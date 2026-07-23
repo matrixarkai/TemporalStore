@@ -37,7 +37,7 @@ Representative C++ files inspected:
   `cargo test -p temporalstore-rust --test unified_temporalstore_corpus -- --test-threads=1`
 
   This replaces the old Rust-local `temporalstore_compat` integration target. Basic smoke,
-  consistency, stream, Feature, Sequence, IPS, ControlState, Redis/admin, Context, control-plane,
+  consistency, stream, Feature, Sequence, IPS, Risk, Redis/admin, Context, control-plane,
   ingestion, storage, and Raft behavior should be added to the shared corpus first, then
   executed through this target.
 

@@ -50,7 +50,7 @@ MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_EMBEDDING_MODEL=sentence-transformers
 - Node L1 policy: generate when child summaries, >=3 source events, or >=180 estimated source tokens
 - Embedding note: OSS embedding provider completed for this run.
 
-## Capability Field Guide
+## Data Model Field Guide
 
 |model|purpose|important_fields|
 |---|---|---|
@@ -165,7 +165,7 @@ MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_EMBEDDING_MODEL=sentence-transformers
 |2805366902134763703||||resource_deadline: Purchase order must be ready by July 15, 2026|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |9126288920168708725||||resource_policy: be ready by July 15, 2026|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |6126907253617751783||||resource_approval: Packet|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|8379901460722616416||||resource_control_state: Vendor selection is blocked if finance approval is not attached|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|8379901460722616416||||resource_risk: Vendor selection is blocked if finance approval is not attached|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |1223074302848556039||||tool: Import PDF resource for MatrixArk parsing: Project Aurora GPU Approval Packet||
 |8491964783980545514||||resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |1869664875747613230||||resource_approval: before vendor selection|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
@@ -174,7 +174,7 @@ MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_EMBEDDING_MODEL=sentence-transformers
 |5300838132172955992||||resource_cost: Update Memo|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |943575872141984970||||resource_policy: not be used for current-state answers|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |4339776539578185279||||resource_approval: r: Alice confirmed the updated cap|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|8256455490456818829||||resource_control_state: 42000 dollars is historical and should not be used for current-state answers|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|8256455490456818829||||resource_risk: 42000 dollars is historical and should not be used for current-state answers|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |5609674049059368910||||resource_procedure: ed the updated cap|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |7807306534490412577||||tool: Import PDF resource for MatrixArk parsing: Budget Update Memo||
 |6646553404659991554||||resource_decision: Alice from finance approved the GPU purchase|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
@@ -183,7 +183,7 @@ MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_EMBEDDING_MODEL=sentence-transformers
 |5347224513344327521||||resource_deadline: The purchase order must be ready by July 15, 2026|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |5147935230019537673||||resource_policy: Decision: Alice from finance approved the GPU purchase|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |4917084085215386630||||resource_approval: the GPU purchase|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|8075343161373804078||||resource_control_state: Vendor selection must stop if finance approval is missing|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|8075343161373804078||||resource_risk: Vendor selection must stop if finance approval is missing|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |7493566275012183912||||tool: Import Markdown resource for MatrixArk parsing: Project Aurora GPU Policy||
 |4790451760624608033||||resource_owner: missing, assign Bob before creating a purchase order|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |2969439737818155172||||resource_troubleshooting_step: ing|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
@@ -206,14 +206,14 @@ MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_EMBEDDING_MODEL=sentence-transformers
 |2084188055938458822||resource_deadline|deadline:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Purchase order must be read...|LATEST|resource_deadline: Purchase order must be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |757728581620685626||resource_policy|policy:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:be ready by July 15, 2026|LATEST|resource_policy: be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the P...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |7360235789622462288||resource_approval|approval:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Packet|LATEST|resource_approval: Packet. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|5625682257466382736||resource_control_state|control_state:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Vendor selection is blocked if ...|LATEST|resource_control_state: Vendor selection is blocked if finance approval is not attached. Source: Project Aurora GPU Approval P...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|5625682257466382736||resource_risk|risk:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Vendor selection is blocked if ...|LATEST|resource_risk: Vendor selection is blocked if finance approval is not attached. Source: Project Aurora GPU Approval P...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |7335292191008545134||resource_troubleshooting|troubleshooting:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Procedure: Attach fi...|LATEST|resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection. Source: GPU Procurement Ru...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |5749492756472815569||resource_approval|approval:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:before vendor selection|LATEST|resource_approval: before vendor selection. Source: GPU Procurement Runbook Procedure: Attach finance approval before...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |4371870130263697717||resource_procedure|procedure:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Attach finance approval be...|LATEST|resource_procedure: Attach finance approval before vendor selection. Source: GPU Procurement Runbook Procedure: Attac...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |3570688520692967835||resource_cost|cost:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Update Memo|LATEST|resource_cost: Update Memo. Source: Budget Update Memo Update: The backup GPU quote increased the cap from 42000 doll...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |1475629264707668433||resource_policy|policy:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:not be used for current-state...|LATEST|resource_policy: not be used for current-state answers. Source: Budget Update Memo Update: The backup GPU quote incre...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |1819713890940081580||resource_approval|approval:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:r: Alice confirmed the upda...|LATEST|resource_approval: r: Alice confirmed the updated cap. Source: Budget Update Memo Update: The backup GPU quote increa...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|9203286277593589047||resource_control_state|control_state:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:42000 dollars is historical and...|LATEST|resource_control_state: 42000 dollars is historical and should not be used for current-state answers. Source: Budget Update Me...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|9203286277593589047||resource_risk|risk:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:42000 dollars is historical and...|LATEST|resource_risk: 42000 dollars is historical and should not be used for current-state answers. Source: Budget Update Me...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |3796840776690925669||resource_procedure|procedure:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:ed the updated cap|LATEST|resource_procedure: ed the updated cap. Source: Budget Update Memo Update: The backup GPU quote increased the cap fro...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |1790632716293740327||resource_decision|decision:Project Aurora GPU Policy:Alice from finance approved the GPU purchase|LATEST|resource_decision: Alice from finance approved the GPU purchase. Source: # Project Aurora GPU Policy Decision: Alice ...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |6499229581658240168||resource_owner|owner:Project Aurora GPU Policy:Bob owns procurement and vendor coordination|LATEST|resource_owner: Bob owns procurement and vendor coordination. Source: # Project Aurora GPU Policy Decision: Alice fro...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
@@ -221,7 +221,7 @@ MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_EMBEDDING_MODEL=sentence-transformers
 |5594237035078441302||resource_deadline|deadline:Project Aurora GPU Policy:The purchase order must be ready by July 15, 2026|LATEST|resource_deadline: The purchase order must be ready by July 15, 2026. Source: # Project Aurora GPU Policy Decision: A...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |2601958072599404984||resource_policy|policy:Project Aurora GPU Policy:Decision: Alice from finance approved the GPU purchase|LATEST|resource_policy: Decision: Alice from finance approved the GPU purchase. Source: # Project Aurora GPU Policy Decision...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |6356636754220848834||resource_approval|approval:Project Aurora GPU Policy:the GPU purchase|LATEST|resource_approval: the GPU purchase. Source: # Project Aurora GPU Policy Decision: Alice from finance approved the GP...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|1513792870765019410||resource_control_state|control_state:Project Aurora GPU Policy:Vendor selection must stop if finance approval is missing|LATEST|resource_control_state: Vendor selection must stop if finance approval is missing. Source: # Project Aurora GPU Policy Decisio...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|1513792870765019410||resource_risk|risk:Project Aurora GPU Policy:Vendor selection must stop if finance approval is missing|LATEST|resource_risk: Vendor selection must stop if finance approval is missing. Source: # Project Aurora GPU Policy Decisio...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |3575076914436296206||resource_owner|owner:Troubleshooting:missing, assign Bob before creating a purchase order|LATEST|resource_owner: missing, assign Bob before creating a purchase order. Source: # Troubleshooting If vendor selection f...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |7511407509864819253||resource_troubleshooting|troubleshooting:Troubleshooting:ing|LATEST|resource_troubleshooting_step: ing. Source: # Troubleshooting If vendor selection fails, first verify the finance app...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |1522391842502911337||resource_approval|approval:Troubleshooting:attachment|LATEST|resource_approval: attachment. Source: # Troubleshooting If vendor selection fails, first verify the finance approval...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
@@ -574,9 +574,9 @@ MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_EMBEDDING_MODEL=sentence-transformers
 |source_type:resource_fact|resource_fact|8379901460722616416|3750474927497957967||
 |resource_type:pdf|resource_fact|8379901460722616416|3750474927497957967||
 |unit_kind:pdf_page|resource_fact|8379901460722616416|3750474927497957967||
-|entity_type:resource_control_state|resource_fact|8379901460722616416|3750474927497957967||
+|entity_type:resource_risk|resource_fact|8379901460722616416|3750474927497957967||
 |entity_type:resource_fact|resource_fact|8379901460722616416|3750474927497957967||
-|event_type:resource_control_state|resource_fact|8379901460722616416|3750474927497957967||
+|event_type:resource_risk|resource_fact|8379901460722616416|3750474927497957967||
 |keyword:project|resource_fact|8379901460722616416|3750474927497957967||
 |keyword:aurora|resource_fact|8379901460722616416|3750474927497957967||
 |keyword:gpu|resource_fact|8379901460722616416|3750474927497957967||
@@ -2376,7 +2376,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "source_chunk_hash": 3750474927497957967,
       "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
       "sparse_score": 0.7857142857142857,
-      "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
+      "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
       "time_score": 1.0,
       "token_estimate": 51,
       "updated_at_ms": 1782689963978
@@ -2520,7 +2520,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "sparse_score": 0.7857142857142857,
       "stale_or_superseded": false,
       "supersedes_chunk_hash": null,
-      "text": "resource C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
+      "text": "resource C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
       "time_score": 1.0,
       "token_estimate": 98,
       "updated_at_ms": 1782689963978,

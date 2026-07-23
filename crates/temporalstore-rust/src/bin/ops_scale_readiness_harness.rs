@@ -127,7 +127,7 @@ fn main() {
     let workload_families: Vec<(&str, &[&str])> = vec![
         ("Feature", &["feature_append", "feature_query"]),
         ("IPS", &["ips_add_with_options", "ips_query_range"]),
-        ("ControlState", &["control_state_increment", "control_state_count"]),
+        ("Risk", &["risk_increment", "risk_count"]),
         ("Redis", &["string_set", "hash_multi_set", "set_add"]),
         ("Context", &["context_upsert_node", "context_write_event"]),
         ("Admin", &["existing_test", "common_exists"]),
@@ -143,7 +143,7 @@ fn main() {
     let cplusplus_workload_replay_ready = [
         "feature_packed_timestamped_pages",
         "ips_options_range",
-        "control_state_counter_window",
+        "risk_counter_window",
         "redis_compatible_set_core",
         "context_event_index_audit_dirty_models",
         "cpp_redis_live_storage_smoke_parity_surfaces",

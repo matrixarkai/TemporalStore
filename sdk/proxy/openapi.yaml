@@ -5,17 +5,9 @@ info:
 paths:
   /ProxyService/Set:
     post:
-      summary: Put a string value.
+      summary: Put a string value with optional TTL.
       requestBody:
         $ref: '#/components/requestBodies/StringPut'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/SetEx:
-    post:
-      summary: Put a string value with TTL.
-      requestBody:
-        $ref: '#/components/requestBodies/StringPutWithTtl'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
@@ -30,14 +22,6 @@ paths:
   /ProxyService/Delete:
     post:
       summary: Delete an object.
-      requestBody:
-        $ref: '#/components/requestBodies/Key'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/CommonDelete:
-    post:
-      summary: Delete an object using the common command alias.
       requestBody:
         $ref: '#/components/requestBodies/Key'
       responses:
@@ -83,54 +67,6 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /ProxyService/HMGet:
-    post:
-      summary: Get multiple hash fields.
-      requestBody:
-        $ref: '#/components/requestBodies/HashMultiGet'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/HMSet:
-    post:
-      summary: Set multiple hash fields.
-      requestBody:
-        $ref: '#/components/requestBodies/HashMultiSet'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/HIncrBy:
-    post:
-      summary: Increment a hash field.
-      requestBody:
-        $ref: '#/components/requestBodies/HashIncrBy'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/HashIncrBy:
-    post:
-      summary: Increment a hash field using the hash command alias.
-      requestBody:
-        $ref: '#/components/requestBodies/HashIncrBy'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/HGetAll:
-    post:
-      summary: Get all hash fields.
-      requestBody:
-        $ref: '#/components/requestBodies/Key'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/HLen:
-    post:
-      summary: Count hash fields.
-      requestBody:
-        $ref: '#/components/requestBodies/Key'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
   /ProxyService/SAdd:
     post:
       summary: Add a set member.
@@ -147,30 +83,6 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /ProxyService/SRem:
-    post:
-      summary: Remove a set member.
-      requestBody:
-        $ref: '#/components/requestBodies/SetAdd'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/Exists:
-    post:
-      summary: Check whether an object exists.
-      requestBody:
-        $ref: '#/components/requestBodies/Key'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/StringSetConditional:
-    post:
-      summary: Conditionally put a string value.
-      requestBody:
-        $ref: '#/components/requestBodies/StringSetConditional'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
   /ProxyService/FeatureAdd:
     post:
       summary: Add raw timestamped feature points.
@@ -184,30 +96,6 @@ paths:
       summary: Query raw timestamped feature points.
       requestBody:
         $ref: '#/components/requestBodies/FeatureQuery'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/FeatureReplace:
-    post:
-      summary: Replace raw timestamped feature points in a time range.
-      requestBody:
-        $ref: '#/components/requestBodies/FeatureReplace'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/FeatureDelete:
-    post:
-      summary: Delete raw feature points for a key.
-      requestBody:
-        $ref: '#/components/requestBodies/Key'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/FeatureAggQuery:
-    post:
-      summary: Aggregate raw timestamped feature points.
-      requestBody:
-        $ref: '#/components/requestBodies/FeatureAggregate'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
@@ -243,75 +131,19 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /ProxyService/ControlStateIncrement:
+  /ProxyService/RiskIncrement:
     post:
-      summary: Increment a control_state counter.
+      summary: Increment a risk counter.
       requestBody:
-        $ref: '#/components/requestBodies/ControlStateIncrement'
+        $ref: '#/components/requestBodies/RiskIncrement'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /ProxyService/ControlStateCount:
+  /ProxyService/RiskCount:
     post:
-      summary: Query a control_state counter window.
+      summary: Query a risk counter window.
       requestBody:
-        $ref: '#/components/requestBodies/ControlStateCount'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/ControlStateHset:
-    post:
-      summary: Set a timestamped control_state value.
-      requestBody:
-        $ref: '#/components/requestBodies/ControlStateHset'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/ControlStateHquery:
-    post:
-      summary: Query H-family control_state values through the C++ proxy-compatible alias.
-      requestBody:
-        $ref: '#/components/requestBodies/ControlStateHquery'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/ControlStateCPCSet:
-    post:
-      summary: Set CPC control_state values through the C++ proxy-compatible alias.
-      requestBody:
-        $ref: '#/components/requestBodies/ControlStateCPCSet'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/ControlStateCPCQuery:
-    post:
-      summary: Query CPC control_state counts through the C++ proxy-compatible alias.
-      requestBody:
-        $ref: '#/components/requestBodies/ControlStateCPCQuery'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/ControlStateFolSet:
-    post:
-      summary: Set first-or-last control_state value.
-      requestBody:
-        $ref: '#/components/requestBodies/ControlStateFolSet'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/ControlStateFolQuery:
-    post:
-      summary: Query first-or-last control_state value.
-      requestBody:
-        $ref: '#/components/requestBodies/Key'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /ProxyService/ControlStateManager:
-    post:
-      summary: Query control_state manager entries.
-      requestBody:
-        $ref: '#/components/requestBodies/ControlStateManager'
+        $ref: '#/components/requestBodies/RiskCount'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
@@ -360,18 +192,6 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/StringPutRequest'
-    StringPutWithTtl:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/StringPutWithTtlRequest'
-    StringSetConditional:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/StringSetConditionalRequest'
     Expire:
       required: true
       content:
@@ -390,24 +210,6 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/HashFieldRequest'
-    HashMultiGet:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/HashMultiGetRequest'
-    HashMultiSet:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/HashMultiSetRequest'
-    HashIncrBy:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/HashIncrByRequest'
     SetAdd:
       required: true
       content:
@@ -432,18 +234,6 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/FeatureQueryRequest'
-    FeatureReplace:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/FeatureReplaceRequest'
-    FeatureAggregate:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/FeatureAggregateRequest'
     IpsAdd:
       required: true
       content:
@@ -456,54 +246,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/IpsQueryLastRequest'
-    ControlStateIncrement:
+    RiskIncrement:
       required: true
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ControlStateIncrementRequest'
-    ControlStateCount:
+            $ref: '#/components/schemas/RiskIncrementRequest'
+    RiskCount:
       required: true
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ControlStateCountRequest'
-    ControlStateHset:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ControlStateHsetRequest'
-    ControlStateHquery:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ControlStateHqueryRequest'
-    ControlStateCPCSet:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ControlStateCPCSetRequest'
-    ControlStateCPCQuery:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ControlStateCPCQueryRequest'
-    ControlStateFolSet:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ControlStateFolSetRequest'
-    ControlStateManager:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ControlStateManagerRequest'
+            $ref: '#/components/schemas/RiskCountRequest'
     MatrixArkAppendRecords:
       required: true
       content:
@@ -537,20 +291,14 @@ components:
           type: object
     KeyRequest:
       type: object
-      required: [namespace, table_name, key]
+      required: [namespace, table, key]
       properties:
         namespace:
           type: string
-        table_name:
+        table:
           type: string
         key:
           type: string
-    ByteArray:
-      type: array
-      items:
-        type: integer
-        minimum: 0
-        maximum: 255
     StringPutRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
@@ -558,34 +306,10 @@ components:
           required: [value]
           properties:
             value:
-              $ref: '#/components/schemas/ByteArray'
-            ttl_ms:
-              type: integer
-              format: int64
-    StringPutWithTtlRequest:
-      allOf:
-        - $ref: '#/components/schemas/StringPutRequest'
-        - type: object
-          required: [ttl_ms]
-          properties:
-            ttl_ms:
-              type: integer
-              format: int64
-    StringSetConditionalRequest:
-      allOf:
-        - $ref: '#/components/schemas/StringPutRequest'
-        - type: object
-          required: [condition]
-          properties:
-            ttl_ms:
-              type: integer
-              format: int64
-            condition:
               type: string
-              enum: [always, if_exists, if_not_exists]
-            return_old:
-              type: boolean
-              default: false
+            ttl_ms:
+              type: integer
+              format: int64
     ExpireRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
@@ -604,7 +328,7 @@ components:
             field:
               type: string
             value:
-              $ref: '#/components/schemas/ByteArray'
+              type: string
     HashFieldRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
@@ -613,45 +337,6 @@ components:
           properties:
             field:
               type: string
-    HashMultiGetRequest:
-      allOf:
-        - $ref: '#/components/schemas/KeyRequest'
-        - type: object
-          required: [fields]
-          properties:
-            fields:
-              type: array
-              items:
-                type: string
-    HashEntry:
-      type: array
-      minItems: 2
-      maxItems: 2
-      items:
-        oneOf:
-          - type: string
-          - $ref: '#/components/schemas/ByteArray'
-    HashMultiSetRequest:
-      allOf:
-        - $ref: '#/components/schemas/KeyRequest'
-        - type: object
-          required: [entries]
-          properties:
-            entries:
-              type: array
-              items:
-                $ref: '#/components/schemas/HashEntry'
-    HashIncrByRequest:
-      allOf:
-        - $ref: '#/components/schemas/KeyRequest'
-        - type: object
-          required: [field, increment]
-          properties:
-            field:
-              type: string
-            increment:
-              type: integer
-              format: int64
     SetAddRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
@@ -659,16 +344,16 @@ components:
           required: [member]
           properties:
             member:
-              $ref: '#/components/schemas/ByteArray'
+              type: string
     FeaturePoint:
       type: object
-      required: [timestamp_ms, value]
+      required: [timestamp, value]
       properties:
-        timestamp_ms:
+        timestamp:
           type: integer
           format: int64
         value:
-          $ref: '#/components/schemas/ByteArray'
+          type: string
     FeatureFilter:
       type: object
       required: [field, op, value]
@@ -676,8 +361,7 @@ components:
         field:
           type: string
         op:
-          type: string
-          enum: [equal, not_equal, greater_than, greater_or_equal, less_than, less_or_equal]
+          type: integer
         value:
           type: integer
           format: int64
@@ -693,9 +377,9 @@ components:
                 $ref: '#/components/schemas/FeaturePoint'
     SequenceFeatureRow:
       type: object
-      required: [timestamp_ms, gid, action_type, duration, author_id]
+      required: [timestamp, gid, action_type, duration, author_id]
       properties:
-        timestamp_ms:
+        timestamp:
           type: integer
           format: int64
         gid:
@@ -722,12 +406,12 @@ components:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
-          required: [start_ms, end_ms, count]
+          required: [start_ts, end_ts, count]
           properties:
-            start_ms:
+            start_ts:
               type: integer
               format: int64
-            end_ms:
+            end_ts:
               type: integer
               format: int64
             count:
@@ -737,39 +421,6 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/FeatureFilter'
-    FeatureReplaceRequest:
-      allOf:
-        - $ref: '#/components/schemas/KeyRequest'
-        - type: object
-          required: [start_ms, end_ms, points]
-          properties:
-            start_ms:
-              type: integer
-              format: int64
-            end_ms:
-              type: integer
-              format: int64
-            points:
-              type: array
-              items:
-                $ref: '#/components/schemas/FeaturePoint'
-    FeatureAggregateRequest:
-      allOf:
-        - $ref: '#/components/schemas/KeyRequest'
-        - type: object
-          required: [start_ms, end_ms, aggregator]
-          properties:
-            start_ms:
-              type: integer
-              format: int64
-            end_ms:
-              type: integer
-              format: int64
-            aggregator:
-              type: string
-            count:
-              type: integer
-              format: int64
     IpsFeatureStat:
       type: object
       required: [id, slot, has_slot, type, v1, v2]
@@ -789,238 +440,87 @@ components:
           type: integer
     IpsAddRequest:
       type: object
-      required: [namespace, table_name, key, timestamp_ms, instance]
+      required: [namespace, table, ips_table, uid, timestamp_us, action_type, logical_table, features]
       properties:
         namespace:
           type: string
-        table_name:
+        table:
           type: string
-        key:
+        ips_table:
           type: string
-        timestamp_ms:
+        uid:
           type: integer
           format: int64
-        instance:
-          $ref: '#/components/schemas/ByteArray'
+        timestamp_us:
+          type: integer
+          format: int64
         action_type:
           type: integer
-        table_id:
+        logical_table:
           type: integer
-          format: int64
-        request_id:
-          type: string
+        features:
+          type: array
+          items:
+            $ref: '#/components/schemas/IpsFeatureStat'
     IpsQueryLastRequest:
       type: object
-      required: [namespace, table_name, key, count]
+      required: [namespace, table, ips_table, uid, action_type, logical_table, slot]
       properties:
         namespace:
           type: string
-        table_name:
+        table:
           type: string
-        key:
+        ips_table:
           type: string
-        count:
+        uid:
           type: integer
-    ControlStateIncrementRequest:
+          format: int64
+        action_type:
+          type: integer
+        logical_table:
+          type: integer
+        slot:
+          type: integer
+        top_k:
+          type: integer
+        last_instances:
+          type: integer
+          format: int64
+    RiskIncrementRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
-          required: [timestamp_ms, amount]
+          required: [amount, ttl_seconds, precision]
           properties:
-            timestamp_ms:
-              type: integer
-              format: int64
             amount:
               type: integer
               format: int64
-            precision_ms:
+            ttl_seconds:
               type: integer
               format: int64
-            ttl_ms:
+            precision:
+              type: integer
+            uuid:
+              type: string
+            occur_time_seconds:
               type: integer
               format: int64
-    ControlStateCountRequest:
+    RiskCountRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
-          required: [start_ms, end_ms]
+          required: [precision, window_start, window_end, window_unit]
           properties:
-            start_ms:
+            precision:
+              type: integer
+            window_start:
               type: integer
               format: int64
-            end_ms:
+            window_end:
               type: integer
               format: int64
-    ControlStateHsetRequest:
-      allOf:
-        - $ref: '#/components/schemas/KeyRequest'
-        - type: object
-          properties:
-            timestamp_ms:
+            window_unit:
               type: integer
-              format: int64
-            amount:
-              type: integer
-              format: int64
-            value:
-              oneOf:
-                - type: string
-                - type: integer
-                  format: int64
-            ttl:
-              type: integer
-              format: int64
-            ttl_ms:
-              type: integer
-              format: int64
-            htype:
-              type: string
-              enum: [count, min, max, change]
-            occur_time:
-              type: integer
-              format: int64
-            precision_ms:
-              type: integer
-              format: int64
-    ControlStateWindow:
-      type: object
-      required: [start_offset, end_offset, unit]
-      properties:
-        start_offset:
-          type: integer
-          format: int64
-        end_offset:
-          type: integer
-          format: int64
-        unit:
-          type: string
-          enum: [second, minute, hour, day]
-    ControlStateHqueryRequest:
-      allOf:
-        - $ref: '#/components/schemas/KeyRequest'
-        - type: object
-          properties:
-            start_ms:
-              type: integer
-              format: int64
-            end_ms:
-              type: integer
-              format: int64
-            windows:
-              type: array
-              items:
-                $ref: '#/components/schemas/ControlStateWindow'
-            htype:
-              type: string
-              enum: [count, min, max, change]
-            aggregator:
-              type: string
-            precision_ms:
-              type: integer
-              format: int64
-    ControlStateCPCSetRequest:
-      allOf:
-        - $ref: '#/components/schemas/KeyRequest'
-        - type: object
-          required: [values]
-          properties:
-            values:
-              type: array
-              items:
-                type: string
-            timestamp_ms:
-              type: integer
-              format: int64
-            occur_time:
-              type: integer
-              format: int64
-            ttl_ms:
-              type: integer
-              format: int64
-            ttl:
-              type: integer
-              format: int64
-            precision_ms:
-              type: integer
-              format: int64
-            dont_upgrade_cpc:
-              type: boolean
-    ControlStateCPCQueryRequest:
-      allOf:
-        - $ref: '#/components/schemas/KeyRequest'
-        - type: object
-          properties:
-            start_ms:
-              type: integer
-              format: int64
-            end_ms:
-              type: integer
-              format: int64
-            aggregator:
-              type: string
-              default: sum
-            windows:
-              type: array
-              items:
-                $ref: '#/components/schemas/ControlStateWindow'
-            with_detail:
-              type: boolean
-            precision_ms:
-              type: integer
-              format: int64
-    ControlStateFolSetRequest:
-      allOf:
-        - $ref: '#/components/schemas/KeyRequest'
-        - type: object
-          required: [value, fol_type]
-          properties:
-            value:
-              oneOf:
-                - type: string
-                - $ref: '#/components/schemas/ByteArray'
-            occur_time:
-              type: integer
-              format: int64
-            occur_time_ms:
-              type: integer
-              format: int64
-            ttl:
-              type: integer
-              format: int64
-            ttl_ms:
-              type: integer
-              format: int64
-            fol_type:
-              type: string
-              enum: [first, last]
-    ControlStateManagerKvPair:
-      type: object
-      required: [key, value]
-      properties:
-        key:
-          type: string
-        value:
-          type: string
-    ControlStateManagerRequest:
-      allOf:
-        - $ref: '#/components/schemas/KeyRequest'
-        - type: object
-          properties:
-            op_type:
-              oneOf:
-                - type: string
-                - type: integer
-                  format: int32
-            field_list:
-              type: array
-              items:
-                $ref: '#/components/schemas/ControlStateManagerKvPair'
-            start_offset:
-              type: string
-            end_offset:
-              type: string
-            is_cpc:
-              type: boolean
     MatrixArkHashEntry:
       type: object
       required: [key, field, value]
@@ -1033,11 +533,9 @@ components:
           type: string
     MatrixArkAppendRecordsRequest:
       type: object
-      required: [namespace, table_name, entries]
+      required: [namespace, table, entries]
       properties:
         namespace:
-          type: string
-        table_name:
           type: string
         table:
           type: string
@@ -1051,11 +549,9 @@ components:
           type: string
     MatrixArkScanCandidatesRequest:
       type: object
-      required: [namespace, table_name, count_key, record_hash_key, shard_size]
+      required: [namespace, table, count_key, record_hash_key, shard_size]
       properties:
         namespace:
-          type: string
-        table_name:
           type: string
         table:
           type: string
@@ -1085,11 +581,9 @@ components:
             format: int64
     MatrixArkRetrieveContextPackRequest:
       type: object
-      required: [namespace, table_name, count_key, record_hash_key, shard_size, request]
+      required: [namespace, table, count_key, record_hash_key, shard_size, request]
       properties:
         namespace:
-          type: string
-        table_name:
           type: string
         table:
           type: string

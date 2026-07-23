@@ -1300,27 +1300,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         timestamp_ms = self._context_event_ingestion_time_ms(record)
         return f"{context_event_time_key(timestamp_ms, event_hash):020d}:{event_hash}"
 
-    def _context_event_time_index_scope(self, record: Json) -> Json:
-        """Return compact serving scope for timestamp-index scans."""
-        scope_sources = (
-            record.get("scope"),
-            record.get("access"),
-            record.get("envelope", {}).get("scope") if isinstance(record.get("envelope"), dict) else None,
-        )
-        scope: Json = {}
-        for source in scope_sources:
-            if not isinstance(source, dict):
-                continue
-            for field in ("account_id", "tenant_id", "user_id", "session_id", "agent_name", "team", "project"):
-                value = source.get(field)
-                if value is not None and str(value):
-                    scope[field] = str(value)
-        for field in ("account_id", "tenant_id", "user_id", "session_id", "agent_name", "team", "project"):
-            value = record.get(field)
-            if value is not None and str(value):
-                scope.setdefault(field, str(value))
-        return scope
-
     def _context_event_time_index_payload(self, record: Json) -> str:
         """Compact timestamp-index payload.
 
@@ -1330,9 +1309,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         and extraction/debug fields out of this index avoids doubling hot write
         bytes for every event.
         """
-        scope = self._context_event_time_index_scope(record)
         scope_key = str(record.get("scope_key") or "")
         if not scope_key:
+            scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
             scope_key = canonical_scope_key(scope)
         payload: Json = {
             "record_type": "context_event_ref",
@@ -1341,15 +1320,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "scope_key": scope_key,
             "timestamp_key_ms": self._context_event_ingestion_time_ms(record),
         }
-        if scope:
-            payload["scope"] = scope
-            session_id = scope.get("session_id")
-            if session_id:
-                payload["session_id"] = session_id
-        for hash_field in ("tenant_hash", "user_hash", "session_hash"):
-            hash_value = record.get(hash_field)
-            if hash_value is not None:
-                payload[hash_field] = int(hash_value or 0)
         payload["context_event_key"] = context_event_time_key(payload["timestamp_key_ms"], payload["ref_hash"])
         source_chunk_hash = record.get("source_chunk_hash")
         if source_chunk_hash is not None:

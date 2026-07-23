@@ -134,7 +134,7 @@ This is not a TemporalStore data-path result, but it affects automation reliabil
 Current production-ready path:
 
 - Shared-store replication with async or sync persistence is operational on AWS.
-- Async shared-store is the practical high-write-QPS option today, with accepted RPO control_state.
+- Async shared-store is the practical high-write-QPS option today, with accepted RPO risk.
 - Sync shared-store is safer but EFS latency makes writes much slower in this small test.
 
 Current non-production path:

@@ -154,9 +154,6 @@ def make_backfill_args(
         partial_filter_json="",
         partial_require_bounded=True,
         batch_size=batch_size,
-        backfill_window_policy="conversation",
-        session_commit_threshold=20,
-        idle_commit_timeout_ms=300000,
         source_scan_max_empty_shards=2,
         dry_run=False,
         resume=False,
@@ -174,7 +171,6 @@ def timed_call(fn, *args, **kwargs) -> tuple[Json, float]:
 
 
 def run_one_backend(args: argparse.Namespace, raw_backend: str) -> Json:
-    raw_backend = backfill.normalize_raw_backend(raw_backend)
     with tempfile.TemporaryDirectory(prefix=f"matrixark_backfill_bench_{raw_backend}_") as tmp:
         kv_path = Path(tmp) / "kv.json"
         source_prefix = "matrixark:mcp:raw_ingestion"
@@ -815,10 +811,7 @@ def run_benchmark(args: argparse.Namespace) -> Json:
     if args.gate_aggregation not in {"sample", "min", "avg"}:
         raise BackfillBenchmarkError("--gate-aggregation must be sample, min, or avg")
     batch_sizes = parse_batch_sizes(getattr(args, "batch_sizes", ""), args.batch_size)
-    if args.raw_backends in {"all", "both"}:
-        raw_backends = ["temporalstore", "matrixkv", "s3", "matrixobject"]
-    else:
-        raw_backends = [backfill.normalize_raw_backend(args.raw_backends)]
+    raw_backends = ["temporalstore", "matrixkv"] if args.raw_backends == "both" else [args.raw_backends]
     started = time.perf_counter()
     results: list[Json] = []
     original_batch_size = args.batch_size
@@ -867,12 +860,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--payload-bytes", type=int, default=int(os.environ.get("MATRIXARK_BACKFILL_BENCH_PAYLOAD_BYTES", "128")))
     parser.add_argument("--incremental-records", type=int, default=int(os.environ.get("MATRIXARK_BACKFILL_BENCH_INCREMENTAL_RECORDS", "1000")))
     parser.add_argument("--repeat", type=int, default=int(os.environ.get("MATRIXARK_BACKFILL_BENCH_REPEAT", "1")), help="number of samples to run for each selected raw backend")
-    parser.add_argument(
-        "--raw-backends",
-        choices=["all", "both", "temporalstore", "matrixkv", "s3", "matrixobject", "objectstore"],
-        default=os.environ.get("MATRIXARK_BACKFILL_BENCH_RAW_BACKENDS", "all"),
-        help="raw-message backend sweep; all covers temporalstore, matrixkv, s3, and matrixobject; both is a legacy alias for all",
-    )
+    parser.add_argument("--raw-backends", choices=["both", "temporalstore", "matrixkv"], default=os.environ.get("MATRIXARK_BACKFILL_BENCH_RAW_BACKENDS", "both"))
     parser.add_argument("--min-full-shadow-qps", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_FULL_SHADOW_QPS", "0")))
     parser.add_argument("--min-incremental-repair-qps", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_INCREMENTAL_REPAIR_QPS", "0")))
     parser.add_argument("--min-partial-repair-qps", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_PARTIAL_REPAIR_QPS", "0")))

@@ -19,7 +19,7 @@
 #include "extension/feature/interface.pb.h"
 #include "extension/ips/interface.pb.h"
 #include "extension/modules.pb.h"
-#include "extension/control_state/interface.pb.h"
+#include "extension/risk/interface.pb.h"
 #include "extension/set/interface.pb.h"
 
 namespace {
@@ -330,24 +330,24 @@ bool BenchmarkIps(bcache2::client::TableCore* table, const std::string& prefix, 
                    results);
 }
 
-bool BenchmarkControlState(bcache2::client::TableCore* table, const std::string& prefix, int ops,
+bool BenchmarkRisk(bcache2::client::TableCore* table, const std::string& prefix, int ops,
                    std::vector<LatencyStats>* results) {
     const uint64_t now = static_cast<uint64_t>(std::time(nullptr));
 
-    if (!Measure("CONTROL_STATE", "ingest_hset_count", ops,
+    if (!Measure("RISK", "ingest_hset_count", ops,
                  [&](int i) {
-                     const std::string key = prefix + ":control_state:" + std::to_string(i);
-                     bcache2::control_state::HsetRequest request;
+                     const std::string key = prefix + ":risk:" + std::to_string(i);
+                     bcache2::risk::HsetRequest request;
                      request.set_key(key);
                      request.set_value("1");
                      request.set_ttl(24 * 3600);
-                     request.set_htype(bcache2::control_state::COUNT);
-                     request.set_precision(bcache2::control_state::OneMinute);
+                     request.set_htype(bcache2::risk::COUNT);
+                     request.set_precision(bcache2::risk::OneMinute);
                      request.set_occur_time(now);
-                     request.set_uuid(prefix + ":control_state_uuid:" + std::to_string(i));
-                     bcache2::control_state::HsetResponse response;
-                     if (!ExecuteRaw(table, bcache2::Module::CONTROL_STATE, bcache2::control_state::HSET, key,
-                                     request, &response, "CONTROL_STATE Hset")) {
+                     request.set_uuid(prefix + ":risk_uuid:" + std::to_string(i));
+                     bcache2::risk::HsetResponse response;
+                     if (!ExecuteRaw(table, bcache2::Module::RISK, bcache2::risk::HSET, key,
+                                     request, &response, "RISK Hset")) {
                          return false;
                      }
                      return response.err_code() == 0;
@@ -356,20 +356,20 @@ bool BenchmarkControlState(bcache2::client::TableCore* table, const std::string&
         return false;
     }
 
-    return Measure("CONTROL_STATE", "query_hquery_1h_count", ops,
+    return Measure("RISK", "query_hquery_1h_count", ops,
                    [&](int i) {
-                       const std::string key = prefix + ":control_state:" + std::to_string(i);
-                       bcache2::control_state::HqueryRequest request;
+                       const std::string key = prefix + ":risk:" + std::to_string(i);
+                       bcache2::risk::HqueryRequest request;
                        request.set_key(key);
-                       request.set_precision(bcache2::control_state::OneMinute);
-                       request.set_htype(bcache2::control_state::COUNT);
+                       request.set_precision(bcache2::risk::OneMinute);
+                       request.set_htype(bcache2::risk::COUNT);
                        auto* window = request.add_windows();
                        window->set_start(-1);
                        window->set_end(0);
-                       window->set_unit(bcache2::control_state::Hour);
-                       bcache2::control_state::HqueryResponse response;
-                       if (!ExecuteRaw(table, bcache2::Module::CONTROL_STATE, bcache2::control_state::HQUERY, key,
-                                       request, &response, "CONTROL_STATE Hquery")) {
+                       window->set_unit(bcache2::risk::Hour);
+                       bcache2::risk::HqueryResponse response;
+                       if (!ExecuteRaw(table, bcache2::Module::RISK, bcache2::risk::HQUERY, key,
+                                       request, &response, "RISK Hquery")) {
                            return false;
                        }
                        return response.err_code() == 0 && response.result_list_size() == 1 &&
@@ -428,7 +428,7 @@ int main(int argc, char** argv) {
     ok = ok && BenchmarkSet(table_core, prefix, ops, &results);
     ok = ok && BenchmarkFeature(table_core, prefix, ops, &results);
     ok = ok && BenchmarkIps(table_core, prefix, ops, &results);
-    ok = ok && BenchmarkControlState(table_core, prefix, ops, &results);
+    ok = ok && BenchmarkRisk(table_core, prefix, ops, &results);
 
     bcache2::Status close_status = client->CloseTable(table.get());
     if (!CheckStatus(close_status, "CloseTable")) {

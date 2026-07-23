@@ -60,16 +60,14 @@ matrixark:mcp:raw_ingestion:record_count = 2500000
 matrixark:mcp:raw_ingestion:records:000012 field 00000000000000012345 -> { ... raw record ... }
 ```
 
-Live ingestion writes raw API, batch, stream, resource, and feedback envelopes to this raw prefix before writing materialized serving records to the active TemporalStore context prefix. The raw-message store is selectable through one generic raw-message adapter contract:
+Live ingestion writes raw API, batch, stream, resource, and feedback envelopes to this raw prefix before writing materialized serving records to the active TemporalStore context prefix. The raw-message store is selectable:
 
 - `temporalstore` is the default. Use it when TemporalStore should be the single system for immutable raw messages and derived context-serving records.
 - `matrixkv` is the alternate raw-message store. Use it when MatrixKV should remain the raw ingestion log while TemporalStore serves materialized context.
-- `s3` stores immutable raw envelopes as object references when S3-compatible object storage owns cold raw-message durability.
-- `matrixobject` stores immutable raw envelopes as MatrixObject references. Legacy `objectstore`/`matrixobjectstore` inputs are accepted as aliases, but reports normalize them to `matrixobject`.
 
 That dual-write contract keeps the raw log immutable and keeps serving scans free of raw envelopes.
 
-Pass the selected source store with `--raw-backend=temporalstore`, `--raw-backend=matrixkv`, `--raw-backend=s3`, or `--raw-backend=matrixobject`. The prefix layout is the same, but the backend label is part of checkpoint fingerprints, generated idempotency keys, manifests, Prometheus labels, and target append options. This prevents a MatrixKV, S3, or MatrixObject repair job from accidentally resuming a TemporalStore raw-log job with the same source and target prefixes.
+Pass the selected source store with `--raw-backend=temporalstore` or `--raw-backend=matrixkv`. The prefix layout is the same, but the backend label is part of checkpoint fingerprints, generated idempotency keys, manifests, Prometheus labels, and target append options. This prevents a MatrixKV repair job from accidentally resuming a TemporalStore raw-log job with the same source and target prefixes.
 
 The runner also supports the legacy index layout:
 
@@ -314,17 +312,17 @@ matrixark_context_backfill_plan_artifact_script_semantic_check
 
 `validate_shadow` also emits a machine-readable `promotion_readiness` block in JSON and the `matrixark_context_backfill_promotion_readiness_status` Prometheus family. Treat `promotion_readiness.ready=true` and `status=ready` as the hard precondition for `activate_shadow` or `incremental_repair`. If it is blocked, `promotion_readiness.blockers` lists the failed validation checks such as `serving_record_fingerprint_match`, `target_records_readable`, or `source_scan_had_no_failures`.
 
-The readiness validator generates Prometheus output for the canonical raw modes (`temporalstore`, `matrixkv`, `s3`, and `matrixobject`) and fails if these metric families disappear.
+The readiness validator generates Prometheus output for both `temporalstore` and `matrixkv` raw modes and fails if these metric families disappear.
 
 ## CI Readiness Gate
 
-The open-source CI entrypoint is `tools/run_matrixark_context_backfill_ci_gate_ubuntu22.sh`. It is designed for Ubuntu 22 runners in GitHub Actions, local CI, Buildkite, Jenkins, or a release shell. The gate compiles the backfill tools, runs the backfill, benchmark, dual-write, evidence-manifest, and readiness unit tests, runs `tools/validate_open_source_readiness.py`, then runs `tools/validate_matrixark_context_backfill_readiness.py` with the canonical raw-message backends. The gate writes `matrixark_context_backfill_readiness.json` as the top-level readiness report and writes durable dual-write ingestion JSON plus Prometheus evidence under `matrixark_context_backfill_evidence/dual_write` by passing `--dual-write-evidence-dir`. That directory also contains `manifest.json` with file sizes and SHA-256 checksums for the dual-write JSON and Prometheus artifacts. The gate then writes `matrixark_context_backfill_evidence/manifest.json` with schema `matrixark_context_backfill_ci_evidence_manifest_v1`; this top-level manifest records the CI inputs and SHA-256 checksums for the readiness report plus all dual-write evidence artifacts.
+The open-source CI entrypoint is `tools/run_matrixark_context_backfill_ci_gate_ubuntu22.sh`. It is designed for Ubuntu 22 runners in GitHub Actions, local CI, Buildkite, Jenkins, or a release shell. The gate compiles the backfill tools, runs the backfill, benchmark, dual-write, evidence-manifest, and readiness unit tests, runs `tools/validate_open_source_readiness.py`, then runs `tools/validate_matrixark_context_backfill_readiness.py` with both raw-message backends. The gate writes `matrixark_context_backfill_readiness.json` as the top-level readiness report and writes durable dual-write ingestion JSON plus Prometheus evidence under `matrixark_context_backfill_evidence/dual_write` by passing `--dual-write-evidence-dir`. That directory also contains `manifest.json` with file sizes and SHA-256 checksums for the dual-write JSON and Prometheus artifacts. The gate then writes `matrixark_context_backfill_evidence/manifest.json` with schema `matrixark_context_backfill_ci_evidence_manifest_v1`; this top-level manifest records the CI inputs and SHA-256 checksums for the readiness report plus all dual-write evidence artifacts.
 
 Keep this gate green before changing backfill defaults, raw-message storage behavior, validation semantics, or benchmark thresholds. CI systems should call this script directly and upload `matrixark_context_backfill_readiness.json` plus `matrixark_context_backfill_evidence/` as artifacts. Set `MATRIXARK_BACKFILL_CI_EVIDENCE_DIR=<path>` when the CI system needs a different artifact directory, and set `MATRIXARK_BACKFILL_CI_EVIDENCE_MANIFEST=<path>` only when the top-level manifest must live outside that directory. The gate keeps the requested readiness JSON output and also copies it beside the top-level evidence manifest, so the uploaded evidence directory is self-contained. The top-level manifest stores artifact paths relative to the manifest directory, so the uploaded evidence bundle remains verifiable after download or relocation. The script verifies `matrixark_context_backfill_evidence/manifest.json` with `--require-relative-paths=1` before reporting success and writes `matrixark_context_backfill_evidence/manifest.prom` with `matrixark_context_backfill_ci_evidence_verification_status` plus per-check metrics. The evidence verifier validates checksums, rejects top-level artifact paths that resolve outside the top-level evidence manifest directory, and also checks that the readiness report has `status="ok"`, all readiness checks passed, all required readiness gate sections report `status="ok"`, and the dual-write readiness JSON reports `status="ok"`. It also verifies that the dual-write evidence manifest uses `matrixark_dual_write_readiness_evidence_v1`, the dual-write evidence manifest reports `status="ok"`, and its required artifact entries are present. The dual-write evidence manifest stores portable relative artifact paths, and the verifier confirms that dual-write evidence manifest artifact paths stay inside the dual-write evidence directory and that dual-write evidence manifest artifact sizes and SHA-256 checksums match. When evidence fails, `verified_artifacts` and `nested_verified_artifacts` identify the artifact, stored path, containment result, size match, and SHA-256 match so release reviewers can diagnose bad uploads quickly. Release reviewers can re-run `python3 tools/verify_matrixark_context_backfill_ci_evidence.py --manifest matrixark_context_backfill_evidence/manifest.json --require-relative-paths=1 --prometheus-output matrixark_context_backfill_evidence/manifest.prom` before accepting uploaded evidence, then inspect both `matrixark_context_backfill_evidence/manifest.json` and `matrixark_context_backfill_evidence/dual_write/manifest.json`.
 
 ## Backfill Throughput Benchmark
 
-Use `tools/matrixark_context_backfill_benchmark.py` as the local repeatable speed gate for the backfill path itself. It seeds a local raw ingestion log, runs a full shadow backfill, builds a bounded incremental repair shadow, then promotes that repair into an active prefix. Run it across the selected raw-message store options before claiming a performance improvement.
+Use `tools/matrixark_context_backfill_benchmark.py` as the local repeatable speed gate for the backfill path itself. It seeds a local raw ingestion log, runs a full shadow backfill, builds a bounded incremental repair shadow, then promotes that repair into an active prefix. Run it for both raw-message store options before claiming a performance improvement.
 
 ```bash
 python3 tools/matrixark_context_backfill_benchmark.py \
@@ -333,11 +331,11 @@ python3 tools/matrixark_context_backfill_benchmark.py \
   --incremental-records=1000 \
   --repeat=1 \
   --payload-bytes=128 \
-  --raw-backends=all \
+  --raw-backends=both \
   --json-output=/tmp/matrixark_context_backfill_bench.json
 ```
 
-For release or CI gating, add explicit minimum QPS thresholds and optional p95 latency ceilings. The command exits with code `2` and writes `status=failed` when any selected raw backend falls below the configured throughput floor or exceeds a configured latency ceiling:
+For release or CI gating, add explicit minimum QPS thresholds and optional p95 latency ceilings. The command exits with code `2` and writes `status=failed` when either raw backend falls below the configured throughput floor or exceeds a configured latency ceiling:
 
 ```bash
 python3 tools/matrixark_context_backfill_benchmark.py \
@@ -346,7 +344,7 @@ python3 tools/matrixark_context_backfill_benchmark.py \
   --incremental-records=1000 \
   --repeat=3 \
   --payload-bytes=128 \
-  --raw-backends=all \
+  --raw-backends=both \
   --min-full-shadow-qps=5000 \
   --min-incremental-repair-qps=1500 \
   --min-partial-repair-qps=1500 \
@@ -369,7 +367,7 @@ python3 tools/matrixark_context_backfill_benchmark.py \
   --incremental-records=1000 \
   --repeat=3 \
   --payload-bytes=128 \
-  --raw-backends=all \
+  --raw-backends=both \
   --min-full-shadow-qps=5000 \
   --min-incremental-repair-qps=1500 \
   --min-partial-repair-qps=1500 \
@@ -400,7 +398,7 @@ Key output:
 
 Local mode is an in-process correctness and regression signal. For production capacity numbers, run the same batch sizes through `tools/matrixark_context_backfill.py` against a real TemporalStore/MatrixKV deployment and compare the resulting JSON summaries and Prometheus output.
 
-Use `--repeat` for release and CI runs where a single local sample is too noisy. The default `--gate-aggregation=min` gates the worst repeated QPS sample per backend and p95 latency per backend, which is conservative enough for release checks while keeping the output compact. Use `--gate-aggregation=avg` for trend dashboards, and `--gate-aggregation=sample` when every individual sample must pass. Use `--batch-sizes` when tuning throughput; start from `batch_size_summary.production_candidate`, then rerun the selected size against the real deployment before changing production defaults. The candidate is intentionally balanced: it optimizes the minimum QPS across full shadow, incremental repair, and partial repair, and carries `max_phase_p95_ms` plus `backend_qps_min_max_ratio` so operators can reject a fast but unstable or asymmetric batch size. Use `--min-backend-qps-ratio` when multiple raw-message storage options are selected. It fails the gate when the slowest selected backend aggregate falls below the configured fraction of the fastest selected backend aggregate for full shadow, incremental shadow, incremental repair, partial shadow, or partial repair. This catches asymmetric regressions that average QPS can hide.
+Use `--repeat` for release and CI runs where a single local sample is too noisy. The default `--gate-aggregation=min` gates the worst repeated QPS sample per backend and p95 latency per backend, which is conservative enough for release checks while keeping the output compact. Use `--gate-aggregation=avg` for trend dashboards, and `--gate-aggregation=sample` when every individual sample must pass. Use `--batch-sizes` when tuning throughput; start from `batch_size_summary.production_candidate`, then rerun the selected size against the real deployment before changing production defaults. The candidate is intentionally balanced: it optimizes the minimum QPS across full shadow, incremental repair, and partial repair, and carries `max_phase_p95_ms` plus `backend_qps_min_max_ratio` so operators can reject a fast but unstable or asymmetric batch size. Use `--min-backend-qps-ratio` when both raw-message storage options are selected. It fails the gate when the slowest selected backend aggregate falls below the configured fraction of the fastest selected backend aggregate for full shadow, incremental shadow, incremental repair, partial shadow, or partial repair. This catches asymmetric regressions that average QPS can hide.
 
 Latency gates are optional and disabled by default:
 
@@ -422,7 +420,7 @@ python3 tools/matrixark_context_backfill_benchmark.py \
   --batch-sizes=512,1024 \
   --incremental-records=1000 \
   --repeat=3 \
-  --raw-backends=all \
+  --raw-backends=both \
   --json-output=/tmp/matrixark_context_backfill_baseline.json
 
 python3 tools/matrixark_context_backfill_benchmark.py \
@@ -430,7 +428,7 @@ python3 tools/matrixark_context_backfill_benchmark.py \
   --batch-sizes=512,1024 \
   --incremental-records=1000 \
   --repeat=3 \
-  --raw-backends=all \
+  --raw-backends=both \
   --baseline-json=/tmp/matrixark_context_backfill_baseline.json \
   --min-baseline-qps-ratio=0.90 \
   --max-baseline-latency-ratio=1.25 \
@@ -528,7 +526,7 @@ python3 tools/matrixark_dual_write_ingestion_benchmark.py \
   --require-dual-write-counts=1
 ```
 
-One-command local sweep across all raw-message storage options:
+One-command local sweep across both raw-message storage options:
 
 ```bash
 python3 tools/matrixark_dual_write_ingestion_benchmark.py \
@@ -537,7 +535,7 @@ python3 tools/matrixark_dual_write_ingestion_benchmark.py \
   --workers=4 \
   --batch-size=128 \
   --payload-bytes=128 \
-  --raw-backends=all \
+  --raw-backends=both \
   --min-backend-qps-ratio=0.50 \
   --require-dual-write-counts=1 \
   --json-output=/tmp/matrixark_dual_write_both.json \
@@ -570,7 +568,7 @@ Key output fields:
 | `ingestion_qps` | Records per second observed by callers after both writes complete. |
 | `caller_visible_batch_latency_ms` | Latency percentiles for one `append_many` call, including raw and serving writes. |
 | `caller_visible_record_latency_ms_estimate` | Batch latency divided by batch size, useful for quick per-record comparison across batch sizes. |
-| `raw_backend` | Raw-message storage option measured by the run: `temporalstore`, `matrixkv`, `s3`, or `matrixobject`. |
+| `raw_backend` | Raw-message storage option measured by the run: `temporalstore` or `matrixkv`. |
 | `raw_backends` | In sweep mode, the raw-message storage options measured by the run. |
 | `results[]` | In sweep mode, the per-backend single-run summaries. |
 | `summary.ingestion_qps` | In sweep mode, average/min/max caller-visible ingestion QPS across selected raw backends. |
@@ -581,7 +579,7 @@ Key output fields:
 | `dual_write_return_policy` | Confirms the measured return boundary: raw append and serving append both finished before return. |
 | `performance_gate` | Optional pass/fail release gate for `--min-ingestion-qps`, `--max-batch-p95-ms`, and `--require-dual-write-counts`. The command exits with code `2` when the gate fails. |
 
-Use `--require-dual-write-counts=1` for local-mode CI smoke so the test proves both raw and serving append paths ran before return. Use `--min-ingestion-qps` and `--max-batch-p95-ms` for local or direct release gates. In sweep mode, add `--min-backend-qps-ratio` so a release fails if one selected raw-message storage option falls too far behind another. Direct mode should normally gate on QPS/latency; local synthetic call counts are only available in `--mode=local`.
+Use `--require-dual-write-counts=1` for local-mode CI smoke so the test proves both raw and serving append paths ran before return. Use `--min-ingestion-qps` and `--max-batch-p95-ms` for local or direct release gates. In sweep mode, add `--min-backend-qps-ratio` so a release fails if one raw-message storage option falls too far behind the other. Direct mode should normally gate on QPS/latency; local synthetic call counts are only available in `--mode=local`.
 
 Set `--prometheus-output=<path>` to archive scrapeable dual-write ingestion metrics next to the JSON summary. The output includes `matrixark_dual_write_ingestion_qps`, p95 batch latency, per-backend record counts, dual-write count validation status, performance gate status, and sweep-mode `matrixark_dual_write_ingestion_backend_qps_ratio`.
 
@@ -618,7 +616,7 @@ Every summary includes `source_range`, which records `scan_mode`, requested star
 | Small repair | `128` to `256` | Better control and easier debugging |
 | Normal production backfill | `1024` | Good default for throughput and memory |
 | Large rebuild with stable target latency | `2048` to `4096` | Increase only after watching write latency and memory |
-| Unstable target or high dead-letter control_state | `128` to `512` | Keeps retry windows smaller |
+| Unstable target or high dead-letter risk | `128` to `512` | Keeps retry windows smaller |
 
 A larger batch improves throughput only when target append latency remains stable. If target writes slow down, increase in-flight timeouts or reduce `--batch-size` before rerunning.
 
@@ -1134,7 +1132,7 @@ Use benchmark sweeps before changing production batch defaults:
 ```bash
 python3 tools/matrixark_context_backfill_benchmark.py \
   --batch-sizes=256,512,1024,2048 \
-  --raw-backends=all \
+  --raw-backends=both \
   --repeat=3
 ```
 
@@ -1303,7 +1301,7 @@ python3 tools/validate_open_source_readiness.py
 python3 tools/validate_codex_mcp_parity.py
 ```
 
-The backfill readiness validator performs static surface checks, confirms the manual documents the production-critical flags, runs the local batch/incremental benchmark for the canonical raw-message storage options, executes a baseline-vs-candidate regression gate for the canonical raw modes, validates shadow activation and rollback for the canonical raw modes, proves missing active-prefix preconditions block live activation, verifies explicit bypass activation is audited, proves empty validated activation is blocked unless `--confirm-empty-activation=YES` is supplied and audited, proves no-op rollback is blocked unless explicitly confirmed and audited, verifies dead-letter handling for missing source records in the canonical raw modes, proves `record_count`, legacy `record_index`, and bounded `scan_hash` source discovery for the canonical raw modes, verifies partial shadow repair plus `incremental_repair` promotion with `promotion_partial_matches_validation`, `promotion_data_quality_status="clean"`, and retry idempotency for the canonical raw modes, proves skipped-validation incremental repair blocks an empty or unhealthy shadow target unless `--confirm-unvalidated-target-state=YES` is supplied and audited, verifies persisted manifests with `verify_manifest` and proves tampered manifests are rejected for the canonical raw modes, verifies checkpoint resume for the canonical raw modes, generates Prometheus output for plan, shadow, validation, and incremental repair runs, and runs a dual-write ingestion sweep that requires the canonical raw-message options to pass count proof, backend QPS-ratio checks, scrapeable `matrixark_dual_write_ingestion_qps` plus `matrixark_dual_write_ingestion_backend_qps_ratio` metrics, and a checksum manifest for uploaded evidence. A passing result means the local open-source gate exercised full shadow, bounded incremental repair, partial repair, batch-size sweep, latency/QPS gates, raw-backend parity, synchronous raw-plus-serving ingestion evidence, baseline regression checks, validation-backed cutover, empty-activation guardrails, emergency incremental-repair target-state auditability, active-prefix precondition enforcement, rollback no-op protection, rollback auditability, source-scan compatibility, bounded dead-letter observability, serving-record fingerprints, self-verifying manifests, resumable checkpoints, checksum-backed evidence artifacts, preflight plan observability, and scrapeable operator metrics.
+The backfill readiness validator performs static surface checks, confirms the manual documents the production-critical flags, runs the local batch/incremental benchmark for both raw-message storage options, executes a baseline-vs-candidate regression gate for both raw modes, validates shadow activation and rollback for both raw modes, proves missing active-prefix preconditions block live activation, verifies explicit bypass activation is audited, proves empty validated activation is blocked unless `--confirm-empty-activation=YES` is supplied and audited, proves no-op rollback is blocked unless explicitly confirmed and audited, verifies dead-letter handling for missing source records in both raw modes, proves `record_count`, legacy `record_index`, and bounded `scan_hash` source discovery for both raw modes, verifies partial shadow repair plus `incremental_repair` promotion with `promotion_partial_matches_validation`, `promotion_data_quality_status="clean"`, and retry idempotency for both raw modes, proves skipped-validation incremental repair blocks an empty or unhealthy shadow target unless `--confirm-unvalidated-target-state=YES` is supplied and audited, verifies persisted manifests with `verify_manifest` and proves tampered manifests are rejected for both raw modes, verifies checkpoint resume for both `temporalstore` and `matrixkv` raw modes, generates Prometheus output for plan, shadow, validation, and incremental repair runs, and runs a dual-write ingestion sweep that requires both raw-message options to pass count proof, backend QPS-ratio checks, scrapeable `matrixark_dual_write_ingestion_qps` plus `matrixark_dual_write_ingestion_backend_qps_ratio` metrics, and a checksum manifest for uploaded evidence. A passing result means the local open-source gate exercised full shadow, bounded incremental repair, partial repair, batch-size sweep, latency/QPS gates, raw-backend parity, synchronous raw-plus-serving ingestion evidence, baseline regression checks, validation-backed cutover, empty-activation guardrails, emergency incremental-repair target-state auditability, active-prefix precondition enforcement, rollback no-op protection, rollback auditability, source-scan compatibility, bounded dead-letter observability, serving-record fingerprints, self-verifying manifests, resumable checkpoints, checksum-backed evidence artifacts, preflight plan observability, and scrapeable operator metrics.
 
 ## CLI Reference
 

@@ -243,7 +243,7 @@ chunk_hashes   selected resource chunks for L2 citations
 ```
 
 This keeps the OpenViking-style L0/L1/L2 idea, but the references live in
-TemporalStore capabilities and can be replayed, audited, and token-budgeted.
+TemporalStore data models and can be replayed, audited, and token-budgeted.
 
 A typical useful input writes:
 

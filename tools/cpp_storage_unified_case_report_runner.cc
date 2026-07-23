@@ -645,8 +645,8 @@ UnifiedCaseReportArchive BuildArchive() {
       1.0);
   AddSingleCase(
       &archive,
-      "storage_control_state_context_page_backed_parity",
-      "storage_control_state_context_page_backed_parity_coverage",
+      "storage_risk_context_page_backed_parity",
+      "storage_risk_context_page_backed_parity_coverage",
       SlotObjectBlockOutput(),
       1.0);
 

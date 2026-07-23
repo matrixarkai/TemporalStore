@@ -1,25 +1,13 @@
-use std::collections::BTreeSet;
-
-use serde::{Deserialize, Serialize};
+﻿use serde::{Deserialize, Serialize};
 
 use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::ShardId;
 use matrixcache::MultiLayerCache;
 
+use super::read_page_bytes;
 use super::state::{
-    object_component_lookup_key, object_page_lookup_key, ShardState, SlotLayoutState, SlotNode,
+    object_component_lookup_key, object_page_lookup_key, ShardState, SlotLayoutState,
 };
-use super::{read_page_bytes, read_page_bytes_batch_owned};
-
-type SlotPageIdentityKey = (
-    u64,
-    u64,
-    u64,
-    Option<u64>,
-    Option<u64>,
-    Option<u32>,
-    Option<u64>,
-);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct SlotRuntimeState {
@@ -139,87 +127,13 @@ pub(super) fn runtime_report(shard: &ShardState) -> SlotStoreRuntimeReport {
 }
 
 #[allow(dead_code)]
-pub(super) fn classify_slot_layout(object_count: usize, page_ref_count: usize) -> SlotLayoutState {
-    match (object_count, page_ref_count) {
-        (0, _) => SlotLayoutState::Empty,
-        (1, 0) => SlotLayoutState::SingleObject,
-        (_, 0) => SlotLayoutState::Empty,
-        (1, 1) => SlotLayoutState::SinglePageObject,
-        (1, _) => SlotLayoutState::MultiPageObject,
-        _ => SlotLayoutState::MultiObject,
-    }
-}
-
-#[allow(dead_code)]
-pub(super) fn slot_layout_name(layout: SlotLayoutState) -> &'static str {
+fn slot_layout_name(layout: SlotLayoutState) -> &'static str {
     match layout {
         SlotLayoutState::Empty => "empty",
         SlotLayoutState::SingleObject => "single_object",
         SlotLayoutState::SinglePageObject => "single_page_object",
         SlotLayoutState::MultiPageObject => "multi_page_object",
         SlotLayoutState::MultiObject => "multi_object",
-    }
-}
-
-pub(super) fn update_slot_layout(slot: &mut SlotNode) {
-    let live_object_ids: BTreeSet<u64> = slot
-        .page_index
-        .values()
-        .filter(|page| !page.deleted)
-        .map(|page| page.object_id)
-        .collect();
-    if !live_object_ids.is_empty() {
-        slot.object_index = live_object_ids;
-    } else {
-        slot.object_index.clear();
-    }
-    slot.layout = classify_slot_layout(slot.object_index.len(), slot.page_index.len());
-}
-
-pub(super) fn refresh_slot_runtime_flags(shard: &mut ShardState, now: u64) {
-    for slot in shard.slot_index.slot_map.values_mut() {
-        slot.meta_loaded = true;
-        slot.loading = false;
-        slot.in_memory = !slot.page_index.is_empty();
-        slot.deleted =
-            !slot.page_index.is_empty() && slot.page_index.values().all(|page| page.deleted);
-        slot.dirty |= slot
-            .page_index
-            .values()
-            .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key));
-        slot.ttl_ms = slot
-            .page_index
-            .values()
-            .filter_map(|page| shard.expires_at_ms.get(&page.object_key).copied())
-            .map(|expires_at| expires_at.saturating_sub(now))
-            .min();
-        update_slot_layout(slot);
-    }
-}
-
-fn slot_page_identity_key(address: &PageAddress) -> SlotPageIdentityKey {
-    (
-        address.page_segment_id,
-        address.offset,
-        address.length,
-        address.page_id,
-        address.object_id,
-        address.routing_slot,
-        address.generation,
-    )
-}
-
-fn select_earliest_page_address(
-    current: &mut Option<(SlotPageIdentityKey, PageAddress)>,
-    address: &PageAddress,
-) {
-    let identity = slot_page_identity_key(address);
-    if current
-        .as_ref()
-        .map(|(current_identity, _)| identity < *current_identity)
-        .unwrap_or(true)
-    {
-        *current = Some((identity, address.clone()));
     }
 }
 
@@ -231,7 +145,6 @@ pub(super) fn slot_index_page_address(
 ) -> Option<PageAddress> {
     let lookup_key = object_page_lookup_key(model_id, object_key, component);
     if let Some(page_refs) = shard.slot_index.object_page_lookup.get(&lookup_key) {
-        let mut selected = None;
         for page_ref in page_refs {
             let Some(slot) = shard.slot_index.slot_map.get(&page_ref.routing_slot) else {
                 continue;
@@ -244,67 +157,17 @@ pub(super) fn slot_index_page_address(
                 && page.object_key == object_key
                 && page.component.as_deref() == component
             {
-                select_earliest_page_address(&mut selected, &page.address);
+                return Some(page.address.clone());
             }
         }
-        return selected.map(|(_, address)| address);
+        return None;
     }
 
     if !shard.slot_index.object_page_lookup.is_empty() {
         return None;
     }
 
-    if let Some(page_refs) = shard.slot_index.page_refs_for_object_key(object_key) {
-        let mut selected = None;
-        for page_ref in page_refs {
-            if page_ref.model_id != model_id || page_ref.component.as_deref() != component {
-                continue;
-            }
-            let Some(slot) = shard.slot_index.slot_map.get(&page_ref.routing_slot) else {
-                continue;
-            };
-            let Some(page) = slot.page_index.get(&page_ref.page_ref_key) else {
-                continue;
-            };
-            if !page.deleted
-                && page.model_id == model_id
-                && page.object_key == object_key
-                && page.component.as_deref() == component
-            {
-                select_earliest_page_address(&mut selected, &page.address);
-            }
-        }
-        return selected.map(|(_, address)| address);
-    }
-
-    if !shard.slot_index.object_key_lookup.is_empty() {
-        return None;
-    }
-
-    if let Some(routing_slots) = shard
-        .slot_index
-        .routing_slots_for_object_key(object_key)
-        .filter(|slots| !slots.is_empty())
-    {
-        let mut selected = None;
-        for page in routing_slots
-            .iter()
-            .filter_map(|routing_slot| shard.slot_index.slot_map.get(routing_slot))
-            .flat_map(|slot| slot.page_index.values())
-            .filter(|page| {
-                !page.deleted
-                    && page.model_id == model_id
-                    && page.object_key == object_key
-                    && page.component.as_deref() == component
-            })
-        {
-            select_earliest_page_address(&mut selected, &page.address);
-        }
-        return selected.map(|(_, address)| address);
-    }
-
-    let mut selected = None;
-    for page in shard
+    shard
         .slot_index
         .slot_map
         .values()
@@ -315,10 +178,8 @@ pub(super) fn slot_index_page_address(
                 && page.object_key == object_key
                 && page.component.as_deref() == component
         })
-    {
-        select_earliest_page_address(&mut selected, &page.address);
-    }
-    selected.map(|(_, address)| address)
+        .map(|page| page.address.clone())
+        .next()
 }
 
 pub(super) fn slot_index_component_page_addresses(
@@ -328,24 +189,21 @@ pub(super) fn slot_index_component_page_addresses(
 ) -> Vec<(Option<String>, PageAddress)> {
     let lookup_key = object_component_lookup_key(model_id, object_key);
     if let Some(page_refs) = shard.slot_index.object_component_lookup.get(&lookup_key) {
-        let mut refs = Vec::with_capacity(page_refs.len());
-        for page_ref in page_refs {
-            let Some(slot) = shard.slot_index.slot_map.get(&page_ref.routing_slot) else {
-                continue;
-            };
-            let Some(page) = slot.page_index.get(&page_ref.page_ref_key) else {
-                continue;
-            };
-            if !page.deleted && page.model_id == model_id && page.object_key == object_key {
-                refs.push((
-                    page.component.clone(),
-                    slot_page_identity_key(&page.address),
-                    page.address.clone(),
-                ));
-            }
-        }
+        let mut refs = page_refs
+            .iter()
+            .filter_map(|page_ref| {
+                let slot = shard.slot_index.slot_map.get(&page_ref.routing_slot)?;
+                let page = slot.page_index.get(&page_ref.page_ref_key)?;
+                if !page.deleted && page.model_id == model_id && page.object_key == object_key {
+                    Some((page.component.clone(), page.address.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
         if !refs.is_empty() {
-            return sorted_slot_component_refs(refs);
+            refs.sort_by(|left, right| left.0.cmp(&right.0));
+            return refs;
         }
         return Vec::new();
     }
@@ -354,89 +212,16 @@ pub(super) fn slot_index_component_page_addresses(
         return Vec::new();
     }
 
-    if let Some(page_refs) = shard.slot_index.page_refs_for_object_key(object_key) {
-        let mut refs = Vec::with_capacity(page_refs.len());
-        for page_ref in page_refs {
-            if page_ref.model_id != model_id {
-                continue;
-            }
-            let Some(slot) = shard.slot_index.slot_map.get(&page_ref.routing_slot) else {
-                continue;
-            };
-            let Some(page) = slot.page_index.get(&page_ref.page_ref_key) else {
-                continue;
-            };
-            if !page.deleted && page.model_id == model_id && page.object_key == object_key {
-                refs.push((
-                    page.component.clone(),
-                    slot_page_identity_key(&page.address),
-                    page.address.clone(),
-                ));
-            }
-        }
-        return sorted_slot_component_refs(refs);
-    }
-
-    if !shard.slot_index.object_key_lookup.is_empty() {
-        return Vec::new();
-    }
-
-    let mut refs = Vec::new();
-    if let Some(routing_slots) = shard
+    let mut refs = shard
         .slot_index
-        .routing_slots_for_object_key(object_key)
-        .filter(|slots| !slots.is_empty())
-    {
-        let capacity = routing_slots
-            .iter()
-            .filter_map(|routing_slot| shard.slot_index.slot_map.get(routing_slot))
-            .map(|slot| slot.page_index.len())
-            .sum();
-        refs.reserve(capacity);
-        for routing_slot in routing_slots {
-            let Some(slot) = shard.slot_index.slot_map.get(&routing_slot) else {
-                continue;
-            };
-            for page in slot.page_index.values() {
-                if !page.deleted && page.model_id == model_id && page.object_key == object_key {
-                    refs.push((
-                        page.component.clone(),
-                        slot_page_identity_key(&page.address),
-                        page.address.clone(),
-                    ));
-                }
-            }
-        }
-    } else {
-        let capacity = shard
-            .slot_index
-            .slot_map
-            .values()
-            .map(|slot| slot.page_index.len())
-            .sum();
-        refs.reserve(capacity);
-        for slot in shard.slot_index.slot_map.values() {
-            for page in slot.page_index.values() {
-                if !page.deleted && page.model_id == model_id && page.object_key == object_key {
-                    refs.push((
-                        page.component.clone(),
-                        slot_page_identity_key(&page.address),
-                        page.address.clone(),
-                    ));
-                }
-            }
-        }
-    };
-    sorted_slot_component_refs(refs)
-}
-
-fn sorted_slot_component_refs(
-    mut refs: Vec<(Option<String>, SlotPageIdentityKey, PageAddress)>,
-) -> Vec<(Option<String>, PageAddress)> {
-    refs.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-    refs.into_iter()
-        .map(|(component, _, address)| (component, address))
-        .collect()
+        .slot_map
+        .values()
+        .flat_map(|slot| slot.page_index.values())
+        .filter(|page| !page.deleted && page.model_id == model_id && page.object_key == object_key)
+        .map(|page| (page.component.clone(), page.address.clone()))
+        .collect::<Vec<_>>();
+    refs.sort_by(|left, right| left.0.cmp(&right.0));
+    refs
 }
 
 pub(super) fn read_slot_index_value(
@@ -450,80 +235,4 @@ pub(super) fn read_slot_index_value(
 ) -> Option<Vec<u8>> {
     slot_index_page_address(shard, model_id, object_key, component)
         .and_then(|address| read_page_bytes(cache, page_store, shard_id, &address))
-}
-
-pub(super) fn read_slot_index_component_values(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    shard: &ShardState,
-    model_id: &str,
-    object_key: &str,
-) -> Vec<(Option<String>, Vec<u8>)> {
-    let refs = slot_index_component_page_addresses(shard, model_id, object_key);
-    if refs.is_empty() {
-        return Vec::new();
-    }
-    if refs.len() == 1 {
-        let (component, address) = refs
-            .into_iter()
-            .next()
-            .expect("single component ref is present");
-        return read_page_bytes(cache, page_store, shard_id, &address)
-            .map(|value| vec![(component, value)])
-            .unwrap_or_default();
-    }
-
-    let mut components = Vec::with_capacity(refs.len());
-    let mut addresses = Vec::with_capacity(refs.len());
-    for (component, address) in refs {
-        components.push(component);
-        addresses.push(Some(address));
-    }
-    let values = read_page_bytes_batch_owned(cache, page_store, shard_id, addresses);
-
-    let mut entries = Vec::with_capacity(components.len());
-    for (value, component) in values.into_iter().zip(components) {
-        if let Some(value) = value {
-            entries.push((component, value));
-        }
-    }
-    entries
-}
-
-pub(super) fn read_component_page_address_values(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    mut refs: Vec<(String, PageAddress)>,
-) -> Vec<(String, Vec<u8>)> {
-    if refs.is_empty() {
-        return Vec::new();
-    }
-    refs.sort_by(|left, right| left.0.cmp(&right.0));
-    if refs.len() == 1 {
-        let (component, address) = refs
-            .into_iter()
-            .next()
-            .expect("single component ref is present");
-        return read_page_bytes(cache, page_store, shard_id, &address)
-            .map(|value| vec![(component, value)])
-            .unwrap_or_default();
-    }
-
-    let mut components = Vec::with_capacity(refs.len());
-    let mut addresses = Vec::with_capacity(refs.len());
-    for (component, address) in refs {
-        components.push(component);
-        addresses.push(Some(address));
-    }
-    let values = read_page_bytes_batch_owned(cache, page_store, shard_id, addresses);
-
-    let mut entries = Vec::with_capacity(components.len());
-    for (value, component) in values.into_iter().zip(components) {
-        if let Some(value) = value {
-            entries.push((component, value));
-        }
-    }
-    entries
 }

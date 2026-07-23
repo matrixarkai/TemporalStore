@@ -11,7 +11,7 @@ MatrixArk keeps four lanes separate:
 | Lane | Stored as | Retrieval role |
 |---|---|---|
 | Resources | cited `ResourceChunk` records, `resource_l0` summaries, `ContextEmbedding`, and `ContextIndex` records | Source evidence with citations. Chunks answer "show me the policy/runbook/source" questions. |
-| Resource facts | normal `ContextEvent` and `ContextEntity` records with `source_chunk_hash` and `source_ref` | Compact memory extracted from resources: decisions, owners, deadlines, costs, approvals, procedures, control_states, API contracts, and troubleshooting facts. |
+| Resource facts | normal `ContextEvent` and `ContextEntity` records with `source_chunk_hash` and `source_ref` | Compact memory extracted from resources: decisions, owners, deadlines, costs, approvals, procedures, risks, API contracts, and troubleshooting facts. |
 | Skills | separate `SkillManifest`, `SkillRegistry`, and `SkillSection` records, plus skill summaries, embeddings, and skill indexes | Operational instructions. Retrieval returns only relevant skill sections, not the whole skill bundle by default. |
 | Audit/replay | `ContextPackAudit`, debug records, selected/dropped refs, token costs, access decisions, stale/superseded reasons | Observability and governance. Audit explains why retrieval/extraction behaved a certain way; it is not a primary serving memory lane. |
 
@@ -192,7 +192,7 @@ flowchart TD
   H --> I
 ```
 
-Capabilities written during resource ingestion:
+Data models written during resource ingestion:
 
 - `resource_import_task`: lifecycle state, progress, parse warnings, chunk counts, failure details, and timing metrics.
 - `resource_manifest`: one logical imported resource version, including `raw_uri`, `resource_hash`, `resource_version`, parser info, scope, and summary ref.
@@ -201,7 +201,7 @@ Capabilities written during resource ingestion:
 - `context_summary`: `resource_l0` summary for traversal, preview, and broad exploration queries.
 - `context_embedding`: vectors for resource summaries, chunks, extracted facts, and entity states.
 - `context_index`: secondary filters such as `source_type`, `resource_type`, `unit_kind`, `keyword`, `heading_slug`, and `relative_path`.
-- `context_event`: extracted resource facts such as approval, policy, deadline, owner, cost, procedure, control_state, troubleshooting step, or API contract.
+- `context_event`: extracted resource facts such as approval, policy, deadline, owner, cost, procedure, risk, troubleshooting step, or API contract.
 - `context_entity`: evolving state derived from extracted resource facts, linked back to the source chunk/event.
 
 Resource-specific extraction runs after chunking. It turns useful document facts into `ContextEvent` and `ContextEntity` records with `source_chunk_hash` and `source_ref`, so retrieval can return compact facts first while still citing the original chunk.

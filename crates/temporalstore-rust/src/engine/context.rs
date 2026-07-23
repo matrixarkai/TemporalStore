@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+﻿use std::collections::{BTreeMap, HashMap};
 
 use crate::engine::constants::*;
 use crate::page_store::LocalPageStore;
@@ -11,14 +11,8 @@ use crate::types::{
 };
 use matrixcache::MultiLayerCache;
 
-use super::packed_pages::{
-    decode_feature_page_strict, read_feature_point_cold_with_cache_policy, ColdScanPackedPageCache,
-};
-use super::state::PackedFeaturePageDecode;
-use super::{read_page_bytes, read_page_bytes_batch, stable_object_hash, ShardState};
-
-const CONTEXT_PAGE_HASH_LOOKUP_MIN_REFS: usize = 16;
-
+use super::packed_pages::{read_feature_point, read_feature_point_cached, read_feature_point_cold};
+use super::{read_page_bytes, stable_object_hash, ShardState};
 pub(super) fn context_node_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:node:{tenant_hash}:{node_hash}")
 }
@@ -112,20 +106,12 @@ pub(super) fn context_event_timeline_key_for_write(
     let start = context_timeline_key(primary_time_ms, event.event_id_hash);
     let end = context_timeline_end(primary_time_ms);
     let mut timeline_key = start;
-    let mut page_cache = HashMap::new();
     while timeline_key < end {
         let Some(address) = series.get(&timeline_key) else {
             return Some(timeline_key);
         };
-        if let Some(existing) = read_context_values_cached_with_page_cache::<ContextEvent>(
-            cache,
-            page_store,
-            shard_id,
-            vec![(timeline_key, address.clone())],
-            &mut page_cache,
-        )
-        .into_iter()
-        .next()
+        if let Some(existing) =
+            read_context_value::<ContextEvent>(cache, page_store, shard_id, timeline_key, address)
         {
             if existing.event_id_hash == event.event_id_hash {
                 return if first_write_only {
@@ -165,15 +151,35 @@ pub(super) fn context_from_bytes<T: ContextWire>(bytes: &[u8]) -> Option<T> {
     T::decode_context_value(bytes)
 }
 
-pub(super) fn read_context_value_cold<T: ContextWire>(
-    cache: Option<&MultiLayerCache>,
+pub(super) fn read_context_value<T: ContextWire>(
+    cache: &MultiLayerCache,
     page_store: &LocalPageStore,
     shard_id: ShardId,
     timeline_key: u64,
     address: &PageAddress,
-    packed_page_cache: &mut ColdScanPackedPageCache,
 ) -> Option<T> {
-    let point = read_feature_point_cold_with_cache_policy(
+    let point = read_feature_point(cache, page_store, shard_id, timeline_key, address)?;
+    context_from_bytes(&point.value)
+}
+
+pub(super) fn read_context_value_cold<T: ContextWire>(
+    page_store: &LocalPageStore,
+    timeline_key: u64,
+    address: &PageAddress,
+) -> Option<T> {
+    let point = read_feature_point_cold(page_store, timeline_key, address)?;
+    context_from_bytes(&point.value)
+}
+
+pub(super) fn read_context_value_cached<T: ContextWire>(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    timeline_key: u64,
+    address: &PageAddress,
+    packed_page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>,
+) -> Option<T> {
+    let point = read_feature_point_cached(
         cache,
         page_store,
         shard_id,
@@ -182,177 +188,6 @@ pub(super) fn read_context_value_cold<T: ContextWire>(
         packed_page_cache,
     )?;
     context_from_bytes(&point.value)
-}
-
-pub(super) fn read_context_values_cached<T: ContextWire>(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    entries: Vec<(u64, PageAddress)>,
-) -> Vec<T> {
-    let mut packed_page_cache: HashMap<PageAddress, Option<Vec<FeaturePoint>>> = HashMap::new();
-    read_context_values_cached_with_page_cache(
-        cache,
-        page_store,
-        shard_id,
-        entries,
-        &mut packed_page_cache,
-    )
-}
-
-pub(super) fn read_context_values_cached_with_page_cache<T: ContextWire>(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    entries: Vec<(u64, PageAddress)>,
-    packed_page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>,
-) -> Vec<T> {
-    if entries.is_empty() {
-        return Vec::new();
-    }
-    if entries.windows(2).all(|window| window[0].1 == window[1].1) {
-        return read_context_values_from_single_page(
-            cache,
-            page_store,
-            shard_id,
-            &entries,
-            packed_page_cache,
-        );
-    }
-
-    let mut values: Vec<Option<T>> = Vec::with_capacity(entries.len());
-    let mut miss_addresses = Vec::new();
-    let mut miss_groups = HashMap::<PageAddress, Vec<(usize, u64)>>::new();
-    for (index, (timeline_key, address)) in entries.iter().enumerate() {
-        if let Some(points) = packed_page_cache.get(address) {
-            values.push(
-                points
-                    .as_ref()
-                    .and_then(|points| context_from_packed_page_point::<T>(points, *timeline_key)),
-            );
-        } else {
-            values.push(None);
-            if !miss_groups.contains_key(address) {
-                miss_addresses.push(Some(address.clone()));
-            }
-            miss_groups
-                .entry(address.clone())
-                .or_default()
-                .push((index, *timeline_key));
-        }
-    }
-    let bytes = read_page_bytes_batch(cache, page_store, shard_id, &miss_addresses);
-    for (address, bytes) in miss_addresses.into_iter().flatten().zip(bytes) {
-        let Some(bytes) = bytes else {
-            continue;
-        };
-        let lookups = miss_groups.remove(&address).unwrap_or_default();
-        match decode_feature_page_strict(&bytes) {
-            PackedFeaturePageDecode::Packed(points) => {
-                fill_context_values_from_packed_page(&mut values, lookups, &points);
-                packed_page_cache.insert(address, Some(points));
-            }
-            PackedFeaturePageDecode::Legacy => {
-                for (index, _) in lookups {
-                    values[index] = context_from_bytes::<T>(&bytes);
-                }
-            }
-            PackedFeaturePageDecode::Corrupt(_) => {
-                packed_page_cache.insert(address, None);
-            }
-        }
-    }
-    values.into_iter().flatten().collect()
-}
-
-fn read_context_values_from_single_page<T: ContextWire>(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    entries: &[(u64, PageAddress)],
-    packed_page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>,
-) -> Vec<T> {
-    let Some((_, address)) = entries.first() else {
-        return Vec::new();
-    };
-    if let Some(points) = packed_page_cache.get(address) {
-        return points
-            .as_ref()
-            .map(|points| {
-                entries
-                    .iter()
-                    .filter_map(|(timeline_key, _)| {
-                        context_from_packed_page_point::<T>(points, *timeline_key)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-    }
-
-    let bytes = read_page_bytes(cache, page_store, shard_id, address);
-    let Some(bytes) = bytes else {
-        return Vec::new();
-    };
-    match decode_feature_page_strict(&bytes) {
-        PackedFeaturePageDecode::Packed(points) => {
-            let values = entries
-                .iter()
-                .filter_map(|(timeline_key, _)| {
-                    context_from_packed_page_point::<T>(&points, *timeline_key)
-                })
-                .collect();
-            packed_page_cache.insert(address.clone(), Some(points));
-            values
-        }
-        PackedFeaturePageDecode::Legacy => entries
-            .iter()
-            .filter_map(|_| context_from_bytes::<T>(&bytes))
-            .collect(),
-        PackedFeaturePageDecode::Corrupt(_) => {
-            packed_page_cache.insert(address.clone(), None);
-            Vec::new()
-        }
-    }
-}
-
-fn fill_context_values_from_packed_page<T: ContextWire>(
-    values: &mut [Option<T>],
-    lookups: Vec<(usize, u64)>,
-    points: &[FeaturePoint],
-) {
-    if lookups.len() >= CONTEXT_PAGE_HASH_LOOKUP_MIN_REFS
-        && points.len() >= CONTEXT_PAGE_HASH_LOOKUP_MIN_REFS
-    {
-        let points_by_timestamp = points
-            .iter()
-            .map(|point| (point.timestamp_ms, point))
-            .collect::<HashMap<_, _>>();
-        for (index, timeline_key) in lookups {
-            values[index] = points_by_timestamp
-                .get(&timeline_key)
-                .and_then(|point| context_from_bytes::<T>(&point.value));
-        }
-        return;
-    }
-
-    for (index, timeline_key) in lookups {
-        values[index] = context_from_packed_page_point(points, timeline_key);
-    }
-}
-
-fn context_from_packed_page_point<T: ContextWire>(
-    points: &[FeaturePoint],
-    timeline_key: u64,
-) -> Option<T> {
-    match points.binary_search_by_key(&timeline_key, |point| point.timestamp_ms) {
-        Ok(index) => points
-            .get(index)
-            .and_then(|point| context_from_bytes::<T>(&point.value)),
-        Err(_) => points
-            .iter()
-            .find(|point| point.timestamp_ms == timeline_key)
-            .and_then(|point| context_from_bytes::<T>(&point.value)),
-    }
 }
 
 pub(super) fn context_event_matches_filter(
@@ -759,144 +594,48 @@ pub(super) fn validate_context_compression_event(
     )
 }
 
-pub(super) fn load_context_children_limited(
+pub(super) fn load_context_children(
     cache: &MultiLayerCache,
     page_store: &LocalPageStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
-    limit: usize,
 ) -> Vec<ContextChildRef> {
-    let Some(series) = shard.context_children.get(object_key) else {
-        return Vec::new();
-    };
-    let limit = limit.max(1);
-    let mut refs = Vec::with_capacity(limit.min(64));
-    let mut page_cache = HashMap::new();
-    let mut batch = Vec::with_capacity(64);
-    let drain_batch =
-        |batch: &mut Vec<(u64, PageAddress)>,
-         refs: &mut Vec<ContextChildRef>,
-         page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>| {
-            for child_ref in read_context_values_cached_with_page_cache::<ContextChildRef>(
-                cache,
-                page_store,
-                shard_id,
-                std::mem::take(batch),
-                page_cache,
-            ) {
-                refs.push(child_ref);
-                if refs.len() >= limit {
-                    break;
-                }
-            }
-        };
-    for (timeline_key, address) in series.iter() {
-        batch.push((*timeline_key, address.clone()));
-        if batch.len() >= 64 {
-            drain_batch(&mut batch, &mut refs, &mut page_cache);
-            if refs.len() >= limit {
-                break;
-            }
-        }
-    }
-    if refs.len() < limit && !batch.is_empty() {
-        drain_batch(&mut batch, &mut refs, &mut page_cache);
-    }
-    refs.truncate(limit);
-    refs
-}
-
-pub(super) fn context_child_ref_exists(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    shard: &ShardState,
-    object_key: &str,
-    child_hash: u64,
-) -> bool {
-    let Some(series) = shard.context_children.get(object_key) else {
-        return false;
-    };
-    let child_timeline_slot = child_hash % CONTEXT_TIMELINE_FANOUT;
-    let mut page_cache = HashMap::new();
-    let mut batch = Vec::with_capacity(64);
-    for (timeline_key, address) in series.iter().rev() {
-        if timeline_key % CONTEXT_TIMELINE_FANOUT != child_timeline_slot {
-            continue;
-        }
-        batch.push((*timeline_key, address.clone()));
-        if batch.len() >= 64 {
-            if read_context_values_cached_with_page_cache::<ContextChildRef>(
-                cache,
-                page_store,
-                shard_id,
-                std::mem::take(&mut batch),
-                &mut page_cache,
-            )
-            .into_iter()
-            .any(|child_ref| child_ref.child_hash == child_hash)
-            {
-                return true;
-            }
-        }
-    }
-    !batch.is_empty()
-        && read_context_values_cached_with_page_cache::<ContextChildRef>(
-            cache,
-            page_store,
-            shard_id,
-            batch,
-            &mut page_cache,
-        )
-        .into_iter()
-        .any(|child_ref| child_ref.child_hash == child_hash)
-}
-
-pub(super) fn context_child_refs_may_exist(shard: &ShardState, object_key: &str) -> bool {
     shard
         .context_children
         .get(object_key)
-        .map(|series| !series.is_empty())
-        .unwrap_or(false)
+        .map(|series| {
+            series
+                .iter()
+                .filter_map(|(timeline_key, address)| {
+                    read_context_value::<ContextChildRef>(
+                        cache,
+                        page_store,
+                        shard_id,
+                        *timeline_key,
+                        address,
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-fn hydrate_context_embeddings_with_cache(
+pub(super) fn load_context_embedding(
     cache: &MultiLayerCache,
     page_store: &LocalPageStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,
-    ref_hashes: impl IntoIterator<Item = u64>,
-    embedding_cache: &mut HashMap<u64, Option<ContextEmbedding>>,
-) {
-    let mut seen = HashSet::new();
-    let missing = ref_hashes
-        .into_iter()
-        .filter(|ref_hash| *ref_hash != 0 && seen.insert(*ref_hash))
-        .filter(|ref_hash| !embedding_cache.contains_key(ref_hash))
-        .collect::<Vec<_>>();
-    if missing.is_empty() {
-        return;
-    }
-
-    let addresses = missing
-        .iter()
-        .map(|ref_hash| {
-            shard
-                .context_embeddings
-                .get(&context_embedding_key(tenant_hash, *ref_hash))
-                .cloned()
+    ref_hash: u64,
+) -> Option<ContextEmbedding> {
+    shard
+        .context_embeddings
+        .get(&context_embedding_key(tenant_hash, ref_hash))
+        .and_then(|address| {
+            read_page_bytes(cache, page_store, shard_id, address)
+                .and_then(|bytes| context_from_bytes::<ContextEmbedding>(&bytes))
         })
-        .collect::<Vec<_>>();
-    for (ref_hash, bytes) in missing.into_iter().zip(read_page_bytes_batch(
-        cache, page_store, shard_id, &addresses,
-    )) {
-        embedding_cache.insert(
-            ref_hash,
-            bytes.and_then(|bytes| context_from_bytes::<ContextEmbedding>(&bytes)),
-        );
-    }
 }
 
 pub(super) fn load_context_summaries(
@@ -912,19 +651,20 @@ pub(super) fn load_context_summaries(
         .context_summaries
         .get(object_key)
         .map(|series| {
-            let entries = series
+            series
                 .range(0..context_timeline_end(as_of_ms))
-                .rev()
                 .take(context_limit(limit))
-                .map(|(timeline_key, address)| (*timeline_key, address.clone()))
-                .collect::<Vec<_>>();
-            let mut summaries =
-                read_context_values_cached::<ContextSummary>(cache, page_store, shard_id, entries)
-                    .into_iter()
-                    .filter(|summary| summary.valid_from_ms <= as_of_ms)
-                    .collect::<Vec<_>>();
-            summaries.sort_by_key(|summary| summary.valid_from_ms);
-            summaries
+                .filter_map(|(timeline_key, address)| {
+                    read_context_value::<ContextSummary>(
+                        cache,
+                        page_store,
+                        shard_id,
+                        *timeline_key,
+                        address,
+                    )
+                })
+                .filter(|summary| summary.valid_from_ms <= as_of_ms)
+                .collect()
         })
         .unwrap_or_default()
 }
@@ -937,40 +677,11 @@ pub(super) fn load_latest_context_summary(
     object_key: &str,
     as_of_ms: u64,
 ) -> Option<ContextSummary> {
-    shard.context_summaries.get(object_key).and_then(|series| {
-        let mut page_cache = HashMap::new();
-        let mut batch = Vec::with_capacity(16);
-        for (timeline_key, address) in series.range(0..context_timeline_end(as_of_ms)).rev() {
-            batch.push((*timeline_key, address.clone()));
-            if batch.len() >= 16 {
-                if let Some(summary) = read_context_values_cached_with_page_cache::<ContextSummary>(
-                    cache,
-                    page_store,
-                    shard_id,
-                    std::mem::take(&mut batch),
-                    &mut page_cache,
-                )
-                .into_iter()
-                .find(|summary| summary.valid_from_ms <= as_of_ms)
-                {
-                    return Some(summary);
-                }
-            }
-        }
-        if batch.is_empty() {
-            None
-        } else {
-            read_context_values_cached_with_page_cache::<ContextSummary>(
-                cache,
-                page_store,
-                shard_id,
-                batch,
-                &mut page_cache,
-            )
-            .into_iter()
-            .find(|summary| summary.valid_from_ms <= as_of_ms)
-        }
-    })
+    load_context_summaries(
+        cache, page_store, shard_id, shard, object_key, as_of_ms, None,
+    )
+    .into_iter()
+    .max_by_key(|summary| summary.valid_from_ms)
 }
 
 pub(super) fn load_context_compression_events(
@@ -984,114 +695,31 @@ pub(super) fn load_context_compression_events(
     end_time_ms: u64,
     limit: Option<usize>,
 ) -> Vec<ContextCompressionEvent> {
-    let event_limit = context_limit(limit);
-    let trim_threshold = event_limit.saturating_mul(2).max(event_limit);
-    let mut events = Vec::with_capacity(event_limit);
-    let mut seen_nodes = HashSet::new();
-    let mut page_cache = HashMap::new();
+    let mut events = Vec::new();
     for node_hash in node_hashes
         .iter()
         .copied()
-        .filter(|node_hash| *node_hash != 0 && seen_nodes.insert(*node_hash))
+        .filter(|node_hash| *node_hash != 0)
     {
         let object_key = context_compression_key(tenant_hash, node_hash);
         if let Some(series) = shard.context_compressions.get(&object_key) {
-            let mut batch = Vec::with_capacity(64);
-            let drain_batch =
-                |batch: &mut Vec<(u64, PageAddress)>,
-                 events: &mut Vec<ContextCompressionEvent>,
-                 page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>| {
-                    for event in
-                        read_context_values_cached_with_page_cache::<ContextCompressionEvent>(
-                            cache,
-                            page_store,
-                            shard_id,
-                            std::mem::take(batch),
-                            page_cache,
-                        )
-                        .into_iter()
-                        .filter(|event| {
-                            event.source_end_ms >= start_time_ms
-                                && event.source_start_ms <= end_time_ms
-                        })
-                    {
-                        events.push(event);
-                        if events.len() > trim_threshold {
-                            sort_truncate_context_compression_events(events, event_limit);
-                        }
-                    }
-                };
-            for (timeline_key, address) in series
-                .range(context_timeline_start(start_time_ms)..context_timeline_end(end_time_ms))
-            {
-                batch.push((*timeline_key, address.clone()));
-                if batch.len() >= 64 {
-                    drain_batch(&mut batch, &mut events, &mut page_cache);
-                }
-            }
-            if !batch.is_empty() {
-                drain_batch(&mut batch, &mut events, &mut page_cache);
-            }
-        }
-    }
-    sort_truncate_context_compression_events(&mut events, event_limit);
-    events
-}
-
-pub(super) fn load_context_compression_events_cold(
-    cache: Option<&MultiLayerCache>,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    shard: &ShardState,
-    tenant_hash: u64,
-    node_hashes: &[u64],
-    start_time_ms: u64,
-    end_time_ms: u64,
-    limit: Option<usize>,
-) -> Vec<ContextCompressionEvent> {
-    let event_limit = context_limit(limit);
-    let trim_threshold = event_limit.saturating_mul(2).max(event_limit);
-    let mut events = Vec::with_capacity(event_limit);
-    let mut seen_nodes = HashSet::new();
-    let mut packed_page_cache = ColdScanPackedPageCache::default();
-    for node_hash in node_hashes
-        .iter()
-        .copied()
-        .filter(|node_hash| *node_hash != 0 && seen_nodes.insert(*node_hash))
-    {
-        let object_key = context_compression_key(tenant_hash, node_hash);
-        if let Some(series) = shard.context_compressions.get(&object_key) {
-            for event in series
-                .range(context_timeline_start(start_time_ms)..context_timeline_end(end_time_ms))
-                .filter_map(|(timeline_key, address)| {
-                    read_context_value_cold::<ContextCompressionEvent>(
-                        cache,
-                        page_store,
-                        shard_id,
-                        *timeline_key,
-                        address,
-                        &mut packed_page_cache,
-                    )
-                    .filter(|event| {
-                        event.source_end_ms >= start_time_ms && event.source_start_ms <= end_time_ms
-                    })
+            events.extend(series.iter().filter_map(|(timeline_key, address)| {
+                read_context_value::<ContextCompressionEvent>(
+                    cache,
+                    page_store,
+                    shard_id,
+                    *timeline_key,
+                    address,
+                )
+                .filter(|event| {
+                    event.source_end_ms >= start_time_ms && event.source_start_ms <= end_time_ms
                 })
-            {
-                events.push(event);
-                if events.len() > trim_threshold {
-                    sort_truncate_context_compression_events(&mut events, event_limit);
-                }
-            }
+            }));
+        }
+        if events.len() >= context_limit(limit) {
+            break;
         }
     }
-    sort_truncate_context_compression_events(&mut events, event_limit);
-    events
-}
-
-fn sort_truncate_context_compression_events(
-    events: &mut Vec<ContextCompressionEvent>,
-    limit: usize,
-) {
     events.sort_by(|left, right| {
         right
             .source_end_ms
@@ -1099,7 +727,8 @@ fn sort_truncate_context_compression_events(
             .then_with(|| right.compressed_time_ms.cmp(&left.compressed_time_ms))
             .then_with(|| left.compression_id_hash.cmp(&right.compression_id_hash))
     });
-    events.truncate(limit);
+    events.truncate(context_limit(limit));
+    events
 }
 
 pub(super) fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
@@ -1154,44 +783,33 @@ pub(super) fn traverse_context_tree(
         score: 1.0,
     }];
     let mut results = Vec::new();
-    let mut embedding_cache = HashMap::new();
     for depth in 1..=max_depth {
         let mut scored_layer = Vec::new();
-        let mut children_to_score = Vec::new();
         for parent in &frontier {
             let child_key = context_child_key(tenant_hash, parent.node_hash);
-            let mut children = load_context_children_limited(
-                cache,
-                page_store,
-                shard_id,
-                shard,
-                &child_key,
-                child_limit,
-            );
+            let mut children =
+                load_context_children(cache, page_store, shard_id, shard, &child_key);
             children.sort_by_key(|child_ref| (child_ref.updated_at_ms, child_ref.child_hash));
             children.truncate(child_limit);
-            children_to_score.extend(children);
-        }
-        hydrate_context_embeddings_with_cache(
-            cache,
-            page_store,
-            shard_id,
-            shard,
-            tenant_hash,
-            children_to_score.iter().map(|child| child.child_hash),
-            &mut embedding_cache,
-        );
-        for child in children_to_score {
-            let Some(Some(embedding)) = embedding_cache.get(&child.child_hash) else {
-                continue;
-            };
-            let score = cosine_similarity(query_vector, &embedding.vector);
-            if score > 0.0 {
-                scored_layer.push(ContextTraversedNode {
-                    node_hash: child.child_hash,
-                    depth,
-                    score,
-                });
+            for child in children {
+                let Some(embedding) = load_context_embedding(
+                    cache,
+                    page_store,
+                    shard_id,
+                    shard,
+                    tenant_hash,
+                    child.child_hash,
+                ) else {
+                    continue;
+                };
+                let score = cosine_similarity(query_vector, &embedding.vector);
+                if score > 0.0 {
+                    scored_layer.push(ContextTraversedNode {
+                        node_hash: child.child_hash,
+                        depth,
+                        score,
+                    });
+                }
             }
         }
         scored_layer.sort_by(|left, right| {
@@ -1205,7 +823,8 @@ pub(super) fn traverse_context_tree(
         let mut next_frontier = Vec::new();
         for node in scored_layer {
             let child_key = context_child_key(tenant_hash, node.node_hash);
-            let is_leaf = !context_child_refs_may_exist(shard, &child_key);
+            let is_leaf =
+                load_context_children(cache, page_store, shard_id, shard, &child_key).is_empty();
             next_frontier.push(node.clone());
             if !leaf_only || is_leaf {
                 results.push(node);

@@ -1,13 +1,5 @@
-if (BCACHE2_OPEN_SOURCE_SURFACE)
-    file(GLOB HDRS "*.h")
-    set(SRCS
-        flags.cc
-        model_context.cc
-        model_manager.cc)
-else()
-    file(GLOB HDRS "*.h" "ips/*.h")
-    file(GLOB SRCS "*.cc" "ips/*.cc")
-endif()
+file(GLOB HDRS "*.h" "ips/*.h")
+file(GLOB SRCS "*.cc" "ips/*.cc")
 add_library(model ${HDRS} ${SRCS})
 add_definitions(-w)
 target_link_libraries(model

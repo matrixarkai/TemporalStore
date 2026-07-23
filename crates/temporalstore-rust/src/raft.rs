@@ -19,17 +19,15 @@ use crate::http::{
     json_response, parse_json, post_json_with_options, HttpRequest, HttpRequestOptions,
 };
 use crate::meta::{
-    AckResponse, AddNamespaceRequest, AddTableRequest, DeleteTableRequest, DropProxyGroupRequest,
-    GetShardResponse, GetTableTopologyRequest, ListNamespacesResponse, ListProxiesResponse,
-    ListProxyGroupRequest, ListProxyGroupResponse, ListServersResponse, ListTablesResponse,
-    LoadFinishRequest, ManagementInfo, MetaEntityState, MetaInfo, MetaMutation,
-    MetaPreflightReport, MetaSnapshot, MetaStats, PartitionStateChangeRequest,
-    ProxyHeartbeatRequest, ProxyHeartbeatResponse, PublishShardSnapshotRequest,
-    PutProxyGroupRequest, RegisterProxyRequest, RegisterServerRequest, RegisterShardRequest,
+    AckResponse, AddNamespaceRequest, AddTableRequest, DeleteTableRequest, GetShardResponse,
+    GetTableTopologyRequest, ListNamespacesResponse, ListProxiesResponse, ListServersResponse,
+    ListTablesResponse, LoadFinishRequest, MetaEntityState, MetaInfo, MetaMutation,
+    MetaPreflightReport, MetaSnapshot, MetaStats, ProxyHeartbeatRequest, ProxyHeartbeatResponse,
+    PublishShardSnapshotRequest, RegisterProxyRequest, RegisterServerRequest, RegisterShardRequest,
     RegisterShardResponse, SafeModePolicy, SafeModeReport, ServerHeartbeatRequest,
     ServerHeartbeatResponse, ShardLocation, ShardSnapshotRef, SingleNodeMeta, StaleResourceReport,
     StaleServerReport, StateChangeRequest, TableTopologyResponse, TopologyVersionReport,
-    TopologyVersionRequest, UpdateManageInfoRequest, UpdateServerRequest, UpdateTableRequest,
+    TopologyVersionRequest, UpdateTableRequest,
 };
 use crate::rebalance::RaftPersistedSchedulerState;
 use crate::types::{Command, CommandResponse, ExecuteRequest, ShardId, Status};
@@ -3039,18 +3037,6 @@ impl ProductionMetaRaftRuntime {
 
     pub fn status(&self) -> RaftClusterStatus {
         self.cluster.status()
-    }
-
-    pub fn local_node_id(&self) -> RaftNodeId {
-        self.options.local_node_id
-    }
-
-    pub fn node_addr(&self, node_id: RaftNodeId) -> Option<&str> {
-        self.options
-            .nodes
-            .iter()
-            .find(|node| node.node_id == node_id)
-            .map(|node| node.addr.as_str())
     }
 
     pub fn validate_ready(&self) -> Result<(), RaftError> {
@@ -9004,8 +8990,8 @@ impl RaftClusterInner {
             released_segment_count: wal_released_segment_count,
             slow_fsync_backpressure_observed: wal_slow_fsync_backpressure_observed,
             slow_fsync_threshold_ms: 0,
-            slow_fsync_count: u64::from(wal_slow_fsync_backpressure_observed),
-            consecutive_slow_fsync_count: u64::from(wal_slow_fsync_backpressure_observed),
+            slow_fsync_count: 0,
+            consecutive_slow_fsync_count: 0,
             max_fsync_elapsed_ms: 0,
             compacted_after_slow_fsync_count: 0,
         });
@@ -9881,56 +9867,6 @@ fn split_command_for_raft_limit(command: Command, limit: u64) -> Result<Vec<Comm
             }
             if !current.is_empty() {
                 chunks.push(Command::SequenceAdd { key, rows: current });
-            }
-            Ok(chunks)
-        }
-        Command::SequenceAddWithPolicy { key, rows, policy } if rows.len() > 1 => {
-            let mut chunks = Vec::new();
-            let mut current = Vec::new();
-            for row in rows {
-                let mut candidate = current.clone();
-                candidate.push(row.clone());
-                let candidate_command = Command::SequenceAddWithPolicy {
-                    key: key.clone(),
-                    rows: candidate,
-                    policy,
-                };
-                let candidate_bytes = command_size_bytes(&candidate_command);
-                if candidate_bytes <= limit {
-                    current.push(row);
-                    continue;
-                }
-                if current.is_empty() {
-                    return Err(RaftError::LogEntryTooLarge {
-                        bytes: candidate_bytes,
-                        limit,
-                    });
-                }
-                chunks.push(Command::SequenceAddWithPolicy {
-                    key: key.clone(),
-                    rows: std::mem::take(&mut current),
-                    policy,
-                });
-                let single_command = Command::SequenceAddWithPolicy {
-                    key: key.clone(),
-                    rows: vec![row.clone()],
-                    policy,
-                };
-                let single_bytes = command_size_bytes(&single_command);
-                if single_bytes > limit {
-                    return Err(RaftError::LogEntryTooLarge {
-                        bytes: single_bytes,
-                        limit,
-                    });
-                }
-                current.push(row);
-            }
-            if !current.is_empty() {
-                chunks.push(Command::SequenceAddWithPolicy {
-                    key,
-                    rows: current,
-                    policy,
-                });
             }
             Ok(chunks)
         }
@@ -11665,12 +11601,6 @@ impl MetaRaftCluster {
         }
     }
 
-    pub fn update_server(&self, request: UpdateServerRequest) -> AckResponse {
-        AckResponse {
-            status: self.mutation_status(MetaMutation::UpdateServer(request)),
-        }
-    }
-
     pub fn server_heartbeat(&self, request: ServerHeartbeatRequest) -> ServerHeartbeatResponse {
         self.read_meta().map_or_else(
             |status| ServerHeartbeatResponse {
@@ -11701,46 +11631,6 @@ impl MetaRaftCluster {
             },
             |meta| meta.proxy_heartbeat(request),
         )
-    }
-
-    pub fn put_proxy_group(&self, request: PutProxyGroupRequest) -> AckResponse {
-        AckResponse {
-            status: self.mutation_status(MetaMutation::PutProxyGroup(request)),
-        }
-    }
-
-    pub fn drop_proxy_group(&self, request: DropProxyGroupRequest) -> AckResponse {
-        AckResponse {
-            status: self.mutation_status(MetaMutation::DropProxyGroup(request)),
-        }
-    }
-
-    pub fn list_proxy_groups(&self, request: ListProxyGroupRequest) -> ListProxyGroupResponse {
-        self.read_meta().map_or_else(
-            |status| ListProxyGroupResponse {
-                status,
-                groups: Vec::new(),
-            },
-            |meta| meta.list_proxy_groups(request),
-        )
-    }
-
-    pub fn update_manage_info(&self, request: UpdateManageInfoRequest) -> AckResponse {
-        AckResponse {
-            status: self.mutation_status(MetaMutation::UpdateManageInfo(request)),
-        }
-    }
-
-    pub fn mute_meta_change(&self) -> AckResponse {
-        AckResponse {
-            status: self.mutation_status(MetaMutation::MuteMetaChange),
-        }
-    }
-
-    pub fn resume_meta_change(&self) -> AckResponse {
-        AckResponse {
-            status: self.mutation_status(MetaMutation::ResumeMetaChange),
-        }
     }
 
     pub fn add_namespace(&self, request: AddNamespaceRequest) -> AckResponse {
@@ -11779,18 +11669,6 @@ impl MetaRaftCluster {
         }
     }
 
-    pub fn freeze_partition(&self, request: PartitionStateChangeRequest) -> AckResponse {
-        AckResponse {
-            status: self.mutation_status(MetaMutation::FreezePartition(request)),
-        }
-    }
-
-    pub fn drop_partition(&self, request: PartitionStateChangeRequest) -> AckResponse {
-        AckResponse {
-            status: self.mutation_status(MetaMutation::DropPartition(request)),
-        }
-    }
-
     pub fn finish_load(&self, request: LoadFinishRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::FinishLoad(request)),
@@ -11815,33 +11693,6 @@ impl MetaRaftCluster {
         }
     }
 
-    pub fn server_notify_stop(&self, request: StateChangeRequest) -> AckResponse {
-        let status = match self.read_meta() {
-            Ok(meta) => {
-                let servers = meta.list_servers();
-                if !servers.status.ok {
-                    return AckResponse {
-                        status: servers.status,
-                    };
-                }
-                match servers
-                    .servers
-                    .iter()
-                    .find(|server| server.server_addr == request.endpoint)
-                {
-                    Some(server) if server.state == MetaEntityState::Normal => Status::ok(),
-                    Some(_) => Status::error("failed_precondition", "state not normal"),
-                    None => Status::error("not_found", "server not found"),
-                }
-            }
-            Err(status) => status,
-        };
-        if !status.ok {
-            return AckResponse { status };
-        }
-        self.drop_server(request)
-    }
-
     pub fn freeze_proxy(&self, request: StateChangeRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::FreezeProxy(request)),
@@ -11852,33 +11703,6 @@ impl MetaRaftCluster {
         AckResponse {
             status: self.mutation_status(MetaMutation::DropProxy(request)),
         }
-    }
-
-    pub fn proxy_notify_stop(&self, request: StateChangeRequest) -> AckResponse {
-        let status = match self.read_meta() {
-            Ok(meta) => {
-                let proxies = meta.list_proxies();
-                if !proxies.status.ok {
-                    return AckResponse {
-                        status: proxies.status,
-                    };
-                }
-                match proxies
-                    .proxies
-                    .iter()
-                    .find(|proxy| proxy.proxy_addr == request.endpoint)
-                {
-                    Some(proxy) if proxy.state == MetaEntityState::Normal => Status::ok(),
-                    Some(_) => Status::error("failed_precondition", "state not normal"),
-                    None => Status::error("not_found", "proxy not found"),
-                }
-            }
-            Err(status) => status,
-        };
-        if !status.ok {
-            return AckResponse { status };
-        }
-        self.drop_proxy(request)
     }
 
     pub fn freeze_stale_servers(&self, stale_after_ms: u64) -> StaleServerReport {
@@ -12037,8 +11861,6 @@ impl MetaRaftCluster {
                 stats: MetaStats::default(),
                 boot_time_ms: 0,
                 durable_mutation_log: false,
-                management_info: ManagementInfo::default(),
-                manage_info: ManagementInfo::default(),
             },
             |meta| meta.info(),
         )

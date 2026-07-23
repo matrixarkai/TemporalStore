@@ -28,7 +28,6 @@ from tools.matrixark_mcp_server import (  # noqa: E402
     MatrixArkMcpServer,
 )
 from tools import matrixark_mcp_core as mcp_core  # noqa: E402
-from tools import matrixark_mcp_serving_records as serving_records  # noqa: E402
 
 
 Json = dict[str, Any]
@@ -82,7 +81,7 @@ PDF_FIXTURES = [
             "Owner: Bob owns procurement and vendor coordination.",
             "Budget: Current approved cap is 45000 dollars.",
             "Deadline: Purchase order must be ready by July 15, 2026.",
-            "ControlState: Vendor selection is blocked if finance approval is not attached.",
+            "Risk: Vendor selection is blocked if finance approval is not attached.",
         ],
     },
     {
@@ -445,10 +444,10 @@ def compact_summary_policy(record: Json, aliases: ReportAliases) -> Json:
 def compact_context_indexes(records: list[Json], aliases: ReportAliases) -> list[Json]:
     postings: dict[tuple[str, str, Any, Any], set[Any]] = {}
     for record in records:
-        if str(record.get("capability") or "") in HIDDEN_COMPACT_REPORT_RECORD_TYPES:
+        if str(record.get("data_model") or "") in HIDDEN_COMPACT_REPORT_RECORD_TYPES:
             continue
         key = (
-            str(record.get("capability") or record.get("ref_type") or ""),
+            str(record.get("data_model") or record.get("ref_type") or ""),
             str(record.get("index_name") or ""),
             record.get("node_hash") or "",
             record.get("ref_type") or "",
@@ -800,7 +799,7 @@ PIPELINE_MERMAID = """flowchart TD
 """
 
 
-CAPABILITY_ROWS = [
+DATA_MODEL_ROWS = [
     {"model": "ContextNode", "purpose": "Filesystem-like topology. Messages/resources attach to a leaf node, parents are used for traversal.", "important_fields": "node, parent, name, compact path"},
     {"model": "ContextEvent", "purpose": "Replayable extracted fact or raw conversational event.", "important_fields": "event, node, type, entity, source, text"},
     {"model": "ContextSegment", "purpose": "Batch/session topic segment when a logical window is committed.", "important_fields": "segment, node, source events, summary, time range"},
@@ -958,9 +957,9 @@ def write_outputs(
         f"- Node L1 policy: {trace['summary_refresh_policy']['node_l1_policy']}",
         f"- Embedding note: {embedding_note}",
         "",
-        "## Capability Field Guide",
+        "## Data Model Field Guide",
         "",
-        markdown_table(CAPABILITY_ROWS, ["model", "purpose", "important_fields"], limit=50),
+        markdown_table(DATA_MODEL_ROWS, ["model", "purpose", "important_fields"], limit=50),
         "",
         "## Record Counts",
         "",
@@ -968,7 +967,7 @@ def write_outputs(
         "",
         "## Data Field Inventory",
         "",
-        "Observed compact/raw fields by capability for this run. This is for debugging schema shape; token-facing ContextPack still stays compact.",
+        "Observed compact/raw fields by data model for this run. This is for debugging schema shape; token-facing ContextPack still stays compact.",
         "",
         markdown_table(field_inventory, ["record_type", "field_count", "fields"], limit=120),
         "",
@@ -1076,7 +1075,7 @@ def write_outputs(
 
     roots = node_tree(records)
     graph_html = "\n".join(render_node_html(root, aliases) for root in roots) or "<p>No context_node records found.</p>"
-    model_table_html = records_table(CAPABILITY_ROWS, ["model", "purpose", "important_fields"])
+    model_table_html = records_table(DATA_MODEL_ROWS, ["model", "purpose", "important_fields"])
     html_embedding_note = html.escape(embedding_note)
     html_doc = f"""<!doctype html>
 <html lang="en">
@@ -1123,8 +1122,8 @@ def write_outputs(
       <div class="metric"><span class="muted">Selected Refs</span><strong>{len(retrieve_result.get('selected_refs', []))}</strong></div>
     </section>
     <section class="section"><h2>Pipeline</h2><pre>{html.escape(PIPELINE_MERMAID)}</pre></section>
-    <section class="section"><h2>Capability Field Guide</h2>{model_table_html}</section>
-    <section class="section"><h2>Data Field Inventory</h2><p class="muted">Observed fields by capability for this run. Token-facing ContextPack remains compact.</p>{records_table(field_inventory, ['record_type', 'field_count', 'fields'])}</section>
+    <section class="section"><h2>Data Model Field Guide</h2>{model_table_html}</section>
+    <section class="section"><h2>Data Field Inventory</h2><p class="muted">Observed fields by data model for this run. Token-facing ContextPack remains compact.</p>{records_table(field_inventory, ['record_type', 'field_count', 'fields'])}</section>
     <section class="section"><h2>ContextNode Graph</h2>{graph_html}</section>
     <section class="section"><h2>Messages</h2>{records_table([{'role': m['role'], 'content': m['content']} for m in MESSAGES], ['role', 'content'])}</section>
     <section class="section"><h2>Resources</h2>{records_table(compact_resources(trace['resources']), ['rid', 'type', 'title', 'source', 'lines'])}</section>
@@ -1167,7 +1166,6 @@ def main() -> int:
     )
     args = parser.parse_args()
     mcp_core.ENABLE_CONTEXT_DEBUG_RECORDS = bool(args.include_debug_audit)
-    serving_records.ENABLE_CONTEXT_DEBUG_RECORDS = bool(args.include_debug_audit)
     mcp_core.ENABLE_CONTEXT_REPLAY = bool(args.include_debug_audit)
     mcp_core.ENABLE_SUMMARY_REFRESH_AUDIT = bool(args.include_debug_audit)
 

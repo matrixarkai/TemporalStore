@@ -24,7 +24,7 @@
       "context": 5,
       "Feature": 12,
       "Sequence": 4,
-      "ControlState": 8,
+      "Risk": 8,
       "IPS": 4,
       "rust internals": 6
     },
@@ -56,7 +56,7 @@
       "Sequence": {
         "move_to_shared": 4
       },
-      "ControlState": {
+      "Risk": {
         "move_to_shared": 8
       },
       "IPS": {
@@ -1222,9 +1222,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::live_page_segment_ids_scan_all_index_backed_capabilities",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::live_page_segment_ids_scan_all_index_backed_data_models",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "live_page_segment_ids_scan_all_index_backed_capabilities",
+      "test_name": "live_page_segment_ids_scan_all_index_backed_data_models",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
@@ -1555,12 +1555,12 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::common_delete_removes_cpp_control_state_family_records_for_logical_key",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::common_delete_removes_cpp_risk_family_records_for_logical_key",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "common_delete_removes_cpp_control_state_family_records_for_logical_key",
-      "family": "ControlState",
+      "test_name": "common_delete_removes_cpp_risk_family_records_for_logical_key",
+      "family": "Risk",
       "classification": "move_to_shared",
-      "next_migration_target": "ControlState shared cases for CPC/list/manager/debug/window semantics",
+      "next_migration_target": "Risk shared cases for CPC/list/manager/debug/window semantics",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -1582,12 +1582,12 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::common_expire_and_ttl_cover_cpp_control_state_family_records_for_logical_key",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::common_expire_and_ttl_cover_cpp_risk_family_records_for_logical_key",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "common_expire_and_ttl_cover_cpp_control_state_family_records_for_logical_key",
-      "family": "ControlState",
+      "test_name": "common_expire_and_ttl_cover_cpp_risk_family_records_for_logical_key",
+      "family": "Risk",
       "classification": "move_to_shared",
-      "next_migration_target": "ControlState shared cases for CPC/list/manager/debug/window semantics",
+      "next_migration_target": "Risk shared cases for CPC/list/manager/debug/window semantics",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -1609,12 +1609,12 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::control_state_count_sums_window",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::risk_count_sums_window",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "control_state_count_sums_window",
-      "family": "ControlState",
+      "test_name": "risk_count_sums_window",
+      "family": "Risk",
       "classification": "move_to_shared",
-      "next_migration_target": "ControlState shared cases for CPC/list/manager/debug/window semantics",
+      "next_migration_target": "Risk shared cases for CPC/list/manager/debug/window semantics",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -1717,39 +1717,39 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::control_state_change_matches_cpp_distinct_field_semantics",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::risk_change_matches_cpp_distinct_field_semantics",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "control_state_change_matches_cpp_distinct_field_semantics",
-      "family": "ControlState",
+      "test_name": "risk_change_matches_cpp_distinct_field_semantics",
+      "family": "Risk",
       "classification": "move_to_shared",
-      "next_migration_target": "ControlState shared cases for CPC/list/manager/debug/window semantics",
+      "next_migration_target": "Risk shared cases for CPC/list/manager/debug/window semantics",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::control_state_query_supports_first_last_and_detail_list",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::risk_query_supports_first_last_and_detail_list",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "control_state_query_supports_first_last_and_detail_list",
-      "family": "ControlState",
+      "test_name": "risk_query_supports_first_last_and_detail_list",
+      "family": "Risk",
       "classification": "move_to_shared",
-      "next_migration_target": "ControlState shared cases for CPC/list/manager/debug/window semantics",
+      "next_migration_target": "Risk shared cases for CPC/list/manager/debug/window semantics",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::control_state_fol_matches_cpp_first_last_string_semantics",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::risk_fol_matches_cpp_first_last_string_semantics",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "control_state_fol_matches_cpp_first_last_string_semantics",
-      "family": "ControlState",
+      "test_name": "risk_fol_matches_cpp_first_last_string_semantics",
+      "family": "Risk",
       "classification": "move_to_shared",
-      "next_migration_target": "ControlState shared cases for CPC/list/manager/debug/window semantics",
+      "next_migration_target": "Risk shared cases for CPC/list/manager/debug/window semantics",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::feature_write_policy_sequence_batch_ips_dimensions_and_control_state_precision_work",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::feature_write_policy_sequence_batch_ips_dimensions_and_risk_precision_work",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "feature_write_policy_sequence_batch_ips_dimensions_and_control_state_precision_work",
-      "family": "ControlState",
+      "test_name": "feature_write_policy_sequence_batch_ips_dimensions_and_risk_precision_work",
+      "family": "Risk",
       "classification": "move_to_shared",
-      "next_migration_target": "ControlState shared cases for CPC/list/manager/debug/window semantics",
+      "next_migration_target": "Risk shared cases for CPC/list/manager/debug/window semantics",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -1891,9 +1891,9 @@
       "test_id": "crates/temporalstore-rust/src/engine/tests.rs::slot_dump_manifest_prune_is_blocked_by_lagging_follower_cursor",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
       "test_name": "slot_dump_manifest_prune_is_blocked_by_lagging_follower_cursor",
-      "family": "ControlState",
+      "family": "Risk",
       "classification": "move_to_shared",
-      "next_migration_target": "ControlState shared cases for CPC/list/manager/debug/window semantics",
+      "next_migration_target": "Risk shared cases for CPC/list/manager/debug/window semantics",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {

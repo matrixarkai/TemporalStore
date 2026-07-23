@@ -157,7 +157,7 @@ Retrieval behavior:
 - It avoids using only the latest entity state because the question is historical.
 - It retrieves the older Seattle event and may include the Austin event as a temporal boundary.
 
-## 5. Logical Capabilities Injected During LOCOMO
+## 5. Logical Data Models Injected During LOCOMO
 
 ### ContextEvent
 

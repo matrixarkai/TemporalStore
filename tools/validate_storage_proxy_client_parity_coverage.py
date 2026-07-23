@@ -34,7 +34,7 @@ REQUIRED_CASES = {
     "storage_manager_page_gc_dependency_refusal": "page GC dependency refusal",
     "storage_manager_index_gc_thresholds_recovery": "Index GC thresholds and recovery",
     "storage_manager_metrics_admin_phase_reports": "StorageManager metrics/admin phase reports",
-    "storage_control_state_context_page_backed_parity": "ControlState/Context page-backed parity",
+    "storage_risk_context_page_backed_parity": "Risk/Context page-backed parity",
     "control_multi_proxy_topology_churn_scale": "multi-proxy convergence scale",
     "control_client_cpp_partition_set_route_cache": "direct SDK partition-set route cache",
     "control_client_pipeline_batch_partial_timeout_contract": "direct SDK pipeline parity",

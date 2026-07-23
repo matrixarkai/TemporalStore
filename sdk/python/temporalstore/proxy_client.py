@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -11,9 +10,8 @@ from .client import (
     FeatureFilter,
     FeatureFilterOp,
     FeaturePoint,
-    FeatureWritePolicy,
     IpsFeatureStat,
-    ControlStatePrecision,
+    RiskPrecision,
     SequenceFeatureRow,
     TemporalStoreError,
     WindowUnit,
@@ -65,14 +63,8 @@ class ProxyClient:
         self._post("/ProxyService/HSet", body)
 
     def batch_hset(self, entries: Iterable[Dict[str, Any]]) -> None:
-        grouped: Dict[str, Dict[str, str]] = {}
         for entry in entries:
-            key = str(entry["key"])
-            field = str(entry["field"])
-            value = str(entry.get("value", ""))
-            grouped.setdefault(key, {})[field] = value
-        for key, values in grouped.items():
-            self.hmset(key, values)
+            self.hset(str(entry["key"]), str(entry["field"]), str(entry.get("value", "")))
 
     def matrixark_batch_append_records(
         self,
@@ -85,17 +77,12 @@ class ProxyClient:
         body: Dict[str, Any] = {
             "namespace": self.options.namespace_name,
             "table": self.options.table_name,
-            "table_name": self.options.table_name,
             "entries": list(entries),
         }
         if count_key is not None:
             body["count_key"] = count_key
         if count_value is not None:
             body["count_value"] = count_value
-        if append_options is not None:
-            body["append_options_json"] = json.dumps(
-                append_options, sort_keys=True, separators=(",", ":")
-            )
         self._post("/matrixark/append_records", body)
 
     def matrixark_append_records(
@@ -127,7 +114,6 @@ class ProxyClient:
         body = {
             "namespace": self.options.namespace_name,
             "table": self.options.table_name,
-            "table_name": self.options.table_name,
             "count_key": count_key,
             "record_hash_key": record_hash_key,
             "shard_size": int(shard_size),
@@ -149,7 +135,6 @@ class ProxyClient:
         body = {
             "namespace": self.options.namespace_name,
             "table": self.options.table_name,
-            "table_name": self.options.table_name,
             "count_key": count_key,
             "record_hash_key": record_hash_key,
             "shard_size": int(shard_size),
@@ -161,35 +146,7 @@ class ProxyClient:
         body = self._key_body(key)
         body["field"] = field
         data = self._post("/ProxyService/HGet", body)
-        return _string_value(data.get("value", ""))
-
-    def hmset(self, key: str, entries: Dict[str, str]) -> None:
-        body = self._key_body(key)
-        body["entries"] = [[field, _bytes_value(value)] for field, value in entries.items()]
-        self._post("/ProxyService/HMSet", body)
-
-    def hmget(self, key: str, fields: Iterable[str]) -> List[Optional[str]]:
-        body = self._key_body(key)
-        body["fields"] = list(fields)
-        data = self._post("/ProxyService/HMGet", body)
-        return [None if value is None else _string_value(value) for value in data.get("values", [])]
-
-    def hgetall(self, key: str) -> Dict[str, str]:
-        data = self._post("/ProxyService/HGetAll", self._key_body(key))
-        if "fields" in data and "values" in data:
-            return {
-                str(field): _string_value(value)
-                for field, value in zip(data.get("fields", []), data.get("values", []))
-            }
-        return {
-            str(entry[0]): _string_value(entry[1])
-            for entry in data.get("entries", [])
-            if isinstance(entry, list) and len(entry) >= 2
-        }
-
-    def hlen(self, key: str) -> int:
-        data = self._post("/ProxyService/HLen", self._key_body(key))
-        return int(data.get("len", data.get("value", 0)))
+        return str(data.get("value", ""))
 
     def hdel(self, key: str, field: str) -> None:
         body = self._key_body(key)
@@ -205,28 +162,9 @@ class ProxyClient:
         data = self._post("/ProxyService/SMembers", self._key_body(key))
         return [str(item) for item in data.get("members", [])]
 
-    def srem(self, key: str, member: str) -> None:
-        body = self._key_body(key)
-        body["member"] = _bytes_value(member)
-        self._post("/ProxyService/SRem", body)
-
-    def exists(self, key: str) -> bool:
-        data = self._post("/ProxyService/Exists", self._key_body(key))
-        return int(data.get("value", 0)) != 0
-
     def add_feature_points(self, key: str, points: Iterable[FeaturePoint]) -> None:
-        self.add_feature_points_with_policy(key, points, FeatureWritePolicy.UPSERT)
-
-    def add_feature_points_with_policy(
-        self,
-        key: str,
-        points: Iterable[FeaturePoint],
-        policy: FeatureWritePolicy = FeatureWritePolicy.UPSERT,
-    ) -> None:
         body = self._key_body(key)
-        body["format"] = "protobuf"
         body["points"] = [_feature_point_body(point) for point in points]
-        body["policy"] = int(policy)
         self._post("/ProxyService/FeatureAdd", body)
 
     def query_feature_points(
@@ -244,59 +182,10 @@ class ProxyClient:
             for row in data.get("points", [])
         ]
 
-    def replace_feature_points(
-        self,
-        key: str,
-        start_ts: int,
-        end_ts: int,
-        points: Iterable[FeaturePoint],
-    ) -> None:
-        body = self._key_body(key)
-        body.update(
-            {
-                "start_ms": start_ts,
-                "end_ms": end_ts,
-                "points": [_feature_point_body(point) for point in points],
-            }
-        )
-        self._post("/ProxyService/FeatureReplace", body)
-
-    def delete_feature_points(self, key: str) -> None:
-        self._post("/ProxyService/FeatureDelete", self._key_body(key))
-
-    def aggregate_feature_points(
-        self,
-        key: str,
-        start_ts: int,
-        end_ts: int,
-        aggregator: str,
-        count: Optional[int] = None,
-    ) -> int:
-        body = self._key_body(key)
-        body.update(
-            {
-                "start_ms": start_ts,
-                "end_ms": end_ts,
-                "aggregator": aggregator,
-                "count": count,
-            }
-        )
-        data = self._post("/ProxyService/FeatureAggQuery", body)
-        return int(data.get("value", 0))
-
     def add_sequence_feature_rows(self, key: str, rows: Iterable[SequenceFeatureRow]) -> None:
-        self.add_sequence_feature_rows_with_policy(key, rows, FeatureWritePolicy.UPSERT)
-
-    def add_sequence_feature_rows_with_policy(
-        self,
-        key: str,
-        rows: Iterable[SequenceFeatureRow],
-        policy: FeatureWritePolicy = FeatureWritePolicy.UPSERT,
-    ) -> None:
         body = self._key_body(key)
-        body["rows"] = [_sequence_row_body(row) for row in rows]
-        body["policy"] = int(policy)
-        self._post("/ProxyService/SequenceAdd", body)
+        body["command"] = {"kind": "sequence_add", "key": key, "rows": [_sequence_row_body(row) for row in rows]}
+        self._post("/ProxyService/ExecuteTableCmd", body)
 
     def query_sequence_feature_rows(
         self,
@@ -306,8 +195,16 @@ class ProxyClient:
         count: int,
         filters: Iterable[FeatureFilter] = (),
     ) -> List[SequenceFeatureRow]:
-        body = self._query_body(key, start_ts, end_ts, count, filters)
-        data = self._post("/ProxyService/SequenceQuery", body)
+        body = self._key_body(key)
+        body["command"] = {
+            "kind": "sequence_query",
+            "key": key,
+            "start_ms": start_ts,
+            "end_ms": end_ts,
+            "count": int(count),
+            "filters": [_feature_filter_body(item) for item in filters],
+        }
+        data = self._post("/ProxyService/ExecuteTableCmd", body)
         return [
             SequenceFeatureRow(
                 int(row.get("timestamp", row.get("timestamp_ms", 0))),
@@ -331,19 +228,22 @@ class ProxyClient:
         body = {
             "namespace": self.options.namespace_name,
             "table": self.options.table_name,
-            "table_name": self.options.table_name,
             "ips_table": table,
-            "key": table,
             "uid": uid,
             "timestamp_us": timestamp_us,
-            "timestamp_ms": int(timestamp_us // 1000),
             "action_type": action_type,
-            "table_id": int(logical_table),
             "logical_table": logical_table,
             "features": [asdict(feature) for feature in features],
         }
-        body["instance"] = _bytes_value(json.dumps(body["features"], separators=(",", ":")))
-        self._post("/ProxyService/IpsAdd", body)
+        body["command"] = {
+            "kind": "ips_add_with_options",
+            "key": table,
+            "timestamp_ms": int(timestamp_us // 1000),
+            "instance": _bytes_value(json.dumps(body["features"], separators=(",", ":"))),
+            "action_type": int(action_type),
+            "table_id": int(logical_table),
+        }
+        self._post("/ProxyService/ExecuteTableCmd", body)
 
     def query_ips_last_instances(
         self,
@@ -358,18 +258,16 @@ class ProxyClient:
         body = {
             "namespace": self.options.namespace_name,
             "table": self.options.table_name,
-            "table_name": self.options.table_name,
             "ips_table": table,
-            "key": table,
             "uid": uid,
             "action_type": action_type,
             "logical_table": logical_table,
             "slot": slot,
             "top_k": top_k,
             "last_instances": last_instances,
-            "count": int(last_instances),
         }
-        data = self._post("/ProxyService/IpsQueryLast", body)
+        body["command"] = {"kind": "ips_query_last", "key": table, "count": int(last_instances)}
+        data = self._post("/ProxyService/ExecuteTableCmd", body)
         return [
             IpsFeatureStat(
                 int(row.get("id", 0)),
@@ -382,12 +280,12 @@ class ProxyClient:
             for row in data.get("features", [])
         ]
 
-    def control_state_increment(
+    def risk_increment(
         self,
         key: str,
         amount: int = 1,
         ttl_seconds: int = 24 * 3600,
-        precision: ControlStatePrecision = ControlStatePrecision.ONE_MINUTE,
+        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
         uuid: str = "",
         occur_time_seconds: int = 0,
     ) -> None:
@@ -396,20 +294,23 @@ class ProxyClient:
             {
                 "amount": amount,
                 "ttl_seconds": ttl_seconds,
-                "ttl_ms": ttl_seconds * 1000,
                 "precision": int(precision),
-                "precision_ms": _control_state_precision_ms(precision),
                 "uuid": uuid,
                 "occur_time_seconds": occur_time_seconds,
-                "timestamp_ms": _proxy_timestamp_ms(occur_time_seconds),
             }
         )
-        self._post("/ProxyService/ControlStateIncrement", body)
+        body["command"] = {
+            "kind": "risk_increment",
+            "key": key,
+            "timestamp_ms": int(occur_time_seconds * 1000) if occur_time_seconds else 0,
+            "amount": int(amount),
+        }
+        self._post("/ProxyService/ExecuteTableCmd", body)
 
-    def control_state_count(
+    def risk_count(
         self,
         key: str,
-        precision: ControlStatePrecision = ControlStatePrecision.ONE_MINUTE,
+        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
         window_start: int = -1,
         window_end: int = 0,
         window_unit: WindowUnit = WindowUnit.HOUR,
@@ -423,154 +324,9 @@ class ProxyClient:
                 "window_unit": int(window_unit),
             }
         )
-        start_ms, end_ms = _control_state_window_ms(window_start, window_end, window_unit)
-        body["start_ms"] = start_ms
-        body["end_ms"] = end_ms
-        data = self._post("/ProxyService/ControlStateCount", body)
+        body["command"] = {"kind": "risk_count", "key": key, "start_ms": int(window_start), "end_ms": int(window_end)}
+        data = self._post("/ProxyService/ExecuteTableCmd", body)
         return int(data.get("count", 0))
-
-    def control_state_hset(self, key: str, timestamp_ms: int, amount: int) -> None:
-        body = self._key_body(key)
-        body.update({"timestamp_ms": timestamp_ms, "amount": amount})
-        self._post("/ProxyService/ControlStateHset", body)
-
-    def control_state_hset_with_options(
-        self,
-        key: str,
-        value: str,
-        ttl_seconds: int,
-        htype: str = "count",
-        occur_time_seconds: int = 0,
-        precision: ControlStatePrecision = ControlStatePrecision.ONE_MINUTE,
-    ) -> None:
-        body = self._key_body(key)
-        body.update(
-            {
-                "value": value,
-                "ttl": int(ttl_seconds),
-                "ttl_ms": int(ttl_seconds) * 1000,
-                "htype": htype,
-                "occur_time": int(occur_time_seconds),
-                "timestamp_ms": _proxy_timestamp_ms(occur_time_seconds),
-                "precision_ms": _control_state_precision_ms(precision),
-            }
-        )
-        self._post("/ProxyService/ControlStateHset", body)
-
-    def control_state_hquery(
-        self,
-        key: str,
-        precision: ControlStatePrecision = ControlStatePrecision.ONE_MINUTE,
-        window_start: int = -1,
-        window_end: int = 0,
-        window_unit: WindowUnit = WindowUnit.HOUR,
-        aggregator: str = "sum",
-    ) -> List[int]:
-        body = self._key_body(key)
-        start_ms, end_ms = _control_state_window_ms(window_start, window_end, window_unit)
-        body.update(
-            {
-                "start_ms": start_ms,
-                "end_ms": end_ms,
-                "precision_ms": _control_state_precision_ms(precision),
-                "aggregator": aggregator,
-            }
-        )
-        data = self._post("/ProxyService/ControlStateHquery", body)
-        return [int(item.get("result", 0)) for item in data.get("result_list", [])]
-
-    def control_state_cpc_set(
-        self,
-        key: str,
-        values: Iterable[str],
-        timestamp_ms: Optional[int] = None,
-        ttl_ms: int = 0,
-        precision: ControlStatePrecision = ControlStatePrecision.ONE_MINUTE,
-        dont_upgrade_cpc: bool = False,
-    ) -> None:
-        body = self._key_body(key)
-        body.update(
-            {
-                "values": list(values),
-                "timestamp_ms": int(timestamp_ms if timestamp_ms is not None else time.time() * 1000),
-                "ttl_ms": ttl_ms,
-                "precision_ms": _control_state_precision_ms(precision),
-                "dont_upgrade_cpc": dont_upgrade_cpc,
-            }
-        )
-        self._post("/ProxyService/ControlStateCPCSet", body)
-
-    def control_state_cpc_query(
-        self,
-        key: str,
-        precision: ControlStatePrecision = ControlStatePrecision.ONE_MINUTE,
-        window_start: int = -1,
-        window_end: int = 0,
-        window_unit: WindowUnit = WindowUnit.HOUR,
-    ) -> List[int]:
-        body = self._key_body(key)
-        start_ms, end_ms = _control_state_window_ms(window_start, window_end, window_unit)
-        body.update(
-            {
-                "start_ms": start_ms,
-                "end_ms": end_ms,
-                "precision_ms": _control_state_precision_ms(precision),
-            }
-        )
-        data = self._post("/ProxyService/ControlStateCPCQuery", body)
-        return [int(value) for value in data.get("count_list", [])]
-
-    def control_state_fol_set(
-        self,
-        key: str,
-        value: str,
-        occur_time_ms: int,
-        ttl_ms: int,
-        fol_type: str = "last",
-    ) -> None:
-        body = self._key_body(key)
-        body.update(
-            {
-                "value": value,
-                "value_bytes": _bytes_value(value),
-                "occur_time": int(occur_time_ms) // 1000,
-                "occur_time_ms": occur_time_ms,
-                "ttl": int(ttl_ms) // 1000,
-                "ttl_ms": ttl_ms,
-                "fol_type": fol_type,
-            }
-        )
-        self._post("/ProxyService/ControlStateFolSet", body)
-
-    def control_state_fol_query(self, key: str) -> str:
-        data = self._post("/ProxyService/ControlStateFolQuery", self._key_body(key))
-        return str(data.get("result", _string_value(data.get("value", ""))))
-
-    def control_state_manager(self, key: str) -> Dict[str, str]:
-        data = self._post("/ProxyService/ControlStateManager", self._key_body(key))
-        return dict(data.get("entries", {}))
-
-    def control_state_manager_with_options(
-        self,
-        key: str,
-        op_type: str,
-        field_list: Optional[Iterable[Dict[str, str]]] = None,
-        start_offset: str = "",
-        end_offset: str = "",
-        is_cpc: bool = False,
-    ) -> Dict[str, str]:
-        body = self._key_body(key)
-        body.update(
-            {
-                "op_type": op_type,
-                "field_list": list(field_list or []),
-                "start_offset": start_offset,
-                "end_offset": end_offset,
-                "is_cpc": is_cpc,
-            }
-        )
-        data = self._post("/ProxyService/ControlStateManager", body)
-        return dict(data.get("entries", {}))
 
     def _key_body(self, key: str) -> Dict[str, Any]:
         return {
@@ -596,7 +352,6 @@ class ProxyClient:
                 "start_ms": start_ts,
                 "end_ms": end_ts,
                 "count": count,
-                "format": "protobuf",
                 "filters": [_feature_filter_body(item) for item in filters],
             }
         )
@@ -643,8 +398,6 @@ def _feature_filter_body(value: FeatureFilter) -> Dict[str, Any]:
         FeatureFilterOp.NOT_EQUAL: "not_equal",
         FeatureFilterOp.GREATER_THAN: "greater_than",
         FeatureFilterOp.LESS_THAN: "less_than",
-        FeatureFilterOp.GREATER_OR_EQUAL: "greater_or_equal",
-        FeatureFilterOp.LESS_OR_EQUAL: "less_or_equal",
     }
     return {"field": value.field, "op": names.get(value.op, "equal"), "value": int(value.value)}
 
@@ -693,29 +446,6 @@ def _flatten_command_response(response: Any) -> Dict[str, Any]:
         return {"value": value, "count": value, "ttl_ms": value}
     if kind == "members":
         return {"members": [_string_value(item) for item in response.get("members", [])]}
-    if kind == "values":
-        values = list(response.get("values", []))
-        exists = response.get("exists")
-        if isinstance(exists, list):
-            return {
-                "values": [
-                    _string_value(value) if index < len(exists) and bool(exists[index]) else None
-                    for index, value in enumerate(values)
-                ],
-                "exists": [bool(item) for item in exists],
-            }
-        return {
-            "values": [
-                None if item is None else _string_value(item)
-                for item in values
-            ]
-        }
-    if kind == "hash_entries":
-        entries: Dict[str, str] = {}
-        for item in response.get("entries", []):
-            if isinstance(item, list) and len(item) >= 2:
-                entries[str(item[0])] = _string_value(item[1])
-        return {"entries": entries}
     if kind == "feature_points":
         return {"points": [_feature_point_result(item) for item in response.get("points", [])]}
     if kind == "sequence_rows":
@@ -734,42 +464,3 @@ def _sequence_row_result(value: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(value)
     out["timestamp"] = int(out.get("timestamp", out.get("timestamp_ms", 0)))
     return out
-
-
-def _proxy_timestamp_ms(occur_time_seconds: int) -> int:
-    if occur_time_seconds:
-        return int(occur_time_seconds) * 1000
-    return int(time.time() * 1000)
-
-
-def _control_state_precision_ms(precision: ControlStatePrecision) -> int:
-    values = {
-        ControlStatePrecision.ONE_SECOND: 1000,
-        ControlStatePrecision.FIVE_SECONDS: 5000,
-        ControlStatePrecision.TEN_SECONDS: 10000,
-        ControlStatePrecision.ONE_MINUTE: 60000,
-        ControlStatePrecision.FIVE_MINUTES: 5 * 60000,
-        ControlStatePrecision.TEN_MINUTES: 10 * 60000,
-        ControlStatePrecision.ONE_HOUR: 60 * 60000,
-        ControlStatePrecision.ONE_DAY: 24 * 60 * 60000,
-        ControlStatePrecision.ONE_MONTH: 30 * 24 * 60 * 60000,
-    }
-    return values.get(precision, 60000)
-
-
-def _control_state_window_ms(window_start: int, window_end: int, unit: WindowUnit) -> tuple[int, int]:
-    end = int(window_end) if window_end > 0 else int(time.time() * 1000)
-    start = int(window_start)
-    if start < 0:
-        start = end - _window_unit_ms(unit)
-    return max(start, 0), end
-
-
-def _window_unit_ms(unit: WindowUnit) -> int:
-    values = {
-        WindowUnit.SECOND: 1000,
-        WindowUnit.MINUTE: 60000,
-        WindowUnit.HOUR: 60 * 60000,
-        WindowUnit.DAY: 24 * 60 * 60000,
-    }
-    return values.get(unit, 60 * 60000)

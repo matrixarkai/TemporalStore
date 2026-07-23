@@ -2,7 +2,7 @@
 
 This manual explains how Codex connects to MatrixArk, how automatic hooks differ from MCP tool calls, and how to call the MatrixArk ingestion, extraction, retrieval, feedback, replay, resource, and skill APIs from Codex.
 
-MatrixArk should not require Codex, Claude, Cursor, or another agent to understand MatrixArk's internal capabilities. The agent sends messages, local context hints, files, and lifecycle events. MatrixArk resolves identity, extracts context, writes TemporalStore records, refreshes summaries, retrieves a ContextPack, and records audit/replay data.
+MatrixArk should not require Codex, Claude, Cursor, or another agent to understand MatrixArk's internal data models. The agent sends messages, local context hints, files, and lifecycle events. MatrixArk resolves identity, extracts context, writes TemporalStore records, refreshes summaries, retrieves a ContextPack, and records audit/replay data.
 
 ## 1. Two Integration Modes
 
@@ -499,7 +499,7 @@ rolling window          -> commit next 20 pending messages, not the whole sessio
 
 ```json
 {
-  "query": "What GPU approvals are current, and what budget control_states were mentioned?",
+  "query": "What GPU approvals are current, and what budget risks were mentioned?",
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
@@ -748,7 +748,7 @@ matrixark_retrieve(query="what did Alice approve?")
 matrixark_replay(context_pack_id="...")
 ```
 
-Expected capability flow:
+Expected data model flow:
 
 ```text
 message/hook payload

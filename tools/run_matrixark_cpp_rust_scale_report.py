@@ -103,24 +103,6 @@ def _is_loopback_metaserver(metaserver: str) -> bool:
     return _metaserver_host(metaserver).strip().lower() in {"127.0.0.1", "localhost", "::1"}
 
 
-def default_retrieve_warmup_queries(server: Any, retrieve_workers: int, requested_warmup_queries: int) -> int:
-    if requested_warmup_queries >= 0:
-        return requested_warmup_queries
-    lane_counts = getattr(server, "_lane_worker_counts", {}) or {}
-    adapter = getattr(server, "adapter", None)
-    if not lane_counts and adapter is not None:
-        lane_counts = getattr(adapter, "_lane_worker_counts", {}) or {}
-    if not lane_counts and adapter is not None:
-        retrieve_client_factory = getattr(adapter, "_native_retrieve_client", None)
-        if callable(retrieve_client_factory):
-            try:
-                lane_counts = getattr(retrieve_client_factory(), "_lane_worker_counts", {}) or {}
-            except Exception:
-                lane_counts = {}
-    lane_count = int(lane_counts.get("pack") or lane_counts.get("retrieve") or 0)
-    return max(retrieve_workers, lane_count * 4)
-
-
 def default_canonical_release_out_dir() -> Path:
     return CANONICAL_UBUNTU_REPO / "output-ubuntu22" / "release"
 
@@ -128,17 +110,6 @@ def default_canonical_release_out_dir() -> Path:
 def ensure_local_topology(args: argparse.Namespace) -> Json:
     """Start local C++ topology for loopback scale runs when it is absent."""
 
-    requested_backends = set(getattr(args, "backends", []) or [])
-    worker_backend = str(getattr(args, "backend_worker", "") or "")
-    if worker_backend:
-        requested_backends = {worker_backend}
-    if "cpp" not in requested_backends and getattr(args, "skip_context_pipeline", False):
-        return {
-            "status": "skipped",
-            "reason": "cpp_backend_not_requested_for_raw_only_run",
-            "metaserver": args.metaserver,
-            "backends": sorted(requested_backends),
-        }
     if getattr(args, "no_auto_start_local_topology", False):
         return {"status": "skipped", "reason": "disabled_by_flag", "metaserver": args.metaserver}
     if not _is_loopback_metaserver(str(args.metaserver)):
@@ -1849,98 +1820,11 @@ def rust_proxy_breakdown_from_backend_metrics(backend_metrics: Json) -> Json:
     if not isinstance(metrics, dict):
         return {"available": False, "reason": "missing_backend_metrics_result"}
     nested_metrics = metrics.get("metrics", {}) if isinstance(metrics.get("metrics"), dict) else {}
-    primary_metrics = nested_metrics.get("rust_client", {}) if isinstance(nested_metrics.get("rust_client"), dict) else {}
-    if not primary_metrics:
-        primary_metrics = metrics
-
-    client_sources = [
-        ("primary", primary_metrics),
-        ("retrieve", nested_metrics.get("rust_retrieve_client", {})),
-        ("summary", nested_metrics.get("rust_summary_client", {})),
-    ]
-    clients: Json = {}
-    combined_ops: dict[str, Json] = {}
-    combined_commands_total = 0
-    combined_engine_total = 0.0
-    combined_serialization_total = 0.0
-    combined_queue_wait_total = 0.0
-
-    for name, client_metrics in client_sources:
-        if not isinstance(client_metrics, dict) or not client_metrics:
-            continue
-        combined_commands_total += int(client_metrics.get("commands_total") or 0)
-        combined_engine_total += float(client_metrics.get("rust_engine_ms_total") or 0.0)
-        combined_serialization_total += float(client_metrics.get("serialization_ms_total") or 0.0)
-        combined_queue_wait_total += float(client_metrics.get("proxy_queue_wait_ms_total") or 0.0)
-        op_metrics = client_metrics.get("op_metrics", {})
-        if isinstance(op_metrics, dict):
-            for op, values in op_metrics.items():
-                if not isinstance(values, dict):
-                    continue
-                bucket = combined_ops.setdefault(
-                    str(op),
-                    {"op": str(op), "commands_total": 0, "latency_ms_total": 0.0, "latency_ms_max": 0.0},
-                )
-                bucket["commands_total"] += int(values.get("commands_total") or 0)
-                bucket["latency_ms_total"] += float(values.get("latency_ms_total") or 0.0)
-                bucket["latency_ms_max"] = max(
-                    float(bucket.get("latency_ms_max") or 0.0),
-                    float(values.get("latency_ms_max") or 0.0),
-                )
-        clients[name] = {
-            "commands_total": int(client_metrics.get("commands_total") or 0),
-            "qps": round(float(client_metrics.get("qps") or 0.0), 6),
-            "top_ops_by_total_latency": _top_rust_proxy_ops(client_metrics)[:8],
-            "lanes": _rust_proxy_lanes(client_metrics),
-            "proxy_queue_wait_ms_total": round(float(client_metrics.get("proxy_queue_wait_ms_total") or 0.0), 3),
-        }
-
-    top_ops = [
-        {
-            "op": op,
-            "commands_total": int(values.get("commands_total") or 0),
-            "latency_ms_total": round(float(values.get("latency_ms_total") or 0.0), 3),
-            "latency_ms_avg": round(
-                float(values.get("latency_ms_total") or 0.0) / max(1, int(values.get("commands_total") or 0)),
-                3,
-            ),
-            "latency_ms_max": round(float(values.get("latency_ms_max") or 0.0), 3),
-        }
-        for op, values in combined_ops.items()
-    ]
-    top_ops.sort(key=lambda item: (float(item.get("latency_ms_total") or 0.0), int(item.get("commands_total") or 0)), reverse=True)
-
-    lanes = _rust_proxy_lanes(primary_metrics)
-    commands_total = int(primary_metrics.get("commands_total") or 0)
-    engine_total = float(primary_metrics.get("rust_engine_ms_total") or 0.0)
-    serialization_total = float(primary_metrics.get("serialization_ms_total") or 0.0)
-    return {
-        "available": bool(top_ops or lanes),
-        "commands_total": commands_total,
-        "combined_commands_total": combined_commands_total,
-        "qps": round(float(primary_metrics.get("qps") or 0.0), 6),
-        "engine_ms_total": round(engine_total, 3),
-        "combined_engine_ms_total": round(combined_engine_total, 3),
-        "serialization_ms_total": round(serialization_total, 3),
-        "combined_serialization_ms_total": round(combined_serialization_total, 3),
-        "proxy_queue_wait_ms_total": round(float(primary_metrics.get("proxy_queue_wait_ms_total") or 0.0), 3),
-        "combined_proxy_queue_wait_ms_total": round(combined_queue_wait_total, 3),
-        "engine_ms_per_command": round(engine_total / max(1, commands_total), 6),
-        "serialization_ms_per_command": round(serialization_total / max(1, commands_total), 6),
-        "top_ops_by_total_latency": top_ops[:8],
-        "lanes": lanes,
-        "clients": clients,
-        "publish_visibility": primary_metrics.get("publish_visibility", {}),
-        "batch_hset_coalescing": primary_metrics.get("batch_hset_coalescing", {}),
-        "batch_hget_coalescing": primary_metrics.get("batch_hget_coalescing", {}),
-        "matrixark_append_coalescing": primary_metrics.get("matrixark_append_coalescing", {}),
-        "string_cache": primary_metrics.get("string_cache", {}),
-        "scan_hash_cache": primary_metrics.get("scan_hash_cache", {}),
-    }
-
-
-def _top_rust_proxy_ops(metrics: Json) -> list[Json]:
-    op_metrics = metrics.get("op_metrics", {}) if isinstance(metrics, dict) else {}
+    rust_client_metrics = nested_metrics.get("rust_client", {}) if isinstance(nested_metrics.get("rust_client"), dict) else {}
+    if rust_client_metrics:
+        metrics = rust_client_metrics
+    op_metrics = metrics.get("op_metrics", {})
+    lane_metrics = metrics.get("lanes", metrics.get("lane_metrics", {}))
     top_ops: list[Json] = []
     if isinstance(op_metrics, dict):
         for op, values in op_metrics.items():
@@ -1958,11 +1842,7 @@ def _top_rust_proxy_ops(metrics: Json) -> list[Json]:
                 }
             )
     top_ops.sort(key=lambda item: (float(item.get("latency_ms_total") or 0.0), int(item.get("commands_total") or 0)), reverse=True)
-    return top_ops
 
-
-def _rust_proxy_lanes(metrics: Json) -> Json:
-    lane_metrics = metrics.get("lanes", metrics.get("lane_metrics", {})) if isinstance(metrics, dict) else {}
     lanes: Json = {}
     if isinstance(lane_metrics, dict):
         for lane, values in lane_metrics.items():
@@ -1976,7 +1856,23 @@ def _rust_proxy_lanes(metrics: Json) -> Json:
                 "p95_latency_ms": round(float(values.get("p95_latency_ms") or 0.0), 3),
                 "p99_latency_ms": round(float(values.get("p99_latency_ms") or 0.0), 3),
             }
-    return lanes
+
+    commands_total = int(metrics.get("commands_total") or 0)
+    engine_total = float(metrics.get("rust_engine_ms_total") or 0.0)
+    serialization_total = float(metrics.get("serialization_ms_total") or 0.0)
+    return {
+        "available": bool(top_ops or lanes),
+        "commands_total": commands_total,
+        "qps": round(float(metrics.get("qps") or 0.0), 6),
+        "engine_ms_total": round(engine_total, 3),
+        "serialization_ms_total": round(serialization_total, 3),
+        "proxy_queue_wait_ms_total": round(float(metrics.get("proxy_queue_wait_ms_total") or 0.0), 3),
+        "engine_ms_per_command": round(engine_total / max(1, commands_total), 6),
+        "serialization_ms_per_command": round(serialization_total / max(1, commands_total), 6),
+        "top_ops_by_total_latency": top_ops[:8],
+        "lanes": lanes,
+        "publish_visibility": metrics.get("publish_visibility", {}),
+    }
 
 
 def fallback_flags_from_backend(result: Json) -> Json:
@@ -2222,14 +2118,18 @@ def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
         return MatrixArkTemporalStoreDirectAdapter(library_path=args.cpp_lib, **common)
     if backend == "rust":
         validate_rust_runtime_path(args)
-        # Dedicated Rust proxy clients avoid stdio head-of-line stalls between
-        # write, read, and context-pack work. Visibility is explicitly published
-        # after flush when the adapter uses isolated clients, so correctness no
-        # longer requires pinning all traffic to one process. Operators can
-        # still force the old shared-client topology with
-        # MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS=0.
-        os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS", "1")
-        os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "1")
+        # Correctness comes before latency in scale/parity runs. Keep one shared
+        # write/control proxy process so fresh MatrixArk append state is owned by a
+        # single writer, but allow dedicated read-mostly pack lanes after flush.
+        # The adapter publishes visibility after the direct-write queue drains, so
+        # pack workers can reload the compact index without sitting behind write
+        # traffic on the stdio lane.
+        if os.environ.get("MATRIXARK_RUST_PROXY_ALLOW_ISOLATED_CLIENTS", "").strip().lower() in {"1", "true", "yes"}:
+            os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS", "1")
+            os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "1")
+        else:
+            os.environ["MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS"] = "0"
+            os.environ["MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES"] = "1"
         os.environ.setdefault(
             "MATRIXARK_RUST_PROXY_PACK_LANES",
             str(max(1, int(getattr(args, "retrieve_workers", 1) or 1))),
@@ -2641,14 +2541,19 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
             previous_queue_env[key] = os.environ.get(key)
             os.environ[key] = value
     if backend == "rust":
+        allow_isolated_rust_clients = os.environ.get(
+            "MATRIXARK_RUST_PROXY_ALLOW_ISOLATED_CLIENTS", ""
+        ).strip().lower() in {"1", "true", "yes"}
         rust_proxy_lane_defaults = {
-            "MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS": "1",
+            "MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS": "0",
             "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES": "1",
             "MATRIXARK_RUST_PROXY_PACK_LANES": str(max(1, int(getattr(args, "retrieve_workers", 1) or 1))),
         }
+        if not allow_isolated_rust_clients:
+            rust_proxy_lane_defaults["MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS"] = "0"
         for key, value in rust_proxy_lane_defaults.items():
             previous_queue_env[key] = os.environ.get(key)
-            os.environ.setdefault(key, value)
+            os.environ[key] = value
     adapter = make_adapter(backend, args, prefix)
     if backend in {"cpp", "rust"}:
         pin_scale_adapter_write_policy(adapter, queue_capacity=scale_queue_capacity)
@@ -2671,14 +2576,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
     }
     node_path = ["tenant:tenant_scale", "user:user_scale", f"session:scale-{run_id}", "conversation:scale"]
     try:
-        if args.skip_context_pipeline and backend == "rust":
-            readiness = {
-                "status": "ready",
-                "skipped": True,
-                "reason": "rust_raw_storage_uses_local_cli_without_metaserver_topology",
-            }
-        else:
-            readiness = server.call_tool("matrixark_backend_ready", {"probe": True, "timeout_ms": args.readiness_timeout_ms})
+        readiness = server.call_tool("matrixark_backend_ready", {"probe": True, "timeout_ms": args.readiness_timeout_ms})
         if readiness.get("status") != "ready":
             result = {
                 "backend": backend,
@@ -2826,11 +2724,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
         retrieval_metric_rows: list[Json] = []
         partial_count = 0
         retrieve_warmup_latencies: list[float] = []
-        retrieve_warmup_queries = default_retrieve_warmup_queries(
-            server,
-            int(args.retrieve_workers),
-            int(args.retrieve_warmup_queries),
-        )
+        retrieve_warmup_queries = args.retrieve_workers if int(args.retrieve_warmup_queries) < 0 else int(args.retrieve_warmup_queries)
         for payload in retrieve_payloads[: max(0, retrieve_warmup_queries)]:
             latency, _result, _error = call_with_latency(server, "matrixark_retrieve", payload)
             retrieve_warmup_latencies.append(latency)
@@ -3013,8 +2907,6 @@ def run_backend_isolated(backend: str, args: argparse.Namespace, run_id: str, ar
     ]
     if args.allow_rust_record_log_compat:
         cmd.append("--allow-rust-record-log-compat")
-    if args.allow_rust_cpp_c_api_bridge:
-        cmd.append("--allow-rust-cpp-c-api-bridge")
     if args.allow_rust_debug_cli:
         cmd.append("--allow-rust-debug-cli")
     if args.skip_context_pipeline:
@@ -3887,7 +3779,7 @@ def main() -> int:
     parser.add_argument("--local-topology-start-timeout-sec", type=int, default=120)
     parser.add_argument("--allow-rust-record-log-compat", action="store_true")
     parser.add_argument("--allow-rust-debug-cli", action="store_true")
-    parser.add_argument("--allow-rust-cpp-c-api-bridge", action="store_true", help="allow direct Rust cdylib MatrixArk hot path; also keeps legacy C++ C API bridge diagnostics gated")
+    parser.add_argument("--allow-rust-cpp-c-api-bridge", action="store_true", help="diagnostic only: allow the legacy Rust cdylib MatrixArk hot path to call the shared C++ C API bridge")
     parser.add_argument("--request-timeout-ms", type=int, default=60000)
     parser.add_argument("--io-timeout-ms", type=int, default=60000)
     parser.add_argument("--readiness-timeout-ms", type=int, default=60000)

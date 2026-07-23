@@ -72,7 +72,7 @@ records. Those are internal TemporalStore serving models.
 MatrixArk always runs extraction and canonicalization. The extraction provider
 can be deterministic local logic, OSS models, OpenAI/provider models, or
 agent-provided hints in `metadata.agent_extraction`; MatrixArk validates and
-normalizes all of them into its internal capability.
+normalizes all of them into its internal data model.
 
 For short feedback such as `yes`, `approved`, or `wrong`, confirmation requires
 prior context. The caller should provide `context_pack_id`,

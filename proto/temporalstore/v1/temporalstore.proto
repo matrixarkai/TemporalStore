@@ -237,74 +237,12 @@ message Command {
     SequenceQuery sequence_query = 13;
     IpsAdd ips_add = 14;
     IpsQuery ips_query = 15;
-    ControlStateIncrement control_state_increment = 16;
-    ControlStateQuery control_state_query = 17;
+    RiskIncrement risk_increment = 16;
+    RiskQuery risk_query = 17;
     ContextNodeUpsert context_node_upsert = 18;
     ContextNodeGet context_node_get = 19;
     CommonExpire common_expire = 20;
     CommonExists common_exists = 21;
-    HashDelete hash_delete = 22;
-    HashGetAll hash_get_all = 23;
-    HashLen hash_len = 24;
-    SetRemove set_remove = 25;
-    CommonTtl common_ttl = 26;
-    FeatureReplace feature_replace = 27;
-    FeatureDelete feature_delete = 28;
-    FeatureAggQuery feature_agg_query = 29;
-    SequenceBatchQuery sequence_batch_query = 30;
-    IpsAddWithOptions ips_add_with_options = 31;
-    IpsQueryLast ips_query_last = 32;
-    ControlStateIncrementWithOptions control_state_increment_with_options = 33;
-    ControlStateCount control_state_count = 34;
-    ControlStateChangeAdd control_state_change_add = 35;
-    ControlStateDetail control_state_detail = 36;
-    ControlStateFamilySet control_state_family_set = 37;
-    ControlStateFamilyQuery control_state_family_query = 38;
-    ControlStateFamilySetAndGet control_state_family_set_and_get = 39;
-    ControlStateFolSet control_state_fol_set = 40;
-    ControlStateFolQuery control_state_fol_query = 41;
-    ControlStateManager control_state_manager = 42;
-    ControlStateDebug control_state_debug = 43;
-    ContextWriteEvent context_write_event = 44;
-    ContextQueryEvents context_query_events = 45;
-    ContextNodesGet context_nodes_get = 46;
-    ContextWriteIndexRef context_write_index_ref = 47;
-    ContextQueryIndex context_query_index = 48;
-    ContextWritePackAudit context_write_pack_audit = 49;
-    ContextQueryPackAudit context_query_pack_audit = 50;
-    ContextMarkSummaryDirty context_mark_summary_dirty = 51;
-    ContextQuerySummaryDirty context_query_summary_dirty = 52;
-    ContextUpsertEntity context_upsert_entity = 53;
-    ContextGetEntity context_get_entity = 54;
-    ContextQueryEntities context_query_entities = 55;
-    ContextUpsertChildRef context_upsert_child_ref = 56;
-    ContextQueryChildren context_query_children = 57;
-    ContextUpsertEmbedding context_upsert_embedding = 58;
-    ContextQueryEmbeddings context_query_embeddings = 59;
-    ContextTraverseTree context_traverse_tree = 60;
-    ContextUpsertSummary context_upsert_summary = 61;
-    ContextQuerySummaries context_query_summaries = 62;
-    ContextWriteCompressionEvent context_write_compression_event = 63;
-    ContextQueryCompressionEvents context_query_compression_events = 64;
-    ContextCompressEvents context_compress_events = 65;
-    ContextQueryNodeContext context_query_node_context = 66;
-    ContextWriteExtractedEvent context_write_extracted_event = 67;
-    ContextQueryIndexIntersection context_query_index_intersection = 68;
-    IpsRemove ips_remove = 69;
-    IpsDelete ips_delete = 70;
-    IpsCount ips_count = 71;
-    CommonDelete common_delete = 72;
-    StringSetConditional string_set_conditional = 73;
-    HashIncrBy hash_incr_by = 74;
-    FeatureAppendWithPolicy feature_append_with_policy = 75;
-    FeatureQueryFiltered feature_query_filtered = 76;
-    IpsBatchQueryLast ips_batch_query_last = 77;
-    IpsQueryWithOptions ips_query_with_options = 78;
-    IpsStat ips_stat = 79;
-    IpsFilter ips_filter = 80;
-    IpsLoad ips_load = 81;
-    IpsSnapshot ips_snapshot = 82;
-    IpsSnapshotReportRequest ips_snapshot_report = 83;
   }
 }
 
@@ -325,30 +263,11 @@ message StringSet {
   uint64 ttl_ms = 3;
 }
 
-enum StringSetCondition {
-  STRING_SET_CONDITION_UNSPECIFIED = 0;
-  STRING_SET_CONDITION_ALWAYS = 1;
-  STRING_SET_CONDITION_IF_EXISTS = 2;
-  STRING_SET_CONDITION_IF_NOT_EXISTS = 3;
-}
-
-message StringSetConditional {
-  string key = 1;
-  bytes value = 2;
-  optional uint64 ttl_ms = 3;
-  StringSetCondition condition = 4;
-  bool return_old = 5;
-}
-
 message StringGet {
   string key = 1;
 }
 
 message StringDelete {
-  string key = 1;
-}
-
-message CommonDelete {
   string key = 1;
 }
 
@@ -361,25 +280,6 @@ message HashSet {
 message HashGet {
   string key = 1;
   string field = 2;
-}
-
-message HashDelete {
-  string key = 1;
-  string field = 2;
-}
-
-message HashIncrBy {
-  string key = 1;
-  string field = 2;
-  int64 increment = 3;
-}
-
-message HashGetAll {
-  string key = 1;
-}
-
-message HashLen {
-  string key = 1;
 }
 
 message HashEntry {
@@ -406,11 +306,6 @@ message SetMembers {
   string key = 1;
 }
 
-message SetRemove {
-  string key = 1;
-  bytes member = 2;
-}
-
 message FeaturePoint {
   uint64 timestamp_ms = 1;
   bytes value = 2;
@@ -421,68 +316,11 @@ message FeatureAppend {
   repeated FeaturePoint points = 2;
 }
 
-enum FeatureWritePolicy {
-  FEATURE_WRITE_POLICY_UNSPECIFIED = 0;
-  FEATURE_WRITE_POLICY_UPSERT = 1;
-  FEATURE_WRITE_POLICY_INSERT_IF_ABSENT = 2;
-  FEATURE_WRITE_POLICY_REPLACE_EXISTING = 3;
-  FEATURE_WRITE_POLICY_BLOCK = 4;
-}
-
-message FeatureAppendWithPolicy {
-  string key = 1;
-  repeated FeaturePoint points = 2;
-  FeatureWritePolicy policy = 3;
-}
-
 message FeatureQuery {
   string key = 1;
   uint64 start_ms = 2;
   uint64 end_ms = 3;
   uint32 limit = 4;
-}
-
-enum FeatureFilterOp {
-  FEATURE_FILTER_OP_UNSPECIFIED = 0;
-  FEATURE_FILTER_OP_EQUAL = 1;
-  FEATURE_FILTER_OP_NOT_EQUAL = 2;
-  FEATURE_FILTER_OP_GREATER_THAN = 3;
-  FEATURE_FILTER_OP_GREATER_OR_EQUAL = 4;
-  FEATURE_FILTER_OP_LESS_THAN = 5;
-  FEATURE_FILTER_OP_LESS_OR_EQUAL = 6;
-}
-
-message FeatureFilter {
-  string field = 1;
-  FeatureFilterOp op = 2;
-  uint64 value = 3;
-}
-
-message FeatureQueryFiltered {
-  string key = 1;
-  uint64 start_ms = 2;
-  uint64 end_ms = 3;
-  uint32 limit = 4;
-  repeated FeatureFilter filters = 5;
-}
-
-message FeatureReplace {
-  string key = 1;
-  uint64 start_ms = 2;
-  uint64 end_ms = 3;
-  repeated FeaturePoint points = 4;
-}
-
-message FeatureDelete {
-  string key = 1;
-}
-
-message FeatureAggQuery {
-  string key = 1;
-  uint64 start_ms = 2;
-  uint64 end_ms = 3;
-  string aggregator = 4;
-  uint32 limit = 5;
 }
 
 message SequenceFeatureRow {
@@ -505,30 +343,10 @@ message SequenceQuery {
   uint32 limit = 4;
 }
 
-message SequenceQuerySpec {
-  string key = 1;
-  uint64 start_ms = 2;
-  uint64 end_ms = 3;
-  uint32 limit = 4;
-}
-
-message SequenceBatchQuery {
-  repeated SequenceQuerySpec queries = 1;
-}
-
 message IpsAdd {
   string key = 1;
   uint64 timestamp_ms = 2;
   bytes payload = 3;
-}
-
-message IpsAddWithOptions {
-  string key = 1;
-  uint64 timestamp_ms = 2;
-  bytes payload = 3;
-  optional uint32 action_type = 4;
-  optional uint64 table_id = 5;
-  string request_id = 6;
 }
 
 message IpsQuery {
@@ -538,175 +356,18 @@ message IpsQuery {
   uint32 limit = 4;
 }
 
-message IpsQueryLast {
-  string key = 1;
-  uint32 limit = 2;
-}
-
-message IpsRemove {
-  string key = 1;
-  uint64 timestamp_ms = 2;
-}
-
-message IpsDelete {
-  string key = 1;
-}
-
-message IpsCount {
-  string key = 1;
-  uint64 start_ms = 2;
-  uint64 end_ms = 3;
-}
-
-message IpsBatchQueryLast {
-  repeated string keys = 1;
-  uint32 limit = 2;
-}
-
-message IpsQueryWithOptions {
-  string key = 1;
-  uint64 start_ms = 2;
-  uint64 end_ms = 3;
-  uint32 limit = 4;
-  optional uint32 action_type = 5;
-  optional uint64 table_id = 6;
-}
-
-message IpsStat {
-  string key = 1;
-  uint64 start_ms = 2;
-  uint64 end_ms = 3;
-}
-
-message IpsFilter {
-  string key = 1;
-  uint64 start_ms = 2;
-  uint64 end_ms = 3;
-  uint32 limit = 4;
-  optional uint32 action_type = 5;
-  optional uint64 table_id = 6;
-}
-
-message IpsLoad {
-  string key = 1;
-  repeated FeaturePoint points = 2;
-}
-
-message IpsSnapshot {
-  string key = 1;
-  uint64 start_ms = 2;
-  uint64 end_ms = 3;
-  uint32 limit = 4;
-}
-
-message IpsSnapshotReportRequest {
-  string key = 1;
-  uint64 start_ms = 2;
-  uint64 end_ms = 3;
-  uint32 limit = 4;
-}
-
-enum ControlStateFamily {
-  CONTROL_STATE_FAMILY_UNSPECIFIED = 0;
-  CONTROL_STATE_FAMILY_H = 1;
-  CONTROL_STATE_FAMILY_CPC = 2;
-  CONTROL_STATE_FAMILY_FOL = 3;
-}
-
-enum ControlStateFolType {
-  CONTROL_STATE_FOL_TYPE_UNSPECIFIED = 0;
-  CONTROL_STATE_FOL_TYPE_FIRST = 1;
-  CONTROL_STATE_FOL_TYPE_LAST = 2;
-}
-
-message ControlStateIncrement {
+message RiskIncrement {
   string key = 1;
   string family = 2;
   int64 delta = 3;
   uint64 timestamp_ms = 4;
 }
 
-message ControlStateIncrementWithOptions {
-  string key = 1;
-  int64 delta = 2;
-  uint64 timestamp_ms = 3;
-  optional uint64 precision_ms = 4;
-  optional uint64 ttl_ms = 5;
-}
-
-message ControlStateCount {
-  string key = 1;
-  uint64 start_ms = 2;
-  uint64 end_ms = 3;
-}
-
-message ControlStateChangeAdd {
-  string key = 1;
-  uint64 timestamp_ms = 2;
-  bytes value = 3;
-  optional uint64 precision_ms = 4;
-  optional uint64 ttl_ms = 5;
-}
-
-message ControlStateDetail {
-  string key = 1;
-  uint64 start_ms = 2;
-  uint64 end_ms = 3;
-  uint32 limit = 4;
-}
-
-message ControlStateQuery {
+message RiskQuery {
   string key = 1;
   string family = 2;
   uint64 start_ms = 3;
   uint64 end_ms = 4;
-}
-
-message ControlStateFamilySet {
-  ControlStateFamily family = 1;
-  string key = 2;
-  uint64 timestamp_ms = 3;
-  int64 amount = 4;
-}
-
-message ControlStateFamilyQuery {
-  ControlStateFamily family = 1;
-  string key = 2;
-  uint64 start_ms = 3;
-  uint64 end_ms = 4;
-  string aggregator = 5;
-}
-
-message ControlStateFamilySetAndGet {
-  ControlStateFamily family = 1;
-  string key = 2;
-  uint64 timestamp_ms = 3;
-  int64 amount = 4;
-  uint64 start_ms = 5;
-  uint64 end_ms = 6;
-  string aggregator = 7;
-}
-
-message ControlStateFolSet {
-  string key = 1;
-  bytes value = 2;
-  uint64 occur_time_ms = 3;
-  uint64 ttl_ms = 4;
-  ControlStateFolType fol_type = 5;
-}
-
-message ControlStateFolQuery {
-  string key = 1;
-}
-
-message ControlStateManager {
-  string key = 1;
-}
-
-message ControlStateDebug {
-  string key = 1;
-  uint64 start_ms = 2;
-  uint64 end_ms = 3;
 }
 
 message ContextNode {
@@ -714,38 +375,6 @@ message ContextNode {
   string model = 2;
   bytes payload = 3;
   uint64 updated_at_ms = 4;
-}
-
-message ContextEvent {
-  uint64 event_id_hash = 1;
-  uint64 event_time_ms = 2;
-  uint64 ingestion_time_ms = 3;
-  uint32 event_type = 4;
-  float confidence = 5;
-  float importance = 6;
-  string text = 7;
-}
-
-message ContextWriteEvent {
-  string key = 1;
-  string node_id = 2;
-  ContextEvent event = 3;
-  bool first_write_only = 4;
-  bool cold_storage = 5;
-}
-
-message ContextQueryEvents {
-  string key = 1;
-  string node_id = 2;
-  uint64 start_time_ms = 3;
-  uint64 end_time_ms = 4;
-  uint32 limit = 5;
-  bool current_valid_only = 6;
-  uint64 as_of_ms = 7;
-  repeated uint32 kinds = 8;
-  repeated uint32 statuses = 9;
-  float min_confidence = 10;
-  float min_importance = 11;
 }
 
 message ContextNodeUpsert {
@@ -758,267 +387,11 @@ message ContextNodeGet {
   string node_id = 2;
 }
 
-message ContextNodesGet {
-  string key = 1;
-  repeated string node_ids = 2;
-}
-
-message ContextIndexRef {
-  uint64 primary_node_hash = 1;
-  uint64 primary_event_time_ms = 2;
-  uint64 event_id_hash = 3;
-}
-
-message ContextWriteIndexRef {
-  string key = 1;
-  string index_name = 2;
-  uint64 index_value_hash = 3;
-  uint64 scope_hash = 4;
-  uint64 event_time_ms = 5;
-  ContextIndexRef index_ref = 6;
-}
-
-message ContextQueryIndex {
-  string key = 1;
-  string index_name = 2;
-  uint64 index_value_hash = 3;
-  uint64 scope_hash = 4;
-  uint64 start_time_ms = 5;
-  uint64 end_time_ms = 6;
-  uint32 limit = 7;
-}
-
-message ContextExtractedEventIndexes {
-  uint64 scope_hash = 1;
-  repeated uint64 entity_hashes = 2;
-  uint64 status_hash = 3;
-  uint64 source_hash = 4;
-  uint64 event_time_bucket_ms = 5;
-  repeated uint32 disabled_indexes = 6;
-}
-
-message ContextWriteExtractedEvent {
-  string key = 1;
-  string node_id = 2;
-  ContextEvent event = 3;
-  ContextExtractedEventIndexes indexes = 4;
-  bool first_write_only = 5;
-  bool cold_storage = 6;
-}
-
-message ContextIndexLookup {
-  string index_name = 1;
-  uint64 index_value_hash = 2;
-  uint64 scope_hash = 3;
-  uint64 start_time_ms = 4;
-  uint64 end_time_ms = 5;
-}
-
-message ContextQueryIndexIntersection {
-  string key = 1;
-  repeated ContextIndexLookup predicates = 2;
-  uint32 limit = 3;
-}
-
-message ContextAuditRef {
-  uint64 node_hash = 1;
-  uint64 event_time_ms = 2;
-  string reason = 3;
-}
-
-message ContextPackAudit {
-  string query_id = 1;
-  uint64 session_hash = 2;
-  uint64 request_time_ms = 3;
-  uint64 query_hash = 4;
-  uint32 max_prompt_tokens = 5;
-  uint32 selected_tokens = 6;
-  repeated ContextAuditRef selected_refs = 7;
-  repeated ContextAuditRef blocked_refs = 8;
-}
-
-message ContextWritePackAudit {
-  string key = 1;
-  ContextPackAudit audit = 2;
-}
-
-message ContextQueryPackAudit {
-  string key = 1;
-  uint64 session_hash = 2;
-  uint64 start_time_ms = 3;
-  uint64 end_time_ms = 4;
-  uint32 limit = 5;
-}
-
-message ContextSummaryDirtyMarker {
-  uint64 node_hash = 1;
-  uint64 event_time_ms = 2;
-  uint32 reason = 3;
-  uint32 propagate_depth = 4;
-}
-
-message ContextMarkSummaryDirty {
-  string key = 1;
-  ContextSummaryDirtyMarker marker = 2;
-}
-
-message ContextQuerySummaryDirty {
-  string key = 1;
-  string node_id = 2;
-  uint64 start_time_ms = 3;
-  uint64 end_time_ms = 4;
-  uint32 limit = 5;
-}
-
-message ContextEntity {
-  uint64 entity_hash = 1;
-  uint64 node_hash = 2;
-  uint32 entity_type = 3;
-  string name = 4;
-  string value = 5;
-  uint64 updated_at_ms = 6;
-  uint64 valid_from_ms = 7;
-  float confidence = 8;
-  repeated uint64 source_event_hashes = 9;
-}
-
-message ContextUpsertEntity {
-  string key = 1;
-  ContextEntity entity = 2;
-}
-
-message ContextGetEntity {
-  string key = 1;
-  string node_id = 2;
-  uint64 entity_hash = 3;
-}
-
-message ContextQueryEntities {
-  string key = 1;
-  string node_id = 2;
-  repeated uint64 entity_hashes = 3;
-  uint32 limit = 4;
-}
-
-message ContextChildRef {
-  uint64 parent_hash = 1;
-  uint64 child_hash = 2;
-  uint64 updated_at_ms = 3;
-}
-
-message ContextUpsertChildRef {
-  string key = 1;
-  ContextChildRef child_ref = 2;
-}
-
-message ContextQueryChildren {
-  string key = 1;
-  uint64 parent_hash = 2;
-  uint32 limit = 3;
-}
-
-message ContextEmbedding {
-  uint64 ref_hash = 1;
-  uint32 level = 2;
-  uint64 model_hash = 3;
-  repeated float vector = 4;
-  uint64 updated_at_ms = 5;
-}
-
-message ContextUpsertEmbedding {
-  string key = 1;
-  ContextEmbedding embedding = 2;
-}
-
-message ContextQueryEmbeddings {
-  string key = 1;
-  repeated uint64 ref_hashes = 2;
-  uint32 limit = 3;
-}
-
-message ContextTraverseTree {
-  string key = 1;
-  uint64 start_node_hash = 2;
-  repeated float query_vector = 3;
-  uint32 max_depth = 4;
-  uint32 top_k_per_depth = 5;
-  uint32 max_children_scored_per_parent = 6;
-  uint32 max_candidate_nodes = 7;
-  bool leaf_only = 8;
-}
-
-message ContextSummary {
-  uint64 node_hash = 1;
-  uint32 level = 2;
-  string text = 3;
-  uint64 valid_from_ms = 4;
-}
-
-message ContextUpsertSummary {
-  string key = 1;
-  ContextSummary summary = 2;
-}
-
-message ContextQuerySummaries {
-  string key = 1;
-  uint64 node_hash = 2;
-  uint32 level = 3;
-  uint64 as_of_ms = 4;
-  uint32 limit = 5;
-}
-
-message ContextCompressionEvent {
-  uint64 compression_id_hash = 1;
-  uint64 node_hash = 2;
-  uint64 source_start_ms = 3;
-  uint64 source_end_ms = 4;
-  uint64 compressed_time_ms = 5;
-  string summary = 6;
-}
-
-message ContextWriteCompressionEvent {
-  string key = 1;
-  ContextCompressionEvent event = 2;
-}
-
-message ContextQueryCompressionEvents {
-  string key = 1;
-  repeated uint64 node_hashes = 2;
-  uint64 start_time_ms = 3;
-  uint64 end_time_ms = 4;
-  uint32 limit = 5;
-}
-
-message ContextCompressEvents {
-  string key = 1;
-  uint64 node_hash = 2;
-  uint64 source_start_ms = 3;
-  uint64 source_end_ms = 4;
-  uint64 compressed_time_ms = 5;
-  uint32 max_source_events = 6;
-  float min_confidence = 7;
-  float min_importance = 8;
-}
-
-message ContextQueryNodeContext {
-  string key = 1;
-  uint64 node_hash = 2;
-  uint32 summary_level = 3;
-  uint64 as_of_ms = 4;
-  uint64 cold_start_time_ms = 5;
-  uint64 cold_end_time_ms = 6;
-  uint32 compression_limit = 7;
-}
-
 message CommonExpire {
   string key = 1;
   uint64 ttl_ms = 2;
 }
 
 message CommonExists {
-  string key = 1;
-}
-
-message CommonTtl {
   string key = 1;
 }

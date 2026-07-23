@@ -339,7 +339,7 @@
     },
     {
       "module": "IPS",
-      "test": "control_state/frequency cap sample",
+      "test": "risk/frequency cap sample",
       "status": "passed",
       "write_path": "direct SDK",
       "read_path": "primary",
@@ -356,11 +356,11 @@
       "notes": "plain KV baseline; proxy STRING passed"
     }
   ],
-  "capabilities": [
+  "data_models": [
     {
       "name": "TemporalAggregate",
       "status": "passed",
-      "use_case": "high-cardinality temporal counters, filtered control_state features, frequency caps, and arbitrary window feature serving",
+      "use_case": "high-cardinality temporal counters, filtered risk features, frequency caps, and arbitrary window feature serving",
       "write_shape": "INCR(key, metric, dimensions, timestamp_ms, bucket_width_ms, value, op)",
       "query_shape": "QUERY(key, metric, dimensions, start_ms, end_ms, bucket_width_ms, op)",
       "storage_shape": "bucketed aggregate state grouped inside an entity object",
@@ -390,10 +390,10 @@
     {
       "name": "IPS",
       "status": "passed",
-      "use_case": "control_state/frequency-cap style state keyed by uid, slot, table, and action type",
+      "use_case": "risk/frequency-cap style state keyed by uid, slot, table, and action type",
       "write_shape": "UPSERT/INCR(uid, slot, table, action_type, timestamp/value)",
       "query_shape": "GET/SCAN(uid, slot, table, action_type, window/filter)",
-      "storage_shape": "business-specific indexed state for control_state and serving",
+      "storage_shape": "business-specific indexed state for risk and serving",
       "consistency": "implementation details need deeper test coverage",
       "test_status": "module smoke passed"
     },
@@ -1316,7 +1316,7 @@
       {
         "label": "Model isolation",
         "value": "config driven",
-        "detail": "tenant can pin OSS capability and runtime class"
+        "detail": "tenant can pin OSS model family and runtime class"
       }
     ],
     "runbook": [

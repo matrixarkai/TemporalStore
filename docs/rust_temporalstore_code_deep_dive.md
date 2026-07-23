@@ -21,7 +21,7 @@ The main Rust crate exposes the following public modules from
 
 | Module | Primary role |
 | --- | --- |
-| `types` | Shared command, response, table, shard, feature, sequence, IPS, control_state, context, storage, and readiness types. |
+| `types` | Shared command, response, table, shard, feature, sequence, IPS, risk, context, storage, and readiness types. |
 | `engine` | Core execution engine, shard state, command dispatch, durable writes, storage/cache integration, admin reports. |
 | `lock_store` | Page envelopes, page addresses, packed timestamp/value page records, slot dump/load and recovery helpers. |
 | `cache` | Memory and disk block cache accounting, admission/eviction stats, cache refill behavior. |
@@ -81,15 +81,15 @@ The common request path is:
 6. Reads use index state first, then cache/block-store/shared-store refill paths.
 7. Admin/readiness endpoints expose the current evidence and blockers.
 
-## Command And Capability Core
+## Command And Data Model Core
 
 `types.rs` is the product contract center. It defines:
 
-- `Command`: string, hash, set, feature, sequence, IPS, control_state, Redis/admin,
+- `Command`: string, hash, set, feature, sequence, IPS, risk, Redis/admin,
   context, ingestion, storage, and lifecycle commands.
 - `CommandResponse`: typed results for each command family.
 - Product-specific structs such as feature points, sequence rows, IPS rows,
-  control_state metadata, context nodes/events/segments/entities, storage reports, cache
+  risk metadata, context nodes/events/segments/entities, storage reports, cache
   reports, and Raft/readiness reports.
 
 This is the main place to inspect when comparing Rust behavior with C++ product

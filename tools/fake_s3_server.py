@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import hashlib
 import html
 import os
 import shutil
@@ -17,11 +16,6 @@ def safe_path(root, bucket, key):
     if not path.startswith(root_abs + os.sep):
         raise ValueError("path escaped fake S3 root")
     return path
-
-
-def object_validators(data):
-    digest = hashlib.sha256(data).hexdigest()
-    return f'"sha256:{digest}"', digest[:16]
 
 
 class FakeS3Handler(BaseHTTPRequestHandler):
@@ -47,16 +41,6 @@ class FakeS3Handler(BaseHTTPRequestHandler):
         if body and self.command != "HEAD":
             self.wfile.write(body)
 
-    def send_status_with_validators(self, code, body, validator_data):
-        etag, version_id = object_validators(validator_data)
-        self.send_response(code)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("ETag", etag)
-        self.send_header("x-amz-version-id", version_id)
-        self.end_headers()
-        if body and self.command != "HEAD":
-            self.wfile.write(body)
-
     def do_PUT(self):
         bucket, key, _ = self.parse_path()
         if not bucket or not key:
@@ -75,44 +59,25 @@ class FakeS3Handler(BaseHTTPRequestHandler):
                 self.send_status(404, b"not found")
                 return
             shutil.copyfile(src, dst)
-            with open(src, "rb") as fh:
-                source_data = fh.read()
-            self.send_status_with_validators(200, b"<CopyObjectResult/>", source_data)
-            return
-        if self.headers.get("If-None-Match") == "*" and os.path.exists(dst):
-            self.send_status(412, b"precondition failed")
+            self.send_status(200, b"<CopyObjectResult/>")
             return
         length = int(self.headers.get("Content-Length", "0"))
         data = self.rfile.read(length)
         with open(dst, "wb") as fh:
             fh.write(data)
-        self.send_status_with_validators(200, b"", data)
+        self.send_status(200)
 
     def do_GET(self):
         bucket, key, parsed = self.parse_path()
         query = urllib.parse.parse_qs(parsed.query)
         if query.get("list-type") == ["2"]:
-            max_keys = int(query.get("max-keys", ["1000"])[0])
-            continuation_token = query.get("continuation-token", [None])[0]
-            self.list_objects(
-                bucket,
-                query.get("prefix", [""])[0],
-                max(max_keys, 1),
-                continuation_token,
-            )
+            self.list_objects(bucket, query.get("prefix", [""])[0])
             return
         self.read_object(bucket, key, head_only=False)
 
     def do_HEAD(self):
         bucket, key, _ = self.parse_path()
         self.read_object(bucket, key, head_only=True)
-
-    def do_POST(self):
-        bucket, _, parsed = self.parse_path()
-        if parsed.query == "delete":
-            self.delete_objects(bucket)
-            return
-        self.send_status(405, b"method not allowed")
 
     def do_DELETE(self):
         bucket, key, _ = self.parse_path()
@@ -151,18 +116,13 @@ class FakeS3Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(length))
         if range_header:
             self.send_header("Content-Range", f"bytes {begin}-{end}/{size}")
-        with open(path, "rb") as fh:
-            validator_data = fh.read()
-        etag, version_id = object_validators(validator_data)
-        self.send_header("ETag", etag)
-        self.send_header("x-amz-version-id", version_id)
         self.end_headers()
         if not head_only:
             with open(path, "rb") as fh:
                 fh.seek(begin)
                 self.wfile.write(fh.read(length))
 
-    def list_objects(self, bucket, prefix, max_keys, continuation_token):
+    def list_objects(self, bucket, prefix):
         if not bucket:
             self.send_status(400, b"bucket required")
             return
@@ -175,62 +135,14 @@ class FakeS3Handler(BaseHTTPRequestHandler):
                     rel = os.path.relpath(path, bucket_dir).replace(os.sep, "/")
                     if rel.startswith(prefix):
                         keys.append(rel)
-        keys = sorted(keys)
-        start = 0
-        if continuation_token:
-            for idx, key in enumerate(keys):
-                if key > continuation_token:
-                    start = idx
-                    break
-            else:
-                start = len(keys)
-        page = keys[start:start + max_keys]
-        truncated = start + len(page) < len(keys)
         body = [
             '<?xml version="1.0" encoding="UTF-8"?>',
             "<ListBucketResult>",
-            f"<IsTruncated>{str(truncated).lower()}</IsTruncated>",
         ]
-        for key in page:
+        for key in sorted(keys):
             body.append(f"<Contents><Key>{html.escape(key)}</Key></Contents>")
-        if truncated and page:
-            body.append(
-                f"<NextContinuationToken>{html.escape(page[-1])}</NextContinuationToken>"
-            )
         body.append("</ListBucketResult>")
         payload = "".join(body).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/xml")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
-
-    def delete_objects(self, bucket):
-        if not bucket:
-            self.send_status(400, b"bucket required")
-            return
-        length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(length).decode("utf-8")
-        keys = []
-        remainder = body
-        while "<Key>" in remainder:
-            _, _, after_open = remainder.partition("<Key>")
-            value, _, remainder = after_open.partition("</Key>")
-            if value:
-                keys.append(html.unescape(value))
-        for key in keys:
-            try:
-                os.remove(safe_path(self.server.root, bucket, key))
-            except FileNotFoundError:
-                pass
-        response = [
-            '<?xml version="1.0" encoding="UTF-8"?>',
-            "<DeleteResult>",
-        ]
-        for key in keys:
-            response.append(f"<Deleted><Key>{html.escape(key)}</Key></Deleted>")
-        response.append("</DeleteResult>")
-        payload = "".join(response).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/xml")
         self.send_header("Content-Length", str(len(payload)))

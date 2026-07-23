@@ -6,84 +6,11 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 use crate::control::{PartitionInfoStats, ShardCanonicalStorageStats};
 use crate::partition_id::{validate_partition_set_count, PartitionId, MAX_TABLE_ID};
 use crate::types::{ShardId, Status};
-use matrixcache::CacheStats;
-
-fn endpoint_string_from_json<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    endpoint_string_value(&value).map_err(serde::de::Error::custom)
-}
-
-fn endpoint_string_value(value: &serde_json::Value) -> Result<String, String> {
-    match value {
-        serde_json::Value::String(value) => Ok(value.clone()),
-        serde_json::Value::Object(map) => {
-            for key in ["server_addr", "proxy_addr", "endpoint", "addr", "address"] {
-                if let Some(value) = map.get(key).and_then(|value| value.as_str()) {
-                    if !value.is_empty() {
-                        return Ok(value.to_string());
-                    }
-                }
-            }
-            let host = map
-                .get("ip4")
-                .or_else(|| map.get("ip6"))
-                .or_else(|| map.get("host"))
-                .or_else(|| map.get("hostname"))
-                .and_then(|value| value.as_str())
-                .unwrap_or_default();
-            let port = map
-                .get("port")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0);
-            if host.is_empty() || port == 0 {
-                return Err(
-                    "endpoint must contain server_addr/proxy_addr or ip4/ip6/host plus port"
-                        .to_string(),
-                );
-            }
-            Ok(format!("{}:{}", host, port))
-        }
-        serde_json::Value::Null => Ok(String::new()),
-        _ => Err("endpoint must be a string or object".to_string()),
-    }
-}
-
-fn location_string_from_json<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    location_string_value(&value).map_err(serde::de::Error::custom)
-}
-
-fn location_string_value(value: &serde_json::Value) -> Result<String, String> {
-    match value {
-        serde_json::Value::String(value) => Ok(value.clone()),
-        serde_json::Value::Object(map) => {
-            if let Some(tag) = map.get("tag").and_then(|value| value.as_str()) {
-                if !tag.is_empty() {
-                    return Ok(tag.to_string());
-                }
-            }
-            let parts: Vec<&str> = ["vregion", "vdc", "vau"]
-                .iter()
-                .filter_map(|key| map.get(*key).and_then(|value| value.as_str()))
-                .filter(|value| !value.is_empty())
-                .collect();
-            Ok(parts.join("/"))
-        }
-        serde_json::Value::Null => Ok(String::new()),
-        _ => Err("location must be a string or object".to_string()),
-    }
-}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -156,27 +83,10 @@ pub struct AckResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegisterServerRequest {
-    #[serde(alias = "endpoint", deserialize_with = "endpoint_string_from_json")]
     pub server_addr: String,
     #[serde(default)]
     pub node_id: u64,
-    #[serde(default, deserialize_with = "location_string_from_json")]
-    pub location: String,
     #[serde(default)]
-    pub binary_version: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct UpdateServerRequest {
-    #[serde(alias = "endpoint", deserialize_with = "endpoint_string_from_json")]
-    pub server_addr: String,
-    #[serde(default)]
-    pub node_id: u64,
-    #[serde(
-        default,
-        alias = "location_tag_name",
-        deserialize_with = "location_string_from_json"
-    )]
     pub location: String,
     #[serde(default)]
     pub binary_version: String,
@@ -184,7 +94,6 @@ pub struct UpdateServerRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServerHeartbeatRequest {
-    #[serde(alias = "endpoint", deserialize_with = "endpoint_string_from_json")]
     pub server_addr: String,
     #[serde(default)]
     pub boot_time_ms: u64,
@@ -266,8 +175,6 @@ pub struct ServerShardServingState {
     pub storage_bytes: u64,
     pub cache_memory_bytes: u64,
     #[serde(default)]
-    pub cache: CacheStats,
-    #[serde(default)]
     pub storage: ShardCanonicalStorageStats,
     #[serde(alias = "page_store_bytes_written")]
     pub block_store_bytes_written: u64,
@@ -339,11 +246,10 @@ pub struct SafeModeReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegisterProxyRequest {
-    #[serde(alias = "endpoint", deserialize_with = "endpoint_string_from_json")]
     pub proxy_addr: String,
-    #[serde(default, alias = "namespace_name", alias = "namespace_")]
+    #[serde(default)]
     pub namespace: String,
-    #[serde(default, deserialize_with = "location_string_from_json")]
+    #[serde(default)]
     pub location: String,
     #[serde(default)]
     pub config_version: u64,
@@ -353,9 +259,8 @@ pub struct RegisterProxyRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyHeartbeatRequest {
-    #[serde(alias = "endpoint", deserialize_with = "endpoint_string_from_json")]
     pub proxy_addr: String,
-    #[serde(default, alias = "namespace_name", alias = "namespace_")]
+    #[serde(default)]
     pub namespace: String,
     #[serde(default)]
     pub config_version: u64,
@@ -391,67 +296,7 @@ pub struct ProxyMetaInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyGroupMetaInfo {
-    #[serde(rename = "namespace_name", alias = "namespace")]
-    pub namespace: String,
-    #[serde(default)]
-    pub placement: serde_json::Value,
-    #[serde(default)]
-    pub config: serde_json::Value,
-    #[serde(default)]
-    pub proxies: Vec<ProxyMetaInfo>,
-    #[serde(default)]
-    pub instance_num: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PutProxyGroupRequest {
-    pub info: ProxyGroupMetaInfo,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DropProxyGroupRequest {
-    #[serde(rename = "namespace_name", alias = "namespace")]
-    pub namespace: String,
-    #[serde(default)]
-    pub placement: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ListProxyGroupRequest {
-    #[serde(default)]
-    #[serde(rename = "namespace_name", alias = "namespace")]
-    pub namespace: String,
-    #[serde(default)]
-    pub placement: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ListProxyGroupResponse {
-    pub status: Status,
-    pub groups: Vec<ProxyGroupMetaInfo>,
-}
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ManagementInfo {
-    #[serde(default)]
-    pub readonly: bool,
-    #[serde(default)]
-    pub reserved_namespace_name_list: Vec<String>,
-    #[serde(default)]
-    pub reserved_table_name_list: Vec<String>,
-    #[serde(default)]
-    pub reserved_consul_name_list: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct UpdateManageInfoRequest {
-    pub info: ManagementInfo,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AddNamespaceRequest {
-    #[serde(alias = "name", alias = "namespace_name")]
     pub namespace: String,
 }
 
@@ -462,7 +307,7 @@ pub struct NamespaceMetaInfo {
     pub state: MetaEntityState,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AddTableRequest {
     pub namespace: String,
     pub table_name: String,
@@ -478,73 +323,17 @@ pub struct AddTableRequest {
     pub serving_options: TableServingOptions,
 }
 
-impl<'de> Deserialize<'de> for AddTableRequest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct RawAddTableRequest {
-            #[serde(default, alias = "namespace_name", alias = "namespace_")]
-            namespace: String,
-            #[serde(default, alias = "name")]
-            table_name: String,
-            #[serde(default)]
-            first_shard_id: Option<ShardId>,
-            #[serde(default, alias = "partition_set_num")]
-            shard_count: Option<u64>,
-            #[serde(default = "default_replica_count")]
-            replica_count: u64,
-            #[serde(default)]
-            use_cpp_partition_ids: Option<bool>,
-            #[serde(default)]
-            partition_version: u32,
-            #[serde(default)]
-            serving_options: TableServingOptions,
-            #[serde(default)]
-            partition_units: Vec<serde_json::Value>,
-        }
-
-        let raw = RawAddTableRequest::deserialize(deserializer)?;
-        let cpp_shape = raw.use_cpp_partition_ids.unwrap_or(false)
-            || !raw.partition_units.is_empty()
-            || raw.first_shard_id.is_none();
-        Ok(Self {
-            namespace: raw.namespace,
-            table_name: raw.table_name,
-            first_shard_id: raw.first_shard_id.unwrap_or_default(),
-            shard_count: raw.shard_count.unwrap_or(0),
-            replica_count: raw.replica_count,
-            use_cpp_partition_ids: raw.use_cpp_partition_ids.unwrap_or(cpp_shape),
-            partition_version: raw.partition_version,
-            serving_options: raw.serving_options,
-        })
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeleteTableRequest {
-    #[serde(alias = "namespace_name", alias = "namespace_")]
     pub namespace: String,
-    #[serde(alias = "name")]
     pub table_name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PartitionStateChangeRequest {
-    #[serde(rename = "partition_id", alias = "shard_id")]
-    pub partition_id: ShardId,
-    #[serde(default)]
-    pub force: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpdateTableRequest {
-    #[serde(alias = "namespace_name", alias = "namespace_")]
     pub namespace: String,
-    #[serde(alias = "name")]
     pub table_name: String,
-    #[serde(default, alias = "partition_set_num")]
+    #[serde(default)]
     pub shard_count: Option<u64>,
     #[serde(default)]
     pub replica_count: Option<u64>,
@@ -625,11 +414,9 @@ pub struct TableServingOptionsPatch {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GetTableTopologyRequest {
-    #[serde(alias = "namespace_name", alias = "namespace_")]
     pub namespace: String,
-    #[serde(alias = "name")]
     pub table_name: String,
-    #[serde(default, alias = "old_topo_version")]
+    #[serde(default)]
     pub old_topology_version: u64,
 }
 
@@ -654,8 +441,6 @@ pub struct TableMetaInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TablePartition {
     pub shard_id: ShardId,
-    #[serde(default)]
-    pub state: MetaEntityState,
     pub start_slot: u64,
     pub end_slot: u64,
     pub primary: Option<String>,
@@ -683,7 +468,7 @@ pub struct TableTopologyResponse {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TopologyVersionRequest {
-    #[serde(default, alias = "old_topo_version")]
+    #[serde(default)]
     pub old_topology_version: u64,
 }
 
@@ -748,11 +533,6 @@ pub struct ListProxiesResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StateChangeRequest {
-    #[serde(
-        alias = "server_addr",
-        alias = "proxy_addr",
-        deserialize_with = "endpoint_string_from_json"
-    )]
     pub endpoint: String,
     #[serde(default)]
     pub freeze_cooldown_ms: u64,
@@ -812,10 +592,6 @@ pub struct MetaInfo {
     pub stats: MetaStats,
     pub boot_time_ms: u64,
     pub durable_mutation_log: bool,
-    #[serde(default)]
-    pub management_info: ManagementInfo,
-    #[serde(default)]
-    pub manage_info: ManagementInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -837,21 +613,13 @@ pub enum MetaMutation {
     RegisterShard(RegisterShardRequest),
     PublishShardSnapshot(PublishShardSnapshotRequest),
     RegisterServer(RegisterServerRequest),
-    UpdateServer(UpdateServerRequest),
     RegisterProxy(RegisterProxyRequest),
-    PutProxyGroup(PutProxyGroupRequest),
-    DropProxyGroup(DropProxyGroupRequest),
-    UpdateManageInfo(UpdateManageInfoRequest),
-    MuteMetaChange,
-    ResumeMetaChange,
     AddNamespace(AddNamespaceRequest),
     AddTable(AddTableRequest),
     DeleteTable(DeleteTableRequest),
     UpdateTable(UpdateTableRequest),
     FreezeTable(DeleteTableRequest),
     UnfreezeTable(DeleteTableRequest),
-    FreezePartition(PartitionStateChangeRequest),
-    DropPartition(PartitionStateChangeRequest),
     FinishLoad(LoadFinishRequest),
     FreezeServer(StateChangeRequest),
     DropServer(StateChangeRequest),
@@ -938,10 +706,7 @@ pub(crate) struct MetaState {
     shards: HashMap<ShardId, ShardLocation>,
     servers: BTreeMap<String, ServerMetaInfo>,
     proxies: BTreeMap<String, ProxyMetaInfo>,
-    proxy_groups: BTreeMap<String, ProxyGroupMetaInfo>,
-    management_info: ManagementInfo,
     namespaces: BTreeMap<String, MetaEntityState>,
-    partition_states: BTreeMap<ShardId, MetaEntityState>,
     tables: BTreeMap<String, TableRecord>,
     counters: MetaCounters,
     next_table_id: u64,
@@ -957,13 +722,7 @@ pub struct MetaSnapshot {
     pub shards: HashMap<ShardId, ShardLocation>,
     pub servers: BTreeMap<String, ServerMetaInfo>,
     pub proxies: BTreeMap<String, ProxyMetaInfo>,
-    #[serde(default)]
-    pub proxy_groups: BTreeMap<String, ProxyGroupMetaInfo>,
-    #[serde(default)]
-    pub management_info: ManagementInfo,
     pub namespaces: BTreeMap<String, MetaEntityState>,
-    #[serde(default)]
-    pub partition_states: BTreeMap<ShardId, MetaEntityState>,
     pub tables: Vec<TableMetaInfo>,
     pub stats: MetaStats,
     pub next_table_id: u64,
@@ -1057,10 +816,7 @@ impl SingleNodeMeta {
             shards: snapshot.shards,
             servers: snapshot.servers,
             proxies: snapshot.proxies,
-            proxy_groups: snapshot.proxy_groups,
-            management_info: snapshot.management_info,
             namespaces: snapshot.namespaces,
-            partition_states: snapshot.partition_states,
             tables,
             counters: counters_from_stats(&snapshot.stats),
             next_table_id,
@@ -1090,10 +846,7 @@ impl MetaSnapshot {
             shards: state.shards.clone(),
             servers: state.servers.clone(),
             proxies: state.proxies.clone(),
-            proxy_groups: state.proxy_groups.clone(),
-            management_info: state.management_info.clone(),
             namespaces: state.namespaces.clone(),
-            partition_states: state.partition_states.clone(),
             tables: state
                 .tables
                 .values()
@@ -1266,43 +1019,6 @@ impl SingleNodeMeta {
             "register_server",
             format!("server:{server_addr}"),
             "state=normal",
-        );
-        AckResponse {
-            status: Status::ok(),
-        }
-    }
-
-    pub fn update_server(&self, request: UpdateServerRequest) -> AckResponse {
-        self.record_mutation(MetaMutation::UpdateServer(request.clone()));
-        self.apply_update_server(request)
-    }
-
-    fn apply_update_server(&self, request: UpdateServerRequest) -> AckResponse {
-        let mut state = self.inner.write().expect("meta lock poisoned");
-        let Some(server) = state.servers.get_mut(&request.server_addr) else {
-            return AckResponse {
-                status: Status::error("not_found", "server not found"),
-            };
-        };
-        if server.state != MetaEntityState::Normal {
-            return AckResponse {
-                status: Status::error("failed_precondition", "server state is not normal"),
-            };
-        }
-        if request.node_id > 0 {
-            server.node_id = request.node_id;
-        }
-        if !request.location.is_empty() {
-            server.location = request.location;
-        }
-        if !request.binary_version.is_empty() {
-            server.binary_version = request.binary_version;
-        }
-        record_topology_event(
-            &mut state,
-            "update_server",
-            format!("server:{}", request.server_addr),
-            "metadata_updated",
         );
         AckResponse {
             status: Status::ok(),
@@ -1591,16 +1307,6 @@ impl SingleNodeMeta {
         self.apply_set_table_state(request, MetaEntityState::Normal)
     }
 
-    pub fn freeze_partition(&self, request: PartitionStateChangeRequest) -> AckResponse {
-        self.record_mutation(MetaMutation::FreezePartition(request.clone()));
-        self.apply_set_partition_state(request, MetaEntityState::Frozen)
-    }
-
-    pub fn drop_partition(&self, request: PartitionStateChangeRequest) -> AckResponse {
-        self.record_mutation(MetaMutation::DropPartition(request.clone()));
-        self.apply_set_partition_state(request, MetaEntityState::Dropped)
-    }
-
     pub fn update_table(&self, request: UpdateTableRequest) -> AckResponse {
         self.record_mutation(MetaMutation::UpdateTable(request.clone()));
         self.apply_update_table(request)
@@ -1832,157 +1538,6 @@ impl SingleNodeMeta {
         }
     }
 
-    pub fn put_proxy_group(&self, request: PutProxyGroupRequest) -> AckResponse {
-        self.record_mutation(MetaMutation::PutProxyGroup(request.clone()));
-        self.apply_put_proxy_group(request)
-    }
-
-    fn apply_put_proxy_group(&self, request: PutProxyGroupRequest) -> AckResponse {
-        if request.info.namespace.is_empty() {
-            return AckResponse {
-                status: Status::error("bad_request", "namespace is required"),
-            };
-        }
-        let mut state = self.inner.write().expect("meta lock poisoned");
-        match state.namespaces.get(&request.info.namespace) {
-            Some(MetaEntityState::Normal) => {}
-            Some(MetaEntityState::Frozen) => {
-                return AckResponse {
-                    status: Status::error("resource_frozen", "namespace is frozen"),
-                };
-            }
-            Some(MetaEntityState::Dropped) => {
-                return AckResponse {
-                    status: Status::error("namespace_not_found", "namespace is dropped"),
-                };
-            }
-            None => {
-                return AckResponse {
-                    status: Status::error("namespace_not_found", "namespace not found"),
-                };
-            }
-        }
-        let key = proxy_group_key(&request.info.namespace, &request.info.placement);
-        state.proxy_groups.insert(key, request.info.clone());
-        record_topology_event(
-            &mut state,
-            "proxy_group_put",
-            format!("namespace:{}", request.info.namespace),
-            "proxy_group_updated",
-        );
-        AckResponse {
-            status: Status::ok(),
-        }
-    }
-
-    pub fn drop_proxy_group(&self, request: DropProxyGroupRequest) -> AckResponse {
-        self.record_mutation(MetaMutation::DropProxyGroup(request.clone()));
-        self.apply_drop_proxy_group(request)
-    }
-
-    fn apply_drop_proxy_group(&self, request: DropProxyGroupRequest) -> AckResponse {
-        if request.namespace.is_empty() {
-            return AckResponse {
-                status: Status::error("bad_request", "namespace is required"),
-            };
-        }
-        let mut state = self.inner.write().expect("meta lock poisoned");
-        let key = proxy_group_key(&request.namespace, &request.placement);
-        if state.proxy_groups.remove(&key).is_none() {
-            return AckResponse {
-                status: Status::error("not_found", "proxy group not found"),
-            };
-        }
-        record_topology_event(
-            &mut state,
-            "proxy_group_drop",
-            format!("namespace:{}", request.namespace),
-            "proxy_group_dropped",
-        );
-        AckResponse {
-            status: Status::ok(),
-        }
-    }
-
-    pub fn list_proxy_groups(&self, request: ListProxyGroupRequest) -> ListProxyGroupResponse {
-        let state = self.inner.read().expect("meta lock poisoned");
-        if !request.namespace.is_empty() {
-            match state.namespaces.get(&request.namespace) {
-                Some(MetaEntityState::Normal) | Some(MetaEntityState::Frozen) => {}
-                Some(MetaEntityState::Dropped) | None => {
-                    return ListProxyGroupResponse {
-                        status: Status::error("namespace_not_found", "namespace not found"),
-                        groups: Vec::new(),
-                    };
-                }
-            }
-        }
-        let groups = state
-            .proxy_groups
-            .values()
-            .filter(|group| request.namespace.is_empty() || group.namespace == request.namespace)
-            .filter(|group| {
-                request
-                    .placement
-                    .as_ref()
-                    .map(|placement| group.placement == *placement)
-                    .unwrap_or(true)
-            })
-            .cloned()
-            .collect();
-        ListProxyGroupResponse {
-            status: Status::ok(),
-            groups,
-        }
-    }
-
-    pub fn update_manage_info(&self, request: UpdateManageInfoRequest) -> AckResponse {
-        self.record_mutation(MetaMutation::UpdateManageInfo(request.clone()));
-        self.apply_update_manage_info(request)
-    }
-
-    fn apply_update_manage_info(&self, request: UpdateManageInfoRequest) -> AckResponse {
-        let mut state = self.inner.write().expect("meta lock poisoned");
-        state.management_info = request.info;
-        record_topology_event(
-            &mut state,
-            "manage_info_update",
-            "management".to_string(),
-            "management_info_updated",
-        );
-        AckResponse {
-            status: Status::ok(),
-        }
-    }
-
-    pub fn mute_meta_change(&self) -> AckResponse {
-        self.record_mutation(MetaMutation::MuteMetaChange);
-        self.apply_set_meta_change_readonly(true)
-    }
-
-    pub fn resume_meta_change(&self) -> AckResponse {
-        self.record_mutation(MetaMutation::ResumeMetaChange);
-        self.apply_set_meta_change_readonly(false)
-    }
-
-    fn apply_set_meta_change_readonly(&self, readonly: bool) -> AckResponse {
-        let mut state = self.inner.write().expect("meta lock poisoned");
-        state.management_info.readonly = readonly;
-        record_topology_event(
-            &mut state,
-            if readonly {
-                "meta_change_muted"
-            } else {
-                "meta_change_resumed"
-            },
-            "management".to_string(),
-            format!("readonly={readonly}"),
-        );
-        AckResponse {
-            status: Status::ok(),
-        }
-    }
-
     pub fn list_servers(&self) -> ListServersResponse {
         let state = self.inner.read().expect("meta lock poisoned");
         ListServersResponse {
@@ -2140,38 +1695,6 @@ impl SingleNodeMeta {
 
     pub fn drop_proxy(&self, request: StateChangeRequest) -> AckResponse {
         self.set_proxy_state(request, MetaEntityState::Dropped)
-    }
-
-    pub fn server_notify_stop(&self, request: StateChangeRequest) -> AckResponse {
-        let state = self.inner.read().expect("meta lock poisoned");
-        let Some(server) = state.servers.get(&request.endpoint) else {
-            return AckResponse {
-                status: Status::error("not_found", "server not found"),
-            };
-        };
-        if server.state != MetaEntityState::Normal {
-            return AckResponse {
-                status: Status::error("failed_precondition", "state not normal"),
-            };
-        }
-        drop(state);
-        self.drop_server(request)
-    }
-
-    pub fn proxy_notify_stop(&self, request: StateChangeRequest) -> AckResponse {
-        let state = self.inner.read().expect("meta lock poisoned");
-        let Some(proxy) = state.proxies.get(&request.endpoint) else {
-            return AckResponse {
-                status: Status::error("not_found", "proxy not found"),
-            };
-        };
-        if proxy.state != MetaEntityState::Normal {
-            return AckResponse {
-                status: Status::error("failed_precondition", "state not normal"),
-            };
-        }
-        drop(state);
-        self.drop_proxy(request)
     }
 
     pub fn finish_load(&self, request: LoadFinishRequest) -> AckResponse {
@@ -2366,15 +1889,11 @@ impl SingleNodeMeta {
     }
 
     pub fn info(&self) -> MetaInfo {
-        let state = self.inner.read().expect("meta lock poisoned");
-        let management_info = state.management_info.clone();
         MetaInfo {
             status: Status::ok(),
-            stats: stats_from_state(&state),
+            stats: self.stats(),
             boot_time_ms: self.boot_time_ms,
             durable_mutation_log: self.mutation_log.is_some(),
-            management_info: management_info.clone(),
-            manage_info: management_info,
         }
     }
 
@@ -2608,72 +2127,6 @@ impl SingleNodeMeta {
         }
     }
 
-    fn apply_set_partition_state(
-        &self,
-        request: PartitionStateChangeRequest,
-        next: MetaEntityState,
-    ) -> AckResponse {
-        if request.partition_id == 0 {
-            return AckResponse {
-                status: Status::error("bad_request", "partition_id is required"),
-            };
-        }
-        let mut state = self.inner.write().expect("meta lock poisoned");
-        let Some(table) =
-            table_for_shard(&state, request.partition_id).map(|table| table.info.clone())
-        else {
-            return AckResponse {
-                status: Status::error("partition_not_found", "partition not found"),
-            };
-        };
-        if table.state == MetaEntityState::Dropped {
-            return AckResponse {
-                status: Status::error("partition_not_found", "table is dropped"),
-            };
-        }
-        let existing = state
-            .partition_states
-            .get(&request.partition_id)
-            .copied()
-            .unwrap_or(MetaEntityState::Normal);
-        match next {
-            MetaEntityState::Frozen => {
-                if existing == MetaEntityState::Dropped {
-                    return AckResponse {
-                        status: Status::error("partition_not_found", "partition is dropped"),
-                    };
-                }
-                if existing == MetaEntityState::Frozen {
-                    return AckResponse {
-                        status: Status::error("not_modified", "partition is already frozen"),
-                    };
-                }
-            }
-            MetaEntityState::Dropped => {
-                if existing != MetaEntityState::Frozen {
-                    return AckResponse {
-                        status: Status::error("failed_precondition", "partition is not frozen"),
-                    };
-                }
-            }
-            MetaEntityState::Normal => {}
-        }
-        state.partition_states.insert(request.partition_id, next);
-        let topology_version = record_topology_event(
-            &mut state,
-            "partition_state",
-            format!("partition:{}", request.partition_id),
-            format!("state={}", next.as_str()),
-        );
-        let key = table_key(&table.namespace, &table.table_name);
-        if let Some(record) = state.tables.get_mut(&key) {
-            record.info.topology_version = topology_version;
-        }
-        AckResponse {
-            status: Status::ok(),
-        }
-    }
-
     fn record_mutation(&self, mutation: MetaMutation) {
         if let Some(log) = &self.mutation_log {
             log.append(&mutation)
@@ -2688,15 +2141,7 @@ impl SingleNodeMeta {
                 self.apply_publish_shard_snapshot(request).status
             }
             MetaMutation::RegisterServer(request) => self.apply_register_server(request).status,
-            MetaMutation::UpdateServer(request) => self.apply_update_server(request).status,
             MetaMutation::RegisterProxy(request) => self.apply_register_proxy(request).status,
-            MetaMutation::PutProxyGroup(request) => self.apply_put_proxy_group(request).status,
-            MetaMutation::DropProxyGroup(request) => self.apply_drop_proxy_group(request).status,
-            MetaMutation::UpdateManageInfo(request) => {
-                self.apply_update_manage_info(request).status
-            }
-            MetaMutation::MuteMetaChange => self.apply_set_meta_change_readonly(true).status,
-            MetaMutation::ResumeMetaChange => self.apply_set_meta_change_readonly(false).status,
             MetaMutation::AddNamespace(request) => self.apply_add_namespace(request).status,
             MetaMutation::AddTable(request) => self.apply_add_table(request).status,
             MetaMutation::DeleteTable(request) => self.apply_delete_table(request).status,
@@ -2707,14 +2152,6 @@ impl SingleNodeMeta {
             }
             MetaMutation::UnfreezeTable(request) => {
                 self.apply_set_table_state(request, MetaEntityState::Normal)
-                    .status
-            }
-            MetaMutation::FreezePartition(request) => {
-                self.apply_set_partition_state(request, MetaEntityState::Frozen)
-                    .status
-            }
-            MetaMutation::DropPartition(request) => {
-                self.apply_set_partition_state(request, MetaEntityState::Dropped)
                     .status
             }
             MetaMutation::FinishLoad(request) => self.apply_finish_load(request).status,
@@ -2824,14 +2261,6 @@ fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartit
     let mut partitions = Vec::new();
     for offset in 0..table.shard_count {
         let shard_id = table_shard_id(table, offset).unwrap_or(table.first_shard_id + offset);
-        let partition_state = state
-            .partition_states
-            .get(&shard_id)
-            .copied()
-            .unwrap_or(MetaEntityState::Normal);
-        if partition_state == MetaEntityState::Dropped {
-            continue;
-        }
         let start_slot = slot_count * offset / table.shard_count;
         let end_slot = (slot_count * (offset + 1) / table.shard_count).saturating_sub(1);
         let mut replicas = Vec::new();
@@ -2898,7 +2327,6 @@ fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartit
             .collect();
         partitions.push(TablePartition {
             shard_id,
-            state: partition_state,
             start_slot,
             end_slot,
             primary,
@@ -3155,11 +2583,6 @@ fn counters_from_stats(stats: &MetaStats) -> MetaCounters {
 
 fn table_key(namespace: &str, table_name: &str) -> String {
     format!("{namespace}/{table_name}")
-}
-
-fn proxy_group_key(namespace: &str, placement: &serde_json::Value) -> String {
-    let placement = serde_json::to_string(placement).unwrap_or_else(|_| "null".to_string());
-    format!("{namespace}/{placement}")
 }
 
 fn default_replica_count() -> u64 {
@@ -4861,36 +4284,6 @@ mod tests {
     }
 
     #[test]
-    fn cxx_endpoint_and_location_shapes_deserialize_for_meta_requests() {
-        let server: RegisterServerRequest = serde_json::from_value(serde_json::json!({
-            "endpoint": {"ip4": "10.0.0.7", "port": 9081},
-            "location": {"vregion": "r1", "vdc": "d1", "vau": "a1"},
-            "node_id": 7
-        }))
-        .unwrap();
-        assert_eq!(server.server_addr, "10.0.0.7:9081");
-        assert_eq!(server.location, "r1/d1/a1");
-
-        let proxy: RegisterProxyRequest = serde_json::from_value(serde_json::json!({
-            "endpoint": {"ip6": "fd00::1", "port": 9181},
-            "namespace_name": "ns",
-            "location": {"tag": "zone-a"}
-        }))
-        .unwrap();
-        assert_eq!(proxy.proxy_addr, "fd00::1:9181");
-        assert_eq!(proxy.namespace, "ns");
-        assert_eq!(proxy.location, "zone-a");
-
-        let state_change: StateChangeRequest = serde_json::from_value(serde_json::json!({
-            "endpoint": {"ip4": "10.0.0.8", "port": 9082},
-            "freeze_cooldown_ms": 50
-        }))
-        .unwrap();
-        assert_eq!(state_change.endpoint, "10.0.0.8:9082");
-        assert_eq!(state_change.freeze_cooldown_ms, 50);
-    }
-
-    #[test]
     fn metaserver_records_latest_shard_snapshot_and_rejects_stale_ref() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("snapshot-meta.jsonl");
@@ -5036,46 +4429,6 @@ mod tests {
             recovered.stats().topology_version,
             snapshot.topology_version
         );
-    }
-
-    #[test]
-    fn metaserver_management_info_replays_and_snapshots() {
-        let dir = tempfile::tempdir().unwrap();
-        let log_path = dir.path().join("meta-mutations.jsonl");
-        let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
-
-        assert!(
-            meta.update_manage_info(UpdateManageInfoRequest {
-                info: ManagementInfo {
-                    readonly: false,
-                    reserved_namespace_name_list: vec!["system".to_string()],
-                    reserved_table_name_list: vec!["meta".to_string()],
-                    reserved_consul_name_list: vec!["consul-a".to_string()],
-                },
-            })
-            .status
-            .ok
-        );
-        assert!(meta.mute_meta_change().status.ok);
-        assert!(meta.info().manage_info.readonly);
-        let snapshot = meta.export_snapshot();
-        assert_eq!(
-            snapshot.management_info.reserved_namespace_name_list,
-            vec!["system".to_string()]
-        );
-
-        let replayed = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
-        assert!(replayed.info().manage_info.readonly);
-        assert_eq!(
-            replayed.info().manage_info.reserved_table_name_list,
-            vec!["meta".to_string()]
-        );
-        assert!(replayed.resume_meta_change().status.ok);
-        assert!(!replayed.info().manage_info.readonly);
-
-        let restored = SingleNodeMeta::default();
-        assert!(restored.install_snapshot(snapshot).status.ok);
-        assert!(restored.info().manage_info.readonly);
     }
 
     #[test]

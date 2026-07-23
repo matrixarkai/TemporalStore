@@ -2,7 +2,7 @@
 
 Goal: make Rust storage production-ready and scalable enough for the current Rust-native target
 while matching the important C++ TemporalStore storage lifecycle behavior. legacy C++ wire, S3, and
-MatrixObjectStore integration remain out of scope for this plan.
+ByteStore integration remain out of scope for this plan.
 
 ## Current Production Posture Gate
 
@@ -138,7 +138,7 @@ Cycle 5 adds the migration-only C++ storage corpus and local production harness 
 current Rust-native deployment target:
 
 - `compat/storage_migration_corpus.json` defines C++-exported logical storage artifacts for common,
-  string, hash, set, Feature, Sequence, IPS, ControlState, Redis-compatible, and Context model coverage.
+  string, hash, set, Feature, Sequence, IPS, Risk, Redis-compatible, and Context model coverage.
 - Rust consumes that corpus into native page envelopes, then validates slot ownership summaries,
   dirty generations, dump manifest checksums, follower-cursor retention planning, cache warmup,
   recovery integrity, Redis/admin reads, and post-restart logical reads.
@@ -156,7 +156,7 @@ current Rust-native deployment target:
 
 This closes the in-repo Rust migration verifier, external artifact-export contract, CI-published
 golden corpus path, and local production-harness slice for Rust-native storage formats. It does not
-claim global storage production readiness; live MatrixObjectStore/S3 integration and broader
+claim global storage production readiness; live ByteStore/S3 integration and broader
 deployment-scale evidence remain separately tracked blockers.
 
 ## Global Readiness Boundary
@@ -221,7 +221,7 @@ transition counts, and tombstone object preservation. Blockers are emitted if co
 live refs, loses tombstones, lacks model-layout rows, fails to improve or preserve live-ref density,
 or lacks slot-layout transition evidence. Per-model policy rows also expose stale-density triggers,
 tombstone-compaction triggers, and layout-aware rewrite requirements; the shared compaction test now
-covers string/hash/set/timestamped pages, ControlState pages, and Context event/embedding/summary sidecar
+covers string/hash/set/timestamped pages, Risk pages, and Context event/embedding/summary sidecar
 pages. The report also exposes aggregate policy coverage counts and reclaimable stale segment
 counts, and the shared test verifies indexes move to the compacted segment while old page segments
 become reclaimable.
@@ -239,7 +239,7 @@ evidence is present:
 | GC/WAL/index-log reclaim rules | WAL/index-log reclaim reports must show slot-dump durability, follower cursor retention, Raft snapshot/install floor awareness, and recovery after reclaim/index-GC. |
 | Cache and eviction soak | `storage_cache_replacement_policy_soak` plus cold page-address read tests must show weighted replacement, pinned-skip accounting, memory/disk pressure, disk/page/shared-store fallback, memory refill, dump-before-evict, delete/drop eviction, writeback/backpressure, bucketed read-through/refill/writeback/eviction/compaction latency samples, and restart refill. |
 | Stream/extent manifest rebuild | Page-store recovery must show stream record inspection, extent manifest rebuild from local segments, active/sealed/delayed-destroy state, and post-reopen append/read behavior. |
-| ControlState/context page-backed parity | ControlState and context model tests must verify page-backed storage, secondary view reconciliation from slot/object/page authority, and logical reads after reload/compaction. |
+| Risk/context page-backed parity | Risk and context model tests must verify page-backed storage, secondary view reconciliation from slot/object/page authority, and logical reads after reload/compaction. |
 
 Remaining blockers are deliberately narrower: direct CacheLib/mtcache binary/API compatibility,
 live external object-store integration, and broad deployment-scale evidence remain out of scope

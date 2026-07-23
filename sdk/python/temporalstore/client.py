@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Dict, Iterable, List, Optional
+from typing import Iterable, List, Optional
 
 
 class TemporalStoreError(RuntimeError):
@@ -20,18 +20,9 @@ class FeatureFilterOp(IntEnum):
     NOT_EQUAL = 1
     GREATER_THAN = 2
     LESS_THAN = 3
-    GREATER_OR_EQUAL = 4
-    LESS_OR_EQUAL = 5
 
 
-class FeatureWritePolicy(IntEnum):
-    UPSERT = 0
-    BLOCK = 1
-    FIRST = 2
-    UPDATE = 3
-
-
-class ControlStatePrecision(IntEnum):
+class RiskPrecision(IntEnum):
     ONE_SECOND = 0
     FIVE_SECONDS = 1
     TEN_SECONDS = 2
@@ -428,19 +419,6 @@ class _Native:
             ctypes.POINTER(ctypes.c_void_p),
         ]
         lib.temporalstore_add_feature_points.restype = ctypes.c_int
-        self.has_add_feature_points_with_policy = hasattr(
-            lib, "temporalstore_add_feature_points_with_policy"
-        )
-        if self.has_add_feature_points_with_policy:
-            lib.temporalstore_add_feature_points_with_policy.argtypes = [
-                ctypes.c_void_p,
-                ctypes.c_char_p,
-                ctypes.POINTER(_CFeaturePoint),
-                ctypes.c_size_t,
-                ctypes.c_int,
-                ctypes.POINTER(ctypes.c_void_p),
-            ]
-            lib.temporalstore_add_feature_points_with_policy.restype = ctypes.c_int
         lib.temporalstore_query_feature_points_with_filters.argtypes = [
             ctypes.c_void_p,
             ctypes.c_char_p,
@@ -461,19 +439,6 @@ class _Native:
             ctypes.POINTER(ctypes.c_void_p),
         ]
         lib.temporalstore_add_sequence_feature_rows.restype = ctypes.c_int
-        self.has_add_sequence_feature_rows_with_policy = hasattr(
-            lib, "temporalstore_add_sequence_feature_rows_with_policy"
-        )
-        if self.has_add_sequence_feature_rows_with_policy:
-            lib.temporalstore_add_sequence_feature_rows_with_policy.argtypes = [
-                ctypes.c_void_p,
-                ctypes.c_char_p,
-                ctypes.POINTER(_CSequenceFeatureRow),
-                ctypes.c_size_t,
-                ctypes.c_int,
-                ctypes.POINTER(ctypes.c_void_p),
-            ]
-            lib.temporalstore_add_sequence_feature_rows_with_policy.restype = ctypes.c_int
         lib.temporalstore_query_sequence_feature_rows.argtypes = [
             ctypes.c_void_p,
             ctypes.c_char_p,
@@ -511,7 +476,7 @@ class _Native:
             ctypes.POINTER(ctypes.c_void_p),
         ]
         lib.temporalstore_query_ips_last_instances.restype = ctypes.c_int
-        lib.temporalstore_control_state_increment.argtypes = [
+        lib.temporalstore_risk_increment.argtypes = [
             ctypes.c_void_p,
             ctypes.c_char_p,
             ctypes.c_int64,
@@ -521,8 +486,8 @@ class _Native:
             ctypes.c_uint64,
             ctypes.POINTER(ctypes.c_void_p),
         ]
-        lib.temporalstore_control_state_increment.restype = ctypes.c_int
-        lib.temporalstore_control_state_count.argtypes = [
+        lib.temporalstore_risk_increment.restype = ctypes.c_int
+        lib.temporalstore_risk_count.argtypes = [
             ctypes.c_void_p,
             ctypes.c_char_p,
             ctypes.c_int,
@@ -532,7 +497,7 @@ class _Native:
             ctypes.POINTER(ctypes.c_int64),
             ctypes.POINTER(ctypes.c_void_p),
         ]
-        lib.temporalstore_control_state_count.restype = ctypes.c_int
+        lib.temporalstore_risk_count.restype = ctypes.c_int
 
     def check(self, code: int, error: ctypes.c_void_p) -> None:
         if code == 0:
@@ -855,16 +820,6 @@ class Client:
         finally:
             self._native.lib.temporalstore_free_string(value)
 
-    def hmset(self, key: str, entries: Dict[str, str]) -> None:
-        for field, value in entries.items():
-            self.hset(key, str(field), str(value))
-
-    def hmget(self, key: str, fields: Iterable[str]) -> List[Optional[str]]:
-        field_list = [str(field) for field in fields]
-        records = self.hgetall(key)
-        values = {str(record.get("field", "")): str(record.get("value", "")) for record in records}
-        return [values.get(field) for field in field_list]
-
     def hgetall(self, key: str) -> List[dict]:
         if not self._native.has_hgetall:
             raise NotImplementedError("native hgetall/scan_hash is not available in this TemporalStore library")
@@ -891,9 +846,6 @@ class Client:
     def scan_hash(self, key: str) -> dict:
         records = self.hgetall(key)
         return {"ok": True, "count": len(records), "records": records}
-
-    def hlen(self, key: str) -> int:
-        return len(self.hgetall(key))
 
     def hdel(self, key: str, field: str) -> None:
         error = ctypes.c_void_p()
@@ -925,14 +877,6 @@ class Client:
             self._native.lib.temporalstore_string_array_free(ctypes.byref(out))
 
     def add_feature_points(self, key: str, points: Iterable[FeaturePoint]) -> None:
-        self.add_feature_points_with_policy(key, points, FeatureWritePolicy.UPSERT)
-
-    def add_feature_points_with_policy(
-        self,
-        key: str,
-        points: Iterable[FeaturePoint],
-        policy: FeatureWritePolicy = FeatureWritePolicy.UPSERT,
-    ) -> None:
         values = list(points)
         value_strings = [_encode(point.value) for point in values]
         array_type = _CFeaturePoint * len(values)
@@ -940,25 +884,13 @@ class Client:
             *[_CFeaturePoint(point.timestamp, value_strings[i]) for i, point in enumerate(values)]
         )
         error = ctypes.c_void_p()
-        if self._native.has_add_feature_points_with_policy:
-            code = self._native.lib.temporalstore_add_feature_points_with_policy(
-                self._handle,
-                _encode(key),
-                _optional_pointer(c_points, _CFeaturePoint),
-                len(values),
-                int(policy),
-                ctypes.byref(error),
-            )
-        elif int(policy) == int(FeatureWritePolicy.UPSERT):
-            code = self._native.lib.temporalstore_add_feature_points(
-                self._handle,
-                _encode(key),
-                _optional_pointer(c_points, _CFeaturePoint),
-                len(values),
-                ctypes.byref(error),
-            )
-        else:
-            raise TemporalStoreError(0, "native library does not expose feature write policy")
+        code = self._native.lib.temporalstore_add_feature_points(
+            self._handle,
+            _encode(key),
+            _optional_pointer(c_points, _CFeaturePoint),
+            len(values),
+            ctypes.byref(error),
+        )
         self._native.check(code, error)
 
     def query_feature_points(
@@ -996,14 +928,6 @@ class Client:
             self._native.lib.temporalstore_feature_point_array_free(ctypes.byref(out))
 
     def add_sequence_feature_rows(self, key: str, rows: Iterable[SequenceFeatureRow]) -> None:
-        self.add_sequence_feature_rows_with_policy(key, rows, FeatureWritePolicy.UPSERT)
-
-    def add_sequence_feature_rows_with_policy(
-        self,
-        key: str,
-        rows: Iterable[SequenceFeatureRow],
-        policy: FeatureWritePolicy = FeatureWritePolicy.UPSERT,
-    ) -> None:
         values = list(rows)
         array_type = _CSequenceFeatureRow * len(values)
         c_rows = array_type(
@@ -1015,25 +939,13 @@ class Client:
             ]
         )
         error = ctypes.c_void_p()
-        if self._native.has_add_sequence_feature_rows_with_policy:
-            code = self._native.lib.temporalstore_add_sequence_feature_rows_with_policy(
-                self._handle,
-                _encode(key),
-                _optional_pointer(c_rows, _CSequenceFeatureRow),
-                len(values),
-                int(policy),
-                ctypes.byref(error),
-            )
-        elif int(policy) == int(FeatureWritePolicy.UPSERT):
-            code = self._native.lib.temporalstore_add_sequence_feature_rows(
-                self._handle,
-                _encode(key),
-                _optional_pointer(c_rows, _CSequenceFeatureRow),
-                len(values),
-                ctypes.byref(error),
-            )
-        else:
-            raise TemporalStoreError(0, "native library does not expose sequence write policy")
+        code = self._native.lib.temporalstore_add_sequence_feature_rows(
+            self._handle,
+            _encode(key),
+            _optional_pointer(c_rows, _CSequenceFeatureRow),
+            len(values),
+            ctypes.byref(error),
+        )
         self._native.check(code, error)
 
     def query_sequence_feature_rows(
@@ -1151,17 +1063,17 @@ class Client:
         finally:
             self._native.lib.temporalstore_ips_feature_array_free(ctypes.byref(out))
 
-    def control_state_increment(
+    def risk_increment(
         self,
         key: str,
         amount: int = 1,
         ttl_seconds: int = 24 * 3600,
-        precision: ControlStatePrecision = ControlStatePrecision.ONE_MINUTE,
+        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
         uuid: str = "",
         occur_time_seconds: int = 0,
     ) -> None:
         error = ctypes.c_void_p()
-        code = self._native.lib.temporalstore_control_state_increment(
+        code = self._native.lib.temporalstore_risk_increment(
             self._handle,
             _encode(key),
             amount,
@@ -1173,17 +1085,17 @@ class Client:
         )
         self._native.check(code, error)
 
-    def control_state_count(
+    def risk_count(
         self,
         key: str,
-        precision: ControlStatePrecision = ControlStatePrecision.ONE_MINUTE,
+        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
         window_start: int = -1,
         window_end: int = 0,
         window_unit: WindowUnit = WindowUnit.HOUR,
     ) -> int:
         value = ctypes.c_int64()
         error = ctypes.c_void_p()
-        code = self._native.lib.temporalstore_control_state_count(
+        code = self._native.lib.temporalstore_risk_count(
             self._handle,
             _encode(key),
             int(precision),

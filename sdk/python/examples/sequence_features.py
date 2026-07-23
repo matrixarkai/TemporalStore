@@ -3,7 +3,7 @@ from temporalstore import (
     FeatureFilter,
     FeatureFilterOp,
     Options,
-    ControlStatePrecision,
+    RiskPrecision,
     SequenceFeatureRow,
     WindowUnit,
 )
@@ -44,6 +44,6 @@ with Client(options) as client:
     )
     print(rows)
 
-    control_state_key = "python:user:42:control_state"
-    client.control_state_increment(control_state_key, precision=ControlStatePrecision.ONE_MINUTE, uuid="python-control_state-1")
-    print("control_state_count=", client.control_state_count(control_state_key, window_unit=WindowUnit.HOUR))
+    risk_key = "python:user:42:risk"
+    client.risk_increment(risk_key, precision=RiskPrecision.ONE_MINUTE, uuid="python-risk-1")
+    print("risk_count=", client.risk_count(risk_key, window_unit=WindowUnit.HOUR))

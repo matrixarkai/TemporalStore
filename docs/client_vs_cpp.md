@@ -10,7 +10,7 @@ The C++ client has these important pieces:
   primary-only; callers can opt into first-replica reads.
 - `Client::OpenTable(namespace, table_name)` returning a table handle.
 - `Client::CloseTable(table)` unregistering that handle from `MetaSyncer`.
-- `Table` typed methods: `Set`, `Get`, `SetEx`, `Del`, `Expire`, `Ttl`, `HSet`, `HGet`, `HDel`, Feature, IPS, and richer ControlState APIs.
+- `Table` typed methods: `Set`, `Get`, `SetEx`, `Del`, `Expire`, `Ttl`, `HSet`, `HGet`, `HDel`, Feature, IPS, and richer Risk APIs.
 - `Pipeline` that queues table commands and sends them as batch requests on `Sync`.
 - `MetaSyncer` that periodically fetches table topology from metaserver.
 - `Router` that maps `key -> slot -> partition -> primary/secondary endpoint`.
@@ -35,7 +35,7 @@ Rust now has:
   retry, writes default to zero retries
 - `TemporalStoreTable`
 - `TemporalStorePipeline`
-- typed table methods for common string/hash/set/feature/sequence/IPS/control_state flows:
+- typed table methods for common string/hash/set/feature/sequence/IPS/risk flows:
   - `exists`
   - `set`
   - `setex`
@@ -72,11 +72,11 @@ Rust now has:
   - `ips_remove`
   - `ips_delete`
   - `ips_count`
-  - `control_state_increment`
-  - `control_state_increment_with_options`
-  - `control_state_count`
-  - `control_state_query`
-  - `control_state_detail`
+  - `risk_increment`
+  - `risk_increment_with_options`
+  - `risk_count`
+  - `risk_query`
+  - `risk_detail`
 - key-to-shard routing using `TableOptions { first_shard_id, shard_count }`
 - pipeline `sync` backed by `BatchExecuteRequest`
 - pipeline grouping by routed shard, with responses reassembled in original command order
@@ -133,6 +133,6 @@ Rust still does not have C++ client wire parity:
 - Neptune/deployment placement hooks are present for the Rust-native route model, but not the full
   internal C++ partition-set hierarchy
 - no async callback API
-- no full internal C++ ControlState/IPS proto semantics such as manager/debug APIs, CPC/list-specific behavior, IPS load/snapshot/stat/filter, or server aggregation
+- no full internal C++ Risk/IPS proto semantics such as manager/debug APIs, CPC/list-specific behavior, IPS load/snapshot/stat/filter, or server aggregation
 
 The current Rust client is a behavior-compatible open-source layer over the Rust HTTP API, not a drop-in replacement for the internal C++ SDK.

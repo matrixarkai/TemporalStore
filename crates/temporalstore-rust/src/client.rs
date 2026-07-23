@@ -1,11 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::http::{
@@ -22,10 +21,10 @@ mod commands;
 mod retry;
 mod routing;
 
-use commands::{command_is_dropped, command_routing_key, is_write};
+use commands::{command_is_dropped, command_key, command_routing_key, is_write};
 use retry::{
     classify_cpp_retry_decision, replica_read_policy_from_meta, retry_attempts_for,
-    sleep_before_retry, status_is_replica_read_not_ready,
+    sleep_before_retry,
 };
 pub use routing::{
     crc64_jones, key_is_dropped_by_percent, shard_id_for_key, slot_id_for_key, stable_key_hash,
@@ -33,11 +32,9 @@ pub use routing::{
 
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
-    ContextChildRef, ContextCompressionEvent, ContextEmbedding, ContextEntity, ContextEvent,
-    ContextExtractedEventIndexes, ContextIndexLookup, ContextIndexRef, ContextNode,
-    ContextPackAudit, ContextSummary, ContextSummaryDirtyMarker, ContextTraversedNode,
+    ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit, ContextSummaryDirtyMarker,
     ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy,
-    IpsSnapshotReport, IpsStats, ControlStateFamily, ControlStateFolType, SequenceFeatureRow, SequenceQuerySpec,
+    IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
     ShardId, Status,
 };
 
@@ -60,10 +57,6 @@ pub enum ClientError {
 pub struct ClientOptions {
     pub proxy_addr: String,
     pub meta_addr: Option<String>,
-    #[serde(default)]
-    pub namespace_name: String,
-    #[serde(default)]
-    pub table_name: String,
     pub default_shard_id: ShardId,
     pub connect_timeout_ms: u64,
     pub io_timeout_ms: u64,
@@ -80,193 +73,12 @@ pub struct ClientOptions {
     pub drop_percent: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MatrixArkRecordAppend {
-    pub key: String,
-    pub field: String,
-    #[serde(default, deserialize_with = "deserialize_bytes_from_json")]
-    pub value: Vec<u8>,
-    #[serde(
-        default,
-        alias = "storage_route",
-        deserialize_with = "deserialize_string_or_json"
-    )]
-    pub route_json: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MatrixArkBatchAppendOptions {
-    #[serde(default)]
-    pub count_key: String,
-    #[serde(default)]
-    pub count_value: String,
-    #[serde(default)]
-    pub append_options_json: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MatrixArkBatchAppendRequest {
-    pub namespace: String,
-    #[serde(default, alias = "table")]
-    pub table_name: String,
-    #[serde(default, alias = "entries")]
-    pub records: Vec<MatrixArkRecordAppend>,
-    #[serde(default)]
-    pub count_key: String,
-    #[serde(default)]
-    pub count_value: String,
-    #[serde(
-        default,
-        alias = "append_options",
-        alias = "options",
-        deserialize_with = "deserialize_string_or_json"
-    )]
-    pub append_options_json: String,
-}
-
-fn deserialize_string_or_json<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = Value::deserialize(deserializer)?;
-    match value {
-        Value::Null => Ok(String::new()),
-        Value::String(value) => Ok(value),
-        value => serde_json::to_string(&value).map_err(serde::de::Error::custom),
-    }
-}
-
-fn deserialize_bytes_from_json<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = Value::deserialize(deserializer)?;
-    match value {
-        Value::Null => Ok(Vec::new()),
-        Value::String(value) => Ok(value.into_bytes()),
-        Value::Array(_) => serde_json::from_value(value).map_err(serde::de::Error::custom),
-        Value::Object(mut object) => {
-            if let Some(bytes) = object.remove("bytes") {
-                serde_json::from_value(bytes).map_err(serde::de::Error::custom)
-            } else if let Some(value) = object.remove("value") {
-                deserialize_bytes_value(value)
-            } else {
-                serde_json::to_vec(&Value::Object(object)).map_err(serde::de::Error::custom)
-            }
-        }
-        value => serde_json::to_vec(&value).map_err(serde::de::Error::custom),
-    }
-}
-
-fn deserialize_bytes_value<E>(value: Value) -> Result<Vec<u8>, E>
-where
-    E: serde::de::Error,
-{
-    match value {
-        Value::Null => Ok(Vec::new()),
-        Value::String(value) => Ok(value.into_bytes()),
-        Value::Array(_) => serde_json::from_value(value).map_err(E::custom),
-        value => serde_json::to_vec(&value).map_err(E::custom),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MatrixArkRetrieveContextPackRequest {
-    #[serde(default)]
-    pub metaserver: String,
-    #[serde(default)]
-    pub namespace: String,
-    #[serde(default)]
-    pub table: String,
-    #[serde(default)]
-    pub storage_prefix: String,
-    #[serde(default)]
-    pub query: String,
-    #[serde(default)]
-    pub max_selected_refs: usize,
-    #[serde(default)]
-    pub tenant_hash: u64,
-    #[serde(default)]
-    pub start_node_hash: u64,
-    #[serde(default)]
-    pub node_hash: u64,
-    #[serde(default)]
-    pub scope_hash: u64,
-    #[serde(default)]
-    pub start_time_ms: u64,
-    #[serde(default)]
-    pub end_time_ms: u64,
-    #[serde(default)]
-    pub reference_time_ms: u64,
-    #[serde(default)]
-    pub as_of_ms: u64,
-    #[serde(default)]
-    pub max_context_tokens: u32,
-    #[serde(default)]
-    pub summary_level: Option<u32>,
-    #[serde(default)]
-    pub compression_limit: Option<usize>,
-    #[serde(default)]
-    pub record: Value,
-    #[serde(default)]
-    pub scope: Option<Value>,
-    #[serde(default)]
-    pub secondary_index_groups: Vec<Vec<String>>,
-    #[serde(default)]
-    pub top_level_response: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct MatrixArkRecordLogRetrieveRequest {
-    op: &'static str,
-    metaserver: String,
-    namespace: String,
-    table: String,
-    storage_prefix: String,
-    query: String,
-    max_selected_refs: usize,
-    record: Value,
-    scope: Option<Value>,
-    secondary_index_groups: Vec<Vec<String>>,
-    top_level_response: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct MatrixArkRecordLogResponse {
-    ok: bool,
-    #[serde(default)]
-    value: String,
-    #[serde(default)]
-    error: String,
-    #[serde(default)]
-    error_code: String,
-    #[serde(flatten)]
-    extra: BTreeMap<String, Value>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ProxyTableBatchExecuteClientRequest {
-    namespace: String,
-    table_name: String,
-    commands: Vec<Command>,
-}
-
 impl ClientOptions {
     pub fn proxy(proxy_addr: impl Into<String>) -> Self {
         Self {
             proxy_addr: proxy_addr.into(),
             ..Self::default()
         }
-    }
-
-    pub fn with_default_table(
-        mut self,
-        namespace_name: impl Into<String>,
-        table_name: impl Into<String>,
-    ) -> Self {
-        self.namespace_name = namespace_name.into();
-        self.table_name = table_name.into();
-        self
     }
 
     fn http_options(&self) -> HttpRequestOptions {
@@ -292,8 +104,6 @@ impl Default for ClientOptions {
         Self {
             proxy_addr: "127.0.0.1:17000".to_string(),
             meta_addr: None,
-            namespace_name: String::new(),
-            table_name: String::new(),
             default_shard_id: 1,
             connect_timeout_ms: 200,
             io_timeout_ms: 200,
@@ -321,84 +131,6 @@ impl Default for RequestOptions {
     fn default() -> Self {
         Self { trace_id: 0 }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ClientControlStatePrecision {
-    OneSecond,
-    FiveSeconds,
-    TenSeconds,
-    OneMinute,
-    FiveMinutes,
-    TenMinutes,
-    OneHour,
-    OneDay,
-    OneMonth,
-}
-
-impl ClientControlStatePrecision {
-    pub fn precision_ms(self) -> u64 {
-        match self {
-            Self::OneSecond => 1_000,
-            Self::FiveSeconds => 5_000,
-            Self::TenSeconds => 10_000,
-            Self::OneMinute => 60_000,
-            Self::FiveMinutes => 5 * 60_000,
-            Self::TenMinutes => 10 * 60_000,
-            Self::OneHour => 60 * 60_000,
-            Self::OneDay => 24 * 60 * 60_000,
-            Self::OneMonth => 30 * 24 * 60 * 60_000,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ClientControlStateWindowUnit {
-    Second,
-    Minute,
-    Hour,
-    Day,
-}
-
-impl ClientControlStateWindowUnit {
-    pub fn duration_ms(self) -> i64 {
-        match self {
-            Self::Second => 1_000,
-            Self::Minute => 60_000,
-            Self::Hour => 60 * 60_000,
-            Self::Day => 24 * 60 * 60_000,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClientControlStateWindow {
-    #[serde(default = "default_client_control_state_window_start")]
-    pub start: i64,
-    #[serde(default)]
-    pub end: i64,
-    #[serde(default = "default_client_control_state_window_unit")]
-    pub unit: ClientControlStateWindowUnit,
-}
-
-impl Default for ClientControlStateWindow {
-    fn default() -> Self {
-        Self {
-            start: default_client_control_state_window_start(),
-            end: 0,
-            unit: default_client_control_state_window_unit(),
-        }
-    }
-}
-
-fn default_client_control_state_window_start() -> i64 {
-    -1
-}
-
-fn default_client_control_state_window_unit() -> ClientControlStateWindowUnit {
-    ClientControlStateWindowUnit::Hour
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -590,7 +322,7 @@ impl Default for ClientProductionReplacementContract {
                 "feature".to_string(),
                 "sequence".to_string(),
                 "ips".to_string(),
-                "control_state".to_string(),
+                "risk".to_string(),
                 "redis".to_string(),
                 "admin".to_string(),
                 "context".to_string(),
@@ -833,6 +565,23 @@ pub struct ClientRetryDecision {
     pub would_retry: bool,
 }
 
+impl ClientStats {
+    fn record_backend_error(&mut self, became_continuous: bool) {
+        self.backend_errors += 1;
+        self.backend_error_streak += 1;
+        if became_continuous {
+            self.continuous_backend_failures += 1;
+        }
+    }
+
+    fn record_backend_success(&mut self) {
+        if self.backend_error_streak > 0 {
+            self.backend_successes_after_error += 1;
+        }
+        self.backend_error_streak = 0;
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TemporalStoreClient {
     inner: Arc<ClientInner>,
@@ -845,62 +594,7 @@ struct ClientInner {
     backend_failures: Mutex<HashMap<String, BackendFailureState>>,
     tables: Mutex<HashMap<String, TableOptions>>,
     meta_sync_tables: Mutex<HashMap<String, ClientMetaSyncTableState>>,
-    stats: ClientStatsState,
-}
-
-#[derive(Debug, Default)]
-struct ClientStatsState {
-    open_table_calls: AtomicU64,
-    close_table_calls: AtomicU64,
-    execute_requests: AtomicU64,
-    batch_execute_requests: AtomicU64,
-    route_cache_hits: AtomicU64,
-    route_cache_misses: AtomicU64,
-    route_refreshes: AtomicU64,
-    backend_errors: AtomicU64,
-    backend_error_streak: AtomicU64,
-    continuous_backend_failures: AtomicU64,
-    backend_successes_after_error: AtomicU64,
-    meta_sync_total: AtomicU64,
-    meta_sync_errors: AtomicU64,
-}
-
-impl ClientStatsState {
-    fn snapshot(&self) -> ClientStats {
-        ClientStats {
-            open_table_calls: self.open_table_calls.load(Ordering::Relaxed),
-            close_table_calls: self.close_table_calls.load(Ordering::Relaxed),
-            execute_requests: self.execute_requests.load(Ordering::Relaxed),
-            batch_execute_requests: self.batch_execute_requests.load(Ordering::Relaxed),
-            route_cache_hits: self.route_cache_hits.load(Ordering::Relaxed),
-            route_cache_misses: self.route_cache_misses.load(Ordering::Relaxed),
-            route_refreshes: self.route_refreshes.load(Ordering::Relaxed),
-            backend_errors: self.backend_errors.load(Ordering::Relaxed),
-            backend_error_streak: self.backend_error_streak.load(Ordering::Relaxed),
-            continuous_backend_failures: self.continuous_backend_failures.load(Ordering::Relaxed),
-            backend_successes_after_error: self
-                .backend_successes_after_error
-                .load(Ordering::Relaxed),
-            meta_sync_total: self.meta_sync_total.load(Ordering::Relaxed),
-            meta_sync_errors: self.meta_sync_errors.load(Ordering::Relaxed),
-        }
-    }
-
-    fn record_backend_error(&self, became_continuous: bool) {
-        self.backend_errors.fetch_add(1, Ordering::Relaxed);
-        self.backend_error_streak.fetch_add(1, Ordering::Relaxed);
-        if became_continuous {
-            self.continuous_backend_failures
-                .fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn record_backend_success(&self) {
-        if self.backend_error_streak.swap(0, Ordering::Relaxed) > 0 {
-            self.backend_successes_after_error
-                .fetch_add(1, Ordering::Relaxed);
-        }
-    }
+    stats: Mutex<ClientStats>,
 }
 
 #[derive(Debug, Clone)]
@@ -973,7 +667,7 @@ impl TemporalStoreClient {
                 backend_failures: Mutex::default(),
                 tables: Mutex::default(),
                 meta_sync_tables: Mutex::default(),
-                stats: ClientStatsState::default(),
+                stats: Mutex::default(),
             }),
         }
     }
@@ -995,8 +689,9 @@ impl TemporalStoreClient {
         self.ensure_meta_sync_table_state(&namespace, &table_name);
         self.inner
             .stats
-            .open_table_calls
-            .fetch_add(1, Ordering::Relaxed);
+            .lock()
+            .expect("client stats lock poisoned")
+            .open_table_calls += 1;
         TemporalStoreTable {
             client: self.clone(),
             namespace,
@@ -1013,7 +708,8 @@ impl TemporalStoreClient {
     ) -> Result<TemporalStoreTable, ClientError> {
         let namespace = namespace.into();
         let table_name = table_name.into();
-        self.open_table_from_meta_ref(&namespace, &table_name)
+        let options = self.sync_table_topology(namespace.clone(), table_name.clone())?;
+        Ok(self.open_table(namespace, table_name, options))
     }
 
     pub fn cached_table(
@@ -1023,39 +719,20 @@ impl TemporalStoreClient {
     ) -> Option<TemporalStoreTable> {
         let namespace = namespace.into();
         let table_name = table_name.into();
-        self.cached_table_ref(&namespace, &table_name)
-    }
-
-    pub(crate) fn cached_table_ref(
-        &self,
-        namespace: &str,
-        table_name: &str,
-    ) -> Option<TemporalStoreTable> {
         let options = self
             .inner
             .tables
             .lock()
             .expect("client table cache lock poisoned")
-            .get(&table_combine_name(namespace, table_name))
+            .get(&table_combine_name(&namespace, &table_name))
             .cloned()?;
         Some(TemporalStoreTable {
             client: self.clone(),
-            namespace: namespace.to_string(),
-            table_name: table_name.to_string(),
+            namespace,
+            table_name,
             shard_id: self.inner.options.default_shard_id,
             options,
         })
-    }
-
-    pub(crate) fn open_table_from_meta_ref(
-        &self,
-        namespace: &str,
-        table_name: &str,
-    ) -> Result<TemporalStoreTable, ClientError> {
-        let namespace = namespace.to_string();
-        let table_name = table_name.to_string();
-        let options = self.sync_table_topology(namespace.clone(), table_name.clone())?;
-        Ok(self.open_table(namespace, table_name, options))
     }
 
     pub fn deployment_placement_policy(
@@ -1198,8 +875,9 @@ impl TemporalStoreClient {
         self.ensure_meta_sync_table_state(&namespace, &table_name);
         self.inner
             .stats
-            .meta_sync_total
-            .fetch_add(1, Ordering::Relaxed);
+            .lock()
+            .expect("client stats lock poisoned")
+            .meta_sync_total += 1;
         let meta_addr = self
             .inner
             .options
@@ -1220,8 +898,9 @@ impl TemporalStoreClient {
             Err(err) => {
                 self.inner
                     .stats
-                    .meta_sync_errors
-                    .fetch_add(1, Ordering::Relaxed);
+                    .lock()
+                    .expect("client stats lock poisoned")
+                    .meta_sync_errors += 1;
                 self.record_meta_sync_error(&namespace, &table_name, &err.to_string());
                 return Err(err.into());
             }
@@ -1229,8 +908,9 @@ impl TemporalStoreClient {
         if !topology.status.ok {
             self.inner
                 .stats
-                .meta_sync_errors
-                .fetch_add(1, Ordering::Relaxed);
+                .lock()
+                .expect("client stats lock poisoned")
+                .meta_sync_errors += 1;
             self.record_meta_sync_error(&namespace, &table_name, &topology.status.message);
             return Err(ClientError::Status(topology.status.message));
         }
@@ -1408,8 +1088,9 @@ impl TemporalStoreClient {
         if !topology.status.ok {
             self.inner
                 .stats
-                .meta_sync_errors
-                .fetch_add(1, Ordering::Relaxed);
+                .lock()
+                .expect("client stats lock poisoned")
+                .meta_sync_errors += 1;
             return Err(ClientError::Status(topology.status.message));
         }
 
@@ -1659,29 +1340,29 @@ impl TemporalStoreClient {
     }
 
     pub fn close_table(&self, table: &TemporalStoreTable) -> Result<(), ClientError> {
-        let table_key = table_combine_name(table.namespace(), table.table_name());
         let removed = self
             .inner
             .tables
             .lock()
             .expect("client table cache lock poisoned")
-            .remove(&table_key)
+            .remove(&table_combine_name(table.namespace(), table.table_name()))
             .is_some();
         self.inner
             .stats
-            .close_table_calls
-            .fetch_add(1, Ordering::Relaxed);
+            .lock()
+            .expect("client stats lock poisoned")
+            .close_table_calls += 1;
         if removed {
             self.inner
                 .routes
                 .lock()
                 .expect("client route cache lock poisoned")
-                .retain(|_, route| route.table_key != table_key);
+                .clear();
             self.inner
                 .meta_sync_tables
                 .lock()
                 .expect("client meta sync table lock poisoned")
-                .remove(&table_key);
+                .remove(&table_combine_name(table.namespace(), table.table_name()));
             Ok(())
         } else {
             Err(ClientError::Status("table not found".to_string()))
@@ -1689,7 +1370,7 @@ impl TemporalStoreClient {
     }
 
     pub fn stats(&self) -> ClientStats {
-        self.inner.stats.snapshot()
+        *self.inner.stats.lock().expect("client stats lock poisoned")
     }
 
     pub fn preflight_report(&self) -> ClientPreflightReport {
@@ -2085,707 +1766,6 @@ impl TemporalStoreClient {
         post_json(&self.inner.options.proxy_addr, "/batch_execute", &request)
     }
 
-    pub fn batch_execute_table(
-        &self,
-        namespace: impl Into<String>,
-        table_name: impl Into<String>,
-        commands: Vec<Command>,
-    ) -> Result<BatchExecuteResponse, ClientError> {
-        let response = post_json_with_options::<_, BatchExecuteResponse>(
-            &self.inner.options.proxy_addr,
-            "/ProxyService/BatchExecuteTableCmd",
-            &ProxyTableBatchExecuteClientRequest {
-                namespace: namespace.into(),
-                table_name: table_name.into(),
-                commands,
-            },
-            self.inner.options.http_options(),
-        )?;
-        if !response.status.ok {
-            return Err(ClientError::Status(response.status.message));
-        }
-        Ok(response)
-    }
-
-    pub fn default_table(&self) -> Result<TemporalStoreTable, ClientError> {
-        let (namespace, table_name) = self.default_table_names()?;
-        self.table_for_command(namespace, table_name)
-    }
-
-    fn default_table_names(&self) -> Result<(String, String), ClientError> {
-        let namespace = self.inner.options.namespace_name.clone();
-        let table_name = self.inner.options.table_name.clone();
-        if namespace.trim().is_empty() || table_name.trim().is_empty() {
-            return Err(ClientError::InvalidRequest(
-                "default namespace_name and table_name are required".to_string(),
-            ));
-        }
-        Ok((namespace, table_name))
-    }
-
-    pub fn put_string(
-        &self,
-        key: impl Into<String>,
-        value: impl Into<Vec<u8>>,
-    ) -> Result<(), ClientError> {
-        self.default_table()?.set(key, value)
-    }
-
-    pub fn put_string_with_ttl(
-        &self,
-        key: impl Into<String>,
-        value: impl Into<Vec<u8>>,
-        ttl_ms: u64,
-    ) -> Result<(), ClientError> {
-        self.default_table()?.setex(key, value, ttl_ms)
-    }
-
-    pub fn get_string(&self, key: impl Into<String>) -> Result<Option<Vec<u8>>, ClientError> {
-        self.default_table()?.get(key)
-    }
-
-    pub fn exists(&self, key: impl Into<String>) -> Result<bool, ClientError> {
-        self.default_table()?.exists(key)
-    }
-
-    pub fn delete_object(&self, key: impl Into<String>) -> Result<(), ClientError> {
-        self.default_table()?.del(key)
-    }
-
-    pub fn expire(&self, key: impl Into<String>, ttl_ms: u64) -> Result<(), ClientError> {
-        self.default_table()?.expire(key, ttl_ms)
-    }
-
-    pub fn ttl(&self, key: impl Into<String>) -> Result<i64, ClientError> {
-        self.default_table()?.ttl(key)
-    }
-
-    pub fn hset(
-        &self,
-        key: impl Into<String>,
-        field: impl Into<String>,
-        value: impl Into<Vec<u8>>,
-    ) -> Result<(), ClientError> {
-        self.default_table()?.hset(key, field, value)
-    }
-
-    pub fn hget(
-        &self,
-        key: impl Into<String>,
-        field: impl Into<String>,
-    ) -> Result<Option<Vec<u8>>, ClientError> {
-        self.default_table()?.hget(key, field)
-    }
-
-    pub fn hgetall(&self, key: impl Into<String>) -> Result<Vec<(String, Vec<u8>)>, ClientError> {
-        self.default_table()?.hgetall(key)
-    }
-
-    pub fn hmget(
-        &self,
-        key: impl Into<String>,
-        fields: Vec<String>,
-    ) -> Result<Vec<Option<Vec<u8>>>, ClientError> {
-        self.default_table()?.hmget(key, fields)
-    }
-
-    pub fn hmset(
-        &self,
-        key: impl Into<String>,
-        entries: Vec<(String, Vec<u8>)>,
-    ) -> Result<(), ClientError> {
-        self.default_table()?.hmset(key, entries)
-    }
-
-    pub fn hincrby(
-        &self,
-        key: impl Into<String>,
-        field: impl Into<String>,
-        increment: i64,
-    ) -> Result<i64, ClientError> {
-        self.default_table()?.hincrby(key, field, increment)
-    }
-
-    pub fn hlen(&self, key: impl Into<String>) -> Result<i64, ClientError> {
-        self.default_table()?.hlen(key)
-    }
-
-    pub fn hdel(
-        &self,
-        key: impl Into<String>,
-        field: impl Into<String>,
-    ) -> Result<(), ClientError> {
-        self.default_table()?.hdel(key, field)
-    }
-
-    pub fn sadd(
-        &self,
-        key: impl Into<String>,
-        member: impl Into<Vec<u8>>,
-    ) -> Result<(), ClientError> {
-        self.default_table()?.sadd(key, member)
-    }
-
-    pub fn smembers(&self, key: impl Into<String>) -> Result<Vec<Vec<u8>>, ClientError> {
-        self.default_table()?.smembers(key)
-    }
-
-    pub fn srem(
-        &self,
-        key: impl Into<String>,
-        member: impl Into<Vec<u8>>,
-    ) -> Result<(), ClientError> {
-        self.default_table()?.srem(key, member)
-    }
-
-    pub fn add_feature_points(
-        &self,
-        key: impl Into<String>,
-        points: Vec<FeaturePoint>,
-        policy: FeatureWritePolicy,
-    ) -> Result<bool, ClientError> {
-        self.default_table()?
-            .feature_append_with_policy(key, points, policy)
-    }
-
-    pub fn query_feature_points(
-        &self,
-        key: impl Into<String>,
-        start_ms: u64,
-        end_ms: u64,
-        count: Option<usize>,
-    ) -> Result<Vec<FeaturePoint>, ClientError> {
-        self.default_table()?
-            .feature_query(key, start_ms, end_ms, count)
-    }
-
-    pub fn query_feature_points_filtered(
-        &self,
-        key: impl Into<String>,
-        start_ms: u64,
-        end_ms: u64,
-        count: Option<usize>,
-        filters: Vec<FeatureFilter>,
-    ) -> Result<Vec<FeaturePoint>, ClientError> {
-        self.default_table()?
-            .feature_query_filtered(key, start_ms, end_ms, count, filters)
-    }
-
-    pub fn add_sequence_feature_rows(
-        &self,
-        key: impl Into<String>,
-        rows: Vec<SequenceFeatureRow>,
-        policy: FeatureWritePolicy,
-    ) -> Result<(), ClientError> {
-        self.default_table()?
-            .sequence_add_with_policy(key, rows, policy)
-    }
-
-    pub fn query_sequence_feature_rows(
-        &self,
-        key: impl Into<String>,
-        start_ms: u64,
-        end_ms: u64,
-        count: usize,
-        filters: Vec<FeatureFilter>,
-    ) -> Result<Vec<SequenceFeatureRow>, ClientError> {
-        self.default_table()?
-            .sequence_query(key, start_ms, end_ms, count, filters)
-    }
-
-    pub fn add_ips_instance(
-        &self,
-        uid: u64,
-        timestamp_us: u64,
-        instance: impl Into<Vec<u8>>,
-        action_type: Option<u32>,
-        table_id: Option<u64>,
-        request_id: Option<String>,
-    ) -> Result<bool, ClientError> {
-        if uid == 0 {
-            return Err(ClientError::InvalidRequest("uid is required".to_string()));
-        }
-        if timestamp_us == 0 {
-            return Err(ClientError::InvalidRequest(
-                "timestamp_us is required".to_string(),
-            ));
-        }
-        self.default_table()?.ips_add_with_options(
-            uid.to_string(),
-            timestamp_us / 1_000,
-            instance,
-            action_type,
-            table_id,
-            request_id,
-        )
-    }
-
-    pub fn query_ips_last_instances(
-        &self,
-        uid: u64,
-        last_instances: usize,
-    ) -> Result<Vec<FeaturePoint>, ClientError> {
-        if uid == 0 {
-            return Err(ClientError::InvalidRequest("uid is required".to_string()));
-        }
-        self.default_table()?
-            .ips_query_last(uid.to_string(), last_instances)
-    }
-
-    pub fn query_ips_last_instances_with_options(
-        &self,
-        uid: u64,
-        last_instances: usize,
-        action_type: Option<u32>,
-        table_id: Option<u64>,
-    ) -> Result<Vec<FeaturePoint>, ClientError> {
-        if uid == 0 {
-            return Err(ClientError::InvalidRequest("uid is required".to_string()));
-        }
-        self.default_table()?.ips_filter(
-            uid.to_string(),
-            0,
-            u64::MAX,
-            Some(last_instances),
-            action_type,
-            table_id,
-        )
-    }
-
-    pub fn control_state_increment(
-        &self,
-        key: impl Into<String>,
-        amount: i64,
-        ttl_seconds: u64,
-        precision: ClientControlStatePrecision,
-        occur_time_seconds: u64,
-    ) -> Result<(), ClientError> {
-        let (namespace, table_name) = self.default_table_names()?;
-        self.control_state_increment_table(
-            namespace,
-            table_name,
-            key,
-            amount,
-            ttl_seconds,
-            precision,
-            occur_time_seconds,
-        )
-    }
-
-    pub fn control_state_count(
-        &self,
-        key: impl Into<String>,
-        precision: ClientControlStatePrecision,
-        window: ClientControlStateWindow,
-    ) -> Result<i64, ClientError> {
-        let (namespace, table_name) = self.default_table_names()?;
-        self.control_state_count_table(namespace, table_name, key, precision, window)
-    }
-
-    pub fn control_state_hquery(
-        &self,
-        key: impl Into<String>,
-        precision: ClientControlStatePrecision,
-        window: ClientControlStateWindow,
-        aggregator: impl Into<String>,
-    ) -> Result<i64, ClientError> {
-        let (namespace, table_name) = self.default_table_names()?;
-        self.control_state_hquery_table(namespace, table_name, key, precision, window, aggregator)
-    }
-
-    pub fn control_state_cpc_set(
-        &self,
-        key: impl Into<String>,
-        values: Vec<String>,
-        ttl_seconds: u64,
-        precision: ClientControlStatePrecision,
-        occur_time_seconds: u64,
-    ) -> Result<(), ClientError> {
-        let (namespace, table_name) = self.default_table_names()?;
-        self.control_state_cpc_set_table(
-            namespace,
-            table_name,
-            key,
-            values,
-            ttl_seconds,
-            precision,
-            occur_time_seconds,
-        )
-    }
-
-    pub fn control_state_cpc_query(
-        &self,
-        key: impl Into<String>,
-        precision: ClientControlStatePrecision,
-        window: ClientControlStateWindow,
-    ) -> Result<i64, ClientError> {
-        let (namespace, table_name) = self.default_table_names()?;
-        self.control_state_cpc_query_table(namespace, table_name, key, precision, window)
-    }
-
-    pub fn control_state_increment_table(
-        &self,
-        namespace: impl Into<String>,
-        table_name: impl Into<String>,
-        key: impl Into<String>,
-        amount: i64,
-        ttl_seconds: u64,
-        precision: ClientControlStatePrecision,
-        occur_time_seconds: u64,
-    ) -> Result<(), ClientError> {
-        let table = self.table_for_command(namespace.into(), table_name.into())?;
-        let timestamp_ms = if occur_time_seconds == 0 {
-            now_unix_ms()
-        } else {
-            occur_time_seconds.saturating_mul(1_000)
-        };
-        table.control_state_increment_with_options(
-            key,
-            timestamp_ms,
-            amount,
-            Some(precision.precision_ms()),
-            Some(ttl_seconds.saturating_mul(1_000)),
-        )
-    }
-
-    pub fn control_state_count_table(
-        &self,
-        namespace: impl Into<String>,
-        table_name: impl Into<String>,
-        key: impl Into<String>,
-        precision: ClientControlStatePrecision,
-        window: ClientControlStateWindow,
-    ) -> Result<i64, ClientError> {
-        let table = self.table_for_command(namespace.into(), table_name.into())?;
-        let (start_ms, end_ms) = client_control_state_window_bounds_ms(window, precision);
-        table.control_state_count(key, start_ms, end_ms)
-    }
-
-    pub fn control_state_hquery_table(
-        &self,
-        namespace: impl Into<String>,
-        table_name: impl Into<String>,
-        key: impl Into<String>,
-        precision: ClientControlStatePrecision,
-        window: ClientControlStateWindow,
-        aggregator: impl Into<String>,
-    ) -> Result<i64, ClientError> {
-        let table = self.table_for_command(namespace.into(), table_name.into())?;
-        let (start_ms, end_ms) = client_control_state_window_bounds_ms(window, precision);
-        table.control_state_family_query(ControlStateFamily::H, key, start_ms, end_ms, aggregator)
-    }
-
-    pub fn control_state_cpc_set_table(
-        &self,
-        namespace: impl Into<String>,
-        table_name: impl Into<String>,
-        key: impl Into<String>,
-        values: Vec<String>,
-        _ttl_seconds: u64,
-        _precision: ClientControlStatePrecision,
-        occur_time_seconds: u64,
-    ) -> Result<(), ClientError> {
-        let table = self.table_for_command(namespace.into(), table_name.into())?;
-        let timestamp_ms = if occur_time_seconds == 0 {
-            now_unix_ms()
-        } else {
-            occur_time_seconds.saturating_mul(1_000)
-        };
-        table.control_state_family_set(ControlStateFamily::Cpc, key, timestamp_ms, values.len() as i64)
-    }
-
-    pub fn control_state_cpc_query_table(
-        &self,
-        namespace: impl Into<String>,
-        table_name: impl Into<String>,
-        key: impl Into<String>,
-        precision: ClientControlStatePrecision,
-        window: ClientControlStateWindow,
-    ) -> Result<i64, ClientError> {
-        let table = self.table_for_command(namespace.into(), table_name.into())?;
-        let (start_ms, end_ms) = client_control_state_window_bounds_ms(window, precision);
-        table.control_state_family_query(ControlStateFamily::Cpc, key, start_ms, end_ms, "sum")
-    }
-
-    fn table_for_command(
-        &self,
-        namespace: String,
-        table_name: String,
-    ) -> Result<TemporalStoreTable, ClientError> {
-        if let Some(table) = self.cached_table_ref(&namespace, &table_name) {
-            return Ok(table);
-        }
-        self.open_table_from_meta_ref(&namespace, &table_name)
-    }
-
-    pub fn matrixark_batch_append_records(
-        &self,
-        namespace: impl Into<String>,
-        table_name: impl Into<String>,
-        records: Vec<MatrixArkRecordAppend>,
-    ) -> Result<usize, ClientError> {
-        self.matrixark_batch_append_records_with_options(
-            namespace,
-            table_name,
-            records,
-            MatrixArkBatchAppendOptions::default(),
-        )
-    }
-
-    pub fn matrixark_batch_append_default_table(
-        &self,
-        records: Vec<MatrixArkRecordAppend>,
-        options: MatrixArkBatchAppendOptions,
-    ) -> Result<usize, ClientError> {
-        let (namespace, table_name) = self.default_table_names()?;
-        self.matrixark_batch_append_records_with_options(namespace, table_name, records, options)
-    }
-
-    pub fn matrixark_batch_append_default_request(
-        &self,
-        mut request: MatrixArkBatchAppendRequest,
-    ) -> Result<usize, ClientError> {
-        if request.namespace.trim().is_empty() || request.table_name.trim().is_empty() {
-            let (namespace, table_name) = self.default_table_names()?;
-            if request.namespace.trim().is_empty() {
-                request.namespace = namespace;
-            }
-            if request.table_name.trim().is_empty() {
-                request.table_name = table_name;
-            }
-        }
-        self.matrixark_batch_append_records_request(request)
-    }
-
-    pub fn matrixark_batch_append_records_with_options(
-        &self,
-        namespace: impl Into<String>,
-        table_name: impl Into<String>,
-        records: Vec<MatrixArkRecordAppend>,
-        options: MatrixArkBatchAppendOptions,
-    ) -> Result<usize, ClientError> {
-        let record_count = records.len();
-        if record_count == 0 && options.count_key.is_empty() {
-            return Err(ClientError::InvalidRequest("entries is empty".to_string()));
-        }
-        let mut grouped: HashMap<String, Vec<(String, Vec<u8>)>> =
-            HashMap::with_capacity(record_count.max(1));
-        for record in records {
-            grouped
-                .entry(record.key)
-                .or_default()
-                .push((record.field, record.value));
-        }
-        let mut commands = grouped
-            .into_iter()
-            .map(|(key, entries)| Command::HashMultiSet { key, entries })
-            .collect::<Vec<_>>();
-        if !options.count_key.is_empty() {
-            commands.push(Command::StringSet {
-                key: options.count_key,
-                value: options.count_value.into_bytes(),
-            });
-        }
-        let expected_responses = commands.len();
-        let response = self.batch_execute_table(namespace, table_name, commands)?;
-        if response.responses.len() != expected_responses {
-            return Err(ClientError::Status(
-                "batch response length mismatch".to_string(),
-            ));
-        }
-        for item in &response.responses {
-            if !item.status.ok {
-                return Err(ClientError::Status(item.status.message.clone()));
-            }
-            if !matches!(item.response, CommandResponse::Empty) {
-                return Err(ClientError::UnexpectedResponse {
-                    operation: "matrixark_batch_append_records",
-                    response: item.response.clone(),
-                });
-            }
-        }
-        Ok(record_count)
-    }
-
-    pub fn matrixark_batch_append_records_request(
-        &self,
-        request: MatrixArkBatchAppendRequest,
-    ) -> Result<usize, ClientError> {
-        self.matrixark_batch_append_records_with_options(
-            request.namespace,
-            request.table_name,
-            request.records,
-            MatrixArkBatchAppendOptions {
-                count_key: request.count_key,
-                count_value: request.count_value,
-                append_options_json: request.append_options_json,
-            },
-        )
-    }
-
-    pub fn matrixark_retrieve_context_pack_request_json(
-        &self,
-        request: MatrixArkRetrieveContextPackRequest,
-    ) -> Result<String, ClientError> {
-        self.matrixark_record_log_context_request_json("matrixark_retrieve_context_pack", request)
-    }
-
-    pub fn matrixark_retrieve_context_pack_request_json_str(
-        &self,
-        request_json: &str,
-    ) -> Result<String, ClientError> {
-        let request = parse_matrixark_context_request_json(request_json)?;
-        self.matrixark_retrieve_context_pack_request_json(request)
-    }
-
-    pub fn matrixark_scan_candidates_request_json(
-        &self,
-        request: MatrixArkRetrieveContextPackRequest,
-    ) -> Result<String, ClientError> {
-        self.matrixark_record_log_context_request_json("matrixark_scan_candidates", request)
-    }
-
-    pub fn matrixark_scan_candidates_request_json_str(
-        &self,
-        request_json: &str,
-    ) -> Result<String, ClientError> {
-        let request = parse_matrixark_context_request_json(request_json)?;
-        self.matrixark_scan_candidates_request_json(request)
-    }
-
-    pub fn matrixark_scan_candidates_native_json(
-        &self,
-        mut request: MatrixArkRetrieveContextPackRequest,
-    ) -> Result<Value, ClientError> {
-        self.apply_matrixark_default_table(&mut request)?;
-        let namespace = request.namespace.clone();
-        let table_name = request.table.clone();
-        if namespace.trim().is_empty() {
-            return Err(ClientError::InvalidRequest(
-                "matrixark native scan candidates requires namespace".to_string(),
-            ));
-        }
-        if table_name.trim().is_empty() {
-            return Err(ClientError::InvalidRequest(
-                "matrixark native scan candidates requires table".to_string(),
-            ));
-        }
-        let table = match self.cached_table_ref(&namespace, &table_name) {
-            Some(table) => table,
-            None => self.open_table_from_meta_ref(&namespace, &table_name)?,
-        };
-        table.matrixark_scan_candidates_native_json(request)
-    }
-
-    pub fn matrixark_scan_candidates_native_json_str(
-        &self,
-        request_json: &str,
-    ) -> Result<Value, ClientError> {
-        let request = parse_matrixark_context_request_json(request_json)?;
-        self.matrixark_scan_candidates_native_json(request)
-    }
-
-    pub fn matrixark_retrieve_context_pack_native_json(
-        &self,
-        mut request: MatrixArkRetrieveContextPackRequest,
-    ) -> Result<Value, ClientError> {
-        self.apply_matrixark_default_table(&mut request)?;
-        let namespace = request.namespace.clone();
-        let table_name = request.table.clone();
-        if namespace.trim().is_empty() {
-            return Err(ClientError::InvalidRequest(
-                "matrixark native context pack requires namespace".to_string(),
-            ));
-        }
-        if table_name.trim().is_empty() {
-            return Err(ClientError::InvalidRequest(
-                "matrixark native context pack requires table".to_string(),
-            ));
-        }
-        let table = match self.cached_table_ref(&namespace, &table_name) {
-            Some(table) => table,
-            None => self.open_table_from_meta_ref(&namespace, &table_name)?,
-        };
-        table.matrixark_retrieve_context_pack_native_json(request)
-    }
-
-    pub fn matrixark_retrieve_context_pack_native_json_str(
-        &self,
-        request_json: &str,
-    ) -> Result<Value, ClientError> {
-        let request = parse_matrixark_context_request_json(request_json)?;
-        self.matrixark_retrieve_context_pack_native_json(request)
-    }
-
-    fn apply_matrixark_default_table(
-        &self,
-        request: &mut MatrixArkRetrieveContextPackRequest,
-    ) -> Result<(), ClientError> {
-        if request.namespace.trim().is_empty() || request.table.trim().is_empty() {
-            let (namespace, table_name) = self.default_table_names()?;
-            if request.namespace.trim().is_empty() {
-                request.namespace = namespace;
-            }
-            if request.table.trim().is_empty() {
-                request.table = table_name;
-            }
-        }
-        Ok(())
-    }
-
-    fn matrixark_record_log_context_request_json(
-        &self,
-        op: &'static str,
-        mut request: MatrixArkRetrieveContextPackRequest,
-    ) -> Result<String, ClientError> {
-        self.apply_matrixark_default_table(&mut request)?;
-        let metaserver = if request.metaserver.trim().is_empty() {
-            self.inner.options.proxy_addr.clone()
-        } else {
-            request.metaserver
-        };
-        serde_json::to_string(&MatrixArkRecordLogRetrieveRequest {
-            op,
-            metaserver,
-            namespace: request.namespace,
-            table: request.table,
-            storage_prefix: request.storage_prefix,
-            query: request.query,
-            max_selected_refs: request.max_selected_refs,
-            record: request.record,
-            scope: request.scope,
-            secondary_index_groups: request.secondary_index_groups,
-            top_level_response: request.top_level_response,
-        })
-        .map_err(|err| ClientError::InvalidRequest(err.to_string()))
-    }
-
-    pub fn parse_matrixark_retrieve_context_pack_response(
-        &self,
-        response_line: &str,
-    ) -> Result<Value, ClientError> {
-        let response: MatrixArkRecordLogResponse = serde_json::from_str(response_line)
-            .map_err(|err| ClientError::InvalidRequest(err.to_string()))?;
-        if !response.ok {
-            let code = if response.error_code.is_empty() {
-                "matrixark_retrieve_context_pack_failed"
-            } else {
-                response.error_code.as_str()
-            };
-            return Err(ClientError::Status(format!("{code}: {}", response.error)));
-        }
-        if let Some(pack) = response.extra.get("context_pack") {
-            return Ok(pack.clone());
-        }
-        if response.value.trim().is_empty() {
-            return Err(ClientError::Status(
-                "matrixark context pack missing".to_string(),
-            ));
-        }
-        serde_json::from_str(&response.value)
-            .map_err(|err| ClientError::InvalidRequest(err.to_string()))
-    }
-
     pub fn batch_execute_with_options(
         &self,
         request: BatchExecuteRequest,
@@ -2801,7 +1781,11 @@ impl TemporalStoreClient {
                         &server_addr,
                         self.inner.options.topo_error_retry_interval_ms,
                     );
-                    self.inner.stats.record_backend_error(became_continuous);
+                    self.inner
+                        .stats
+                        .lock()
+                        .expect("client stats lock poisoned")
+                        .record_backend_error(became_continuous);
                     let refreshed = self.resolve_route(request.shard_id, true, None)?;
                     Ok(post_json_with_options(
                         &refreshed,
@@ -2836,7 +1820,7 @@ impl TemporalStoreClient {
         force_primary: bool,
     ) -> Result<ExecuteResponse, ClientError> {
         self.execute_routed_with_http(
-            &request,
+            request,
             force_primary,
             self.inner.options.http_options(),
             None,
@@ -2845,7 +1829,7 @@ impl TemporalStoreClient {
 
     fn execute_routed_with_http(
         &self,
-        request: &ExecuteRequest,
+        request: ExecuteRequest,
         force_primary: bool,
         http_options: HttpRequestOptions,
         continuous_failed_time_ms: Option<u64>,
@@ -2862,7 +1846,7 @@ impl TemporalStoreClient {
 
     fn execute_routed_with_http_and_policy(
         &self,
-        request: &ExecuteRequest,
+        request: ExecuteRequest,
         force_primary: bool,
         http_options: HttpRequestOptions,
         continuous_failed_time_ms: Option<u64>,
@@ -2889,7 +1873,11 @@ impl TemporalStoreClient {
                         continuous_failed_time_ms
                             .unwrap_or(self.inner.options.topo_error_retry_interval_ms),
                     );
-                    self.inner.stats.record_backend_error(became_continuous);
+                    self.inner
+                        .stats
+                        .lock()
+                        .expect("client stats lock poisoned")
+                        .record_backend_error(became_continuous);
                     let refreshed = self.resolve_route_with_policy(
                         request.shard_id,
                         true,
@@ -2900,7 +1888,11 @@ impl TemporalStoreClient {
                     let response =
                         post_json_with_options(&refreshed, "/execute", &request, http_options)?;
                     self.record_backend_success(&refreshed);
-                    self.inner.stats.record_backend_success();
+                    self.inner
+                        .stats
+                        .lock()
+                        .expect("client stats lock poisoned")
+                        .record_backend_success();
                     Ok(response)
                 });
         }
@@ -2916,7 +1908,7 @@ impl TemporalStoreClient {
 
     fn batch_execute_with_http(
         &self,
-        request: &BatchExecuteRequest,
+        request: BatchExecuteRequest,
         http_options: HttpRequestOptions,
         continuous_failed_time_ms: Option<u64>,
     ) -> Result<BatchExecuteResponse, ClientError> {
@@ -2930,7 +1922,11 @@ impl TemporalStoreClient {
                         continuous_failed_time_ms
                             .unwrap_or(self.inner.options.topo_error_retry_interval_ms),
                     );
-                    self.inner.stats.record_backend_error(became_continuous);
+                    self.inner
+                        .stats
+                        .lock()
+                        .expect("client stats lock poisoned")
+                        .record_backend_error(became_continuous);
                     let refreshed =
                         self.resolve_route(request.shard_id, true, continuous_failed_time_ms)?;
                     let response = post_json_with_options(
@@ -2940,7 +1936,11 @@ impl TemporalStoreClient {
                         http_options,
                     )?;
                     self.record_backend_success(&refreshed);
-                    self.inner.stats.record_backend_success();
+                    self.inner
+                        .stats
+                        .lock()
+                        .expect("client stats lock poisoned")
+                        .record_backend_success();
                     Ok(response)
                 });
         }
@@ -2993,13 +1993,15 @@ impl TemporalStoreClient {
                     ) {
                         self.inner
                             .stats
-                            .continuous_backend_failures
-                            .fetch_add(1, Ordering::Relaxed);
+                            .lock()
+                            .expect("client stats lock poisoned")
+                            .continuous_backend_failures += 1;
                     } else {
                         self.inner
                             .stats
-                            .route_cache_hits
-                            .fetch_add(1, Ordering::Relaxed);
+                            .lock()
+                            .expect("client stats lock poisoned")
+                            .route_cache_hits += 1;
                         return Ok(server_addr);
                     }
                 }
@@ -3007,8 +2009,9 @@ impl TemporalStoreClient {
         }
         self.inner
             .stats
-            .route_cache_misses
-            .fetch_add(1, Ordering::Relaxed);
+            .lock()
+            .expect("client stats lock poisoned")
+            .route_cache_misses += 1;
 
         let meta_addr = self
             .inner
@@ -3038,8 +2041,9 @@ impl TemporalStoreClient {
             );
         self.inner
             .stats
-            .route_refreshes
-            .fetch_add(1, Ordering::Relaxed);
+            .lock()
+            .expect("client stats lock poisoned")
+            .route_refreshes += 1;
         Ok(server_addr)
     }
 
@@ -3531,19 +2535,6 @@ impl TemporalStoreTable {
         })
     }
 
-    pub fn sequence_add_with_policy(
-        &self,
-        key: impl Into<String>,
-        rows: Vec<SequenceFeatureRow>,
-        policy: FeatureWritePolicy,
-    ) -> Result<(), ClientError> {
-        self.expect_empty(Command::SequenceAddWithPolicy {
-            key: key.into(),
-            rows,
-            policy,
-        })
-    }
-
     pub fn sequence_query(
         &self,
         key: impl Into<String>,
@@ -3990,38 +2981,6 @@ impl TemporalStoreTable {
         }
     }
 
-    pub fn context_write_extracted_event(
-        &self,
-        tenant_hash: u64,
-        node_hash: u64,
-        event: ContextEvent,
-        indexes: ContextExtractedEventIndexes,
-        first_write_only: bool,
-        cold_storage: bool,
-    ) -> Result<(String, Vec<String>, usize), ClientError> {
-        match self
-            .execute(Command::ContextWriteExtractedEvent {
-                tenant_hash,
-                node_hash,
-                event,
-                indexes,
-                first_write_only,
-                cold_storage,
-            })?
-            .response
-        {
-            CommandResponse::ContextExtractedEventWrite {
-                event_object_key,
-                index_object_keys,
-                written_index_count,
-            } => Ok((event_object_key, index_object_keys, written_index_count)),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "context_write_extracted_event",
-                response,
-            }),
-        }
-    }
-
     pub fn context_write_index_ref(
         &self,
         tenant_hash: u64,
@@ -4075,38 +3034,6 @@ impl TemporalStoreTable {
             CommandResponse::ContextIndexRefs { refs, .. } => Ok(refs),
             response => Err(ClientError::UnexpectedResponse {
                 operation: "context_query_index",
-                response,
-            }),
-        }
-    }
-
-    pub fn context_query_index_intersection(
-        &self,
-        tenant_hash: u64,
-        predicates: Vec<ContextIndexLookup>,
-        limit: Option<usize>,
-    ) -> Result<(Vec<ContextIndexRef>, usize, usize, usize), ClientError> {
-        match self
-            .execute(Command::ContextQueryIndexIntersection {
-                tenant_hash,
-                predicates,
-                limit,
-            })?
-            .response
-        {
-            CommandResponse::ContextIndexIntersection {
-                refs,
-                matched_index_count,
-                scanned_ref_count,
-                deduped_ref_count,
-            } => Ok((
-                refs,
-                matched_index_count,
-                scanned_ref_count,
-                deduped_ref_count,
-            )),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "context_query_index_intersection",
                 response,
             }),
         }
@@ -4201,645 +3128,20 @@ impl TemporalStoreTable {
         }
     }
 
-    pub fn context_upsert_entity(
-        &self,
-        tenant_hash: u64,
-        entity: ContextEntity,
-    ) -> Result<String, ClientError> {
-        match self
-            .execute(Command::ContextUpsertEntity {
-                tenant_hash,
-                entity,
-            })?
-            .response
-        {
-            CommandResponse::ContextObjectKey { object_key } => Ok(object_key),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "context_upsert_entity",
-                response,
-            }),
-        }
-    }
-
-    pub fn context_get_entity(
-        &self,
-        tenant_hash: u64,
-        node_hash: u64,
-        entity_hash: u64,
-    ) -> Result<Option<ContextEntity>, ClientError> {
-        match self
-            .execute(Command::ContextGetEntity {
-                tenant_hash,
-                node_hash,
-                entity_hash,
-            })?
-            .response
-        {
-            CommandResponse::ContextEntity { entity, .. } => Ok(entity),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "context_get_entity",
-                response,
-            }),
-        }
-    }
-
-    pub fn context_query_entities(
-        &self,
-        tenant_hash: u64,
-        node_hash: u64,
-        entity_hashes: Vec<u64>,
-        limit: Option<usize>,
-    ) -> Result<Vec<ContextEntity>, ClientError> {
-        match self
-            .execute(Command::ContextQueryEntities {
-                tenant_hash,
-                node_hash,
-                entity_hashes,
-                limit,
-            })?
-            .response
-        {
-            CommandResponse::ContextEntities { entities, .. } => Ok(entities),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "context_query_entities",
-                response,
-            }),
-        }
-    }
-
-    pub fn context_upsert_child_ref(
-        &self,
-        tenant_hash: u64,
-        child_ref: ContextChildRef,
-    ) -> Result<bool, ClientError> {
-        match self
-            .execute(Command::ContextUpsertChildRef {
-                tenant_hash,
-                child_ref,
-            })?
-            .response
-        {
-            CommandResponse::ContextChildRefs { created, .. } => Ok(created.unwrap_or(false)),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "context_upsert_child_ref",
-                response,
-            }),
-        }
-    }
-
-    pub fn context_query_children(
-        &self,
-        tenant_hash: u64,
-        parent_hash: u64,
-        limit: Option<usize>,
-    ) -> Result<Vec<ContextChildRef>, ClientError> {
-        match self
-            .execute(Command::ContextQueryChildren {
-                tenant_hash,
-                parent_hash,
-                limit,
-            })?
-            .response
-        {
-            CommandResponse::ContextChildRefs { refs, .. } => Ok(refs),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "context_query_children",
-                response,
-            }),
-        }
-    }
-
-    pub fn context_upsert_embedding(
-        &self,
-        tenant_hash: u64,
-        embedding: ContextEmbedding,
-    ) -> Result<String, ClientError> {
-        match self
-            .execute(Command::ContextUpsertEmbedding {
-                tenant_hash,
-                embedding,
-            })?
-            .response
-        {
-            CommandResponse::ContextObjectKey { object_key } => Ok(object_key),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "context_upsert_embedding",
-                response,
-            }),
-        }
-    }
-
-    pub fn context_query_embeddings(
-        &self,
-        tenant_hash: u64,
-        ref_hashes: Vec<u64>,
-        limit: Option<usize>,
-    ) -> Result<Vec<ContextEmbedding>, ClientError> {
-        match self
-            .execute(Command::ContextQueryEmbeddings {
-                tenant_hash,
-                ref_hashes,
-                limit,
-            })?
-            .response
-        {
-            CommandResponse::ContextEmbeddings { embeddings } => Ok(embeddings),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "context_query_embeddings",
-                response,
-            }),
-        }
-    }
-
-    pub fn context_traverse_tree(
-        &self,
-        tenant_hash: u64,
-        start_node_hash: u64,
-        query_vector: Vec<f32>,
-        max_depth: Option<u32>,
-        top_k_per_depth: Option<usize>,
-        max_children_scored_per_parent: Option<usize>,
-        max_candidate_nodes: Option<usize>,
-        leaf_only: bool,
-    ) -> Result<Vec<ContextTraversedNode>, ClientError> {
-        match self
-            .execute(Command::ContextTraverseTree {
-                tenant_hash,
-                start_node_hash,
-                query_vector,
-                max_depth,
-                top_k_per_depth,
-                max_children_scored_per_parent,
-                max_candidate_nodes,
-                leaf_only,
-            })?
-            .response
-        {
-            CommandResponse::ContextTraversedNodes { nodes } => Ok(nodes),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "context_traverse_tree",
-                response,
-            }),
-        }
-    }
-
-    pub fn context_upsert_summary(
-        &self,
-        tenant_hash: u64,
-        summary: ContextSummary,
-    ) -> Result<String, ClientError> {
-        match self
-            .execute(Command::ContextUpsertSummary {
-                tenant_hash,
-                summary,
-            })?
-            .response
-        {
-            CommandResponse::ContextObjectKey { object_key } => Ok(object_key),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "context_upsert_summary",
-                response,
-            }),
-        }
-    }
-
-    pub fn context_query_summaries(
-        &self,
-        tenant_hash: u64,
-        node_hash: u64,
-        level: u32,
-        as_of_ms: u64,
-        limit: Option<usize>,
-    ) -> Result<Vec<ContextSummary>, ClientError> {
-        match self
-            .execute(Command::ContextQuerySummaries {
-                tenant_hash,
-                node_hash,
-                level,
-                as_of_ms,
-                limit,
-            })?
-            .response
-        {
-            CommandResponse::ContextSummaries { summaries, .. } => Ok(summaries),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "context_query_summaries",
-                response,
-            }),
-        }
-    }
-
-    pub fn context_write_compression_event(
-        &self,
-        tenant_hash: u64,
-        event: ContextCompressionEvent,
-    ) -> Result<String, ClientError> {
-        match self
-            .execute(Command::ContextWriteCompressionEvent { tenant_hash, event })?
-            .response
-        {
-            CommandResponse::ContextObjectKey { object_key } => Ok(object_key),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "context_write_compression_event",
-                response,
-            }),
-        }
-    }
-
-    pub fn context_query_compression_events(
-        &self,
-        tenant_hash: u64,
-        node_hashes: Vec<u64>,
-        start_time_ms: u64,
-        end_time_ms: u64,
-        limit: Option<usize>,
-    ) -> Result<Vec<ContextCompressionEvent>, ClientError> {
-        match self
-            .execute(Command::ContextQueryCompressionEvents {
-                tenant_hash,
-                node_hashes,
-                start_time_ms,
-                end_time_ms,
-                limit,
-            })?
-            .response
-        {
-            CommandResponse::ContextCompressionEvents { events, .. } => Ok(events),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "context_query_compression_events",
-                response,
-            }),
-        }
-    }
-
-    pub fn context_compress_events(
-        &self,
-        tenant_hash: u64,
-        node_hash: u64,
-        source_start_ms: u64,
-        source_end_ms: u64,
-        compressed_time_ms: u64,
-        max_source_events: Option<usize>,
-        min_confidence: f32,
-        min_importance: f32,
-    ) -> Result<Vec<ContextCompressionEvent>, ClientError> {
-        match self
-            .execute(Command::ContextCompressEvents {
-                tenant_hash,
-                node_hash,
-                source_start_ms,
-                source_end_ms,
-                compressed_time_ms,
-                max_source_events,
-                min_confidence,
-                min_importance,
-            })?
-            .response
-        {
-            CommandResponse::ContextCompressionEvents { events, .. } => Ok(events),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "context_compress_events",
-                response,
-            }),
-        }
-    }
-
-    pub fn context_query_node_context(
-        &self,
-        tenant_hash: u64,
-        node_hash: u64,
-        summary_level: Option<u32>,
-        as_of_ms: u64,
-        cold_start_time_ms: u64,
-        cold_end_time_ms: u64,
-        compression_limit: Option<usize>,
-    ) -> Result<
-        (
-            bool,
-            Option<ContextNode>,
-            bool,
-            Option<ContextSummary>,
-            Vec<ContextCompressionEvent>,
-        ),
-        ClientError,
-    > {
-        match self
-            .execute(Command::ContextQueryNodeContext {
-                tenant_hash,
-                node_hash,
-                summary_level,
-                as_of_ms,
-                cold_start_time_ms,
-                cold_end_time_ms,
-                compression_limit,
-            })?
-            .response
-        {
-            CommandResponse::ContextNodeContext {
-                node_exists,
-                node,
-                overall_summary_exists,
-                overall_summary,
-                cold_window_summaries,
-            } => Ok((
-                node_exists,
-                node,
-                overall_summary_exists,
-                overall_summary,
-                cold_window_summaries,
-            )),
-            response => Err(ClientError::UnexpectedResponse {
-                operation: "context_query_node_context",
-                response,
-            }),
-        }
-    }
-
-    pub fn matrixark_retrieve_context_pack_native_json(
-        &self,
-        request: MatrixArkRetrieveContextPackRequest,
-    ) -> Result<Value, ClientError> {
-        let tenant_hash = request.tenant_hash;
-        if tenant_hash == 0 {
-            return Err(ClientError::InvalidRequest(
-                "matrixark native context pack requires tenant_hash".to_string(),
-            ));
-        }
-        let node_hash = if request.start_node_hash != 0 {
-            request.start_node_hash
-        } else {
-            request.node_hash
-        };
-        if node_hash == 0 {
-            return Err(ClientError::InvalidRequest(
-                "matrixark native context pack requires start_node_hash".to_string(),
-            ));
-        }
-        let as_of_ms = if request.as_of_ms != 0 {
-            request.as_of_ms
-        } else {
-            request.reference_time_ms
-        };
-        let cold_end_time_ms = if request.end_time_ms != 0 {
-            request.end_time_ms
-        } else {
-            request.reference_time_ms
-        };
-        let compression_limit = request.compression_limit.or_else(|| {
-            if request.max_selected_refs == 0 {
-                None
-            } else {
-                Some(request.max_selected_refs)
-            }
-        });
-        let query_started_ms = now_unix_ms();
-        let (node_exists, node, overall_summary_exists, overall_summary, cold_window_summaries) =
-            self.context_query_node_context(
-                tenant_hash,
-                node_hash,
-                request.summary_level,
-                as_of_ms,
-                request.start_time_ms,
-                cold_end_time_ms,
-                compression_limit,
-            )?;
-
-        let selected_capacity = if request.max_selected_refs == 0 {
-            cold_window_summaries
-                .len()
-                .saturating_add(usize::from(overall_summary.is_some()))
-                .saturating_add(1)
-        } else {
-            request
-                .max_selected_refs
-                .min(cold_window_summaries.len().saturating_add(1))
-        };
-        let mut selected_refs = Vec::with_capacity(selected_capacity);
-        let mut remote_context_refs = Vec::with_capacity(selected_refs.capacity());
-        let mut used_context_tokens = 0u64;
-        macro_rules! push_selected_ref {
-            ($ref_type:expr, $ref_hash:expr, $node_hash:expr, $event_time_ms:expr, $text:expr $(,)?) => {{
-                let ref_hash = $ref_hash;
-                let text = $text;
-                let token_estimate = estimate_context_tokens(&text);
-                used_context_tokens = used_context_tokens.saturating_add(token_estimate);
-                let text_for_remote = text.clone();
-                let ref_hash_for_remote = ref_hash.clone();
-                selected_refs.push(serde_json::json!({
-                    "ref_type": $ref_type,
-                    "ref_hash": ref_hash,
-                    "node_hash": $node_hash,
-                    "event_time_ms": $event_time_ms,
-                    "score": 1.0,
-                    "token_estimate": token_estimate,
-                    "text": text,
-                }));
-                remote_context_refs.push(serde_json::json!({
-                    "type": $ref_type,
-                    "ref_hash": ref_hash_for_remote,
-                    "node_hash": $node_hash,
-                    "score": 1.0,
-                    "tokens": token_estimate,
-                    "content": text_for_remote,
-                }));
-            }};
-        }
-        if let Some(summary) = overall_summary.as_ref() {
-            if !summary.text.is_empty() {
-                let summary_hash: serde_json::Value = stable_key_hash(&format!(
-                    "summary:{}:{}:{}",
-                    tenant_hash, summary.node_hash, summary.level
-                ))
-                .into();
-                push_selected_ref!(
-                    "summary",
-                    summary_hash,
-                    summary.node_hash,
-                    summary.valid_from_ms,
-                    summary.text.clone(),
-                );
-            }
-        }
-        for event in &cold_window_summaries {
-            if request.max_selected_refs != 0 && selected_refs.len() >= request.max_selected_refs {
-                break;
-            }
-            if event.summary.is_empty() {
-                continue;
-            }
-            push_selected_ref!(
-                "compression_event",
-                serde_json::json!(event.compression_id_hash),
-                event.node_hash,
-                event.compressed_time_ms,
-                event.summary.clone(),
-            );
-        }
-        let pack_ms = now_unix_ms().saturating_sub(query_started_ms);
-
-        Ok(serde_json::json!({
-            "native_context_pack": true,
-            "context_pack_assembly": "native_rust_direct",
-            "context_pack_id": format!(
-                "rust-direct-{}-{}",
-                query_started_ms,
-                stable_key_hash(&format!("{}:{}:{}", tenant_hash, node_hash, request.query))
-            ),
-            "tenant_hash": tenant_hash,
-            "start_node_hash": node_hash,
-            "scope_hash": request.scope_hash,
-            "query": request.query,
-            "node_exists": node_exists,
-            "node": node,
-            "overall_summary_exists": overall_summary_exists,
-            "overall_summary": overall_summary,
-            "cold_window_summaries": cold_window_summaries,
-            "selected_refs": selected_refs,
-            "remote_context_refs": remote_context_refs,
-            "used_context_tokens": used_context_tokens,
-            "used_remote_context_tokens": used_context_tokens,
-            "remote_context_budget_tokens": request.max_context_tokens,
-            "retrieval_metrics": {
-                "query_plan_ms": 0,
-                "node_traversal_ms": 0,
-                "index_prefilter_ms": 0,
-                "candidate_fetch_ms": 0,
-                "score_ms": 0,
-                "pack_ms": pack_ms,
-                "audit_ms": 0,
-                "selected_ref_count": selected_refs.len(),
-            }
-        }))
-    }
-
-    pub fn matrixark_scan_candidates_native_json(
-        &self,
-        request: MatrixArkRetrieveContextPackRequest,
-    ) -> Result<Value, ClientError> {
-        let tenant_hash = request.tenant_hash;
-        if tenant_hash == 0 {
-            return Err(ClientError::InvalidRequest(
-                "matrixark native scan candidates requires tenant_hash".to_string(),
-            ));
-        }
-        let node_hash = if request.start_node_hash != 0 {
-            request.start_node_hash
-        } else {
-            request.node_hash
-        };
-        if node_hash == 0 {
-            return Err(ClientError::InvalidRequest(
-                "matrixark native scan candidates requires start_node_hash".to_string(),
-            ));
-        }
-        let as_of_ms = if request.as_of_ms != 0 {
-            request.as_of_ms
-        } else {
-            request.reference_time_ms
-        };
-        let cold_end_time_ms = if request.end_time_ms != 0 {
-            request.end_time_ms
-        } else {
-            request.reference_time_ms
-        };
-        let compression_limit = request.compression_limit.or_else(|| {
-            if request.max_selected_refs == 0 {
-                None
-            } else {
-                Some(request.max_selected_refs)
-            }
-        });
-        let (node_exists, node, overall_summary_exists, overall_summary, cold_window_summaries) =
-            self.context_query_node_context(
-                tenant_hash,
-                node_hash,
-                request.summary_level,
-                as_of_ms,
-                request.start_time_ms,
-                cold_end_time_ms,
-                compression_limit,
-            )?;
-
-        let mut records = Vec::with_capacity(
-            cold_window_summaries
-                .len()
-                .saturating_add(if overall_summary.is_some() { 1 } else { 0 })
-                .saturating_add(1),
-        );
-        if let Some(node) = node {
-            records.push(serde_json::json!({
-                "record_type": "context_entity",
-                "tenant_hash": tenant_hash,
-                "node_hash": node_hash,
-                "node": node,
-            }));
-        }
-        if let Some(summary) = overall_summary {
-            if !summary.text.is_empty() {
-                records.push(serde_json::json!({
-                    "record_type": "context_summary",
-                    "tenant_hash": tenant_hash,
-                    "node_hash": summary.node_hash,
-                    "summary_level": summary.level,
-                    "event_time_ms": summary.valid_from_ms,
-                    "text": summary.text,
-                }));
-            }
-        }
-        for event in cold_window_summaries {
-            if request.max_selected_refs != 0 && records.len() >= request.max_selected_refs {
-                break;
-            }
-            records.push(serde_json::json!({
-                "record_type": "context_compression_event",
-                "tenant_hash": tenant_hash,
-                "node_hash": event.node_hash,
-                "event_time_ms": event.compressed_time_ms,
-                "compression_id_hash": event.compression_id_hash,
-                "summary": event.summary,
-            }));
-        }
-
-        let returned_records = records.len();
-        Ok(serde_json::json!({
-            "ok": true,
-            "native_candidate_prefilter": true,
-            "count": returned_records,
-            "records": records,
-            "scan_stats": {
-                "execution_mode": "rust_direct_native_candidate_prefilter",
-                "native_prefix_scan": true,
-                "native_secondary_index_prefilter": false,
-                "native_pack_assembly": false,
-                "pack_assembly_location": "caller_or_context_pack_api",
-                "scanned_records": returned_records,
-                "returned_records": returned_records,
-                "dropped_by_type": 0,
-                "dropped_by_scope": 0,
-                "native_scan_record_cache_hit": false,
-                "secondary_index_groups_supplied": request.secondary_index_groups.len(),
-                "secondary_index_matched_candidate_count": 0,
-                "secondary_index_dropped_candidate_count": 0,
-                "node_exists": node_exists,
-                "overall_summary_exists": overall_summary_exists,
-            }
-        }))
-    }
-
-    pub fn control_state_increment(
+    pub fn risk_increment(
         &self,
         key: impl Into<String>,
         timestamp_ms: u64,
         amount: i64,
     ) -> Result<(), ClientError> {
-        self.expect_empty(Command::ControlStateIncrement {
+        self.expect_empty(Command::RiskIncrement {
             key: key.into(),
             timestamp_ms,
             amount,
         })
     }
 
-    pub fn control_state_increment_with_options(
+    pub fn risk_increment_with_options(
         &self,
         key: impl Into<String>,
         timestamp_ms: u64,
@@ -4847,7 +3149,7 @@ impl TemporalStoreTable {
         precision_ms: Option<u64>,
         ttl_ms: Option<u64>,
     ) -> Result<(), ClientError> {
-        self.expect_empty(Command::ControlStateIncrementWithOptions {
+        self.expect_empty(Command::RiskIncrementWithOptions {
             key: key.into(),
             timestamp_ms,
             amount,
@@ -4856,7 +3158,7 @@ impl TemporalStoreTable {
         })
     }
 
-    pub fn control_state_change_add(
+    pub fn risk_change_add(
         &self,
         key: impl Into<String>,
         timestamp_ms: u64,
@@ -4864,7 +3166,7 @@ impl TemporalStoreTable {
         precision_ms: Option<u64>,
         ttl_ms: Option<u64>,
     ) -> Result<(), ClientError> {
-        self.expect_empty(Command::ControlStateChangeAdd {
+        self.expect_empty(Command::RiskChangeAdd {
             key: key.into(),
             timestamp_ms,
             value: value.into(),
@@ -4873,14 +3175,14 @@ impl TemporalStoreTable {
         })
     }
 
-    pub fn control_state_count(
+    pub fn risk_count(
         &self,
         key: impl Into<String>,
         start_ms: u64,
         end_ms: u64,
     ) -> Result<i64, ClientError> {
         match self
-            .execute(Command::ControlStateCount {
+            .execute(Command::RiskCount {
                 key: key.into(),
                 start_ms,
                 end_ms,
@@ -4889,13 +3191,13 @@ impl TemporalStoreTable {
         {
             CommandResponse::Integer { value } => Ok(value),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "control_state_count",
+                operation: "risk_count",
                 response,
             }),
         }
     }
 
-    pub fn control_state_query(
+    pub fn risk_query(
         &self,
         key: impl Into<String>,
         start_ms: u64,
@@ -4903,7 +3205,7 @@ impl TemporalStoreTable {
         aggregator: impl Into<String>,
     ) -> Result<i64, ClientError> {
         match self
-            .execute(Command::ControlStateQuery {
+            .execute(Command::RiskQuery {
                 key: key.into(),
                 start_ms,
                 end_ms,
@@ -4913,13 +3215,13 @@ impl TemporalStoreTable {
         {
             CommandResponse::Integer { value } => Ok(value),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "control_state_query",
+                operation: "risk_query",
                 response,
             }),
         }
     }
 
-    pub fn control_state_detail(
+    pub fn risk_detail(
         &self,
         key: impl Into<String>,
         start_ms: u64,
@@ -4927,7 +3229,7 @@ impl TemporalStoreTable {
         count: Option<usize>,
     ) -> Result<Vec<FeaturePoint>, ClientError> {
         match self
-            .execute(Command::ControlStateDetail {
+            .execute(Command::RiskDetail {
                 key: key.into(),
                 start_ms,
                 end_ms,
@@ -4937,39 +3239,37 @@ impl TemporalStoreTable {
         {
             CommandResponse::FeaturePoints { points } => Ok(points),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "control_state_detail",
+                operation: "risk_detail",
                 response,
             }),
         }
     }
 
-    pub fn control_state_family_set(
+    pub fn risk_family_set(
         &self,
-        family: ControlStateFamily,
+        family: RiskFamily,
         key: impl Into<String>,
         timestamp_ms: u64,
         amount: i64,
     ) -> Result<(), ClientError> {
-        self.expect_empty(Command::ControlStateSet {
+        self.expect_empty(Command::RiskSet {
             family,
             key: key.into(),
             timestamp_ms,
             amount,
-            precision_ms: None,
-            ttl_ms: None,
         })
     }
 
-    pub fn control_state_family_query(
+    pub fn risk_family_query(
         &self,
-        family: ControlStateFamily,
+        family: RiskFamily,
         key: impl Into<String>,
         start_ms: u64,
         end_ms: u64,
         aggregator: impl Into<String>,
     ) -> Result<i64, ClientError> {
         match self
-            .execute(Command::ControlStateFamilyQuery {
+            .execute(Command::RiskFamilyQuery {
                 family,
                 key: key.into(),
                 start_ms,
@@ -4980,43 +3280,15 @@ impl TemporalStoreTable {
         {
             CommandResponse::Integer { value } => Ok(value),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "control_state_family_query",
+                operation: "risk_family_query",
                 response,
             }),
         }
     }
 
-    pub fn control_state_hquery(
+    pub fn risk_family_set_and_get(
         &self,
-        key: impl Into<String>,
-        start_ms: u64,
-        end_ms: u64,
-        aggregator: impl Into<String>,
-    ) -> Result<i64, ClientError> {
-        self.control_state_family_query(ControlStateFamily::H, key, start_ms, end_ms, aggregator)
-    }
-
-    pub fn control_state_cpc_set(
-        &self,
-        key: impl Into<String>,
-        values: Vec<String>,
-        timestamp_ms: u64,
-    ) -> Result<(), ClientError> {
-        self.control_state_family_set(ControlStateFamily::Cpc, key, timestamp_ms, values.len() as i64)
-    }
-
-    pub fn control_state_cpc_query(
-        &self,
-        key: impl Into<String>,
-        start_ms: u64,
-        end_ms: u64,
-    ) -> Result<i64, ClientError> {
-        self.control_state_family_query(ControlStateFamily::Cpc, key, start_ms, end_ms, "sum")
-    }
-
-    pub fn control_state_family_set_and_get(
-        &self,
-        family: ControlStateFamily,
+        family: RiskFamily,
         key: impl Into<String>,
         timestamp_ms: u64,
         amount: i64,
@@ -5025,7 +3297,7 @@ impl TemporalStoreTable {
         aggregator: impl Into<String>,
     ) -> Result<i64, ClientError> {
         match self
-            .execute(Command::ControlStateSetAndGet {
+            .execute(Command::RiskSetAndGet {
                 family,
                 key: key.into(),
                 timestamp_ms,
@@ -5033,28 +3305,26 @@ impl TemporalStoreTable {
                 start_ms,
                 end_ms,
                 aggregator: aggregator.into(),
-                precision_ms: None,
-                ttl_ms: None,
             })?
             .response
         {
             CommandResponse::Integer { value } => Ok(value),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "control_state_family_set_and_get",
+                operation: "risk_family_set_and_get",
                 response,
             }),
         }
     }
 
-    pub fn control_state_fol_set(
+    pub fn risk_fol_set(
         &self,
         key: impl Into<String>,
         value: impl Into<Vec<u8>>,
         occur_time_ms: u64,
         ttl_ms: u64,
-        fol_type: ControlStateFolType,
+        fol_type: RiskFolType,
     ) -> Result<(), ClientError> {
-        self.expect_empty(Command::ControlStateFolSet {
+        self.expect_empty(Command::RiskFolSet {
             key: key.into(),
             value: value.into(),
             occur_time_ms,
@@ -5063,50 +3333,43 @@ impl TemporalStoreTable {
         })
     }
 
-    pub fn control_state_fol_query(&self, key: impl Into<String>) -> Result<Option<Vec<u8>>, ClientError> {
+    pub fn risk_fol_query(&self, key: impl Into<String>) -> Result<Option<Vec<u8>>, ClientError> {
         match self
-            .execute(Command::ControlStateFolQuery { key: key.into() })?
+            .execute(Command::RiskFolQuery { key: key.into() })?
             .response
         {
             CommandResponse::Bytes { value } => Ok(value),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "control_state_fol_query",
+                operation: "risk_fol_query",
                 response,
             }),
         }
     }
 
-    pub fn control_state_manager(
+    pub fn risk_manager(
         &self,
         key: impl Into<String>,
     ) -> Result<Vec<(String, Vec<u8>)>, ClientError> {
         match self
-            .execute(Command::ControlStateManager {
-                key: key.into(),
-                op_type: None,
-                field_list: Vec::new(),
-                start_offset: String::new(),
-                end_offset: String::new(),
-                is_cpc: None,
-            })?
+            .execute(Command::RiskManager { key: key.into() })?
             .response
         {
             CommandResponse::HashEntries { entries } => Ok(entries),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "control_state_manager",
+                operation: "risk_manager",
                 response,
             }),
         }
     }
 
-    pub fn control_state_debug(
+    pub fn risk_debug(
         &self,
         key: impl Into<String>,
         start_ms: u64,
         end_ms: u64,
     ) -> Result<Vec<(String, Vec<u8>)>, ClientError> {
         match self
-            .execute(Command::ControlStateDebug {
+            .execute(Command::RiskDebug {
                 key: key.into(),
                 start_ms,
                 end_ms,
@@ -5115,7 +3378,7 @@ impl TemporalStoreTable {
         {
             CommandResponse::HashEntries { entries } => Ok(entries),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "control_state_debug",
+                operation: "risk_debug",
                 response,
             }),
         }
@@ -5125,64 +3388,41 @@ impl TemporalStoreTable {
         self.client
             .inner
             .stats
-            .execute_requests
-            .fetch_add(1, Ordering::Relaxed);
+            .lock()
+            .expect("client stats lock poisoned")
+            .execute_requests += 1;
         let write = is_write(&command);
-        let request = ExecuteRequest {
-            shard_id: self.shard_id_for_command(&command),
-            command,
-        };
         if write {
             self.refresh_table_topology_before_write_if_due()?;
         }
+        let shard_id = self.shard_id_for_command(&command);
         let table_options = self.table_options();
-        if command_is_dropped(&request.command, table_options.drop_percent) {
+        if command_is_dropped(&command, table_options.drop_percent) {
             return Ok(ExecuteResponse {
                 status: Status::error("traffic_dropped", "request dropped by table drop_percent"),
                 response: CommandResponse::Empty,
             });
         }
         let force_primary = write || table_options.pin_primary;
-        let replica_fallback_allowed = !write
-            && !force_primary
-            && table_options.replica_read_policy != ReplicaReadPolicy::PinPrimary;
-        let mut current_force_primary = force_primary;
-        let mut replica_primary_fallback_used = false;
         let retry_budget_attempts = retry_attempts_for(&table_options, write);
         let mut attempt = 0;
         let mut topology_refresh_used = false;
         let response = loop {
-            let current_result = self.client.execute_routed_with_http_and_policy(
-                &request,
-                current_force_primary,
+            let current = self.client.execute_routed_with_http_and_policy(
+                ExecuteRequest {
+                    shard_id,
+                    command: command.clone(),
+                },
+                force_primary,
                 self.http_options(),
                 Some(table_options.continuous_failed_time_ms),
-                if current_force_primary {
-                    ReplicaReadPolicy::PinPrimary
-                } else {
-                    table_options.replica_read_policy
-                },
+                table_options.replica_read_policy,
                 if table_options.preferred_location.is_empty() {
                     None
                 } else {
                     Some(table_options.preferred_location.as_str())
                 },
-            );
-            let current = match current_result {
-                Ok(current) => current,
-                Err(err) => {
-                    if replica_fallback_allowed && !replica_primary_fallback_used {
-                        replica_primary_fallback_used = true;
-                        current_force_primary = true;
-                        topology_refresh_used = true;
-                        self.refresh_table_topology_after_status();
-                        sleep_before_retry(&table_options, attempt);
-                        attempt += 1;
-                        continue;
-                    }
-                    return Err(err);
-                }
-            };
+            )?;
             let decision = classify_cpp_retry_decision(
                 &current.status,
                 write,
@@ -5191,31 +3431,11 @@ impl TemporalStoreTable {
                 topology_refresh_used,
             );
             if current.status.ok || !decision.would_retry {
-                if replica_fallback_allowed
-                    && !replica_primary_fallback_used
-                    && !current.status.ok
-                    && status_is_replica_read_not_ready(&current.status)
-                {
-                    replica_primary_fallback_used = true;
-                    current_force_primary = true;
-                    topology_refresh_used = true;
-                    self.refresh_table_topology_after_status();
-                    sleep_before_retry(&table_options, attempt);
-                    attempt += 1;
-                    continue;
-                }
                 break current;
             }
             if decision.topology_retry && !topology_refresh_used {
                 topology_refresh_used = true;
                 self.refresh_table_topology_after_status();
-            }
-            if replica_fallback_allowed
-                && !replica_primary_fallback_used
-                && status_is_replica_read_not_ready(&current.status)
-            {
-                replica_primary_fallback_used = true;
-                current_force_primary = true;
             }
             sleep_before_retry(&table_options, attempt);
             attempt += 1;
@@ -5233,52 +3453,28 @@ impl TemporalStoreTable {
         self.client
             .inner
             .stats
-            .batch_execute_requests
-            .fetch_add(1, Ordering::Relaxed);
-        let table_options = self.table_options();
-        if commands.is_empty() {
-            return Ok(BatchExecuteResponse {
-                status: Status::ok(),
-                responses: Vec::new(),
-            });
-        }
-        let mut write = false;
-
-        if table_options.drop_percent == 0 {
-            for command in &commands {
-                if !write && is_write(command) {
-                    write = true;
-                    break;
-                }
-            }
-            // Fast path: skip hash/key materialization when drop percent is disabled.
-        } else {
-            let mut dropped_command_key: Option<String> = None;
-            for command in commands.iter() {
-                if !write && is_write(command) {
-                    write = true;
-                }
-                if dropped_command_key.is_none()
-                    && command_is_dropped(command, table_options.drop_percent)
-                {
-                    dropped_command_key = command_routing_key(command).map(|key| key.into_owned());
-                }
-            }
-            if let Some(key) = dropped_command_key {
-                return Ok(BatchExecuteResponse {
-                    status: Status::error(
-                        "traffic_dropped",
-                        format!(
-                            "batch command for key {} dropped by table drop_percent",
-                            key
-                        ),
-                    ),
-                    responses: Vec::new(),
-                });
-            }
-        }
+            .lock()
+            .expect("client stats lock poisoned")
+            .batch_execute_requests += 1;
+        let write = commands.iter().any(is_write);
         if write {
             self.refresh_table_topology_before_write_if_due()?;
+        }
+        let table_options = self.table_options();
+        if let Some(command) = commands
+            .iter()
+            .find(|command| command_is_dropped(command, table_options.drop_percent))
+        {
+            return Ok(BatchExecuteResponse {
+                status: Status::error(
+                    "traffic_dropped",
+                    format!(
+                        "batch command for key {:?} dropped by table drop_percent",
+                        command_key(command)
+                    ),
+                ),
+                responses: Vec::new(),
+            });
         }
         if self.options.shard_count > 1 {
             return self.batch_execute_grouped_by_shard(commands);
@@ -5287,21 +3483,21 @@ impl TemporalStoreTable {
             shard_id: self.shard_id,
             commands,
         };
-        self.batch_execute_single_shard_with_retry(&request, &table_options, write)
+        self.batch_execute_single_shard_with_retry(request, table_options)
     }
 
     fn batch_execute_single_shard_with_retry(
         &self,
-        request: &BatchExecuteRequest,
-        table_options: &TableOptions,
-        write: bool,
+        request: BatchExecuteRequest,
+        table_options: TableOptions,
     ) -> Result<BatchExecuteResponse, ClientError> {
-        let retry_budget_attempts = retry_attempts_for(table_options, write);
+        let write = request.commands.iter().any(is_write);
+        let retry_budget_attempts = retry_attempts_for(&table_options, write);
         let mut attempt = 0;
         let mut topology_refresh_used = false;
         let response = loop {
             let current = self.client.batch_execute_with_http(
-                request,
+                request.clone(),
                 self.http_options(),
                 Some(table_options.continuous_failed_time_ms),
             )?;
@@ -5350,186 +3546,37 @@ impl TemporalStoreTable {
         &self,
         commands: Vec<Command>,
     ) -> Result<BatchExecuteResponse, ClientError> {
-        use std::sync::mpsc;
-
-        #[derive(Default)]
-        struct ShardGroup {
-            indexes: Vec<usize>,
-            commands: Vec<Command>,
-            has_write: bool,
-        }
-
-        let table_options = self.table_options();
-        let total_commands = commands.len();
-        if total_commands <= 1 {
-            let write = commands.iter().any(is_write);
-            return self.batch_execute_single_shard_with_retry(
-                &BatchExecuteRequest {
-                    shard_id: self.shard_id,
-                    commands,
-                },
-                &table_options,
-                write,
-            );
-        }
-        if table_options.shard_count > 1 {
-            let first_shard = self.shard_id_for_command(&commands[0]);
-            let mut has_write = is_write(&commands[0]);
-            let mut all_single_shard = true;
-            for command in &commands[1..] {
-                has_write = has_write || is_write(command);
-                if self.shard_id_for_command(command) != first_shard {
-                    all_single_shard = false;
-                    break;
-                }
-            }
-            if all_single_shard {
-                return self.batch_execute_single_shard_with_retry(
-                    &BatchExecuteRequest {
-                        shard_id: first_shard,
-                        commands,
-                    },
-                    &table_options,
-                    has_write,
-                );
-            }
-        }
-
-        let mut first_shard = None;
-        let mut groups: HashMap<ShardId, ShardGroup> = HashMap::with_capacity(std::cmp::min(
-            table_options.shard_count as usize,
-            total_commands,
-        ));
-        let mut has_write = false;
-        let mut all_single_shard = true;
+        let mut groups: BTreeMap<ShardId, Vec<(usize, Command)>> = BTreeMap::new();
+        let total = commands.len();
         for (index, command) in commands.into_iter().enumerate() {
-            let is_write_command = is_write(&command);
-            let shard_id = self.shard_id_for_command(&command);
-            if first_shard.is_none() {
-                first_shard = Some(shard_id);
-            } else if all_single_shard && shard_id != first_shard.unwrap() {
-                all_single_shard = false;
-            }
-            let group = groups.entry(shard_id).or_default();
-            group.indexes.push(index);
-            group.has_write = group.has_write || is_write_command;
-            group.commands.push(command);
-            has_write = has_write || is_write_command;
+            groups
+                .entry(self.shard_id_for_command(&command))
+                .or_default()
+                .push((index, command));
         }
-        let first_shard = first_shard.unwrap_or(self.shard_id);
-        if all_single_shard {
-            let group = groups.remove(&first_shard).unwrap();
-            return self.batch_execute_single_shard_with_retry(
-                &BatchExecuteRequest {
-                    shard_id: first_shard,
-                    commands: group.commands,
-                },
-                &table_options,
-                has_write,
-            );
-        }
-        let mut group_entries: Vec<(ShardId, Vec<usize>, Vec<Command>, bool)> =
-            Vec::with_capacity(groups.len());
+
+        let mut responses: Vec<Option<ExecuteResponse>> = vec![None; total];
         for (shard_id, group) in groups {
-            group_entries.push((shard_id, group.indexes, group.commands, group.has_write));
-        }
-        group_entries.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
-
-        let mut responses: Vec<Option<ExecuteResponse>> = vec![None; total_commands];
-        let mut append_responses =
-            |indexes: Vec<usize>, response: BatchExecuteResponse| -> Option<Status> {
-                if !response.status.ok {
-                    return Some(response.status);
-                }
-                if response.responses.len() != indexes.len() {
-                    return Some(Status::error(
-                        "bad_response",
-                        "batch response length mismatch",
-                    ));
-                }
-                for (index, response) in indexes.into_iter().zip(response.responses.into_iter()) {
-                    responses[index] = Some(response);
-                }
-                None
-            };
-
-        const MAX_SEQUENTIAL_BATCH_SHARD_GROUPS: usize = 2;
-        const MIN_THREADED_BATCH_COMMANDS: usize = 32;
-        if group_entries.len() <= MAX_SEQUENTIAL_BATCH_SHARD_GROUPS
-            || total_commands <= MIN_THREADED_BATCH_COMMANDS
-        {
-            for (shard_id, indexes, commands, has_write) in group_entries {
-                let response = self.batch_execute_single_shard_with_retry(
-                    &BatchExecuteRequest { shard_id, commands },
-                    &table_options,
-                    has_write,
-                )?;
-                if let Some(status) = append_responses(indexes, response) {
-                    return Ok(BatchExecuteResponse {
-                        status,
-                        responses: Vec::new(),
-                    });
-                }
-            }
-            return Ok(BatchExecuteResponse {
-                status: Status::ok(),
-                responses: responses
-                    .into_iter()
-                    .map(|response| {
-                        response.unwrap_or_else(|| ExecuteResponse {
-                            status: Status::error("missing_response", "batch response missing"),
-                            response: CommandResponse::Empty,
-                        })
-                    })
-                    .collect(),
-            });
-        }
-
-        let max_worker_threads = {
-            let max_threads = std::thread::available_parallelism().map_or(4, |value| value.get());
-            max_threads.max(1).min(group_entries.len()).min(64)
-        };
-        let max_worker_threads = max_worker_threads.max(1);
-        let mut worker_jobs: Vec<Vec<(ShardId, Vec<usize>, Vec<Command>, bool)>> =
-            vec![Vec::new(); max_worker_threads];
-        let mut worker_load = vec![0usize; max_worker_threads];
-        for job in group_entries {
-            let mut chosen_worker = 0usize;
-            let mut best_load = worker_load[0];
-            for (worker, load) in worker_load.iter().enumerate().skip(1) {
-                if *load < best_load {
-                    best_load = *load;
-                    chosen_worker = worker;
-                }
-            }
-            worker_load[chosen_worker] += job.1.len();
-            worker_jobs[chosen_worker].push(job);
-        }
-        let (tx, rx) = mpsc::channel();
-        thread::scope(|scope| {
-            for jobs in worker_jobs {
-                let tx = tx.clone();
-                let table_options = &table_options;
-                scope.spawn(move || {
-                    for (shard_id, indexes, commands, has_write) in jobs {
-                        let result = self.batch_execute_single_shard_with_retry(
-                            &BatchExecuteRequest { shard_id, commands },
-                            table_options,
-                            has_write,
-                        );
-                        let _ = tx.send((indexes, result));
-                    }
-                });
-            }
-        });
-        drop(tx);
-        for (indexes, result) in rx {
-            let response = result?;
-            if let Some(status) = append_responses(indexes, response) {
+            let indexes: Vec<usize> = group.iter().map(|(index, _)| *index).collect();
+            let commands: Vec<Command> = group.into_iter().map(|(_, command)| command).collect();
+            let response = self.batch_execute_single_shard_with_retry(
+                BatchExecuteRequest { shard_id, commands },
+                self.table_options(),
+            )?;
+            if !response.status.ok {
                 return Ok(BatchExecuteResponse {
-                    status,
+                    status: response.status,
                     responses: Vec::new(),
                 });
+            }
+            if response.responses.len() != indexes.len() {
+                return Ok(BatchExecuteResponse {
+                    status: Status::error("bad_response", "batch response length mismatch"),
+                    responses: Vec::new(),
+                });
+            }
+            for (index, response) in indexes.into_iter().zip(response.responses.into_iter()) {
+                responses[index] = Some(response);
             }
         }
 
@@ -5709,18 +3756,6 @@ fn table_combine_name(namespace: &str, table_name: &str) -> String {
     format!("{namespace}/{table_name}")
 }
 
-fn parse_matrixark_context_request_json(
-    request_json: &str,
-) -> Result<MatrixArkRetrieveContextPackRequest, ClientError> {
-    if request_json.trim().is_empty() {
-        return Err(ClientError::InvalidRequest(
-            "request_json must be a JSON object".to_string(),
-        ));
-    }
-    serde_json::from_str(request_json)
-        .map_err(|err| ClientError::InvalidRequest(format!("invalid request_json: {err}")))
-}
-
 fn client_partition_id_for_offset(options: &TableOptions, offset: u64) -> ShardId {
     if options.use_cpp_partition_ids {
         if let Ok(partition) = PartitionId::new(
@@ -5804,36 +3839,6 @@ fn now_unix_ms() -> u64 {
         .unwrap_or_default()
         .as_millis()
         .min(u128::from(u64::MAX)) as u64
-}
-
-fn client_control_state_window_bounds_ms(
-    window: ClientControlStateWindow,
-    precision: ClientControlStatePrecision,
-) -> (u64, u64) {
-    let unit_ms = window.unit.duration_ms();
-    let precision_ms = i128::from(precision.precision_ms());
-    let now_ms = now_unix_ms() as i128;
-    let end_ms = if window.end <= 0 {
-        now_ms.saturating_add((window.end as i128).saturating_mul(unit_ms as i128))
-    } else {
-        (window.end as i128).saturating_mul(unit_ms as i128)
-    };
-    let start_ms = if window.start < 0 {
-        end_ms.saturating_add((window.start as i128).saturating_mul(unit_ms as i128))
-    } else {
-        (window.start as i128).saturating_mul(unit_ms as i128)
-    };
-    let start_ms = start_ms - start_ms.rem_euclid(precision_ms);
-    let end_ms = end_ms - end_ms.rem_euclid(precision_ms);
-    (
-        start_ms.max(0).min(i128::from(u64::MAX)) as u64,
-        end_ms.max(0).min(i128::from(u64::MAX)) as u64,
-    )
-}
-
-fn estimate_context_tokens(text: &str) -> u64 {
-    let chars = text.chars().count() as u64;
-    chars.saturating_add(3) / 4
 }
 
 #[cfg(test)]

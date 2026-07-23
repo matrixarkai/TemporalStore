@@ -1,2 +1,0 @@
-Command exited with non-zero status 1
-elapsed_sec=140.87

@@ -1,6 +1,5 @@
-use super::*;
+﻿use super::*;
 use crate::block_store::BlockStoreExtentState;
-use crate::control::CanonicalLogAckPolicy;
 use crate::engine::golden::{
     cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report,
 };
@@ -9,7 +8,7 @@ use crate::types::{
     ContextExtractedEventIndexes, ContextSummary, ContextWire, FeatureFilter, FeatureFilterOp,
     ReplicatedCommand,
 };
-use crate::{BlockAddress, BlockStoreOptions, LocalBlockStore, WriteAheadLogRecord};
+use crate::{BlockAddress, BlockStoreOptions, LocalBlockStore};
 
 fn wait_for_fresh_admission_second() {
     loop {
@@ -931,12 +930,6 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
 
     let cache_puts_before = engine.cache().stats().puts;
     let block_writes_before = engine.block_store().stats().writes;
-    let wal_sequence_before = engine
-        .get_stats(1)
-        .stats
-        .unwrap()
-        .write_ahead_log
-        .last_sequence;
     for idx in 0..3 {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -967,91 +960,6 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
     }
     assert!(engine.block_store().stats().writes > block_writes_before);
     assert_eq!(engine.cache().stats().puts, cache_puts_before);
-    assert_eq!(
-        engine
-            .get_stats(1)
-            .stats
-            .unwrap()
-            .write_ahead_log
-            .last_sequence,
-        wal_sequence_before + 3
-    );
-
-    let cache_puts_before_extracted = engine.cache().stats().puts;
-    let extracted = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::ContextWriteExtractedEvent {
-            tenant_hash: TENANT,
-            node_hash: NODE,
-            event: ContextEvent {
-                event_id_hash: 9001,
-                event_time_ms: START + 30,
-                ingestion_time_ms: START + 30,
-                kind: 9,
-                event_type: 9,
-                actor_hash: 0,
-                status: 0,
-                valid_until_ms: 0,
-                confidence: 0.97,
-                importance: 0.9,
-                text: "Cold extracted backfill event".to_string(),
-                source_ref: "backfill://raw-query".to_string(),
-                related_node_hashes: Vec::new(),
-                compact_attrs: Vec::new(),
-            },
-            indexes: ContextExtractedEventIndexes {
-                scope_hash: 77,
-                entity_hashes: vec![901, 902],
-                status_hash: 55,
-                source_hash: 66,
-                event_time_bucket_ms: START,
-                disabled_indexes: Vec::new(),
-            },
-            first_write_only: false,
-            cold_storage: true,
-        },
-    });
-    assert!(extracted.status.ok);
-    assert!(matches!(
-        extracted.response,
-        CommandResponse::ContextExtractedEventWrite {
-            written_index_count,
-            ..
-        } if written_index_count >= 4
-    ));
-    assert_eq!(engine.cache().stats().puts, cache_puts_before_extracted);
-
-    let cache_puts_before_wal_scan = engine.cache().stats().puts;
-    let wal_scan = engine.scan_stream(ScanStreamRequest {
-        shard_id: 1,
-        stream_kind: StreamKind::Wal,
-        page_segment_id: 0,
-        start_offset: 0,
-        end_offset: 64 * 1024,
-        max_bytes: 64 * 1024,
-    });
-    assert!(wal_scan.status.ok);
-    let wal_records = wal_scan
-        .records
-        .iter()
-        .map(|record| serde_json::from_slice::<WriteAheadLogRecord>(&record.data).unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(wal_records.len(), 4);
-    assert_eq!(engine.cache().stats().puts, cache_puts_before_wal_scan);
-    assert!(wal_records.iter().take(3).all(|record| matches!(
-        record.command,
-        Command::ContextWriteEvent {
-            cold_storage: true,
-            ..
-        }
-    )));
-    assert!(matches!(
-        wal_records.last().unwrap().command,
-        Command::ContextWriteExtractedEvent {
-            cold_storage: true,
-            ..
-        }
-    ));
 
     let block_reads_before = engine.block_store().stats().reads;
     let cache_puts_before_compress = engine.cache().stats().puts;
@@ -1061,9 +969,9 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
             tenant_hash: TENANT,
             node_hash: NODE,
             source_start_ms: START,
-            source_end_ms: START + 30,
+            source_end_ms: START + 20,
             compressed_time_ms: START + 1_000,
-            max_source_events: Some(4),
+            max_source_events: Some(3),
             min_confidence: 0.9,
             min_importance: 0.8,
         },
@@ -1073,7 +981,7 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
         compressed.response,
         CommandResponse::ContextCompressionEvents {
             ref events,
-            source_event_count: Some(4),
+            source_event_count: Some(3),
             ..
         } if events.len() == 1
     ));
@@ -1082,7 +990,7 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
 }
 
 #[test]
-fn live_page_segment_ids_scan_all_index_backed_capabilities() {
+fn live_page_segment_ids_scan_all_index_backed_data_models() {
     let mut shard = ShardState::default();
     shard.strings.insert(
         "string".to_string(),
@@ -1196,8 +1104,8 @@ fn live_page_segment_ids_scan_all_index_backed_capabilities() {
         },
     );
     shard
-        .control_state
-        .entry("control_state".to_string())
+        .risk
+        .entry("risk".to_string())
         .or_default()
         .insert(14, 1);
 
@@ -1411,9 +1319,9 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
                 },
             ],
         },
-        Command::ControlStateSet {
-            family: ControlStateFamily::Cpc,
-            key: "compact-control_state".to_string(),
+        Command::RiskSet {
+            family: RiskFamily::Cpc,
+            key: "compact-risk".to_string(),
             timestamp_ms: 45,
             amount: 3,
         },
@@ -1556,7 +1464,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     assert!(policy("feature").layout_aware_rewrite_required);
     assert!(policy("sequence").layout_aware_rewrite_required);
     assert!(policy("ips").layout_aware_rewrite_required);
-    assert!(policy("control_state").layout_aware_rewrite_required);
+    assert!(policy("risk").layout_aware_rewrite_required);
     assert!(policy("context_event").layout_aware_rewrite_required);
     assert!(policy("context_embedding").layout_aware_rewrite_required);
     assert!(policy("context_summary").layout_aware_rewrite_required);
@@ -1580,7 +1488,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         "hash",
         "feature",
         "ips",
-        "control_state",
+        "risk",
         "context_event",
         "context_embedding",
         "context_summary",
@@ -1619,7 +1527,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
 
 // shared-corpus: storage_manager_background_loop;
 #[test]
-fn storage_manager_loop_runs_prepare_reclaim_evict_expire_compact_and_index_gc() {
+fn storage_manager_cycle_runs_prepare_reclaim_evict_expire_compact_and_index_gc() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -3401,10 +3309,7 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
     });
     assert!(write.status.ok);
     assert_eq!(engine.block_store().stats().writes, 0);
-    let wal_stats = engine.write_ahead_log_store().stats(1);
-    assert_eq!(wal_stats.writes, 1);
-    assert_eq!(wal_stats.syncs, 0);
-    assert_eq!(wal_stats.last_flushed_sequence, 0);
+    assert_eq!(engine.write_ahead_log_store().stats(1).writes, 0);
     assert_eq!(engine.index_log_store().stats(1).writes, 0);
 
     let read = engine.execute(ExecuteRequest {
@@ -3421,109 +3326,6 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
     );
     assert_eq!(engine.block_store().stats().reads, 0);
     assert!(engine.cache().stats().memory_hits >= 1);
-}
-
-#[test]
-fn async_storage_publish_uses_serving_index_without_full_index_log_by_default() {
-    let dir = tempfile::tempdir().unwrap();
-    let page_dir = dir.path().join("pages");
-    let index_dir = dir.path().join("indexes");
-    let engine = TemporalEngine::with_local_dirs(
-        1024 * 1024,
-        dir.path().join("writer-cache"),
-        &page_dir,
-        &index_dir,
-    );
-    engine.load_shard(1);
-    assert!(
-        engine
-            .set_config(SetConfigRequest {
-                shard_id: 1,
-                config: Config {
-                    version: 2,
-                    async_storage: true,
-                    ..Config::default()
-                },
-            })
-            .ok
-    );
-
-    let write = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::StringSet {
-            key: "published-hot".to_string(),
-            value: b"value".to_vec(),
-        },
-    });
-    assert!(write.status.ok);
-    assert_eq!(engine.block_store().stats().writes, 0);
-    assert_eq!(engine.index_log_store().stats(1).writes, 0);
-
-    let published = engine
-        .publish_shard_index_snapshot_for_keys(1, ["published-hot".to_string()])
-        .expect("publish async page visibility");
-    assert!(published > 0);
-    assert_eq!(engine.block_store().stats().writes, 1);
-    assert_eq!(engine.index_log_store().stats(1).writes, 0);
-
-    let reader = TemporalEngine::with_local_dirs(
-        1024 * 1024,
-        dir.path().join("reader-cache"),
-        &page_dir,
-        &index_dir,
-    );
-    reader.load_shard(1);
-    let read = reader.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::StringGet {
-            key: "published-hot".to_string(),
-        },
-    });
-    assert_eq!(
-        read.response,
-        CommandResponse::Bytes {
-            value: Some(b"value".to_vec())
-        }
-    );
-}
-
-#[test]
-fn async_storage_can_force_durable_canonical_log_ack() {
-    let dir = tempfile::tempdir().unwrap();
-    let engine = TemporalEngine::with_local_dirs(
-        1024 * 1024,
-        dir.path().join("cache"),
-        dir.path().join("pages"),
-        dir.path().join("indexes"),
-    );
-    engine.load_shard(1);
-    assert!(
-        engine
-            .set_config(SetConfigRequest {
-                shard_id: 1,
-                config: Config {
-                    version: 2,
-                    async_storage: true,
-                    canonical_log_ack_policy: CanonicalLogAckPolicy::Durable,
-                    ..Config::default()
-                },
-            })
-            .ok
-    );
-
-    let write = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::StringSet {
-            key: "durable-hot".to_string(),
-            value: b"value".to_vec(),
-        },
-    });
-    assert!(write.status.ok);
-    assert_eq!(engine.block_store().stats().writes, 0);
-    let wal_stats = engine.write_ahead_log_store().stats(1);
-    assert_eq!(wal_stats.writes, 1);
-    assert_eq!(wal_stats.syncs, 1);
-    assert_eq!(wal_stats.last_flushed_sequence, 1);
 }
 
 #[test]
@@ -3559,7 +3361,7 @@ fn durable_execute_overrides_async_storage_for_raft_local_file_path() {
     assert!(write.status.ok);
     assert_eq!(engine.block_store().stats().writes, 1);
     assert_eq!(engine.write_ahead_log_store().stats(1).writes, 1);
-    assert_eq!(engine.index_log_store().stats(1).writes, 0);
+    assert_eq!(engine.index_log_store().stats(1).writes, 1);
 
     let read = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -4634,19 +4436,19 @@ fn common_delete_removes_all_data_types_for_key() {
 }
 
 #[test]
-fn common_delete_removes_cpp_control_state_family_records_for_logical_key() {
+fn common_delete_removes_cpp_risk_family_records_for_logical_key() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     for (family, amount) in [
-        (ControlStateFamily::H, 5),
-        (ControlStateFamily::Cpc, 7),
-        (ControlStateFamily::Fol, 11),
+        (RiskFamily::H, 5),
+        (RiskFamily::Cpc, 7),
+        (RiskFamily::Fol, 11),
     ] {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ControlStateSet {
+            command: Command::RiskSet {
                 family,
-                key: "control_state-cpp".to_string(),
+                key: "risk-cpp".to_string(),
                 timestamp_ms: 10,
                 amount,
             },
@@ -4659,7 +4461,7 @@ fn common_delete_removes_cpp_control_state_family_records_for_logical_key() {
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::CommonExists {
-                    key: "control_state-cpp".to_string(),
+                    key: "risk-cpp".to_string(),
                 },
             })
             .response,
@@ -4670,20 +4472,20 @@ fn common_delete_removes_cpp_control_state_family_records_for_logical_key() {
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::CommonDelete {
-                    key: "control_state-cpp".to_string(),
+                    key: "risk-cpp".to_string(),
                 },
             })
             .response,
         CommandResponse::Empty
     );
-    for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
+    for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
         assert_eq!(
             engine
                 .execute(ExecuteRequest {
                     shard_id: 1,
-                    command: Command::ControlStateFamilyQuery {
+                    command: Command::RiskFamilyQuery {
                         family,
-                        key: "control_state-cpp".to_string(),
+                        key: "risk-cpp".to_string(),
                         start_ms: 0,
                         end_ms: 20,
                         aggregator: "sum".to_string(),
@@ -4741,14 +4543,14 @@ fn common_expire_missing_key_matches_cpp_not_found() {
 }
 
 #[test]
-fn common_expire_and_ttl_cover_cpp_control_state_family_records_for_logical_key() {
+fn common_expire_and_ttl_cover_cpp_risk_family_records_for_logical_key() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let response = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::ControlStateSet {
-            family: ControlStateFamily::Cpc,
-            key: "control_state-expire".to_string(),
+        command: Command::RiskSet {
+            family: RiskFamily::Cpc,
+            key: "risk-expire".to_string(),
             timestamp_ms: 10,
             amount: 3,
         },
@@ -4760,7 +4562,7 @@ fn common_expire_and_ttl_cover_cpp_control_state_family_records_for_logical_key(
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::CommonTtl {
-                    key: "control_state-expire".to_string(),
+                    key: "risk-expire".to_string(),
                 },
             })
             .response,
@@ -4771,7 +4573,7 @@ fn common_expire_and_ttl_cover_cpp_control_state_family_records_for_logical_key(
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::CommonExpire {
-                    key: "control_state-expire".to_string(),
+                    key: "risk-expire".to_string(),
                     ttl_ms: 0,
                 },
             })
@@ -4783,7 +4585,7 @@ fn common_expire_and_ttl_cover_cpp_control_state_family_records_for_logical_key(
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::CommonTtl {
-                    key: "control_state-expire".to_string(),
+                    key: "risk-expire".to_string(),
                 },
             })
             .response,
@@ -4793,9 +4595,9 @@ fn common_expire_and_ttl_cover_cpp_control_state_family_records_for_logical_key(
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::ControlStateFamilyQuery {
-                    family: ControlStateFamily::Cpc,
-                    key: "control_state-expire".to_string(),
+                command: Command::RiskFamilyQuery {
+                    family: RiskFamily::Cpc,
+                    key: "risk-expire".to_string(),
                     start_ms: 0,
                     end_ms: 20,
                     aggregator: "sum".to_string(),
@@ -4931,14 +4733,14 @@ fn ips_query_last_returns_recent_instances() {
 }
 
 #[test]
-fn control_state_count_sums_window() {
+fn risk_count_sums_window() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     for (timestamp_ms, amount) in [(10, 1), (20, 2), (30, 4)] {
         engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ControlStateIncrement {
-                key: "control_state".to_string(),
+            command: Command::RiskIncrement {
+                key: "risk".to_string(),
                 timestamp_ms,
                 amount,
             },
@@ -4948,8 +4750,8 @@ fn control_state_count_sums_window() {
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::ControlStateCount {
-                    key: "control_state".to_string(),
+                command: Command::RiskCount {
+                    key: "risk".to_string(),
                     start_ms: 15,
                     end_ms: 30,
                 },
@@ -5331,7 +5133,7 @@ fn control_api_reads_and_scans_wal_stream() {
 }
 
 #[test]
-fn control_api_index_log_stream_is_empty_by_default() {
+fn control_api_reads_and_scans_index_log_stream() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -5364,7 +5166,11 @@ fn control_api_index_log_stream_is_empty_by_default() {
         size: 8192,
     });
     assert!(stream.status.ok);
-    assert!(stream.data.is_empty());
+    let text = String::from_utf8(stream.data).unwrap();
+    assert!(text.contains("\"sequence\":1"));
+    assert!(text.contains("\"sequence\":2"));
+    assert!(text.contains("\"strings\""));
+    assert!(text.contains("\"hashes\""));
 
     let scan = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
@@ -5374,9 +5180,15 @@ fn control_api_index_log_stream_is_empty_by_default() {
         end_offset: 8192,
         max_bytes: 8192,
     });
-    assert!(scan.status.ok);
-    assert!(scan.records.is_empty());
-    assert_eq!(engine.index_log_store().stats(1).writes, 0);
+    assert_eq!(scan.records.len(), 2);
+
+    let last_record: crate::index_log::IndexLogRecord =
+        serde_json::from_slice(&scan.records[1].data).unwrap();
+    assert_eq!(last_record.sequence, 2);
+    assert_eq!(
+        last_record.index["hashes"]["h"]["f"]["page_segment_id"],
+        serde_json::json!(0)
+    );
     assert_eq!(engine.index_log_store().stats(1).last_sequence, 2);
 }
 
@@ -6009,14 +5821,14 @@ fn ips_compaction_rewrites_shared_timestamped_page_once() {
 }
 
 #[test]
-fn control_state_change_matches_cpp_distinct_field_semantics() {
+fn risk_change_matches_cpp_distinct_field_semantics() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     for (timestamp_ms, value) in [(10, "device-a"), (20, "device-a"), (30, "device-b")] {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ControlStateChangeAdd {
-                key: "control_state-change".to_string(),
+            command: Command::RiskChangeAdd {
+                key: "risk-change".to_string(),
                 timestamp_ms,
                 value: value.as_bytes().to_vec(),
                 precision_ms: Some(10),
@@ -6029,8 +5841,8 @@ fn control_state_change_matches_cpp_distinct_field_semantics() {
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::ControlStateQuery {
-                    key: "control_state-change".to_string(),
+                command: Command::RiskQuery {
+                    key: "risk-change".to_string(),
                     start_ms: 0,
                     end_ms: 40,
                     aggregator: "change".to_string(),
@@ -6043,8 +5855,8 @@ fn control_state_change_matches_cpp_distinct_field_semantics() {
     for (timestamp_ms, value) in [(10, "buyer-1"), (20, "buyer-1"), (30, "buyer-2")] {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ControlStateChangeAdd {
-                key: control_state_family_key(ControlStateFamily::H, "control_state-change"),
+            command: Command::RiskChangeAdd {
+                key: risk_family_key(RiskFamily::H, "risk-change"),
                 timestamp_ms,
                 value: value.as_bytes().to_vec(),
                 precision_ms: None,
@@ -6057,9 +5869,9 @@ fn control_state_change_matches_cpp_distinct_field_semantics() {
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::ControlStateFamilyQuery {
-                    family: ControlStateFamily::H,
-                    key: "control_state-change".to_string(),
+                command: Command::RiskFamilyQuery {
+                    family: RiskFamily::H,
+                    key: "risk-change".to_string(),
                     start_ms: 0,
                     end_ms: 40,
                     aggregator: "change".to_string(),
@@ -6071,14 +5883,14 @@ fn control_state_change_matches_cpp_distinct_field_semantics() {
 }
 
 #[test]
-fn control_state_query_supports_first_last_and_detail_list() {
+fn risk_query_supports_first_last_and_detail_list() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     for (timestamp_ms, amount) in [(10, 5), (20, -2), (30, 7)] {
         engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ControlStateIncrement {
-                key: "control_state".to_string(),
+            command: Command::RiskIncrement {
+                key: "risk".to_string(),
                 timestamp_ms,
                 amount,
             },
@@ -6089,8 +5901,8 @@ fn control_state_query_supports_first_last_and_detail_list() {
             engine
                 .execute(ExecuteRequest {
                     shard_id: 1,
-                    command: Command::ControlStateQuery {
-                        key: "control_state".to_string(),
+                    command: Command::RiskQuery {
+                        key: "risk".to_string(),
                         start_ms: 0,
                         end_ms: 40,
                         aggregator: aggregator.to_string(),
@@ -6104,8 +5916,8 @@ fn control_state_query_supports_first_last_and_detail_list() {
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::ControlStateDetail {
-                    key: "control_state".to_string(),
+                command: Command::RiskDetail {
+                    key: "risk".to_string(),
                     start_ms: 15,
                     end_ms: 40,
                     count: Some(2),
@@ -6128,7 +5940,7 @@ fn control_state_query_supports_first_last_and_detail_list() {
 }
 
 #[test]
-fn control_state_fol_matches_cpp_first_last_string_semantics() {
+fn risk_fol_matches_cpp_first_last_string_semantics() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
 
@@ -6137,12 +5949,12 @@ fn control_state_fol_matches_cpp_first_last_string_semantics() {
             engine
                 .execute(ExecuteRequest {
                     shard_id: 1,
-                    command: Command::ControlStateFolSet {
-                        key: "control_state-fol-first".to_string(),
+                    command: Command::RiskFolSet {
+                        key: "risk-fol-first".to_string(),
                         value: value.as_bytes().to_vec(),
                         occur_time_ms,
                         ttl_ms: 60_000,
-                        fol_type: ControlStateFolType::First,
+                        fol_type: RiskFolType::First,
                     },
                 })
                 .status
@@ -6152,12 +5964,12 @@ fn control_state_fol_matches_cpp_first_last_string_semantics() {
             engine
                 .execute(ExecuteRequest {
                     shard_id: 1,
-                    command: Command::ControlStateFolSet {
-                        key: "control_state-fol-last".to_string(),
+                    command: Command::RiskFolSet {
+                        key: "risk-fol-last".to_string(),
                         value: value.as_bytes().to_vec(),
                         occur_time_ms,
                         ttl_ms: 60_000,
-                        fol_type: ControlStateFolType::Last,
+                        fol_type: RiskFolType::Last,
                     },
                 })
                 .status
@@ -6169,8 +5981,8 @@ fn control_state_fol_matches_cpp_first_last_string_semantics() {
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::ControlStateFolQuery {
-                    key: "control_state-fol-first".to_string(),
+                command: Command::RiskFolQuery {
+                    key: "risk-fol-first".to_string(),
                 },
             })
             .response,
@@ -6182,8 +5994,8 @@ fn control_state_fol_matches_cpp_first_last_string_semantics() {
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::ControlStateFolQuery {
-                    key: "control_state-fol-last".to_string(),
+                command: Command::RiskFolQuery {
+                    key: "risk-fol-last".to_string(),
                 },
             })
             .response,
@@ -6194,7 +6006,7 @@ fn control_state_fol_matches_cpp_first_last_string_semantics() {
 }
 
 #[test]
-fn feature_write_policy_sequence_batch_ips_dimensions_and_control_state_precision_work() {
+fn feature_write_policy_sequence_batch_ips_dimensions_and_risk_precision_work() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
 
@@ -6392,8 +6204,8 @@ fn feature_write_policy_sequence_batch_ips_dimensions_and_control_state_precisio
 
     engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::ControlStateIncrementWithOptions {
-            key: "control_state-bucket".to_string(),
+        command: Command::RiskIncrementWithOptions {
+            key: "risk-bucket".to_string(),
             timestamp_ms: 1_234,
             amount: 3,
             precision_ms: Some(1_000),
@@ -6402,8 +6214,8 @@ fn feature_write_policy_sequence_batch_ips_dimensions_and_control_state_precisio
     });
     engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::ControlStateIncrementWithOptions {
-            key: "control_state-bucket".to_string(),
+        command: Command::RiskIncrementWithOptions {
+            key: "risk-bucket".to_string(),
             timestamp_ms: 1_999,
             amount: 4,
             precision_ms: Some(1_000),
@@ -6414,8 +6226,8 @@ fn feature_write_policy_sequence_batch_ips_dimensions_and_control_state_precisio
         engine
             .execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::ControlStateDetail {
-                    key: "control_state-bucket".to_string(),
+                command: Command::RiskDetail {
+                    key: "risk-bucket".to_string(),
                     start_ms: 0,
                     end_ms: 2_000,
                     count: None,
@@ -6434,7 +6246,7 @@ fn feature_write_policy_sequence_batch_ips_dimensions_and_control_state_precisio
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::CommonTtl {
-                    key: "control_state-bucket".to_string(),
+                    key: "risk-bucket".to_string(),
                 },
             })
             .response,
@@ -6605,7 +6417,7 @@ fn table_write_qps_config_is_shared_across_loaded_table_shards() {
 #[test]
 fn tenant_read_qps_config_is_shared_across_tables() {
     let engine = TemporalEngine::default();
-    for (shard_id, table_name, key) in [(1, "feature_table", "k1"), (2, "control_state_table", "k2")] {
+    for (shard_id, table_name, key) in [(1, "feature_table", "k1"), (2, "risk_table", "k2")] {
         assert!(
             engine
                 .load_shard_with(LoadShardRequest {
@@ -6744,9 +6556,9 @@ fn stats_include_cpp_style_partition_and_object_manager_accounting() {
             timestamp_ms: 30,
             instance: b"i".to_vec(),
         },
-        Command::ControlStateSet {
-            family: ControlStateFamily::Cpc,
-            key: "control_state-key".to_string(),
+        Command::RiskSet {
+            family: RiskFamily::Cpc,
+            key: "risk-key".to_string(),
             timestamp_ms: 40,
             amount: 5,
         },

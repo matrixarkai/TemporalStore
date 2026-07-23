@@ -50,7 +50,7 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 - Node L1 policy: generate when child summaries, >=3 source events, or >=180 estimated source tokens
 - Embedding note: This run completed with the local deterministic embedding backend. The local sentence-transformers OSS probe timed out before this trace was generated, so the data-flow artifact is complete but not an OSS-embedding proof.
 
-## Capability Field Guide
+## Data Model Field Guide
 
 |model|purpose|important_fields|
 |---|---|---|
@@ -163,7 +163,7 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 |1284491766207212107||||resource_deadline: Purchase order must be ready by July 15, 2026|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_approval_pack...|
 |6873945044330384682||||resource_policy: be ready by July 15, 2026|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_approval_pack...|
 |1400600991763049791||||resource_approval: Packet|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_approval_pack...|
-|3705294793213905754||||resource_control_state: Vendor selection is blocked if finance approval is not attached|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_approval_pack...|
+|3705294793213905754||||resource_risk: Vendor selection is blocked if finance approval is not attached|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_approval_pack...|
 |5654756010519791030||||tool: Import PDF resource for MatrixArk parsing: Project Aurora GPU Approval Packet||
 |3738510915562235548||||resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_runbook.pdf#p...|
 |3500512499410010384||||resource_approval: before vendor selection|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_runbook.pdf#p...|
@@ -172,7 +172,7 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 |1867230627180458883||||resource_cost: Update Memo|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_budget_update.pdf...|
 |8527016089933923295||||resource_policy: not be used for current-state answers|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_budget_update.pdf...|
 |1753182679162406059||||resource_approval: r: Alice confirmed the updated cap|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_budget_update.pdf...|
-|2307859885012344902||||resource_control_state: 42000 dollars is historical and should not be used for current-state answers|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_budget_update.pdf...|
+|2307859885012344902||||resource_risk: 42000 dollars is historical and should not be used for current-state answers|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_budget_update.pdf...|
 |4299602754758533188||||resource_procedure: ed the updated cap|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_budget_update.pdf...|
 |213976219643900850||||tool: Import PDF resource for MatrixArk parsing: Budget Update Memo||
 |2312897152796500630||||resource_decision: Alice from finance approved the GPU purchase|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_policy.md#hea...|
@@ -181,7 +181,7 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 |9181802928853541024||||resource_deadline: The purchase order must be ready by July 15, 2026|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_policy.md#hea...|
 |8571381764593228331||||resource_policy: Decision: Alice from finance approved the GPU purchase|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_policy.md#hea...|
 |4011494514020799277||||resource_approval: the GPU purchase|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_policy.md#hea...|
-|1389497734384339325||||resource_control_state: Vendor selection must stop if finance approval is missing|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_policy.md#hea...|
+|1389497734384339325||||resource_risk: Vendor selection must stop if finance approval is missing|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_policy.md#hea...|
 |1212042360257752752||||tool: Import Markdown resource for MatrixArk parsing: Project Aurora GPU Policy||
 |1746055786593003872||||resource_owner: missing, assign Bob before creating a purchase order|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_troubleshooti...|
 |1191324747560101318||||resource_troubleshooting_step: ing|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_troubleshooti...|
@@ -204,14 +204,14 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 |332706507544913773||resource_deadline|deadline:<repo>/docs/debug/matrixark_message_resource_tr:Purchase order must be read...|LATEST|resource_deadline: Purchase order must be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_approval_pack...|
 |7691857620508400519||resource_policy|policy:<repo>/docs/debug/matrixark_message_resource_tr:be ready by July 15, 2026|LATEST|resource_policy: be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the P...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_approval_pack...|
 |5734834108424821547||resource_approval|approval:<repo>/docs/debug/matrixark_message_resource_tr:Packet|LATEST|resource_approval: Packet. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_approval_pack...|
-|3681193860540582228||resource_control_state|control_state:<repo>/docs/debug/matrixark_message_resource_tr:Vendor selection is blocked if ...|LATEST|resource_control_state: Vendor selection is blocked if finance approval is not attached. Source: Project Aurora GPU Approval P...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_approval_pack...|
+|3681193860540582228||resource_risk|risk:<repo>/docs/debug/matrixark_message_resource_tr:Vendor selection is blocked if ...|LATEST|resource_risk: Vendor selection is blocked if finance approval is not attached. Source: Project Aurora GPU Approval P...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_approval_pack...|
 |2512649410389002367||resource_troubleshooting|troubleshooting:<repo>/docs/debug/matrixark_message_resource_tr:Procedure: Attach fi...|LATEST|resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection. Source: GPU Procurement Ru...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_runbook.pdf#p...|
 |3446279725772254762||resource_approval|approval:<repo>/docs/debug/matrixark_message_resource_tr:before vendor selection|LATEST|resource_approval: before vendor selection. Source: GPU Procurement Runbook Procedure: Attach finance approval before...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_runbook.pdf#p...|
 |4498763483140346875||resource_procedure|procedure:<repo>/docs/debug/matrixark_message_resource_tr:Attach finance approval be...|LATEST|resource_procedure: Attach finance approval before vendor selection. Source: GPU Procurement Runbook Procedure: Attac...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_runbook.pdf#p...|
 |7091862246613828923||resource_cost|cost:<repo>/docs/debug/matrixark_message_resource_tr:Update Memo|LATEST|resource_cost: Update Memo. Source: Budget Update Memo Update: The backup GPU quote increased the cap from 42000 doll...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_budget_update.pdf...|
 |9192194601650663443||resource_policy|policy:<repo>/docs/debug/matrixark_message_resource_tr:not be used for current-state...|LATEST|resource_policy: not be used for current-state answers. Source: Budget Update Memo Update: The backup GPU quote incre...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_budget_update.pdf...|
 |4162387875305440817||resource_approval|approval:<repo>/docs/debug/matrixark_message_resource_tr:r: Alice confirmed the upda...|LATEST|resource_approval: r: Alice confirmed the updated cap. Source: Budget Update Memo Update: The backup GPU quote increa...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_budget_update.pdf...|
-|9159433939993899167||resource_control_state|control_state:<repo>/docs/debug/matrixark_message_resource_tr:42000 dollars is historical and...|LATEST|resource_control_state: 42000 dollars is historical and should not be used for current-state answers. Source: Budget Update Me...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_budget_update.pdf...|
+|9159433939993899167||resource_risk|risk:<repo>/docs/debug/matrixark_message_resource_tr:42000 dollars is historical and...|LATEST|resource_risk: 42000 dollars is historical and should not be used for current-state answers. Source: Budget Update Me...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_budget_update.pdf...|
 |3229343125285924193||resource_procedure|procedure:<repo>/docs/debug/matrixark_message_resource_tr:ed the updated cap|LATEST|resource_procedure: ed the updated cap. Source: Budget Update Memo Update: The backup GPU quote increased the cap fro...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_budget_update.pdf...|
 |8155224278018612603||resource_decision|decision:Project Aurora GPU Policy:Alice from finance approved the GPU purchase|LATEST|resource_decision: Alice from finance approved the GPU purchase. Source: # Project Aurora GPU Policy Decision: Alice ...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_policy.md#hea...|
 |2599613715978458484||resource_owner|owner:Project Aurora GPU Policy:Bob owns procurement and vendor coordination|LATEST|resource_owner: Bob owns procurement and vendor coordination. Source: # Project Aurora GPU Policy Decision: Alice fro...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_policy.md#hea...|
@@ -219,7 +219,7 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 |766117570688515982||resource_deadline|deadline:Project Aurora GPU Policy:The purchase order must be ready by July 15, 2026|LATEST|resource_deadline: The purchase order must be ready by July 15, 2026. Source: # Project Aurora GPU Policy Decision: A...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_policy.md#hea...|
 |3036499234095687803||resource_policy|policy:Project Aurora GPU Policy:Decision: Alice from finance approved the GPU purchase|LATEST|resource_policy: Decision: Alice from finance approved the GPU purchase. Source: # Project Aurora GPU Policy Decision...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_policy.md#hea...|
 |3337745580132946892||resource_approval|approval:Project Aurora GPU Policy:the GPU purchase|LATEST|resource_approval: the GPU purchase. Source: # Project Aurora GPU Policy Decision: Alice from finance approved the GP...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_policy.md#hea...|
-|1888419120349658147||resource_control_state|control_state:Project Aurora GPU Policy:Vendor selection must stop if finance approval is missing|LATEST|resource_control_state: Vendor selection must stop if finance approval is missing. Source: # Project Aurora GPU Policy Decisio...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_policy.md#hea...|
+|1888419120349658147||resource_risk|risk:Project Aurora GPU Policy:Vendor selection must stop if finance approval is missing|LATEST|resource_risk: Vendor selection must stop if finance approval is missing. Source: # Project Aurora GPU Policy Decisio...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_policy.md#hea...|
 |3868382368249208523||resource_owner|owner:Troubleshooting:missing, assign Bob before creating a purchase order|LATEST|resource_owner: missing, assign Bob before creating a purchase order. Source: # Troubleshooting If vendor selection f...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_troubleshooti...|
 |5115347200010598359||resource_troubleshooting|troubleshooting:Troubleshooting:ing|LATEST|resource_troubleshooting_step: ing. Source: # Troubleshooting If vendor selection fails, first verify the finance app...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_troubleshooti...|
 |1595147935229124402||resource_approval|approval:Troubleshooting:attachment|LATEST|resource_approval: attachment. Source: # Troubleshooting If vendor selection fails, first verify the finance approval...|<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_troubleshooti...|
@@ -509,9 +509,9 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 |source_type:resource_fact|resource_fact|3705294793213905754|4418781127472015957||
 |resource_type:pdf|resource_fact|3705294793213905754|4418781127472015957||
 |unit_kind:pdf_page|resource_fact|3705294793213905754|4418781127472015957||
-|entity_type:resource_control_state|resource_fact|3705294793213905754|4418781127472015957||
+|entity_type:resource_risk|resource_fact|3705294793213905754|4418781127472015957||
 |entity_type:resource_fact|resource_fact|3705294793213905754|4418781127472015957||
-|event_type:resource_control_state|resource_fact|3705294793213905754|4418781127472015957||
+|event_type:resource_risk|resource_fact|3705294793213905754|4418781127472015957||
 |keyword:project|resource_fact|3705294793213905754|4418781127472015957||
 |keyword:aurora|resource_fact|3705294793213905754|4418781127472015957||
 |keyword:gpu|resource_fact|3705294793213905754|4418781127472015957||
@@ -2179,7 +2179,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "source_chunk_hash": 4418781127472015957,
       "source_ref": "<repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
       "sparse_score": 0.7857142857142857,
-      "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
+      "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
       "time_score": 1.0,
       "token_estimate": 51,
       "updated_at_ms": 1782522156498
@@ -2248,7 +2248,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "sparse_score": 0.7857142857142857,
       "stale_or_superseded": false,
       "supersedes_chunk_hash": null,
-      "text": "resource <repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_approval_packet.pdf <repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
+      "text": "resource <repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_approval_packet.pdf <repo>/docs/debug/matrixark_message_resource_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
       "time_score": 1.0,
       "token_estimate": 76,
       "updated_at_ms": 1782522156498,

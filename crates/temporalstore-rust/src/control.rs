@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+﻿use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -7,19 +7,6 @@ use crate::types::{BatchExecuteResponse, Command, ExecuteResponse};
 use crate::types::{ShardId, Status};
 use crate::wal::WriteAheadLogStats;
 use matrixcache::CacheStats;
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CanonicalLogAckPolicy {
-    BestEffort,
-    Durable,
-}
-
-impl Default for CanonicalLogAckPolicy {
-    fn default() -> Self {
-        Self::BestEffort
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Config {
@@ -41,8 +28,6 @@ pub struct Config {
     pub extend_config: BTreeMap<String, String>,
     pub feature_max_size: usize,
     pub async_storage: bool,
-    #[serde(default)]
-    pub canonical_log_ack_policy: CanonicalLogAckPolicy,
 }
 
 impl Default for Config {
@@ -59,8 +44,7 @@ impl Default for Config {
             tenant_write_qps: None,
             extend_config: BTreeMap::new(),
             feature_max_size: 5000,
-            async_storage: true,
-            canonical_log_ack_policy: CanonicalLogAckPolicy::BestEffort,
+            async_storage: false,
         }
     }
 }
@@ -186,12 +170,8 @@ pub struct ShardCanonicalStorageStats {
     pub storage_zone_used_bytes: u64,
     pub storage_zone_stale_bytes: u64,
     pub page_reads: u64,
-    #[serde(default)]
-    pub cold_scan_no_cache_reads: u64,
     pub page_writes: u64,
     pub block_reads: u64,
-    #[serde(default)]
-    pub cold_block_reads: u64,
     pub block_writes: u64,
     pub bytes_read: u64,
     pub bytes_written: u64,
@@ -212,7 +192,7 @@ pub struct ShardStats {
     pub feature_records: usize,
     pub sequence_records: usize,
     pub ips_records: usize,
-    pub control_state_records: usize,
+    pub risk_records: usize,
     pub storage_bytes: u64,
     pub object_manager: ObjectManagerStats,
     pub partition_info: PartitionInfoStats,

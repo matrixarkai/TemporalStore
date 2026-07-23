@@ -1580,11 +1580,11 @@ pub fn openviking_context_parity_cases() -> Vec<ContextOpenVikingParityCase> {
             benchmark_proven: true,
         },
         ContextOpenVikingParityCase {
-            case_name: "longmem_memory_update_control_state_score".to_string(),
+            case_name: "longmem_memory_update_risk_score".to_string(),
             category: "memory_update".to_string(),
-            query: "What control_state score was recorded after the latest fraud review?".to_string(),
-            positive_memory: "Latest fraud review: the checkout control_state score was updated to 87 after the payment incident escalated.".to_string(),
-            stale_memory: "Earlier fraud review: the checkout control_state score was 42 before the payment incident escalated.".to_string(),
+            query: "What risk score was recorded after the latest fraud review?".to_string(),
+            positive_memory: "Latest fraud review: the checkout risk score was updated to 87 after the payment incident escalated.".to_string(),
+            stale_memory: "Earlier fraud review: the checkout risk score was 42 before the payment incident escalated.".to_string(),
             expected_terms: vec!["87".to_string()],
             expected_model_profile: "vikingmem-gpt-4o-mini-reader".to_string(),
             uses_vlm: false,
@@ -3419,8 +3419,8 @@ fn benchmark_context_body(index: usize, topic_index: usize, topic_sequence: usiz
         "earlier memory"
     };
     let detail = match (topic_index % 4, is_latest_update) {
-        (0, true) => "checkout payment control_state score changed after a fraud review, with the current status captured for later QA",
-        (0, false) => "checkout payment control_state score baseline from the original fraud review remains available as historical context",
+        (0, true) => "checkout payment risk score changed after a fraud review, with the current status captured for later QA",
+        (0, false) => "checkout payment risk score baseline from the original fraud review remains available as historical context",
         (1, true) => "backend service dependency outage created a current temporal incident timeline and recovery sequence",
         (1, false) => "backend service dependency health snapshot captured the initial incident history before recovery",
         (2, true) => "customer preference was updated during a later conversation session and replaced the stale setting",
@@ -4351,7 +4351,7 @@ fn truncate_words(value: &str, limit: usize) -> String {
 
 fn context_importance(body: &str) -> f32 {
     let lower = body.to_ascii_lowercase();
-    if lower.contains("incident") || lower.contains("customer") || lower.contains("control_state") {
+    if lower.contains("incident") || lower.contains("customer") || lower.contains("risk") {
         0.9
     } else {
         0.5

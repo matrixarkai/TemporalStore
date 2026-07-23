@@ -82,7 +82,7 @@ Interpretation:
 
 - The one-hour TemporalStore soak did not report operation errors or client loop crashes.
 - Read/query latency was higher than the earlier focused scale tests because three workloads ran at the same time on the same small meta/client node.
-- Earlier TemporalStore focused scale results are still the better source for per-capability latency under controlled load.
+- Earlier TemporalStore focused scale results are still the better source for per-data-model latency under controlled load.
 
 ## TemporalStore Focused Scale Results
 
@@ -192,7 +192,7 @@ Interpretation:
 
 ## Cross-System Reading
 
-| System | Strongest result from these runs | Main control_state found |
+| System | Strongest result from these runs | Main risk found |
 |---|---|---|
 | TemporalStore | Native temporal/sequence/aggregate serving works with secondary visibility and no soak loop crashes | EFS durable write path limits write QPS on small nodes; proxy FeatureQuery still needs debugging |
 | ByteKV | Mixed KV workload completed 1.74M ops with `0` benchmark op errors | benchmark client cleanup segfault/abort after successful rows |

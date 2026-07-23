@@ -5,7 +5,7 @@
 The C++ proxy is a production front door:
 
 - starts a legacy C++ RPC server with framed service support
-- parses legacy C++ framed methods such as `Get`, `Set`, `FeatureAdd`, `FeatureQuery`, `ControlStateHset`, `HMGet`, `HMSet`, `HGetAll`, and `HLen`
+- parses legacy C++ framed methods such as `Get`, `Set`, `FeatureAdd`, `FeatureQuery`, `RiskHset`, `HMGet`, `HMSet`, `HGetAll`, and `HLen`
 - opens tables through the C++ client per namespace/table
 - forwards requests through the C++ client's router and backend server pool
 - uses the client `MetaSyncer` for topology refresh
@@ -110,7 +110,7 @@ Rust proxy is still not a C++ proxy drop-in:
 - no legacy framed parser
 - no legacy C++ framed request/response wire compatibility
 - no legacy framed method compatibility; Rust exposes JSON aliases for `Get`, `Set`, `FeatureAdd`,
-  `ControlStateHset`, `HMGet`, `HMSet`, `HGetAll`, and `HLen` instead
+  `RiskHset`, `HMGet`, `HMSet`, `HGetAll`, and `HLen` instead
 - no full C++ partition-set topology/slot router beyond the open-source table topology path
 - no live Consul registration; Rust exposes deterministic service-registry name/status reports
 - no proxy location/VDC/CMDB integration

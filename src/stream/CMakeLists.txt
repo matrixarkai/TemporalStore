@@ -8,10 +8,11 @@ add_library(recordstream ${HDRS} ${SRCS})
 target_link_libraries(recordstream
     common
     bcache2_proto
-    matrixobjectstore
+    bytestore
     byte
     gflags
-    fiu)
+    fiu
+    ev)
 if (CURL_FOUND)
     target_link_libraries(recordstream CURL::libcurl OpenSSL::Crypto)
     target_compile_definitions(recordstream PUBLIC BCACHE2_ENABLE_S3_STORE)

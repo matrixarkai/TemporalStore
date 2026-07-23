@@ -1114,13 +1114,6 @@ fn block_store_options_from_env() -> BlockStoreOptions {
             "TS_PAGE_STORE_COMPRESSION_LEVEL",
             defaults.compression_level,
         ),
-        sync_on_append: env_bool(
-            "TEMPORALSTORE_BLOCK_STORE_SYNC_ON_APPEND",
-            env_bool(
-                "TS_BLOCK_STORE_SYNC_ON_APPEND",
-                env_bool("TS_PAGE_STORE_SYNC_ON_APPEND", defaults.sync_on_append),
-            ),
-        ),
     }
 }
 
@@ -1903,12 +1896,12 @@ fn is_raft_read_command(command: &Command) -> bool {
             | Command::IpsSnapshot { .. }
             | Command::IpsStat { .. }
             | Command::IpsFilter { .. }
-            | Command::ControlStateCount { .. }
-            | Command::ControlStateQuery { .. }
-            | Command::ControlStateDetail { .. }
-            | Command::ControlStateSetAndGet { .. }
-            | Command::ControlStateFamilyQuery { .. }
-            | Command::ControlStateManager { .. }
+            | Command::RiskCount { .. }
+            | Command::RiskQuery { .. }
+            | Command::RiskDetail { .. }
+            | Command::RiskSetAndGet { .. }
+            | Command::RiskFamilyQuery { .. }
+            | Command::RiskManager { .. }
     )
 }
 
@@ -2678,7 +2671,7 @@ fn send_heartbeat(
                 + stats.feature_records
                 + stats.sequence_records
                 + stats.ips_records
-                + stats.control_state_records) as u64,
+                + stats.risk_records) as u64,
             memory_bytes: stats.cache.memory_bytes as u64,
         })
         .collect();

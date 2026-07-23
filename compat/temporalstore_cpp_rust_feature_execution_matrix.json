@@ -90,7 +90,7 @@
         "storage_manager_active_eviction_runtime",
         "storage_manager_page_gc_dependency_refusal",
         "storage_manager_index_gc_thresholds_recovery",
-        "storage_control_state_context_page_backed_parity"
+        "storage_risk_context_page_backed_parity"
       ],
       "suites": [
         "cpp_storage_parity",
@@ -285,7 +285,7 @@
       "status": "temporary_static_surface_gate",
       "native_cpp_executable": false,
       "selected_case_count": 1,
-      "blocker": "C++ executable shared adapter for Redis/admin/Feature/Sequence/IPS/ControlState command corpus is still pending.",
+      "blocker": "C++ executable shared adapter for Redis/admin/Feature/Sequence/IPS/Risk command corpus is still pending.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-product-api-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family product_api_models --cpp --require-cpp-native",
       "suites": [
         "cpp_product_api_parity"

@@ -50,7 +50,7 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 - Node L1 policy: generate when child summaries, >=3 source events, or >=180 estimated source tokens
 - Embedding note: This run completed with the local deterministic embedding backend. The local sentence-transformers OSS probe timed out before this trace was generated, so the data-flow artifact is complete but not an OSS-embedding proof.
 
-## Capability Field Guide
+## Data Model Field Guide
 
 |model|purpose|important_fields|
 |---|---|---|
@@ -62,7 +62,7 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 |ResourceChunk|Cited serving chunk from PDF/MD/etc. Full raw_uri lives on ResourceManifest; chunks carry resource_hash plus source_l...|chunk_hash, resource_hash, source_locator, text, token_estimate, unit_kind, page_number, heading_slug|
 |ContextSummary|L0/L1 node/resource summary used for preview and tree traversal.|summary_hash, summary_type, node_hash, summary_text, source_event_ids, source_chunk_hashes|
 |ContextEmbedding|Vector stored separately for summaries, chunks, events, entities, and resources.|embedding_type, ref_type, ref_hash, model, dim, vector|
-|ContextIndex|TemporalStore-style posting rows for bounded secondary filters before similarity scoring.|capability, index_name, timestamp_key_ms, ref_type, ref_hashes, node_hash|
+|ContextIndex|TemporalStore-style posting rows for bounded secondary filters before similarity scoring.|data_model, index_name, timestamp_key_ms, ref_type, ref_hashes, node_hash|
 |ContextPackAudit|Explains selected/dropped refs, scores, token costs, warnings, and replay path.|context_pack_id, selected_refs, dropped_refs, used_context_tokens, quality_warnings|
 
 ## Record Counts
@@ -1199,7 +1199,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "source_chunk_hash": 4819398059654939441,
       "source_ref": "",
       "sparse_score": 0.7857142857142857,
-      "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
+      "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
       "time_score": 1.0,
       "token_estimate": 51,
       "updated_at_ms": 1782693464186
@@ -1301,7 +1301,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "sparse_score": 0.7857142857142857,
       "stale_or_superseded": false,
       "supersedes_chunk_hash": null,
-      "text": "resource page=1: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
+      "text": "resource page=1: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
       "time_score": 1.0,
       "token_estimate": 54,
       "updated_at_ms": 1782693464186,

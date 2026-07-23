@@ -8,30 +8,117 @@ keeps MCP contract changes easy to review.
 from __future__ import annotations
 
 try:
-    from tools.matrixark_mcp_core import BACKEND_READINESS_TIMEOUT_MS, Json
+    from tools.matrixark_mcp_core import *
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import BACKEND_READINESS_TIMEOUT_MS, Json
+    from matrixark_mcp_core import *
 
 
-try:
-    from tools.matrixark_mcp_schema_common import MESSAGE_SCHEMA, METADATA_SCHEMA, SCOPE_SCHEMA
-except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_schema_common import MESSAGE_SCHEMA, METADATA_SCHEMA, SCOPE_SCHEMA
+MESSAGE_SCHEMA: Json = {
+    "type": "object",
+    "description": "One chat/tool/system message. Only role and content are required.",
+    "required": ["role", "content"],
+    "properties": {
+        "role": {"type": "string", "enum": ["user", "assistant", "tool", "system"]},
+        "content": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "description": "Optional human/tool/agent name."},
+        "created_at_ms": {
+            "type": "integer",
+            "description": "Optional source event time. MatrixArk still uses server ingestion time as the primary write key.",
+        },
+    },
+    "additionalProperties": True,
+}
 
+SCOPE_SCHEMA: Json = {
+    "type": "object",
+    "description": "Optional memory scope. Local mode defaults account_id to acct_local, tenant_id to the agent name, and user_id to the local OS account when omitted. Send user_id or session_id when the host agent knows them; both together give the best user and thread grouping.",
+    "properties": {
+        "account_id": {"type": "string"},
+        "tenant_id": {"type": "string", "description": "Tenant/workspace id. In local mode this defaults to tenant_<agent_name>."},
+        "agent_name": {"type": "string", "description": "Optional host agent name such as codex, claude, cursor, or local test. Used to derive the local tenant when tenant_id is omitted."},
+        "user_id": {
+            "type": "string",
+            "description": "Optional user memory scope. In local mode this defaults to the local OS account. Useful alone, and stronger when paired with session_id.",
+        },
+        "session_id": {
+            "type": "string",
+            "description": "Optional thread/run/session scope. Useful alone, and strongest when paired with user_id.",
+        },
+        "team": {"type": "string"},
+        "project": {"type": "string"},
+    },
+    "additionalProperties": True,
+}
 
-try:
-    from tools.matrixark_mcp_storage_schemas import (
-        PART_STORAGE_OPTIONS_SCHEMA,
-        RECORD_STORAGE_OPTIONS_SCHEMA,
-        STORAGE_OPTIONS_SCHEMA,
-    )
-except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_storage_schemas import (
-        PART_STORAGE_OPTIONS_SCHEMA,
-        RECORD_STORAGE_OPTIONS_SCHEMA,
-        STORAGE_OPTIONS_SCHEMA,
-    )
+METADATA_SCHEMA: Json = {
+    "type": "object",
+    "description": "Optional routing and evidence hints. MatrixArk can infer or fill these internally.",
+    "properties": {
+        "source": {"type": "string", "description": "Optional source name such as cursor, codex, tool, or resource parser."},
+        "node_path": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Optional tree/path hint. MatrixArk may choose its own internal ContextNode path.",
+        },
+        "reply_to_message_id": {"type": "string", "description": "Optional message linkage for feedback."},
+        "reply_to_context_pack_id": {
+            "type": "string",
+            "description": "Optional ContextPack linkage for confirmation/correction inference.",
+        },
+    },
+    "additionalProperties": True,
+}
 
+STORAGE_OPTIONS_SCHEMA: Json = {
+    "type": "object",
+    "description": "Optional TemporalStore serving-mode request hint. Native deployments still decide the actual topology, but MatrixArk records this policy for routing, audit, replay, and benchmark parity.",
+    "properties": {
+        "route": {
+            "type": "string",
+            "enum": ["shared_store_async", "shared_store_sync", "raft_async", "raft_sync"],
+            "description": "Compact write-route preset. Expands into storage_mode, replication_mode, oplog_mode, and raft_mode.",
+        },
+        "storage_family": {
+            "type": "string",
+            "enum": ["default", "shared_store", "raft"],
+            "description": "Friendly route selector. Choose shared_store or raft, then combine with write_mode=async|sync.",
+        },
+        "write_mode": {
+            "type": "string",
+            "enum": ["default", "async", "sync"],
+            "description": "Per-message write behavior. async lets the native backend acknowledge after memory append/background oplog work; sync waits for the durable route.",
+        },
+        "background_write": {
+            "type": "boolean",
+            "description": "Optional explicit background-write hint for native backends. Defaults to true for async write_mode and false for sync write_mode.",
+        },
+        "storage_mode": {
+            "type": "string",
+            "enum": ["default", "local", "single_node", "multi_node", "shared_store", "raft"],
+            "description": "Requested storage topology/mode for this operation.",
+        },
+        "oplog_mode": {
+            "type": "string",
+            "enum": ["default", "async", "sync"],
+            "description": "Requested oplog durability behavior. async is the high-throughput default; sync is for stronger durability gates.",
+        },
+        "replication_mode": {
+            "type": "string",
+            "enum": ["default", "none", "shared_store", "raft"],
+            "description": "Requested replication behavior.",
+        },
+        "raft_mode": {
+            "type": "boolean",
+            "description": "Convenience flag. true implies storage_mode=raft and replication_mode=raft unless explicitly supplied.",
+        },
+        "consistency": {
+            "type": "string",
+            "enum": ["default", "eventual", "read_your_writes", "linearizable"],
+            "description": "Requested read/write consistency profile for benchmark and production policy.",
+        },
+    },
+    "additionalProperties": True,
+}
 
 AGENT_HOOK_SCHEMA: Json = {
     "type": "object",
@@ -59,24 +146,27 @@ AGENT_HOOK_SCHEMA: Json = {
     "additionalProperties": True,
 }
 
-try:
-    from tools.matrixark_mcp_auth_schemas import (
-        ADMIN_ACCOUNT_PROPERTIES,
-        API_KEY_SCHEMA,
-        IDEMPOTENCY_KEY_SCHEMA,
-    )
-except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_auth_schemas import (
-        ADMIN_ACCOUNT_PROPERTIES,
-        API_KEY_SCHEMA,
-        IDEMPOTENCY_KEY_SCHEMA,
-    )
+API_KEY_SCHEMA: Json = {
+    "type": "string",
+    "description": "Optional MatrixArk API key. Required when access mode is enforced; dev mode allows omitted keys for local testing.",
+}
+
+IDEMPOTENCY_KEY_SCHEMA: Json = {
+    "type": "string",
+    "description": "Optional caller-generated idempotency key for write APIs. Retries with the same key in the same account/tenant/user/session scope return the original response instead of writing duplicates.",
+}
+
+ADMIN_ACCOUNT_PROPERTIES: Json = {
+    "api_key": API_KEY_SCHEMA,
+    "idempotency_key": IDEMPOTENCY_KEY_SCHEMA,
+    "account_id": {"type": "string", "description": "MatrixArk account/customer id. Generated or defaulted when omitted in dev mode."},
+    "account_name": {"type": "string"},
+    "tenant_id": {"type": "string", "description": "MatrixArk tenant/workspace id. Defaults to tenant_default for account creation."},
+    "tenant_name": {"type": "string"},
+    "scope": SCOPE_SCHEMA,
+}
 
 
-try:
-    from tools.matrixark_mcp_admin_schemas import ADMIN_TOOLS
-except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_admin_schemas import ADMIN_TOOLS
 TOOLS: list[Json] = [
     {
         "name": "matrixark_ingest",
@@ -100,11 +190,6 @@ TOOLS: list[Json] = [
                 "scope": SCOPE_SCHEMA,
                 "metadata": METADATA_SCHEMA,
                 "storage_options": STORAGE_OPTIONS_SCHEMA,
-                "record_storage_options": RECORD_STORAGE_OPTIONS_SCHEMA,
-                "part_storage_options": {
-                    **RECORD_STORAGE_OPTIONS_SCHEMA,
-                    "description": "Compatibility alias for record_storage_options. Prefer record_storage_options in new clients.",
-                },
                 "temporalstore_storage_mode": {"type": "string", "description": "Convenience alias for storage_options.storage_mode."},
                 "temporalstore_oplog_mode": {"type": "string", "description": "Convenience alias for storage_options.oplog_mode."},
                 "temporalstore_replication_mode": {"type": "string", "description": "Convenience alias for storage_options.replication_mode."},
@@ -112,9 +197,7 @@ TOOLS: list[Json] = [
                 "temporalstore_route": {"type": "string", "description": "Convenience alias for storage_options.route, e.g. shared_store_async, shared_store_sync, raft_async, raft_sync."},
                 "temporalstore_storage_family": {"type": "string", "description": "Convenience alias for storage_options.storage_family, e.g. shared_store or raft."},
                 "temporalstore_write_mode": {"type": "string", "description": "Convenience alias for storage_options.write_mode, e.g. async or sync."},
-                "temporalstore_durability": {"type": "string", "description": "Convenience alias for storage_options.durability, e.g. async or sync."},
                 "temporalstore_background_write": {"type": "boolean", "description": "Convenience alias for storage_options.background_write."},
-                "temporalstore_read_preference": {"type": "string", "description": "Convenience alias for storage_options.read_preference, e.g. replica_preferred."},
                 "agent_hook": AGENT_HOOK_SCHEMA,
                 "api_key": API_KEY_SCHEMA,
                 "idempotency_key": IDEMPOTENCY_KEY_SCHEMA,
@@ -148,48 +231,18 @@ TOOLS: list[Json] = [
                 },
                 "auto_batch_extract": {
                     "type": "boolean",
-                    "default": True,
-                    "description": "VikingMem-style default for message/business_data/feedback ingest: persist each raw message immediately, buffer session_buffer_event markers, and commit extraction once session_buffer_threshold pending events accumulate. Set false to disable automatic batch extraction.",
-                },
-                "session_buffer_enabled": {
-                    "type": "boolean",
-                    "default": True,
-                    "description": "Write session_buffer_event markers for later matrixark_session_commit while raw ContextEvent/cold storage is still persisted immediately. Set false to force immediate-only extraction behavior.",
+                    "default": False,
+                    "description": "If true, commit the same-session buffer once session_buffer_threshold pending events accumulate.",
                 },
                 "session_buffer_threshold": {
                     "type": "integer",
                     "default": 20,
-                    "description": "Pending same-session raw event threshold for VikingMem-style automatic one-pass batch extraction.",
+                    "description": "Pending same-session raw event threshold for automatic one-pass batch extraction.",
                 },
                 "idle_commit_timeout_ms": {
                     "type": "integer",
-                    "default": 300000,
                     "minimum": 0,
-                    "description": "Idle timeout trigger in milliseconds. Defaults to 5 minutes; if previous pending same-session messages are older than this, MatrixArk commits that window before ingesting the new message. Set 0 to disable.",
-                },
-                "flush_session_buffer": {
-                    "type": "boolean",
-                    "default": False,
-                    "description": "If true, commit pending same-session extraction immediately after this raw message is persisted, even below session_buffer_threshold.",
-                },
-                "conversation_done": {
-                    "type": "boolean",
-                    "default": False,
-                    "description": "Alias for flush_session_buffer when the caller knows the conversation/thread has ended.",
-                },
-                "session_done": {
-                    "type": "boolean",
-                    "default": False,
-                    "description": "Alias for flush_session_buffer when the caller knows the session has ended.",
-                },
-                "task_complete": {
-                    "type": "boolean",
-                    "default": False,
-                    "description": "Alias for flush_session_buffer when the task has completed and buffered extraction should run now.",
-                },
-                "lifecycle_event_type": {
-                    "type": "string",
-                    "description": "Optional agent lifecycle event. stop/session_end/task_complete/post_compact style events force a session buffer commit after raw ingest.",
+                    "description": "Optional idle timeout. If previous pending same-session messages are older than this, MatrixArk commits that window before ingesting the new message.",
                 },
             },
             "additionalProperties": True,
@@ -569,5 +622,340 @@ TOOLS: list[Json] = [
             "additionalProperties": True,
         },
     },
-    *ADMIN_TOOLS,
+    {
+        "name": "matrixark_auth_signup",
+        "description": "Production signup: create account, tenant, user, first scoped API key, and audit record. In enforced mode call from a trusted gateway or an admin API key.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "trusted_gateway": {"type": "boolean", "default": False},
+                "provider": {"type": "string", "description": "local, google, github, okta, azure_ad, or oidc."},
+                "external_user_id": {"type": "string"},
+                "email": {"type": "string"},
+                "account_id": {"type": "string"},
+                "account_name": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "tenant_name": {"type": "string"},
+                "user_id": {"type": "string"},
+                "display_name": {"type": "string"},
+                "external_subject": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "first_key_scopes": {"type": "array", "items": {"type": "string"}},
+                "first_key_role": {"type": "string", "default": "owner"},
+                "key_display_name": {"type": "string"},
+                "allowed_user_ids": {"type": "array", "items": {"type": "string"}},
+                "allowed_session_ids": {"type": "array", "items": {"type": "string"}},
+                "allow_all_users": {"type": "boolean", "default": False},
+                "expires_at_ms": {"type": "integer"},
+                "key_prefix": {"type": "string", "default": "mk_live"},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_auth_sso_callback",
+        "description": "Trusted OAuth/OIDC gateway callback for Google/Gmail, GitHub, Okta, and Azure AD. MatrixArk stores mapped identity metadata only, never raw OAuth tokens.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["provider"],
+            "properties": {
+                "provider": {"type": "string", "enum": ["google", "gmail", "github", "okta", "azure_ad", "azuread", "oidc"]},
+                "external_user_id": {"type": "string", "description": "Stable IdP subject, such as OIDC sub or GitHub id."},
+                "email": {"type": "string"},
+                "matrixark_user_id": {"type": "string"},
+                "display_name": {"type": "string"},
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "account_name": {"type": "string"},
+                "tenant_name": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "id_token_verified": {"type": "boolean", "default": False},
+                "trusted_gateway": {"type": "boolean", "default": False},
+                "api_key": API_KEY_SCHEMA,
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_auth_sso_login",
+        "description": "Map verified Google/Okta/Azure AD/OIDC login claims into a MatrixArk user scope. In enforced mode the gateway must pass id_token_verified=true or trusted_gateway=true.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["provider"],
+            "properties": {
+                "provider": {"type": "string", "description": "google, okta, azure_ad, github, or another trusted IdP."},
+                "external_user_id": {"type": "string", "description": "Stable IdP subject. For Google this is the OIDC sub claim when available."},
+                "email": {"type": "string", "description": "Email claim, e.g. a Gmail or Google Workspace address."},
+                "matrixark_user_id": {"type": "string", "description": "Optional explicit MatrixArk user id; otherwise derived from provider subject."},
+                "display_name": {"type": "string"},
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "id_token_verified": {"type": "boolean", "default": False, "description": "Set by the trusted portal/gateway after OAuth/OIDC token validation."},
+                "trusted_gateway": {"type": "boolean", "default": False},
+                "api_key": API_KEY_SCHEMA,
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_management_portal",
+        "description": "Return one backend portal payload for registration, API-key management, ingestion history, topology, metrics, and audit.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "page_size": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
+                "page_token": {"type": ["integer", "string"], "default": 0, "description": "Offset for live paged portal tables."},
+                "include_revoked": {"type": "boolean", "default": False},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_admin_create_account",
+        "description": "Create a MatrixArk account and default tenant.",
+        "inputSchema": {
+            "type": "object",
+            "properties": ADMIN_ACCOUNT_PROPERTIES,
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_admin_update_account",
+        "description": "Update account or tenant metadata and active/disabled status.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "account_name": {"type": "string"},
+                "tenant_name": {"type": "string"},
+                "account_status": {"type": "string", "enum": ["active", "disabled"]},
+                "tenant_status": {"type": "string", "enum": ["active", "disabled"]},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_admin_list_accounts",
+        "description": "List account and tenant metadata visible to the caller.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "limit": {"type": "integer", "default": 100},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_admin_create_user",
+        "description": "Create or register a MatrixArk user under an account/tenant.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["user_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "user_id": {"type": "string"},
+                "display_name": {"type": "string"},
+                "external_subject": {"type": "string"},
+                "status": {"type": "string", "enum": ["active", "disabled"], "default": "active"},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_admin_update_user",
+        "description": "Update, enable, or disable a MatrixArk user under an account/tenant.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["user_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "user_id": {"type": "string"},
+                "display_name": {"type": "string"},
+                "external_subject": {"type": "string"},
+                "status": {"type": "string", "enum": ["active", "disabled"]},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_admin_list_users",
+        "description": "List MatrixArk users for an account/tenant without exposing context data.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "status": {"type": "string", "enum": ["active", "disabled"]},
+                "limit": {"type": "integer", "default": 100},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_admin_create_api_key",
+        "description": "Create a MatrixArk API key for an account/tenant. The raw key is returned once.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "scopes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Allowed scopes such as context:ingest, context:retrieve, admin:api_key.",
+                },
+                "role": {"type": "string", "default": "service"},
+                "display_name": {"type": "string"},
+                "allowed_user_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional user allow-list. Empty means any user in the key tenant.",
+                },
+                "allowed_session_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional session allow-list. Empty means any session in the key tenant.",
+                },
+                "expires_at_ms": {
+                    "type": "integer",
+                    "description": "Optional future unix timestamp in milliseconds when this key expires.",
+                },
+                "key_prefix": {"type": "string", "default": "mk_test"},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_admin_apply_api_key",
+        "description": "One-call local agent onboarding: create or reuse account, agent-derived tenant, local user, and return a scoped MatrixArk API key.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "account_id": {"type": "string", "description": "Optional account/customer id. Defaults to acct_local in local mode."},
+                "tenant_id": {"type": "string", "description": "Optional tenant/workspace id. Defaults to tenant_<agent_name> in local mode."},
+                "agent_name": {"type": "string", "description": "Agent name used for the local tenant, e.g. codex, claude, cursor."},
+                "user_id": {"type": "string", "description": "Optional MatrixArk user id. Defaults to the local OS account."},
+                "account_name": {"type": "string"},
+                "tenant_name": {"type": "string"},
+                "display_name": {"type": "string", "description": "Display name for the local MatrixArk user."},
+                "external_subject": {"type": "string", "description": "Optional external subject such as local:<user>, okta:<id>, google:<id>."},
+                "key_display_name": {"type": "string"},
+                "scopes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Allowed scopes for the new key. Defaults to context ingest/retrieve/feedback/replay plus resource and skill read.",
+                },
+                "role": {"type": "string", "default": "local_agent"},
+                "allowed_user_ids": {"type": "array", "items": {"type": "string"}},
+                "allowed_session_ids": {"type": "array", "items": {"type": "string"}},
+                "allow_all_users": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, do not restrict the key to the derived local user.",
+                },
+                "expires_at_ms": {"type": "integer"},
+                "key_prefix": {"type": "string", "default": "mk_local"},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_admin_list_api_keys",
+        "description": "List MatrixArk API key metadata for an account/tenant. Raw keys and hashes are never returned.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "include_revoked": {"type": "boolean", "default": False},
+                "limit": {"type": "integer", "default": 100},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_admin_rotate_api_key",
+        "description": "Revoke an active MatrixArk API key and create a replacement with the same scopes.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["api_key_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "api_key_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "key_prefix": {"type": "string", "default": "mk_test"},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_admin_revoke_api_key",
+        "description": "Revoke a MatrixArk API key.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["api_key_id"],
+            "properties": {"api_key": API_KEY_SCHEMA, "api_key_id": {"type": "string"}, "scope": SCOPE_SCHEMA},
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_admin_map_sso_user",
+        "description": "Map an external Okta/Google/Azure AD user id to a MatrixArk user id.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["provider", "external_user_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "provider": {"type": "string", "description": "okta, google, azure_ad, or another IdP name."},
+                "external_user_id": {"type": "string"},
+                "matrixark_user_id": {"type": "string"},
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_admin_audit",
+        "description": "List MatrixArk access-management audit records.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "limit": {"type": "integer", "default": 100},
+            },
+            "additionalProperties": True,
+        },
+    },
 ]

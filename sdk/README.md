@@ -56,7 +56,7 @@ The Go, Java, and Python wrappers now expose the same C ABI surface:
 - FEATURE: raw feature point add/query with filters
 - SEQUENCE FEATURE: typed long-sequence row add/query with filters
 - IPS: add instance and query last instances
-- CONTROL_STATE: increment and window count
+- RISK: increment and window count
 
 The C++ native client is still the fullest surface because it also exposes lower
 level native request controls.

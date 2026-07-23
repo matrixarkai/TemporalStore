@@ -1,27 +1,23 @@
-use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use temporalstore_rust::http::{
     get_json_with_options, json_response, parse_json, post_json_with_options, serve, HttpRequest,
     HttpRequestOptions,
 };
 use temporalstore_rust::meta::{
-    AckResponse, AddNamespaceRequest, AddTableRequest, DeleteTableRequest, DropProxyGroupRequest,
-    FreezeStaleServersRequest, GetShardResponse, GetTableTopologyRequest, ListProxyGroupRequest,
-    LoadFinishRequest, MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse,
-    MetaSnapshotResponse, PartitionStateChangeRequest, ProxyHeartbeatRequest,
-    PublishShardSnapshotRequest, PutProxyGroupRequest, RegisterProxyRequest, RegisterServerRequest,
-    RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest, SingleNodeMeta,
-    StateChangeRequest, TopologyVersionRequest, UpdateManageInfoRequest, UpdateServerRequest,
-    UpdateTableRequest,
+    AckResponse, AddNamespaceRequest, AddTableRequest, DeleteTableRequest,
+    FreezeStaleServersRequest, GetShardResponse, GetTableTopologyRequest, LoadFinishRequest,
+    MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
+    ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
+    RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
+    SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateTableRequest,
 };
 use temporalstore_rust::raft::{
     ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions, ProductionRaftEngineKind,
     ProductionRaftNode, RaftClusterStatus, RaftConfig, RaftMembershipChangeReport, RaftNodeId,
-    RaftReplicaRole,
 };
 use temporalstore_rust::rebalance::{
     DeterministicTaskScheduler, MembershipUpdateTaskPlan, RebalanceStep, SchedulerRunReport,
@@ -1123,20 +1119,12 @@ macro_rules! backend_call {
     };
 }
 
-static FE_CLUSTER_REGISTRY: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
-
 fn handle(
     meta: &MetaBackend,
     scheduler: &MetaTaskScheduler,
     request: HttpRequest,
 ) -> (u16, Vec<u8>) {
     if let Some(response) = handle_master_service_route(meta, &request) {
-        return response;
-    }
-    if let Some(response) = handle_fe_cluster_route(&request) {
-        return response;
-    }
-    if let Some(response) = handle_fe_manage_route(meta, &request) {
         return response;
     }
     if let Some(response) = handle_manage_service_route(meta, &request) {
@@ -1146,9 +1134,6 @@ fn handle(
         return response;
     }
     if let Some(response) = handle_heartbeat_service_route(meta, &request) {
-        return response;
-    }
-    if let Some(response) = handle_raft_control_service_route(meta, &request) {
         return response;
     }
     match (request.method.as_str(), request.path.as_str()) {
@@ -1495,7 +1480,7 @@ fn escape_meta_metric_label(value: &str) -> String {
         .replace('"', "\\\"")
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct MasterTableOptionsRequest {
     #[serde(default)]
     partition_num: u64,
@@ -1573,9 +1558,9 @@ impl MasterTableOptionsRequest {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct MasterCreateTableRequest {
-    #[serde(alias = "namespace_name", alias = "namespace_")]
+    #[serde(alias = "namespace_name")]
     namespace: String,
     #[serde(alias = "name")]
     table_name: String,
@@ -1596,44 +1581,8 @@ struct MasterCreateTableRequest {
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct FeLegacyAddTableRequest {
-    #[serde(default, alias = "namespace")]
-    namespace_name: String,
-    #[serde(default, alias = "table_name")]
-    name: String,
-    #[serde(default)]
-    partition_set_num: u64,
-    #[serde(default)]
-    partition_units: Vec<FeLegacyPartitionUnit>,
-    #[serde(default)]
-    table_options: Option<MasterTableOptionsRequest>,
-    #[serde(default)]
-    config: Option<MasterTableOptionsRequest>,
-    #[serde(default)]
-    use_cpp_partition_ids: bool,
-    #[serde(default)]
-    partition_version: u32,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct FeLegacyPartitionUnit {
-    #[serde(default)]
-    partition_num: u64,
-    #[serde(default)]
-    placement_set: Vec<FeLegacyLocation>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct FeLegacyLocation {
-    #[serde(default)]
-    vdc: String,
-    #[serde(default)]
-    tag: String,
-}
-
-#[derive(Debug, serde::Deserialize)]
 struct MasterUpdateTableRequest {
-    #[serde(alias = "namespace_name", alias = "namespace_")]
+    #[serde(alias = "namespace_name")]
     namespace: String,
     #[serde(alias = "name")]
     table_name: String,
@@ -1654,14 +1603,10 @@ struct MasterUpdateTableRequest {
 #[allow(dead_code)]
 #[derive(Debug, serde::Deserialize)]
 struct MasterTableRequest {
-    #[serde(default, alias = "namespace_name", alias = "namespace_")]
+    #[serde(alias = "namespace_name")]
     namespace: String,
-    #[serde(default, alias = "name")]
+    #[serde(alias = "name")]
     table_name: String,
-    #[serde(default)]
-    table_id: u64,
-    #[serde(default)]
-    force: bool,
     #[serde(default)]
     open_version: u64,
 }
@@ -1672,161 +1617,9 @@ struct MasterOpenTableResponse {
     open_version: u64,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct MasterRegisterServerResponse {
-    status: Status,
-    #[serde(default)]
-    redirect_endpoint: String,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct FeManageRequest {
-    #[serde(default)]
-    cluster: String,
-    method: String,
-    data: serde_json::Value,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct FeAddClusterRequest {
-    cluster: String,
-    uri: String,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct QueryListPartitionRequest {
-    #[serde(default, alias = "namespace_name", alias = "namespace_")]
-    namespace: String,
-    #[serde(default, alias = "table_name", alias = "name")]
-    table: String,
-    #[serde(default, alias = "partition_id")]
-    shard_id: u64,
-    #[serde(default)]
-    read_stale: bool,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct QueryPartitionSetBlock {
-    set_info: Option<temporalstore_rust::meta::TableMetaInfo>,
-    partition_info: Vec<temporalstore_rust::meta::TablePartition>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct QueryListPartitionResponse {
-    status: Status,
-    info: Vec<QueryPartitionSetBlock>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct QueryLeaderRequest {
-    #[serde(default)]
-    cluster_name: String,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct FeQueryActionRequest {
-    action: String,
-    #[serde(flatten)]
-    params: serde_json::Value,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct QueryLeaderEndpoint {
-    ip4: String,
-    port: u32,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct QueryLeaderResponse {
-    status: Status,
-    is_leader: bool,
-    leader: Option<QueryLeaderEndpoint>,
-    leader_id: Option<RaftNodeId>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct QueryListServerPartitionRequest {
-    #[serde(default)]
-    read_stale: bool,
-    #[serde(default)]
-    server_addr: String,
-    #[serde(default)]
-    endpoint: Option<HeartbeatEndpoint>,
-    #[serde(default)]
-    host: String,
-    #[serde(default)]
-    port: u32,
-    #[serde(default)]
-    server_id: u64,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct QueryServerPartitionInfo {
-    id: u64,
-    state: String,
-    membership: serde_json::Value,
-    config: serde_json::Value,
-    load_version: u64,
-    partition_uri: String,
-    start_slot: u32,
-    end_slot: u32,
-    persistent_type: String,
-    readonly: bool,
-    table_name: String,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct QueryServerNodePartitions {
-    node_id: u64,
-    partitions: Vec<QueryServerPartitionInfo>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct QueryListServerPartitionResponse {
-    status: Status,
-    server_info: Option<temporalstore_rust::meta::ServerMetaInfo>,
-    node_partitions: Vec<QueryServerNodePartitions>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct ManageFinishLoadPartitionRequest {
-    partition_id: u64,
-    #[serde(default)]
-    load_result: Option<Status>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct RaftControlNode {
-    #[serde(default, alias = "node_id")]
-    peer_id: RaftNodeId,
-    #[serde(default)]
-    raft_addr: String,
-    #[serde(default)]
-    snapshot_addr: String,
-    #[serde(default)]
-    role: serde_json::Value,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct RaftControlNodeRequest {
-    #[serde(default)]
-    node: Option<RaftControlNode>,
-    #[serde(default, alias = "peer_id")]
-    node_id: RaftNodeId,
-    #[serde(default)]
-    role: serde_json::Value,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RaftControlListMembershipResponse {
-    status: Status,
-    nodes: Vec<RaftControlNode>,
-}
-
 #[allow(dead_code)]
 #[derive(Debug, serde::Deserialize)]
 struct MasterGetTableTopoRequest {
-    #[serde(alias = "namespace_name", alias = "namespace_")]
     namespace: String,
     table_name: String,
     #[serde(default)]
@@ -1891,24 +1684,6 @@ struct HeartbeatServerRequest {
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct ManageUpdateServerRequest {
-    #[serde(default)]
-    server_addr: String,
-    #[serde(default)]
-    host: String,
-    #[serde(default)]
-    port: u32,
-    #[serde(default)]
-    endpoint: Option<HeartbeatEndpoint>,
-    #[serde(default)]
-    node_id: u64,
-    #[serde(default, alias = "location_tag_name")]
-    location: String,
-    #[serde(default)]
-    binary_version: String,
-}
-
-#[derive(Debug, serde::Deserialize)]
 struct HeartbeatProxyRequest {
     #[serde(default)]
     proxy_addr: String,
@@ -1968,95 +1743,6 @@ fn master_add_table_request(req: MasterCreateTableRequest) -> AddTableRequest {
     }
 }
 
-fn fe_manage_data_value(data: serde_json::Value) -> Result<serde_json::Value, String> {
-    match data {
-        serde_json::Value::String(raw) => serde_json::from_str(&raw).map_err(|err| err.to_string()),
-        value => Ok(value),
-    }
-}
-
-fn fe_manage_request_body(method: &str, data: serde_json::Value) -> Result<Vec<u8>, String> {
-    let data = fe_manage_data_value(data)?;
-    let data = if method == "AddTable" {
-        fe_convert_legacy_add_table_form(data)?
-    } else {
-        data
-    };
-    serde_json::to_vec(&data).map_err(|err| err.to_string())
-}
-
-fn fe_convert_legacy_add_table_form(data: serde_json::Value) -> Result<serde_json::Value, String> {
-    let has_legacy_partition_units = data
-        .as_object()
-        .map(|object| object.contains_key("partition_units"))
-        .unwrap_or(false);
-    if !has_legacy_partition_units {
-        return Ok(data);
-    }
-
-    let legacy: FeLegacyAddTableRequest =
-        serde_json::from_value(data).map_err(|err| err.to_string())?;
-    let replica_count: u64 = legacy
-        .partition_units
-        .iter()
-        .map(|unit| unit.partition_num)
-        .sum::<u64>()
-        .max(1);
-    let shard_count = if legacy.partition_set_num > 0 {
-        legacy.partition_set_num
-    } else {
-        replica_count
-    };
-    let mut table_options =
-        legacy
-            .table_options
-            .or(legacy.config)
-            .unwrap_or(MasterTableOptionsRequest {
-                partition_num: 0,
-                pin_primary: None,
-                replica_read_policy: None,
-                preferred_location: None,
-                drop_percent: None,
-                max_read_retries: None,
-                max_write_retries: None,
-                retry_backoff_ms: None,
-                continuous_failed_time_ms: None,
-                io_timeout_ms: None,
-                connect_timeout_ms: None,
-            });
-    if table_options.preferred_location.is_none() {
-        table_options.preferred_location = legacy
-            .partition_units
-            .iter()
-            .flat_map(|unit| unit.placement_set.iter())
-            .find_map(|loc| {
-                if loc.vdc.is_empty() {
-                    None
-                } else if loc.tag.is_empty() {
-                    Some(loc.vdc.clone())
-                } else {
-                    Some(format!("{}-{}", loc.vdc, loc.tag))
-                }
-            });
-    }
-    if table_options.partition_num == 0 {
-        table_options.partition_num = shard_count;
-    }
-
-    serde_json::to_value(MasterCreateTableRequest {
-        namespace: legacy.namespace_name,
-        table_name: legacy.name,
-        first_shard_id: 0,
-        shard_count,
-        partition_set_num: legacy.partition_set_num,
-        replica_count,
-        table_options: Some(table_options),
-        use_cpp_partition_ids: legacy.use_cpp_partition_ids,
-        partition_version: legacy.partition_version,
-    })
-    .map_err(|err| err.to_string())
-}
-
 fn master_update_table_request(req: MasterUpdateTableRequest) -> UpdateTableRequest {
     let shard_count = req.shard_count.or_else(|| {
         req.table_options
@@ -2078,43 +1764,11 @@ fn master_update_table_request(req: MasterUpdateTableRequest) -> UpdateTableRequ
     }
 }
 
-fn master_delete_table_request(
-    meta: &MetaBackend,
-    req: MasterTableRequest,
-) -> Result<DeleteTableRequest, Status> {
-    let _ = req.force;
-    let _ = req.open_version;
-    if !req.namespace.is_empty() || !req.table_name.is_empty() {
-        if req.namespace.is_empty() || req.table_name.is_empty() {
-            return Err(Status::error(
-                "bad_request",
-                "namespace_name and name are both required when either is provided",
-            ));
-        }
-        return Ok(DeleteTableRequest {
-            namespace: req.namespace,
-            table_name: req.table_name,
-        });
+fn master_delete_table_request(req: MasterTableRequest) -> DeleteTableRequest {
+    DeleteTableRequest {
+        namespace: req.namespace,
+        table_name: req.table_name,
     }
-    if req.table_id == 0 {
-        return Err(Status::error(
-            "bad_request",
-            "table_id or namespace_name/name is required",
-        ));
-    }
-    let tables = backend_call!(meta, list_tables);
-    if !tables.status.ok {
-        return Err(tables.status);
-    }
-    tables
-        .tables
-        .into_iter()
-        .find(|table| table.table_id == req.table_id)
-        .map(|table| DeleteTableRequest {
-            namespace: table.namespace,
-            table_name: table.table_name,
-        })
-        .ok_or_else(|| Status::error("table_not_found", "table id not found"))
 }
 
 fn handle_manage_service_route(
@@ -2122,17 +1776,6 @@ fn handle_manage_service_route(
     request: &HttpRequest,
 ) -> Option<(u16, Vec<u8>)> {
     let response = match (request.method.as_str(), request.path.as_str()) {
-        ("POST", "/ManageService/UpdateManageInfo") => {
-            parse_or(&request.body, |req: UpdateManageInfoRequest| {
-                backend_call!(meta, update_manage_info, req)
-            })
-        }
-        ("POST", "/ManageService/MuteMetaChange") => {
-            json_response(200, &backend_call!(meta, mute_meta_change))
-        }
-        ("POST", "/ManageService/ResumeMetaChange") => {
-            json_response(200, &backend_call!(meta, resume_meta_change))
-        }
         ("POST", "/ManageService/AddServer") => {
             parse_or(&request.body, |req: HeartbeatServerRequest| {
                 backend_call!(
@@ -2167,20 +1810,6 @@ fn handle_manage_service_route(
                     StateChangeRequest {
                         endpoint: heartbeat_server_addr(&req),
                         freeze_cooldown_ms: 0,
-                    }
-                )
-            })
-        }
-        ("POST", "/ManageService/UpdateServer") => {
-            parse_or(&request.body, |req: ManageUpdateServerRequest| {
-                backend_call!(
-                    meta,
-                    update_server,
-                    UpdateServerRequest {
-                        server_addr: manage_update_server_addr(&req),
-                        node_id: req.node_id,
-                        location: req.location,
-                        binary_version: req.binary_version,
                     }
                 )
             })
@@ -2230,16 +1859,6 @@ fn handle_manage_service_route(
                 )
             })
         }
-        ("POST", "/ManageService/PutProxyGroup") => {
-            parse_or(&request.body, |req: PutProxyGroupRequest| {
-                backend_call!(meta, put_proxy_group, req)
-            })
-        }
-        ("POST", "/ManageService/DropProxyGroup") => {
-            parse_or(&request.body, |req: DropProxyGroupRequest| {
-                backend_call!(meta, drop_proxy_group, req)
-            })
-        }
         ("POST", "/ManageService/AddNamespace") => {
             parse_or(&request.body, |req: ManageNamespaceRequest| {
                 backend_call!(
@@ -2261,1071 +1880,45 @@ fn handle_manage_service_route(
                 backend_call!(meta, update_table, master_update_table_request(req))
             })
         }
-        ("POST", "/ManageService/FreezeTable") => parse_or(
-            &request.body,
-            |req: MasterTableRequest| match master_delete_table_request(meta, req) {
-                Ok(request) => backend_call!(meta, freeze_table, request),
-                Err(status) => AckResponse { status },
-            },
-        ),
-        ("POST", "/ManageService/DropTable") => parse_or(
-            &request.body,
-            |req: MasterTableRequest| match master_delete_table_request(meta, req) {
-                Ok(request) => backend_call!(meta, delete_table, request),
-                Err(status) => AckResponse { status },
-            },
-        ),
-        ("POST", "/ManageService/FreezePartition") => {
-            parse_or(&request.body, |req: PartitionStateChangeRequest| {
-                backend_call!(meta, freeze_partition, req)
+        ("POST", "/ManageService/FreezeTable") => {
+            parse_or(&request.body, |req: MasterTableRequest| {
+                backend_call!(meta, freeze_table, master_delete_table_request(req))
             })
         }
-        ("POST", "/ManageService/DropPartition") => {
-            parse_or(&request.body, |req: PartitionStateChangeRequest| {
-                backend_call!(meta, drop_partition, req)
-            })
-        }
-        ("POST", "/ManageService/FinishLoadPartition") => {
-            parse_or(&request.body, |req: ManageFinishLoadPartitionRequest| {
-                finish_load_partition_from_manage_service(meta, req)
+        ("POST", "/ManageService/DropTable") => {
+            parse_or(&request.body, |req: MasterTableRequest| {
+                backend_call!(meta, delete_table, master_delete_table_request(req))
             })
         }
         _ => return None,
     };
     Some(response)
-}
-
-fn handle_fe_cluster_route(request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
-    match (request.method.as_str(), request.path.as_str()) {
-        ("POST", "/HttpApiService/AddCluster") | ("POST", "/add_cluster") => {
-            Some(parse_or(&request.body, |req: FeAddClusterRequest| {
-                fe_add_cluster(req)
-            }))
-        }
-        _ => None,
-    }
-}
-
-fn fe_add_cluster(req: FeAddClusterRequest) -> serde_json::Value {
-    if req.cluster.trim().is_empty() || req.uri.trim().is_empty() {
-        return serde_json::json!({
-            "status": Status::error("failed_precondition", "invalid param"),
-        });
-    }
-    let registry = FE_CLUSTER_REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()));
-    registry
-        .lock()
-        .expect("FE cluster registry lock poisoned")
-        .insert(req.cluster, req.uri);
-    serde_json::json!({
-        "status": Status::ok(),
-    })
-}
-
-fn handle_fe_manage_route(meta: &MetaBackend, request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
-    match (request.method.as_str(), request.path.as_str()) {
-        ("POST", "/manage") | ("POST", "/manage/request") => {
-            Some(parse_or(&request.body, |req: FeManageRequest| {
-                fe_manage(meta, req)
-            }))
-        }
-        _ => None,
-    }
-}
-
-fn fe_manage(meta: &MetaBackend, req: FeManageRequest) -> serde_json::Value {
-    let _ = req.cluster;
-    if req.method.trim().is_empty() {
-        return serde_json::json!({
-            "status": Status::error("bad_request", "missing method"),
-        });
-    }
-    let body = match fe_manage_request_body(&req.method, req.data) {
-        Ok(body) => body,
-        Err(err) => {
-            return serde_json::json!({
-                "status": Status::error("bad_request", err.to_string()),
-            });
-        }
-    };
-    let routed = HttpRequest {
-        method: "POST".to_string(),
-        path: format!("/ManageService/{}", req.method),
-        body,
-    };
-    match handle_manage_service_route(meta, &routed) {
-        Some((_, body)) => serde_json::from_slice(&body).unwrap_or_else(|err| {
-            serde_json::json!({
-                "status": Status::error("manage_response_error", err.to_string()),
-            })
-        }),
-        None => serde_json::json!({
-            "status": Status::error("not_found", format!("unknown manage method {}", req.method)),
-        }),
-    }
-}
-
-fn handle_raft_control_service_route(
-    meta: &MetaBackend,
-    request: &HttpRequest,
-) -> Option<(u16, Vec<u8>)> {
-    let response = match (request.method.as_str(), request.path.as_str()) {
-        ("POST", "/RaftControlService/AddNode") => {
-            parse_or(&request.body, |req: RaftControlNodeRequest| {
-                raft_control_add_node(meta, req)
-            })
-        }
-        ("POST", "/RaftControlService/RemoveNode") => {
-            parse_or(&request.body, |req: RaftControlNodeRequest| {
-                raft_control_remove_node(meta, req)
-            })
-        }
-        ("GET", "/RaftControlService/ListMembership")
-        | ("POST", "/RaftControlService/ListMembership") => {
-            json_response(200, &raft_control_list_membership(meta))
-        }
-        ("GET", "/RaftControlService/TriggerSnapshot")
-        | ("POST", "/RaftControlService/TriggerSnapshot") => {
-            json_response(200, &raft_control_trigger_snapshot(meta))
-        }
-        _ => return None,
-    };
-    Some(response)
-}
-
-fn raft_control_add_node(meta: &MetaBackend, req: RaftControlNodeRequest) -> AckResponse {
-    let Some((node_id, role)) = raft_control_node_id_and_role(req) else {
-        return AckResponse {
-            status: Status::error("bad_request", "raft node id is required"),
-        };
-    };
-    match meta {
-        MetaBackend::Single(_) => AckResponse {
-            status: Status::error("raft_disabled", "meta raft is disabled"),
-        },
-        MetaBackend::Raft(runtime) => AckResponse {
-            status: runtime
-                .add_node(node_id, role)
-                .map(|_| Status::ok())
-                .unwrap_or_else(|err| Status::error("raft_control_failed", err.to_string())),
-        },
-    }
-}
-
-fn raft_control_remove_node(meta: &MetaBackend, req: RaftControlNodeRequest) -> AckResponse {
-    let Some((node_id, _)) = raft_control_node_id_and_role(req) else {
-        return AckResponse {
-            status: Status::error("bad_request", "raft node id is required"),
-        };
-    };
-    match meta {
-        MetaBackend::Single(_) => AckResponse {
-            status: Status::error("raft_disabled", "meta raft is disabled"),
-        },
-        MetaBackend::Raft(runtime) => AckResponse {
-            status: runtime
-                .remove_node(node_id)
-                .map(|_| Status::ok())
-                .unwrap_or_else(|err| Status::error("raft_control_failed", err.to_string())),
-        },
-    }
-}
-
-fn raft_control_list_membership(meta: &MetaBackend) -> RaftControlListMembershipResponse {
-    match meta {
-        MetaBackend::Single(_) => RaftControlListMembershipResponse {
-            status: Status::error("raft_disabled", "meta raft is disabled"),
-            nodes: Vec::new(),
-        },
-        MetaBackend::Raft(runtime) => RaftControlListMembershipResponse {
-            status: Status::ok(),
-            nodes: runtime
-                .list_membership()
-                .into_iter()
-                .map(|node_id| RaftControlNode {
-                    peer_id: node_id,
-                    raft_addr: runtime.node_addr(node_id).unwrap_or_default().to_string(),
-                    snapshot_addr: String::new(),
-                    role: serde_json::json!("NORMAL"),
-                })
-                .collect(),
-        },
-    }
-}
-
-fn raft_control_trigger_snapshot(meta: &MetaBackend) -> AckResponse {
-    match meta {
-        MetaBackend::Single(_) => AckResponse {
-            status: Status::error("raft_disabled", "meta raft is disabled"),
-        },
-        MetaBackend::Raft(runtime) => AckResponse {
-            status: runtime
-                .trigger_snapshot()
-                .map(|_| Status::ok())
-                .unwrap_or_else(|err| Status::error("raft_control_failed", err.to_string())),
-        },
-    }
-}
-
-fn raft_control_node_id_and_role(
-    req: RaftControlNodeRequest,
-) -> Option<(RaftNodeId, RaftReplicaRole)> {
-    if let Some(node) = req.node {
-        let role = raft_control_role(&node.role);
-        return (node.peer_id > 0).then_some((node.peer_id, role));
-    }
-    (req.node_id > 0).then_some((req.node_id, raft_control_role(&req.role)))
-}
-
-fn raft_control_role(role: &serde_json::Value) -> RaftReplicaRole {
-    match role {
-        serde_json::Value::Number(number) => match number.as_u64().unwrap_or_default() {
-            1 => RaftReplicaRole::Learner,
-            2 => RaftReplicaRole::Witness,
-            _ => RaftReplicaRole::Voter,
-        },
-        serde_json::Value::String(role) if role.eq_ignore_ascii_case("learner") => {
-            RaftReplicaRole::Learner
-        }
-        serde_json::Value::String(role) if role.eq_ignore_ascii_case("witness") => {
-            RaftReplicaRole::Witness
-        }
-        _ => RaftReplicaRole::Voter,
-    }
 }
 
 fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
-    let path = request_path(&request.path);
-    let response = match (request.method.as_str(), path) {
-        ("GET", "/QueryService/QueryLeader") => json_response(200, &query_leader(meta, None)),
-        ("POST", "/QueryService/QueryLeader") => {
-            parse_or(&request.body, |req: QueryLeaderRequest| {
-                query_leader(meta, Some(req))
-            })
-        }
+    let response = match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/QueryService/QueryManageInfo") | ("POST", "/QueryService/QueryManageInfo") => {
             json_response(200, &backend_call!(meta, info))
-        }
-        ("GET", "/query/listx") => json_response(200, &fe_query_action_from_query(meta, request)),
-        ("POST", "/query/listx") => parse_or(&request.body, |req: FeQueryActionRequest| {
-            fe_query_action(meta, req)
-        }),
-        ("GET", "/query/list_cluster") | ("POST", "/query/list_cluster") => {
-            json_response(200, &fe_list_cluster())
-        }
-        ("GET", "/query/info") | ("POST", "/query/info") => {
-            json_response(200, &fe_query_info(meta))
         }
         ("GET", "/QueryService/QueryClusterStatus")
         | ("POST", "/QueryService/QueryClusterStatus") => {
             json_response(200, &backend_call!(meta, preflight_report))
         }
         ("GET", "/QueryService/ListServer") | ("POST", "/QueryService/ListServer") => {
-            json_response(200, &query_list_servers(meta, request))
-        }
-        ("GET", "/query/list_server") | ("POST", "/query/list_server") => {
-            json_response(200, &fe_query_list_servers(meta, request))
+            json_response(200, &backend_call!(meta, list_servers))
         }
         ("GET", "/QueryService/ListProxy") | ("POST", "/QueryService/ListProxy") => {
-            json_response(200, &query_list_proxies(meta, request))
-        }
-        ("POST", "/QueryService/ListProxyGroup") => {
-            parse_or(&request.body, |req: ListProxyGroupRequest| {
-                backend_call!(meta, list_proxy_groups, req)
-            })
+            json_response(200, &backend_call!(meta, list_proxies))
         }
         ("GET", "/QueryService/ListNamespace") | ("POST", "/QueryService/ListNamespace") => {
             json_response(200, &backend_call!(meta, list_namespaces))
         }
         ("GET", "/QueryService/ListTable") | ("POST", "/QueryService/ListTable") => {
-            json_response(200, &query_list_tables(meta, request))
-        }
-        ("GET", "/query/list_table") | ("POST", "/query/list_table") => {
-            json_response(200, &fe_query_list_tables(meta, request))
-        }
-        ("GET", "/QueryService/ListPartition") => {
-            json_response(200, &query_list_partition_from_query(meta, request))
-        }
-        ("GET", "/query/list_partition") => {
-            json_response(200, &fe_query_list_partition_from_query(meta, request))
-        }
-        ("POST", "/QueryService/ListPartition") => {
-            parse_or(&request.body, |req: QueryListPartitionRequest| {
-                query_list_partition(meta, req)
-            })
-        }
-        ("POST", "/query/list_partition") => {
-            parse_or(&request.body, |req: QueryListPartitionRequest| {
-                fe_query_list_partition(query_list_partition(meta, req))
-            })
-        }
-        ("GET", "/QueryService/ListServerPartition") => {
-            json_response(200, &query_list_server_partition_from_query(meta, request))
-        }
-        ("GET", "/query/list_server_partition") => json_response(
-            200,
-            &fe_query_list_server_partition_from_query(meta, request),
-        ),
-        ("POST", "/QueryService/ListServerPartition") => {
-            parse_or(&request.body, |req: QueryListServerPartitionRequest| {
-                query_list_server_partition(meta, req)
-            })
-        }
-        ("POST", "/query/list_server_partition") => {
-            parse_or(&request.body, |req: QueryListServerPartitionRequest| {
-                fe_query_list_server_partition(query_list_server_partition(meta, req))
-            })
+            json_response(200, &backend_call!(meta, list_tables))
         }
         _ => return None,
     };
     Some(response)
-}
-
-fn request_path(raw_path: &str) -> &str {
-    raw_path.split_once('?').map_or(raw_path, |(path, _)| path)
-}
-
-fn request_query_params(raw_path: &str) -> BTreeMap<String, String> {
-    raw_path
-        .split_once('?')
-        .map(|(_, query)| query)
-        .unwrap_or_default()
-        .split('&')
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let (key, value) = part.split_once('=').unwrap_or((part, ""));
-            (
-                url_decode_form_component(key),
-                url_decode_form_component(value),
-            )
-        })
-        .collect()
-}
-
-fn url_decode_form_component(value: &str) -> String {
-    let mut out = Vec::with_capacity(value.len());
-    let bytes = value.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'+' => {
-                out.push(b' ');
-                index += 1;
-            }
-            b'%' if index + 2 < bytes.len() => {
-                let hi = from_hex(bytes[index + 1]);
-                let lo = from_hex(bytes[index + 2]);
-                if let (Some(hi), Some(lo)) = (hi, lo) {
-                    out.push((hi << 4) | lo);
-                    index += 3;
-                } else {
-                    out.push(bytes[index]);
-                    index += 1;
-                }
-            }
-            byte => {
-                out.push(byte);
-                index += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn from_hex(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
-
-fn query_params_value(request: &HttpRequest) -> serde_json::Value {
-    let mut object = serde_json::Map::new();
-    for (key, value) in request_query_params(&request.path) {
-        object.insert(key, serde_json::Value::String(value));
-    }
-    serde_json::Value::Object(object)
-}
-
-fn request_location_filter(
-    request: &HttpRequest,
-    params: &BTreeMap<String, String>,
-) -> Option<String> {
-    if let Some(tag) = params
-        .get("tag")
-        .or_else(|| params.get("location"))
-        .filter(|tag| !tag.is_empty())
-    {
-        return Some(tag.clone());
-    }
-    let value = serde_json::from_slice::<serde_json::Value>(&request.body).ok()?;
-    let location = value.get("location")?.as_object()?;
-    if let Some(tag) = location.get("tag").and_then(serde_json::Value::as_str) {
-        if !tag.is_empty() {
-            return Some(tag.to_string());
-        }
-    }
-    let parts: Vec<&str> = ["vregion", "vdc", "vau"]
-        .iter()
-        .filter_map(|key| location.get(*key).and_then(serde_json::Value::as_str))
-        .filter(|value| !value.is_empty())
-        .collect();
-    (!parts.is_empty()).then(|| parts.join("/"))
-}
-
-fn cxx_server_state_filter(state: &str) -> Option<&'static str> {
-    match state.to_ascii_lowercase().as_str() {
-        "1" | "normal" | "server_normal" => Some("normal"),
-        "2" | "frozen" | "server_frozen" => Some("frozen"),
-        "3" | "dropped" => Some("dropped"),
-        _ => None,
-    }
-}
-
-fn cxx_proxy_state_filter(state: &str) -> Option<&'static str> {
-    match state.to_ascii_lowercase().as_str() {
-        "2" | "normal" | "proxy_normal" => Some("normal"),
-        "3" | "frozen" | "proxy_frozen" => Some("frozen"),
-        "4" | "dropped" => Some("dropped"),
-        _ => None,
-    }
-}
-
-fn fe_query_action_from_query(meta: &MetaBackend, request: &HttpRequest) -> serde_json::Value {
-    let mut params = query_params_value(request);
-    let action = params
-        .get("action")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    if let serde_json::Value::Object(object) = &mut params {
-        object.remove("action");
-        object.remove("cluster");
-    }
-    fe_query_action(meta, FeQueryActionRequest { action, params })
-}
-
-fn fe_query_action(meta: &MetaBackend, req: FeQueryActionRequest) -> serde_json::Value {
-    let action = req.action.to_ascii_lowercase();
-    let body = serde_json::to_vec(&req.params).unwrap_or_else(|_| b"{}".to_vec());
-    let routed = match action.as_str() {
-        "info" => HttpRequest {
-            method: "GET".to_string(),
-            path: "/query/info".to_string(),
-            body: Vec::new(),
-        },
-        "list_server" => HttpRequest {
-            method: "POST".to_string(),
-            path: "/query/list_server".to_string(),
-            body,
-        },
-        "list_table" => HttpRequest {
-            method: "POST".to_string(),
-            path: "/query/list_table".to_string(),
-            body,
-        },
-        "list_partition" => HttpRequest {
-            method: "POST".to_string(),
-            path: "/query/list_partition".to_string(),
-            body,
-        },
-        "list_server_partition" => HttpRequest {
-            method: "POST".to_string(),
-            path: "/query/list_server_partition".to_string(),
-            body,
-        },
-        "list_cluster" => {
-            return fe_list_cluster();
-        }
-        _ => {
-            return serde_json::json!({
-                "status": Status::error("not_found", format!("unknown query action {}", action)),
-            });
-        }
-    };
-    match handle_query_service_route(meta, &routed) {
-        Some((_, body)) => serde_json::from_slice(&body).unwrap_or_else(|err| {
-            serde_json::json!({
-                "status": Status::error("query_response_error", err.to_string()),
-            })
-        }),
-        None => serde_json::json!({
-            "status": Status::error("not_found", format!("unknown query action {}", action)),
-        }),
-    }
-}
-
-fn query_list_servers(meta: &MetaBackend, request: &HttpRequest) -> serde_json::Value {
-    let mut response = backend_call!(meta, list_servers);
-    let params = request_params(request);
-    if let Some(prefix) = params
-        .get("prefix")
-        .or_else(|| params.get("ip_substr"))
-        .filter(|prefix| !prefix.is_empty())
-    {
-        response
-            .servers
-            .retain(|server| server.server_addr.contains(prefix));
-    }
-    if let Some(location) = request_location_filter(request, &params).filter(|tag| !tag.is_empty())
-    {
-        response
-            .servers
-            .retain(|server| server.location.contains(&location));
-    }
-    if let Some(state) = params
-        .get("state")
-        .and_then(|state| cxx_server_state_filter(state))
-    {
-        response
-            .servers
-            .retain(|server| server.state.as_str() == state);
-    }
-    serde_json::to_value(response).unwrap_or_else(|err| {
-        serde_json::json!({
-            "status": Status::error("query_response_error", err.to_string()),
-        })
-    })
-}
-
-fn query_list_proxies(meta: &MetaBackend, request: &HttpRequest) -> serde_json::Value {
-    let mut response = backend_call!(meta, list_proxies);
-    let params = request_params(request);
-    if let Some(prefix) = params
-        .get("prefix")
-        .or_else(|| params.get("ip_substr"))
-        .filter(|prefix| !prefix.is_empty())
-    {
-        response
-            .proxies
-            .retain(|proxy| proxy.proxy_addr.contains(prefix));
-    }
-    if let Some(location) = request_location_filter(request, &params).filter(|tag| !tag.is_empty())
-    {
-        response
-            .proxies
-            .retain(|proxy| proxy.location.contains(&location));
-    }
-    if let Some(namespace) = params
-        .get("namespace")
-        .or_else(|| params.get("namespace_name"))
-        .filter(|namespace| !namespace.is_empty())
-    {
-        response
-            .proxies
-            .retain(|proxy| proxy.namespace == *namespace);
-    }
-    if let Some(state) = params
-        .get("state")
-        .and_then(|state| cxx_proxy_state_filter(state))
-    {
-        response
-            .proxies
-            .retain(|proxy| proxy.state.as_str() == state);
-    }
-    serde_json::to_value(response).unwrap_or_else(|err| {
-        serde_json::json!({
-            "status": Status::error("query_response_error", err.to_string()),
-        })
-    })
-}
-
-fn query_list_tables(meta: &MetaBackend, request: &HttpRequest) -> serde_json::Value {
-    let mut response = backend_call!(meta, list_tables);
-    let params = request_params(request);
-    if let Some(namespace) = params
-        .get("namespace")
-        .or_else(|| params.get("namespace_name"))
-        .filter(|namespace| !namespace.is_empty())
-    {
-        response
-            .tables
-            .retain(|table| table.namespace == *namespace);
-    }
-    if let Some(table_name) = params
-        .get("table")
-        .or_else(|| params.get("table_name"))
-        .or_else(|| params.get("name"))
-        .filter(|table_name| !table_name.is_empty())
-    {
-        response
-            .tables
-            .retain(|table| table.table_name == *table_name);
-    }
-    serde_json::to_value(response).unwrap_or_else(|err| {
-        serde_json::json!({
-            "status": Status::error("query_response_error", err.to_string()),
-        })
-    })
-}
-
-fn fe_query_list_servers(meta: &MetaBackend, request: &HttpRequest) -> serde_json::Value {
-    let response = query_list_servers(meta, request);
-    fe_query_items(response, "servers")
-}
-
-fn fe_query_list_tables(meta: &MetaBackend, request: &HttpRequest) -> serde_json::Value {
-    let response = query_list_tables(meta, request);
-    fe_query_items(response, "tables")
-}
-
-fn fe_query_list_partition_from_query(
-    meta: &MetaBackend,
-    request: &HttpRequest,
-) -> serde_json::Value {
-    let response = query_list_partition_from_query(meta, request);
-    fe_query_list_partition(response)
-}
-
-fn fe_query_list_partition(response: QueryListPartitionResponse) -> serde_json::Value {
-    fe_query_items(
-        serde_json::to_value(response).unwrap_or_else(|err| {
-            serde_json::json!({
-                "status": Status::error("query_response_error", err.to_string()),
-            })
-        }),
-        "info",
-    )
-}
-
-fn fe_query_list_server_partition_from_query(
-    meta: &MetaBackend,
-    request: &HttpRequest,
-) -> serde_json::Value {
-    let response = query_list_server_partition_from_query(meta, request);
-    fe_query_list_server_partition(response)
-}
-
-fn fe_query_list_server_partition(response: QueryListServerPartitionResponse) -> serde_json::Value {
-    fe_query_items(
-        serde_json::to_value(response).unwrap_or_else(|err| {
-            serde_json::json!({
-                "status": Status::error("query_response_error", err.to_string()),
-            })
-        }),
-        "node_partitions",
-    )
-}
-
-fn fe_query_items(mut response: serde_json::Value, field: &str) -> serde_json::Value {
-    let status = response
-        .get("status")
-        .cloned()
-        .unwrap_or_else(|| serde_json::to_value(Status::ok()).unwrap_or(serde_json::Value::Null));
-    let items = response
-        .as_object_mut()
-        .and_then(|object| object.remove(field))
-        .unwrap_or_else(|| serde_json::json!([]));
-    serde_json::json!({
-        "status": status,
-        "data": {
-            "items": items
-        }
-    })
-}
-
-fn request_params(request: &HttpRequest) -> BTreeMap<String, String> {
-    let query_params = request_query_params(&request.path);
-    if !query_params.is_empty() {
-        return query_params;
-    }
-    serde_json::from_slice::<serde_json::Value>(&request.body)
-        .ok()
-        .and_then(|value| value.as_object().cloned())
-        .map(|object| {
-            object
-                .into_iter()
-                .filter_map(|(key, value)| {
-                    let value = match value {
-                        serde_json::Value::String(value) => value,
-                        serde_json::Value::Number(value) => value.to_string(),
-                        serde_json::Value::Bool(value) => value.to_string(),
-                        _ => return None,
-                    };
-                    Some((key, value))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn query_list_partition_from_query(
-    meta: &MetaBackend,
-    request: &HttpRequest,
-) -> QueryListPartitionResponse {
-    let value = query_params_value(request);
-    match serde_json::from_value::<QueryListPartitionRequest>(value) {
-        Ok(req) => query_list_partition(meta, req),
-        Err(err) => QueryListPartitionResponse {
-            status: Status::error("bad_request", err.to_string()),
-            info: Vec::new(),
-        },
-    }
-}
-
-fn query_list_server_partition_from_query(
-    meta: &MetaBackend,
-    request: &HttpRequest,
-) -> QueryListServerPartitionResponse {
-    let value = query_params_value(request);
-    match serde_json::from_value::<QueryListServerPartitionRequest>(value) {
-        Ok(req) => query_list_server_partition(meta, req),
-        Err(err) => QueryListServerPartitionResponse {
-            status: Status::error("bad_request", err.to_string()),
-            server_info: None,
-            node_partitions: Vec::new(),
-        },
-    }
-}
-
-fn fe_list_cluster() -> serde_json::Value {
-    let mut options = FE_CLUSTER_REGISTRY
-        .get_or_init(|| Mutex::new(BTreeMap::new()))
-        .lock()
-        .expect("FE cluster registry lock poisoned")
-        .iter()
-        .map(|(cluster, uri)| {
-            serde_json::json!({
-                "value": cluster,
-                "label": cluster,
-                "cluster": cluster,
-                "uri": uri,
-            })
-        })
-        .collect::<Vec<_>>();
-    if options.is_empty() {
-        options.push(serde_json::json!({
-            "value": "default",
-            "label": "default"
-        }));
-    }
-    serde_json::json!({
-        "status": Status::ok(),
-        "data": {
-            "options": options
-        }
-    })
-}
-
-fn fe_query_info(meta: &MetaBackend) -> serde_json::Value {
-    let clusters = FE_CLUSTER_REGISTRY
-        .get_or_init(|| Mutex::new(BTreeMap::new()))
-        .lock()
-        .expect("FE cluster registry lock poisoned")
-        .clone();
-    let info = serde_json::to_value(backend_call!(meta, info)).unwrap_or_else(|err| {
-        serde_json::json!({
-            "status": Status::error("query_response_error", err.to_string()),
-        })
-    });
-    let mut items = clusters
-        .iter()
-        .map(|(cluster, uri)| {
-            serde_json::json!({
-                "cluster": cluster,
-                "uri": uri,
-                "leader": "",
-                "info": info,
-            })
-        })
-        .collect::<Vec<_>>();
-    if items.is_empty() {
-        items.push(serde_json::json!({
-            "cluster": "default",
-            "uri": "",
-            "leader": "",
-            "info": info,
-        }));
-    }
-    serde_json::json!({
-        "status": Status::ok(),
-        "data": {
-            "items": items
-        }
-    })
-}
-
-fn query_leader(meta: &MetaBackend, req: Option<QueryLeaderRequest>) -> QueryLeaderResponse {
-    if let Some(req) = req {
-        let _ = req.cluster_name;
-    }
-    match meta {
-        MetaBackend::Single(_) => QueryLeaderResponse {
-            status: Status::ok(),
-            is_leader: true,
-            leader: None,
-            leader_id: None,
-        },
-        MetaBackend::Raft(runtime) => {
-            let status = runtime.status();
-            let leader_id = status.leader_id;
-            QueryLeaderResponse {
-                status: Status::ok(),
-                is_leader: leader_id == runtime.local_node_id(),
-                leader: runtime.node_addr(leader_id).and_then(query_leader_endpoint),
-                leader_id: Some(leader_id),
-            }
-        }
-    }
-}
-
-fn query_leader_endpoint(addr: &str) -> Option<QueryLeaderEndpoint> {
-    let (host, port) = addr.rsplit_once(':')?;
-    let port = port.parse().ok()?;
-    Some(QueryLeaderEndpoint {
-        ip4: host.to_string(),
-        port,
-    })
-}
-
-fn query_list_partition(
-    meta: &MetaBackend,
-    req: QueryListPartitionRequest,
-) -> QueryListPartitionResponse {
-    let _ = req.read_stale;
-    if req.namespace.is_empty() || req.table.is_empty() {
-        if req.shard_id == 0 {
-            return QueryListPartitionResponse {
-                status: Status::error(
-                    "bad_request",
-                    "namespace_name/table_name or partition_id is required",
-                ),
-                info: Vec::new(),
-            };
-        }
-        return query_list_partition_by_id(meta, req.shard_id);
-    }
-    let topology = backend_call!(
-        meta,
-        get_table_topology,
-        GetTableTopologyRequest {
-            namespace: req.namespace,
-            table_name: req.table,
-            old_topology_version: 0,
-        }
-    );
-    if !topology.status.ok {
-        return QueryListPartitionResponse {
-            status: topology.status,
-            info: Vec::new(),
-        };
-    }
-    let partitions = if req.shard_id > 0 {
-        topology
-            .partitions
-            .into_iter()
-            .filter(|partition| partition.shard_id == req.shard_id)
-            .collect()
-    } else {
-        topology.partitions
-    };
-    QueryListPartitionResponse {
-        status: topology.status,
-        info: vec![QueryPartitionSetBlock {
-            set_info: topology.table,
-            partition_info: partitions,
-        }],
-    }
-}
-
-fn query_list_partition_by_id(meta: &MetaBackend, shard_id: u64) -> QueryListPartitionResponse {
-    let tables = backend_call!(meta, list_tables);
-    if !tables.status.ok {
-        return QueryListPartitionResponse {
-            status: tables.status,
-            info: Vec::new(),
-        };
-    }
-    for table in tables.tables {
-        let topology = backend_call!(
-            meta,
-            get_table_topology,
-            GetTableTopologyRequest {
-                namespace: table.namespace.clone(),
-                table_name: table.table_name.clone(),
-                old_topology_version: 0,
-            }
-        );
-        if !topology.status.ok {
-            continue;
-        }
-        let partitions = topology
-            .partitions
-            .into_iter()
-            .filter(|partition| partition.shard_id == shard_id)
-            .collect::<Vec<_>>();
-        if !partitions.is_empty() {
-            return QueryListPartitionResponse {
-                status: topology.status,
-                info: vec![QueryPartitionSetBlock {
-                    set_info: topology.table,
-                    partition_info: partitions,
-                }],
-            };
-        }
-    }
-    QueryListPartitionResponse {
-        status: Status::error("not_found", "partition not found"),
-        info: Vec::new(),
-    }
-}
-
-fn query_list_server_partition(
-    meta: &MetaBackend,
-    req: QueryListServerPartitionRequest,
-) -> QueryListServerPartitionResponse {
-    let _ = req.read_stale;
-    let servers = backend_call!(meta, list_servers);
-    if !servers.status.ok {
-        return QueryListServerPartitionResponse {
-            status: servers.status,
-            server_info: None,
-            node_partitions: Vec::new(),
-        };
-    }
-    let endpoint = if !req.server_addr.is_empty() {
-        req.server_addr
-    } else {
-        heartbeat_addr(&req.host, req.port, req.endpoint.as_ref())
-    };
-    let server = servers.servers.into_iter().find(|server| {
-        (req.server_id > 0 && server.node_id == req.server_id)
-            || (!endpoint.is_empty() && server.server_addr == endpoint)
-    });
-    let Some(server) = server else {
-        return QueryListServerPartitionResponse {
-            status: Status::error("not_found", "server not found"),
-            server_info: None,
-            node_partitions: Vec::new(),
-        };
-    };
-    let mut partitions = server
-        .shard_states
-        .iter()
-        .map(|state| QueryServerPartitionInfo {
-            id: state.shard_id,
-            state: state.serving_state.clone(),
-            membership: serde_json::json!({}),
-            config: serde_json::json!({}),
-            load_version: state.load_version,
-            partition_uri: state.shard_uri.clone(),
-            start_slot: state.start_routing_slot,
-            end_slot: state.end_routing_slot,
-            persistent_type: String::new(),
-            readonly: state.readonly,
-            table_name: state.table_name.clone(),
-        })
-        .collect::<Vec<_>>();
-    if partitions.is_empty() {
-        partitions = server
-            .partition_loads
-            .iter()
-            .map(|load| QueryServerPartitionInfo {
-                id: load.shard_id,
-                state: "unknown".to_string(),
-                membership: serde_json::json!({}),
-                config: serde_json::json!({}),
-                load_version: load.partition_info.load_version,
-                partition_uri: load.partition_info.shard_uri.clone(),
-                start_slot: load.partition_info.start_routing_slot,
-                end_slot: load.partition_info.end_routing_slot,
-                persistent_type: String::new(),
-                readonly: load.partition_info.readonly,
-                table_name: load.partition_info.table_name.clone(),
-            })
-            .collect();
-    }
-    let node_id = server.node_id;
-    QueryListServerPartitionResponse {
-        status: Status::ok(),
-        server_info: Some(server),
-        node_partitions: vec![QueryServerNodePartitions {
-            node_id,
-            partitions,
-        }],
-    }
-}
-
-fn finish_load_partition_from_manage_service(
-    meta: &MetaBackend,
-    req: ManageFinishLoadPartitionRequest,
-) -> AckResponse {
-    let status = req.load_result.unwrap_or_else(Status::ok);
-    if !status.ok {
-        return AckResponse { status };
-    }
-    let servers = backend_call!(meta, list_servers);
-    if !servers.status.ok {
-        return AckResponse {
-            status: servers.status,
-        };
-    }
-
-    let mut candidates = Vec::new();
-    let mut already_serving = false;
-    for server in servers.servers {
-        for shard_state in server
-            .shard_states
-            .iter()
-            .filter(|state| state.shard_id == req.partition_id)
-        {
-            if matches!(shard_state.serving_state.as_str(), "serving" | "readonly") {
-                already_serving = true;
-            }
-            if matches!(
-                shard_state.serving_state.as_str(),
-                "loading" | "running" | "queued" | "serving" | "readonly"
-            ) {
-                candidates.push((
-                    server.server_addr.clone(),
-                    shard_state.load_version,
-                    shard_state.serving_state.clone(),
-                ));
-            }
-        }
-    }
-
-    if candidates.is_empty() {
-        let route = backend_call!(meta, get, req.partition_id);
-        return AckResponse {
-            status: if route.status.ok {
-                Status::ok()
-            } else {
-                Status::error(
-                    "partition_load_not_found",
-                    "no loading server state found for partition",
-                )
-            },
-        };
-    }
-    candidates.sort();
-    candidates.dedup();
-    if candidates.len() > 1 && !already_serving {
-        return AckResponse {
-            status: Status::error(
-                "ambiguous_partition_load",
-                "multiple loading server states found for partition",
-            ),
-        };
-    }
-    let (server_addr, load_version, _) = candidates
-        .into_iter()
-        .max_by_key(|(_, load_version, _)| *load_version)
-        .expect("candidate exists");
-    backend_call!(
-        meta,
-        finish_load,
-        LoadFinishRequest {
-            server_addr,
-            shard_id: req.partition_id,
-            load_version,
-            status: Status::ok(),
-            scheduler_task_id: None,
-            scheduler_generation: None,
-        }
-    )
 }
 
 fn handle_heartbeat_service_route(
@@ -3355,7 +1948,7 @@ fn handle_heartbeat_service_route(
                 let endpoint = heartbeat_server_addr(&req);
                 backend_call!(
                     meta,
-                    server_notify_stop,
+                    drop_server,
                     StateChangeRequest {
                         endpoint,
                         freeze_cooldown_ms: 0,
@@ -3388,7 +1981,7 @@ fn handle_heartbeat_service_route(
                 let endpoint = heartbeat_proxy_addr(&req);
                 backend_call!(
                     meta,
-                    proxy_notify_stop,
+                    drop_proxy,
                     StateChangeRequest {
                         endpoint,
                         freeze_cooldown_ms: 0,
@@ -3402,14 +1995,6 @@ fn handle_heartbeat_service_route(
 }
 
 fn heartbeat_server_addr(request: &HeartbeatServerRequest) -> String {
-    if !request.server_addr.is_empty() {
-        request.server_addr.clone()
-    } else {
-        heartbeat_addr(&request.host, request.port, request.endpoint.as_ref())
-    }
-}
-
-fn manage_update_server_addr(request: &ManageUpdateServerRequest) -> String {
     if !request.server_addr.is_empty() {
         request.server_addr.clone()
     } else {
@@ -3579,7 +2164,7 @@ fn handle_master_service_route(
         ("POST", "/MasterService/RegisterServer") => {
             parse_or(&request.body, |req: MasterRegisterServerRequest| {
                 let server_addr = master_server_addr(&req);
-                let response = backend_call!(
+                backend_call!(
                     meta,
                     register_server,
                     RegisterServerRequest {
@@ -3588,11 +2173,7 @@ fn handle_master_service_route(
                         location: req.location,
                         binary_version: req.binary_version,
                     }
-                );
-                MasterRegisterServerResponse {
-                    status: response.status,
-                    redirect_endpoint: String::new(),
-                }
+                )
             })
         }
         ("GET", "/MasterService/GetInfo") => json_response(200, &backend_call!(meta, info)),
@@ -3601,18 +2182,14 @@ fn handle_master_service_route(
         }
         ("POST", "/MasterService/UnRegisterServer") => {
             parse_or(&request.body, |req: MasterRegisterServerRequest| {
-                let response = backend_call!(
+                backend_call!(
                     meta,
                     drop_server,
                     StateChangeRequest {
                         endpoint: master_server_addr(&req),
                         freeze_cooldown_ms: 0,
                     }
-                );
-                MasterRegisterServerResponse {
-                    status: response.status,
-                    redirect_endpoint: String::new(),
-                }
+                )
             })
         }
         _ => return None,
@@ -3717,10 +2294,7 @@ mod tests {
     use tempfile::tempdir;
     use temporalstore_rust::data_node::DataNodeLifecycleSnapshot;
     use temporalstore_rust::http::HttpRequest;
-    use temporalstore_rust::meta::{
-        MetaEntityState, ServerRuntimeLoad, ServerShardServingState, ShardSnapshotRef,
-        TableTopologyResponse,
-    };
+    use temporalstore_rust::meta::{MetaEntityState, ShardSnapshotRef, TableTopologyResponse};
     use temporalstore_rust::rebalance::RebalanceStep;
     use temporalstore_rust::ProductionReadinessReport;
 
@@ -3745,296 +2319,6 @@ mod tests {
             assert!(report.cpp_parity_ready);
             assert_eq!(report.missing_count(), 0);
         }
-    }
-
-    #[test]
-    fn manage_service_updates_and_toggles_management_info() {
-        let backend = MetaBackend::Single(SingleNodeMeta::default());
-        let scheduler = MetaTaskScheduler::default();
-        let update = UpdateManageInfoRequest {
-            info: temporalstore_rust::meta::ManagementInfo {
-                readonly: false,
-                reserved_namespace_name_list: vec!["system".to_string()],
-                reserved_table_name_list: vec!["meta".to_string()],
-                reserved_consul_name_list: vec!["consul-a".to_string()],
-            },
-        };
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/ManageService/UpdateManageInfo".to_string(),
-                body: serde_json::to_vec(&update).unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let ack: AckResponse = serde_json::from_slice(&body).unwrap();
-        assert!(ack.status.ok);
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "GET".to_string(),
-                path: "/QueryService/QueryManageInfo".to_string(),
-                body: Vec::new(),
-            },
-        );
-        assert_eq!(code, 200);
-        let info: temporalstore_rust::meta::MetaInfo = serde_json::from_slice(&body).unwrap();
-        assert_eq!(
-            info.manage_info.reserved_namespace_name_list,
-            vec!["system".to_string()]
-        );
-        assert!(!info.manage_info.readonly);
-
-        for (path, expected_readonly) in [
-            ("/ManageService/MuteMetaChange", true),
-            ("/ManageService/ResumeMetaChange", false),
-        ] {
-            let (code, body) = handle(
-                &backend,
-                &scheduler,
-                HttpRequest {
-                    method: "POST".to_string(),
-                    path: path.to_string(),
-                    body: Vec::new(),
-                },
-            );
-            assert_eq!(code, 200);
-            let ack: AckResponse = serde_json::from_slice(&body).unwrap();
-            assert!(ack.status.ok);
-            assert_eq!(
-                backend_call!(&backend, info).manage_info.readonly,
-                expected_readonly
-            );
-        }
-    }
-
-    #[test]
-    fn manage_service_freezes_and_drops_partition() {
-        let meta = SingleNodeMeta::default();
-        assert!(
-            meta.add_table(AddTableRequest {
-                namespace: "partition-ns".to_string(),
-                table_name: "partition-table".to_string(),
-                first_shard_id: 700,
-                shard_count: 2,
-                replica_count: 1,
-                use_cpp_partition_ids: false,
-                partition_version: 0,
-                serving_options: temporalstore_rust::meta::TableServingOptions::default(),
-            })
-            .status
-            .ok
-        );
-        let backend = MetaBackend::Single(meta);
-        let scheduler = MetaTaskScheduler::default();
-
-        for (path, expected_ok) in [
-            ("/ManageService/DropPartition", false),
-            ("/ManageService/FreezePartition", true),
-            ("/ManageService/DropPartition", true),
-        ] {
-            let (code, body) = handle(
-                &backend,
-                &scheduler,
-                HttpRequest {
-                    method: "POST".to_string(),
-                    path: path.to_string(),
-                    body: serde_json::to_vec(&PartitionStateChangeRequest {
-                        partition_id: 700,
-                        force: false,
-                    })
-                    .unwrap(),
-                },
-            );
-            assert_eq!(code, 200);
-            let ack: AckResponse = serde_json::from_slice(&body).unwrap();
-            assert_eq!(ack.status.ok, expected_ok, "{ack:?}");
-        }
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/QueryService/ListPartition".to_string(),
-                body: serde_json::to_vec(&QueryListPartitionRequest {
-                    namespace: "partition-ns".to_string(),
-                    table: "partition-table".to_string(),
-                    shard_id: 0,
-                    read_stale: false,
-                })
-                .unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let partitions: QueryListPartitionResponse = serde_json::from_slice(&body).unwrap();
-        assert!(partitions.status.ok);
-        assert_eq!(partitions.info[0].partition_info.len(), 1);
-        assert_eq!(partitions.info[0].partition_info[0].shard_id, 701);
-    }
-
-    #[test]
-    fn manage_service_finish_load_partition_uses_server_state() {
-        let meta = SingleNodeMeta::default();
-        assert!(
-            meta.register_server(RegisterServerRequest {
-                server_addr: "load-server-a".to_string(),
-                node_id: 9,
-                location: "zone-a".to_string(),
-                binary_version: "v1".to_string(),
-            })
-            .status
-            .ok
-        );
-        assert!(
-            meta.server_heartbeat(ServerHeartbeatRequest {
-                server_addr: "load-server-a".to_string(),
-                boot_time_ms: 1,
-                binary_version: "v1".to_string(),
-                shard_loads: Vec::new(),
-                partition_loads: Vec::new(),
-                runtime_load: ServerRuntimeLoad::default(),
-                shard_states: vec![ServerShardServingState {
-                    shard_id: 744,
-                    serving_state: "loading".to_string(),
-                    worker_index: 0,
-                    worker_threads: 1,
-                    loaded: false,
-                    readonly: false,
-                    load_version: 12,
-                    table_name: "partition-table".to_string(),
-                    shard_uri: "local://partition-table/744".to_string(),
-                    start_routing_slot: 0,
-                    end_routing_slot: 1023,
-                    total_records: 0,
-                    storage_bytes: 0,
-                    cache_memory_bytes: 0,
-                    storage: temporalstore_rust::control::ShardCanonicalStorageStats::default(),
-                    block_store_bytes_written: 0,
-                    oplog_sequence: 0,
-                    dirty_object_count: 0,
-                    dirty_slot_count: 0,
-                }],
-            })
-            .status
-            .ok
-        );
-        let backend = MetaBackend::Single(meta);
-        let scheduler = MetaTaskScheduler::default();
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/ManageService/FinishLoadPartition".to_string(),
-                body: serde_json::to_vec(&serde_json::json!({
-                    "partition_id": 744,
-                    "load_result": Status::ok(),
-                }))
-                .unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let ack: AckResponse = serde_json::from_slice(&body).unwrap();
-        assert!(ack.status.ok, "{ack:?}");
-
-        let route = backend_call!(&backend, get, 744);
-        assert!(route.status.ok);
-        assert_eq!(route.location.unwrap().server_addr, "load-server-a");
-    }
-
-    #[test]
-    fn heartbeat_notify_stop_requires_normal_state() {
-        let meta = SingleNodeMeta::default();
-        meta.register_server(RegisterServerRequest {
-            server_addr: "server-stop-a".to_string(),
-            node_id: 1,
-            location: "zone-a".to_string(),
-            binary_version: "v1".to_string(),
-        });
-        meta.register_proxy(RegisterProxyRequest {
-            proxy_addr: "proxy-stop-a".to_string(),
-            namespace: "ns".to_string(),
-            location: "zone-a".to_string(),
-            config_version: 1,
-            binary_version: "v1".to_string(),
-        });
-        let backend = MetaBackend::Single(meta);
-        let scheduler = MetaTaskScheduler::default();
-
-        for (path, body) in [
-            (
-                "/HeartbeatService/ServerNotifyStop",
-                serde_json::json!({"server_addr": "missing-server"}),
-            ),
-            (
-                "/HeartbeatService/ProxyNotifyStop",
-                serde_json::json!({"proxy_addr": "missing-proxy"}),
-            ),
-        ] {
-            let (code, body) = handle(
-                &backend,
-                &scheduler,
-                HttpRequest {
-                    method: "POST".to_string(),
-                    path: path.to_string(),
-                    body: serde_json::to_vec(&body).unwrap(),
-                },
-            );
-            assert_eq!(code, 200);
-            let ack: AckResponse = serde_json::from_slice(&body).unwrap();
-            assert_eq!(ack.status.code, "not_found");
-        }
-
-        assert!(
-            backend_call!(
-                &backend,
-                freeze_server,
-                StateChangeRequest {
-                    endpoint: "server-stop-a".to_string(),
-                    freeze_cooldown_ms: 0,
-                }
-            )
-            .status
-            .ok
-        );
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/HeartbeatService/ServerNotifyStop".to_string(),
-                body: serde_json::to_vec(&serde_json::json!({"server_addr": "server-stop-a"}))
-                    .unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let ack: AckResponse = serde_json::from_slice(&body).unwrap();
-        assert_eq!(ack.status.code, "failed_precondition");
-
-        let (code, body) = handle(
-            &backend,
-            &scheduler,
-            HttpRequest {
-                method: "POST".to_string(),
-                path: "/HeartbeatService/ProxyNotifyStop".to_string(),
-                body: serde_json::to_vec(&serde_json::json!({"proxy_addr": "proxy-stop-a"}))
-                    .unwrap(),
-            },
-        );
-        assert_eq!(code, 200);
-        let ack: AckResponse = serde_json::from_slice(&body).unwrap();
-        assert!(ack.status.ok);
-        assert_eq!(
-            backend_call!(&backend, list_proxies).proxies[0].state,
-            MetaEntityState::Dropped
-        );
     }
 
     #[test]

@@ -21,7 +21,7 @@
 - understanding_provider: `oss_encoder`
 - note: This debug run requires real OSS embeddings and OSS-encoder extraction/query understanding. Deterministic extraction, segmentation, and query-understanding are disabled for this run.
 
-## Capability Counts
+## Data Model Counts
 
 - `context_embedding`: 85
 - `context_entity`: 14
@@ -3520,7 +3520,7 @@ Prefilter candidate sample:
 ]
 ```
 
-## Records By Capability
+## Records By Data Model
 
 ### context_embedding
 ```json

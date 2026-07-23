@@ -9,18 +9,18 @@ const (
 	FeatureFilterLessThan    FeatureFilterOp = 3
 )
 
-type ControlStatePrecision int
+type RiskPrecision int
 
 const (
-	ControlStateOneSecond   ControlStatePrecision = 0
-	ControlStateFiveSeconds ControlStatePrecision = 1
-	ControlStateTenSeconds  ControlStatePrecision = 2
-	ControlStateOneMinute   ControlStatePrecision = 3
-	ControlStateFiveMinutes ControlStatePrecision = 4
-	ControlStateTenMinutes  ControlStatePrecision = 5
-	ControlStateOneHour     ControlStatePrecision = 6
-	ControlStateOneDay      ControlStatePrecision = 7
-	ControlStateOneMonth    ControlStatePrecision = 8
+	RiskOneSecond   RiskPrecision = 0
+	RiskFiveSeconds RiskPrecision = 1
+	RiskTenSeconds  RiskPrecision = 2
+	RiskOneMinute   RiskPrecision = 3
+	RiskFiveMinutes RiskPrecision = 4
+	RiskTenMinutes  RiskPrecision = 5
+	RiskOneHour     RiskPrecision = 6
+	RiskOneDay      RiskPrecision = 7
+	RiskOneMonth    RiskPrecision = 8
 )
 
 type WindowUnit int

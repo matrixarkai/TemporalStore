@@ -40,7 +40,7 @@ First-party total, C++ + Rust + Python + Proto: **334,369 nonblank LOC**.
 |---|---:|---:|---:|---:|
 | byteraft C++ dependency | `/root/src/github-services/TemporalStore/.local/deps-src/byteraft-master` | 210 | 50,287 | 41,996 |
 | byte C++ dependency | `/root/src/github-services/TemporalStore/.local/deps-src/byte-master` | 377 | 85,916 | 74,964 |
-| MatrixRaft external lib | `/root/src/github-services/MatrixRaft` | 63 | 36,819 | 34,530 |
+| RustRaft external lib | `/root/src/github-services/RustRaft` | 63 | 36,819 | 34,530 |
 | MatrixCache external lib | `/root/src/github-services/MatrixCache` | 2 | 24,790 | 22,003 |
 | mtcache C++ dependency | `/root/TemporalStore-main-slice5/dependencies/mtcache` | 145 | 31,099 | 26,615 |
 
@@ -53,7 +53,7 @@ Listed dependency total: **200,108 nonblank LOC**.
 | TemporalStore first-party C++ + Rust + Python + Proto | 334,369 |
 | Listed dependencies total | 200,108 |
 | TemporalStore C++ plus C++ dependencies: byteraft + byte + mtcache | 255,714 |
-| Rust ecosystem dependencies: MatrixRaft + MatrixCache | 56,533 |
+| Rust ecosystem dependencies: RustRaft + MatrixCache | 56,533 |
 
 ## Notes
 

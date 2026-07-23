@@ -29,65 +29,65 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
 
     public void putString(String key, String value) {
         Map<String, Object> body = keyBody(key);
-        body.put("value", bytesValue(value));
-        post("/ProxyService/Set", body);
+        body.put("value", value);
+        post("/v1/string/put", body);
     }
 
     public void putStringWithTtl(String key, String value, long ttlMs) {
         Map<String, Object> body = keyBody(key);
-        body.put("value", bytesValue(value));
+        body.put("value", value);
         body.put("ttl_ms", ttlMs);
-        post("/ProxyService/SetEx", body);
+        post("/v1/string/put", body);
     }
 
     public String getString(String key) {
-        JsonNode data = post("/ProxyService/Get", keyBody(key));
-        return stringValue(data.path("value"));
+        JsonNode data = post("/v1/string/get", keyBody(key));
+        return data.path("value").asText();
     }
 
     public void deleteObject(String key) {
-        post("/ProxyService/Delete", keyBody(key));
+        post("/v1/common/delete", keyBody(key));
     }
 
     public void expire(String key, long ttlMs) {
         Map<String, Object> body = keyBody(key);
         body.put("ttl_ms", ttlMs);
-        post("/ProxyService/Expire", body);
+        post("/v1/common/expire", body);
     }
 
     public long ttl(String key) {
-        JsonNode data = post("/ProxyService/Ttl", keyBody(key));
-        return data.path("value").asLong();
+        JsonNode data = post("/v1/common/ttl", keyBody(key));
+        return data.path("ttl_ms").asLong();
     }
 
     public void hset(String key, String field, String value) {
         Map<String, Object> body = keyBody(key);
         body.put("field", field);
-        body.put("value", bytesValue(value));
-        post("/ProxyService/HSet", body);
+        body.put("value", value);
+        post("/v1/hash/hset", body);
     }
 
     public String hget(String key, String field) {
         Map<String, Object> body = keyBody(key);
         body.put("field", field);
-        JsonNode data = post("/ProxyService/HGet", body);
-        return stringValue(data.path("value"));
+        JsonNode data = post("/v1/hash/hget", body);
+        return data.path("value").asText();
     }
 
     public void hdel(String key, String field) {
         Map<String, Object> body = keyBody(key);
         body.put("field", field);
-        post("/ProxyService/HDel", body);
+        post("/v1/hash/hdel", body);
     }
 
     public void sadd(String key, String member) {
         Map<String, Object> body = keyBody(key);
-        body.put("member", bytesValue(member));
-        post("/ProxyService/SAdd", body);
+        body.put("member", member);
+        post("/v1/set/sadd", body);
     }
 
     public List<String> smembers(String key) {
-        JsonNode data = post("/ProxyService/SMembers", keyBody(key));
+        JsonNode data = post("/v1/set/smembers", keyBody(key));
         return MAPPER.convertValue(data.path("members"), new TypeReference<List<String>>() {});
     }
 
@@ -101,7 +101,7 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
             }
         }
         body.put("points", encodedPoints);
-        post("/ProxyService/FeatureAdd", body);
+        post("/v1/feature/add", body);
     }
 
     public List<TemporalStoreClient.FeaturePoint> queryFeaturePoints(
@@ -110,7 +110,7 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
             long endTs,
             long count,
             List<TemporalStoreClient.FeatureFilter> filters) {
-        JsonNode data = post("/ProxyService/FeatureQuery", queryBody(key, startTs, endTs, count, filters));
+        JsonNode data = post("/v1/feature/query", queryBody(key, startTs, endTs, count, filters));
         List<TemporalStoreClient.FeaturePoint> points = new ArrayList<>();
         for (JsonNode point : data.path("points")) {
             points.add(
@@ -130,7 +130,7 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
             }
         }
         body.put("rows", encodedRows);
-        post("/ProxyService/SequenceAdd", body);
+        post("/v1/sequence/add", body);
     }
 
     public List<TemporalStoreClient.SequenceFeatureRow> querySequenceFeatureRows(
@@ -139,7 +139,7 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
             long endTs,
             long count,
             List<TemporalStoreClient.FeatureFilter> filters) {
-        JsonNode data = post("/ProxyService/SequenceQuery", queryBody(key, startTs, endTs, count, filters));
+        JsonNode data = post("/v1/sequence/query", queryBody(key, startTs, endTs, count, filters));
         List<TemporalStoreClient.SequenceFeatureRow> rows = new ArrayList<>();
         for (JsonNode row : data.path("rows")) {
             rows.add(
@@ -162,7 +162,7 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
             List<TemporalStoreClient.IpsFeatureStat> features) {
         Map<String, Object> body = new HashMap<>();
         body.put("namespace", options.namespaceName);
-        body.put("table_name", options.tableName);
+        body.put("table", options.tableName);
         body.put("ips_table", ipsTable);
         body.put("uid", uid);
         body.put("timestamp_us", timestampUs);
@@ -175,7 +175,7 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
             }
         }
         body.put("features", encodedFeatures);
-        post("/ProxyService/IpsAdd", body);
+        post("/v1/ips/add", body);
     }
 
     public List<TemporalStoreClient.IpsFeatureStat> queryIpsLastInstances(
@@ -188,7 +188,7 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
             long lastInstances) {
         Map<String, Object> body = new HashMap<>();
         body.put("namespace", options.namespaceName);
-        body.put("table_name", options.tableName);
+        body.put("table", options.tableName);
         body.put("ips_table", ipsTable);
         body.put("uid", uid);
         body.put("action_type", actionType);
@@ -196,7 +196,7 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
         body.put("slot", slot);
         body.put("top_k", topK);
         body.put("last_instances", lastInstances);
-        JsonNode data = post("/ProxyService/IpsQueryLast", body);
+        JsonNode data = post("/v1/ips/query_last", body);
         List<TemporalStoreClient.IpsFeatureStat> features = new ArrayList<>();
         for (JsonNode feature : data.path("features")) {
             features.add(
@@ -211,11 +211,11 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
         return features;
     }
 
-    public void control_stateIncrement(
+    public void riskIncrement(
             String key,
             long amount,
             long ttlSeconds,
-            TemporalStoreClient.ControlStatePrecision precision,
+            TemporalStoreClient.RiskPrecision precision,
             String uuid,
             long occurTimeSeconds) {
         Map<String, Object> body = keyBody(key);
@@ -224,12 +224,12 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
         body.put("precision", precision.ordinal());
         body.put("uuid", uuid == null ? "" : uuid);
         body.put("occur_time_seconds", occurTimeSeconds);
-        post("/ProxyService/ControlStateIncrement", body);
+        post("/v1/risk/increment", body);
     }
 
-    public long control_stateCount(
+    public long riskCount(
             String key,
-            TemporalStoreClient.ControlStatePrecision precision,
+            TemporalStoreClient.RiskPrecision precision,
             long windowStart,
             long windowEnd,
             TemporalStoreClient.WindowUnit windowUnit) {
@@ -238,7 +238,7 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
         body.put("window_start", windowStart);
         body.put("window_end", windowEnd);
         body.put("window_unit", windowUnit.ordinal());
-        JsonNode data = post("/ProxyService/ControlStateCount", body);
+        JsonNode data = post("/v1/risk/count", body);
         return data.path("count").asLong();
     }
 
@@ -264,20 +264,6 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
                 throw new TemporalStoreClient.TemporalStoreException(
                         response.statusCode(), envelope.path("message").asText());
             }
-            if (envelope.has("status")) {
-                JsonNode status = envelope.path("status");
-                boolean statusOk = status.isObject()
-                        ? status.path("ok").asBoolean(false)
-                        : "ok".equals(status.asText());
-                if (!statusOk) {
-                    throw new TemporalStoreClient.TemporalStoreException(
-                            response.statusCode(), status.path("message").asText(status.asText()));
-                }
-                JsonNode proxyResponse = envelope.path("response");
-                return proxyResponse.isMissingNode() || proxyResponse.isNull()
-                        ? MAPPER.createObjectNode()
-                        : proxyResponse;
-            }
             if (!envelope.path("ok").asBoolean(false)) {
                 throw new TemporalStoreClient.TemporalStoreException(
                         envelope.path("code").asInt(), envelope.path("message").asText());
@@ -295,7 +281,7 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
     private Map<String, Object> keyBody(String key) {
         Map<String, Object> body = new HashMap<>();
         body.put("namespace", options.namespaceName);
-        body.put("table_name", options.tableName);
+        body.put("table", options.tableName);
         body.put("key", key);
         return body;
     }
@@ -307,8 +293,8 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
             long count,
             List<TemporalStoreClient.FeatureFilter> filters) {
         Map<String, Object> body = keyBody(key);
-        body.put("start_ms", startTs);
-        body.put("end_ms", endTs);
+        body.put("start_ts", startTs);
+        body.put("end_ts", endTs);
         body.put("count", count);
         List<Map<String, Object>> encodedFilters = new ArrayList<>();
         if (filters != null) {
@@ -357,28 +343,6 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
             return "";
         }
         return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
-    }
-
-    private static List<Integer> bytesValue(String value) {
-        List<Integer> bytes = new ArrayList<>();
-        for (byte item : (value == null ? "" : value).getBytes(java.nio.charset.StandardCharsets.UTF_8)) {
-            bytes.add(Byte.toUnsignedInt(item));
-        }
-        return bytes;
-    }
-
-    private static String stringValue(JsonNode value) {
-        if (value == null || value.isMissingNode() || value.isNull()) {
-            return "";
-        }
-        if (value.isArray()) {
-            byte[] bytes = new byte[value.size()];
-            for (int i = 0; i < value.size(); i++) {
-                bytes[i] = (byte) value.get(i).asInt();
-            }
-            return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-        }
-        return value.asText();
     }
 
     public static final class Options {

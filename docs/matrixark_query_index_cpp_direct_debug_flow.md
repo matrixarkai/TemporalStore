@@ -20,7 +20,7 @@
 - embedding_model: `<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2`
 - note: This debug run uses real OSS embeddings. Extraction and query-understanding are the current MatrixArk internal deterministic schema/rule path unless an LLM provider is wired in.
 
-## Capability Counts
+## Data Model Counts
 
 - `context_embedding`: 82
 - `context_entity`: 16
@@ -4092,7 +4092,7 @@ Prefilter candidate sample:
     "text": "assistant: Preference noted: Java for backend protot
 ```
 
-## Records By Capability
+## Records By Data Model
 
 ### context_embedding
 ```json

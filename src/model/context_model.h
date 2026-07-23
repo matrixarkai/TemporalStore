@@ -26,6 +26,11 @@ class ContextIndexOrSet : public FeatureOrSet {
     explicit ContextIndexOrSet(PersistentMap<uint64_t, std::string>* data) : FeatureOrSet(data) {}
 };
 
+class ContextAuditOrSet : public FeatureOrSet {
+ public:
+    explicit ContextAuditOrSet(PersistentMap<uint64_t, std::string>* data) : FeatureOrSet(data) {}
+};
+
 class ContextDirtyOrSet : public FeatureOrSet {
  public:
     explicit ContextDirtyOrSet(PersistentMap<uint64_t, std::string>* data) : FeatureOrSet(data) {}
@@ -64,6 +69,8 @@ using ContextEventModel =
         OrSetModel<uint64_t, std::string, ContextEventOrSet>;
 using ContextIndexModel =
         OrSetModel<uint64_t, std::string, ContextIndexOrSet>;
+using ContextAuditModel =
+        OrSetModel<uint64_t, std::string, ContextAuditOrSet>;
 using ContextDirtyModel =
         OrSetModel<uint64_t, std::string, ContextDirtyOrSet>;
 using ContextChildModel =
@@ -76,16 +83,6 @@ using ContextSummaryModel =
         OrSetModel<uint64_t, std::string, ContextSummaryOrSet>;
 using ContextCompressionModel =
         OrSetModel<uint64_t, std::string, ContextCompressionOrSet>;
-
-#ifndef BCACHE2_OPEN_SOURCE_SURFACE
-class ContextAuditOrSet : public FeatureOrSet {
- public:
-    explicit ContextAuditOrSet(PersistentMap<uint64_t, std::string>* data) : FeatureOrSet(data) {}
-};
-
-using ContextAuditModel =
-        OrSetModel<uint64_t, std::string, ContextAuditOrSet>;
-#endif
 
 }  // namespace model
 }  // namespace bcache2

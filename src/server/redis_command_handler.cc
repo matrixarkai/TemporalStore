@@ -72,61 +72,6 @@ void SetRedisStatusError(brpc::RedisReply* reply, const RpcStatus& status) {
     SetRedisError(reply, status.message().empty() ? "command failed" : status.message());
 }
 
-#ifdef BCACHE2_OPEN_SOURCE_SURFACE
-struct OpenSourceRedisCommandDescriptor {
-    RedisCommand::CmdType type;
-    const char* name;
-    int64_t arity;
-    const char* flag;
-};
-
-const std::vector<OpenSourceRedisCommandDescriptor>& OpenSourceRedisCommands() {
-    static const std::vector<OpenSourceRedisCommandDescriptor> commands = {
-        {RedisCommand::CmdType::kInfo, "INFO", -1, "admin"},
-        {RedisCommand::CmdType::kAuth, "AUTH", 2, "admin"},
-        {RedisCommand::CmdType::kPing, "PING", -1, "readonly"},
-        {RedisCommand::CmdType::kCommand, "COMMAND", -1, "admin"},
-        {RedisCommand::CmdType::kGet, "GET", 2, "readonly"},
-        {RedisCommand::CmdType::kSet, "SET", -3, "write"},
-        {RedisCommand::CmdType::kDel, "DEL", -2, "write"},
-        {RedisCommand::CmdType::kExists, "EXISTS", -2, "readonly"},
-        {RedisCommand::CmdType::kExpire, "EXPIRE", 3, "write"},
-        {RedisCommand::CmdType::kTtl, "TTL", 2, "readonly"},
-        {RedisCommand::CmdType::kHSet, "HSET", -4, "write"},
-        {RedisCommand::CmdType::kHGet, "HGET", 3, "readonly"},
-        {RedisCommand::CmdType::kHDel, "HDEL", -3, "write"},
-        {RedisCommand::CmdType::kHExists, "HEXISTS", 3, "readonly"},
-        {RedisCommand::CmdType::kHLen, "HLEN", 2, "readonly"},
-        {RedisCommand::CmdType::kHGetAll, "HGETALL", 2, "readonly"},
-    };
-    return commands;
-}
-bool IsOpenSourceRedisCommandAllowed(RedisCommand::CmdType cmd_type) {
-    for (const auto& command : OpenSourceRedisCommands()) {
-        if (command.type == cmd_type) {
-            return true;
-        }
-    }
-    return false;
-}
-
-const OpenSourceRedisCommandDescriptor* FindOpenSourceRedisCommand(const std::string& name) {
-    for (const auto& command : OpenSourceRedisCommands()) {
-        if (!strcasecmp(command.name, name.c_str())) {
-            return &command;
-        }
-    }
-    return nullptr;
-}
-
-int64_t OpenSourceRedisCommandCount() {
-    // Keep this aligned with IsOpenSourceRedisCommandAllowed(). C++ currently
-    // exposes the first-release minimal string/hash/TTL surface; feature/frequency
-    // model commands are Rust bridge APIs and are not advertised by the C++ Redis bridge.
-    return static_cast<int64_t>(OpenSourceRedisCommands().size());
-}
-#endif
-
 
 
 class RedisSyncClosure : public Closure<void> {
@@ -414,61 +359,6 @@ bool ParseInt64Arg(const std::string& arg, int64_t* value) {
     } catch (...) {
         return false;
     }
-}
-
-bool RedisPatternMatchesAt(const std::string& pattern, size_t pattern_index,
-                           const std::string& value, size_t value_index) {
-    if (pattern_index == pattern.size()) {
-        return value_index == value.size();
-    }
-    if (pattern[pattern_index] == '*') {
-        return RedisPatternMatchesAt(pattern, pattern_index + 1, value, value_index) ||
-               (value_index < value.size() &&
-                RedisPatternMatchesAt(pattern, pattern_index, value, value_index + 1));
-    }
-    if (pattern[pattern_index] == '?') {
-        return value_index < value.size() &&
-               RedisPatternMatchesAt(pattern, pattern_index + 1, value, value_index + 1);
-    }
-    return value_index < value.size() && pattern[pattern_index] == value[value_index] &&
-           RedisPatternMatchesAt(pattern, pattern_index + 1, value, value_index + 1);
-}
-
-bool RedisPatternMatches(const std::string& pattern, const std::string& value) {
-    return RedisPatternMatchesAt(pattern, 0, value, 0);
-}
-
-bool ParseScanTailOptions(RedisClientContext* c, size_t start_index, std::string* pattern,
-                          int64_t* count, brpc::RedisReply* reply) {
-    *pattern = "*";
-    *count = 10;
-    size_t index = start_index;
-    while (index < c->ArgSize()) {
-        const std::string option = c->StrArg(index);
-        if (!strcasecmp(option.c_str(), "match")) {
-            if (index + 1 >= c->ArgSize()) {
-                SetRedisError(reply, "syntax error");
-                return false;
-            }
-            *pattern = c->StrArg(index + 1);
-            index += 2;
-            continue;
-        }
-        if (!strcasecmp(option.c_str(), "count")) {
-            if (index + 1 >= c->ArgSize() || !ParseInt64Arg(c->StrArg(index + 1), count)) {
-                SetRedisError(reply, "invalid count");
-                return false;
-            }
-            if (*count < 1) {
-                *count = 1;
-            }
-            index += 2;
-            continue;
-        }
-        SetRedisError(reply, "syntax error");
-        return false;
-    }
-    return true;
 }
 
 void SetStringArrayReply(brpc::RedisReply* reply, const std::vector<std::string>& values) {
@@ -846,13 +736,6 @@ brpc::RedisCommandHandlerResult RedisCommandHandler::Run(
     }
 
     RedisClientContext client(args, output);
-#ifdef BCACHE2_OPEN_SOURCE_SURFACE
-    if (!IsOpenSourceRedisCommandAllowed(command_.GetCmdType())) {
-        SetRedisError(output, "command " + command_.GetName() +
-                                  " is not part of the open-source Redis surface");
-        return brpc::REDIS_CMD_HANDLED;
-    }
-#endif
     if (handler_ == nullptr) {
         Unsupported(&client);
     } else {
@@ -901,44 +784,6 @@ void RedisCommandHandler::Client(RedisClientContext* c) {
 }
 
 void RedisCommandHandler::Command(RedisClientContext* c) {
-#ifdef BCACHE2_OPEN_SOURCE_SURFACE
-    const auto& commands = OpenSourceRedisCommands();
-    if (c->ArgSize() == 1) {
-        c->reply->SetArray(commands.size());
-        for (size_t i = 0; i < commands.size(); ++i) {
-            (*c->reply)[i].SetString(commands[i].name);
-        }
-        return;
-    }
-    const std::string op = c->StrArg(1);
-    if (!strcasecmp(op.c_str(), "count") && c->ArgSize() == 2) {
-        c->reply->SetInteger(OpenSourceRedisCommandCount());
-        return;
-    }
-    if (!strcasecmp(op.c_str(), "docs") && c->ArgSize() >= 2) {
-        c->reply->SetArray(0);
-        return;
-    }
-    if (!strcasecmp(op.c_str(), "info") && c->ArgSize() >= 2) {
-        const size_t requested = c->ArgSize() > 2 ? c->ArgSize() - 2 : commands.size();
-        c->reply->SetArray(requested);
-        for (size_t i = 0; i < requested; ++i) {
-            const auto* command = c->ArgSize() > 2
-                                      ? FindOpenSourceRedisCommand(c->StrArg(i + 2))
-                                      : &commands[i];
-            if (command == nullptr) {
-                (*c->reply)[i].SetNullString();
-                continue;
-            }
-            (*c->reply)[i].SetArray(3);
-            (*c->reply)[i][0].SetString(command->name);
-            (*c->reply)[i][1].SetInteger(command->arity);
-            (*c->reply)[i][2].SetArray(1);
-            (*c->reply)[i][2][0].SetString(command->flag);
-        }
-        return;
-    }
-#else
     if (c->ArgSize() == 1) {
         c->reply->SetArray(0);
         return;
@@ -956,7 +801,6 @@ void RedisCommandHandler::Command(RedisClientContext* c) {
         c->reply->SetArray(0);
         return;
     }
-#endif
     c->reply->SetError("ERR unsupported COMMAND subcommand");
 }
 
@@ -1208,14 +1052,6 @@ void RedisCommandHandler::Info(RedisClientContext* c) {
             "partition_loading_stats:" +
             partition_loading_stats +
             "\r\n"
-#ifdef BCACHE2_OPEN_SOURCE_SURFACE
-            "redis_surface:trimmed_open_source_context_feature_control\r\n"
-            "redis_surface_schema:temporalstore_open_source_redis_surface_v1\r\n"
-            "redis_surface_cxx_command_count:" +
-            std::to_string(OpenSourceRedisCommandCount()) +
-            "\r\n"
-            "redis_surface_blocked_command_family_count:9\r\n"
-#endif
             "total_connections_received:982455\r\n"
             "total_commands_processed:10909755651\r\n"
             "total_commands_dropped:0\r\n"
@@ -2262,62 +2098,6 @@ void RedisCommandHandler::HVals(RedisClientContext* c) {
     c->reply->SetArray(getall_response.values_size());
     for (int i = 0; i < getall_response.values_size(); ++i) {
         (*c->reply)[i].SetString(getall_response.values(i));
-    }
-}
-
-void RedisCommandHandler::HScan(RedisClientContext* c) {
-    int64_t cursor = 0;
-    if (!ParseInt64Arg(c->StrArg(2), &cursor) || cursor < 0) {
-        SetRedisError(c->reply, "invalid cursor");
-        return;
-    }
-    std::string pattern;
-    int64_t count = 10;
-    if (!ParseScanTailOptions(c, 3, &pattern, &count, c->reply)) {
-        return;
-    }
-
-    CmdResponse response;
-    if (!ExecuteRedisSingle(redis_service_, HashGetAllCmd(c->StrArg(1)), &response, c->reply)) {
-        return;
-    }
-    if (!IsOkStatus(response.response_status())) {
-        c->reply->SetArray(2);
-        (*c->reply)[0].SetString("0");
-        (*c->reply)[1].SetArray(0);
-        return;
-    }
-    hash2::GetAllResponse getall_response;
-    if (!getall_response.ParseFromString(response.response_bytes())) {
-        SetRedisError(c->reply, "failed to parse HSCAN response");
-        return;
-    }
-
-    std::vector<std::pair<std::string, std::string>> entries;
-    entries.reserve(getall_response.fields_size());
-    for (int i = 0; i < getall_response.fields_size(); ++i) {
-        const std::string& field = getall_response.fields(i);
-        if (RedisPatternMatches(pattern, field)) {
-            entries.emplace_back(field, getall_response.values(i));
-        }
-    }
-    std::sort(entries.begin(), entries.end(),
-              [](const auto& left, const auto& right) { return left.first < right.first; });
-
-    const size_t start = static_cast<size_t>(cursor);
-    const size_t total_values = entries.size() * 2;
-    const size_t selected_values =
-        start >= total_values ? 0 : std::min(static_cast<size_t>(count), total_values - start);
-    const size_t next_cursor = (start + selected_values >= total_values) ? 0 : start + selected_values;
-
-    c->reply->SetArray(2);
-    (*c->reply)[0].SetString(std::to_string(next_cursor));
-    brpc::RedisReply& values_reply = (*c->reply)[1];
-    values_reply.SetArray(selected_values);
-    for (size_t i = 0; i < selected_values; ++i) {
-        const size_t flat_index = start + i;
-        const auto& entry = entries[flat_index / 2];
-        values_reply[i].SetString(flat_index % 2 == 0 ? entry.first : entry.second);
     }
 }
 

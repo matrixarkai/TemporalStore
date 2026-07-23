@@ -1,10 +1,9 @@
-pub mod v1 {
+﻿pub mod v1 {
     tonic::include_proto!("temporalstore.v1");
 }
 
 use std::sync::Arc;
 
-use serde::Serialize;
 use tonic::{Request, Response, Status as TonicStatus};
 
 use crate::client::TemporalStoreTable;
@@ -37,37 +36,24 @@ pub trait TemporalStoreSdkExecutor: Send + Sync + 'static {
         types::BatchExecuteResponse { status, responses }
     }
 
-    fn open_table_sdk(&self, request: v1::OpenTableRequest) -> v1::OpenTableResponse {
+    fn open_table_sdk(&self, _request: v1::OpenTableRequest) -> v1::OpenTableResponse {
         v1::OpenTableResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            topology: Some(local_sdk_topology(
-                request.namespace_name,
-                request.table_name,
-                request.local_location,
+            status: Some(error_status(
+                "not_implemented",
+                "open_table tonic adapter is not wired to metaserver yet",
             )),
+            topology: None,
         }
     }
 
-    fn sync_topology_sdk(&self, request: v1::SyncTopologyRequest) -> v1::SyncTopologyResponse {
-        let mut topologies = Vec::new();
-        let mut failures = Vec::new();
-        for key in request.table_keys {
-            match split_table_key(&key) {
-                Some((namespace, table_name)) => {
-                    topologies.push(local_sdk_topology(namespace, table_name, String::new()));
-                }
-                None => failures.push(format!("{key}:invalid_table_key")),
-            }
-        }
-        let status = if failures.is_empty() {
-            types::Status::ok()
-        } else {
-            types::Status::error("partial_sync_topology", failures.join(","))
-        };
+    fn sync_topology_sdk(&self, _request: v1::SyncTopologyRequest) -> v1::SyncTopologyResponse {
         v1::SyncTopologyResponse {
-            status: Some(types_status_to_sdk(status)),
-            topologies,
-            topology_version: 1,
+            status: Some(error_status(
+                "not_implemented",
+                "sync_topology tonic adapter is not wired to metaserver yet",
+            )),
+            topologies: Vec::new(),
+            topology_version: 0,
         }
     }
 
@@ -314,19 +300,9 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 }
             }
         }
-        v1::command::Kind::StringSetConditional(command) => types::Command::StringSetConditional {
-            key: command.key,
-            value: command.value,
-            ttl_ms: command.ttl_ms,
-            condition: sdk_string_set_condition_to_types(command.condition)?,
-            return_old: command.return_old,
-        },
         v1::command::Kind::StringGet(command) => types::Command::StringGet { key: command.key },
         v1::command::Kind::StringDelete(command) => {
             types::Command::StringDelete { key: command.key }
-        }
-        v1::command::Kind::CommonDelete(command) => {
-            types::Command::CommonDelete { key: command.key }
         }
         v1::command::Kind::HashSet(command) => types::Command::HashSet {
             key: command.key,
@@ -337,17 +313,6 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             key: command.key,
             field: command.field,
         },
-        v1::command::Kind::HashDelete(command) => types::Command::HashDelete {
-            key: command.key,
-            field: command.field,
-        },
-        v1::command::Kind::HashIncrBy(command) => types::Command::HashIncrBy {
-            key: command.key,
-            field: command.field,
-            increment: command.increment,
-        },
-        v1::command::Kind::HashGetAll(command) => types::Command::HashGetAll { key: command.key },
-        v1::command::Kind::HashLen(command) => types::Command::HashLen { key: command.key },
         v1::command::Kind::HashMultiSet(command) => types::Command::HashMultiSet {
             key: command.key,
             entries: command
@@ -364,10 +329,6 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             key: command.key,
             member: command.member,
         },
-        v1::command::Kind::SetRemove(command) => types::Command::SetRemove {
-            key: command.key,
-            member: command.member,
-        },
         v1::command::Kind::SetMembers(command) => types::Command::SetMembers { key: command.key },
         v1::command::Kind::FeatureAppend(command) => types::Command::FeatureAppend {
             key: command.key,
@@ -377,52 +338,10 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 .map(sdk_feature_point_to_types)
                 .collect(),
         },
-        v1::command::Kind::FeatureAppendWithPolicy(command) => {
-            types::Command::FeatureAppendWithPolicy {
-                key: command.key,
-                points: command
-                    .points
-                    .into_iter()
-                    .map(sdk_feature_point_to_types)
-                    .collect(),
-                policy: sdk_feature_write_policy_to_types(command.policy)?,
-            }
-        }
         v1::command::Kind::FeatureQuery(command) => types::Command::FeatureQuery {
             key: command.key,
             start_ms: command.start_ms,
             end_ms: command.end_ms,
-            count: nonzero_limit(command.limit),
-        },
-        v1::command::Kind::FeatureQueryFiltered(command) => types::Command::FeatureQueryFiltered {
-            key: command.key,
-            start_ms: command.start_ms,
-            end_ms: command.end_ms,
-            count: nonzero_limit(command.limit),
-            filters: command
-                .filters
-                .into_iter()
-                .map(sdk_feature_filter_to_types)
-                .collect::<Result<Vec<_>, _>>()?,
-        },
-        v1::command::Kind::FeatureReplace(command) => types::Command::FeatureReplace {
-            key: command.key,
-            start_ms: command.start_ms,
-            end_ms: command.end_ms,
-            points: command
-                .points
-                .into_iter()
-                .map(sdk_feature_point_to_types)
-                .collect(),
-        },
-        v1::command::Kind::FeatureDelete(command) => {
-            types::Command::FeatureDelete { key: command.key }
-        }
-        v1::command::Kind::FeatureAggQuery(command) => types::Command::FeatureAggQuery {
-            key: command.key,
-            start_ms: command.start_ms,
-            end_ms: command.end_ms,
-            aggregator: command.aggregator,
             count: nonzero_limit(command.limit),
         },
         v1::command::Kind::SequenceAppend(command) => types::Command::SequenceAdd {
@@ -446,31 +365,10 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             count: command.limit.max(1) as usize,
             filters: Vec::new(),
         },
-        v1::command::Kind::SequenceBatchQuery(command) => types::Command::SequenceBatchQuery {
-            queries: command
-                .queries
-                .into_iter()
-                .map(|query| types::SequenceQuerySpec {
-                    key: query.key,
-                    start_ms: query.start_ms,
-                    end_ms: query.end_ms,
-                    count: query.limit.max(1) as usize,
-                    filters: Vec::new(),
-                })
-                .collect(),
-        },
         v1::command::Kind::IpsAdd(command) => types::Command::IpsAdd {
             key: command.key,
             timestamp_ms: command.timestamp_ms,
             instance: command.payload,
-        },
-        v1::command::Kind::IpsAddWithOptions(command) => types::Command::IpsAddWithOptions {
-            key: command.key,
-            timestamp_ms: command.timestamp_ms,
-            instance: command.payload,
-            action_type: command.action_type,
-            table_id: command.table_id,
-            request_id: (!command.request_id.is_empty()).then_some(command.request_id),
         },
         v1::command::Kind::IpsQuery(command) => types::Command::IpsQueryRange {
             key: command.key,
@@ -478,153 +376,16 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             end_ms: command.end_ms,
             count: nonzero_limit(command.limit),
         },
-        v1::command::Kind::IpsQueryLast(command) => types::Command::IpsQueryLast {
-            key: command.key,
-            count: command.limit.max(1) as usize,
-        },
-        v1::command::Kind::IpsRemove(command) => types::Command::IpsRemove {
-            key: command.key,
-            timestamp_ms: command.timestamp_ms,
-        },
-        v1::command::Kind::IpsDelete(command) => types::Command::IpsDelete { key: command.key },
-        v1::command::Kind::IpsCount(command) => types::Command::IpsCount {
-            key: command.key,
-            start_ms: command.start_ms,
-            end_ms: command.end_ms,
-        },
-        v1::command::Kind::IpsBatchQueryLast(command) => types::Command::IpsBatchQueryLast {
-            keys: command.keys,
-            count: command.limit.max(1) as usize,
-        },
-        v1::command::Kind::IpsQueryWithOptions(command) => {
-            types::Command::IpsQueryRangeWithOptions {
-                key: command.key,
-                start_ms: command.start_ms,
-                end_ms: command.end_ms,
-                count: nonzero_limit(command.limit),
-                action_type: command.action_type,
-                table_id: command.table_id,
-            }
-        }
-        v1::command::Kind::IpsStat(command) => types::Command::IpsStat {
-            key: command.key,
-            start_ms: command.start_ms,
-            end_ms: command.end_ms,
-        },
-        v1::command::Kind::IpsFilter(command) => types::Command::IpsFilter {
-            key: command.key,
-            start_ms: command.start_ms,
-            end_ms: command.end_ms,
-            count: nonzero_limit(command.limit),
-            action_type: command.action_type,
-            table_id: command.table_id,
-        },
-        v1::command::Kind::IpsLoad(command) => types::Command::IpsLoad {
-            key: command.key,
-            points: command
-                .points
-                .into_iter()
-                .map(sdk_feature_point_to_types)
-                .collect(),
-        },
-        v1::command::Kind::IpsSnapshot(command) => types::Command::IpsSnapshot {
-            key: command.key,
-            start_ms: command.start_ms,
-            end_ms: command.end_ms,
-            count: nonzero_limit(command.limit),
-        },
-        v1::command::Kind::IpsSnapshotReport(command) => types::Command::IpsSnapshotReport {
-            key: command.key,
-            start_ms: command.start_ms,
-            end_ms: command.end_ms,
-            count: nonzero_limit(command.limit),
-        },
-        v1::command::Kind::ControlStateIncrement(command) => types::Command::ControlStateIncrement {
+        v1::command::Kind::RiskIncrement(command) => types::Command::RiskIncrement {
             key: command.key,
             timestamp_ms: command.timestamp_ms,
             amount: command.delta,
         },
-        v1::command::Kind::ControlStateIncrementWithOptions(command) => {
-            types::Command::ControlStateIncrementWithOptions {
-                key: command.key,
-                timestamp_ms: command.timestamp_ms,
-                amount: command.delta,
-                precision_ms: command.precision_ms,
-                ttl_ms: command.ttl_ms,
-            }
-        }
-        v1::command::Kind::ControlStateCount(command) => types::Command::ControlStateCount {
-            key: command.key,
-            start_ms: command.start_ms,
-            end_ms: command.end_ms,
-        },
-        v1::command::Kind::ControlStateChangeAdd(command) => types::Command::ControlStateChangeAdd {
-            key: command.key,
-            timestamp_ms: command.timestamp_ms,
-            value: command.value,
-            precision_ms: command.precision_ms,
-            ttl_ms: command.ttl_ms,
-        },
-        v1::command::Kind::ControlStateDetail(command) => types::Command::ControlStateDetail {
-            key: command.key,
-            start_ms: command.start_ms,
-            end_ms: command.end_ms,
-            count: nonzero_limit(command.limit),
-        },
-        v1::command::Kind::ControlStateQuery(command) => types::Command::ControlStateQuery {
+        v1::command::Kind::RiskQuery(command) => types::Command::RiskQuery {
             key: command.key,
             start_ms: command.start_ms,
             end_ms: command.end_ms,
             aggregator: command.family,
-        },
-        v1::command::Kind::ControlStateFamilySet(command) => types::Command::ControlStateSet {
-            family: sdk_control_state_family_to_types(command.family)?,
-            key: command.key,
-            timestamp_ms: command.timestamp_ms,
-            amount: command.amount,
-            precision_ms: None,
-            ttl_ms: None,
-        },
-        v1::command::Kind::ControlStateFamilyQuery(command) => types::Command::ControlStateFamilyQuery {
-            family: sdk_control_state_family_to_types(command.family)?,
-            key: command.key,
-            start_ms: command.start_ms,
-            end_ms: command.end_ms,
-            aggregator: command.aggregator,
-        },
-        v1::command::Kind::ControlStateFamilySetAndGet(command) => types::Command::ControlStateSetAndGet {
-            family: sdk_control_state_family_to_types(command.family)?,
-            key: command.key,
-            timestamp_ms: command.timestamp_ms,
-            amount: command.amount,
-            start_ms: command.start_ms,
-            end_ms: command.end_ms,
-            aggregator: command.aggregator,
-            precision_ms: None,
-            ttl_ms: None,
-        },
-        v1::command::Kind::ControlStateFolSet(command) => types::Command::ControlStateFolSet {
-            key: command.key,
-            value: command.value,
-            occur_time_ms: command.occur_time_ms,
-            ttl_ms: command.ttl_ms,
-            fol_type: sdk_control_state_fol_type_to_types(command.fol_type)?,
-        },
-        v1::command::Kind::ControlStateFolQuery(command) => {
-            types::Command::ControlStateFolQuery { key: command.key }
-        }
-        v1::command::Kind::ControlStateManager(command) => types::Command::ControlStateManager {
-            key: command.key,
-            op_type: None,
-            field_list: Vec::new(),
-            start_offset: String::new(),
-            end_offset: String::new(),
-            is_cpc: None,
-        },
-        v1::command::Kind::ControlStateDebug(command) => types::Command::ControlStateDebug {
-            key: command.key,
-            start_ms: command.start_ms,
-            end_ms: command.end_ms,
         },
         v1::command::Kind::ContextNodeUpsert(command) => {
             let node = command
@@ -639,249 +400,10 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             tenant_hash: stable_hash(&command.key),
             node_hash: stable_hash(&command.node_id),
         },
-        v1::command::Kind::ContextNodesGet(command) => types::Command::ContextGetNodes {
-            tenant_hash: stable_hash(&command.key),
-            node_hashes: command
-                .node_ids
-                .into_iter()
-                .map(|node_id| stable_hash(&node_id))
-                .collect(),
-        },
-        v1::command::Kind::ContextWriteIndexRef(command) => {
-            let index_ref = command
-                .index_ref
-                .ok_or_else(|| TonicStatus::invalid_argument("context index_ref missing"))?;
-            types::Command::ContextWriteIndexRef {
-                tenant_hash: stable_hash(&command.key),
-                index_name: command.index_name,
-                index_value_hash: command.index_value_hash,
-                scope_hash: command.scope_hash,
-                event_time_ms: command.event_time_ms,
-                index_ref: sdk_context_index_ref_to_types(index_ref),
-            }
-        }
-        v1::command::Kind::ContextQueryIndex(command) => types::Command::ContextQueryIndex {
-            tenant_hash: stable_hash(&command.key),
-            index_name: command.index_name,
-            index_value_hash: command.index_value_hash,
-            scope_hash: command.scope_hash,
-            start_time_ms: command.start_time_ms,
-            end_time_ms: command.end_time_ms,
-            limit: nonzero_limit(command.limit),
-        },
-        v1::command::Kind::ContextWriteExtractedEvent(command) => {
-            let event = command
-                .event
-                .ok_or_else(|| TonicStatus::invalid_argument("context event missing"))?;
-            types::Command::ContextWriteExtractedEvent {
-                tenant_hash: stable_hash(&command.key),
-                node_hash: stable_hash(&command.node_id),
-                event: sdk_context_event_to_types(event),
-                indexes: command
-                    .indexes
-                    .map(sdk_context_extracted_event_indexes_to_types)
-                    .transpose()?
-                    .unwrap_or_default(),
-                first_write_only: command.first_write_only,
-                cold_storage: command.cold_storage,
-            }
-        }
-        v1::command::Kind::ContextQueryIndexIntersection(command) => {
-            types::Command::ContextQueryIndexIntersection {
-                tenant_hash: stable_hash(&command.key),
-                predicates: command
-                    .predicates
-                    .into_iter()
-                    .map(sdk_context_index_lookup_to_types)
-                    .collect(),
-                limit: nonzero_limit(command.limit),
-            }
-        }
-        v1::command::Kind::ContextWritePackAudit(command) => {
-            let audit = command
-                .audit
-                .ok_or_else(|| TonicStatus::invalid_argument("context pack audit missing"))?;
-            types::Command::ContextWritePackAudit {
-                tenant_hash: stable_hash(&command.key),
-                audit: sdk_context_pack_audit_to_types(audit),
-            }
-        }
-        v1::command::Kind::ContextQueryPackAudit(command) => {
-            types::Command::ContextQueryPackAudit {
-                tenant_hash: stable_hash(&command.key),
-                session_hash: command.session_hash,
-                start_time_ms: command.start_time_ms,
-                end_time_ms: command.end_time_ms,
-                limit: nonzero_limit(command.limit),
-            }
-        }
-        v1::command::Kind::ContextMarkSummaryDirty(command) => {
-            let marker = command.marker.ok_or_else(|| {
-                TonicStatus::invalid_argument("context summary dirty marker missing")
-            })?;
-            types::Command::ContextMarkSummaryDirty {
-                tenant_hash: stable_hash(&command.key),
-                marker: sdk_context_summary_dirty_marker_to_types(marker),
-            }
-        }
-        v1::command::Kind::ContextQuerySummaryDirty(command) => {
-            types::Command::ContextQuerySummaryDirty {
-                tenant_hash: stable_hash(&command.key),
-                node_hash: stable_hash(&command.node_id),
-                start_time_ms: command.start_time_ms,
-                end_time_ms: command.end_time_ms,
-                limit: nonzero_limit(command.limit),
-            }
-        }
-        v1::command::Kind::ContextUpsertEntity(command) => {
-            let entity = command
-                .entity
-                .ok_or_else(|| TonicStatus::invalid_argument("context entity missing"))?;
-            types::Command::ContextUpsertEntity {
-                tenant_hash: stable_hash(&command.key),
-                entity: sdk_context_entity_to_types(entity),
-            }
-        }
-        v1::command::Kind::ContextGetEntity(command) => types::Command::ContextGetEntity {
-            tenant_hash: stable_hash(&command.key),
-            node_hash: stable_hash(&command.node_id),
-            entity_hash: command.entity_hash,
-        },
-        v1::command::Kind::ContextQueryEntities(command) => types::Command::ContextQueryEntities {
-            tenant_hash: stable_hash(&command.key),
-            node_hash: stable_hash(&command.node_id),
-            entity_hashes: command.entity_hashes,
-            limit: nonzero_limit(command.limit),
-        },
-        v1::command::Kind::ContextUpsertChildRef(command) => {
-            let child_ref = command
-                .child_ref
-                .ok_or_else(|| TonicStatus::invalid_argument("context child_ref missing"))?;
-            types::Command::ContextUpsertChildRef {
-                tenant_hash: stable_hash(&command.key),
-                child_ref: sdk_context_child_ref_to_types(child_ref),
-            }
-        }
-        v1::command::Kind::ContextQueryChildren(command) => types::Command::ContextQueryChildren {
-            tenant_hash: stable_hash(&command.key),
-            parent_hash: command.parent_hash,
-            limit: nonzero_limit(command.limit),
-        },
-        v1::command::Kind::ContextUpsertEmbedding(command) => {
-            let embedding = command
-                .embedding
-                .ok_or_else(|| TonicStatus::invalid_argument("context embedding missing"))?;
-            types::Command::ContextUpsertEmbedding {
-                tenant_hash: stable_hash(&command.key),
-                embedding: sdk_context_embedding_to_types(embedding),
-            }
-        }
-        v1::command::Kind::ContextQueryEmbeddings(command) => {
-            types::Command::ContextQueryEmbeddings {
-                tenant_hash: stable_hash(&command.key),
-                ref_hashes: command.ref_hashes,
-                limit: nonzero_limit(command.limit),
-            }
-        }
-        v1::command::Kind::ContextTraverseTree(command) => types::Command::ContextTraverseTree {
-            tenant_hash: stable_hash(&command.key),
-            start_node_hash: command.start_node_hash,
-            query_vector: command.query_vector,
-            max_depth: nonzero_u32(command.max_depth),
-            top_k_per_depth: nonzero_limit(command.top_k_per_depth),
-            max_children_scored_per_parent: nonzero_limit(command.max_children_scored_per_parent),
-            max_candidate_nodes: nonzero_limit(command.max_candidate_nodes),
-            leaf_only: command.leaf_only,
-        },
-        v1::command::Kind::ContextUpsertSummary(command) => {
-            let summary = command
-                .summary
-                .ok_or_else(|| TonicStatus::invalid_argument("context summary missing"))?;
-            types::Command::ContextUpsertSummary {
-                tenant_hash: stable_hash(&command.key),
-                summary: sdk_context_summary_to_types(summary),
-            }
-        }
-        v1::command::Kind::ContextQuerySummaries(command) => {
-            types::Command::ContextQuerySummaries {
-                tenant_hash: stable_hash(&command.key),
-                node_hash: command.node_hash,
-                level: command.level,
-                as_of_ms: command.as_of_ms,
-                limit: nonzero_limit(command.limit),
-            }
-        }
-        v1::command::Kind::ContextWriteCompressionEvent(command) => {
-            let event = command.event.ok_or_else(|| {
-                TonicStatus::invalid_argument("context compression event missing")
-            })?;
-            types::Command::ContextWriteCompressionEvent {
-                tenant_hash: stable_hash(&command.key),
-                event: sdk_context_compression_event_to_types(event),
-            }
-        }
-        v1::command::Kind::ContextQueryCompressionEvents(command) => {
-            types::Command::ContextQueryCompressionEvents {
-                tenant_hash: stable_hash(&command.key),
-                node_hashes: command.node_hashes,
-                start_time_ms: command.start_time_ms,
-                end_time_ms: command.end_time_ms,
-                limit: nonzero_limit(command.limit),
-            }
-        }
-        v1::command::Kind::ContextCompressEvents(command) => {
-            types::Command::ContextCompressEvents {
-                tenant_hash: stable_hash(&command.key),
-                node_hash: command.node_hash,
-                source_start_ms: command.source_start_ms,
-                source_end_ms: command.source_end_ms,
-                compressed_time_ms: command.compressed_time_ms,
-                max_source_events: nonzero_limit(command.max_source_events),
-                min_confidence: command.min_confidence,
-                min_importance: command.min_importance,
-            }
-        }
-        v1::command::Kind::ContextQueryNodeContext(command) => {
-            types::Command::ContextQueryNodeContext {
-                tenant_hash: stable_hash(&command.key),
-                node_hash: command.node_hash,
-                summary_level: nonzero_u32(command.summary_level),
-                as_of_ms: command.as_of_ms,
-                cold_start_time_ms: command.cold_start_time_ms,
-                cold_end_time_ms: command.cold_end_time_ms,
-                compression_limit: nonzero_limit(command.compression_limit),
-            }
-        }
-        v1::command::Kind::ContextWriteEvent(command) => {
-            let event = command
-                .event
-                .ok_or_else(|| TonicStatus::invalid_argument("context event missing"))?;
-            types::Command::ContextWriteEvent {
-                tenant_hash: stable_hash(&command.key),
-                node_hash: stable_hash(&command.node_id),
-                event: sdk_context_event_to_types(event),
-                first_write_only: command.first_write_only,
-                cold_storage: command.cold_storage,
-            }
-        }
-        v1::command::Kind::ContextQueryEvents(command) => types::Command::ContextQueryEvents {
-            tenant_hash: stable_hash(&command.key),
-            node_hash: stable_hash(&command.node_id),
-            start_time_ms: command.start_time_ms,
-            end_time_ms: command.end_time_ms,
-            limit: nonzero_limit(command.limit),
-            current_valid_only: command.current_valid_only,
-            as_of_ms: command.as_of_ms,
-            kinds: command.kinds,
-            statuses: command.statuses,
-            min_confidence: command.min_confidence,
-            min_importance: command.min_importance,
-        },
         v1::command::Kind::CommonExpire(command) => types::Command::CommonExpire {
             key: command.key,
             ttl_ms: command.ttl_ms,
         },
-        v1::command::Kind::CommonTtl(command) => types::Command::CommonTtl { key: command.key },
         v1::command::Kind::CommonExists(command) => {
             types::Command::CommonExists { key: command.key }
         }
@@ -890,82 +412,6 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
 
 fn nonzero_limit(limit: u32) -> Option<usize> {
     (limit > 0).then_some(limit as usize)
-}
-
-fn nonzero_u32(value: u32) -> Option<u32> {
-    (value > 0).then_some(value)
-}
-
-fn sdk_string_set_condition_to_types(
-    condition: i32,
-) -> Result<types::StringSetCondition, TonicStatus> {
-    match v1::StringSetCondition::try_from(condition) {
-        Ok(v1::StringSetCondition::IfExists) => Ok(types::StringSetCondition::IfExists),
-        Ok(v1::StringSetCondition::IfNotExists) => Ok(types::StringSetCondition::IfNotExists),
-        Ok(v1::StringSetCondition::Always) | Ok(v1::StringSetCondition::Unspecified) | Err(_) => {
-            Ok(types::StringSetCondition::Always)
-        }
-    }
-}
-
-fn sdk_feature_write_policy_to_types(
-    policy: i32,
-) -> Result<types::FeatureWritePolicy, TonicStatus> {
-    match v1::FeatureWritePolicy::try_from(policy) {
-        Ok(v1::FeatureWritePolicy::InsertIfAbsent) => Ok(types::FeatureWritePolicy::InsertIfAbsent),
-        Ok(v1::FeatureWritePolicy::ReplaceExisting) => {
-            Ok(types::FeatureWritePolicy::ReplaceExisting)
-        }
-        Ok(v1::FeatureWritePolicy::Block) => Ok(types::FeatureWritePolicy::Block),
-        Ok(v1::FeatureWritePolicy::Upsert) | Ok(v1::FeatureWritePolicy::Unspecified) | Err(_) => {
-            Ok(types::FeatureWritePolicy::Upsert)
-        }
-    }
-}
-
-fn sdk_feature_filter_to_types(
-    filter: v1::FeatureFilter,
-) -> Result<types::FeatureFilter, TonicStatus> {
-    Ok(types::FeatureFilter {
-        field: filter.field,
-        op: sdk_feature_filter_op_to_types(filter.op)?,
-        value: filter.value,
-    })
-}
-
-fn sdk_feature_filter_op_to_types(op: i32) -> Result<types::FeatureFilterOp, TonicStatus> {
-    match v1::FeatureFilterOp::try_from(op) {
-        Ok(v1::FeatureFilterOp::Equal) => Ok(types::FeatureFilterOp::Equal),
-        Ok(v1::FeatureFilterOp::NotEqual) => Ok(types::FeatureFilterOp::NotEqual),
-        Ok(v1::FeatureFilterOp::GreaterThan) => Ok(types::FeatureFilterOp::GreaterThan),
-        Ok(v1::FeatureFilterOp::GreaterOrEqual) => Ok(types::FeatureFilterOp::GreaterOrEqual),
-        Ok(v1::FeatureFilterOp::LessThan) => Ok(types::FeatureFilterOp::LessThan),
-        Ok(v1::FeatureFilterOp::LessOrEqual) => Ok(types::FeatureFilterOp::LessOrEqual),
-        Ok(v1::FeatureFilterOp::Unspecified) | Err(_) => Err(TonicStatus::invalid_argument(
-            "feature filter op missing or invalid",
-        )),
-    }
-}
-
-fn sdk_control_state_family_to_types(family: i32) -> Result<types::ControlStateFamily, TonicStatus> {
-    match v1::ControlStateFamily::try_from(family) {
-        Ok(v1::ControlStateFamily::H) => Ok(types::ControlStateFamily::H),
-        Ok(v1::ControlStateFamily::Cpc) => Ok(types::ControlStateFamily::Cpc),
-        Ok(v1::ControlStateFamily::Fol) => Ok(types::ControlStateFamily::Fol),
-        Ok(v1::ControlStateFamily::Unspecified) | Err(_) => Err(TonicStatus::invalid_argument(
-            "control_state family missing or invalid",
-        )),
-    }
-}
-
-fn sdk_control_state_fol_type_to_types(fol_type: i32) -> Result<types::ControlStateFolType, TonicStatus> {
-    match v1::ControlStateFolType::try_from(fol_type) {
-        Ok(v1::ControlStateFolType::First) => Ok(types::ControlStateFolType::First),
-        Ok(v1::ControlStateFolType::Last) => Ok(types::ControlStateFolType::Last),
-        Ok(v1::ControlStateFolType::Unspecified) | Err(_) => Err(TonicStatus::invalid_argument(
-            "control_state fol_type missing or invalid",
-        )),
-    }
 }
 
 fn sdk_feature_point_to_types(point: v1::FeaturePoint) -> types::FeaturePoint {
@@ -1003,169 +449,6 @@ fn types_context_node_to_sdk(node: types::ContextNode) -> v1::ContextNode {
         model: node.l0,
         payload: node.raw_metadata_ref.into_bytes(),
         updated_at_ms: node.last_event_time_ms,
-    }
-}
-
-fn sdk_context_index_ref_to_types(index_ref: v1::ContextIndexRef) -> types::ContextIndexRef {
-    types::ContextIndexRef {
-        primary_node_hash: index_ref.primary_node_hash,
-        primary_event_time_ms: index_ref.primary_event_time_ms,
-        event_id_hash: index_ref.event_id_hash,
-    }
-}
-
-fn sdk_context_index_lookup_to_types(lookup: v1::ContextIndexLookup) -> types::ContextIndexLookup {
-    types::ContextIndexLookup {
-        index_name: lookup.index_name,
-        index_value_hash: lookup.index_value_hash,
-        scope_hash: lookup.scope_hash,
-        start_time_ms: lookup.start_time_ms,
-        end_time_ms: lookup.end_time_ms,
-    }
-}
-
-fn sdk_context_extracted_event_indexes_to_types(
-    indexes: v1::ContextExtractedEventIndexes,
-) -> Result<types::ContextExtractedEventIndexes, TonicStatus> {
-    Ok(types::ContextExtractedEventIndexes {
-        scope_hash: indexes.scope_hash,
-        entity_hashes: indexes.entity_hashes,
-        status_hash: indexes.status_hash,
-        source_hash: indexes.source_hash,
-        event_time_bucket_ms: indexes.event_time_bucket_ms,
-        disabled_indexes: indexes
-            .disabled_indexes
-            .into_iter()
-            .map(sdk_internal_context_index_to_types)
-            .collect::<Result<Vec<_>, _>>()?,
-    })
-}
-
-fn sdk_internal_context_index_to_types(
-    index: u32,
-) -> Result<types::InternalContextIndex, TonicStatus> {
-    match index {
-        1 => Ok(types::InternalContextIndex::EventKind),
-        2 => Ok(types::InternalContextIndex::Entity),
-        3 => Ok(types::InternalContextIndex::Status),
-        4 => Ok(types::InternalContextIndex::Source),
-        5 => Ok(types::InternalContextIndex::EventTimeBucket),
-        _ => Err(TonicStatus::invalid_argument(
-            "context disabled index missing or invalid",
-        )),
-    }
-}
-
-fn sdk_context_audit_ref_to_types(audit_ref: v1::ContextAuditRef) -> types::ContextAuditRef {
-    types::ContextAuditRef {
-        node_hash: audit_ref.node_hash,
-        event_time_ms: audit_ref.event_time_ms,
-        reason: audit_ref.reason,
-    }
-}
-
-fn sdk_context_pack_audit_to_types(audit: v1::ContextPackAudit) -> types::ContextPackAudit {
-    types::ContextPackAudit {
-        query_id: audit.query_id,
-        session_hash: audit.session_hash,
-        request_time_ms: audit.request_time_ms,
-        query_hash: audit.query_hash,
-        max_prompt_tokens: audit.max_prompt_tokens,
-        selected_tokens: audit.selected_tokens,
-        selected_refs: audit
-            .selected_refs
-            .into_iter()
-            .map(sdk_context_audit_ref_to_types)
-            .collect(),
-        blocked_refs: audit
-            .blocked_refs
-            .into_iter()
-            .map(sdk_context_audit_ref_to_types)
-            .collect(),
-    }
-}
-
-fn sdk_context_summary_dirty_marker_to_types(
-    marker: v1::ContextSummaryDirtyMarker,
-) -> types::ContextSummaryDirtyMarker {
-    types::ContextSummaryDirtyMarker {
-        node_hash: marker.node_hash,
-        event_time_ms: marker.event_time_ms,
-        reason: marker.reason,
-        propagate_depth: marker.propagate_depth,
-    }
-}
-
-fn sdk_context_entity_to_types(entity: v1::ContextEntity) -> types::ContextEntity {
-    types::ContextEntity {
-        entity_hash: entity.entity_hash,
-        node_hash: entity.node_hash,
-        entity_type: entity.entity_type,
-        name: entity.name,
-        value: entity.value,
-        updated_at_ms: entity.updated_at_ms,
-        valid_from_ms: entity.valid_from_ms,
-        confidence: entity.confidence,
-        source_event_hashes: entity.source_event_hashes,
-    }
-}
-
-fn sdk_context_child_ref_to_types(child_ref: v1::ContextChildRef) -> types::ContextChildRef {
-    types::ContextChildRef {
-        parent_hash: child_ref.parent_hash,
-        child_hash: child_ref.child_hash,
-        updated_at_ms: child_ref.updated_at_ms,
-    }
-}
-
-fn sdk_context_embedding_to_types(embedding: v1::ContextEmbedding) -> types::ContextEmbedding {
-    types::ContextEmbedding {
-        ref_hash: embedding.ref_hash,
-        level: embedding.level,
-        model_hash: embedding.model_hash,
-        vector: embedding.vector,
-        updated_at_ms: embedding.updated_at_ms,
-    }
-}
-
-fn sdk_context_summary_to_types(summary: v1::ContextSummary) -> types::ContextSummary {
-    types::ContextSummary {
-        node_hash: summary.node_hash,
-        level: summary.level,
-        text: summary.text,
-        valid_from_ms: summary.valid_from_ms,
-    }
-}
-
-fn sdk_context_compression_event_to_types(
-    event: v1::ContextCompressionEvent,
-) -> types::ContextCompressionEvent {
-    types::ContextCompressionEvent {
-        compression_id_hash: event.compression_id_hash,
-        node_hash: event.node_hash,
-        source_start_ms: event.source_start_ms,
-        source_end_ms: event.source_end_ms,
-        compressed_time_ms: event.compressed_time_ms,
-        summary: event.summary,
-    }
-}
-
-fn sdk_context_event_to_types(event: v1::ContextEvent) -> types::ContextEvent {
-    types::ContextEvent {
-        event_id_hash: event.event_id_hash,
-        event_time_ms: event.event_time_ms,
-        ingestion_time_ms: event.ingestion_time_ms,
-        kind: 0,
-        event_type: event.event_type,
-        actor_hash: 0,
-        status: 0,
-        valid_until_ms: 0,
-        confidence: event.confidence,
-        importance: event.importance,
-        text: event.text,
-        source_ref: String::new(),
-        related_node_hashes: Vec::new(),
-        compact_attrs: Vec::new(),
     }
 }
 
@@ -1231,20 +514,6 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             feature_points: points.into_iter().map(types_feature_point_to_sdk).collect(),
             ..Default::default()
         },
-        types::CommandResponse::FeaturePointGroups { groups } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            feature_points: groups
-                .into_iter()
-                .flat_map(|(_, points)| points)
-                .map(types_feature_point_to_sdk)
-                .collect(),
-            ..Default::default()
-        },
-        types::CommandResponse::Aggregate { value } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            count: value.max(0) as u64,
-            ..Default::default()
-        },
         types::CommandResponse::SequenceRows { rows } => v1::CommandResponse {
             status: Some(types_status_to_sdk(types::Status::ok())),
             sequence_rows: rows
@@ -1259,188 +528,19 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
                 .collect(),
             ..Default::default()
         },
-        types::CommandResponse::SequenceRowGroups { groups } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            sequence_rows: groups
-                .into_iter()
-                .flat_map(|(_, rows)| rows)
-                .map(|row| v1::SequenceFeatureRow {
-                    timestamp_ms: row.timestamp_ms,
-                    gid: row.gid,
-                    action_type: row.action_type,
-                    duration: row.duration,
-                    author_id: row.author_id,
-                })
-                .collect(),
-            ..Default::default()
-        },
-        types::CommandResponse::IpsStats { stats } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            count: stats.total,
-            values: vec![json_bytes(stats)],
-            ..Default::default()
-        },
-        types::CommandResponse::IpsSnapshotReport { report } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            count: report.returned_count as u64,
-            values: vec![json_bytes(report)],
-            ..Default::default()
-        },
         types::CommandResponse::ContextNode { node, .. } => v1::CommandResponse {
             status: Some(types_status_to_sdk(types::Status::ok())),
             context_nodes: node.into_iter().map(types_context_node_to_sdk).collect(),
             ..Default::default()
         },
-        types::CommandResponse::ContextNodes { nodes } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            context_nodes: nodes.into_iter().map(types_context_node_to_sdk).collect(),
+        other => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::error(
+                "unsupported_sdk_response",
+                format!("SDK response conversion missing for {other:?}"),
+            ))),
             ..Default::default()
         },
-        types::CommandResponse::ContextObjectKey { object_key } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            value: object_key.into_bytes(),
-            ..Default::default()
-        },
-        types::CommandResponse::ContextExtractedEventWrite {
-            event_object_key,
-            index_object_keys,
-            written_index_count,
-        } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            value: event_object_key.into_bytes(),
-            values: index_object_keys
-                .into_iter()
-                .map(String::into_bytes)
-                .collect(),
-            count: written_index_count as u64,
-            ..Default::default()
-        },
-        types::CommandResponse::ContextEvents { object_key, events } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            value: object_key.into_bytes(),
-            count: events.len() as u64,
-            values: json_values(events),
-            ..Default::default()
-        },
-        types::CommandResponse::ContextIndexRefs { object_key, refs } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            value: object_key.into_bytes(),
-            count: refs.len() as u64,
-            values: json_values(refs),
-            ..Default::default()
-        },
-        types::CommandResponse::ContextIndexIntersection {
-            refs,
-            deduped_ref_count,
-            ..
-        } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            count: deduped_ref_count as u64,
-            values: json_values(refs),
-            ..Default::default()
-        },
-        types::CommandResponse::ContextPackAudits { object_key, audits } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            value: object_key.into_bytes(),
-            count: audits.len() as u64,
-            values: json_values(audits),
-            ..Default::default()
-        },
-        types::CommandResponse::ContextSummaryDirtyMarkers {
-            object_key,
-            markers,
-        } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            value: object_key.into_bytes(),
-            count: markers.len() as u64,
-            values: json_values(markers),
-            ..Default::default()
-        },
-        types::CommandResponse::ContextEntity { object_key, entity } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            value: object_key.into_bytes(),
-            count: u64::from(entity.is_some()),
-            values: entity.into_iter().map(json_bytes).collect(),
-            ..Default::default()
-        },
-        types::CommandResponse::ContextEntities {
-            object_key,
-            entities,
-        } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            value: object_key.into_bytes(),
-            count: entities.len() as u64,
-            values: json_values(entities),
-            ..Default::default()
-        },
-        types::CommandResponse::ContextChildRefs {
-            object_key, refs, ..
-        } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            value: object_key.into_bytes(),
-            count: refs.len() as u64,
-            values: json_values(refs),
-            ..Default::default()
-        },
-        types::CommandResponse::ContextEmbeddings { embeddings } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            count: embeddings.len() as u64,
-            values: json_values(embeddings),
-            ..Default::default()
-        },
-        types::CommandResponse::ContextTraversedNodes { nodes } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            count: nodes.len() as u64,
-            values: json_values(nodes),
-            ..Default::default()
-        },
-        types::CommandResponse::ContextSummaries {
-            object_key,
-            summaries,
-        } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            value: object_key.into_bytes(),
-            count: summaries.len() as u64,
-            values: json_values(summaries),
-            ..Default::default()
-        },
-        types::CommandResponse::ContextCompressionEvents {
-            object_key, events, ..
-        } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            value: object_key.into_bytes(),
-            count: events.len() as u64,
-            values: json_values(events),
-            ..Default::default()
-        },
-        types::CommandResponse::ContextNodeContext {
-            node,
-            overall_summary,
-            cold_window_summaries,
-            ..
-        } => {
-            let mut values = Vec::new();
-            if let Some(summary) = overall_summary {
-                values.push(json_bytes(summary));
-            }
-            values.extend(json_values(cold_window_summaries));
-            v1::CommandResponse {
-                status: Some(types_status_to_sdk(types::Status::ok())),
-                context_nodes: node.into_iter().map(types_context_node_to_sdk).collect(),
-                count: values.len() as u64,
-                values,
-                ..Default::default()
-            }
-        }
     }
-}
-
-fn json_values<T: Serialize>(values: Vec<T>) -> Vec<Vec<u8>> {
-    values.into_iter().map(json_bytes).collect()
-}
-
-fn json_bytes<T: Serialize>(value: T) -> Vec<u8> {
-    serde_json::to_vec(&value).unwrap_or_default()
 }
 
 fn types_status_to_sdk(status: types::Status) -> v1::Status {
@@ -1449,6 +549,10 @@ fn types_status_to_sdk(status: types::Status) -> v1::Status {
         code: status.code,
         message: status.message,
     }
+}
+
+fn error_status(code: impl Into<String>, message: impl Into<String>) -> v1::Status {
+    types_status_to_sdk(types::Status::error(code, message))
 }
 
 fn stable_hash(value: &str) -> u64 {
@@ -1484,34 +588,6 @@ fn table_to_sdk_topology(
         drop_percent: options.drop_percent as u32,
         topology_version: cache.max_topology_version,
         shards,
-    }
-}
-
-fn local_sdk_topology(
-    namespace_name: String,
-    table_name: String,
-    local_location: String,
-) -> v1::TableTopology {
-    v1::TableTopology {
-        namespace_name,
-        table_name,
-        state: "serving".to_string(),
-        readonly: false,
-        write_disabled: false,
-        drop_percent: 0,
-        topology_version: 1,
-        shards: vec![v1::ShardTopology {
-            shard_id: 1,
-            primary: Some(v1::ServerEndpoint {
-                server_id: "local-engine".to_string(),
-                host: "local-engine".to_string(),
-                port: 0,
-                location: local_location,
-            }),
-            replicas: Vec::new(),
-            load_generation: 1,
-            lifecycle_state: "serving".to_string(),
-        }],
     }
 }
 
@@ -1686,45 +762,6 @@ mod tests {
         assert!(response.status.expect("status").ok);
         assert_eq!(response.responses.len(), 2);
         assert_eq!(response.responses[1].value, b"batch");
-    }
-
-    #[tokio::test]
-    async fn tonic_adapter_exposes_engine_open_and_sync_topology_paths() {
-        let engine = TemporalEngine::new(MultiLayerCache::default());
-        let adapter = TemporalStoreTonicAdapter::new(engine);
-
-        let open = adapter
-            .open_table(Request::new(OpenTableRequest {
-                namespace_name: "local".to_string(),
-                table_name: "embedded".to_string(),
-                local_location: "dev-zone".to_string(),
-            }))
-            .await
-            .expect("open table")
-            .into_inner();
-        assert!(open.status.expect("open status").ok);
-        let topology = open.topology.expect("open topology");
-        assert_eq!(topology.namespace_name, "local");
-        assert_eq!(topology.table_name, "embedded");
-        assert_eq!(topology.topology_version, 1);
-        assert_eq!(
-            topology.shards[0].primary.as_ref().unwrap().location,
-            "dev-zone"
-        );
-
-        let sync = adapter
-            .sync_topology(Request::new(SyncTopologyRequest {
-                table_keys: vec!["local/embedded".to_string()],
-                min_topology_version: 0,
-                deadline_ms: 100,
-            }))
-            .await
-            .expect("sync topology")
-            .into_inner();
-        assert!(sync.status.expect("sync status").ok);
-        assert_eq!(sync.topologies.len(), 1);
-        assert_eq!(sync.topologies[0].namespace_name, "local");
-        assert_eq!(sync.topologies[0].table_name, "embedded");
     }
 
     #[tokio::test]

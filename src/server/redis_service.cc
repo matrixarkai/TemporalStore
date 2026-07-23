@@ -140,8 +140,6 @@ void RedisServiceImpl::InitCommands() {
                     &RedisCommandHandler::HKeys);
     RegisterCommand("hvals", RedisCommand::CmdType::kHVals, 2, "r", 1, 1, 1,
                     &RedisCommandHandler::HVals);
-    RegisterCommand("hscan", RedisCommand::CmdType::kHScan, -3, "r", 1, 1, 1,
-                    &RedisCommandHandler::HScan);
     RegisterCommand("hstrlen", RedisCommand::CmdType::kHStrlen, 3, "rF", 1, 1, 1,
                     &RedisCommandHandler::HStrlen);
     RegisterCommand("hincrby", RedisCommand::CmdType::kHIncrBy, 4, "wm", 1, 1, 1,
@@ -226,7 +224,7 @@ void RedisServiceImpl::InitCommands() {
                     &RedisCommandHandler::ZCount);
     RegisterCommand("zmscore", RedisCommand::CmdType::kZMScore, -3, "rF", 1, 1, 1,
                     &RedisCommandHandler::ZMScore);
-    for (const char* name : {"scan", "sscan", "zscan", "keys", "dbsize",
+    for (const char* name : {"scan", "hscan", "sscan", "zscan", "keys", "dbsize",
                              "multi", "exec", "discard", "watch", "unwatch", "eval",
                              "evalsha", "script", "publish", "subscribe", "psubscribe",
                              "cluster", "pfadd", "pfcount", "geoadd", "geosearch",

@@ -1,15 +1,5 @@
 # C++ TemporalStore API Parity
 
-Scope note: this document tracks broad C++/Rust API-parity and compatibility
-corpus coverage. It is not the open-source production Redis surface. Public
-open-source builds must follow the trimmed surface in
-[`redis_compatibility_matrix.md`](redis_compatibility_matrix.md): string/common,
-hash, feature, frequency-control, and narrow single-hash `HSCAN`. Generic
-SET/LIST/ZSET clones, server-configuration/admin commands such as `CONFIG` and
-`DBSIZE`, broad `KEYS`/`SCAN`, and private/debug families remain private,
-unsupported, or full-compatibility test-only behavior unless explicitly moved
-into that trimmed production matrix.
-
 Reference sources checked:
 
 - `/home/vj/src/temporalstore/src/protocol/*module.proto`
@@ -183,29 +173,29 @@ IPS:
   total counts, action/table aggregations, and packed page evidence for the timestamped page blocks
   backing the snapshot.
 
-ControlState:
+Risk:
 
-- increment -> `ControlStateIncrement`
-- precision/TTL increment -> `ControlStateIncrementWithOptions`
-- count/sum window -> `ControlStateCount`
-- aggregate query -> `ControlStateQuery` with `sum`, `min`, `max`, `first`, `last`, and `events`
-- detail list -> `ControlStateDetail`
-- C++-named family commands -> `ControlStateSet`, `ControlStateFamilyQuery`, `ControlStateSetAndGet`,
-  `ControlStateManager`, and `ControlStateDebug` for the `h`, `cpc`, and `fol` control_state families
-- C++ FOL first/last string semantics -> `ControlStateFolSet` and `ControlStateFolQuery`, preserving the selected
+- increment -> `RiskIncrement`
+- precision/TTL increment -> `RiskIncrementWithOptions`
+- count/sum window -> `RiskCount`
+- aggregate query -> `RiskQuery` with `sum`, `min`, `max`, `first`, `last`, and `events`
+- detail list -> `RiskDetail`
+- C++-named family commands -> `RiskSet`, `RiskFamilyQuery`, `RiskSetAndGet`,
+  `RiskManager`, and `RiskDebug` for the `h`, `cpc`, and `fol` risk families
+- C++ FOL first/last string semantics -> `RiskFolSet` and `RiskFolQuery`, preserving the selected
   value by event timestamp rather than treating FOL as a numeric sum-only family
-- Typed client coverage: `control_state_increment`, `control_state_increment_with_options`, `control_state_count`,
-  `control_state_query`, `control_state_detail`, `control_state_family_set`, `control_state_family_query`,
-  `control_state_family_set_and_get`, `control_state_fol_set`, `control_state_fol_query`, `control_state_manager`, and
-  `control_state_debug`
-- RESP coverage: `CONTROL_STATEINCR`, `CONTROL_STATEINCROPT`, `CONTROL_STATECOUNT`, `CONTROL_STATEQUERY`, `CONTROL_STATEDETAIL`
-  plus C++-style `CONTROL_STATEHSET`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCQUERY`,
-  `CPCSETANDGET`, `FOLSET`, `FOLQUERY`, `FOLSETANDGET`, `CONTROL_STATEMANAGER`, and
-  `CONTROL_STATEDEBUG`.
+- Typed client coverage: `risk_increment`, `risk_increment_with_options`, `risk_count`,
+  `risk_query`, `risk_detail`, `risk_family_set`, `risk_family_query`,
+  `risk_family_set_and_get`, `risk_fol_set`, `risk_fol_query`, `risk_manager`, and
+  `risk_debug`
+- RESP coverage: `RISKINCR`, `RISKINCROPT`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`
+  plus C++-style `RISKHSET`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCQUERY`,
+  `CPCSETANDGET`, `FOLSET`, `FOLQUERY`, `FOLSETANDGET`, `RISKMANAGER`, and
+  `RISKDEBUG`.
   `FOLSET key value occur_time_ms ttl_ms FIRST|LAST` and `FOLQUERY key` now model the C++ string
   first/last behavior; the older numeric FOL test shape remains for compatibility with the local
   simplified family shim.
-  `CONTROL_STATEHSET` is used for H-family set-only writes in RESP so normal Redis `HSET`
+  `RISKHSET` is used for H-family set-only writes in RESP so normal Redis `HSET`
   remains hash-compatible.
 
 Runtime/control surface:
@@ -243,11 +233,11 @@ IPS:
 - C++ IPS still has deployment-specific snap internals, but the Rust surface now covers production
   snapshot metadata and server-side action/table aggregation for the local open-source model.
 
-ControlState:
+Risk:
 
 - Rust covers increment, precision/TTL increment, count, sum/min/max/first/last/event aggregation,
   and detail lists, with typed client and RESP coverage.
-- C++ control_state has `HSET`, `HQUERY`, `CPCSET`, `CPCQUERY`, `FOLSET`, `FOLQUERY`,
+- C++ risk has `HSET`, `HQUERY`, `CPCSET`, `CPCQUERY`, `FOLSET`, `FOLQUERY`,
   `HSETANDGET`, `FOLSETANDGET`, `CPCSETANDGET`, and `MANAGER`. Rust now covers
   those command shapes for local integer-window behavior, C++-style FOL first/last string selection,
   a manager summary, and a debug report for full/window family counters and FOL metadata.
@@ -264,7 +254,7 @@ Feature:
   sequence filtering, and packed timestamped KV page layout.
 - Rust also exposes `cpp_api_golden_corpus_v1` through `cpp_api_golden_corpus_report()`.
   This broader Rust-local corpus combines the feature/sequence golden cases with Redis-compatible
-  string/hash/set core commands, IPS filter/stat/snapshot behavior, ControlState family/FOL/manager
+  string/hash/set core commands, IPS filter/stat/snapshot behavior, Risk family/FOL/manager
   behavior, and admin storage-readiness checks after mixed API writes.
 - C++ feature API includes richer `FeaturePoint` structure with nested point arrays and additional
   deployment-specific time-range behaviors. Rust currently stores one value per timestamp.
@@ -307,7 +297,7 @@ Partially covered, but still materially smaller than C++:
   full C++ namespace/table/partition-set placement hierarchy and placement-rule chain are still not
   complete.
 - Proxy exposes Rust HTTP/JSON command-shaped aliases for C++ proxy methods including `Get`, `Set`,
-  `FeatureAdd`, `ControlStateHset`, `HMGet`, `HMSet`, `HGetAll`, and `HLen`, all delegated through the
+  `FeatureAdd`, `RiskHset`, `HMGet`, `HMSet`, `HGetAll`, and `HLen`, all delegated through the
   normal table-routed client execution path. This is API-shape coverage, not legacy C++ wire wire
   compatibility.
 - Hot object state is represented by per-type maps of key/field/timestamp to `BlockAddress`, with
@@ -318,7 +308,7 @@ Partially covered, but still materially smaller than C++:
   write-through accounting, bounded SSD capacity eviction, hotness metadata, warmup, pinning, and
   observability. It is still not blockcache/mtcache binary/API compatibility.
 - Shared-store replication exists for file/object-store checkpoint, page, index, and oplog flows.
-  There is still no production MatrixObjectStore stream backend parity.
+  There is still no production ByteStore stream backend parity.
 - Raft has local/distributed model coverage, HTTP transport contracts, WAL persistence, snapshots,
   external snapshot refs, membership safety models, and local harnesses. It is still not production
   RustRaft parity and still lacks real OpenRaft/raft-rs FSM/storage integration, actual mTLS
@@ -335,7 +325,7 @@ Still intentionally missing from the open-source Rust target:
 ## Current Conclusion
 
 The Rust repo now covers the main simple module APIs: common, string, hash, set, feature,
-sequence, and the implemented IPS/ControlState subset with typed client and RESP coverage. It is not yet
+sequence, and the implemented IPS/Risk subset with typed client and RESP coverage. It is not yet
 feature-complete versus the full C++ TemporalStore product, mainly because exact C++ proto
 semantics, routing/topology, C++ slot-owned dump/load recovery, OpenRaft/raft-rs integration,
 mTLS/tonic production surfaces, external chaos validation, and production replication are still

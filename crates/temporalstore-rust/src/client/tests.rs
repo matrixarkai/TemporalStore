@@ -180,7 +180,7 @@ fn client_exposes_neptune_placement_hooks_and_migration_scope() {
         .iter()
         .any(|blocker| blocker.contains("legacy C++ wire")));
     for family in [
-        "common", "string", "hash", "set", "feature", "sequence", "ips", "control_state", "redis", "admin",
+        "common", "string", "hash", "set", "feature", "sequence", "ips", "risk", "redis", "admin",
         "context",
     ] {
         assert!(migration
@@ -640,13 +640,13 @@ fn table_typed_methods_and_pipeline_match_cpp_client_shape() {
     assert_eq!(snapshot_report.table_id_counts, vec![(42, 1)]);
     assert_eq!(snapshot_report.packed_timestamped_page_count, 2);
 
-    table.control_state_increment("control_state", 10, 5).unwrap();
-    table.control_state_increment("control_state", 20, -2).unwrap();
-    table.control_state_increment("control_state", 30, 7).unwrap();
-    assert_eq!(table.control_state_query("control_state", 0, 40, "sum").unwrap(), 10);
-    assert_eq!(table.control_state_query("control_state", 0, 40, "last").unwrap(), 7);
+    table.risk_increment("risk", 10, 5).unwrap();
+    table.risk_increment("risk", 20, -2).unwrap();
+    table.risk_increment("risk", 30, 7).unwrap();
+    assert_eq!(table.risk_query("risk", 0, 40, "sum").unwrap(), 10);
+    assert_eq!(table.risk_query("risk", 0, 40, "last").unwrap(), 7);
     assert_eq!(
-        table.control_state_detail("control_state", 15, 40, Some(2)).unwrap(),
+        table.risk_detail("risk", 15, 40, Some(2)).unwrap(),
         vec![
             FeaturePoint {
                 timestamp_ms: 20,
@@ -659,96 +659,96 @@ fn table_typed_methods_and_pipeline_match_cpp_client_shape() {
         ]
     );
     table
-        .control_state_family_set(ControlStateFamily::H, "control_state-cpp", 10, 5)
+        .risk_family_set(RiskFamily::H, "risk-cpp", 10, 5)
         .unwrap();
     assert_eq!(
         table
-            .control_state_family_set_and_get(ControlStateFamily::H, "control_state-cpp", 20, 7, 0, 30, "sum")
+            .risk_family_set_and_get(RiskFamily::H, "risk-cpp", 20, 7, 0, 30, "sum")
             .unwrap(),
         12
     );
     table
-        .control_state_family_set(ControlStateFamily::Cpc, "control_state-cpp", 10, 3)
+        .risk_family_set(RiskFamily::Cpc, "risk-cpp", 10, 3)
         .unwrap();
     assert_eq!(
         table
-            .control_state_family_set_and_get(ControlStateFamily::Cpc, "control_state-cpp", 20, 4, 0, 30, "sum")
+            .risk_family_set_and_get(RiskFamily::Cpc, "risk-cpp", 20, 4, 0, 30, "sum")
             .unwrap(),
         7
     );
     table
-        .control_state_family_set(ControlStateFamily::Fol, "control_state-cpp", 10, 11)
+        .risk_family_set(RiskFamily::Fol, "risk-cpp", 10, 11)
         .unwrap();
     assert_eq!(
         table
-            .control_state_family_query(ControlStateFamily::Fol, "control_state-cpp", 0, 30, "sum")
+            .risk_family_query(RiskFamily::Fol, "risk-cpp", 0, 30, "sum")
             .unwrap(),
         11
     );
     table
-        .control_state_fol_set(
-            "control_state-fol-first",
+        .risk_fol_set(
+            "risk-fol-first",
             b"middle".to_vec(),
             20,
             60_000,
-            ControlStateFolType::First,
+            RiskFolType::First,
         )
         .unwrap();
     table
-        .control_state_fol_set(
-            "control_state-fol-first",
+        .risk_fol_set(
+            "risk-fol-first",
             b"first".to_vec(),
             10,
             60_000,
-            ControlStateFolType::First,
+            RiskFolType::First,
         )
         .unwrap();
     table
-        .control_state_fol_set(
-            "control_state-fol-first",
+        .risk_fol_set(
+            "risk-fol-first",
             b"last".to_vec(),
             30,
             60_000,
-            ControlStateFolType::First,
+            RiskFolType::First,
         )
         .unwrap();
     assert_eq!(
-        table.control_state_fol_query("control_state-fol-first").unwrap(),
+        table.risk_fol_query("risk-fol-first").unwrap(),
         Some(b"first".to_vec())
     );
     table
-        .control_state_fol_set(
-            "control_state-fol-last",
+        .risk_fol_set(
+            "risk-fol-last",
             b"middle".to_vec(),
             20,
             60_000,
-            ControlStateFolType::Last,
+            RiskFolType::Last,
         )
         .unwrap();
     table
-        .control_state_fol_set(
-            "control_state-fol-last",
+        .risk_fol_set(
+            "risk-fol-last",
             b"first".to_vec(),
             10,
             60_000,
-            ControlStateFolType::Last,
+            RiskFolType::Last,
         )
         .unwrap();
     table
-        .control_state_fol_set(
-            "control_state-fol-last",
+        .risk_fol_set(
+            "risk-fol-last",
             b"last".to_vec(),
             30,
             60_000,
-            ControlStateFolType::Last,
+            RiskFolType::Last,
         )
         .unwrap();
     assert_eq!(
-        table.control_state_fol_query("control_state-fol-last").unwrap(),
+        table.risk_fol_query("risk-fol-last").unwrap(),
         Some(b"last".to_vec())
     );
     assert_eq!(
-        table.control_state_manager("control_state-cpp").unwrap(),
+        table.risk_manager("risk-cpp").unwrap(),
         vec![
             ("h_events".to_string(), b"2".to_vec()),
             ("h_sum".to_string(), b"12".to_vec()),
@@ -758,8 +758,8 @@ fn table_typed_methods_and_pipeline_match_cpp_client_shape() {
             ("fol_sum".to_string(), b"11".to_vec()),
         ]
     );
-    let debug = table.control_state_debug("control_state-cpp", 0, 15).unwrap();
-    assert!(debug.contains(&("key".to_string(), b"control_state-cpp".to_vec())));
+    let debug = table.risk_debug("risk-cpp", 0, 15).unwrap();
+    assert!(debug.contains(&("key".to_string(), b"risk-cpp".to_vec())));
     assert!(debug.contains(&("h_window_events".to_string(), b"1".to_vec())));
     assert!(debug.contains(&("cpc_window_sum".to_string(), b"3".to_vec())));
     assert!(debug.contains(&("fol_window_last_timestamp_ms".to_string(), b"10".to_vec())));
@@ -2341,32 +2341,11 @@ fn table_routes_keys_to_shards_and_pipeline_splits_batches() {
     assert!(stats.route_cache_hits > 0);
     assert!(stats.route_refreshes >= 2);
     assert_eq!(client.route_cache_size(), 2);
-    let other = client.open_table(
-        "ns",
-        "other",
-        TableOptions {
-            first_shard_id: 99,
-            ..TableOptions::default()
-        },
-    );
-    let mut other_route = CachedRoute::for_shard(99, "127.0.0.1:19999", "test_other_table");
-    other_route.table_key = table_combine_name("ns", "other");
-    client
-        .inner
-        .routes
-        .lock()
-        .expect("client route cache lock poisoned")
-        .insert(99, other_route);
-    assert_eq!(client.route_cache_size(), 3);
     client.close_table(&table).unwrap();
-    assert_eq!(client.route_cache_size(), 1);
+    assert_eq!(client.route_cache_size(), 0);
     assert!(client
         .cached_table("ns".to_string(), "tbl".to_string())
         .is_none());
-    assert!(client
-        .cached_table("ns".to_string(), "other".to_string())
-        .is_some());
-    assert_eq!(other.shard_id_for_key("other-key"), 99);
 }
 
 // shared-corpus: control_client_pipeline_batch_partial_timeout_contract
@@ -2473,142 +2452,6 @@ fn pipeline_batches_partial_failures_and_timeout_budget_contract() {
     );
     assert!(stale_route_retry.safe_budget_free_write_retry);
     assert!(stale_route_retry.would_retry);
-}
-
-#[test]
-fn matrixark_batch_append_records_uses_proxy_table_batch_route() {
-    let proxy_addr = free_local_addr();
-    let seen_path = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let seen_path_for_server = std::sync::Arc::clone(&seen_path);
-    let proxy_addr_for_listener = proxy_addr.clone();
-    std::thread::spawn(move || {
-        serve(&proxy_addr_for_listener, move |request| {
-            match (request.method.as_str(), request.path.as_str()) {
-                ("POST", "/ProxyService/BatchExecuteTableCmd") => {
-                    *seen_path_for_server.lock().unwrap() = request.path.clone();
-                    let req =
-                        parse_json::<ProxyTableBatchExecuteClientRequest>(&request.body).unwrap();
-                    assert_eq!(req.namespace, "matrixark");
-                    assert_eq!(req.table_name, "records");
-                    assert_eq!(req.commands.len(), 2);
-                    match &req.commands[0] {
-                        Command::HashMultiSet { key, entries } => {
-                            assert_eq!(key, "session-a");
-                            assert_eq!(entries.len(), 2);
-                            assert_eq!(entries[0].0, "record-1");
-                            assert_eq!(entries[1].0, "record-2");
-                        }
-                        other => panic!("unexpected first command: {other:?}"),
-                    }
-                    match &req.commands[1] {
-                        Command::HashMultiSet { key, entries } => {
-                            assert_eq!(key, "session-b");
-                            assert_eq!(entries.len(), 1);
-                            assert_eq!(entries[0].0, "record-3");
-                        }
-                        other => panic!("unexpected second command: {other:?}"),
-                    }
-                    json_response(
-                        200,
-                        &BatchExecuteResponse {
-                            status: Status::ok(),
-                            responses: vec![
-                                ExecuteResponse {
-                                    status: Status::ok(),
-                                    response: CommandResponse::Empty,
-                                },
-                                ExecuteResponse {
-                                    status: Status::ok(),
-                                    response: CommandResponse::Empty,
-                                },
-                            ],
-                        },
-                    )
-                }
-                _ => json_response(404, &Status::error("not_found", "not found")),
-            }
-        })
-        .unwrap();
-    });
-    wait_for_http(&proxy_addr);
-
-    let client = TemporalStoreClient::with_options(ClientOptions {
-        proxy_addr,
-        max_retries: 0,
-        ..ClientOptions::default()
-    });
-    let written = client
-        .matrixark_batch_append_records(
-            "matrixark",
-            "records",
-            vec![
-                MatrixArkRecordAppend {
-                    key: "session-a".to_string(),
-                    field: "record-1".to_string(),
-                    value: b"one".to_vec(),
-                },
-                MatrixArkRecordAppend {
-                    key: "session-a".to_string(),
-                    field: "record-2".to_string(),
-                    value: b"two".to_vec(),
-                },
-                MatrixArkRecordAppend {
-                    key: "session-b".to_string(),
-                    field: "record-3".to_string(),
-                    value: b"three".to_vec(),
-                },
-            ],
-        )
-        .expect("matrixark append");
-    assert_eq!(written, 3);
-    assert_eq!(
-        seen_path.lock().unwrap().as_str(),
-        "/ProxyService/BatchExecuteTableCmd"
-    );
-}
-
-#[test]
-fn matrixark_retrieve_context_pack_helper_uses_record_log_protocol() {
-    let client = TemporalStoreClient::with_options(ClientOptions {
-        proxy_addr: "127.0.0.1:17000".to_string(),
-        ..ClientOptions::default()
-    });
-    let request_json = client
-        .matrixark_retrieve_context_pack_request_json(MatrixArkRetrieveContextPackRequest {
-            metaserver: String::new(),
-            namespace: "matrixark".to_string(),
-            table: "records".to_string(),
-            storage_prefix: "tenant-a:session-a".to_string(),
-            query: "who owns gpu procurement".to_string(),
-            max_selected_refs: 8,
-            record: serde_json::json!({
-                "query": "who owns gpu procurement",
-                "ranking": {"max_selected_refs": 8}
-            }),
-            scope: Some(serde_json::json!(["tenant-a", "session-a"])),
-            secondary_index_groups: vec![vec!["keyword:gpu".to_string()]],
-            top_level_response: true,
-        })
-        .expect("record-log request json");
-    let envelope: serde_json::Value = serde_json::from_str(&request_json).unwrap();
-    assert_eq!(envelope["op"], "matrixark_retrieve_context_pack");
-    assert_eq!(envelope["metaserver"], "127.0.0.1:17000");
-    assert_eq!(envelope["storage_prefix"], "tenant-a:session-a");
-    assert!(envelope["top_level_response"].as_bool().unwrap());
-
-    let response = serde_json::json!({
-        "ok": true,
-        "op": "matrixark_retrieve_context_pack",
-        "context_pack": {
-            "native_context_pack": true,
-            "selected_refs": [{"ref_hash": "r1"}]
-        }
-    });
-    let pack = client
-        .parse_matrixark_retrieve_context_pack_response(&response.to_string())
-        .expect("context pack response");
-    assert!(pack["native_context_pack"].as_bool().unwrap());
-    assert_eq!(pack["selected_refs"][0]["ref_hash"], "r1");
 }
 
 fn key_for_shard(table: &TemporalStoreTable, shard_id: ShardId) -> String {

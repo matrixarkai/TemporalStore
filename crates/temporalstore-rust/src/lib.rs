@@ -1,4 +1,4 @@
-#![doc = include_str!("../README.md")]
+﻿#![doc = include_str!("../README.md")]
 
 pub mod block_store;
 pub mod client;
@@ -95,11 +95,11 @@ pub use context_workflow::{
     ContextTreeTraversalDebug, ContextWorkflowStateReport,
 };
 pub use control::{
-    CanonicalLogAckPolicy, CheckedBatchExecuteRequest, CheckedBatchExecuteResponse,
-    CheckedExecuteRequest, CheckedExecuteResponse, Config, GetConfigResponse, GetInfoResponse,
-    GetStatsResponse, LoadShardRequest, LoadShardResponse, MembershipUpdateRequest,
-    ScanStreamRequest, ScanStreamResponse, SetConfigRequest, ShardCanonicalStorageStats,
-    StreamKind, StreamReadRequest, StreamReadResponse, UnloadShardRequest, UnloadShardResponse,
+    CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
+    CheckedExecuteResponse, Config, GetConfigResponse, GetInfoResponse, GetStatsResponse,
+    LoadShardRequest, LoadShardResponse, MembershipUpdateRequest, ScanStreamRequest,
+    ScanStreamResponse, SetConfigRequest, ShardCanonicalStorageStats, StreamKind,
+    StreamReadRequest, StreamReadResponse, UnloadShardRequest, UnloadShardResponse,
 };
 pub use data_node::{
     CompactionRequest, CompactionResponse, DataNodeLifecycleReport, DataNodePreflightReport,
@@ -233,11 +233,9 @@ pub use shared_store::{
     SharedStoreReplicationError, SharedStoreReplicator, SharedStoreRetryPolicy,
     SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWriteReport,
 };
-#[cfg(not(feature = "open-source-surface"))]
-pub use types::ContextAuditModel;
 pub use types::{
-    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditRef,
-    ContextChildModel, ContextChildRef, ContextCompressionEvent,
+    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditModel,
+    ContextAuditRef, ContextChildModel, ContextChildRef, ContextCompressionEvent,
     ContextCompressionModel, ContextDirtyModel, ContextEmbedding, ContextEmbeddingModel,
     ContextEntity, ContextEvent, ContextEventModel, ContextExtractedEventIndexes,
     ContextIndexModel, ContextIndexRef, ContextNode, ContextNodeModel, ContextPackAudit,

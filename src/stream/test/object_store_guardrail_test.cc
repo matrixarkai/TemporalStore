@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <cstdlib>
 #include <string>
 #include <utility>
@@ -25,10 +24,6 @@ void ExpectUnimplemented(const std::string& uri, const Status& status) {
     EXPECT_TRUE(status.IsUnimplemented()) << uri << ": " << status.ToString();
     EXPECT_NE(status.ToString().find("object-store backend is not linked"), std::string::npos)
         << status.ToString();
-}
-
-bool HasCapability(const std::vector<std::string>& values, const std::string& value) {
-    return std::find(values.begin(), values.end(), value) != values.end();
 }
 
 void ExpectUnsupportedBackendFailsClosed(const std::string& uri) {
@@ -161,133 +156,6 @@ TEST(ObjectStoreBackendGuardrailTest, UnknownBackendsRemainInvalidArguments) {
     Store::BlobStat stat;
     store_layer.Stat(&ctrl, "http://bucket/prefix/blob1", Store::StatOptions(), &stat);
     EXPECT_TRUE(ctrl.status().IsInvalidArgument()) << ctrl.status().ToString();
-}
-
-TEST(ObjectStoreBackendGuardrailTest, PublicBackendNamesAreCanonical) {
-    EXPECT_EQ("matrixobject",
-              std::string(ObjectStoreBackendName(
-                  DetectObjectStoreBackend("matrixobject://bucket/prefix"))));
-    EXPECT_EQ("matrixobject",
-              std::string(ObjectStoreBackendName(
-                  DetectObjectStoreBackend("matrixobjectstore://bucket/prefix"))));
-    EXPECT_EQ("s3", std::string(ObjectStoreBackendName(DetectObjectStoreBackend("s3://b/k"))));
-    EXPECT_EQ("ceph_s3",
-              std::string(ObjectStoreBackendName(DetectObjectStoreBackend("ceph+s3://b/k"))));
-    EXPECT_EQ("shared_file",
-              std::string(ObjectStoreBackendName(DetectObjectStoreBackend("shared-file://b/k"))));
-    EXPECT_EQ("local_file",
-              std::string(ObjectStoreBackendName(DetectObjectStoreBackend("file:///tmp/k"))));
-    EXPECT_EQ("matrixobject",
-              std::string(ObjectStoreBackendUriScheme(ObjectStoreBackend::kMatrixObjectStore)));
-    EXPECT_EQ("file", std::string(ObjectStoreBackendUriScheme(ObjectStoreBackend::kLocalFile)));
-}
-
-TEST(ObjectStoreBackendGuardrailTest, PublicCapabilityReportsAreProviderNeutral) {
-    const auto matrixobject =
-        ObjectStoreBackendCapabilityReport(ObjectStoreBackend::kMatrixObjectStore);
-    EXPECT_EQ("matrixobject", std::string(matrixobject.backend));
-    EXPECT_EQ("matrixobject", std::string(matrixobject.uri_scheme));
-    EXPECT_TRUE(matrixobject.runtime_linked);
-    EXPECT_FALSE(matrixobject.operations_fail_closed);
-    EXPECT_TRUE(matrixobject.atomic_publish);
-    EXPECT_TRUE(matrixobject.unique_put);
-    EXPECT_TRUE(matrixobject.conditional_create);
-    EXPECT_TRUE(matrixobject.direct_upload_from_path);
-    EXPECT_TRUE(matrixobject.direct_download_to_path);
-    EXPECT_TRUE(matrixobject.metadata_head);
-    EXPECT_TRUE(matrixobject.prefix_list);
-    EXPECT_TRUE(matrixobject.paginated_list);
-    EXPECT_TRUE(matrixobject.delete_capability);
-    EXPECT_TRUE(matrixobject.bulk_delete);
-    EXPECT_TRUE(matrixobject.object_copy);
-    EXPECT_TRUE(matrixobject.prefix_delete);
-    EXPECT_TRUE(matrixobject.byte_range_read);
-    EXPECT_TRUE(matrixobject.checksum_sha256);
-    EXPECT_TRUE(matrixobject.opaque_object_validators);
-    EXPECT_TRUE(matrixobject.object_version_ids);
-    EXPECT_TRUE(matrixobject.split_services);
-    EXPECT_TRUE(matrixobject.condition_metadata);
-    EXPECT_TRUE(matrixobject.prefix_list);
-    EXPECT_TRUE(matrixobject.metadata_stat);
-    EXPECT_TRUE(matrixobject.append_write);
-    EXPECT_TRUE(matrixobject.byte_range_read);
-    EXPECT_TRUE(matrixobject.delete_object);
-    EXPECT_TRUE(matrixobject.copy_or_rename);
-    EXPECT_TRUE(matrixobject.split_services);
-    EXPECT_FALSE(matrixobject.s3_compatible);
-
-    const auto s3 = ObjectStoreBackendCapabilityReport(ObjectStoreBackend::kS3);
-    EXPECT_EQ("s3", std::string(s3.backend));
-    EXPECT_EQ("s3", std::string(s3.uri_scheme));
-    EXPECT_TRUE(s3.s3_compatible);
-    EXPECT_TRUE(s3.object_version_ids);
-#ifdef BCACHE2_ENABLE_S3_STORE
-    EXPECT_TRUE(s3.runtime_linked);
-    EXPECT_FALSE(s3.operations_fail_closed);
-#else
-    EXPECT_FALSE(s3.runtime_linked);
-    EXPECT_TRUE(s3.operations_fail_closed);
-#endif
-
-    const auto ceph = ObjectStoreBackendCapabilityReport(ObjectStoreBackend::kCephS3);
-    EXPECT_EQ("ceph_s3", std::string(ceph.backend));
-    EXPECT_EQ("ceph+s3", std::string(ceph.uri_scheme));
-    EXPECT_TRUE(ceph.s3_compatible);
-
-    const auto rados = ObjectStoreBackendCapabilityReport(ObjectStoreBackend::kCephRados);
-    EXPECT_EQ("ceph_rados", std::string(rados.backend));
-    EXPECT_EQ("rados", std::string(rados.uri_scheme));
-    EXPECT_FALSE(rados.runtime_linked);
-    EXPECT_TRUE(rados.operations_fail_closed);
-
-    const auto shared_file = ObjectStoreBackendCapabilityReport(ObjectStoreBackend::kSharedFile);
-    EXPECT_TRUE(shared_file.runtime_linked);
-    EXPECT_TRUE(shared_file.local_file_compatible);
-    EXPECT_FALSE(shared_file.operations_fail_closed);
-}
-
-
-TEST(ObjectStoreBackendGuardrailTest, CanonicalCapabilityReportsHideCompatibilityAliases) {
-    const auto matrixobject =
-        CanonicalObjectStoreBackendCapabilityReport(ObjectStoreBackend::kMatrixObjectStore);
-    EXPECT_EQ("matrixobject", std::string(matrixobject.backend));
-    EXPECT_EQ("matrixobject", std::string(matrixobject.uri_scheme));
-    EXPECT_TRUE(matrixobject.runtime_linked);
-    EXPECT_FALSE(matrixobject.operations_fail_closed);
-    EXPECT_TRUE(matrixobject.split_services);
-    for (const auto& required : {"atomic_publish",
-                                 "unique_put",
-                                 "conditional_create",
-                                 "direct_upload_from_path",
-                                 "direct_download_to_path",
-                                 "metadata_head",
-                                 "prefix_list",
-                                 "paginated_list",
-                                 "delete_capability",
-                                 "bulk_delete",
-                                 "object_copy",
-                                 "prefix_delete",
-                                 "byte_range_read"}) {
-        EXPECT_TRUE(HasCapability(matrixobject.operations, required)) << required;
-    }
-    for (const auto& legacy : {"condition_metadata",
-                               "metadata_stat",
-                               "append_write",
-                               "delete_object",
-                               "copy_or_rename"}) {
-        EXPECT_FALSE(HasCapability(matrixobject.operations, legacy)) << legacy;
-        EXPECT_FALSE(HasCapability(matrixobject.validators, legacy)) << legacy;
-    }
-    EXPECT_TRUE(HasCapability(matrixobject.validators, "checksum_sha256"));
-    EXPECT_TRUE(HasCapability(matrixobject.validators, "opaque_object_validators"));
-    EXPECT_TRUE(HasCapability(matrixobject.validators, "object_version_ids"));
-
-    const auto s3 = CanonicalObjectStoreBackendCapabilityReport(ObjectStoreBackend::kS3);
-    EXPECT_EQ("s3", std::string(s3.backend));
-    EXPECT_EQ("s3", std::string(s3.uri_scheme));
-    EXPECT_TRUE(s3.s3_compatible);
-    EXPECT_TRUE(HasCapability(s3.operations, "byte_range_read"));
-    EXPECT_TRUE(HasCapability(s3.validators, "opaque_object_validators"));
 }
 
 }  // namespace stream

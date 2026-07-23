@@ -7,7 +7,7 @@ The C++ metaserver is the production control plane:
 - `ManageService` mutates metadata through Raft proposals
 - `QueryService` lists leader, cluster state, servers, proxies, namespaces, tables, and partitions
 - `HeartbeatService` tracks server/proxy liveness and returns proxy config changes
-- metacapability includes location, server, proxy, namespace, table, partition set, partition, membership, and placement
+- metadata model includes location, server, proxy, namespace, table, partition set, partition, membership, and placement
 - scheduler/balance routines create partitions, update membership, and rebalance load
 - failure detector convicts unhealthy servers/proxies and can freeze resources
 - snapshots persist the whole metabase

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REDIS_HOST="${REDIS_HOST:-127.0.0.1}"
 REDIS_PORT="${REDIS_PORT:-6379}"
 REDIS_AUTH="${REDIS_AUTH:-}"
@@ -11,21 +10,6 @@ TIMEOUT_S="${TIMEOUT_S:-5}"
 RUN_BENCH="${RUN_BENCH:-0}"
 BENCH_REQUESTS="${BENCH_REQUESTS:-1000}"
 BENCH_CLIENTS="${BENCH_CLIENTS:-8}"
-BENCH_KEYSPACE="${BENCH_KEYSPACE:-100000}"
-REDIS_BENCH_MIN_OVERALL_QPS="${REDIS_BENCH_MIN_OVERALL_QPS:-0}"
-REDIS_COMPAT_SURFACE="${REDIS_COMPAT_SURFACE:-trimmed}"
-REDIS_SURFACE_MANIFEST_PATH="${REDIS_SURFACE_MANIFEST_PATH:-${ROOT}/compat/redis_open_source_surface_manifest.json}"
-REDIS_SURFACE_BLOCKED_FAMILY_COUNT="${REDIS_SURFACE_BLOCKED_FAMILY_COUNT:-$(python3 - "${REDIS_SURFACE_MANIFEST_PATH}" <<'PY'
-import json
-import sys
-with open(sys.argv[1], encoding="utf-8") as fh:
-    print(len(json.load(fh).get("blocked_command_families", [])))
-PY
-)}"
-REDIS_TEST_MODEL_COMMANDS="${REDIS_TEST_MODEL_COMMANDS:-0}"
-REDIS_EXPECT_UNSUPPORTED_COLLECTIONS="${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS:-0}"
-REDIS_TRIMMED_COMMAND_COUNT_MIN="${REDIS_TRIMMED_COMMAND_COUNT_MIN:-16}"
-REDIS_TRIMMED_COMMAND_COUNT_MAX="${REDIS_TRIMMED_COMMAND_COUNT_MAX:-39}"
 
 mkdir -p "${RESULT_DIR}"
 SUMMARY="${RESULT_DIR}/summary.txt"
@@ -105,142 +89,7 @@ expect_error select_nonzero SELECT 1
 expect_eq client_setname OK CLIENT SETNAME matrixark-smoke
 expect_eq client_getname "" CLIENT GETNAME
 expect_eq client_id 0 CLIENT ID
-command_count="$(redis_cmd COMMAND COUNT 2>/dev/null || true)"
-printf '%s
-' "${command_count}" > "${RESULT_DIR}/command_count.out"
-if ! [[ "${command_count}" =~ ^[0-9]+$ ]]; then
-  echo "FAIL command_count: expected integer got [${command_count}]" | tee -a "${SUMMARY}"
-  exit 1
-fi
-if [[ "${REDIS_COMPAT_SURFACE}" == "trimmed" ]] && \
-   ([[ "${command_count}" -lt "${REDIS_TRIMMED_COMMAND_COUNT_MIN}" ]] || \
-    [[ "${command_count}" -gt "${REDIS_TRIMMED_COMMAND_COUNT_MAX}" ]]); then
-  echo "FAIL command_count: trimmed surface count ${command_count} outside ${REDIS_TRIMMED_COMMAND_COUNT_MIN}-${REDIS_TRIMMED_COMMAND_COUNT_MAX}" | tee -a "${SUMMARY}"
-  exit 1
-fi
-echo "PASS command_count" | tee -a "${SUMMARY}"
-expect_contains_line info_surface redis_surface:trimmed_open_source_context_feature_control INFO stats
-expect_contains_line info_surface_schema redis_surface_schema:temporalstore_open_source_redis_surface_v1 INFO stats
-expect_contains_line info_surface_blocked_families redis_surface_blocked_command_family_count:${REDIS_SURFACE_BLOCKED_FAMILY_COUNT} INFO stats
-
-if [[ "${REDIS_COMPAT_SURFACE}" == "trimmed" ]]; then
-  expect_eq set OK SET "$(k string)" v1
-  expect_eq get v1 GET "$(k string)"
-  expect_eq exists 1 EXISTS "$(k string)" "$(k missing)"
-  expect_eq expire 1 EXPIRE "$(k string)" 60
-  ttl_value="$(redis_cmd TTL "$(k string)")"
-  printf '%s\n' "${ttl_value}" > "${RESULT_DIR}/ttl_positive.out"
-  if ! [[ "${ttl_value}" =~ ^[0-9]+$ ]] || [[ "${ttl_value}" -le 0 ]]; then
-    echo "FAIL ttl_positive: expected positive TTL got [${ttl_value}]" | tee -a "${SUMMARY}"
-    exit 1
-  fi
-  echo "PASS ttl_positive" | tee -a "${SUMMARY}"
-  expect_eq hset 2 HSET "$(k hash)" f1 v1 f2 v2
-  expect_eq hget v1 HGET "$(k hash)" f1
-  expect_eq hexists 1 HEXISTS "$(k hash)" f2
-  expect_eq hlen 2 HLEN "$(k hash)"
-  expect_contains_line hgetall_f1 f1 HGETALL "$(k hash)"
-  expect_contains_line hgetall_v1 v1 HGETALL "$(k hash)"
-  expect_eq hdel 1 HDEL "$(k hash)" f1
-  expect_eq del_existing 1 DEL "$(k string)"
-
-  for blocked in ECHO QUIT CLIENT SELECT TYPE SETNX SETEX PSETEX GETSET GETDEL GETEX MGET MSET UNLINK PEXPIRE PTTL PERSIST APPEND STRLEN INCR INCRBY DECR DECRBY HMSET HSETNX HMGET HKEYS HVALS HSCAN HSTRLEN HINCRBY MSETNX TOUCH EXPIREAT PEXPIREAT EXPIRETIME PEXPIRETIME GETRANGE SETRANGE INCRBYFLOAT HINCRBYFLOAT; do
-    expect_error "unsupported_${blocked,,}_trimmed" "${blocked}" "$(k blocked)" x
-  done
-
-  if [[ "${REDIS_TEST_MODEL_COMMANDS}" == "1" ]]; then
-    expect_eq fappend OK FAPPEND "$(k feature)" 10 2
-    expect_eq fappend_policy 1 FAPPENDPOLICY "$(k feature)" 20 3 UPSERT
-    expect_eq fagg 5 FAGG "$(k feature)" 0 30 sum
-    expect_eq control_stateincr OK CONTROL_STATEINCR "$(k control_state)" 10 5
-    expect_eq control_statecount 5 CONTROL_STATECOUNT "$(k control_state)" 0 30
-  fi
-
-  if [[ "${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS}" == "1" ]]; then
-    expect_error unsupported_sadd_trimmed SADD "$(k set)" a
-    expect_error unsupported_lpush_trimmed LPUSH "$(k list)" a
-    expect_error unsupported_zadd_trimmed ZADD "$(k zset)" 1 a
-  fi
-  expect_error unsupported_bgsave BGSAVE
-  expect_error unsupported_config CONFIG GET maxmemory
-  expect_error unsupported_scan SCAN 0
-  expect_error unsupported_keys KEYS "*"
-  expect_error unsupported_dbsize DBSIZE
-  expect_error unsupported_multi MULTI
-  expect_error unsupported_eval EVAL "return 1" 0
-  expect_error unsupported_xadd XADD "$(k stream)" "*" f v
-
-  if [[ "${RUN_BENCH}" == "1" ]]; then
-    if ! command -v redis-benchmark >/dev/null 2>&1; then
-      echo "missing redis-benchmark; install redis-tools" >&2
-      exit 2
-    fi
-    bench_args=(-h "${REDIS_HOST}" -p "${REDIS_PORT}" -n "${BENCH_REQUESTS}" -c "${BENCH_CLIENTS}" --csv)
-    if [[ -n "${REDIS_AUTH}" ]]; then
-      bench_args+=(-a "${REDIS_AUTH}")
-    fi
-    redis-benchmark "${bench_args[@]}" -t set,get > "${RESULT_DIR}/redis-benchmark.csv" 2> "${RESULT_DIR}/redis-benchmark.err"
-    redis_cmd HSET "${KEY_PREFIX}:bench:hash" hit value >/dev/null
-    redis_cmd SET "${KEY_PREFIX}:bench:string" value >/dev/null
-    redis-benchmark "${bench_args[@]}" -r "${BENCH_KEYSPACE}" HSET "${KEY_PREFIX}:bench:hash" __rand_int__ value > "${RESULT_DIR}/redis-benchmark-hset.csv" 2> "${RESULT_DIR}/redis-benchmark-hset.err"
-    redis-benchmark "${bench_args[@]}" HGET "${KEY_PREFIX}:bench:hash" hit > "${RESULT_DIR}/redis-benchmark-hget.csv" 2> "${RESULT_DIR}/redis-benchmark-hget.err"
-    redis-benchmark "${bench_args[@]}" EXPIRE "${KEY_PREFIX}:bench:string" 60 > "${RESULT_DIR}/redis-benchmark-expire.csv" 2> "${RESULT_DIR}/redis-benchmark-expire.err"
-    python3 - "${RESULT_DIR}" "${BENCH_REQUESTS}" "${BENCH_CLIENTS}" "${BENCH_KEYSPACE}" "${REDIS_BENCH_MIN_OVERALL_QPS}" "${ROOT}/compat/redis_open_source_surface_manifest.json" <<'BENCHPY'
-import csv, hashlib, json, sys
-from pathlib import Path
-result_dir = Path(sys.argv[1])
-requests = int(sys.argv[2]); clients = int(sys.argv[3]); keyspace = int(sys.argv[4])
-min_overall_qps = float(sys.argv[5])
-manifest_path = Path(sys.argv[6])
-manifest_bytes = manifest_path.read_bytes()
-manifest = json.loads(manifest_bytes.decode("utf-8"))
-artifacts = [("set_get", "redis-benchmark.csv"), ("hset", "redis-benchmark-hset.csv"), ("hget", "redis-benchmark-hget.csv"), ("expire", "redis-benchmark-expire.csv")]
-commands = []
-for command, file_name in artifacts:
-    rows = list(csv.reader((result_dir / file_name).open(newline="", encoding="utf-8")))
-    qps = [float(row[1]) for row in rows if len(row) >= 2]
-    if not qps:
-        raise SystemExit(f"benchmark artifact has no numeric QPS: {file_name}")
-    commands.append({"command": command, "csv": file_name, "row_count": len(rows), "requests_per_second_min": min(qps), "requests_per_second_max": max(qps), "requests_per_second_avg": sum(qps)/len(qps)})
-expected = manifest.get("benchmark_commands", {}).get("required", [])
-actual = [c["command"] for c in commands]
-if actual != expected:
-    raise SystemExit(f"benchmark commands {actual} do not match manifest expected {expected}")
-overall_min = min(c["requests_per_second_min"] for c in commands)
-if min_overall_qps > 0 and overall_min < min_overall_qps:
-    raise SystemExit(f"trimmed Redis benchmark overall min QPS {overall_min:.3f} below REDIS_BENCH_MIN_OVERALL_QPS={min_overall_qps:.3f}")
-summary = {
-    "schema": "temporalstore_trimmed_redis_benchmark_summary_v1",
-    "redis_surface_schema": manifest.get("schema"),
-    "redis_surface": manifest.get("surface"),
-    "redis_surface_manifest": str(manifest_path),
-    "redis_surface_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
-    "cxx_command_count": manifest.get("cxx_command_count"),
-    "blocked_command_family_count": len(manifest.get("blocked_command_families", [])),
-    "required_benchmark_commands": expected,
-    "optional_benchmark_commands": manifest.get("benchmark_commands", {}).get("opt_in", []),
-    "hincrbyfloat_enabled": False,
-    "expected_benchmark_commands": expected,
-    "benchmark_commands": actual,
-    "expected_benchmark_command_count": len(expected),
-    "benchmark_command_count": len(commands),
-    "requests": requests,
-    "clients": clients,
-    "keyspace": keyspace,
-    "min_overall_qps_threshold": min_overall_qps,
-    "requests_per_second_overall_min": overall_min,
-    "requests_per_second_overall_max": max(c["requests_per_second_max"] for c in commands),
-    "requests_per_second_overall_avg": sum(c["requests_per_second_avg"] for c in commands) / len(commands),
-    "commands": commands,
-}
-(result_dir / "redis-benchmark-summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-BENCHPY
-    echo "PASS redis_benchmark_summary" | tee -a "${SUMMARY}"
-  fi
-  echo "PASS Redis compatibility smoke" | tee -a "${SUMMARY}"
-  echo "${RESULT_DIR}"
-  exit 0
-fi
+expect_eq command_count 0 COMMAND COUNT
 expect_eq set OK SET "$(k string)" v1
 expect_eq get v1 GET "$(k string)"
 expect_eq type_string string TYPE "$(k string)"
@@ -321,12 +170,6 @@ expect_eq hexists 1 HEXISTS "$(k hash)" f2
 expect_eq hlen 3 HLEN "$(k hash)"
 expect_eq hincrby_1 3 HINCRBY "$(k hash)" counter 3
 expect_eq hincrby_2 7 HINCRBY "$(k hash)" counter 4
-if [[ "${REDIS_EXPECT_HINCRBYFLOAT:-0}" == "1" ]]; then
-  expect_eq hincrbyfloat_1 1.5 HINCRBYFLOAT "$(k hash)" float 1.5
-  expect_eq hincrbyfloat_2 2 HINCRBYFLOAT "$(k hash)" float 0.5
-else
-  echo "SKIP hincrbyfloat: REDIS_EXPECT_HINCRBYFLOAT=${REDIS_EXPECT_HINCRBYFLOAT:-0}" | tee -a "${SUMMARY}"
-fi
 expect_contains_line hgetall_f1 f1 HGETALL "$(k hash)"
 expect_contains_line hgetall_v1 v1b HGETALL "$(k hash)"
 expect_contains_line hkeys_f1 f1 HKEYS "$(k hash)"
@@ -335,22 +178,10 @@ expect_contains_line hvals_v1 v1b HVALS "$(k hash)"
 expect_contains_line hvals_v2 v2 HVALS "$(k hash)"
 expect_eq hstrlen 3 HSTRLEN "$(k hash)" f1
 expect_eq hstrlen_missing 0 HSTRLEN "$(k hash)" nofield
-expect_contains_line hscan_cursor 0 HSCAN "$(k hash)" 0 MATCH f* COUNT 8
-expect_contains_line hscan_f1 f1 HSCAN "$(k hash)" 0 MATCH f* COUNT 8
-expect_contains_line hscan_v1 v1b HSCAN "$(k hash)" 0 MATCH f* COUNT 8
 expect_eq hdel 1 HDEL "$(k hash)" f1
 expect_eq hexists_after_hdel 0 HEXISTS "$(k hash)" f1
 expect_eq hmset OK HMSET "$(k hash2)" a 1 b 2
 expect_eq hmget_hmset $'1\n2' HMGET "$(k hash2)" a b
-
-if [[ "${REDIS_TEST_MODEL_COMMANDS}" == "1" ]]; then
-  expect_eq fappend OK FAPPEND "$(k feature)" 10 2
-  expect_eq fappend_policy 1 FAPPENDPOLICY "$(k feature)" 20 3 UPSERT
-  expect_eq fagg 5 FAGG "$(k feature)" 0 30 sum
-  expect_eq control_stateincr OK CONTROL_STATEINCR "$(k control_state)" 10 5
-  expect_eq control_statecount 5 CONTROL_STATECOUNT "$(k control_state)" 0 30
-fi
-if [[ "${REDIS_COMPAT_SURFACE}" == "full" ]]; then
 expect_eq sadd 2 SADD "$(k set)" a b a
 expect_eq sadd_other 3 SADD "$(k set2)" b c d
 expect_eq type_set set TYPE "$(k set)"
@@ -417,20 +248,11 @@ expect_eq zcard_after_zrem 1 ZCARD "$(k zset)"
 expect_eq zadd_pop 3 ZADD "$(k zpop)" 1 low 2 mid 3 high
 expect_eq zpopmin $'low\n1\nmid\n2' ZPOPMIN "$(k zpop)" 2
 expect_eq zpopmax $'high\n3' ZPOPMAX "$(k zpop)"
-
-else
-  echo "SKIP collection clone compatibility: REDIS_COMPAT_SURFACE=${REDIS_COMPAT_SURFACE}" | tee -a "${SUMMARY}"
-  if [[ "${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS}" == "1" ]]; then
-    expect_error unsupported_sadd_trimmed SADD "$(k set)" a
-    expect_error unsupported_lpush_trimmed LPUSH "$(k list)" a
-    expect_error unsupported_zadd_trimmed ZADD "$(k zset)" 1 a
-  fi
-fi
 expect_error unsupported_bgsave BGSAVE
 expect_error unsupported_flushall FLUSHALL
 expect_error unsupported_pslotinfo PSLOTINFO
-expect_error unsupported_config CONFIG GET maxmemory
 expect_error unsupported_scan SCAN 0
+expect_error unsupported_hscan HSCAN "$(k hash)" 0
 expect_error unsupported_sscan SSCAN "$(k set2)" 0
 expect_error unsupported_zscan ZSCAN "$(k zset)" 0
 expect_error unsupported_keys KEYS "*"
@@ -563,170 +385,14 @@ if [[ "${RUN_BENCH}" == "1" ]]; then
     echo "missing redis-benchmark; install redis-tools" >&2
     exit 2
   fi
-  bench_args=(-h "${REDIS_HOST}" -p "${REDIS_PORT}" -n "${BENCH_REQUESTS}" -c "${BENCH_CLIENTS}" --csv)
+  bench_args=(-h "${REDIS_HOST}" -p "${REDIS_PORT}" -n "${BENCH_REQUESTS}" -c "${BENCH_CLIENTS}" -t set,get --csv)
   if [[ -n "${REDIS_AUTH}" ]]; then
     bench_args+=(-a "${REDIS_AUTH}")
   fi
-
-  redis-benchmark "${bench_args[@]}" -t set,get \
+  redis-benchmark "${bench_args[@]}" \
     > "${RESULT_DIR}/redis-benchmark.csv" \
     2> "${RESULT_DIR}/redis-benchmark.err"
-  echo "PASS redis_benchmark_set_get" | tee -a "${SUMMARY}"
-
-  redis_cmd HSET "${KEY_PREFIX}:bench:hash" hit value >/dev/null
-  redis_cmd SET "${KEY_PREFIX}:bench:string" value >/dev/null
-
-  redis-benchmark "${bench_args[@]}" -r "${BENCH_KEYSPACE}" \
-    HSET "${KEY_PREFIX}:bench:hash" __rand_int__ value \
-    > "${RESULT_DIR}/redis-benchmark-hset.csv" \
-    2> "${RESULT_DIR}/redis-benchmark-hset.err"
-  echo "PASS redis_benchmark_hset" | tee -a "${SUMMARY}"
-
-  redis-benchmark "${bench_args[@]}" \
-    HGET "${KEY_PREFIX}:bench:hash" hit \
-    > "${RESULT_DIR}/redis-benchmark-hget.csv" \
-    2> "${RESULT_DIR}/redis-benchmark-hget.err"
-  echo "PASS redis_benchmark_hget" | tee -a "${SUMMARY}"
-
-  redis-benchmark "${bench_args[@]}" -r "${BENCH_KEYSPACE}" \
-    HINCRBY "${KEY_PREFIX}:bench:hash" counter:__rand_int__ 1 \
-    > "${RESULT_DIR}/redis-benchmark-hincrby.csv" \
-    2> "${RESULT_DIR}/redis-benchmark-hincrby.err"
-  echo "PASS redis_benchmark_hincrby" | tee -a "${SUMMARY}"
-
-  if [[ "${REDIS_EXPECT_HINCRBYFLOAT:-0}" == "1" ]]; then
-    redis-benchmark "${bench_args[@]}" -r "${BENCH_KEYSPACE}" \
-      HINCRBYFLOAT "${KEY_PREFIX}:bench:hash" float:__rand_int__ 1.5 \
-      > "${RESULT_DIR}/redis-benchmark-hincrbyfloat.csv" \
-      2> "${RESULT_DIR}/redis-benchmark-hincrbyfloat.err"
-    echo "PASS redis_benchmark_hincrbyfloat" | tee -a "${SUMMARY}"
-  else
-    echo "SKIP redis_benchmark_hincrbyfloat: REDIS_EXPECT_HINCRBYFLOAT=${REDIS_EXPECT_HINCRBYFLOAT:-0}" | tee -a "${SUMMARY}"
-  fi
-
-  redis-benchmark "${bench_args[@]}" -r "${BENCH_KEYSPACE}" \
-    INCR "${KEY_PREFIX}:bench:counter:__rand_int__" \
-    > "${RESULT_DIR}/redis-benchmark-incr.csv" \
-    2> "${RESULT_DIR}/redis-benchmark-incr.err"
-  echo "PASS redis_benchmark_incr" | tee -a "${SUMMARY}"
-
-  redis-benchmark "${bench_args[@]}" \
-    EXPIRE "${KEY_PREFIX}:bench:string" 60 \
-    > "${RESULT_DIR}/redis-benchmark-expire.csv" \
-    2> "${RESULT_DIR}/redis-benchmark-expire.err"
-  echo "PASS redis_benchmark_expire" | tee -a "${SUMMARY}"
-
-  python3 - "${RESULT_DIR}" "${BENCH_REQUESTS}" "${BENCH_CLIENTS}" "${BENCH_KEYSPACE}" "${REDIS_BENCH_MIN_OVERALL_QPS}" "${ROOT}/compat/redis_open_source_surface_manifest.json" <<'BENCHPY'
-import csv
-import hashlib
-import json
-import sys
-from pathlib import Path
-
-result_dir = Path(sys.argv[1])
-requests = int(sys.argv[2])
-clients = int(sys.argv[3])
-keyspace = int(sys.argv[4])
-min_overall_qps = float(sys.argv[5])
-manifest_path = Path(sys.argv[6])
-manifest_bytes = manifest_path.read_bytes()
-manifest = json.loads(manifest_bytes.decode("utf-8"))
-benchmark_manifest = manifest.get("benchmark_commands", {})
-required_benchmark_commands = benchmark_manifest.get("required", [])
-optional_benchmark_commands = benchmark_manifest.get("opt_in", [])
-artifacts = [
-    ("set_get", "redis-benchmark.csv"),
-    ("hset", "redis-benchmark-hset.csv"),
-    ("hget", "redis-benchmark-hget.csv"),
-    ("hincrby", "redis-benchmark-hincrby.csv"),
-    ("incr", "redis-benchmark-incr.csv"),
-    ("expire", "redis-benchmark-expire.csv"),
-]
-hincrbyfloat_path = result_dir / "redis-benchmark-hincrbyfloat.csv"
-if hincrbyfloat_path.exists():
-    artifacts.append(("hincrbyfloat", "redis-benchmark-hincrbyfloat.csv"))
-expected_benchmark_commands = list(required_benchmark_commands)
-if hincrbyfloat_path.exists():
-    expected_benchmark_commands.extend(optional_benchmark_commands)
-expected_benchmark_command_count = len(expected_benchmark_commands)
-
-commands = []
-for command, file_name in artifacts:
-    path = result_dir / file_name
-    rows = []
-    with path.open(newline="", encoding="utf-8") as source:
-        for row in csv.reader(source):
-            if len(row) >= 2:
-                rows.append(row)
-    if not rows:
-        raise SystemExit(f"benchmark artifact has no rows: {file_name}")
-    qps_values = []
-    for row in rows:
-        try:
-            qps_values.append(float(row[1]))
-        except ValueError:
-            pass
-    if not qps_values:
-        raise SystemExit(f"benchmark artifact has no numeric QPS: {file_name}")
-    commands.append(
-        {
-            "command": command,
-            "csv": file_name,
-            "row_count": len(rows),
-            "requests_per_second_min": min(qps_values),
-            "requests_per_second_max": max(qps_values),
-            "requests_per_second_avg": sum(qps_values) / len(qps_values),
-        }
-    )
-
-benchmark_commands = [command["command"] for command in commands]
-if benchmark_commands != expected_benchmark_commands:
-    raise SystemExit(
-        f"benchmark commands {benchmark_commands} do not match manifest expected {expected_benchmark_commands}"
-    )
-if len(commands) != expected_benchmark_command_count:
-    raise SystemExit(
-        f"benchmark command count {len(commands)} does not match manifest expected {expected_benchmark_command_count}"
-    )
-command_qps_mins = [command["requests_per_second_min"] for command in commands]
-command_qps_maxes = [command["requests_per_second_max"] for command in commands]
-command_qps_avgs = [command["requests_per_second_avg"] for command in commands]
-overall_min_qps = min(command_qps_mins)
-if min_overall_qps > 0 and overall_min_qps < min_overall_qps:
-    raise SystemExit(
-        f"trimmed Redis benchmark overall min QPS {overall_min_qps:.3f} below REDIS_BENCH_MIN_OVERALL_QPS={min_overall_qps:.3f}"
-    )
-
-summary = {
-    "schema": "temporalstore_trimmed_redis_benchmark_summary_v1",
-    "redis_surface_schema": manifest.get("schema"),
-    "redis_surface": manifest.get("surface"),
-    "redis_surface_manifest": str(manifest_path),
-    "redis_surface_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
-    "cxx_command_count": manifest.get("cxx_command_count"),
-    "blocked_command_family_count": len(manifest.get("blocked_command_families", [])),
-    "required_benchmark_commands": required_benchmark_commands,
-    "optional_benchmark_commands": optional_benchmark_commands,
-    "hincrbyfloat_enabled": hincrbyfloat_path.exists(),
-    "expected_benchmark_commands": expected_benchmark_commands,
-    "benchmark_commands": benchmark_commands,
-    "expected_benchmark_command_count": expected_benchmark_command_count,
-    "benchmark_command_count": len(commands),
-    "requests": requests,
-    "clients": clients,
-    "keyspace": keyspace,
-    "min_overall_qps_threshold": min_overall_qps,
-    "requests_per_second_overall_min": overall_min_qps,
-    "requests_per_second_overall_max": max(command_qps_maxes),
-    "requests_per_second_overall_avg": sum(command_qps_avgs) / len(command_qps_avgs),
-    "commands": commands,
-}
-(result_dir / "redis-benchmark-summary.json").write_text(
-    json.dumps(summary, indent=2, sort_keys=True) + "\n",
-    encoding="utf-8",
-)
-BENCHPY
-  echo "PASS redis_benchmark_summary" | tee -a "${SUMMARY}"
+  echo "PASS redis_benchmark" | tee -a "${SUMMARY}"
 fi
 
 echo "PASS Redis compatibility smoke" | tee -a "${SUMMARY}"

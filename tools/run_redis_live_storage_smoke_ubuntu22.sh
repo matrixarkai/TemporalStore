@@ -14,17 +14,6 @@ MS_RAFT_PORT="${MS_RAFT_PORT:-18110}"
 MS_SNAPSHOT_PORT="${MS_SNAPSHOT_PORT:-18120}"
 SERVER_PORT="${SERVER_PORT:-18101}"
 MAX_SLOT="${MAX_SLOT:-1073741823}"
-REDIS_COMPAT_SURFACE="${REDIS_COMPAT_SURFACE:-trimmed}"
-REDIS_SURFACE_MANIFEST_PATH="${REDIS_SURFACE_MANIFEST_PATH:-${ROOT}/compat/redis_open_source_surface_manifest.json}"
-REDIS_SURFACE_BLOCKED_FAMILY_COUNT="${REDIS_SURFACE_BLOCKED_FAMILY_COUNT:-$(python3 - "${REDIS_SURFACE_MANIFEST_PATH}" <<'PY'
-import json
-import sys
-with open(sys.argv[1], encoding="utf-8") as fh:
-    print(len(json.load(fh).get("blocked_command_families", [])))
-PY
-)}"
-REDIS_EXPECT_UNSUPPORTED_COLLECTIONS="${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS:-0}"
-REDIS_CXX_TRIMMED_COMMAND_COUNT="${REDIS_CXX_TRIMMED_COMMAND_COUNT:-16}"
 
 smoke_out="${SMOKE_DIR}.out"
 bin_dir="${SMOKE_DIR}.bin"
@@ -139,125 +128,6 @@ expect_error() {
   echo "PASS ${name}" | tee -a "${SUMMARY}"
 }
 
-expect_contains_line() {
-  local name="$1"
-  local expected_line="$2"
-  shift 2
-  local out
-  out="$(redis_cmd "$@" 2>"${RESULT_DIR}/${name}.err")"
-  printf '%s\n' "${out}" > "${RESULT_DIR}/${name}.out"
-  if ! printf '%s\n' "${out}" | grep -Fxq "${expected_line}"; then
-    echo "FAIL ${name}: missing line [${expected_line}]" | tee -a "${SUMMARY}"
-    exit 1
-  fi
-  echo "PASS ${name}" | tee -a "${SUMMARY}"
-}
-
-expect_contains_line info_surface redis_surface:trimmed_open_source_context_feature_control INFO stats
-expect_contains_line info_surface_schema redis_surface_schema:temporalstore_open_source_redis_surface_v1 INFO stats
-expect_contains_line info_surface_blocked_families redis_surface_blocked_command_family_count:${REDIS_SURFACE_BLOCKED_FAMILY_COUNT} INFO stats
-expect_eq command_count "${REDIS_CXX_TRIMMED_COMMAND_COUNT}" COMMAND COUNT
-
-if [[ "${REDIS_COMPAT_SURFACE}" == "trimmed" ]]; then
-  expect_eq ping PONG PING
-  expect_eq set OK SET rk rv
-  expect_eq get rv GET rk
-  expect_eq exists 1 EXISTS rk missing-key
-  expect_eq expire 1 EXPIRE rk 60
-  ttl_value="$(redis_cmd TTL rk)"
-  printf '%s\n' "${ttl_value}" > "${RESULT_DIR}/ttl.out"
-  if ! [[ "${ttl_value}" =~ ^[0-9]+$ ]] || [[ "${ttl_value}" -le 0 ]]; then
-    echo "FAIL ttl: expected positive TTL got [${ttl_value}]" | tee -a "${SUMMARY}"
-    exit 1
-  fi
-  echo "PASS ttl" | tee -a "${SUMMARY}"
-  expect_eq hset 2 HSET rh f1 v1 f2 v2
-  expect_eq hget v1 HGET rh f1
-  expect_eq hexists 1 HEXISTS rh f2
-  expect_eq hlen 2 HLEN rh
-  expect_contains_line hgetall_f1 f1 HGETALL rh
-  expect_eq hdel 1 HDEL rh f1
-  expect_eq del_existing 1 DEL rk
-
-  for blocked in ECHO QUIT CLIENT SELECT TYPE SETNX SETEX PSETEX GETSET GETDEL GETEX MGET MSET UNLINK PEXPIRE PTTL PERSIST APPEND STRLEN INCR INCRBY DECR DECRBY HMSET HSETNX HMGET HKEYS HVALS HSCAN HSTRLEN HINCRBY; do
-    expect_error "unsupported_${blocked,,}_trimmed" "${blocked}" rk x
-  done
-  expect_error unsupported_bgsave BGSAVE
-  expect_error unsupported_flushall FLUSHALL
-  expect_error unsupported_config CONFIG GET maxmemory
-  expect_error unsupported_scan SCAN 0
-  expect_error unsupported_keys KEYS "*"
-  expect_error unsupported_dbsize DBSIZE
-  expect_error unsupported_multi MULTI
-  expect_error unsupported_eval EVAL "return 1" 0
-  expect_error unsupported_xadd XADD rx "*" f v
-  if [[ "${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS}" == "1" ]]; then
-    expect_error unsupported_sadd_trimmed SADD rs a
-    expect_error unsupported_lpush_trimmed LPUSH rl a
-    expect_error unsupported_zadd_trimmed ZADD rz 1 a
-  fi
-
-  if [[ "${RUN_COMPAT_SMOKE:-1}" == "1" ]]; then
-    REDIS_HOST=127.0.0.1 \
-      REDIS_PORT="${SERVER_PORT}" \
-      RESULT_DIR="${RESULT_DIR}/compat" \
-      KEY_PREFIX="ts:redis:live:${CLUSTER_NAME}" \
-      REDIS_COMPAT_SURFACE="${REDIS_COMPAT_SURFACE}" \
-      REDIS_EXPECT_UNSUPPORTED_COLLECTIONS="${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS}" \
-      RUN_BENCH="${RUN_BENCH:-0}" \
-      BENCH_REQUESTS="${BENCH_REQUESTS:-1000}" \
-      BENCH_CLIENTS="${BENCH_CLIENTS:-8}" \
-      BENCH_KEYSPACE="${BENCH_KEYSPACE:-100000}" \
-      REDIS_BENCH_MIN_OVERALL_QPS="${REDIS_BENCH_MIN_OVERALL_QPS:-0}" \
-      bash "${ROOT}/tools/run_redis_compat_smoke_ubuntu22.sh"
-  fi
-
-  python3 - "${RESULT_DIR}" "${REDIS_COMPAT_SURFACE}" "${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS}" "${REDIS_CXX_TRIMMED_COMMAND_COUNT}" "${REDIS_SURFACE_MANIFEST_PATH}" <<'LIVESUMMARYPY'
-import hashlib, json, sys
-from pathlib import Path
-result_dir = Path(sys.argv[1]); compat_surface = sys.argv[2]
-unsupported_collections_expected = sys.argv[3] == "1"; expected_command_count = int(sys.argv[4])
-manifest_path = Path(sys.argv[5]); manifest_bytes = manifest_path.read_bytes()
-manifest = json.loads(manifest_bytes.decode("utf-8"))
-for name, expected in {
-    "info_surface": "redis_surface:trimmed_open_source_context_feature_control",
-    "info_surface_schema": "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
-    "info_surface_blocked_families": f"redis_surface_blocked_command_family_count:{len(manifest.get('blocked_command_families', []))}",
-}.items():
-    out_path = result_dir / f"{name}.out"
-    if expected not in out_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        raise SystemExit(f"Redis live smoke output {out_path} missing expected line {expected!r}")
-command_count = int((result_dir / "command_count.out").read_text(encoding="utf-8").strip())
-if command_count != expected_command_count:
-    raise SystemExit(f"Redis live smoke command count {command_count} != expected {expected_command_count}")
-unsupported_outputs = []
-if unsupported_collections_expected:
-    for name in ("unsupported_sadd_trimmed", "unsupported_lpush_trimmed", "unsupported_zadd_trimmed"):
-        out_path = result_dir / f"{name}.out"
-        if not out_path.exists():
-            raise SystemExit(f"missing unsupported collection proof: {out_path}")
-        unsupported_outputs.append(str(out_path))
-compat_dir = result_dir / "compat"; benchmark_summary = compat_dir / "redis-benchmark-summary.json"
-summary = {
-    "schema": "temporalstore_trimmed_redis_live_storage_smoke_summary_v1",
-    "redis_surface": manifest.get("surface"),
-    "redis_surface_schema": manifest.get("schema"),
-    "redis_surface_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
-    "compat_surface": compat_surface,
-    "command_count": command_count,
-    "expected_command_count": expected_command_count,
-    "blocked_command_family_count": len(manifest.get("blocked_command_families", [])),
-    "unsupported_collections_expected": unsupported_collections_expected,
-    "unsupported_collection_outputs": unsupported_outputs,
-    "compat_summary": str(compat_dir / "summary.txt") if (compat_dir / "summary.txt").exists() else None,
-    "benchmark_summary": str(benchmark_summary) if benchmark_summary.exists() else None,
-}
-(result_dir / "redis-live-storage-smoke-summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-LIVESUMMARYPY
-  echo "PASS Redis live storage smoke" | tee -a "${SUMMARY}"
-  echo "${RESULT_DIR}"
-  exit 0
-fi
 expect_eq ping PONG PING
 expect_eq set OK SET rk rv
 expect_eq get rv GET rk
@@ -313,16 +183,7 @@ expect_eq hmget_missing $'v1b\n\nv2' HMGET rh f1 nofield f2
 expect_eq hexists 1 HEXISTS rh f2
 expect_eq hlen 2 HLEN rh
 expect_eq hincrby 5 HINCRBY rh counter 5
-if [[ "${REDIS_EXPECT_HINCRBYFLOAT:-0}" == "1" ]]; then
-  expect_eq hincrbyfloat_1 1.5 HINCRBYFLOAT rh float 1.5
-  expect_eq hincrbyfloat_2 2 HINCRBYFLOAT rh float 0.5
-  expect_eq hscan_f_fields $'0\nf1\nv1b\nf2\nv2\nfloat\n2' HSCAN rh 0 MATCH f* COUNT 8
-else
-  echo "SKIP hincrbyfloat: REDIS_EXPECT_HINCRBYFLOAT=${REDIS_EXPECT_HINCRBYFLOAT:-0}" | tee -a "${SUMMARY}"
-  expect_eq hscan_f_fields $'0\nf1\nv1b\nf2\nv2' HSCAN rh 0 MATCH f* COUNT 8
-fi
 expect_eq hdel 1 HDEL rh f1
-if [[ "${REDIS_COMPAT_SURFACE}" == "full" ]]; then
 expect_eq sadd 2 SADD rs a b a
 expect_eq scard 2 SCARD rs
 expect_eq sismember_present 1 SISMEMBER rs a
@@ -351,103 +212,21 @@ expect_eq zrangebyscore $'carol\nbob' ZRANGEBYSCORE rz 1.1 3
 expect_eq zcount 2 ZCOUNT rz 1.1 3
 expect_eq zrem 1 ZREM rz carol missing
 expect_eq zcard_after_zrem 2 ZCARD rz
-
-else
-  echo "SKIP live collection clone compatibility: REDIS_COMPAT_SURFACE=${REDIS_COMPAT_SURFACE}" | tee -a "${SUMMARY}"
-  if [[ "${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS}" == "1" ]]; then
-    expect_error unsupported_sadd_trimmed SADD rs a
-    expect_error unsupported_lpush_trimmed LPUSH rl a
-    expect_error unsupported_zadd_trimmed ZADD rz 1 a
-  fi
-fi
 expect_error unsupported_bgsave BGSAVE
 expect_error unsupported_flushall FLUSHALL
 expect_error unsupported_pslotinfo PSLOTINFO
-expect_error unsupported_config CONFIG GET maxmemory
 expect_error unsupported_scan SCAN 0
-expect_error unsupported_sscan SSCAN rs 0
-expect_error unsupported_zscan ZSCAN rz 0
-expect_error unsupported_keys KEYS "*"
-expect_error unsupported_dbsize DBSIZE
 expect_error unsupported_multi MULTI
 expect_error unsupported_eval EVAL "return 1" 0
-expect_error unsupported_evalsha EVALSHA abcdef 0
 expect_error unsupported_xadd XADD rx "*" f v
-expect_error unsupported_xgroup XGROUP CREATE rx g "$"
 
 if [[ "${RUN_COMPAT_SMOKE:-1}" == "1" ]]; then
   REDIS_HOST=127.0.0.1 \
     REDIS_PORT="${SERVER_PORT}" \
     RESULT_DIR="${RESULT_DIR}/compat" \
     KEY_PREFIX="ts:redis:live:${CLUSTER_NAME}" \
-    REDIS_COMPAT_SURFACE="${REDIS_COMPAT_SURFACE}" \
-    REDIS_EXPECT_UNSUPPORTED_COLLECTIONS="${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS}" \
     bash "${ROOT}/tools/run_redis_compat_smoke_ubuntu22.sh"
 fi
-
-python3 - "${RESULT_DIR}" "${REDIS_COMPAT_SURFACE}" "${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS}" "${REDIS_CXX_TRIMMED_COMMAND_COUNT}" "${REDIS_SURFACE_MANIFEST_PATH}" <<'LIVESUMMARYPY'
-import hashlib
-import json
-import sys
-from pathlib import Path
-
-result_dir = Path(sys.argv[1])
-compat_surface = sys.argv[2]
-unsupported_collections_expected = sys.argv[3] == "1"
-expected_command_count = int(sys.argv[4])
-manifest_path = Path(sys.argv[5])
-manifest_bytes = manifest_path.read_bytes()
-manifest = json.loads(manifest_bytes.decode("utf-8"))
-
-required_outputs = {
-    "info_surface": "redis_surface:trimmed_open_source_context_feature_control",
-    "info_surface_schema": "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
-    "info_surface_blocked_families": f"redis_surface_blocked_command_family_count:{len(manifest.get('blocked_command_families', []))}",
-}
-for name, expected in required_outputs.items():
-    out_path = result_dir / f"{name}.out"
-    if not out_path.exists():
-        raise SystemExit(f"missing Redis live smoke output: {out_path}")
-    if expected not in out_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        raise SystemExit(f"Redis live smoke output {out_path} missing expected line {expected!r}")
-
-command_count_path = result_dir / "command_count.out"
-if not command_count_path.exists():
-    raise SystemExit(f"missing Redis live smoke command count output: {command_count_path}")
-command_count = int(command_count_path.read_text(encoding="utf-8").strip())
-if command_count != expected_command_count:
-    raise SystemExit(f"Redis live smoke command count {command_count} != expected {expected_command_count}")
-
-unsupported_outputs = []
-if unsupported_collections_expected:
-    for name in ("unsupported_sadd_trimmed", "unsupported_lpush_trimmed", "unsupported_zadd_trimmed"):
-        out_path = result_dir / f"{name}.out"
-        if not out_path.exists():
-            raise SystemExit(f"missing unsupported collection proof: {out_path}")
-        unsupported_outputs.append(str(out_path))
-
-compat_dir = result_dir / "compat"
-compat_summary = compat_dir / "summary.txt"
-benchmark_summary = compat_dir / "redis-benchmark-summary.json"
-summary = {
-    "schema": "temporalstore_trimmed_redis_live_storage_smoke_summary_v1",
-    "redis_surface": manifest.get("surface"),
-    "redis_surface_schema": manifest.get("schema"),
-    "redis_surface_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
-    "compat_surface": compat_surface,
-    "command_count": command_count,
-    "expected_command_count": expected_command_count,
-    "blocked_command_family_count": len(manifest.get("blocked_command_families", [])),
-    "unsupported_collections_expected": unsupported_collections_expected,
-    "unsupported_collection_outputs": unsupported_outputs,
-    "compat_summary": str(compat_summary) if compat_summary.exists() else None,
-    "benchmark_summary": str(benchmark_summary) if benchmark_summary.exists() else None,
-}
-(result_dir / "redis-live-storage-smoke-summary.json").write_text(
-    json.dumps(summary, indent=2, sort_keys=True) + "\n",
-    encoding="utf-8",
-)
-LIVESUMMARYPY
 
 echo "PASS Redis live storage smoke" | tee -a "${SUMMARY}"
 echo "${RESULT_DIR}"

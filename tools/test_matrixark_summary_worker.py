@@ -9,7 +9,6 @@ import unittest
 from pathlib import Path
 
 import matrixark_mcp_server as mcp
-import matrixark_mcp_summary_runtime as summary_runtime
 
 
 class MatrixArkSummaryWorkerTest(unittest.TestCase):
@@ -74,9 +73,9 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
         self.addCleanup(lambda: os.environ.__setitem__("MATRIXARK_SUMMARY_PROVIDER", old_provider) if old_provider is not None else os.environ.pop("MATRIXARK_SUMMARY_PROVIDER", None))
         self.addCleanup(lambda: os.environ.__setitem__("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", old_require) if old_require is not None else os.environ.pop("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", None))
 
-        summary_globals = summary_runtime.synthesize_context_node_summary.__globals__
-        old_call = summary_globals.get("openai_compatible_json_call")
-        self.addCleanup(lambda: summary_globals.__setitem__("openai_compatible_json_call", old_call) if old_call is not None else summary_globals.pop("openai_compatible_json_call", None))
+        summary_globals = mcp.synthesize_context_node_summary.__globals__
+        old_call = summary_globals["openai_compatible_json_call"]
+        self.addCleanup(lambda: summary_globals.__setitem__("openai_compatible_json_call", old_call))
 
         def fake_json_call(*, system: str, user: str, model: str | None = None, max_tokens: int | None = None) -> dict:
             payload = json.loads(user)
@@ -112,11 +111,11 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
             os.environ["MATRIXARK_REQUIRE_OSS_UNDERSTANDING"] = "1"
             adapter.refresh_summaries({"scope": scope, "force": True})
             summaries = [record for record in adapter.read_all() if record.get("record_type") == "context_summary"]
-            self.assertTrue(summaries)
-            self.assertTrue(any(str(record.get("summary_text", "")).startswith("OSS node_") for record in summaries))
-            for record in summaries:
-                policy = record.get("summary_generation_policy", {})
-                provider = policy.get("summary_provider") or policy
+            l1 = [record for record in summaries if record.get("summary_type") == "node_l1"]
+            self.assertTrue(l1)
+            self.assertTrue(any(str(record.get("summary_text", "")).startswith("OSS node_l1 synthesis") for record in l1))
+            for record in l1:
+                provider = record.get("summary_generation_policy", {}).get("summary_provider", {})
                 self.assertEqual("openai_compatible", provider.get("provider"))
                 self.assertEqual("llm_json", provider.get("execution_mode"))
                 self.assertFalse(provider.get("fallback_used"))

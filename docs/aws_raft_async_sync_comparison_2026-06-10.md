@@ -138,7 +138,7 @@ The post-failover write p99 has one high tail sample and needs more repeated run
 
 ## Current Conclusions
 
-Shared-store async is the fastest write mode in this small AWS shape. It is the right mode for streaming/control_state/feature workloads that can tolerate bounded data loss on a primary crash or can replay from upstream.
+Shared-store async is the fastest write mode in this small AWS shape. It is the right mode for streaming/risk/feature workloads that can tolerate bounded data loss on a primary crash or can replay from upstream.
 
 Shared-store sync is durable through EFS but write throughput is limited by synchronous shared-storage latency. It is safer for batch-loaded data that cannot be easily replayed.
 

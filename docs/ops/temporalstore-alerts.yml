@@ -30,7 +30,7 @@ groups:
           summary: TemporalStore Raft group lost majority
           description: "Raft group {{ $labels.kind }} lost voting majority. Stop writes, inspect node liveness, and follow the split-brain section of docs/ops/temporalstore-fault-runbook.md."
 
-      - alert: TemporalStoreRaftSplitBrainControlState
+      - alert: TemporalStoreRaftSplitBrainRisk
         expr: count by (kind) (temporalstore_raft_node_commit_index{role="leader"}) > 1
         for: 30s
         labels:

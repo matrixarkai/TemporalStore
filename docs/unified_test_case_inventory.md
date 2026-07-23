@@ -156,9 +156,9 @@ C++ execution should progressively cover every executable case.
 | `sequence_cpp_feature_rows` | Sequence rows in the C++ feature-row shape. |
 | `ips_options_range` | IPS add/query with action/table/request metadata. |
 | `ips_snapshot_stat_filter_batch` | IPS load, batch-last grouping, snapshot, metadata filter, stats, and snapshot-report behavior. |
-| `control_state_counter_window` | ControlState increment/count over a timestamp window. |
-| `control_state_family_query_and_delete` | ControlState family set/query plus common delete cleanup. |
-| `control_state_manager_debug_fol` | ControlState set-and-get, first/last FOL selection, manager summary, and debug window report behavior. |
+| `risk_counter_window` | Risk increment/count over a timestamp window. |
+| `risk_family_query_and_delete` | Risk family set/query plus common delete cleanup. |
+| `risk_manager_debug_fol` | Risk set-and-get, first/last FOL selection, manager summary, and debug window report behavior. |
 | `context_node_roundtrip` | Context node upsert/read. |
 | `context_event_index_audit_dirty_models` | Context event, secondary index, prompt-pack audit, dirty-summary models, C++ model IDs 9-13, timeline fanout, and validation limits. |
 | `common_restart_persistence` | String/hash restart-read persistence. |
@@ -253,7 +253,7 @@ ObjectManager/SlotStore runtime authority modules are covered by
 `storage_model_layout_compaction_policies`, `storage_merged_dump_load_lifecycle`,
 `storage_object_manager_cold_hot_reload`, `storage_page_address_disk_cache_shared_store_fallback`,
 `storage_stale_page_density_compaction`, `storage_merged_dump_load_restart_interruption`,
-`storage_gc_eviction_cold_reads`, and `storage_control_state_context_page_backed_parity`.
+`storage_gc_eviction_cold_reads`, and `storage_risk_context_page_backed_parity`.
 
 StorageManager runtime and lifecycle gap cases include
 `storage_manager_continuous_background_runtime`, `storage_manager_real_pressure_signals`,
@@ -459,7 +459,7 @@ split into:
 | Storage/cache/local durability | Recovery, dump/load, cache refill, corruption outcomes, shared-store replay. | Page-store helper units, cache data-structure mechanics, serializer internals. |
 | Control plane/service behavior | Client/proxy/meta/data-node topology, lifecycle, admission, retry, convergence workflows. | Runtime worker handle units, local mock plumbing, adapter-only details. |
 | Raft/local consensus model | Log codec, snapshot, membership, failover, read-index, catch-up semantics. | Temporary Rust-local consensus scaffolding until production Raft lands. |
-| API/model/ingestion/context/SDK | Redis/API behavior, Feature/Sequence/IPS/ControlState/Context, ingestion offsets/checkpoints/dead letters. | Rust SDK conversion helpers and provider mocks without cross-language behavior. |
+| API/model/ingestion/context/SDK | Redis/API behavior, Feature/Sequence/IPS/Risk/Context, ingestion offsets/checkpoints/dead letters. | Rust SDK conversion helpers and provider mocks without cross-language behavior. |
 | Storage crash harness | Crash/restart/corrupt artifact outcomes. | Harness plumbing needed only to drive Rust-local faults. |
 | Other local tests | Readiness output, external chaos, replica replay, scale/fault logs. | CLI parsing and local fixture setup. |
 
@@ -470,7 +470,7 @@ Those should follow the same rule:
 
 | C++-local bucket | Move into shared corpus | Keep C++-specific |
 | --- | --- | --- |
-| Product/API smoke tests | Redis/API command behavior, Feature/Sequence/IPS/ControlState/Context behavior, lifecycle workflows. | legacy C++ wire service glue and C++ fixture setup. |
+| Product/API smoke tests | Redis/API command behavior, Feature/Sequence/IPS/Risk/Context behavior, lifecycle workflows. | legacy C++ wire service glue and C++ fixture setup. |
 | Storage tests | Logical recovery, dump/load, compaction, GC, corruption, shared-store replay. | C++ object lifetime, allocator, and storage class ownership units. |
 | Raft tests | Log/snapshot/membership/failover behavior and durability outcomes. | rustraft integration wiring and C++ transport internals. |
 | Scale/performance gates | Shared workload traces and SLO result formats. | Platform-specific packaging or benchmark harness mechanics. |

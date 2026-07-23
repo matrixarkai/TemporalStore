@@ -276,21 +276,21 @@ fn context_relevance_ranks_qa_synonyms_and_phrases() {
         )
     );
 
-    let updated_control_state_score =
-            "Latest fraud review: the checkout control_state score was updated to 87 after the payment incident escalated.";
-    let stale_control_state_score =
-            "Earlier fraud review: the checkout control_state score was 42 before the payment incident escalated.";
+    let updated_risk_score =
+            "Latest fraud review: the checkout risk score was updated to 87 after the payment incident escalated.";
+    let stale_risk_score =
+            "Earlier fraud review: the checkout risk score was 42 before the payment incident escalated.";
     assert!(context_query_matches(
-        "What control_state score was recorded after the latest fraud review?",
-        updated_control_state_score
+        "What risk score was recorded after the latest fraud review?",
+        updated_risk_score
     ));
     assert!(
         context_relevance_score(
-            "What control_state score was recorded after the latest fraud review?",
-            updated_control_state_score
+            "What risk score was recorded after the latest fraud review?",
+            updated_risk_score
         ) > context_relevance_score(
-            "What control_state score was recorded after the latest fraud review?",
-            stale_control_state_score
+            "What risk score was recorded after the latest fraud review?",
+            stale_risk_score
         )
     );
 
@@ -376,7 +376,7 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
             source_kind: ContextSourceKind::Incident,
             source_id: "INC-1".to_string(),
             title: "Checkout incident".to_string(),
-            body: "Customer checkout failed. Payment control_state score spiked.".to_string(),
+            body: "Customer checkout failed. Payment risk score spiked.".to_string(),
             timestamp_ms: 1_000,
             provider: ContextModelProviderConfig::default(),
         },
@@ -491,7 +491,7 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
                 current_agent_scope_key: "agent:codex".to_string(),
                 provider: ContextModelProviderConfig::default(),
             },
-            prompt: "Explain current control_state.".to_string(),
+            prompt: "Explain current risk.".to_string(),
             session_hash: 7,
             query_id: "q1".to_string(),
             max_prompt_tokens: 128,
@@ -514,9 +514,9 @@ fn context_query_debug_reports_filter_groups_drops_and_injection_order() {
             tenant_hash: 4242,
             source_kind: ContextSourceKind::Incident,
             source_id: "INC-payment-1".to_string(),
-            title: "Payment control_state incident".to_string(),
+            title: "Payment risk incident".to_string(),
             body:
-                "Latest checkout update: payment control_state score moved to 87 after the gateway timeout."
+                "Latest checkout update: payment risk score moved to 87 after the gateway timeout."
                     .to_string(),
             timestamp_ms: 10_000,
             provider: ContextModelProviderConfig::default(),
@@ -545,7 +545,7 @@ fn context_query_debug_reports_filter_groups_drops_and_injection_order() {
             shard_id: 1,
             tenant_hash: 4242,
             node_hashes: vec![relevant.node.node_hash, unrelated.node.node_hash],
-            query: "What is the latest checkout payment control_state score?".to_string(),
+            query: "What is the latest checkout payment risk score?".to_string(),
             start_time_ms: 0,
             end_time_ms: 20_000,
             max_events: 8,
@@ -634,8 +634,8 @@ fn context_retrieval_limits_namespace_fanout_with_summary_and_locality_plan() {
     let mut node_hashes = Vec::new();
     for (index, (title, body)) in [
         (
-            "Checkout payment control_state",
-            "Checkout payment control_state score is 91 after the payment gateway timeout.",
+            "Checkout payment risk",
+            "Checkout payment risk score is 91 after the payment gateway timeout.",
         ),
         (
             "Gardening preference",
@@ -680,7 +680,7 @@ fn context_retrieval_limits_namespace_fanout_with_summary_and_locality_plan() {
             shard_id: 1,
             tenant_hash,
             node_hashes: node_hashes.clone(),
-            query: "checkout payment control_state score".to_string(),
+            query: "checkout payment risk score".to_string(),
             start_time_ms: 0,
             end_time_ms: 20_000,
             max_events: 8,
@@ -1496,7 +1496,7 @@ fn context_workflow_policy_rejects_disallowed_runtime_controls() {
             shard_id: 1,
             tenant_hash: 0,
             node_hashes: vec![1],
-            query: "control_state".to_string(),
+            query: "risk".to_string(),
             start_time_ms: 0,
             end_time_ms: 10,
             max_events: 8,
@@ -1577,7 +1577,7 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
                 serde_json::json!({
                     "choices": [{
                         "message": {
-                            "content": "{\"l0\":\"live checkout incident\",\"l1\":\"kind=Incident; live facts=payment control_state; customer impact\"}"
+                            "content": "{\"l0\":\"live checkout incident\",\"l1\":\"kind=Incident; live facts=payment risk; customer impact\"}"
                         }
                     }]
                 })
@@ -1630,7 +1630,7 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
     );
     assert!(report.status.ok, "{}", report.status.message);
     assert_eq!(report.l0, "live checkout incident");
-    assert!(report.l1.contains("payment control_state"));
+    assert!(report.l1.contains("payment risk"));
     assert_eq!(report.provider.provider_name, "live-test");
     assert_eq!(report.embedding_generation.provider_name, "live-test");
     assert_eq!(
@@ -1705,7 +1705,7 @@ fn context_resource_parser_spills_large_resource_body_to_object_store_ref() {
     assert!(!report.inline_payload);
     assert!(report
         .external_object_uri
-        .starts_with("matrixobject://matrixark/resources/"));
+        .starts_with("objectstore://matrixark/resources/"));
     assert_eq!(
         report.lifecycle.external_object_uri,
         report.external_object_uri
@@ -1715,7 +1715,7 @@ fn context_resource_parser_spills_large_resource_body_to_object_store_ref() {
         report.payload_size_bytes
     );
     assert!(report.chunks.iter().all(|chunk| {
-        chunk.metadata.get("storage_backend").map(String::as_str) == Some("matrixobject")
+        chunk.metadata.get("storage_backend").map(String::as_str) == Some("objectstore")
             && chunk.metadata.get("storage_value_mode").map(String::as_str)
                 == Some("object_ref_json")
             && chunk.metadata.get("external_object_uri") == Some(&report.external_object_uri)
@@ -2069,7 +2069,7 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
             ],
             skills: vec![ContextSkillIngestInput {
                 raw_uri: "skills/payment-incident/SKILL.md".to_string(),
-                text: "---\nname: payment-incident\ndescription: Debug payment incident context.\nprecedence: high\nowner_scope: team:payments\nallowed_tools: [context_workflow_harness]\ntriggers: [payment, checkout, latency]\n---\n\n# Payment Incident\n\n## When To Use\n\nUse when checkout latency or payment control_state spikes.\n"
+                text: "---\nname: payment-incident\ndescription: Debug payment incident context.\nprecedence: high\nowner_scope: team:payments\nallowed_tools: [context_workflow_harness]\ntriggers: [payment, checkout, latency]\n---\n\n# Payment Incident\n\n## When To Use\n\nUse when checkout latency or payment risk spikes.\n"
                     .to_string(),
             }],
             query: "payment dependency rollback p95 latency".to_string(),

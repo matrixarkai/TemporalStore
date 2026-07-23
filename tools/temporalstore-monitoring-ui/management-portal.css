@@ -2312,7 +2312,8 @@ a {
 
 .portal-action-grid pre,
 #portal-request,
-#portal-row-details {
+#portal-row-details,
+#hook-query-details {
   max-height: 360px;
   overflow: auto;
   margin: 0;
@@ -2337,6 +2338,43 @@ a {
   padding: 0 10px;
   background: var(--panel);
   color: var(--accent);
+}
+
+.hook-query-controls {
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+}
+
+.portal-hook-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.portal-hook-summary article {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.portal-hook-summary span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.portal-hook-summary strong {
+  display: block;
+  margin: 5px 0;
+  font-size: 22px;
+}
+
+.portal-hook-summary small {
+  display: block;
+  overflow-wrap: anywhere;
 }
 
 .portal-topology-tree {
