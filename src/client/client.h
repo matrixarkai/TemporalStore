@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "common/status.h"
-#include "extension/control_state/interface.pb.h"
+#include "extension/risk/interface.pb.h"
 #include "protocol/server.pb.h"
 
 namespace bcache2 {
@@ -22,20 +22,20 @@ enum class LogLevel {
     kFatal,
 };
 
-typedef bcache2::control_state::HsetRequest ControlStateHsetRequest;
-typedef bcache2::control_state::HsetResponse ControlStateHsetResponse;
-typedef bcache2::control_state::HqueryRequest ControlStateHqueryRequest;
-typedef bcache2::control_state::HqueryResponse ControlStateHqueryResponse;
-typedef bcache2::control_state::FolSetRequest ControlStateFolSetRequest;
-typedef bcache2::control_state::FolSetResponse ControlStateFolSetResponse;
-typedef bcache2::control_state::FolQueryRequest ControlStateFolQueryRequest;
-typedef bcache2::control_state::FolQueryResponse ControlStateFolQueryResponse;
-typedef bcache2::control_state::CPCSetRequest ControlStateCPCSetRequest;
-typedef bcache2::control_state::CPCSetResponse ControlStateCPCSetResponse;
-typedef bcache2::control_state::CPCQueryRequest ControlStateCPCQueryRequest;
-typedef bcache2::control_state::CPCQueryResponse ControlStateCPCQueryResponse;
-typedef bcache2::control_state::ManagerRequest ControlStateManagerRequest;
-typedef bcache2::control_state::ManagerResponse ControlStateManagerResponse;
+typedef bcache2::risk::HsetRequest RiskHsetRequest;
+typedef bcache2::risk::HsetResponse RiskHsetResponse;
+typedef bcache2::risk::HqueryRequest RiskHqueryRequest;
+typedef bcache2::risk::HqueryResponse RiskHqueryResponse;
+typedef bcache2::risk::FolSetRequest RiskFolSetRequest;
+typedef bcache2::risk::FolSetResponse RiskFolSetResponse;
+typedef bcache2::risk::FolQueryRequest RiskFolQueryRequest;
+typedef bcache2::risk::FolQueryResponse RiskFolQueryResponse;
+typedef bcache2::risk::CPCSetRequest RiskCPCSetRequest;
+typedef bcache2::risk::CPCSetResponse RiskCPCSetResponse;
+typedef bcache2::risk::CPCQueryRequest RiskCPCQueryRequest;
+typedef bcache2::risk::CPCQueryResponse RiskCPCQueryResponse;
+typedef bcache2::risk::ManagerRequest RiskManagerRequest;
+typedef bcache2::risk::ManagerResponse RiskManagerResponse;
 
 class Pipeline;
 
@@ -105,23 +105,23 @@ class Table {
     Status HDel(const std::string& key, const std::string& field);
     /*
     以下命令为：字节电商平台治理相关的操作命令
-    ControlState写入命令,用于DC, COUNT, SUM,MIN,MAX操作所对应的写入
+    Risk写入命令,用于DC, COUNT, SUM,MIN,MAX操作所对应的写入
     */
-    Status ControlStateHset(const ControlStateHsetRequest& req, ControlStateHsetResponse* resp);
-    virtual Status ControlStateHset(const ControlStateHsetRequest& req, ControlStateHsetResponse* resp,
+    Status RiskHset(const RiskHsetRequest& req, RiskHsetResponse* resp);
+    virtual Status RiskHset(const RiskHsetRequest& req, RiskHsetResponse* resp,
                             const RequestOptions& option) = 0;
     // First OR Last操作对应的写入命令
-    Status ControlStateFolSet(const ControlStateFolSetRequest& req, ControlStateFolSetResponse* resp);
-    virtual Status ControlStateFolSet(const ControlStateFolSetRequest& req, ControlStateFolSetResponse* resp,
+    Status RiskFolSet(const RiskFolSetRequest& req, RiskFolSetResponse* resp);
+    virtual Status RiskFolSet(const RiskFolSetRequest& req, RiskFolSetResponse* resp,
                               const RequestOptions& option) = 0;
 
-    // ControlStateDC查询命令,用于DC,COUNT,SUM,MIN,MAX操作
-    Status ControlStateHquery(const ControlStateHqueryRequest& req, ControlStateHqueryResponse* resp);
-    virtual Status ControlStateHquery(const ControlStateHqueryRequest& req, ControlStateHqueryResponse* resp,
+    // RiskDC查询命令,用于DC,COUNT,SUM,MIN,MAX操作
+    Status RiskHquery(const RiskHqueryRequest& req, RiskHqueryResponse* resp);
+    virtual Status RiskHquery(const RiskHqueryRequest& req, RiskHqueryResponse* resp,
                               const RequestOptions& option) = 0;
     // First OR Last操作对应的查询命令
-    Status ControlStateFolQuery(const ControlStateFolQueryRequest& req, ControlStateFolQueryResponse* resp);
-    virtual Status ControlStateFolQuery(const ControlStateFolQueryRequest& req, ControlStateFolQueryResponse* resp,
+    Status RiskFolQuery(const RiskFolQueryRequest& req, RiskFolQueryResponse* resp);
+    virtual Status RiskFolQuery(const RiskFolQueryRequest& req, RiskFolQueryResponse* resp,
                                 const RequestOptions& option) = 0;
 };
 

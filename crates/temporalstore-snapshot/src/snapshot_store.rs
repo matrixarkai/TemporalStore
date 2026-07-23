@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
-use tokio::io::AsyncReadExt;
-use tokio::task::JoinSet;
+use tokio::io::AsyncWriteExt;
 
 use crate::metrics::SnapshotMetrics;
 use crate::object_store::{ObjectStore, ObjectStoreError};
@@ -267,8 +266,14 @@ where
     ) -> Result<SnapshotRef, SnapshotStoreError> {
         let started = Instant::now();
         let stable_prefix = snapshot.manifest.stable_prefix();
-        let result =
-            upload_snapshot_inner(Arc::clone(&self.object_store), &snapshot, &stable_prefix).await;
+        let temp_prefix = format!("{stable_prefix}.tmp-{}/", uuid::Uuid::new_v4());
+        let result = upload_snapshot_inner(
+            self.object_store.as_ref(),
+            &snapshot,
+            &stable_prefix,
+            &temp_prefix,
+        )
+        .await;
 
         match result {
             Ok(snapshot_ref) => {
@@ -287,8 +292,7 @@ where
                 Ok(snapshot_ref)
             }
             Err(err) => {
-                let _ =
-                    delete_prefix_concurrent(Arc::clone(&self.object_store), &stable_prefix).await;
+                let _ = delete_prefix(self.object_store.as_ref(), &temp_prefix).await;
                 if let Some(metrics) = &self.metrics {
                     metrics.observe_upload(
                         snapshot.manifest.shard_id,
@@ -309,8 +313,7 @@ where
     ) -> Result<LocalSnapshot, SnapshotStoreError> {
         let started = Instant::now();
         let result =
-            download_snapshot_inner(Arc::clone(&self.object_store), snapshot_ref, destination)
-                .await;
+            download_snapshot_inner(self.object_store.as_ref(), snapshot_ref, destination).await;
         if let Some(metrics) = &self.metrics {
             metrics.observe_download(
                 snapshot_ref.shard_id,
@@ -331,15 +334,23 @@ where
     ) -> Result<Vec<SnapshotRef>, SnapshotStoreError> {
         let prefix = self.snapshot_prefix(shard_id);
         let keys = self.object_store.list(&prefix).await?;
-        let mut snapshots =
-            list_snapshot_refs_concurrent(Arc::clone(&self.object_store), keys).await?;
+        let mut snapshots = Vec::new();
+        for key in keys {
+            if !key.ends_with(MANIFEST) || key.contains("/.tmp-") {
+                continue;
+            }
+            let manifest_bytes = self.object_store.get(&key).await?;
+            let manifest: SnapshotManifest = serde_json::from_slice(&manifest_bytes)?;
+            snapshots
+                .push(snapshot_ref_from_manifest(self.object_store.as_ref(), &manifest).await?);
+        }
         snapshots.sort_by_key(|s| (s.last_log_index, s.created_at));
         Ok(snapshots)
     }
 
     async fn delete_snapshot(&self, snapshot_ref: &SnapshotRef) -> Result<(), SnapshotStoreError> {
         let prefix = prefix_from_ref(snapshot_ref);
-        delete_prefix_concurrent(Arc::clone(&self.object_store), &prefix).await?;
+        delete_prefix(self.object_store.as_ref(), &prefix).await?;
         Ok(())
     }
 
@@ -347,44 +358,69 @@ where
         let manifest_key = format!("{}{}", prefix_from_ref(snapshot_ref), MANIFEST);
         let manifest_bytes = self.object_store.get(&manifest_key).await?;
         let manifest: SnapshotManifest = serde_json::from_slice(&manifest_bytes)?;
-        verify_remote_checksum_entries(Arc::clone(&self.object_store), &manifest).await?;
+        for entry in &manifest.checksums {
+            let key = format!("{}{}", manifest.stable_prefix(), entry.relative_path);
+            let bytes = self.object_store.get(&key).await?;
+            let actual = sha256_hex(&bytes);
+            if actual != entry.sha256 {
+                return Err(SnapshotStoreError::ChecksumMismatch {
+                    path: entry.relative_path.clone(),
+                    expected: entry.sha256.clone(),
+                    actual,
+                });
+            }
+        }
         Ok(())
     }
 }
 
-async fn upload_snapshot_inner<O: ObjectStore + 'static>(
-    object_store: Arc<O>,
+async fn upload_snapshot_inner<O: ObjectStore>(
+    object_store: &O,
     snapshot: &LocalSnapshot,
     stable_prefix: &str,
+    temp_prefix: &str,
 ) -> Result<SnapshotRef, SnapshotStoreError> {
-    let mut upload_files = vec![
-        SnapshotUploadFile {
-            key: format!("{stable_prefix}{INDEX}"),
-            path: snapshot.index_path.clone(),
-        },
-        SnapshotUploadFile {
-            key: format!("{stable_prefix}{CHECKSUMS}"),
-            path: snapshot.checksums_path.clone(),
-        },
-    ];
+    put_file(
+        object_store,
+        &format!("{temp_prefix}{INDEX}"),
+        &snapshot.index_path,
+    )
+    .await?;
+    put_file(
+        object_store,
+        &format!("{temp_prefix}{CHECKSUMS}"),
+        &snapshot.checksums_path,
+    )
+    .await?;
     for page_segment in &snapshot.page_segments {
         let name = page_segment.file_name().unwrap().to_string_lossy();
-        upload_files.push(SnapshotUploadFile {
-            key: format!("{stable_prefix}page_segments/{name}"),
-            path: page_segment.clone(),
-        });
+        put_file(
+            object_store,
+            &format!("{temp_prefix}page_segments/{name}"),
+            page_segment,
+        )
+        .await?;
     }
-    put_files_unique_concurrent(Arc::clone(&object_store), upload_files).await?;
+
+    let temp_keys = object_store.list(temp_prefix).await?;
+    for temp_key in temp_keys {
+        let suffix = temp_key.trim_start_matches(temp_prefix);
+        let bytes = object_store.get(&temp_key).await?;
+        object_store
+            .put(&format!("{stable_prefix}{suffix}"), bytes)
+            .await?;
+    }
 
     let manifest_bytes = Bytes::from(serde_json::to_vec_pretty(&snapshot.manifest)?);
     object_store
-        .put_unique(&format!("{stable_prefix}{MANIFEST}"), manifest_bytes)
+        .put(&format!("{stable_prefix}{MANIFEST}"), manifest_bytes)
         .await?;
-    snapshot_ref_from_manifest(object_store.as_ref(), &snapshot.manifest).await
+    delete_prefix(object_store, temp_prefix).await?;
+    snapshot_ref_from_manifest(object_store, &snapshot.manifest).await
 }
 
-async fn download_snapshot_inner<O: ObjectStore + 'static>(
-    object_store: Arc<O>,
+async fn download_snapshot_inner<O: ObjectStore>(
+    object_store: &O,
     snapshot_ref: &SnapshotRef,
     destination: PathBuf,
 ) -> Result<LocalSnapshot, SnapshotStoreError> {
@@ -394,27 +430,30 @@ async fn download_snapshot_inner<O: ObjectStore + 'static>(
     tokio::fs::create_dir_all(destination.join("page_segments")).await?;
 
     let index_path = destination.join(INDEX);
+    write_file(
+        &index_path,
+        object_store.get(&format!("{prefix}{INDEX}")).await?,
+    )
+    .await?;
     let checksums_path = destination.join(CHECKSUMS);
+    write_file(
+        &checksums_path,
+        object_store.get(&format!("{prefix}{CHECKSUMS}")).await?,
+    )
+    .await?;
+
     let mut page_segments = Vec::new();
-    let mut download_files = vec![
-        SnapshotDownloadFile {
-            key: format!("{prefix}{INDEX}"),
-            path: index_path.clone(),
-        },
-        SnapshotDownloadFile {
-            key: format!("{prefix}{CHECKSUMS}"),
-            path: checksums_path.clone(),
-        },
-    ];
     for segment in &manifest.page_segments {
         let path = destination.join(&segment.relative_path);
-        download_files.push(SnapshotDownloadFile {
-            key: format!("{prefix}{}", segment.relative_path),
-            path: path.clone(),
-        });
+        write_file(
+            &path,
+            object_store
+                .get(&format!("{prefix}{}", segment.relative_path))
+                .await?,
+        )
+        .await?;
         page_segments.push(path);
     }
-    get_files_concurrent(object_store, download_files).await?;
 
     let local = LocalSnapshot {
         manifest,
@@ -450,196 +489,35 @@ async fn snapshot_ref_from_manifest<O: ObjectStore>(
     })
 }
 
-#[derive(Debug, Clone)]
-struct SnapshotUploadFile {
-    key: String,
-    path: PathBuf,
-}
-
-#[derive(Debug, Clone)]
-struct SnapshotDownloadFile {
-    key: String,
-    path: PathBuf,
-}
-
-#[derive(Debug, Clone)]
-struct SnapshotDeleteObject {
-    key: String,
-}
-
-async fn put_files_unique_concurrent<O: ObjectStore + 'static>(
-    object_store: Arc<O>,
-    files: Vec<SnapshotUploadFile>,
+async fn put_file<O: ObjectStore>(
+    object_store: &O,
+    key: &str,
+    path: &Path,
 ) -> Result<(), SnapshotStoreError> {
-    let concurrency = snapshot_upload_concurrency();
-    let mut join_set = JoinSet::new();
-    let mut next_to_submit = 0usize;
-    while next_to_submit < files.len() || !join_set.is_empty() {
-        while next_to_submit < files.len() && join_set.len() < concurrency {
-            let file = files[next_to_submit].clone();
-            let store = Arc::clone(&object_store);
-            join_set.spawn(async move {
-                store.put_path_unique(&file.key, &file.path).await?;
-                Ok::<_, SnapshotStoreError>(())
-            });
-            next_to_submit += 1;
-        }
-        join_set
-            .join_next()
-            .await
-            .expect("snapshot upload task missing")
-            .map_err(std::io::Error::other)??;
-    }
+    object_store
+        .put(key, Bytes::from(tokio::fs::read(path).await?))
+        .await?;
     Ok(())
 }
 
-async fn list_snapshot_refs_concurrent<O: ObjectStore + 'static>(
-    object_store: Arc<O>,
-    keys: Vec<String>,
-) -> Result<Vec<SnapshotRef>, SnapshotStoreError> {
-    let manifest_keys: Vec<_> = keys
-        .into_iter()
-        .filter(|key| key.ends_with(MANIFEST) && !key.contains("/.tmp-"))
-        .collect();
-    let concurrency = snapshot_transfer_concurrency();
-    let mut join_set = JoinSet::new();
-    let mut next_to_submit = 0usize;
-    let mut snapshots = Vec::with_capacity(manifest_keys.len());
-    while next_to_submit < manifest_keys.len() || !join_set.is_empty() {
-        while next_to_submit < manifest_keys.len() && join_set.len() < concurrency {
-            let key = manifest_keys[next_to_submit].clone();
-            let store = Arc::clone(&object_store);
-            join_set.spawn(async move {
-                let manifest_bytes = store.get(&key).await?;
-                let manifest: SnapshotManifest = serde_json::from_slice(&manifest_bytes)?;
-                snapshot_ref_from_manifest(store.as_ref(), &manifest).await
-            });
-            next_to_submit += 1;
-        }
-        let snapshot_ref = join_set
-            .join_next()
-            .await
-            .expect("snapshot list task missing")
-            .map_err(std::io::Error::other)??;
-        snapshots.push(snapshot_ref);
+async fn write_file(path: &Path, bytes: Bytes) -> Result<(), SnapshotStoreError> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
     }
-    Ok(snapshots)
-}
-
-async fn get_files_concurrent<O: ObjectStore + 'static>(
-    object_store: Arc<O>,
-    files: Vec<SnapshotDownloadFile>,
-) -> Result<(), SnapshotStoreError> {
-    let concurrency = snapshot_transfer_concurrency();
-    let mut join_set = JoinSet::new();
-    let mut next_to_submit = 0usize;
-    while next_to_submit < files.len() || !join_set.is_empty() {
-        while next_to_submit < files.len() && join_set.len() < concurrency {
-            let file = files[next_to_submit].clone();
-            let store = Arc::clone(&object_store);
-            join_set.spawn(async move {
-                store.get_to_path(&file.key, &file.path).await?;
-                Ok::<_, SnapshotStoreError>(())
-            });
-            next_to_submit += 1;
-        }
-        join_set
-            .join_next()
-            .await
-            .expect("snapshot download task missing")
-            .map_err(std::io::Error::other)??;
-    }
+    let mut file = tokio::fs::File::create(path).await?;
+    file.write_all(&bytes).await?;
+    file.flush().await?;
     Ok(())
 }
 
-async fn delete_prefix_concurrent<O: ObjectStore + 'static>(
-    object_store: Arc<O>,
+async fn delete_prefix<O: ObjectStore>(
+    object_store: &O,
     prefix: &str,
 ) -> Result<(), SnapshotStoreError> {
-    let objects: Vec<_> = object_store
-        .list(prefix)
-        .await?
-        .into_iter()
-        .map(|key| SnapshotDeleteObject { key })
-        .collect();
-    let concurrency = snapshot_transfer_concurrency();
-    let mut join_set = JoinSet::new();
-    let mut next_to_submit = 0usize;
-    while next_to_submit < objects.len() || !join_set.is_empty() {
-        while next_to_submit < objects.len() && join_set.len() < concurrency {
-            let object = objects[next_to_submit].clone();
-            let store = Arc::clone(&object_store);
-            join_set.spawn(async move {
-                store.delete(&object.key).await?;
-                Ok::<_, SnapshotStoreError>(())
-            });
-            next_to_submit += 1;
-        }
-        join_set
-            .join_next()
-            .await
-            .expect("snapshot delete task missing")
-            .map_err(std::io::Error::other)??;
+    for key in object_store.list(prefix).await? {
+        object_store.delete(&key).await?;
     }
     Ok(())
-}
-
-async fn verify_remote_checksum_entries<O: ObjectStore + 'static>(
-    object_store: Arc<O>,
-    manifest: &SnapshotManifest,
-) -> Result<(), SnapshotStoreError> {
-    let concurrency = snapshot_transfer_concurrency();
-    let prefix = manifest.stable_prefix();
-    let entries = manifest.checksums.clone();
-    let mut join_set = JoinSet::new();
-    let mut next_to_submit = 0usize;
-    while next_to_submit < entries.len() || !join_set.is_empty() {
-        while next_to_submit < entries.len() && join_set.len() < concurrency {
-            let entry = entries[next_to_submit].clone();
-            let key = format!("{prefix}{}", entry.relative_path);
-            let store = Arc::clone(&object_store);
-            join_set.spawn(async move {
-                let metadata = store.head(&key).await?;
-                if metadata.checksum_sha256 != entry.sha256
-                    || metadata.size_bytes != entry.byte_size
-                {
-                    return Err(SnapshotStoreError::ChecksumMismatch {
-                        path: entry.relative_path,
-                        expected: entry.sha256,
-                        actual: metadata.checksum_sha256,
-                    });
-                }
-                Ok::<_, SnapshotStoreError>(())
-            });
-            next_to_submit += 1;
-        }
-        join_set
-            .join_next()
-            .await
-            .expect("snapshot verify task missing")
-            .map_err(std::io::Error::other)??;
-    }
-    Ok(())
-}
-
-fn snapshot_upload_concurrency() -> usize {
-    snapshot_transfer_concurrency_from_env("TS_SNAPSHOT_UPLOAD_CONCURRENCY")
-}
-
-fn snapshot_transfer_concurrency() -> usize {
-    std::env::var("TS_SNAPSHOT_TRANSFER_CONCURRENCY")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or_else(|| snapshot_transfer_concurrency_from_env("TS_SNAPSHOT_UPLOAD_CONCURRENCY"))
-}
-
-fn snapshot_transfer_concurrency_from_env(name: &str) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(4)
 }
 
 async fn list_local_page_segments(dir: &Path) -> Result<Vec<PathBuf>, SnapshotStoreError> {
@@ -663,13 +541,13 @@ async fn page_segment_manifests(
 ) -> Result<Vec<PageSegmentManifest>, SnapshotStoreError> {
     let mut out = Vec::new();
     for path in &snapshot.page_segments {
-        let (sha256, byte_size) = file_digest(path).await?;
+        let bytes = tokio::fs::read(path).await?;
         let file_name = path.file_name().unwrap().to_string_lossy().to_string();
         out.push(PageSegmentManifest {
             page_segment_id: file_name.trim_end_matches(".seg").to_string(),
             relative_path: format!("page_segments/{file_name}"),
-            byte_size,
-            sha256,
+            byte_size: bytes.len() as u64,
+            sha256: sha256_hex(&bytes),
         });
     }
     Ok(out)
@@ -683,11 +561,11 @@ async fn checksum_entries(
         (INDEX.to_string(), snapshot.index_path.clone()),
         (CHECKSUMS.to_string(), snapshot.checksums_path.clone()),
     ] {
-        let (sha256, byte_size) = file_digest(&path).await?;
+        let bytes = tokio::fs::read(path).await?;
         entries.push(ChecksumEntry {
             relative_path: relative,
-            sha256,
-            byte_size,
+            sha256: sha256_hex(&bytes),
+            byte_size: bytes.len() as u64,
         });
     }
     for segment in &snapshot.manifest.page_segments {
@@ -703,8 +581,9 @@ async fn checksum_entries(
 async fn verify_local_snapshot(snapshot: &LocalSnapshot) -> Result<(), SnapshotStoreError> {
     for entry in &snapshot.manifest.checksums {
         let path = snapshot.root_dir.join(&entry.relative_path);
-        let (actual, byte_size) = file_digest(&path).await?;
-        if actual != entry.sha256 || byte_size != entry.byte_size {
+        let bytes = tokio::fs::read(&path).await?;
+        let actual = sha256_hex(&bytes);
+        if actual != entry.sha256 {
             return Err(SnapshotStoreError::ChecksumMismatch {
                 path: entry.relative_path.clone(),
                 expected: entry.sha256.clone(),
@@ -741,20 +620,10 @@ fn parse_log_index(last_log_id: &str) -> u64 {
         .unwrap_or_default()
 }
 
-async fn file_digest(path: &Path) -> Result<(String, u64), SnapshotStoreError> {
-    let mut file = tokio::fs::File::open(path).await?;
+fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 64 * 1024];
-    let mut byte_size = 0u64;
-    loop {
-        let bytes_read = file.read(&mut buffer).await?;
-        if bytes_read == 0 {
-            break;
-        }
-        byte_size += bytes_read as u64;
-        hasher.update(&buffer[..bytes_read]);
-    }
-    Ok((hex::encode(hasher.finalize()), byte_size))
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]
@@ -766,7 +635,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::object_store::{FileObjectStore, MatrixObjectStore, MatrixObjectStoreConfig};
+    use crate::object_store::FileObjectStore;
 
     async fn sample_snapshot(root: &Path, shard_id: ShardId, log_index: u64) -> LocalSnapshot {
         let shard_root = root.join(format!("shard-{shard_id}"));
@@ -829,34 +698,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(restored.manifest.shard_id, 7);
-        assert_eq!(
-            tokio::fs::read(restored.root_dir.join("page_segments/0001.seg"))
-                .await
-                .unwrap(),
-            b"page-segment-bytes"
-        );
-    }
-
-    #[tokio::test]
-    async fn matrix_object_store_snapshot_upload_uses_direct_unique_objects() {
-        let tmp = TempDir::new().unwrap();
-        let config = MatrixObjectStoreConfig::local_compat(tmp.path().join("objects"))
-            .with_chunk_target_bytes(5)
-            .with_transfer_concurrency(2);
-        let store = Arc::new(MatrixObjectStore::from_config(config));
-        let snapshots = S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store);
-        let local = sample_snapshot(&tmp.path().join("source"), 11, 321).await;
-
-        let uploaded = snapshots.upload_snapshot(local).await.unwrap();
-        snapshots.verify_snapshot(&uploaded).await.unwrap();
-        let listed = snapshots.list_snapshots(11).await.unwrap();
-        assert_eq!(listed.len(), 1);
-        let restored = snapshots
-            .download_snapshot(&uploaded, tmp.path().join("restore-matrixobjectstore"))
-            .await
-            .unwrap();
-
-        assert_eq!(restored.manifest.last_log_index, 321);
         assert_eq!(
             tokio::fs::read(restored.root_dir.join("page_segments/0001.seg"))
                 .await

@@ -940,150 +940,150 @@
       ]
     },
     {
-      "name": "control_state_counter_window",
+      "name": "risk_counter_window",
       "shard_id": 1,
       "steps": [
         {
           "command": {
             "amount": 3,
-            "key": "unified:control_state",
-            "kind": "control_state_increment",
+            "key": "unified:risk",
+            "kind": "risk_increment",
             "timestamp_ms": 4000
           },
           "expect": {
             "kind": "empty"
           },
-          "name": "control_state_increment"
+          "name": "risk_increment"
         },
         {
           "command": {
             "end_ms": 4010,
-            "key": "unified:control_state",
-            "kind": "control_state_count",
+            "key": "unified:risk",
+            "kind": "risk_count",
             "start_ms": 3990
           },
           "expect": {
             "kind": "integer",
             "value": 3
           },
-          "name": "control_state_count"
+          "name": "risk_count"
         }
       ]
     },
     {
-      "name": "control_state_family_query_and_delete",
+      "name": "risk_family_query_and_delete",
       "shard_id": 1,
       "steps": [
         {
           "command": {
             "amount": 7,
             "family": "cpc",
-            "key": "unified:control_state:family",
-            "kind": "control_state_set",
+            "key": "unified:risk:family",
+            "kind": "risk_set",
             "timestamp_ms": 4100
           },
           "expect": {
             "kind": "empty"
           },
-          "name": "control_state_set_cpc_family"
+          "name": "risk_set_cpc_family"
         },
         {
           "command": {
             "aggregator": "sum",
             "end_ms": 4110,
             "family": "cpc",
-            "key": "unified:control_state:family",
-            "kind": "control_state_family_query",
+            "key": "unified:risk:family",
+            "kind": "risk_family_query",
             "start_ms": 4090
           },
           "expect": {
             "kind": "integer",
             "value": 7
           },
-          "name": "control_state_family_query_sum"
+          "name": "risk_family_query_sum"
         },
         {
           "command": {
-            "key": "unified:control_state:family",
+            "key": "unified:risk:family",
             "kind": "common_delete"
           },
           "expect": {
             "kind": "empty"
           },
-          "name": "control_state_family_common_delete"
+          "name": "risk_family_common_delete"
         },
         {
           "command": {
             "aggregator": "sum",
             "end_ms": 4111,
             "family": "cpc",
-            "key": "unified:control_state:family",
-            "kind": "control_state_family_query",
+            "key": "unified:risk:family",
+            "kind": "risk_family_query",
             "start_ms": 4091
           },
           "expect": {
             "kind": "integer",
             "value": 0
           },
-          "name": "control_state_family_query_after_delete"
+          "name": "risk_family_query_after_delete"
         }
       ]
     },
     {
-      "name": "control_state_manager_debug_fol",
+      "name": "risk_manager_debug_fol",
       "shard_id": 1,
       "steps": [
         {
           "command": {
             "amount": 5,
             "family": "h",
-            "key": "unified:control_state:deep",
-            "kind": "control_state_set",
+            "key": "unified:risk:deep",
+            "kind": "risk_set",
             "timestamp_ms": 6100
           },
           "expect": {
             "kind": "empty"
           },
-          "name": "control_state_set_h_10"
+          "name": "risk_set_h_10"
         },
         {
           "command": {
             "amount": 7,
             "family": "h",
-            "key": "unified:control_state:deep",
-            "kind": "control_state_set",
+            "key": "unified:risk:deep",
+            "kind": "risk_set",
             "timestamp_ms": 6200
           },
           "expect": {
             "kind": "empty"
           },
-          "name": "control_state_set_h_20"
+          "name": "risk_set_h_20"
         },
         {
           "command": {
             "amount": 3,
             "family": "cpc",
-            "key": "unified:control_state:deep",
-            "kind": "control_state_set",
+            "key": "unified:risk:deep",
+            "kind": "risk_set",
             "timestamp_ms": 6100
           },
           "expect": {
             "kind": "empty"
           },
-          "name": "control_state_set_cpc_10"
+          "name": "risk_set_cpc_10"
         },
         {
           "command": {
             "amount": 11,
             "family": "fol",
-            "key": "unified:control_state:deep",
-            "kind": "control_state_set",
+            "key": "unified:risk:deep",
+            "kind": "risk_set",
             "timestamp_ms": 6100
           },
           "expect": {
             "kind": "empty"
           },
-          "name": "control_state_set_fol_counter_10"
+          "name": "risk_set_fol_counter_10"
         },
         {
           "command": {
@@ -1091,8 +1091,8 @@
             "amount": 4,
             "end_ms": 6300,
             "family": "cpc",
-            "key": "unified:control_state:deep",
-            "kind": "control_state_set_and_get",
+            "key": "unified:risk:deep",
+            "kind": "risk_set_and_get",
             "start_ms": 6000,
             "timestamp_ms": 6200
           },
@@ -1100,13 +1100,13 @@
             "kind": "integer",
             "value": 7
           },
-          "name": "control_state_set_and_get_cpc_sum"
+          "name": "risk_set_and_get_cpc_sum"
         },
         {
           "command": {
             "fol_type": "first",
-            "key": "unified:control_state:fol:first",
-            "kind": "control_state_fol_set",
+            "key": "unified:risk:fol:first",
+            "kind": "risk_fol_set",
             "occur_time_ms": 6200,
             "ttl_ms": 60000,
             "value": [
@@ -1121,13 +1121,13 @@
           "expect": {
             "kind": "empty"
           },
-          "name": "control_state_fol_first_middle"
+          "name": "risk_fol_first_middle"
         },
         {
           "command": {
             "fol_type": "first",
-            "key": "unified:control_state:fol:first",
-            "kind": "control_state_fol_set",
+            "key": "unified:risk:fol:first",
+            "kind": "risk_fol_set",
             "occur_time_ms": 6100,
             "ttl_ms": 60000,
             "value": [
@@ -1141,13 +1141,13 @@
           "expect": {
             "kind": "empty"
           },
-          "name": "control_state_fol_first_wins_earlier"
+          "name": "risk_fol_first_wins_earlier"
         },
         {
           "command": {
             "fol_type": "last",
-            "key": "unified:control_state:fol:last",
-            "kind": "control_state_fol_set",
+            "key": "unified:risk:fol:last",
+            "kind": "risk_fol_set",
             "occur_time_ms": 6200,
             "ttl_ms": 60000,
             "value": [
@@ -1162,13 +1162,13 @@
           "expect": {
             "kind": "empty"
           },
-          "name": "control_state_fol_last_middle"
+          "name": "risk_fol_last_middle"
         },
         {
           "command": {
             "fol_type": "last",
-            "key": "unified:control_state:fol:last",
-            "kind": "control_state_fol_set",
+            "key": "unified:risk:fol:last",
+            "kind": "risk_fol_set",
             "occur_time_ms": 6300,
             "ttl_ms": 60000,
             "value": [
@@ -1181,12 +1181,12 @@
           "expect": {
             "kind": "empty"
           },
-          "name": "control_state_fol_last_wins_later"
+          "name": "risk_fol_last_wins_later"
         },
         {
           "command": {
-            "key": "unified:control_state:fol:first",
-            "kind": "control_state_fol_query"
+            "key": "unified:risk:fol:first",
+            "kind": "risk_fol_query"
           },
           "expect": {
             "kind": "bytes",
@@ -1198,12 +1198,12 @@
               116
             ]
           },
-          "name": "control_state_fol_query_first"
+          "name": "risk_fol_query_first"
         },
         {
           "command": {
-            "key": "unified:control_state:fol:last",
-            "kind": "control_state_fol_query"
+            "key": "unified:risk:fol:last",
+            "kind": "risk_fol_query"
           },
           "expect": {
             "kind": "bytes",
@@ -1214,12 +1214,12 @@
               116
             ]
           },
-          "name": "control_state_fol_query_last"
+          "name": "risk_fol_query_last"
         },
         {
           "command": {
-            "key": "unified:control_state:deep",
-            "kind": "control_state_manager"
+            "key": "unified:risk:deep",
+            "kind": "risk_manager"
           },
           "expect": {
             "entries": [
@@ -1264,13 +1264,13 @@
             ],
             "kind": "hash_entries"
           },
-          "name": "control_state_manager_counts_all_families"
+          "name": "risk_manager_counts_all_families"
         },
         {
           "command": {
             "end_ms": 6150,
-            "key": "unified:control_state:deep",
-            "kind": "control_state_debug",
+            "key": "unified:risk:deep",
+            "kind": "risk_debug",
             "start_ms": 6000
           },
           "expect": {
@@ -1447,7 +1447,7 @@
             ],
             "kind": "hash_entries"
           },
-          "name": "control_state_debug_reports_window_and_totals"
+          "name": "risk_debug_reports_window_and_totals"
         }
       ]
     },
@@ -1564,6 +1564,256 @@
             ],
             "min_node_count": 2
           }
+        }
+      ]
+    },
+    {
+      "name": "context_event_index_audit_dirty_models",
+      "shard_id": 1,
+      "steps": [
+        {
+          "command": {
+            "event": {
+              "confidence": 0.75,
+              "event_id_hash": 9001,
+              "event_time_ms": 9000,
+              "ingestion_time_ms": 9000,
+              "importance": 0.5,
+              "text": "context event from shared corpus",
+              "type": 4
+            },
+            "first_write_only": false,
+            "kind": "context_write_event",
+            "node_hash": 700,
+            "tenant_hash": 101
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:event:101:700"
+          },
+          "name": "context_write_event_model"
+        },
+        {
+          "command": {
+            "event": {
+              "confidence": 0.8,
+              "event_id_hash": 9002,
+              "event_time_ms": 9000,
+              "ingestion_time_ms": 9000,
+              "importance": 0.6,
+              "text": "second context event in same millisecond",
+              "type": 4
+            },
+            "first_write_only": false,
+            "kind": "context_write_event",
+            "node_hash": 700,
+            "tenant_hash": 101
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:event:101:700"
+          },
+          "name": "context_write_event_same_millisecond_fanout"
+        },
+        {
+          "command": {
+            "as_of_ms": 9200,
+            "current_valid_only": true,
+            "end_time_ms": 9010,
+            "kind": "context_query_events",
+            "kinds": [
+              4
+            ],
+            "limit": 10,
+            "min_confidence": 0.7,
+            "min_importance": 0.4,
+            "node_hash": 700,
+            "start_time_ms": 8990,
+            "statuses": [],
+            "tenant_hash": 101
+          },
+          "expect": {
+            "events": [
+              {
+                "confidence": 0.75,
+                "event_id_hash": 9001,
+                "event_time_ms": 9000,
+                "ingestion_time_ms": 9000,
+                "importance": 0.5,
+                "text": "context event from shared corpus",
+                "type": 4
+              },
+              {
+                "confidence": 0.8,
+                "event_id_hash": 9002,
+                "event_time_ms": 9000,
+                "ingestion_time_ms": 9000,
+                "importance": 0.6,
+                "text": "second context event in same millisecond",
+                "type": 4
+              }
+            ],
+            "kind": "context_events",
+            "object_key": "ctx:event:101:700"
+          },
+          "name": "context_query_event_model"
+        },
+        {
+          "command": {
+            "event_time_ms": 9000,
+            "index_name": "topic",
+            "index_ref": {
+              "event_id_hash": 9001,
+              "primary_event_time_ms": 9000,
+              "primary_node_hash": 700
+            },
+            "index_value_hash": 333,
+            "kind": "context_write_index_ref",
+            "scope_hash": 0,
+            "tenant_hash": 101
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctxidx:101:topic:333:0"
+          },
+          "name": "context_write_index_ref_model"
+        },
+        {
+          "command": {
+            "end_time_ms": 9010,
+            "index_name": "topic",
+            "index_value_hash": 333,
+            "kind": "context_query_index",
+            "limit": 10,
+            "scope_hash": 0,
+            "start_time_ms": 8990,
+            "tenant_hash": 101
+          },
+          "expect": {
+            "kind": "context_index_refs",
+            "object_key": "ctxidx:101:topic:333:0",
+            "refs": [
+              {
+                "event_id_hash": 9001,
+                "primary_event_time_ms": 9000,
+                "primary_node_hash": 700
+              }
+            ]
+          },
+          "name": "context_query_index_ref_model"
+        },
+        {
+          "command": {
+            "audit": {
+              "blocked_refs": [
+                {
+                  "event_time_ms": 9005,
+                  "node_hash": 701,
+                  "reason": "policy"
+                }
+              ],
+              "max_prompt_tokens": 4096,
+              "query_hash": 88,
+              "query_id": "q-shared",
+              "request_time_ms": 9100,
+              "selected_refs": [
+                {
+                  "event_time_ms": 9000,
+                  "node_hash": 700,
+                  "reason": "matched-topic"
+                }
+              ],
+              "selected_tokens": 123,
+              "session_hash": 77
+            },
+            "kind": "context_write_pack_audit",
+            "tenant_hash": 101
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:audit:101:77"
+          },
+          "name": "context_write_pack_audit_model"
+        },
+        {
+          "command": {
+            "end_time_ms": 9110,
+            "kind": "context_query_pack_audit",
+            "limit": 10,
+            "session_hash": 77,
+            "start_time_ms": 9090,
+            "tenant_hash": 101
+          },
+          "expect": {
+            "audits": [
+              {
+                "blocked_refs": [
+                  {
+                    "event_time_ms": 9005,
+                    "node_hash": 701,
+                    "reason": "policy"
+                  }
+                ],
+                "max_prompt_tokens": 4096,
+                "query_hash": 88,
+                "query_id": "q-shared",
+                "request_time_ms": 9100,
+                "selected_refs": [
+                  {
+                    "event_time_ms": 9000,
+                    "node_hash": 700,
+                    "reason": "matched-topic"
+                  }
+                ],
+                "selected_tokens": 123,
+                "session_hash": 77
+              }
+            ],
+            "kind": "context_pack_audits",
+            "object_key": "ctx:audit:101:77"
+          },
+          "name": "context_query_pack_audit_model"
+        },
+        {
+          "command": {
+            "kind": "context_mark_summary_dirty",
+            "marker": {
+              "event_time_ms": 9200,
+              "node_hash": 700,
+              "propagate_depth": 3,
+              "reason": 2
+            },
+            "tenant_hash": 101
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:dirty:101:700"
+          },
+          "name": "context_mark_summary_dirty_model"
+        },
+        {
+          "command": {
+            "end_time_ms": 9210,
+            "kind": "context_query_summary_dirty",
+            "limit": 10,
+            "node_hash": 700,
+            "start_time_ms": 9190,
+            "tenant_hash": 101
+          },
+          "expect": {
+            "kind": "context_summary_dirty_markers",
+            "markers": [
+              {
+                "event_time_ms": 9200,
+                "node_hash": 700,
+                "propagate_depth": 3,
+                "reason": 2
+              }
+            ],
+            "object_key": "ctx:dirty:101:700"
+          },
+          "name": "context_query_summary_dirty_model",
+          "restart_before": true
         }
       ]
     },
@@ -2807,7 +3057,7 @@
         {
           "command": {
             "cpp_runner_contract": "C++ compaction runner emits before/after stale density, tombstone preservation, rewritten page/object counts, and per-model layout policy evidence.",
-            "description": "Shared compaction case for model-layout-aware rewrites, tombstone preservation, stale-page density improvement, packed timestamped pages, context/ControlState page-backed layouts, and slot layout transition evidence.",
+            "description": "Shared compaction case for model-layout-aware rewrites, tombstone preservation, stale-page density improvement, packed timestamped pages, context/Risk page-backed layouts, and slot layout transition evidence.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "rust_runner": "cargo test -p temporalstore-rust page_compaction_reports_model_layouts_tombstones_object_pages_and_density --lib -- --test-threads=1",
@@ -4185,7 +4435,7 @@
       "steps": [
         {
           "command": {
-            "description": "Shared C++/Rust Context retrieval case for QA-style synonym and adjacent-phrase ranking, covering payment/fraud wording against checkout/control_state memories.",
+            "description": "Shared C++/Rust Context retrieval case for QA-style synonym and adjacent-phrase ranking, covering payment/fraud wording against checkout/risk memories.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
@@ -5848,6 +6098,26 @@
       ]
     },
     {
+      "name": "context_compression_secondary_index_query_debug_flow",
+      "shard_id": 60,
+      "steps": [
+        {
+          "command": {
+            "description": "Shared Context pipeline case for temporal compression, secondary-index filter groups, query debug flow, retrieved evidence ordering, and audit refs.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "docs/rust_matrixark_query_index_debug_flow.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_temporal_compression_builds_replayable_summary_without_deleting_sources context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index --lib -- --test-threads=1",
+            "rust_validator": "tools/run_context_workflow_local.sh",
+            "suite": "cpp_context_pipeline_parity"
+          },
+          "name": "context_compression_secondary_index_query_debug_shared"
+        }
+      ]
+    },
+    {
       "name": "control_multi_proxy_convergence_and_quarantine",
       "shard_id": 61,
       "steps": [
@@ -6455,7 +6725,8 @@
                 "ContextIndexRef",
                 "ContextChildRef",
                 "ContextCompressionEvent",
-                "ContextSummaryDirtyMarker"
+                "ContextSummaryDirtyMarker",
+                "ContextPackAudit"
               ],
               "secondary_index_families": [
                 "resource_ref",
@@ -6465,13 +6736,13 @@
                 "summary_ref"
               ]
             },
-            "cpp_runner_contract": "C++ context parity flow must emit equivalent ContextEvent hot fields plus sidecar/index fanout for resource_ref, skill_ref, entity_ref, source_ref, summary_ref, child refs, compression, dirty markers, and selected evidence ordering.",
-            "description": "C++-aligned context hot schema boundary: ContextEvent stores event id/time/type/confidence/importance/text/ingestion time only; source/resource/skill/entity/summary refs, node links, compression payloads, dirty markers, and selected evidence refs are sidecar/index records.",
+            "cpp_runner_contract": "C++ context debug flow must emit equivalent ContextEvent hot fields plus sidecar/index fanout for resource_ref, skill_ref, entity_ref, source_ref, summary_ref, child refs, compression, dirty markers, and selected evidence ordering.",
+            "description": "C++-aligned context hot schema boundary: ContextEvent stores event id/time/type/confidence/importance/text/ingestion time only; source/resource/skill/entity/summary refs, node links, compression payloads, dirty markers, and query-debug selected refs are sidecar/index records.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
               "crates/temporalstore-rust/src/context_workflow.rs",
-              "docs/rust_context_pipeline_report.md",
+              "docs/rust_context_pipeline_debug_trace.md",
               "src/extension/context/interface.proto",
               "src/extension/context/implement.cc"
             ],
@@ -6616,7 +6887,7 @@
       ]
     },
     {
-      "description": "Shared C++/Rust Redis product command flow covering string, hash, set, Feature, IPS, and ControlState commands through the engine-backed Redis command path.",
+      "description": "Shared C++/Rust Redis product command flow covering string, hash, set, Feature, IPS, and Risk commands through the engine-backed Redis command path.",
       "family": "Redis/admin",
       "name": "redis_engine_product_command_flow",
       "shard_id": 1,
@@ -7737,7 +8008,7 @@
             "uri": "blob://pool/stream/"
           },
           "expect": {
-            "backend": "matrixobject",
+            "backend": "bytestore",
             "kind": "object_store_backend"
           },
           "name": "detect_object_store_backend_0"
@@ -7748,7 +8019,7 @@
             "uri": "local://pool/stream/"
           },
           "expect": {
-            "backend": "matrixobject",
+            "backend": "bytestore",
             "kind": "object_store_backend"
           },
           "name": "detect_object_store_backend_1"
@@ -8001,6 +8272,30 @@
             "suite": "cpp_data_node_lifecycle_parity"
           },
           "name": "engine_lifecycle_reload_metadata_readonly_stale_version_shared"
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust Context query-understanding debug case for C++-style filter-group traces, per-group candidate decisions/drop reasons, batched summary traversal evidence, selected refs, and prompt injection ordering.",
+      "family": "context",
+      "name": "context_query_debug_filter_group_cpp_parity",
+      "shard_id": 42,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust runs a mixed relevant/unrelated context retrieval and emits matrixark_context_query_debug_v1 with secondary-index filter groups, per-group candidate_decisions, dropped candidate reasons, batched summary embedding traversal, selected refs, and injection ordering. C++ parity maps to the MatrixArk query/index debug flow and Context model filter-group diagnostics.",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-query-debug-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "crates/temporalstore-rust/src/context_workflow/query.rs",
+              "src/model/model_manager.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_query_debug_reports_filter_groups_drops_and_injection_order --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only && python3 tools/validate_rust_product_test_guard.py",
+            "suite": "cpp_context_query_debug_parity"
+          },
+          "name": "context_query_debug_filter_group_cpp_parity_shared"
         }
       ]
     },
@@ -8293,7 +8588,7 @@
                 "status_codes",
                 "typed_errors"
               ],
-              "control_state": [
+              "risk": [
                 "cpc",
                 "fol",
                 "manager",
@@ -8305,17 +8600,17 @@
                 "missing_series"
               ]
             },
-            "cpp_runner_contract": "C++ product modules execute the same command/response corpus for Redis/admin/Feature/Sequence/IPS/ControlState behavior.",
-            "description": "Unified API case covering Redis/admin aliases plus Feature nested point semantics, Sequence edge cases, IPS snap/stat/filter metadata, and ControlState CPC/list/manager/debug behavior.",
+            "cpp_runner_contract": "C++ product modules execute the same command/response corpus for Redis/admin/Feature/Sequence/IPS/Risk behavior.",
+            "description": "Unified API case covering Redis/admin aliases plus Feature nested point semantics, Sequence edge cases, IPS snap/stat/filter metadata, and Risk CPC/list/manager/debug behavior.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
               "docs/product_api_cpp_rust_parity.md"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust redis_ feature_ sequence_ ips_ control_state_ -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust redis_ feature_ sequence_ ips_ risk_ -- --test-threads=1",
             "suite": "cpp_product_api_parity"
           },
-          "name": "redis_admin_feature_sequence_ips_control_state_shared_contract",
+          "name": "redis_admin_feature_sequence_ips_risk_shared_contract",
           "skip_client": true
         }
       ]
@@ -9787,7 +10082,7 @@
             "report_schema": "temporalstore_unified_case_report_v1",
             "cpp_runner_contract": "C++ runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static C++ surface gate.",
             "kind": "storage_model_aware_block_compaction",
-            "description": "Compacts string/hash/set/timestamped/context/ControlState layouts with tombstone and stale-block-density thresholds, then verifies indexes point to new blocks and stale blocks are reclaimable.",
+            "description": "Compacts string/hash/set/timestamped/context/Risk layouts with tombstone and stale-block-density thresholds, then verifies indexes point to new blocks and stale blocks are reclaimable.",
             "rust_test": "model_layout_compaction_rewrites_live_refs_and_marks_stale_blocks_reclaimable",
             "required_paths": [
               "src/partition/storage/compaction*",
@@ -9799,7 +10094,7 @@
               "set",
               "timestamped",
               "context",
-              "control_state"
+              "risk"
             ],
             "expect_triggers": [
               "tombstone_density",
@@ -10739,9 +11034,9 @@
       ]
     },
     {
-      "name": "all_capability_cpp_rust_parity_sweep",
-      "family": "all capabilities",
-      "description": "Executable shared C++/Rust sweep across TemporalStore product capabilities: common TTL/existence, string, hash, set, Feature, Sequence, IPS, ControlState, and Context node/event/entity/child/embedding/summary/compression/index sidecars.",
+      "name": "all_data_model_cpp_rust_parity_sweep",
+      "family": "all data models",
+      "description": "Executable shared C++/Rust sweep across TemporalStore product data models: common TTL/existence, string, hash, set, Feature, Sequence, IPS, Risk, and Context node/event/entity/child/embedding/summary/compression/index sidecars.",
       "shard_id": 7,
       "steps": [
         {
@@ -11091,11 +11386,11 @@
           }
         },
         {
-          "name": "control_state_h_set",
+          "name": "risk_h_set",
           "command": {
-            "kind": "control_state_set",
+            "kind": "risk_set",
             "family": "h",
-            "key": "parity:control_state",
+            "key": "parity:risk",
             "timestamp_ms": 400,
             "amount": 5
           },
@@ -11104,11 +11399,11 @@
           }
         },
         {
-          "name": "control_state_cpc_set",
+          "name": "risk_cpc_set",
           "command": {
-            "kind": "control_state_set",
+            "kind": "risk_set",
             "family": "cpc",
-            "key": "parity:control_state",
+            "key": "parity:risk",
             "timestamp_ms": 410,
             "amount": 3
           },
@@ -11117,11 +11412,11 @@
           }
         },
         {
-          "name": "control_state_query_h_sum",
+          "name": "risk_query_h_sum",
           "command": {
-            "kind": "control_state_family_query",
+            "kind": "risk_family_query",
             "family": "h",
-            "key": "parity:control_state",
+            "key": "parity:risk",
             "start_ms": 390,
             "end_ms": 420,
             "aggregator": "sum"
@@ -11132,10 +11427,10 @@
           }
         },
         {
-          "name": "control_state_fol_first",
+          "name": "risk_fol_first",
           "command": {
-            "kind": "control_state_fol_set",
-            "key": "parity:control_state:fol",
+            "kind": "risk_fol_set",
+            "key": "parity:risk:fol",
             "value": [
               102,
               105,
@@ -11152,10 +11447,10 @@
           }
         },
         {
-          "name": "control_state_fol_query",
+          "name": "risk_fol_query",
           "command": {
-            "kind": "control_state_fol_query",
-            "key": "parity:control_state:fol"
+            "kind": "risk_fol_query",
+            "key": "parity:risk:fol"
           },
           "expect": {
             "kind": "bytes",
@@ -11881,16 +12176,16 @@
       ]
     },
     {
-      "name": "storage_control_state_context_page_backed_parity",
+      "name": "storage_risk_context_page_backed_parity",
       "shard_id": 1,
       "steps": [
         {
-          "name": "storage_control_state_context_page_backed_parity_coverage",
+          "name": "storage_risk_context_page_backed_parity_coverage",
           "command": {
             "kind": "existing_test",
             "suite": "storage_proxy_client_parity",
             "mode": "static",
-            "description": "Shared C++/Rust parity coverage for ControlState/Context page-backed parity.",
+            "description": "Shared C++/Rust parity coverage for Risk/Context page-backed parity.",
             "required_paths": [
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
@@ -12077,6 +12372,22 @@
         ]
       },
       {
+        "blocker": "Native C++ context pipeline corpus runner is not wired yet; C++ context source/debug paths remain required while Rust executes the shared cases. native C++ context query debug corpus adapter still needs to emit matrixark_context_query_debug_v1 case results",
+        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family context --cpp --require-cpp-native",
+        "family": "context",
+        "status": "temporary_static_surface_gate",
+        "suites": [
+          "cpp_context_pipeline_parity",
+          "cpp_context_query_debug_parity"
+        ],
+        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+        "exit_criteria": [
+          "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in context",
+          "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+          "matrix row can move to native_executable only after no static surface gate remains for this family"
+        ]
+      },
+      {
         "blocker": "Native C++ control-plane corpus runner is not wired yet; client/proxy/data-node/metaserver source and harness paths remain required.",
         "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-control-plane-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family client/proxy/control-plane --cpp --require-cpp-native",
         "family": "client/proxy/control-plane",
@@ -12189,7 +12500,7 @@
         ]
       },
       {
-        "blocker": "C++ executable shared adapter for Redis/admin/Feature/Sequence/IPS/ControlState command corpus is still pending.",
+        "blocker": "C++ executable shared adapter for Redis/admin/Feature/Sequence/IPS/Risk command corpus is still pending.",
         "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-product-api-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family product_api_models --cpp --require-cpp-native",
         "family": "product_api_models",
         "status": "temporary_static_surface_gate",
@@ -12213,8 +12524,8 @@
       "feature_packed_timestamped_pages",
       "sequence_cpp_feature_rows",
       "ips_options_range",
-      "control_state_counter_window",
-      "control_state_family_query_and_delete",
+      "risk_counter_window",
+      "risk_family_query_and_delete",
       "context_node_roundtrip",
       "context_event_index_audit_dirty_models",
       "common_restart_persistence",
@@ -12255,7 +12566,7 @@
       "cpp_metaserver_scheduler_repair_parity_surfaces",
       "cpp_data_node_lifecycle_server_parity_surfaces",
       "ips_snapshot_stat_filter_batch",
-      "control_state_manager_debug_fol",
+      "risk_manager_debug_fol",
       "storage_dump_load_recovery",
       "storage_fault_matrix",
       "storage_follower_safe_gc",
@@ -12416,7 +12727,7 @@
       "storage_manager_active_eviction_runtime",
       "storage_manager_page_gc_dependency_refusal",
       "storage_manager_index_gc_thresholds_recovery",
-      "storage_control_state_context_page_backed_parity"
+      "storage_risk_context_page_backed_parity"
     ],
     "required_command_kinds": [
       "string_set",
@@ -12445,16 +12756,18 @@
       "sequence_batch_query",
       "ips_add_with_options",
       "ips_query_range",
-      "control_state_increment",
-      "control_state_count",
-      "control_state_set",
-      "control_state_family_query",
+      "risk_increment",
+      "risk_count",
+      "risk_set",
+      "risk_family_query",
       "context_upsert_node",
       "context_get_node",
       "context_write_event",
       "context_query_events",
       "context_write_index_ref",
       "context_query_index",
+      "context_write_pack_audit",
+      "context_query_pack_audit",
       "context_mark_summary_dirty",
       "context_query_summary_dirty",
       "common_exists",
@@ -12466,11 +12779,11 @@
       "ips_filter",
       "ips_stat",
       "ips_snapshot_report",
-      "control_state_set_and_get",
-      "control_state_fol_set",
-      "control_state_fol_query",
-      "control_state_manager",
-      "control_state_debug",
+      "risk_set_and_get",
+      "risk_fol_set",
+      "risk_fol_query",
+      "risk_manager",
+      "risk_debug",
       "storage_dump_load_recovery",
       "storage_fault_matrix",
       "storage_follower_safe_gc",
@@ -12546,6 +12859,7 @@
       "context_object_key",
       "context_events",
       "context_index_refs",
+      "context_pack_audits",
       "context_summary_dirty_markers",
       "feature_point_groups",
       "ips_stats",

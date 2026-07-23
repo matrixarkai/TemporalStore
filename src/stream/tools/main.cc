@@ -50,7 +50,7 @@ int main(int argc, char** argv) {
     }
 
     gflags::ParseCommandLineFlags(&argc, &argv, true);
-    matrixobjectstore_init();
+    bytestore_init();
 
     byte::AsyncThreadPool pool;
     byte::AsyncThreadPoolOptions options;
@@ -75,6 +75,6 @@ int main(int argc, char** argv) {
     }));
     sync.Wait();
 
-    matrixobjectstore_shutdown();
+    bytestore_shutdown();
     return result;
 }

@@ -20,11 +20,6 @@ def write_sharded(kv: backfill.LocalJsonKV, prefix: str, sequence: int, record: 
     kv.hset(f"{prefix}:records:{shard:06d}", f"{offset:020d}", json.dumps(record, sort_keys=True))
 
 
-def write_sharded_with_session_index(kv: backfill.LocalJsonKV, prefix: str, sequence: int, record: dict) -> None:
-    write_sharded(kv, prefix, sequence, record)
-    backfill.MatrixKVRecordLog(kv, prefix=prefix).append_session_index_entries(sequence=sequence, record=record)
-
-
 def read_target_records(kv: backfill.LocalJsonKV, prefix: str) -> list[dict]:
     count = int(kv.get_string(f"{prefix}:record_count") or 0)
     records = []
@@ -75,9 +70,6 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "partial_filter_json": "",
             "partial_require_bounded": True,
             "batch_size": 2,
-            "backfill_window_policy": "conversation",
-            "session_commit_threshold": 20,
-            "idle_commit_timeout_ms": 300000,
             "plan_window_size": 0,
             "plan_max_windows": 128,
             "plan_parallelism": 1,
@@ -180,93 +172,6 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(resumed["resume_state"]["checkpoint_last_sequence"], 1)
             self.assertEqual(resumed["resume_state"]["checkpoint_source_range"]["source_high_watermark_seq"], 1)
             self.assertEqual(resumed["resume_state"]["effective_start_seq"], 2)
-
-    def test_message_backfill_uses_conversation_window_and_flushes_at_end(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "kv.json"
-            kv = backfill.LocalJsonKV(path)
-            scope = {"account_id": "acct", "tenant_id": "tenant", "user_id": "user", "session_id": "session"}
-            for sequence in range(3):
-                write_sharded(
-                    kv,
-                    "matrixark:mcp",
-                    sequence,
-                    {
-                        "kind": "message",
-                        "messages": [{"role": "user", "content": f"Backfilled conversation message {sequence}."}],
-                        "scope": scope,
-                        "metadata": {"node_path": ["tenant:tenant", "user:user", "session:session"]},
-                        "updated_at_ms": 1000 + sequence,
-                    },
-                )
-            kv.put_string("matrixark:mcp:record_count", "3")
-
-            summary = backfill.run_backfill(self.make_args(path, batch_size=64, resume=False))
-
-            self.assertEqual(summary["backfill_window_policy"], "conversation")
-            records = read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")
-            record_types = [record.get("record_type") for record in records]
-            self.assertEqual(record_types.count("context_event"), 3)
-            self.assertEqual(record_types.count("session_buffer_event"), 3)
-            commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
-            self.assertEqual(len(commits), 1)
-            self.assertEqual(commits[0].get("commit_reason"), "hook_boundary")
-            self.assertEqual(commits[0].get("committed_event_count"), 3)
-
-    def test_message_backfill_threshold_commits_during_replay(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "kv.json"
-            kv = backfill.LocalJsonKV(path)
-            scope = {"account_id": "acct", "tenant_id": "tenant", "user_id": "user", "session_id": "threshold"}
-            for sequence in range(3):
-                write_sharded(
-                    kv,
-                    "matrixark:mcp",
-                    sequence,
-                    {
-                        "kind": "message",
-                        "messages": [{"role": "user", "content": f"Threshold replay message {sequence}."}],
-                        "scope": scope,
-                        "metadata": {"node_path": ["tenant:tenant", "user:user", "session:threshold"]},
-                        "updated_at_ms": 1000 + sequence,
-                    },
-                )
-            kv.put_string("matrixark:mcp:record_count", "3")
-
-            backfill.run_backfill(self.make_args(path, batch_size=64, resume=False, session_commit_threshold=2))
-
-            records = read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")
-            commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
-            self.assertEqual([commit.get("commit_reason") for commit in commits], ["threshold", "hook_boundary"])
-            self.assertEqual([commit.get("committed_event_count") for commit in commits], [2, 1])
-
-    def test_message_backfill_idle_gap_commits_previous_window(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "kv.json"
-            kv = backfill.LocalJsonKV(path)
-            scope = {"account_id": "acct", "tenant_id": "tenant", "user_id": "user", "session_id": "idle"}
-            for sequence, updated_at_ms in enumerate([1_000, 301_001]):
-                write_sharded(
-                    kv,
-                    "matrixark:mcp",
-                    sequence,
-                    {
-                        "kind": "message",
-                        "messages": [{"role": "user", "content": f"Idle replay message {sequence}."}],
-                        "scope": scope,
-                        "metadata": {"node_path": ["tenant:tenant", "user:user", "session:idle"]},
-                        "updated_at_ms": updated_at_ms,
-                    },
-                )
-            kv.put_string("matrixark:mcp:record_count", "2")
-
-            summary = backfill.run_backfill(self.make_args(path, batch_size=64, resume=False))
-
-            self.assertEqual(summary["idle_commit_timeout_ms"], 300000)
-            records = read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")
-            commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
-            self.assertEqual([commit.get("commit_reason") for commit in commits], ["idle_timeout", "hook_boundary"])
-            self.assertEqual([commit.get("committed_event_count") for commit in commits], [1, 1])
 
     def test_dry_run_checks_target_idempotency_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1659,79 +1564,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertNotEqual(full_cp, partial_cp)
             self.assertEqual(json.loads(kv_after.get_string(partial_cp))["last_sequence"], 2)
 
-    def test_partial_session_backfill_fetches_conversation_specific_refs_for_temporalstore_and_matrixkv(self):
-        for backend in ["temporalstore", "matrixkv"]:
-            with self.subTest(backend=backend):
-                with tempfile.TemporaryDirectory() as tmp:
-                    path = Path(tmp) / "kv.json"
-                    kv = backfill.LocalJsonKV(path)
-                    write_sharded_with_session_index(
-                        kv,
-                        "matrixark:mcp",
-                        0,
-                        {"record_type": "context_event", "event_id_hash": 10, "scope": {"session_id": "s-a"}},
-                    )
-                    write_sharded_with_session_index(
-                        kv,
-                        "matrixark:mcp",
-                        1,
-                        {"record_type": "context_event", "event_id_hash": 20, "scope": {"session_id": "s-b"}},
-                    )
-                    write_sharded_with_session_index(
-                        kv,
-                        "matrixark:mcp",
-                        2,
-                        {"record_type": "context_event", "event_id_hash": 11, "envelope": {"scope": {"conversation_id": "s-a"}}},
-                    )
-                    write_sharded_with_session_index(
-                        kv,
-                        "matrixark:mcp",
-                        3,
-                        {"record_type": "context_event", "event_id_hash": 21, "scope": {"session_id": "s-b"}},
-                    )
-                    kv.put_string("matrixark:mcp:record_count", "4")
 
-                    summary = backfill.run_backfill(self.make_args(
-                        path,
-                        raw_backend=backend,
-                        target_prefix=f"shadow:{backend}:session-index",
-                        partial=True,
-                        partial_session_ids="s-a",
-                        batch_size=1,
-                        resume=False,
-                    ))
-
-                    self.assertEqual(summary["source_range"]["scan_mode"], "session_index")
-                    self.assertTrue(summary["source_range"]["session_index_used"])
-                    self.assertEqual(summary["metrics"]["scanned"], 2)
-                    self.assertEqual(summary["metrics"]["filtered"], 0)
-                    self.assertEqual(summary["metrics"]["written"], 2)
-                    records = read_target_records(backfill.LocalJsonKV(path), f"shadow:{backend}:session-index")
-                    self.assertEqual([record["event_id_hash"] for record in records], [10, 11])
-
-    def test_partial_session_backfill_falls_back_to_global_scan_without_complete_index(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "kv.json"
-            kv = backfill.LocalJsonKV(path)
-            write_sharded_with_session_index(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 10, "scope": {"session_id": "s-a"}})
-            write_sharded(kv, "matrixark:mcp", 1, {"record_type": "context_event", "event_id_hash": 20, "scope": {"session_id": "s-b"}})
-            kv.put_string("matrixark:mcp:record_count", "2")
-
-            summary = backfill.run_backfill(self.make_args(
-                path,
-                target_prefix="shadow:session-index-fallback",
-                partial=True,
-                partial_session_ids="s-a,s-b",
-                resume=False,
-            ))
-
-            self.assertEqual(summary["source_range"]["scan_mode"], "record_count")
-            self.assertFalse(summary["source_range"]["session_index_used"])
-            self.assertEqual(summary["source_range"]["session_index_fallback_reason"], "missing_or_unavailable_session_index")
-            self.assertEqual(summary["metrics"]["scanned"], 2)
-            self.assertEqual(summary["metrics"]["written"], 2)
-
-    def test_raw_message_store_reader_reads_all_raw_backends_with_same_api(self):
+    def test_raw_message_store_reader_reads_temporalstore_and_matrixkv_with_same_api(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "kv.json"
             kv = backfill.LocalJsonKV(path)
@@ -1746,24 +1580,17 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             kv.put_string("matrixark:mcp:record_count", "1")
 
             reports = []
-            expected_normalized = {
-                "temporalstore": "temporalstore",
-                "matrixkv": "matrixkv",
-                "s3": "s3",
-                "matrixobject": "matrixobject",
-                "objectstore": "matrixobject",
-            }
-            for backend, normalized_backend in expected_normalized.items():
+            for backend in ["temporalstore", "matrixkv"]:
                 reader = backfill.make_raw_message_reader(
                     kv,
                     prefix="matrixark:mcp",
                     raw_backend=backend,
                 )
                 self.assertEqual(reader.count(), 1)
-                self.assertEqual(reader.source_range(start_seq=0, end_seq=None)["raw_backend"], normalized_backend)
+                self.assertEqual(reader.source_range(start_seq=0, end_seq=None)["raw_backend"], backend)
                 event = reader.read_raw_event(0)
                 reports.append(event["storage_contract"])
-                self.assertEqual(event["backend"], normalized_backend)
+                self.assertEqual(event["backend"], backend)
                 self.assertEqual(event["record"]["body"], "same general raw event API")
                 self.assertEqual(event["storage_contract"]["timestamp_key_ms"], 1781777200000)
                 self.assertEqual(event["storage_contract"]["event_key_hash"], 42)
@@ -1776,7 +1603,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
                     read_seq=0,
                 ))
                 self.assertEqual(cli_event["mode"], "read_raw_event")
-                self.assertEqual(cli_event["backend"], normalized_backend)
+                self.assertEqual(cli_event["backend"], backend)
                 self.assertEqual(cli_event["raw_store_reader"], "matrixark.raw_message_store_reader.v1")
                 self.assertEqual(cli_event["record"], event["record"])
                 self.assertEqual(cli_event["storage_contract"], event["storage_contract"])

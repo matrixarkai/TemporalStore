@@ -84,7 +84,7 @@ Filters are functional and correct, but they are scan-and-decode filters. A 1,00
 
 Large full-window filtered scans are expensive. The 5,000-row, 3-filter case reached around 742ms p50 and 1.19s p99. This is the expected shape for a timestamp scan with per-row protobuf decode and no secondary index.
 
-For production-style feature serving, keep online windows bounded, use count limits deliberately, and use specialized aggregate/control_state-style models when the serving request needs counts/sums over long windows instead of raw sequence rows.
+For production-style feature serving, keep online windows bounded, use count limits deliberately, and use specialized aggregate/risk-style models when the serving request needs counts/sums over long windows instead of raw sequence rows.
 
 ## Re-run
 

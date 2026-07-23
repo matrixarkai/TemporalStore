@@ -29,7 +29,7 @@ Compared:
 - Rust library client typed methods
 - Rust `client` binary
 - documented C++ client shape: table open/close, router, pipeline, meta sync, retry,
-  hash/string/common/feature/sequence/IPS/ControlState families
+  hash/string/common/feature/sequence/IPS/Risk families
 
 Findings:
 
@@ -44,8 +44,8 @@ Filled:
 - The CLI now exposes common missing direct commands:
   `exists`, `sdel`, `setnx`, `setxx`, `hmset`, `hmget`, `hincrby`, `hgetall`,
   `hlen`, `hdel`, `fappendnx`, `fappendxx`, `ipsrange`, `ipsremove`, `ipsdel`,
-  `ipscount`, `control_statequery`, `control_statedetail`, `control_statehset`, `cpcset`, `folset`,
-  `folquery`, and `control_statemanager`.
+  `ipscount`, `riskquery`, `riskdetail`, `riskhset`, `cpcset`, `folset`,
+  `folquery`, and `riskmanager`.
 
 Remaining client gaps:
 
@@ -78,7 +78,7 @@ Remaining proxy gaps:
 
 - legacy C++ wire framed server compatibility
 - command-specific C++ legacy framed RPC method aliases such as `Get`, `Set`, `FeatureAdd`,
-  `ControlStateHset`, `HMGet`, `HMSet`, `HGetAll`, and `HLen`
+  `RiskHset`, `HMGet`, `HMSet`, `HGetAll`, and `HLen`
 - consul/service-discovery registration
 - full C++ partition-set topology beyond the current open-source table topology model
 
@@ -153,7 +153,7 @@ Compared:
 
 Findings:
 
-- RESP already covers common string/hash/set, feature, sequence, IPS, ControlState, FOL, admin,
+- RESP already covers common string/hash/set, feature, sequence, IPS, Risk, FOL, admin,
   and partition smoke commands.
 - CLI coverage lagged behind RESP and the library client.
 
@@ -182,7 +182,7 @@ Findings:
 - The local scale harness is the right validation for current Rust alpha behavior:
   multi-node routing, failover cadence, string/hash/sequence writes, and optional
   shared-store comparison.
-- It does not prove production C++ parity for legacy C++ wire, real MatrixObjectStore, OpenRaft or
+- It does not prove production C++ parity for legacy C++ wire, real ByteStore, OpenRaft or
   raft-rs FSM/storage, AWS multi-node chaos, or crash recovery under disk faults.
 
 Filled:
@@ -203,5 +203,5 @@ Next gaps to fill before making a stronger parity claim:
 3. Wire the metaserver scheduler loop to continuously apply membership plans against
    real data-node processes.
 4. Replace the local Raft model with a real OpenRaft or raft-rs FSM/storage layer.
-5. Build a C++ golden command corpus for feature, sequence, IPS, and ControlState edge cases
+5. Build a C++ golden command corpus for feature, sequence, IPS, and Risk edge cases
    and run it through the Rust RESP/client paths.

@@ -40,7 +40,7 @@ docker exec -w /work   -e MATRIXARK_EMBEDDING_PROVIDER=oss   -e MATRIXARK_REQUIR
 <repo>/.local/context-debug/locomo-oss-docker-debug/run_stdout.json
 ```
 
-## Capability Counts From The Run
+## Data Model Counts From The Run
 
 ```text
 context_batch_commit: 3

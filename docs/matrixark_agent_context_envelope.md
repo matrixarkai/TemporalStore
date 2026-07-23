@@ -168,4 +168,4 @@ Current MatrixArk hook support:
 
 ## Product Position
 
-The agent should not be forced to understand MatrixArk internal capabilities. It should send a simple, rich envelope containing messages, local context refs, files/resources, lifecycle event, and any identity/session hints it knows. MatrixArk owns extraction, entity updates, summaries, embeddings, tree traversal, access control, and replay.
+The agent should not be forced to understand MatrixArk internal data models. It should send a simple, rich envelope containing messages, local context refs, files/resources, lifecycle event, and any identity/session hints it knows. MatrixArk owns extraction, entity updates, summaries, embeddings, tree traversal, access control, and replay.

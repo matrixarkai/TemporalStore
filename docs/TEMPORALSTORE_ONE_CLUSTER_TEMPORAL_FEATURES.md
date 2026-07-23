@@ -4,7 +4,7 @@ TemporalStore's product direction is an online serving feature store: one online
 
 - latest profile lookup
 - high-cardinality temporal aggregation
-- control_state and fraud counters
+- risk and fraud counters
 - frequency caps
 - long sequence features
 - persisted online state with hot/cold serving
@@ -48,7 +48,7 @@ TemporalStore aims for this online shape:
 flowchart LR
     Events["Events"]
     TS["TemporalStore cluster"]
-    Service["ControlState / ranking / ads / personalization service"]
+    Service["Risk / ranking / ads / personalization service"]
     Offline["Offline archive / training store"]
 
     Events --> TS
@@ -56,7 +56,7 @@ flowchart LR
     Events --> Offline
 ```
 
-The offline path remains, but the online serving path becomes one cluster with multiple capabilities.
+The offline path remains, but the online serving path becomes one cluster with multiple data models.
 
 ## Cluster Shape
 
@@ -95,7 +95,7 @@ A production cluster can expose both direct SDK and proxy SDK paths:
 
 For early cloud service testing, one metaserver node plus two data nodes is enough to validate data paths. For production, the metaserver should be replicated and the data node count should scale by partition count, memory pressure, and write throughput.
 
-## Capabilities In One Cluster
+## Data Models In One Cluster
 
 TemporalStore should support multiple online-serving models in the same cluster.
 
@@ -103,12 +103,12 @@ TemporalStore should support multiple online-serving models in the same cluster.
 |---|---|---|
 | Latest KV / Hash | latest profile fields | `user_id -> age, city, device_type` |
 | TemporalAggregate | bucketed counters/sums/min/max | `device_id -> failed logins in last 30 min` |
-| ControlState / Frequency Cap | bounded counters by entity and dimension | `campaign_id:user_id -> impressions in last hour` |
+| Risk / Frequency Cap | bounded counters by entity and dimension | `campaign_id:user_id -> impressions in last hour` |
 | Sequence Feature | timestamped behavior rows | `user_id -> recent clicked item ids` |
 | Large Object / Page-backed State | objects that may outgrow memory | long profile blobs or cold sequence pages |
 | AI Context / GPU Metadata | session memory, prefix/cache refs, retrieval state | `tenant:model:prefix_hash -> cache location and reuse stats` |
 
-This is the key product claim: the user should not need a different online store for every feature shape. TemporalStore should be usable as the default online serving feature store, while temporal windows, filtered aggregates, distinct state, sequences, and control_state/frequency features are the product wedge that makes it different from a plain online KV/cache.
+This is the key product claim: the user should not need a different online store for every feature shape. TemporalStore should be usable as the default online serving feature store, while temporal windows, filtered aggregates, distinct state, sequences, and risk/frequency features are the product wedge that makes it different from a plain online KV/cache.
 
 ## Choosing Aggregate vs Sequence
 
@@ -157,7 +157,7 @@ model + tenant + route -> rolling p95 latency / error / cost counters
 
 These fit TemporalStore because they are high-cardinality, frequently updated, time-sensitive, and often queried by bounded windows or exact keys.
 
-Possible AI-oriented capabilities:
+Possible AI-oriented data models:
 
 | Model | What It Stores | First Use |
 |---|---|---|
@@ -247,7 +247,7 @@ Offline aggregation works well for stable daily features:
 feature definition -> batch job -> materialized table -> online lookup
 ```
 
-But control_state, fraud, ads, and recommendation features change quickly:
+But risk, fraud, ads, and recommendation features change quickly:
 
 - change the serving window from 30 minutes to 10 minutes
 - add a filter such as `country=US`
@@ -260,7 +260,7 @@ With an offline-only pipeline, many of these changes require a new job and a new
 
 TemporalStore still should export or mirror events to offline storage for training and audit. The difference is that offline no longer has to be the only place where the feature is computed.
 
-## Example: One Cluster For ControlState And Feature Serving
+## Example: One Cluster For Risk And Feature Serving
 
 ```mermaid
 sequenceDiagram
@@ -280,7 +280,7 @@ sequenceDiagram
 
 One cluster can serve:
 
-- control_state counters for login abuse
+- risk counters for login abuse
 - frequency caps for ads
 - latest profile features for ranking
 - long behavior sequences for inference
@@ -344,7 +344,7 @@ The pitch:
 
 ```text
 One online cluster for high-cardinality temporal features,
-control_state counters, frequency caps, long sequence features,
+risk counters, frequency caps, long sequence features,
 and persisted feature serving.
 ```
 

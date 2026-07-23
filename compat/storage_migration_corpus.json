@@ -147,11 +147,11 @@
           }
         },
         {
-          "name": "control_state_increment",
+          "name": "risk_increment",
           "storage_mutation": true,
           "command": {
-            "kind": "control_state_increment",
-            "key": "storage:control_state",
+            "kind": "risk_increment",
+            "key": "storage:risk",
             "timestamp_ms": 4000,
             "amount": 4
           },
@@ -160,11 +160,11 @@
           }
         },
         {
-          "name": "control_state_change_add",
+          "name": "risk_change_add",
           "storage_mutation": true,
           "command": {
-            "kind": "control_state_change_add",
-            "key": "storage:control_state-change",
+            "kind": "risk_change_add",
+            "key": "storage:risk-change",
             "timestamp_ms": 4010,
             "value": [114, 99, 49]
           },
@@ -173,11 +173,11 @@
           }
         },
         {
-          "name": "control_state_fol_set",
+          "name": "risk_fol_set",
           "storage_mutation": true,
           "command": {
-            "kind": "control_state_fol_set",
-            "key": "storage:control_state-fol",
+            "kind": "risk_fol_set",
+            "key": "storage:risk-fol",
             "value": [102, 111, 108],
             "occur_time_ms": 4020,
             "ttl_ms": 60000,
@@ -413,10 +413,10 @@
           }
         },
         {
-          "name": "read_control_state_count",
+          "name": "read_risk_count",
           "command": {
-            "kind": "control_state_count",
-            "key": "storage:control_state",
+            "kind": "risk_count",
+            "key": "storage:risk",
             "start_ms": 3990,
             "end_ms": 4010
           },

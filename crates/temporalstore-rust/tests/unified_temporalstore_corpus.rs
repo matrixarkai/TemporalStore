@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+﻿use std::collections::BTreeSet;
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -222,7 +222,7 @@ fn rust_executes_storage_raft_gc_parity_shared_cases() {
 // shared-corpus: storage_cache_replacement_policy_soak storage_byteraft_cache_refill_pressure storage_cache_cold_read_after_eviction_shared
 // shared-corpus: storage_slot_first_physical_index storage_object_manager_slotstore_runtime_authority storage_model_layout_compaction_policies storage_merged_dump_load_lifecycle storage_object_manager_cold_hot_reload storage_page_address_disk_cache_shared_store_fallback
 // shared-corpus: storage_stale_page_density_compaction storage_merged_dump_load_restart_interruption storage_gc_eviction_cold_reads storage_manager_real_pressure_signals storage_manager_wal_reclaim_slot_generation_retention storage_manager_expire_cursor_scan_limits
-// shared-corpus: storage_manager_active_eviction_runtime storage_manager_page_gc_dependency_refusal storage_manager_index_gc_thresholds_recovery storage_control_state_context_page_backed_parity
+// shared-corpus: storage_manager_active_eviction_runtime storage_manager_page_gc_dependency_refusal storage_manager_index_gc_thresholds_recovery storage_risk_context_page_backed_parity
 #[test]
 fn rust_executes_storage_eviction_parity_shared_cases() {
     verify_storage_cache_replacement_policy_soak(79);
@@ -353,7 +353,6 @@ fn response_kind(response: &CommandResponse) -> &'static str {
         CommandResponse::IpsStats { .. } => "ips_stats",
         CommandResponse::IpsSnapshotReport { .. } => "ips_snapshot_report",
         CommandResponse::ContextNode { .. } => "context_node",
-        CommandResponse::ContextNodes { .. } => "context_nodes",
         CommandResponse::ContextObjectKey { .. } => "context_object_key",
         CommandResponse::ContextExtractedEventWrite { .. } => "context_extracted_event_write",
         CommandResponse::ContextEvents { .. } => "context_events",
@@ -718,8 +717,7 @@ fn assert_static_expectation(case: &UnifiedCase, step: &UnifiedStep) {
                 || uri.starts_with("s3://")
                 || uri.starts_with("ceph://")
                 || uri.starts_with("ceph+s3://")
-                || uri.starts_with("matrixobjectstore://")
-                || uri.starts_with("matrixobject://");
+                || uri.starts_with("bytestore://");
             let expected = step
                 .expect
                 .as_ref()
@@ -733,13 +731,10 @@ fn assert_static_expectation(case: &UnifiedCase, step: &UnifiedStep) {
         }
         "object_store_backend_detect" => {
             let uri = json_string(&step.command, "uri");
-            let backend = if uri.starts_with("blob://")
-                || uri.starts_with("matrixobjectstore://")
-                || uri.starts_with("matrixobject://")
-            {
-                "matrixobject"
+            let backend = if uri.starts_with("blob://") || uri.starts_with("bytestore://") {
+                "bytestore"
             } else if uri.starts_with("local://") {
-                "matrixobject"
+                "bytestore"
             } else if uri.starts_with("ceph+s3://") || uri.starts_with("ceph://") {
                 "ceph_s3"
             } else if uri.starts_with("rados://") {
@@ -2153,7 +2148,6 @@ fn verify_client_cpp_partition_set_route_cache() {
                         partitions: vec![
                             TablePartition {
                                 shard_id: PartitionId::new(42, 0, 0, 17).unwrap().id(),
-                                state: MetaEntityState::Normal,
                                 start_slot: 0,
                                 end_slot: 536_870_911,
                                 primary: Some(primary_for_meta.clone()),
@@ -2169,7 +2163,6 @@ fn verify_client_cpp_partition_set_route_cache() {
                             },
                             TablePartition {
                                 shard_id: PartitionId::new(42, 1, 0, 17).unwrap().id(),
-                                state: MetaEntityState::Normal,
                                 start_slot: 536_870_912,
                                 end_slot: 1_073_741_823,
                                 primary: Some(replica_for_meta.clone()),
@@ -2419,7 +2412,6 @@ fn verify_client_metasync_outage_churn() {
                             }),
                             partitions: vec![TablePartition {
                                 shard_id: 40,
-                                state: MetaEntityState::Normal,
                                 start_slot: 0,
                                 end_slot: 1_073_741_823,
                                 primary: Some("127.0.0.1:27440".to_string()),
@@ -2648,7 +2640,6 @@ fn verify_client_deployment_placement_routing() {
                         }),
                         partitions: vec![TablePartition {
                             shard_id: 81,
-                            state: MetaEntityState::Normal,
                             start_slot: 0,
                             end_slot: u64::MAX,
                             primary: Some(primary_for_meta.clone()),
@@ -2710,114 +2701,6 @@ fn verify_client_deployment_placement_routing() {
     assert_eq!(primary_reads.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(replica_reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(replica_writes.load(std::sync::atomic::Ordering::SeqCst), 0);
-
-    let fallback_primary_addr = free_local_addr();
-    let fallback_replica_addr = free_local_addr();
-    let fallback_meta_addr = free_local_addr();
-    let fallback_primary_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let fallback_replica_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-
-    start_replica_fallback_endpoint(
-        fallback_primary_addr.clone(),
-        Arc::clone(&fallback_primary_reads),
-        Status::ok(),
-        Some(b"primary-fallback".to_vec()),
-    );
-    start_replica_fallback_endpoint(
-        fallback_replica_addr.clone(),
-        Arc::clone(&fallback_replica_reads),
-        Status::error("replica_not_ready", "secondary behind durable sequence"),
-        None,
-    );
-
-    let fallback_meta_for_listener = fallback_meta_addr.clone();
-    let fallback_primary_for_meta = fallback_primary_addr.clone();
-    let fallback_replica_for_meta = fallback_replica_addr.clone();
-    std::thread::spawn(move || {
-        serve(&fallback_meta_for_listener, move |request| {
-            match (request.method.as_str(), request.path.as_str()) {
-                ("POST", "/tables/topology") => json_response(
-                    200,
-                    &TableTopologyResponse {
-                        status: Status::ok(),
-                        table: Some(TableMetaInfo {
-                            table_id: 82,
-                            namespace: "ns".to_string(),
-                            table_name: "fallback".to_string(),
-                            state: MetaEntityState::Normal,
-                            topology_version: 12,
-                            first_shard_id: 82,
-                            shard_count: 1,
-                            replica_count: 2,
-                            use_cpp_partition_ids: false,
-                            partition_version: 4,
-                            serving_options: temporalstore_rust::meta::TableServingOptions {
-                                pin_primary: false,
-                                replica_read_policy: "round_robin_replica".to_string(),
-                                preferred_location: String::new(),
-                                drop_percent: 0,
-                                max_read_retries: 1,
-                                max_write_retries: 0,
-                                retry_backoff_ms: 0,
-                                continuous_failed_time_ms: 100,
-                                io_timeout_ms: 1_000,
-                                connect_timeout_ms: 1_000,
-                            },
-                        }),
-                        partitions: vec![TablePartition {
-                            shard_id: 82,
-                            state: MetaEntityState::Normal,
-                            start_slot: 0,
-                            end_slot: u64::MAX,
-                            primary: Some(fallback_primary_for_meta.clone()),
-                            replicas: vec![
-                                fallback_primary_for_meta.clone(),
-                                fallback_replica_for_meta.clone(),
-                            ],
-                            primary_endpoint: Some(ServerEndpoint {
-                                server_addr: fallback_primary_for_meta.clone(),
-                                location: "zone-primary".to_string(),
-                            }),
-                            replica_endpoints: vec![ServerEndpoint {
-                                server_addr: fallback_replica_for_meta.clone(),
-                                location: "zone-local".to_string(),
-                            }],
-                        }],
-                        unchanged: false,
-                    },
-                ),
-                _ => json_response(404, &Status::error("not_found", "not found")),
-            }
-        })
-        .unwrap();
-    });
-
-    wait_for_http(&fallback_primary_addr);
-    wait_for_http(&fallback_replica_addr);
-    wait_for_http(&fallback_meta_addr);
-
-    let fallback_client = TemporalStoreClient::with_options(ClientOptions {
-        proxy_addr: "127.0.0.1:1".to_string(),
-        meta_addr: Some(fallback_meta_addr),
-        local_location: "zone-local".to_string(),
-        route_cache_ttl_ms: 60_000,
-        ..ClientOptions::default()
-    });
-    let fallback_table = fallback_client
-        .open_table_from_meta("ns", "fallback")
-        .unwrap();
-    assert_eq!(
-        fallback_table.get("placed-key").unwrap(),
-        Some(b"primary-fallback".to_vec())
-    );
-    assert_eq!(
-        fallback_replica_reads.load(std::sync::atomic::Ordering::SeqCst),
-        1
-    );
-    assert_eq!(
-        fallback_primary_reads.load(std::sync::atomic::Ordering::SeqCst),
-        1
-    );
 }
 
 fn verify_metaserver_scheduler_control_plane() {
@@ -4798,40 +4681,6 @@ fn start_client_placement_endpoint(
                                     status: Status::ok(),
                                     response: CommandResponse::Bytes {
                                         value: Some(read_value.clone()),
-                                    },
-                                },
-                            )
-                        }
-                        _ => json_response(400, &Status::error("bad_request", "unexpected")),
-                    }
-                }
-                _ => json_response(404, &Status::error("not_found", "not found")),
-            }
-        })
-        .unwrap();
-    });
-}
-
-fn start_replica_fallback_endpoint(
-    addr: String,
-    reads: Arc<std::sync::atomic::AtomicUsize>,
-    status: Status,
-    read_value: Option<Vec<u8>>,
-) {
-    std::thread::spawn(move || {
-        serve(&addr, move |request| {
-            match (request.method.as_str(), request.path.as_str()) {
-                ("POST", "/execute") => {
-                    let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
-                    match req.command {
-                        Command::StringGet { .. } => {
-                            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            json_response(
-                                200,
-                                &ExecuteResponse {
-                                    status: status.clone(),
-                                    response: CommandResponse::Bytes {
-                                        value: read_value.clone(),
                                     },
                                 },
                             )

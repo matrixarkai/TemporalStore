@@ -89,42 +89,6 @@ func (c *ProxyClient) HGet(key, field string) (string, error) {
 	return data.Value, err
 }
 
-func (c *ProxyClient) HMSet(key string, entries map[string]string) error {
-	body := c.keyBody(key)
-	encoded := make([][]interface{}, 0, len(entries))
-	for field, value := range entries {
-		encoded = append(encoded, []interface{}{field, bytesValue(value)})
-	}
-	body["entries"] = encoded
-	return c.post("/ProxyService/HMSet", body, nil)
-}
-
-func (c *ProxyClient) HMGet(key string, fields []string) ([]string, error) {
-	body := c.keyBody(key)
-	body["fields"] = fields
-	var data struct {
-		Values []string `json:"values"`
-	}
-	err := c.post("/ProxyService/HMGet", body, &data)
-	return data.Values, err
-}
-
-func (c *ProxyClient) HGetAll(key string) (map[string]string, error) {
-	var data struct {
-		Entries map[string]string `json:"entries"`
-	}
-	err := c.post("/ProxyService/HGetAll", c.keyBody(key), &data)
-	return data.Entries, err
-}
-
-func (c *ProxyClient) HLen(key string) (int64, error) {
-	var data struct {
-		Value int64 `json:"value"`
-	}
-	err := c.post("/ProxyService/HLen", c.keyBody(key), &data)
-	return data.Value, err
-}
-
 func (c *ProxyClient) HDel(key, field string) error {
 	body := c.keyBody(key)
 	body["field"] = field
@@ -143,20 +107,6 @@ func (c *ProxyClient) SMembers(key string) ([]string, error) {
 	}
 	err := c.post("/ProxyService/SMembers", c.keyBody(key), &data)
 	return data.Members, err
-}
-
-func (c *ProxyClient) SRem(key, member string) error {
-	body := c.keyBody(key)
-	body["member"] = bytesValue(member)
-	return c.post("/ProxyService/SRem", body, nil)
-}
-
-func (c *ProxyClient) Exists(key string) (bool, error) {
-	var data struct {
-		Value int64 `json:"value"`
-	}
-	err := c.post("/ProxyService/Exists", c.keyBody(key), &data)
-	return data.Value != 0, err
 }
 
 func (c *ProxyClient) AddFeaturePoints(key string, points []FeaturePoint) error {
@@ -178,39 +128,6 @@ func (c *ProxyClient) QueryFeaturePoints(
 	}
 	err := c.post("/ProxyService/FeatureQuery", body, &data)
 	return data.Points, err
-}
-
-func (c *ProxyClient) ReplaceFeaturePoints(key string, startTs uint64, endTs uint64, points []FeaturePoint) error {
-	body := c.keyBody(key)
-	body["start_ms"] = startTs
-	body["end_ms"] = endTs
-	body["points"] = featurePointBodies(points)
-	return c.post("/ProxyService/FeatureReplace", body, nil)
-}
-
-func (c *ProxyClient) DeleteFeaturePoints(key string) error {
-	return c.post("/ProxyService/FeatureDelete", c.keyBody(key), nil)
-}
-
-func (c *ProxyClient) AggregateFeaturePoints(
-	key string,
-	startTs uint64,
-	endTs uint64,
-	aggregator string,
-	count uint64,
-) (int64, error) {
-	body := c.keyBody(key)
-	body["start_ms"] = startTs
-	body["end_ms"] = endTs
-	body["aggregator"] = aggregator
-	if count > 0 {
-		body["count"] = count
-	}
-	var data struct {
-		Value int64 `json:"value"`
-	}
-	err := c.post("/ProxyService/FeatureAggQuery", body, &data)
-	return data.Value, err
 }
 
 func (c *ProxyClient) AddSequenceFeatureRows(key string, rows []SequenceFeatureRow) error {
@@ -294,11 +211,11 @@ func (c *ProxyClient) QueryIPSLastInstances(
 	return data.Features, err
 }
 
-func (c *ProxyClient) ControlStateIncrement(
+func (c *ProxyClient) RiskIncrement(
 	key string,
 	amount int64,
 	ttlSeconds uint64,
-	precision ControlStatePrecision,
+	precision RiskPrecision,
 	uuid string,
 	occurTimeSeconds uint64,
 ) error {
@@ -307,16 +224,16 @@ func (c *ProxyClient) ControlStateIncrement(
 	body["ttl_seconds"] = ttlSeconds
 	body["ttl_ms"] = ttlSeconds * 1000
 	body["precision"] = precision
-	body["precision_ms"] = control_statePrecisionMs(precision)
+	body["precision_ms"] = riskPrecisionMs(precision)
 	body["uuid"] = uuid
 	body["occur_time_seconds"] = occurTimeSeconds
 	body["timestamp_ms"] = proxyTimestampMs(occurTimeSeconds)
-	return c.post("/ProxyService/ControlStateIncrement", body, nil)
+	return c.post("/ProxyService/RiskIncrement", body, nil)
 }
 
-func (c *ProxyClient) ControlStateCount(
+func (c *ProxyClient) RiskCount(
 	key string,
-	precision ControlStatePrecision,
+	precision RiskPrecision,
 	windowStart int64,
 	windowEnd int64,
 	windowUnit WindowUnit,
@@ -326,46 +243,14 @@ func (c *ProxyClient) ControlStateCount(
 	body["window_start"] = windowStart
 	body["window_end"] = windowEnd
 	body["window_unit"] = windowUnit
-	startMs, endMs := control_stateWindowMs(windowStart, windowEnd, windowUnit)
+	startMs, endMs := riskWindowMs(windowStart, windowEnd, windowUnit)
 	body["start_ms"] = startMs
 	body["end_ms"] = endMs
 	var data struct {
 		Count int64 `json:"count"`
 	}
-	err := c.post("/ProxyService/ControlStateCount", body, &data)
+	err := c.post("/ProxyService/RiskCount", body, &data)
 	return data.Count, err
-}
-
-func (c *ProxyClient) ControlStateHSet(key string, timestampMs uint64, amount int64) error {
-	body := c.keyBody(key)
-	body["timestamp_ms"] = timestampMs
-	body["amount"] = amount
-	return c.post("/ProxyService/ControlStateHset", body, nil)
-}
-
-func (c *ProxyClient) ControlStateFOLSet(key, value string, occurTimeMs uint64, ttlMs uint64, folType string) error {
-	body := c.keyBody(key)
-	body["value"] = bytesValue(value)
-	body["occur_time_ms"] = occurTimeMs
-	body["ttl_ms"] = ttlMs
-	body["fol_type"] = folType
-	return c.post("/ProxyService/ControlStateFolSet", body, nil)
-}
-
-func (c *ProxyClient) ControlStateFOLQuery(key string) (string, error) {
-	var data struct {
-		Value string `json:"value"`
-	}
-	err := c.post("/ProxyService/ControlStateFolQuery", c.keyBody(key), &data)
-	return data.Value, err
-}
-
-func (c *ProxyClient) ControlStateManager(key string) (map[string]string, error) {
-	var data struct {
-		Entries map[string]string `json:"entries"`
-	}
-	err := c.post("/ProxyService/ControlStateManager", c.keyBody(key), &data)
-	return data.Entries, err
 }
 
 func (c *ProxyClient) keyBody(key string) map[string]interface{} {
@@ -499,35 +384,6 @@ func flattenCommandResponse(raw json.RawMessage) (json.RawMessage, error) {
 			values = append(values, intsToString(member))
 		}
 		return json.Marshal(map[string]interface{}{"members": values})
-	case "values":
-		var rawValues []json.RawMessage
-		_ = json.Unmarshal(response["values"], &rawValues)
-		values := make([]string, 0, len(rawValues))
-		for _, rawValue := range rawValues {
-			if bytes.Equal(rawValue, []byte("null")) {
-				values = append(values, "")
-				continue
-			}
-			var value []int
-			_ = json.Unmarshal(rawValue, &value)
-			values = append(values, intsToString(value))
-		}
-		return json.Marshal(map[string]interface{}{"values": values})
-	case "hash_entries":
-		var rawEntries [][]json.RawMessage
-		_ = json.Unmarshal(response["entries"], &rawEntries)
-		entries := make(map[string]string, len(rawEntries))
-		for _, rawEntry := range rawEntries {
-			if len(rawEntry) < 2 {
-				continue
-			}
-			var field string
-			var value []int
-			_ = json.Unmarshal(rawEntry[0], &field)
-			_ = json.Unmarshal(rawEntry[1], &value)
-			entries[field] = intsToString(value)
-		}
-		return json.Marshal(map[string]interface{}{"entries": entries})
 	case "feature_points":
 		return flattenFeaturePoints(response["points"])
 	case "sequence_rows":
@@ -627,32 +483,32 @@ func proxyTimestampMs(occurTimeSeconds uint64) uint64 {
 	return occurTimeSeconds * 1000
 }
 
-func control_statePrecisionMs(precision ControlStatePrecision) uint64 {
+func riskPrecisionMs(precision RiskPrecision) uint64 {
 	switch precision {
-	case ControlStateOneSecond:
+	case RiskOneSecond:
 		return 1000
-	case ControlStateFiveSeconds:
+	case RiskFiveSeconds:
 		return 5000
-	case ControlStateTenSeconds:
+	case RiskTenSeconds:
 		return 10000
-	case ControlStateOneMinute:
+	case RiskOneMinute:
 		return 60000
-	case ControlStateFiveMinutes:
+	case RiskFiveMinutes:
 		return 5 * 60000
-	case ControlStateTenMinutes:
+	case RiskTenMinutes:
 		return 10 * 60000
-	case ControlStateOneHour:
+	case RiskOneHour:
 		return 60 * 60000
-	case ControlStateOneDay:
+	case RiskOneDay:
 		return 24 * 60 * 60000
-	case ControlStateOneMonth:
+	case RiskOneMonth:
 		return 30 * 24 * 60 * 60000
 	default:
 		return 60000
 	}
 }
 
-func control_stateWindowMs(windowStart int64, windowEnd int64, unit WindowUnit) (uint64, uint64) {
+func riskWindowMs(windowStart int64, windowEnd int64, unit WindowUnit) (uint64, uint64) {
 	now := time.Now().UnixMilli()
 	end := windowEnd
 	if end <= 0 {

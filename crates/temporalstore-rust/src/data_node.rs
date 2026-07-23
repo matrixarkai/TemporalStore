@@ -134,12 +134,6 @@ pub struct DataNodeRuntimeStats {
     pub rejected_background_total: u64,
     pub timed_out_total: u64,
     pub canceled_total: u64,
-    #[serde(default)]
-    pub append_queue_wait_count: u64,
-    #[serde(default)]
-    pub append_queue_wait_total_ms: u64,
-    #[serde(default)]
-    pub append_queue_wait_max_ms: u64,
     pub queue_depth: usize,
     pub background_queue_depth: usize,
     pub queued_shard_count: usize,
@@ -387,30 +381,6 @@ fn data_node_storage_lifecycle_metrics(stats: &DataNodeRuntimeStats) -> BTreeMap
         stats.rejected_background_total,
     );
     metrics.insert(
-        "append_queue_depth".to_string(),
-        stats
-            .queue_depth
-            .saturating_add(stats.background_queue_depth) as u64,
-    );
-    metrics.insert(
-        "append_queue_wait_count".to_string(),
-        stats.append_queue_wait_count,
-    );
-    metrics.insert(
-        "append_queue_wait_total_ms".to_string(),
-        stats.append_queue_wait_total_ms,
-    );
-    metrics.insert(
-        "append_queue_wait_ms".to_string(),
-        stats.append_queue_wait_max_ms,
-    );
-    metrics.insert(
-        "append_durability_failures".to_string(),
-        stats
-            .rejected_total
-            .saturating_add(stats.rejected_background_total),
-    );
-    metrics.insert(
         "tombstone_records".to_string(),
         stats.expired_records_removed,
     );
@@ -449,104 +419,31 @@ fn apply_shard_storage_metrics(
         let block_entries = storage.block_index_entries.max(page_entries);
         let object_entries = storage.object_index_entries.max(shard.total_records as u64);
         let slot_entries = storage.slot_entries.max(shard.dirty_slot_count);
-        let write_count = storage
-            .page_writes
-            .max(storage.block_writes)
-            .max(page_entries);
-        let write_bytes = storage.bytes_written.max(shard.block_store_bytes_written);
-        let stale_bytes = storage.storage_zone_stale_bytes;
-        let total_zone_bytes = storage
-            .storage_zone_total_bytes
-            .max(storage.storage_zone_used_bytes.saturating_add(stale_bytes));
-        let stale_page_estimate = if stale_bytes == 0 || total_zone_bytes == 0 {
-            0
-        } else {
-            let estimated = page_entries.saturating_mul(stale_bytes) / total_zone_bytes;
-            estimated.max(1)
-        };
-        let stale_block_estimate = if stale_bytes == 0 || total_zone_bytes == 0 {
-            0
-        } else {
-            let estimated = block_entries.saturating_mul(stale_bytes) / total_zone_bytes;
-            estimated.max(1)
-        };
         add(metrics, "object_index_entry_count", object_entries);
         add(metrics, "slot_index_entry_count", slot_entries);
         add(metrics, "slot_object_ref_count", object_entries);
         add(metrics, "slot_page_ref_count", page_entries);
-        add(metrics, "cache_admissions", shard.cache.puts);
-        add(metrics, "cache_evictions", shard.cache.memory_evictions);
-        add(
-            metrics,
-            "cache_rehydrates",
-            shard.cache.disk_hits.saturating_add(shard.cache.pmem_fills),
-        );
-        add(metrics, "memory_cache_hits", shard.cache.memory_hits);
-        add(metrics, "memory_cache_misses", shard.cache.misses);
-        add(metrics, "page_index_cache_hits", shard.cache.memory_hits);
-        add(metrics, "page_index_cache_misses", shard.cache.misses);
-        add(metrics, "block_index_cache_hits", shard.cache.disk_hits);
-        add(metrics, "block_index_cache_misses", shard.cache.misses);
-        add(metrics, "disk_cache_hits", shard.cache.disk_hits);
-        add(metrics, "disk_cache_misses", shard.cache.misses);
-        add(metrics, "shared_store_read_throughs", shard.cache.disk_hits);
-        add(metrics, "cache_refills", shard.cache.puts);
-        add(metrics, "cache_invalidations", shard.cache.invalidations);
-        add(
-            metrics,
-            "hot_cache_promotions",
-            shard.cache.pmem_hits.saturating_add(shard.cache.disk_hits),
-        );
         add(metrics, "page_index_entry_count", page_entries);
         add(metrics, "block_index_entry_count", block_entries);
         add(metrics, "page_address_count", page_entries);
-        add(
-            metrics,
-            "object_page_index_lookup_count",
-            storage.page_reads.max(page_entries),
-        );
-        add(
-            metrics,
-            "page_index_lookup_count",
-            storage.page_reads.max(page_entries),
-        );
-        add(
-            metrics,
-            "block_index_lookup_count",
-            storage
-                .page_reads
-                .max(storage.block_reads)
-                .max(block_entries),
-        );
         add(metrics, "page_reads", storage.page_reads);
-        add(metrics, "page_writes", write_count);
+        add(
+            metrics,
+            "page_writes",
+            storage.page_writes.max(page_entries),
+        );
         add(metrics, "block_reads", storage.block_reads);
         add(
             metrics,
-            "cold_scan_no_cache_reads",
-            storage.cold_block_reads,
-        );
-        add(metrics, "cold_scan_page_reads", storage.cold_block_reads);
-        add(metrics, "no_cache_page_reads", storage.cold_block_reads);
-        add(metrics, "block_writes", write_count.max(block_entries));
-        add(metrics, "records_appended", write_count);
-        add(metrics, "append_engine_ms", write_count);
-        add(metrics, "append_batch_size", write_count);
-        add(metrics, "append_batch_bytes", write_bytes);
-        add(metrics, "append_coalesced_writes", write_count);
-        add(
-            metrics,
-            "append_queue_depth",
-            shard
-                .dirty_slot_count
-                .saturating_add(shard.dirty_object_count),
+            "block_writes",
+            storage.block_writes.max(block_entries),
         );
         add(metrics, "bytes_read", storage.bytes_read);
-        add(metrics, "bytes_written", write_bytes);
-        add(metrics, "reclaimable_bytes", stale_bytes);
-        add(metrics, "tombstone_records", stale_page_estimate);
-        add(metrics, "stale_page_tombstones", stale_page_estimate);
-        add(metrics, "stale_block_tombstones", stale_block_estimate);
+        add(
+            metrics,
+            "bytes_written",
+            storage.bytes_written.max(shard.block_store_bytes_written),
+        );
         add(metrics, "append_watermark", shard.oplog_sequence);
         add(
             metrics,
@@ -1320,9 +1217,6 @@ struct MutableRuntimeStats {
     rejected_background_total: u64,
     timed_out_total: u64,
     canceled_total: u64,
-    append_queue_wait_count: u64,
-    append_queue_wait_total_ms: u64,
-    append_queue_wait_max_ms: u64,
     expiry_sweeps: u64,
     expired_records_removed: u64,
     dump_runs: u64,
@@ -1786,53 +1680,32 @@ impl DataNodeRuntime {
     }
 
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
-        let ExecuteRequest { shard_id, command } = request;
-        let should_mark_dirty = is_write_command(&command);
-        let command_key = if should_mark_dirty {
-            command_key(&command).map(str::to_string)
-        } else {
-            None
-        };
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
-            shard_id,
-            std::slice::from_ref(&command),
+            request.shard_id,
+            std::slice::from_ref(&request.command),
         ) {
             return ExecuteResponse {
                 status,
                 response: CommandResponse::Empty,
             };
         }
-        let response = self.inner.engine.execute(ExecuteRequest {
-            shard_id,
-            command,
-        });
-        if response.status.ok && should_mark_dirty {
+        let response = self.inner.engine.execute(request.clone());
+        if response.status.ok && is_write_command(&request.command) {
             mark_dirty(
                 &self.inner.dirty,
-                shard_id,
-                command_key.as_deref(),
+                request.shard_id,
+                command_key(&request.command),
             );
         }
         response
     }
 
     pub fn execute_checked(&self, request: CheckedExecuteRequest) -> CheckedExecuteResponse {
-        let CheckedExecuteRequest {
-            shard_id,
-            load_version,
-            command,
-        } = request;
-        let should_mark_dirty = is_write_command(&command);
-        let command_key = if should_mark_dirty {
-            command_key(&command).map(str::to_string)
-        } else {
-            None
-        };
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
-            shard_id,
-            std::slice::from_ref(&command),
+            request.shard_id,
+            std::slice::from_ref(&request.command),
         ) {
             return CheckedExecuteResponse {
                 status: status.clone(),
@@ -1842,47 +1715,33 @@ impl DataNodeRuntime {
                 },
             };
         }
-        let response = self.inner.engine.execute_checked(CheckedExecuteRequest {
-            shard_id,
-            load_version,
-            command,
-        });
-        if response.status.ok && should_mark_dirty {
+        let response = self.inner.engine.execute_checked(request.clone());
+        if response.status.ok && is_write_command(&request.command) {
             mark_dirty(
                 &self.inner.dirty,
-                shard_id,
-                command_key.as_deref(),
+                request.shard_id,
+                command_key(&request.command),
             );
         }
         response
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
-        let BatchExecuteRequest { shard_id, commands } = request;
-        let mut command_metadata = Vec::new();
-        for (idx, command) in commands.iter().enumerate() {
-            if is_write_command(command) {
-                command_metadata.push((idx, command_key(command).map(str::to_string)));
-            }
-        }
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
-            shard_id,
-            &commands,
+            request.shard_id,
+            &request.commands,
         ) {
             return BatchExecuteResponse {
                 status,
                 responses: Vec::new(),
             };
         }
-        let response = self.inner.engine.batch_execute(BatchExecuteRequest {
-            shard_id,
-            commands,
-        });
-        mark_dirty_for_successful_commands_from_metadata(
+        let response = self.inner.engine.batch_execute(request.clone());
+        mark_dirty_for_successful_commands(
             &self.inner.dirty,
-            shard_id,
-            &command_metadata,
+            request.shard_id,
+            &request.commands,
             &response.responses,
         );
         response
@@ -1892,21 +1751,10 @@ impl DataNodeRuntime {
         &self,
         request: CheckedBatchExecuteRequest,
     ) -> CheckedBatchExecuteResponse {
-        let CheckedBatchExecuteRequest {
-            shard_id,
-            load_version,
-            commands,
-        } = request;
-        let mut command_metadata = Vec::new();
-        for (idx, command) in commands.iter().enumerate() {
-            if is_write_command(command) {
-                command_metadata.push((idx, command_key(command).map(str::to_string)));
-            }
-        }
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
-            shard_id,
-            &commands,
+            request.shard_id,
+            &request.commands,
         ) {
             return CheckedBatchExecuteResponse {
                 status: status.clone(),
@@ -1916,16 +1764,12 @@ impl DataNodeRuntime {
                 },
             };
         }
-        let response = self.inner.engine.batch_execute_checked(CheckedBatchExecuteRequest {
-            shard_id,
-            load_version,
-            commands,
-        });
+        let response = self.inner.engine.batch_execute_checked(request.clone());
         if response.status.ok {
-            mark_dirty_for_successful_commands_from_metadata(
+            mark_dirty_for_successful_commands(
                 &self.inner.dirty,
-                shard_id,
-                &command_metadata,
+                request.shard_id,
+                &request.commands,
                 &response.response.responses,
             );
         }
@@ -2311,14 +2155,14 @@ impl DataNodeRuntime {
                 stats.storage_manager_reclaim_oplog_runs += 1;
             }
             lifecycle_report = Some(response.report);
-            executed_stages.push("reclaim".to_string());
+            executed_stages.push("reclaim_oplog".to_string());
         } else if !options.enable_oplog_reclaim {
-            skipped_stages.push("reclaim_disabled".to_string());
+            skipped_stages.push("reclaim_oplog_disabled".to_string());
         } else {
-            skipped_stages.push("reclaim_no_pressure".to_string());
+            skipped_stages.push("reclaim_oplog_no_pressure".to_string());
         }
         pressure_decisions.push(storage_manager_pressure_decision(
-            "reclaim",
+            "reclaim_oplog",
             options.enable_oplog_reclaim,
             dump_pressure,
             options.enable_oplog_reclaim && dump_pressure,
@@ -2344,7 +2188,11 @@ impl DataNodeRuntime {
                     "undumped_oplog_pressure",
                 ),
             ]),
-            storage_manager_skip_reason(options.enable_oplog_reclaim, dump_pressure, "reclaim"),
+            storage_manager_skip_reason(
+                options.enable_oplog_reclaim,
+                dump_pressure,
+                "reclaim_oplog",
+            ),
         ));
 
         if options.enable_memory_reclaim && cache_pressure {
@@ -2471,14 +2319,14 @@ impl DataNodeRuntime {
                 .lock()
                 .expect("runtime stats lock poisoned")
                 .storage_manager_reclaim_page_runs += 1;
-            executed_stages.push("page_gc".to_string());
+            executed_stages.push("reclaim_page".to_string());
         } else if !options.enable_page_gc {
-            skipped_stages.push("page_gc_disabled".to_string());
+            skipped_stages.push("reclaim_page_disabled".to_string());
         } else {
-            skipped_stages.push("page_gc_no_pressure".to_string());
+            skipped_stages.push("reclaim_page_no_pressure".to_string());
         }
         pressure_decisions.push(storage_manager_pressure_decision(
-            "page_gc",
+            "reclaim_page",
             options.enable_page_gc,
             stale_page_pressure,
             options.enable_page_gc && stale_page_pressure,
@@ -2514,7 +2362,11 @@ impl DataNodeRuntime {
                     "reclaimable_physical_bytes_pressure",
                 ),
             ]),
-            storage_manager_skip_reason(options.enable_page_gc, stale_page_pressure, "page_gc"),
+            storage_manager_skip_reason(
+                options.enable_page_gc,
+                stale_page_pressure,
+                "reclaim_page",
+            ),
         ));
 
         if options.enable_page_compaction && stale_page_pressure {
@@ -2528,14 +2380,14 @@ impl DataNodeRuntime {
                 .lock()
                 .expect("runtime stats lock poisoned")
                 .storage_manager_compact_runs += 1;
-            executed_stages.push("compaction".to_string());
+            executed_stages.push("compact_pages".to_string());
         } else if !options.enable_page_compaction {
-            skipped_stages.push("compaction_disabled".to_string());
+            skipped_stages.push("compact_pages_disabled".to_string());
         } else {
-            skipped_stages.push("compaction_no_pressure".to_string());
+            skipped_stages.push("compact_pages_no_pressure".to_string());
         }
         pressure_decisions.push(storage_manager_pressure_decision(
-            "compaction",
+            "compact_pages",
             options.enable_page_compaction,
             stale_page_pressure,
             options.enable_page_compaction && stale_page_pressure,
@@ -2574,7 +2426,7 @@ impl DataNodeRuntime {
             storage_manager_skip_reason(
                 options.enable_page_compaction,
                 stale_page_pressure,
-                "compaction",
+                "compact_pages",
             ),
         ));
 
@@ -3019,9 +2871,6 @@ impl DataNodeRuntime {
             rejected_background_total: stats.rejected_background_total,
             timed_out_total: stats.timed_out_total,
             canceled_total: stats.canceled_total,
-            append_queue_wait_count: stats.append_queue_wait_count,
-            append_queue_wait_total_ms: stats.append_queue_wait_total_ms,
-            append_queue_wait_max_ms: stats.append_queue_wait_max_ms,
             queue_depth,
             background_queue_depth: queue.background_queued_total,
             queued_shard_count,
@@ -3466,7 +3315,6 @@ impl DataNodeRuntime {
                     total_records: stats.total_records,
                     storage_bytes: stats.storage_bytes,
                     cache_memory_bytes: stats.cache.memory_bytes,
-                    cache: stats.cache.clone(),
                     storage: stats.storage.clone(),
                     block_store_bytes_written: stats.block_store.bytes_written,
                     oplog_sequence: stats.write_ahead_log.last_sequence,
@@ -3712,14 +3560,6 @@ fn worker_loop(inner: Arc<DataNodeRuntimeInner>) {
                     .expect("runtime queue lock poisoned");
             }
         };
-        if is_append_queue_task(task.kind) {
-            let wait_ms = now_ms().saturating_sub(task.submitted_at_ms);
-            let mut stats = inner.stats.lock().expect("runtime stats lock poisoned");
-            stats.append_queue_wait_count = stats.append_queue_wait_count.saturating_add(1);
-            stats.append_queue_wait_total_ms =
-                stats.append_queue_wait_total_ms.saturating_add(wait_ms);
-            stats.append_queue_wait_max_ms = stats.append_queue_wait_max_ms.max(wait_ms);
-        }
         let shard_id = task.request.shard_id();
         let output = if Instant::now() > task.deadline {
             inner
@@ -3774,13 +3614,6 @@ fn worker_loop(inner: Arc<DataNodeRuntimeInner>) {
             .expect("runtime stats lock poisoned")
             .completed_total += 1;
     }
-}
-
-fn is_append_queue_task(kind: DataNodeTaskKind) -> bool {
-    matches!(
-        kind,
-        DataNodeTaskKind::Execute | DataNodeTaskKind::CheckedExecute
-    )
 }
 
 fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTaskOutput {
@@ -4390,19 +4223,6 @@ fn mark_dirty_for_successful_commands(
     }
 }
 
-fn mark_dirty_for_successful_commands_from_metadata(
-    dirty: &Mutex<DirtyTracker>,
-    shard_id: ShardId,
-    command_metadata: &[(usize, Option<String>)],
-    responses: &[ExecuteResponse],
-) {
-    for (idx, key) in command_metadata.iter() {
-        if responses.get(*idx).map_or(false, |response| response.status.ok) {
-            mark_dirty(dirty, shard_id, key.as_deref());
-        }
-    }
-}
-
 fn command_key(command: &Command) -> Option<&str> {
     match command {
         Command::CommonDelete { key }
@@ -4421,13 +4241,12 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::FeatureReplace { key, .. }
         | Command::FeatureDelete { key }
         | Command::SequenceAdd { key, .. }
-        | Command::SequenceAddWithPolicy { key, .. }
         | Command::IpsAdd { key, .. }
         | Command::IpsAddWithOptions { key, .. }
-        | Command::ControlStateIncrement { key, .. }
-        | Command::ControlStateIncrementWithOptions { key, .. }
-        | Command::ControlStateSet { key, .. }
-        | Command::ControlStateSetAndGet { key, .. } => Some(key),
+        | Command::RiskIncrement { key, .. }
+        | Command::RiskIncrementWithOptions { key, .. }
+        | Command::RiskSet { key, .. }
+        | Command::RiskSetAndGet { key, .. } => Some(key),
         _ => None,
     }
 }
@@ -4451,13 +4270,12 @@ fn is_write_command(command: &Command) -> bool {
             | Command::FeatureReplace { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
-            | Command::SequenceAddWithPolicy { .. }
             | Command::IpsAdd { .. }
             | Command::IpsAddWithOptions { .. }
-            | Command::ControlStateIncrement { .. }
-            | Command::ControlStateIncrementWithOptions { .. }
-            | Command::ControlStateSet { .. }
-            | Command::ControlStateSetAndGet { .. }
+            | Command::RiskIncrement { .. }
+            | Command::RiskIncrementWithOptions { .. }
+            | Command::RiskSet { .. }
+            | Command::RiskSetAndGet { .. }
     )
 }
 

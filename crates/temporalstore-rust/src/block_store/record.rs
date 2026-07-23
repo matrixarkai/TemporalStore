@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::io::Cursor;
 
@@ -54,12 +53,11 @@ struct PageRecordHeader {
 }
 
 #[derive(Debug)]
-pub(super) struct EncodedPageRecordMeta {
-    pub(super) record_len: usize,
+pub(super) struct EncodedPageRecord {
+    pub(super) bytes: Vec<u8>,
     pub(super) logical_len: usize,
     pub(super) stored_len: usize,
     pub(super) compression: PageRecordCompression,
-    pub(super) sha256_hex: String,
 }
 
 #[derive(Debug)]
@@ -75,18 +73,18 @@ pub(super) struct LogicalRangeRead {
     pub(super) compressed_records_read: u64,
 }
 
-pub(super) fn encode_page_record_into(
+pub(super) fn encode_page_record(
     payload: &[u8],
     page_id: u64,
     object_id: Option<u64>,
     routing_slot: Option<u32>,
     extent_id: u64,
     options: BlockStoreOptions,
-    record: &mut Vec<u8>,
-) -> Result<EncodedPageRecordMeta, BlockStoreError> {
+) -> Result<EncodedPageRecord, BlockStoreError> {
     let digest = Sha256::digest(payload);
     let (stored_payload, compression) = encode_page_record_payload(payload, options)?;
     let stored_len = stored_payload.len();
+    let mut record = Vec::with_capacity(PAGE_RECORD_HEADER_LEN + stored_payload.len());
     record.extend_from_slice(PAGE_RECORD_MAGIC);
     record.push(PAGE_RECORD_VERSION);
     record.push(0);
@@ -107,30 +105,29 @@ pub(super) fn encode_page_record_into(
     record.extend_from_slice(&[0; 7]);
     record.extend_from_slice(&(stored_len as u64).to_le_bytes());
     record.extend_from_slice(&stored_payload);
-    Ok(EncodedPageRecordMeta {
-        record_len: PAGE_RECORD_HEADER_LEN + stored_len,
+    Ok(EncodedPageRecord {
+        bytes: record,
         logical_len: payload.len(),
         stored_len,
         compression,
-        sha256_hex: hex::encode(digest),
     })
 }
 
 fn encode_page_record_payload(
     payload: &[u8],
     options: BlockStoreOptions,
-) -> Result<(Cow<'_, [u8]>, PageRecordCompression), BlockStoreError> {
+) -> Result<(Vec<u8>, PageRecordCompression), BlockStoreError> {
     if !options.compression_enabled || payload.len() < options.compression_min_bytes {
-        return Ok((Cow::Borrowed(payload), PageRecordCompression::None));
+        return Ok((payload.to_vec(), PageRecordCompression::None));
     }
     let compressed = zstd::stream::encode_all(
         Cursor::new(payload),
         options.compression_level.clamp(-7, 22),
     )?;
     if compressed.len() < payload.len() {
-        Ok((Cow::Owned(compressed), PageRecordCompression::Zstd))
+        Ok((compressed, PageRecordCompression::Zstd))
     } else {
-        Ok((Cow::Borrowed(payload), PageRecordCompression::None))
+        Ok((payload.to_vec(), PageRecordCompression::None))
     }
 }
 
@@ -236,7 +233,7 @@ pub(super) fn logical_range_from_segment(
     let requested_end = requested_start.saturating_add(size as usize);
     let mut physical_offset = 0usize;
     let mut logical_offset = 0usize;
-    let mut out = Vec::with_capacity((size as usize).min(segment.len()));
+    let mut out = Vec::with_capacity(size as usize);
     let mut compressed_records_read = 0_u64;
 
     while physical_offset < segment.len() && out.len() < size as usize {
@@ -269,15 +266,6 @@ pub(super) fn logical_range_from_segment(
                 "payload length mismatch".to_string(),
             ));
         }
-        let logical_end = logical_offset.saturating_add(header.payload_len);
-        if logical_end <= requested_start {
-            physical_offset = physical_offset.saturating_add(record_len);
-            logical_offset = logical_end;
-            continue;
-        }
-        if logical_offset >= requested_end {
-            break;
-        }
         let address = BlockAddress {
             length: record_len as u64,
             page_id: header.page_id,
@@ -297,6 +285,7 @@ pub(super) fn logical_range_from_segment(
             compressed_records_read += 1;
         }
 
+        let logical_end = logical_offset.saturating_add(header.payload_len);
         let overlap_start = requested_start.max(logical_offset);
         let overlap_end = requested_end.min(logical_end);
         if overlap_start < overlap_end {

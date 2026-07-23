@@ -105,21 +105,21 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const std::string control_state_key = prefix + ":control_state";
+    const std::string risk_key = prefix + ":risk";
     for (int i = 0; i < 3; ++i) {
-        if (!Check(client->ControlStateIncrement(control_state_key, 1, 24 * 3600,
-                                         bcache2::client::ControlStatePrecision::kOneMinute,
-                                         prefix + ":control_state_uuid:" + std::to_string(i)),
-                   "control_state increment")) {
+        if (!Check(client->RiskIncrement(risk_key, 1, 24 * 3600,
+                                         bcache2::client::RiskPrecision::kOneMinute,
+                                         prefix + ":risk_uuid:" + std::to_string(i)),
+                   "risk increment")) {
             return 1;
         }
     }
-    int64_t control_state_count = 0;
-    if (!Check(client->ControlStateCount(control_state_key, bcache2::client::ControlStatePrecision::kOneMinute,
-                                 bcache2::client::ControlStateWindow{-1, 0,
-                                                             bcache2::client::ControlStateWindowUnit::kHour},
-                                 &control_state_count),
-               "control_state count")) {
+    int64_t risk_count = 0;
+    if (!Check(client->RiskCount(risk_key, bcache2::client::RiskPrecision::kOneMinute,
+                                 bcache2::client::RiskWindow{-1, 0,
+                                                             bcache2::client::RiskWindowUnit::kHour},
+                                 &risk_count),
+               "risk count")) {
         return 1;
     }
 
@@ -128,7 +128,7 @@ int main(int argc, char** argv) {
     std::cout << "campaigns=" << campaigns.size() << std::endl;
     std::cout << "sequence_rows=" << queried_rows.size() << std::endl;
     std::cout << "ips_features=" << ips_features.size() << std::endl;
-    std::cout << "control_state_count=" << control_state_count << std::endl;
+    std::cout << "risk_count=" << risk_count << std::endl;
     std::cout << "PASS customer production client example" << std::endl;
     return 0;
 }

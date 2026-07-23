@@ -25,7 +25,7 @@ The Rust proxy accepts the C++-style `ProxyService` routes below and maps them t
 | `/ProxyService/SAdd` | `SetAdd` |
 | `/ProxyService/SMembers` | `SetMembers` |
 | `/ProxyService/FeatureAdd` | `FeatureAppend` |
-| `/ProxyService/ControlStateHset` | `ControlStateSet` |
+| `/ProxyService/RiskHset` | `RiskSet` |
 
 Generic table command routes remain available:
 
@@ -46,12 +46,8 @@ The Rust SDK proxy client now exposes direct-method parity for common C++ client
 - `delete_object`
 - `expire`
 - `ttl`
-- `matrixark_batch_append_records`
-- `matrixark_scan_candidates_request_json`
-- `matrixark_retrieve_context_pack_request_json`
-- `parse_matrixark_retrieve_context_pack_response`
 
-These helpers call the `/ProxyService/...` routes and parse native proxy responses.
+These helpers call the `/ProxyService/...` routes and parse native proxy responses. Existing legacy `/v1/...` helper methods are kept for compatibility.
 
 ## MatrixArk Path
 
@@ -64,4 +60,6 @@ For MatrixArk production workloads:
 
 ## Remaining Work
 
+- Add typed Rust SDK helper for MatrixArk batch append over `/ProxyService/BatchExecuteTableCmd`.
+- Add typed Rust SDK helper for native `matrixark_retrieve_context_pack` when the Rust proxy API stabilizes.
 - Keep direct Rust SDK/C ABI parity as an embedded/local optimization alongside the proxy path.

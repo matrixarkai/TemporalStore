@@ -98,8 +98,8 @@ class PartitionTest : public testing::Test {
         FLAGS_blockcache_dram_capacity = 134217728;  // 128 MB
         FLAGS_blockcache_ssd_capacity = 0;
 
-        matrixobjectstore_set_flag("matrixobjectstore_client_log_level", "1");
-        matrixobjectstore_init();
+        bytestore_set_flag("bytestore_client_log_level", "1");
+        bytestore_init();
         SetHashFunc(CallHash);
         byte::AsyncThreadPoolOptions tp_options;
         tp_options.name_ = "test";
@@ -146,7 +146,7 @@ class PartitionTest : public testing::Test {
         if (partition_.get() != nullptr) {
             partition_->Unload();
         }
-        matrixobjectstore_shutdown();
+        bytestore_shutdown();
 
         if (FLAGS_enable_blockcache) {
             blockcache_->Stop();
@@ -3753,7 +3753,7 @@ TEST_F(PartitionTest, PartitionConfigTest) {
         case Module::HASH:
         case Module::SET:
         case Module::STRING:
-        case Module::CONTROL_STATE:
+        case Module::RISK:
             ASSERT_EQ(partition_->cmd_executor_->module_configs_[i].get(), nullptr);
             break;
         case Module::IPS:

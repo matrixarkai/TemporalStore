@@ -25,7 +25,7 @@ So the practical path today is "dual proxy registered as ABASE2, Redis commands 
 
 Tencent Tendis is the right open-source comparison point for this area: it is a Redis-protocol-compatible persistent KV store backed by RocksDB. Its README says it is compatible with Redis protocol and commands, stores data through RocksDB, and exposes Redis clients as the access path.
 
-The ABase similarity is Redis-style command/capability support. The difference is that ABase is still being validated through its dual proxy path in our local/AWS setup, while Tendis is designed publicly as a Redis-compatible persistent storage system.
+The ABase similarity is Redis-style command/data-model support. The difference is that ABase is still being validated through its dual proxy path in our local/AWS setup, while Tendis is designed publicly as a Redis-compatible persistent storage system.
 
 ## Code Evidence
 
@@ -179,7 +179,7 @@ Two false starts happened before the successful run:
 
 This proves:
 
-- ABase supports LIST and ZSET capabilities in the current code.
+- ABase supports LIST and ZSET data models in the current code.
 - Redis RESP commands for representative LIST and ZSET operations work through the dual proxy path.
 - The working onebox/AWS path is not pure `REDIS_PROTOCOL` registration; it is dual proxy plus ABASE2 registration.
 

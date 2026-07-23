@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, IoSlice, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -8,10 +8,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::types::ShardId;
-
-const INDEX_LOG_SCAN_RECORD_ESTIMATE_BYTES: u64 = 192;
-const INDEX_LOG_SCAN_MAX_PREALLOC_RECORDS: usize = 4096;
-const INDEX_LOG_SCAN_READER_BUFFER_MAX_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
 pub enum IndexLogError {
@@ -63,7 +59,6 @@ pub struct LocalIndexLogStore {
 #[derive(Debug)]
 struct IndexLogInner {
     root: PathBuf,
-    enabled: bool,
     stats: IndexLogStats,
     last_sequence_by_shard: HashMap<ShardId, u64>,
 }
@@ -75,31 +70,9 @@ impl LocalIndexLogStore {
         Self {
             inner: Arc::new(Mutex::new(IndexLogInner {
                 root,
-                enabled: true,
                 stats: IndexLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
             })),
-        }
-    }
-
-    pub fn disabled(root: impl Into<PathBuf>) -> Self {
-        let root = root.into();
-        let _ = fs::create_dir_all(&root);
-        Self {
-            inner: Arc::new(Mutex::new(IndexLogInner {
-                root,
-                enabled: false,
-                stats: IndexLogStats::default(),
-                last_sequence_by_shard: HashMap::new(),
-            })),
-        }
-    }
-
-    pub fn production_default(root: impl Into<PathBuf>) -> Self {
-        if full_index_log_enabled() {
-            Self::new(root)
-        } else {
-            Self::disabled(root)
         }
     }
 
@@ -124,25 +97,17 @@ impl LocalIndexLogStore {
             sequence: next_sequence,
             index: serde_json::from_slice(index_bytes)?,
         };
-        if !inner.enabled {
-            inner.stats.last_sequence = next_sequence;
-            inner.last_sequence_by_shard.insert(shard_id, next_sequence);
-            return Ok(record);
-        }
-        let header = format!("{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\"index\":");
-        let bytes_written = header
-            .len()
-            .saturating_add(index_bytes.len())
-            .saturating_add(2);
+        let mut bytes = serde_json::to_vec(&record)?;
+        bytes.push(b'\n');
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(index_log_path(&inner.root, shard_id))?;
-        write_all_three_vectored(&mut file, header.as_bytes(), index_bytes, b"}\n")?;
+        file.write_all(&bytes)?;
         file.flush()?;
         file.sync_data()?;
         inner.stats.writes += 1;
-        inner.stats.bytes_written += bytes_written as u64;
+        inner.stats.bytes_written += bytes.len() as u64;
         inner.stats.last_sequence = next_sequence;
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
         Ok(record)
@@ -165,25 +130,22 @@ impl LocalIndexLogStore {
             }
         };
         let next_sequence = last_sequence.saturating_add(1);
-        if !inner.enabled {
-            inner.stats.last_sequence = next_sequence;
-            inner.last_sequence_by_shard.insert(shard_id, next_sequence);
-            return Ok(next_sequence);
-        }
-        let header = format!("{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\"index\":");
-        let bytes_written = header
-            .len()
-            .saturating_add(index_bytes.len())
-            .saturating_add(2);
+        let mut bytes = Vec::with_capacity(index_bytes.len().saturating_add(96));
+        write!(
+            &mut bytes,
+            "{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\"index\":"
+        )?;
+        bytes.extend_from_slice(index_bytes);
+        bytes.extend_from_slice(b"}\n");
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(index_log_path(&inner.root, shard_id))?;
-        write_all_three_vectored(&mut file, header.as_bytes(), index_bytes, b"}\n")?;
+        file.write_all(&bytes)?;
         file.flush()?;
         file.sync_data()?;
         inner.stats.writes += 1;
-        inner.stats.bytes_written += bytes_written as u64;
+        inner.stats.bytes_written += bytes.len() as u64;
         inner.stats.last_sequence = next_sequence;
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
         Ok(next_sequence)
@@ -195,44 +157,15 @@ impl LocalIndexLogStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, IndexLogError> {
-        {
-            let mut inner = self.inner.lock().expect("index log lock poisoned");
-            if !inner.enabled {
-                inner.stats.reads = inner.stats.reads.saturating_add(1);
-                return Ok(Vec::new());
-            }
-        }
-        if size == 0 {
-            let mut inner = self.inner.lock().expect("index log lock poisoned");
-            inner.stats.reads = inner.stats.reads.saturating_add(1);
-            return Ok(Vec::new());
-        }
-        let root = {
-            let inner = self.inner.lock().expect("index log lock poisoned");
-            inner.root.clone()
-        };
-        let path = index_log_path(&root, shard_id);
-        let mut file = File::open(path)?;
-        let file_len = file.metadata()?.len();
-        if offset >= file_len {
-            let mut inner = self.inner.lock().expect("index log lock poisoned");
-            inner.stats.reads = inner.stats.reads.saturating_add(1);
-            return Ok(Vec::new());
-        }
-        let read_size = size.min(file_len.saturating_sub(offset));
-        file.seek(SeekFrom::Start(offset))?;
-        let read_size_usize = usize::try_from(read_size).map_err(|_| {
-            IndexLogError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "index log range read size is too large",
-            ))
-        })?;
-        let mut bytes = vec![0; read_size_usize];
-        file.read_exact(&mut bytes)?;
-        let read = bytes.len();
         let mut inner = self.inner.lock().expect("index log lock poisoned");
-        inner.stats.reads = inner.stats.reads.saturating_add(1);
-        inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(read as u64);
+        let path = index_log_path(&inner.root, shard_id);
+        let mut file = File::open(path)?;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = vec![0; size as usize];
+        let read = file.read(&mut bytes)?;
+        bytes.truncate(read);
+        inner.stats.reads += 1;
+        inner.stats.bytes_read += read as u64;
         Ok(bytes)
     }
 
@@ -243,40 +176,17 @@ impl LocalIndexLogStore {
         end_offset: u64,
         max_bytes: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, IndexLogError> {
-        {
-            let mut inner = self.inner.lock().expect("index log lock poisoned");
-            if !inner.enabled {
-                inner.stats.scans = inner.stats.scans.saturating_add(1);
-                return Ok(Vec::new());
-            }
-        }
-        if max_bytes == 0 || start_offset >= end_offset {
-            let mut inner = self.inner.lock().expect("index log lock poisoned");
-            inner.stats.scans = inner.stats.scans.saturating_add(1);
-            return Ok(Vec::new());
-        }
-        let root = {
-            let inner = self.inner.lock().expect("index log lock poisoned");
-            inner.root.clone()
-        };
-        let _ = last_sequence_at(&root, shard_id)?;
-        let path = index_log_path(&root, shard_id);
+        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        let _ = last_sequence_at(&inner.root, shard_id)?;
+        let path = index_log_path(&inner.root, shard_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(start_offset))?;
-        let reader_capacity =
-            usize::try_from(max_bytes.min(INDEX_LOG_SCAN_READER_BUFFER_MAX_BYTES as u64))
-                .unwrap_or(INDEX_LOG_SCAN_READER_BUFFER_MAX_BYTES)
-                .max(1024);
-        let mut reader = BufReader::with_capacity(reader_capacity, file);
+        let mut reader = BufReader::new(file);
         let mut offset = start_offset;
         let mut total = 0;
-        let scan_capacity = max_bytes
-            .saturating_div(INDEX_LOG_SCAN_RECORD_ESTIMATE_BYTES)
-            .saturating_add(1)
-            .min(INDEX_LOG_SCAN_MAX_PREALLOC_RECORDS as u64) as usize;
-        let mut records = Vec::with_capacity(scan_capacity);
+        let mut records = Vec::new();
         loop {
-            let mut line = Vec::with_capacity(INDEX_LOG_SCAN_RECORD_ESTIMATE_BYTES as usize);
+            let mut line = Vec::new();
             let read = reader.read_until(b'\n', &mut line)?;
             if read == 0 {
                 break;
@@ -289,9 +199,8 @@ impl LocalIndexLogStore {
             offset = next_offset;
             total += read as u64;
         }
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
-        inner.stats.scans = inner.stats.scans.saturating_add(1);
-        inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(total);
+        inner.stats.scans += 1;
+        inner.stats.bytes_read += total;
         Ok(records)
     }
 
@@ -309,20 +218,9 @@ impl LocalIndexLogStore {
         retain_from_sequence: u64,
         max_entries_per_round: usize,
     ) -> Result<IndexLogGcReport, IndexLogError> {
-        let root = {
-            let inner = self.inner.lock().expect("index log lock poisoned");
-            if !inner.enabled {
-                return Ok(IndexLogGcReport {
-                    shard_id,
-                    retain_from_sequence,
-                    max_entries_per_round,
-                    ..IndexLogGcReport::default()
-                });
-            }
-            inner.root.clone()
-        };
-        fs::create_dir_all(&root)?;
-        let path = index_log_path(&root, shard_id);
+        let inner = self.inner.lock().expect("index log lock poisoned");
+        fs::create_dir_all(&inner.root)?;
+        let path = index_log_path(&inner.root, shard_id);
         if !path.exists() {
             return Ok(IndexLogGcReport {
                 shard_id,
@@ -333,18 +231,13 @@ impl LocalIndexLogStore {
         }
 
         let bytes_before = path.metadata()?.len();
-        let _ = last_sequence_at(&root, shard_id)?;
+        let _ = last_sequence_at(&inner.root, shard_id)?;
         let file = File::open(&path)?;
         let reader = BufReader::new(file);
         let mut records_before = 0usize;
         let mut removed_this_round = 0usize;
         let mut removable_records_before_budget = 0usize;
-        let retained_capacity = bytes_before
-            .saturating_div(INDEX_LOG_SCAN_RECORD_ESTIMATE_BYTES)
-            .saturating_add(1)
-            .min(INDEX_LOG_SCAN_MAX_PREALLOC_RECORDS as u64)
-            as usize;
-        let mut retained = Vec::with_capacity(retained_capacity);
+        let mut retained = Vec::new();
         for line in reader.lines() {
             let line = line?;
             if line.trim().is_empty() {
@@ -377,8 +270,6 @@ impl LocalIndexLogStore {
         fs::rename(&temp_path, &path)?;
         sync_parent_dir(&path)?;
         let bytes_after = path.metadata()?.len();
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
-        inner.stats.bytes_written = bytes_after;
         Ok(IndexLogGcReport {
             shard_id,
             retain_from_sequence,
@@ -395,13 +286,10 @@ impl LocalIndexLogStore {
     }
 
     pub fn stats(&self, shard_id: ShardId) -> IndexLogStats {
-        let (root, stats) = {
-            let inner = self.inner.lock().expect("index log lock poisoned");
-            (inner.root.clone(), inner.stats)
-        };
+        let inner = self.inner.lock().expect("index log lock poisoned");
         IndexLogStats {
-            last_sequence: last_sequence_at(&root, shard_id).unwrap_or_default(),
-            ..stats
+            last_sequence: last_sequence_at(&inner.root, shard_id).unwrap_or_default(),
+            ..inner.stats
         }
     }
 }
@@ -414,16 +302,6 @@ impl Default for LocalIndexLogStore {
 
 fn index_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
     root.join(format!("shard-{shard_id}.indexlog.jsonl"))
-}
-
-fn full_index_log_enabled() -> bool {
-    matches!(
-        std::env::var("TS_RUST_FULL_INDEX_LOG")
-            .or_else(|_| std::env::var("TEMPORALSTORE_RUST_FULL_INDEX_LOG"))
-            .ok()
-            .as_deref(),
-        Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
-    )
 }
 
 fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError> {
@@ -468,47 +346,6 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         if let Ok(dir) = File::open(parent) {
             dir.sync_all()?;
-        }
-    }
-    Ok(())
-}
-
-fn write_all_three_vectored<W: Write>(
-    writer: &mut W,
-    mut first: &[u8],
-    mut second: &[u8],
-    mut third: &[u8],
-) -> std::io::Result<()> {
-    while !(first.is_empty() && second.is_empty() && third.is_empty()) {
-        let slices = [
-            IoSlice::new(first),
-            IoSlice::new(second),
-            IoSlice::new(third),
-        ];
-        let written = writer.write_vectored(&slices)?;
-        if written == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::WriteZero,
-                "failed to write vectored index log record",
-            ));
-        }
-        let mut remaining = written;
-        if remaining < first.len() {
-            first = &first[remaining..];
-            continue;
-        }
-        remaining -= first.len();
-        first = &[];
-        if remaining < second.len() {
-            second = &second[remaining..];
-            continue;
-        }
-        remaining -= second.len();
-        second = &[];
-        if remaining < third.len() {
-            third = &third[remaining..];
-        } else {
-            third = &[];
         }
     }
     Ok(())

@@ -34,9 +34,9 @@ terraform-output*.json
 dependencies/
 thirdparty/
 local_build/
-matrixobjectstorelab-master/
+bytestorelab-master/
 abase2_images/
-matrixobjectstore_images/
+bytestore_images/
 
 # Terraform/runtime state
 .terraform/

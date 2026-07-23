@@ -467,11 +467,11 @@ func (c *Client) QueryIPSLastInstances(
 	return features, nil
 }
 
-func (c *Client) ControlStateIncrement(
+func (c *Client) RiskIncrement(
 	key string,
 	amount int64,
 	ttlSeconds uint64,
-	precision ControlStatePrecision,
+	precision RiskPrecision,
 	uuid string,
 	occurTimeSeconds uint64,
 ) error {
@@ -480,12 +480,12 @@ func (c *Client) ControlStateIncrement(
 	defer C.free(unsafe.Pointer(cKey))
 	defer C.free(unsafe.Pointer(cUUID))
 	var errMsg *C.char
-	if code := C.temporalstore_control_state_increment(
+	if code := C.temporalstore_risk_increment(
 		c.ptr,
 		cKey,
 		C.int64_t(amount),
 		C.uint64_t(ttlSeconds),
-		C.temporalstore_control_state_precision_t(precision),
+		C.temporalstore_risk_precision_t(precision),
 		cUUID,
 		C.uint64_t(occurTimeSeconds),
 		&errMsg,
@@ -495,9 +495,9 @@ func (c *Client) ControlStateIncrement(
 	return nil
 }
 
-func (c *Client) ControlStateCount(
+func (c *Client) RiskCount(
 	key string,
-	precision ControlStatePrecision,
+	precision RiskPrecision,
 	windowStart int64,
 	windowEnd int64,
 	windowUnit WindowUnit,
@@ -506,10 +506,10 @@ func (c *Client) ControlStateCount(
 	defer C.free(unsafe.Pointer(cKey))
 	var count C.int64_t
 	var errMsg *C.char
-	if code := C.temporalstore_control_state_count(
+	if code := C.temporalstore_risk_count(
 		c.ptr,
 		cKey,
-		C.temporalstore_control_state_precision_t(precision),
+		C.temporalstore_risk_precision_t(precision),
 		C.int64_t(windowStart),
 		C.int64_t(windowEnd),
 		C.temporalstore_window_unit_t(windowUnit),

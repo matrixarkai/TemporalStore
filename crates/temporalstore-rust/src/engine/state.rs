@@ -1,10 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
 use crate::page_store::PageAddress;
-use crate::types::{CommandResponse, FeaturePoint, ControlStateFolType, ShardId};
+use crate::types::{CommandResponse, FeaturePoint, RiskFolType, ShardId};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(super) struct ShardState {
@@ -20,13 +19,13 @@ pub(super) struct ShardState {
     pub(super) ips_meta: HashMap<String, BTreeMap<u64, IpsPointMeta>>,
     #[serde(default)]
     pub(super) ips_request_ids: HashMap<String, BTreeSet<String>>,
-    pub(super) control_state: HashMap<String, BTreeMap<u64, i64>>,
+    pub(super) risk: HashMap<String, BTreeMap<u64, i64>>,
     #[serde(default)]
-    pub(super) control_state_pages: HashMap<String, PageAddress>,
+    pub(super) risk_pages: HashMap<String, PageAddress>,
     #[serde(default)]
-    pub(super) control_state_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
+    pub(super) risk_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
     #[serde(default)]
-    pub(super) control_state_fol: HashMap<String, ControlStateFolValue>,
+    pub(super) risk_fol: HashMap<String, RiskFolValue>,
     #[serde(default)]
     pub(super) context_nodes: HashMap<String, PageAddress>,
     #[serde(default)]
@@ -61,8 +60,6 @@ pub(super) struct CoreIndex {
     pub(super) object_page_lookup: ObjectPageLookup,
     #[serde(default)]
     pub(super) object_component_lookup: ObjectComponentLookup,
-    #[serde(default)]
-    pub(super) object_key_lookup: ObjectKeyLookup,
 }
 
 pub(super) type SlotMap = BTreeMap<u32, SlotNode>;
@@ -70,7 +67,6 @@ pub(super) type ObjectIndex = BTreeSet<u64>;
 pub(super) type PageIndexMap = BTreeMap<String, PageIndex>;
 pub(super) type ObjectPageLookup = BTreeMap<String, BTreeSet<PageLookupRef>>;
 pub(super) type ObjectComponentLookup = BTreeMap<String, BTreeSet<ComponentPageLookupRef>>;
-pub(super) type ObjectKeyLookup = BTreeMap<String, BTreeSet<ObjectKeyPageLookupRef>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(super) struct PageLookupRef {
@@ -80,15 +76,6 @@ pub(super) struct PageLookupRef {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(super) struct ComponentPageLookupRef {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) component: Option<String>,
-    pub(super) routing_slot: u32,
-    pub(super) page_ref_key: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub(super) struct ObjectKeyPageLookupRef {
-    pub(super) model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) component: Option<String>,
     pub(super) routing_slot: u32,
@@ -146,34 +133,17 @@ impl CoreIndex {
     pub(super) fn rebuild_object_page_lookup(&mut self) {
         self.object_page_lookup.clear();
         self.object_component_lookup.clear();
-        self.object_key_lookup.clear();
-        let page_ref_count = self
+        let refs = self
             .slot_map
-            .values()
-            .map(|slot| slot.page_index.len())
-            .sum();
-        let mut refs = Vec::with_capacity(page_ref_count);
-        for (routing_slot, slot) in &self.slot_map {
-            refs.extend(slot.page_index.iter().filter_map(|(page_ref_key, page)| {
-                (!page.deleted).then(|| {
-                    (
-                        *routing_slot,
-                        page_ref_key.clone(),
-                        page.model_id.clone(),
-                        page.object_key.clone(),
-                        page.component.clone(),
-                    )
+            .iter()
+            .flat_map(|(routing_slot, slot)| {
+                slot.page_index.iter().map(move |(page_ref_key, page)| {
+                    (*routing_slot, page_ref_key.clone(), page.clone())
                 })
-            }));
-        }
-        for (routing_slot, page_ref_key, model_id, object_key, component) in refs {
-            self.insert_object_page_lookup_parts(
-                routing_slot,
-                page_ref_key,
-                &model_id,
-                &object_key,
-                component.as_deref(),
-            );
+            })
+            .collect::<Vec<_>>();
+        for (routing_slot, page_ref_key, page) in refs {
+            self.insert_object_page_lookup(routing_slot, page_ref_key, &page);
         }
     }
 
@@ -186,46 +156,27 @@ impl CoreIndex {
         if page.deleted {
             return;
         }
-        self.insert_object_page_lookup_parts(
-            routing_slot,
-            page_ref_key,
-            &page.model_id,
-            &page.object_key,
-            page.component.as_deref(),
-        );
-    }
-
-    fn insert_object_page_lookup_parts(
-        &mut self,
-        routing_slot: u32,
-        page_ref_key: String,
-        model_id: &str,
-        object_key: &str,
-        component: Option<&str>,
-    ) {
         self.object_page_lookup
-            .entry(object_page_lookup_key(model_id, object_key, component))
+            .entry(object_page_lookup_key(
+                &page.model_id,
+                &page.object_key,
+                page.component.as_deref(),
+            ))
             .or_default()
             .insert(PageLookupRef {
                 routing_slot,
                 page_ref_key: page_ref_key.clone(),
             });
         self.object_component_lookup
-            .entry(object_component_lookup_key(model_id, object_key))
+            .entry(object_component_lookup_key(
+                &page.model_id,
+                &page.object_key,
+            ))
             .or_default()
             .insert(ComponentPageLookupRef {
-                component: component.map(str::to_string),
+                component: page.component.clone(),
                 routing_slot,
-                page_ref_key: page_ref_key.clone(),
-            });
-        self.object_key_lookup
-            .entry(object_key.to_string())
-            .or_default()
-            .insert(ObjectKeyPageLookupRef {
-                model_id: model_id.to_string(),
-                component: component.map(str::to_string),
-                routing_slot,
-                page_ref_key: page_ref_key.clone(),
+                page_ref_key,
             });
     }
 
@@ -244,177 +195,6 @@ impl CoreIndex {
                 self.object_component_lookup.remove(&component_lookup_key);
             }
         }
-        self.remove_object_key_lookup_entry(model_id, object_key, component);
-    }
-
-    pub(super) fn remove_all_object_page_lookup_entries(
-        &mut self,
-        model_id: &str,
-        object_key: &str,
-    ) {
-        let component_lookup_key = object_component_lookup_key(model_id, object_key);
-        let components = self
-            .object_component_lookup
-            .remove(&component_lookup_key)
-            .map(|component_refs| {
-                component_refs
-                    .into_iter()
-                    .map(|page_ref| page_ref.component)
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        if components.is_empty() {
-            self.object_page_lookup
-                .remove(&object_page_lookup_key(model_id, object_key, None));
-            self.remove_object_key_lookup_model_entries(model_id, object_key);
-            return;
-        }
-        for component in components {
-            self.object_page_lookup.remove(&object_page_lookup_key(
-                model_id,
-                object_key,
-                component.as_deref(),
-            ));
-        }
-        self.remove_object_key_lookup_model_entries(model_id, object_key);
-    }
-
-    pub(super) fn remove_object_lookup_entries(&mut self, object_key: &str, model_ids: &[&str]) {
-        for model_id in model_ids {
-            let component_lookup_key = object_component_lookup_key(model_id, object_key);
-            let components = self
-                .object_component_lookup
-                .remove(&component_lookup_key)
-                .map(|component_refs| {
-                    component_refs
-                        .into_iter()
-                        .map(|page_ref| page_ref.component)
-                        .collect::<BTreeSet<_>>()
-                })
-                .unwrap_or_default();
-            for component in components {
-                self.object_page_lookup.remove(&object_page_lookup_key(
-                    model_id,
-                    object_key,
-                    component.as_deref(),
-                ));
-            }
-            self.remove_object_key_lookup_model_entries(model_id, object_key);
-        }
-    }
-
-    fn remove_object_key_lookup_entry(
-        &mut self,
-        model_id: &str,
-        object_key: &str,
-        component: Option<&str>,
-    ) {
-        if let Some(page_refs) = self.object_key_lookup.get_mut(object_key) {
-            page_refs.retain(|page_ref| {
-                !(page_ref.model_id == model_id && page_ref.component.as_deref() == component)
-            });
-            if page_refs.is_empty() {
-                self.object_key_lookup.remove(object_key);
-            }
-        }
-    }
-
-    fn remove_object_key_lookup_model_entries(&mut self, model_id: &str, object_key: &str) {
-        if let Some(page_refs) = self.object_key_lookup.get_mut(object_key) {
-            page_refs.retain(|page_ref| page_ref.model_id != model_id);
-            if page_refs.is_empty() {
-                self.object_key_lookup.remove(object_key);
-            }
-        }
-    }
-
-    pub(super) fn contains_object_key(&self, object_key: &str) -> bool {
-        if let Some(page_refs) = self.object_key_lookup.get(object_key) {
-            return page_refs
-                .iter()
-                .any(|page_ref| self.object_key_ref_is_live(object_key, page_ref));
-        }
-
-        if !self.object_key_lookup.is_empty() {
-            return false;
-        }
-
-        self.slot_map.values().any(|slot| {
-            slot.page_index
-                .values()
-                .any(|page| page.object_key == object_key && !page.deleted)
-        })
-    }
-
-    pub(super) fn routing_slots_for_object_key(&self, object_key: &str) -> Option<BTreeSet<u32>> {
-        self.object_key_lookup.get(object_key).map(|page_refs| {
-            page_refs
-                .iter()
-                .filter(|page_ref| self.object_key_ref_is_live(object_key, page_ref))
-                .map(|page_ref| page_ref.routing_slot)
-                .collect()
-        })
-    }
-
-    pub(super) fn object_key_lookup_stats(
-        &self,
-        dirty_objects: &BTreeSet<String>,
-    ) -> Option<(usize, usize, usize, usize)> {
-        if self.object_key_lookup.is_empty() {
-            return None;
-        }
-        let mut live_objects = BTreeSet::new();
-        let mut dirty_objects_seen = BTreeSet::new();
-        let mut dirty_routing_slots = BTreeSet::new();
-        let mut live_page_ref_count = 0usize;
-        for (object_key, page_refs) in &self.object_key_lookup {
-            for page_ref in page_refs {
-                let Some(page) = self
-                    .slot_map
-                    .get(&page_ref.routing_slot)
-                    .and_then(|slot| slot.page_index.get(&page_ref.page_ref_key))
-                else {
-                    continue;
-                };
-                if page.deleted || page.object_key != *object_key {
-                    continue;
-                }
-                let object_identity = (
-                    page.model_id.as_str(),
-                    page.object_key.as_str(),
-                    (page.model_id == "hash")
-                        .then(|| page.component.as_deref())
-                        .flatten(),
-                );
-                live_page_ref_count = live_page_ref_count.saturating_add(1);
-                live_objects.insert(object_identity);
-                if page.dirty || dirty_objects.contains(&page.object_key) {
-                    dirty_objects_seen.insert(object_identity);
-                    dirty_routing_slots.insert(page_ref.routing_slot);
-                }
-            }
-        }
-        Some((
-            live_objects.len(),
-            live_page_ref_count,
-            dirty_objects_seen.len(),
-            dirty_routing_slots.len(),
-        ))
-    }
-
-    pub(super) fn page_refs_for_object_key(
-        &self,
-        object_key: &str,
-    ) -> Option<&BTreeSet<ObjectKeyPageLookupRef>> {
-        self.object_key_lookup.get(object_key)
-    }
-
-    fn object_key_ref_is_live(&self, object_key: &str, page_ref: &ObjectKeyPageLookupRef) -> bool {
-        self.slot_map
-            .get(&page_ref.routing_slot)
-            .and_then(|slot| slot.page_index.get(&page_ref.page_ref_key))
-            .map(|page| !page.deleted && page.object_key == object_key)
-            .unwrap_or(false)
     }
 
     pub(super) fn contains_object_page_address(
@@ -441,26 +221,7 @@ impl CoreIndex {
             });
         }
 
-        if let Some(page_refs) = self.object_key_lookup.get(object_key) {
-            return page_refs.iter().any(|page_ref| {
-                if page_ref.model_id != model_id || page_ref.component.as_deref() != component {
-                    return false;
-                }
-                self.slot_map
-                    .get(&page_ref.routing_slot)
-                    .and_then(|slot| slot.page_index.get(&page_ref.page_ref_key))
-                    .map(|page| {
-                        !page.deleted
-                            && page.model_id == model_id
-                            && page.object_key == object_key
-                            && page.component.as_deref() == component
-                            && same_page_address(&page.address, address)
-                    })
-                    .unwrap_or(false)
-            });
-        }
-
-        if !self.object_page_lookup.is_empty() || !self.object_key_lookup.is_empty() {
+        if !self.object_page_lookup.is_empty() {
             return false;
         }
 
@@ -477,7 +238,7 @@ impl CoreIndex {
 }
 
 pub(super) fn object_component_lookup_key(model_id: &str, object_key: &str) -> String {
-    let mut key = String::with_capacity(lookup_key_capacity(&[model_id, object_key]));
+    let mut key = String::new();
     push_lookup_part(&mut key, model_id);
     push_lookup_part(&mut key, object_key);
     key
@@ -488,11 +249,7 @@ pub(super) fn object_page_lookup_key(
     object_key: &str,
     component: Option<&str>,
 ) -> String {
-    let mut key = String::with_capacity(
-        lookup_key_capacity(&[model_id, object_key])
-            + component.map(lookup_part_capacity).unwrap_or_default()
-            + 2,
-    );
+    let mut key = String::new();
     push_lookup_part(&mut key, model_id);
     push_lookup_part(&mut key, object_key);
     match component {
@@ -506,26 +263,10 @@ pub(super) fn object_page_lookup_key(
 }
 
 fn push_lookup_part(buffer: &mut String, value: &str) {
-    let _ = write!(buffer, "{}:", value.len());
+    buffer.push_str(&value.len().to_string());
+    buffer.push(':');
     buffer.push_str(value);
     buffer.push('|');
-}
-
-fn lookup_key_capacity(parts: &[&str]) -> usize {
-    parts.iter().map(|part| lookup_part_capacity(part)).sum()
-}
-
-fn lookup_part_capacity(value: &str) -> usize {
-    decimal_digit_count(value.len()) + 1 + value.len() + 1
-}
-
-fn decimal_digit_count(mut value: usize) -> usize {
-    let mut digits = 1;
-    while value >= 10 {
-        value /= 10;
-        digits += 1;
-    }
-    digits
 }
 
 fn same_page_address(left: &PageAddress, right: &PageAddress) -> bool {
@@ -539,10 +280,10 @@ fn same_page_address(left: &PageAddress, right: &PageAddress) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct ControlStateFolValue {
+pub(super) struct RiskFolValue {
     pub(super) occur_time_ms: u64,
     pub(super) value: Vec<u8>,
-    pub(super) fol_type: ControlStateFolType,
+    pub(super) fol_type: RiskFolType,
 }
 
 #[derive(Debug, Default, Clone)]

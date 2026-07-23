@@ -8,11 +8,11 @@ Most online feature systems split one business question across several systems:
 - a cache hides read latency
 - a database or lake stores raw events for training and backfills
 
-That architecture works, but it is expensive to operate and hard to change. Every new control_state rule or ranking feature can require a new streaming job, a new materialization path, and careful reconciliation between offline and online values.
+That architecture works, but it is expensive to operate and hard to change. Every new risk rule or ranking feature can require a new streaming job, a new materialization path, and careful reconciliation between offline and online values.
 
 TemporalStore is designed around a different idea: keep high-cardinality temporal state close to the online serving engine. Instead of treating storage as a passive key-value cache, TemporalStore can store structured temporal objects and execute small, bounded computations inside the serving path.
 
-The first strong use case is online feature serving for control_state, fraud, ads, recommendation, and personalization workloads. The same design also has a natural AI-serving extension: store the fast-changing context, session, retrieval, cache-metadata, and serving-stat state around GPU inference systems.
+The first strong use case is online feature serving for risk, fraud, ads, recommendation, and personalization workloads. The same design also has a natural AI-serving extension: store the fast-changing context, session, retrieval, cache-metadata, and serving-stat state around GPU inference systems.
 
 ## The Workload
 
@@ -37,7 +37,7 @@ The hard part is not the formula. The hard part is the shape:
 
 If each feature is precomputed by a separate batch or streaming job, feature development becomes slow. If every online query scans raw events, latency becomes unpredictable. TemporalStore sits between those extremes.
 
-## TemporalAggregate Capability
+## TemporalAggregate Data Model
 
 TemporalStore's `TemporalAggregate` model stores per-key, per-metric, per-dimension, per-time-bucket aggregate values.
 
@@ -133,7 +133,7 @@ This state has the same shape as the feature-serving workloads TemporalStore is 
 - hot/cold serving tiers
 - persistence beyond process memory
 
-That suggests several future AI-specific capabilities:
+That suggests several future AI-specific data models:
 
 | Model | What It Stores | Example |
 |---|---|---|
@@ -186,7 +186,7 @@ For `SUM`, the write adds the request value. For `MIN` and `MAX`, the write fold
 
 The important point is that TemporalStore does not need to append every raw event for this model. It writes the aggregate bucket directly. If 10,000 failed login events hit the same `(device, country, result, minute)` bucket, the stored value is still one bucket cell, not 10,000 raw rows.
 
-That is why this model is useful for high-QPS frequency caps, counters, and control_state features.
+That is why this model is useful for high-QPS frequency caps, counters, and risk features.
 
 ## How Query Works
 
@@ -246,7 +246,7 @@ Offline aggregation is efficient when the feature definition is stable:
 daily batch job -> precomputed feature table -> online materialization
 ```
 
-But real control_state and personalization features change often:
+But real risk and personalization features change often:
 
 - change the time window from 30 minutes to 10 minutes
 - add a filter such as `country=US`
@@ -268,7 +268,7 @@ This does not eliminate offline storage or training pipelines. Historical traini
 
 ## One Store Instead of Many Moving Parts
 
-A traditional system for a control_state counter might look like this:
+A traditional system for a risk counter might look like this:
 
 ```mermaid
 flowchart LR
@@ -278,7 +278,7 @@ flowchart LR
     Batch["Offline batch aggregation"]
     Redis["Online cache"]
     DB["Persistent KV or DB"]
-    Service["ControlState service"]
+    Service["Risk service"]
 
     Events --> Kafka
     Kafka --> Flink
@@ -295,7 +295,7 @@ TemporalStore can simplify the online side:
 flowchart LR
     Events["Events"]
     TS["TemporalStore<br/>bucketed temporal aggregate"]
-    Service["ControlState / ads / ranking service"]
+    Service["Risk / ads / ranking service"]
     Offline["Offline archive / training store"]
 
     Events --> TS
@@ -318,7 +318,7 @@ op = COUNT
 query = last 30 minutes where country=US and result=failed
 ```
 
-Good for account takeover control_state and abuse detection.
+Good for account takeover risk and abuse detection.
 
 ### Purchase Amount
 
@@ -344,7 +344,7 @@ op = COUNT
 query = last 7 days
 ```
 
-Good for merchant control_state scoring.
+Good for merchant risk scoring.
 
 ### Frequency Cap
 
@@ -379,7 +379,7 @@ With plain KV, the application usually has to choose between:
 - precompute every possible window/filter
 - keep many derived counters with custom application logic
 
-TemporalStore makes this a storage-side capability. The application sends feature semantics directly to the store, and the store handles bucket update, range scan, and fold.
+TemporalStore makes this a storage-side data model. The application sends feature semantics directly to the store, and the store handles bucket update, range scan, and fold.
 
 ## Current Implementation Notes
 

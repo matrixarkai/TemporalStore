@@ -2923,15 +2923,6 @@ fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
             ],
             defaults.compression_level,
         ),
-        sync_on_append: env_bool_any(
-            &[
-                "MATRIXARK_RUST_PROXY_BLOCK_STORE_SYNC_ON_APPEND",
-                "TEMPORALSTORE_BLOCK_STORE_SYNC_ON_APPEND",
-                "TS_BLOCK_STORE_SYNC_ON_APPEND",
-                "TS_PAGE_STORE_SYNC_ON_APPEND",
-            ],
-            defaults.sync_on_append,
-        ),
     }
 }
 

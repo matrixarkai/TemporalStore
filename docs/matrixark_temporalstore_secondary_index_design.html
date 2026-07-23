@@ -76,14 +76,14 @@ ctxidx:{tenant_hash}:event_time_bucket:{bucket_ms}:{scope_hash}</code></pre>
   <li>Worse ingestion p95 when PDFs or repos generate many keywords.</li>
 </ul>
 <h2>Production Target</h2>
-<pre><code>Context capability = timestamped series
+<pre><code>Context data model = timestamped series
 Secondary filters = declared compact fields or native posting families
 Query = time range + scope + filter predicates + top-k/candidate cap</code></pre>
 <p>The serving API should look like:</p>
 <pre><code>matrixark_scan_candidates(
   scope_key,
   node_hashes,
-  capabilities=["event", "entity", "resource_chunk", "skill_section"],
+  data_models=["event", "entity", "resource_chunk", "skill_section"],
   time_range,
   filters={
     "source_type": ["message", "resource"],
@@ -123,7 +123,7 @@ visibility_scope</code></pre>
 <h2>What To Change From Today</h2>
 <ol>
   <li>Keep <code>ContextEvent</code> timestamp-keyed by ingestion time.</li>
-  <li>Keep <code>ContextIndexRef</code> as a native internal posting/ref mechanism, not a verbose serving capability.</li>
+  <li>Keep <code>ContextIndexRef</code> as a native internal posting/ref mechanism, not a verbose serving data model.</li>
   <li>Stop exporting every index ref into ContextPack/debug pages by default.</li>
   <li>Cap index fanout per object and per resource import.</li>
   <li>Add a native C++/Rust candidate scan API that applies scope and filter predicates before returning rows.</li>

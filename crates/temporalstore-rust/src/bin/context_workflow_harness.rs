@@ -377,8 +377,8 @@ fn main() {
             tenant_hash: 20260616,
             source_kind: ContextSourceKind::Incident,
             source_id: "mock-incident-1".to_string(),
-            title: "Checkout control_state incident".to_string(),
-            body: "Customer checkout failed. Payment control_state score spiked. The proxy retried safely and support asked for root cause.".to_string(),
+            title: "Checkout risk incident".to_string(),
+            body: "Customer checkout failed. Payment risk score spiked. The proxy retried safely and support asked for root cause.".to_string(),
             timestamp_ms: 1_000,
             provider: ContextModelProviderConfig::default(),
         },
@@ -807,7 +807,7 @@ fn run_resource_skill_conversation_scale(
         ContextResourceParseRequest {
             raw_uri: "viking://resources/payments/checkout-runbook.md".to_string(),
             resource_type: Some("md".to_string()),
-            text: "# Checkout Incident Runbook\n\nPayment dependency timeouts raise checkout latency and control_state score. Roll back the payment gateway canary, verify p95 latency, and notify the payments owner.\n\n## Evidence\n\nUse summary embeddings to retrieve the most recent incident context before paging support.".to_string(),
+            text: "# Checkout Incident Runbook\n\nPayment dependency timeouts raise checkout latency and risk score. Roll back the payment gateway canary, verify p95 latency, and notify the payments owner.\n\n## Evidence\n\nUse summary embeddings to retrieve the most recent incident context before paging support.".to_string(),
             max_chunk_chars: 260,
             overlap_chars: 40,
             chunk_hash_base: Some(20_260_625),
@@ -856,7 +856,7 @@ fn run_resource_skill_conversation_scale(
     let skill_inputs = vec![
         ContextSkillIngestInput {
             raw_uri: "skills/payments-incident/SKILL.md".to_string(),
-            text: "---\nname: payments-incident\ndescription: Diagnose checkout latency and payment control_state incidents.\nprecedence: critical\nowner_scope: team:payments\nversion: v3\nallowed_tools: [context_workflow_harness]\ntriggers: [checkout, latency, payment, rollback]\n---\n\n# Payments Incident\n\nUse this skill when checkout latency, payment dependency timeout, or control_state-score escalation appears in retrieved context.\n".to_string(),
+            text: "---\nname: payments-incident\ndescription: Diagnose checkout latency and payment risk incidents.\nprecedence: critical\nowner_scope: team:payments\nversion: v3\nallowed_tools: [context_workflow_harness]\ntriggers: [checkout, latency, payment, rollback]\n---\n\n# Payments Incident\n\nUse this skill when checkout latency, payment dependency timeout, or risk-score escalation appears in retrieved context.\n".to_string(),
         },
         ContextSkillIngestInput {
             raw_uri: "skills/context-debug/SKILL.md".to_string(),
@@ -2414,20 +2414,20 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         },
         ExternalContextBenchmarkCase {
             dataset: "longmemeval_s_style".to_string(),
-            query_id: "longmem-control_state-score-update".to_string(),
-            category: infer_external_benchmark_category("longmem-control_state-score-update"),
-            query: "What control_state score was recorded after the latest fraud review?".to_string(),
+            query_id: "longmem-risk-score-update".to_string(),
+            category: infer_external_benchmark_category("longmem-risk-score-update"),
+            query: "What risk score was recorded after the latest fraud review?".to_string(),
             expected_terms: vec!["87".to_string()],
             expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
-                    title: "Old control_state score".to_string(),
-                    body: "Earlier fraud review: the checkout control_state score was 42 before the payment incident escalated.".to_string(),
+                    title: "Old risk score".to_string(),
+                    body: "Earlier fraud review: the checkout risk score was 42 before the payment incident escalated.".to_string(),
                     kind: ContextSourceKind::Incident,
                 },
                 ExternalContextBenchmarkSource {
-                    title: "Updated control_state score".to_string(),
-                    body: "Latest fraud review: the checkout control_state score was updated to 87 after the payment incident escalated.".to_string(),
+                    title: "Updated risk score".to_string(),
+                    body: "Latest fraud review: the checkout risk score was updated to 87 after the payment incident escalated.".to_string(),
                     kind: ContextSourceKind::Incident,
                 },
             ],

@@ -38,7 +38,7 @@ App -> proxy SDK -> TemporalStore HTTP proxy -> direct native client -> data ser
 Use proxy SDKs when:
 
 - customers want zero native dependencies;
-- Python/Java runtime loading of the native library is control_statey;
+- Python/Java runtime loading of the native library is risky;
 - multi-tenant auth, quotas, request logging, and policy enforcement should be centralized;
 - an edge/sidecar proxy is operationally easier than shipping native clients everywhere;
 - minor extra network hop latency is acceptable.
@@ -90,38 +90,24 @@ Endpoints:
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /ProxyService/Set` | set string value |
-| `POST /ProxyService/SetEx` | set string value with `ttl_ms` |
-| `POST /ProxyService/Get` | get string value |
-| `POST /ProxyService/Delete` | delete object |
-| `POST /ProxyService/Expire` | set object TTL |
-| `POST /ProxyService/Ttl` | read object TTL |
-| `POST /ProxyService/HSet` | set hash field |
-| `POST /ProxyService/HGet` | get hash field |
-| `POST /ProxyService/HDel` | delete hash field |
-| `POST /ProxyService/HMSet` | set multiple hash fields |
-| `POST /ProxyService/HMGet` | get multiple hash fields |
-| `POST /ProxyService/HGetAll` | get all hash fields |
-| `POST /ProxyService/HLen` | count hash fields |
-| `POST /ProxyService/SAdd` | add set member |
-| `POST /ProxyService/SMembers` | list set members |
-| `POST /ProxyService/SRem` | remove set member |
-| `POST /ProxyService/Exists` | check object existence |
-| `POST /ProxyService/FeatureAdd` | add raw feature points |
-| `POST /ProxyService/FeatureQuery` | query raw feature points |
-| `POST /ProxyService/FeatureReplace` | replace raw feature points in a time range |
-| `POST /ProxyService/FeatureDelete` | delete raw feature points for a key |
-| `POST /ProxyService/FeatureAggQuery` | aggregate raw feature points |
-| `POST /ProxyService/SequenceAdd` | add typed sequence rows |
-| `POST /ProxyService/SequenceQuery` | query typed sequence rows |
-| `POST /ProxyService/IpsAdd` | add IPS instance |
-| `POST /ProxyService/IpsQueryLast` | query IPS last instances |
-| `POST /ProxyService/ControlStateIncrement` | increment control_state counter |
-| `POST /ProxyService/ControlStateCount` | query control_state window counter |
-| `POST /ProxyService/ControlStateHset` | set timestamped control_state value |
-| `POST /ProxyService/ControlStateFolSet` | set first-or-last control_state value |
-| `POST /ProxyService/ControlStateFolQuery` | query first-or-last control_state value |
-| `POST /ProxyService/ControlStateManager` | query control_state manager entries |
+| `POST /v1/string/put` | set string value, optional `ttl_ms` |
+| `POST /v1/string/get` | get string value |
+| `POST /v1/common/delete` | delete object |
+| `POST /v1/common/expire` | set object TTL |
+| `POST /v1/common/ttl` | read object TTL |
+| `POST /v1/hash/hset` | set hash field |
+| `POST /v1/hash/hget` | get hash field |
+| `POST /v1/hash/hdel` | delete hash field |
+| `POST /v1/set/sadd` | add set member |
+| `POST /v1/set/smembers` | list set members |
+| `POST /v1/feature/add` | add raw feature points |
+| `POST /v1/feature/query` | query raw feature points |
+| `POST /v1/sequence/add` | add typed sequence rows |
+| `POST /v1/sequence/query` | query typed sequence rows |
+| `POST /v1/ips/add` | add IPS instance |
+| `POST /v1/ips/query_last` | query IPS last instances |
+| `POST /v1/risk/increment` | increment risk counter |
+| `POST /v1/risk/count` | query risk window counter |
 
 ## Direct vs Proxy Tradeoff
 

@@ -43,7 +43,7 @@ def default_prefixes(args: argparse.Namespace) -> list[str]:
     env_prefix = os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX")
     if env_prefix:
         prefixes.append(env_prefix)
-    prefixes.extend(["matrixark:codex-hook:rust-live-v2", "matrixark:codex-hook", "matrixark:agent-hook", "matrixark:mcp:codex"])
+    prefixes.extend(["matrixark:codex-hook", "matrixark:agent-hook", "matrixark:mcp:codex"])
     seen: set[str] = set()
     unique: list[str] = []
     for prefix in prefixes:

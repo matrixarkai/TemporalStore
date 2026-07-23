@@ -273,9 +273,9 @@ small, medium, large, LOCOMO-style, and LongMemEval_s-style deterministic profil
 harness runs four quick profiles to preserve profile-comparison evidence. The retrieval scorer uses
 query-term overlap, compact QA synonym expansion, adjacent phrase boosts, exact topic-phrase
 boosting, and latest/update wording for benchmark questions. Synthetic sources now include older
-baseline memories and later memory updates, while queries rotate through payment-control_state,
+baseline memories and later memory updates, while queries rotate through payment-risk,
 service-outage, preference-update, and support-follow-up paraphrases. This keeps non-verbatim
-conversational-memory questions such as payment/fraud wording aligned with checkout/control_state memories
+conversational-memory questions such as payment/fraud wording aligned with checkout/risk memories
 and validates stale/latest memory ranking at `hit_at_k = 1.0`, `mean_reciprocal_rank = 1.0`,
 `evidence_retention_at_k = 1.0`, and zero zero-hit queries in the checked harness output.
 
@@ -294,7 +294,7 @@ JSONL path is configured, the harness runs a built-in LOCOMO/LongMemEval_s-style
 fixture so CI and local Docker validation still enforce external-benchmark scoring. Retrieval now
 normalizes punctuation and hyphenation, applies simple plural stemming, expands temporal,
 multi-hop, latest/update, preference, location/workplace, problem/resolution, support, and
-control_state/payment aliases, and boosts latest, temporal, correction, and reminder evidence so newer
+risk/payment aliases, and boosts latest, temporal, correction, and reminder evidence so newer
 memory updates and remembered facts outrank stale conversational memories. It also boosts
 contrastive updates such as switched, moved, became, cancelled, and instead so stale memories with
 overlapping entities do not win against current facts, and social-link cues such as recommended,
@@ -316,7 +316,7 @@ conference?" and "Which project did Lee pick because Dana suggested it during pl
 LOCOMO/LongMemEval-style hit-rate regressions visible. Schedule-detail cases such as "When is
 Maya's dentist appointment after it was rescheduled?" and "What is the new report deadline after the
 calendar update?" cover date/time updates. Quantity cases such as "How many guests did Sofia confirm
-after the dinner update?" and "What control_state score was recorded after the latest fraud review?" cover
+after the dinner update?" and "What risk score was recorded after the latest fraud review?" cover
 numeric memory updates. Alias cases such as "What is Emma's roommate's name after the move?" and
 "What is the dog's name in the latest pet update?" cover entity-disambiguation updates.
 

@@ -15,10 +15,10 @@ from onebox import common
 from onebox import check_helper
 from onebox import conf
 
-# {prefix}/{injection_point}/{type}, e.g., store/matrixobjectstore/io/write/hang
+# {prefix}/{injection_point}/{type}, e.g., store/bytestore/io/write/hang
 FIU_GROUPS = {
-    "matrixobjectstore": {
-        "prefix": "store/matrixobjectstore",
+    "bytestore": {
+        "prefix": "store/bytestore",
         "injection_points": [
             "io/write",
             "io/async_write",
@@ -38,8 +38,8 @@ FIU_GROUPS = {
         ],
         "types": ["hang", "failure", "crash", ],
     },
-    "matrixobjectstore_data_distort": {
-        "prefix": "store/matrixobjectstore",
+    "bytestore_data_distort": {
+        "prefix": "store/bytestore",
         "injection_points": [
             "io/async_read",
         ],

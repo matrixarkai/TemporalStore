@@ -6,7 +6,6 @@ TemporalStore adapter:
 
     <prefix>:record_count              string global count
     <prefix>:records:<shard>           hash of zero-padded offsets -> JSON record
-    <prefix>:session_index:<hash>      optional hash of sequence -> record ref
 
 Legacy prefixes using <prefix>:record_index plus <prefix>:records are also
 supported. Backfill writes normalized MatrixArk serving records to a shadow
@@ -36,7 +35,7 @@ from matrixark_mcp_core import (  # noqa: E402
     materialize_serving_records,
     stable_hash,
 )
-from matrixark_mcp_local_adapter import DEFAULT_SESSION_IDLE_COMMIT_TIMEOUT_MS, MatrixArkLocalAdapter  # noqa: E402
+from matrixark_mcp_local_adapter import MatrixArkLocalAdapter  # noqa: E402
 from matrixark_raw_message_storage_contract import (  # noqa: E402
     RawMessageStorageTarget,
     contract_report as raw_message_contract_report,
@@ -402,48 +401,6 @@ class LocalJsonKV:
         return dict(self.data['hashes'].get(key, {}))
 
 
-def raw_session_index_key(prefix: str, session_id: str) -> str:
-    digest = stable_hash(str(session_id))
-    return f'{prefix.rstrip(":")}:session_index:{digest}'
-
-
-def raw_record_session_ids(record: Json) -> set[str]:
-    candidates = {
-        _scope_value(record, 'session_id'),
-        _scope_value(record, 'conversation_id'),
-    }
-    scope = record.get('scope') if isinstance(record.get('scope'), dict) else {}
-    envelope = record.get('envelope') if isinstance(record.get('envelope'), dict) else {}
-    envelope_scope = envelope.get('scope') if isinstance(envelope.get('scope'), dict) else {}
-    metadata = record.get('metadata') if isinstance(record.get('metadata'), dict) else {}
-    for container in [scope, envelope_scope, metadata, envelope, record]:
-        if not isinstance(container, dict):
-            continue
-        for key in ['session_id', 'session', 'conversation_id', 'conversation']:
-            value = container.get(key)
-            if value not in (None, ''):
-                candidates.add(str(value))
-    return {item for item in candidates if item}
-
-
-def raw_session_index_entries(prefix: str, sequence: int, record: Json, *, shard_size: int = DIRECT_RECORD_LOG_SHARD_SIZE) -> list[Json]:
-    shard = sequence // shard_size
-    offset = sequence % shard_size
-    ref = json.dumps({
-        'sequence': sequence,
-        'shard': shard,
-        'field': f'{offset:020d}',
-    }, sort_keys=True, separators=(',', ':'))
-    return [
-        {
-            'key': raw_session_index_key(prefix, session_id),
-            'field': f'{sequence:020d}',
-            'value': ref,
-        }
-        for session_id in sorted(raw_record_session_ids(record))
-    ]
-
-
 class MatrixKVRecordLog:
     def __init__(self, kv: Any, *, prefix: str, shard_size: int = DIRECT_RECORD_LOG_SHARD_SIZE) -> None:
         self.kv = kv
@@ -529,99 +486,6 @@ class MatrixKVRecordLog:
         legacy_record_id = ref[1] if len(ref) > 1 else None
         scan_field = ref[2] if len(ref) > 2 else None
         return sequence, legacy_record_id, scan_field
-
-    def session_index_key(self, session_id: str) -> str:
-        return raw_session_index_key(self.prefix, session_id)
-
-    def append_session_index_entries(self, *, sequence: int, record: Json) -> None:
-        entries = raw_session_index_entries(self.prefix, sequence, record, shard_size=self.shard_size)
-        if not entries:
-            return
-        batch_hset = getattr(self.kv, 'batch_hset', None)
-        if callable(batch_hset):
-            batch_hset(entries)
-            return
-        for entry in entries:
-            self.kv.hset(str(entry['key']), str(entry['field']), str(entry['value']))
-
-    def session_refs(
-        self,
-        *,
-        session_ids: Iterable[str],
-        start_seq: int,
-        end_seq: int | None,
-    ) -> tuple[list[SourceRef], Json] | None:
-        scan_hash = getattr(self.kv, 'scan_hash', None)
-        if not callable(scan_hash):
-            return None
-        refs_by_sequence: dict[int, SourceRef] = {}
-        found_indexes = 0
-        missing_indexes: list[str] = []
-        for session_id in sorted({str(item) for item in session_ids if str(item)}):
-            index_key = self.session_index_key(session_id)
-            payload = scan_hash(index_key)
-            payload = payload if isinstance(payload, dict) else {}
-            fields = self._scan_hash_fields(payload)
-            if not fields:
-                missing_indexes.append(session_id)
-                continue
-            found_indexes += 1
-            for field in fields:
-                sequence = self._sequence_from_session_index_field(field)
-                value = str(payload.get(field) or '')
-                if value:
-                    sequence = self._sequence_from_session_index_value(value, fallback=sequence)
-                if sequence is None:
-                    continue
-                if sequence < max(0, start_seq):
-                    continue
-                if end_seq is not None and sequence >= end_seq:
-                    continue
-                refs_by_sequence[sequence] = (sequence, None, f'{sequence % self.shard_size:020d}')
-        if found_indexes == 0 or missing_indexes:
-            return None
-        refs = [refs_by_sequence[sequence] for sequence in sorted(refs_by_sequence)]
-        source_range = {
-            'scan_mode': 'session_index',
-            'requested_start_seq': start_seq,
-            'requested_end_seq': end_seq,
-            'effective_start_seq': max(0, start_seq),
-            'effective_end_seq': (max(refs_by_sequence) + 1) if refs_by_sequence else max(0, start_seq),
-            'source_record_count': len(refs),
-            'source_high_watermark_seq': max(refs_by_sequence) if refs_by_sequence else None,
-            'user_bounded_end': end_seq is not None,
-            'session_index_used': True,
-            'session_index_key_count': found_indexes,
-            'session_index_missing_key_count': len(missing_indexes),
-            'session_index_missing_session_ids': missing_indexes[:32],
-        }
-        return refs, source_range
-
-    @staticmethod
-    def _sequence_from_session_index_field(field: str) -> int | None:
-        try:
-            return int(field)
-        except (TypeError, ValueError):
-            return None
-
-    @staticmethod
-    def _sequence_from_session_index_value(value: str, *, fallback: int | None) -> int | None:
-        try:
-            decoded = json.loads(value)
-        except Exception:
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                return fallback
-        if isinstance(decoded, dict):
-            try:
-                return int(decoded.get('sequence'))
-            except (TypeError, ValueError):
-                return fallback
-        try:
-            return int(decoded)
-        except (TypeError, ValueError):
-            return fallback
 
     def _read_one_ref(self, sequence: int, legacy_record_id: str | None, scan_field: str | None = None) -> tuple[int, Json | None, Exception | None]:
         try:
@@ -848,21 +712,6 @@ class RawMessageStoreReader:
             max_empty_scan_shards=max_empty_scan_shards,
             source_range=source_range,
         )
-
-    def session_refs(
-        self,
-        *,
-        session_ids: Iterable[str],
-        start_seq: int,
-        end_seq: int | None,
-    ) -> tuple[list[SourceRef], Json] | None:
-        result = self.log.session_refs(session_ids=session_ids, start_seq=start_seq, end_seq=end_seq)
-        if result is None:
-            return None
-        refs, source_range = result
-        source_range['raw_backend'] = self.raw_backend
-        source_range['raw_store_reader'] = 'matrixark.raw_message_store_reader.v1'
-        return refs, source_range
 
     def iter_records(self, *, start_seq: int, end_seq: int | None) -> Iterable[tuple[int, Json]]:
         return self.log.iter_records(start_seq=start_seq, end_seq=end_seq)
@@ -1165,26 +1014,17 @@ class CaptureAdapter(MatrixArkLocalAdapter):
         self.records: list[Json] = []
 
     def append(self, record: Json) -> None:
-        records = materialize_serving_records(record)
-        self.records.extend(records)
-        self._update_latest_entity_cache(records)
+        self.records.extend(materialize_serving_records(record))
 
     def append_many(self, records: list[Json]) -> None:
-        materialized = materialize_serving_record_batch(records)
-        self.records.extend(materialized)
-        self._update_latest_entity_cache(materialized)
-
-    def drain_records(self) -> list[Json]:
-        records = self.records
-        self.records = []
-        return records
+        self.records.extend(materialize_serving_record_batch(records))
 
 
 def normalize_raw_backend(value: str) -> str:
     try:
         return normalize_raw_storage_backend(value)
     except ValueError as exc:
-        raise BackfillError('--raw-backend must be temporalstore, matrixkv, s3, or matrixobject') from exc
+        raise BackfillError('--raw-backend must be temporalstore, matrixkv, s3, or objectstore') from exc
 
 
 def checkpoint_key(
@@ -1455,9 +1295,6 @@ def build_plan_command_base_args(args: argparse.Namespace, *, start_seq: int, en
         _plan_arg('start-seq', start_seq),
         _plan_arg('end-seq', end_seq),
         _plan_arg('batch-size', args.batch_size),
-        _plan_arg('backfill-window-policy', getattr(args, 'backfill_window_policy', 'conversation')),
-        _plan_arg('session-commit-threshold', getattr(args, 'session_commit_threshold', 20)),
-        _plan_arg('idle-commit-timeout-ms', getattr(args, 'idle_commit_timeout_ms', DEFAULT_SESSION_IDLE_COMMIT_TIMEOUT_MS)),
         _plan_arg('source-scan-max-empty-shards', args.source_scan_max_empty_shards),
     ]
     _append_plan_arg(out, 'library-path', getattr(args, 'library_path', ''))
@@ -2213,19 +2050,11 @@ def _csv_set(value: str) -> set[str]:
 
 def _scope_value(record: Json, name: str) -> str:
     scope = record.get('scope') if isinstance(record.get('scope'), dict) else {}
-    envelope = record.get('envelope') if isinstance(record.get('envelope'), dict) else {}
-    envelope_scope = envelope.get('scope') if isinstance(envelope.get('scope'), dict) else {}
     for key in (name, name.replace('_id', '')):
         value = record.get(key)
         if value not in (None, ''):
             return str(value)
         value = scope.get(key) if isinstance(scope, dict) else None
-        if value not in (None, ''):
-            return str(value)
-        value = envelope_scope.get(key) if isinstance(envelope_scope, dict) else None
-        if value not in (None, ''):
-            return str(value)
-        value = envelope.get(key) if isinstance(envelope, dict) else None
         if value not in (None, ''):
             return str(value)
     return ''
@@ -2277,14 +2106,7 @@ def record_matches_partial(raw_record: Json, partial: Json) -> bool:
     ]
     for spec_key, record_key in checks:
         allowed = set(partial.get(spec_key) or [])
-        if (
-            spec_key == 'session_ids'
-            and allowed
-            and _scope_value(raw_record, record_key) not in allowed
-            and _scope_value(raw_record, 'conversation_id') not in allowed
-        ):
-            return False
-        if spec_key != 'session_ids' and allowed and _scope_value(raw_record, record_key) not in allowed:
+        if allowed and _scope_value(raw_record, record_key) not in allowed:
             return False
     filter_json = partial.get('filter_json') if isinstance(partial.get('filter_json'), dict) else {}
     for key, expected in filter_json.items():
@@ -2337,84 +2159,6 @@ def should_backfill_record(raw_record: Json) -> bool:
     return 'messages' in raw_record or 'kind' in raw_record or 'scope' in raw_record
 
 
-def is_windowed_backfill_record(raw_record: Json) -> bool:
-    record_type = str(raw_record.get('record_type') or '')
-    kind = str(raw_record.get('kind') or 'message')
-    return not record_type and 'messages' in raw_record and kind in {'message', 'business_data', 'feedback'}
-
-
-def backfill_scope_key(raw_record: Json) -> tuple[str, str, str, str]:
-    scope = raw_record.get('scope') if isinstance(raw_record.get('scope'), dict) else {}
-    return (
-        str(scope.get('account_id') or ''),
-        str(scope.get('tenant_id') or ''),
-        str(scope.get('user_id') or ''),
-        str(scope.get('session_id') or ''),
-    )
-
-
-def raw_record_time_ms(raw_record: Json) -> int | None:
-    candidates = [
-        raw_record.get('ingestion_time_ms'),
-        raw_record.get('updated_at_ms'),
-        raw_record.get('created_at_ms'),
-        raw_record.get('timestamp_key_ms'),
-    ]
-    envelope = raw_record.get('envelope') if isinstance(raw_record.get('envelope'), dict) else {}
-    candidates.extend([
-        envelope.get('ingestion_time_ms'),
-        envelope.get('updated_at_ms'),
-        envelope.get('created_at_ms'),
-    ])
-    for value in candidates:
-        try:
-            if value is not None:
-                return int(value)
-        except (TypeError, ValueError):
-            continue
-    return None
-
-
-def backfill_boundary_requested(raw_record: Json) -> bool:
-    metadata = raw_record.get('metadata') if isinstance(raw_record.get('metadata'), dict) else {}
-    if any(bool(raw_record.get(field, False)) for field in ['flush_session_buffer', 'conversation_done', 'session_done', 'task_complete']):
-        return True
-    event = (
-        raw_record.get('lifecycle_event_type')
-        or raw_record.get('event_type')
-        or raw_record.get('event')
-        or metadata.get('lifecycle_event_type')
-        or metadata.get('event_type')
-        or ''
-    )
-    normalized = ''.join(ch for ch in str(event).lower() if ch.isalnum())
-    return normalized in {
-        'stop',
-        'subagentstop',
-        'postcompact',
-        'precompact',
-        'compact',
-        'sessionend',
-        'conversationend',
-        'conversationdone',
-        'sessiondone',
-        'taskcomplete',
-    }
-
-
-def assign_backfill_idempotency(records: list[Json], *, source_prefix: str, raw_backend: str, sequence: int | None, fallback_id: str) -> None:
-    for index, item in enumerate(records):
-        if item.get('idempotency_key'):
-            continue
-        payload = json.dumps(stable_serving_fingerprint_value(item), sort_keys=True, separators=(',', ':'))
-        item['idempotency_key'] = (
-            f'backfill:{normalize_raw_backend(raw_backend)}:{source_prefix}:'
-            f'{sequence if sequence is not None else "window"}:{index}:{stable_hash(payload)}'
-            if fallback_id == ''
-            else f'{fallback_id}:{index}:{stable_hash(payload)}'
-        )
-
-
 def materialize_backfill_record(raw_record: Json) -> list[Json]:
     adapter = CaptureAdapter()
     if 'messages' in raw_record and not str(raw_record.get('record_type') or ''):
@@ -2462,39 +2206,6 @@ def run_backfill(args: argparse.Namespace) -> Json:
     discovered_min_sequence: int | None = None
     discovered_max_sequence: int | None = None
     outer_bulk = hasattr(kv, 'begin_bulk') and hasattr(kv, 'end_bulk')
-    windowed_backfill = str(getattr(args, 'backfill_window_policy', 'conversation')).lower() != 'per_record'
-    backfill_idle_timeout_ms = int(getattr(args, 'idle_commit_timeout_ms', DEFAULT_SESSION_IDLE_COMMIT_TIMEOUT_MS) or 0)
-    backfill_adapter = CaptureAdapter()
-    last_event_time_by_scope: dict[tuple[str, str, str, str], int] = {}
-    open_scopes: dict[tuple[str, str, str, str], Json] = {}
-
-    def drain_adapter_records(*, sequence: int | None = None, fallback_id: str = '') -> list[Json]:
-        records = backfill_adapter.drain_records()
-        assign_backfill_idempotency(
-            records,
-            source_prefix=args.source_prefix,
-            raw_backend=raw_backend,
-            sequence=sequence,
-            fallback_id=fallback_id,
-        )
-        return records
-
-    def flush_backfill_window(scope: Json, *, sequence: int | None, reason: str) -> None:
-        result = backfill_adapter.session_commit(
-            {
-                'scope': scope,
-                'metadata': {'backfill_commit_reason': reason},
-                'threshold_messages': int(getattr(args, 'session_commit_threshold', 20) or 20),
-                'force': True,
-                'commit_reason': 'idle_timeout' if reason == 'idle_timeout' else 'hook_boundary',
-                'skip_prior_context': True,
-            }
-        )
-        records = drain_adapter_records(sequence=sequence, fallback_id=f'backfill:{args.source_prefix}:{raw_backend}:{reason}:{sequence if sequence is not None else "end"}')
-        if result.get('status') == 'committed' and records:
-            pending.extend(records)
-            if len(pending) >= args.batch_size:
-                flush()
 
     def flush() -> None:
         nonlocal pending, checkpoint, checkpoint_pending_seq
@@ -2576,34 +2287,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
                 checkpoint_pending_seq = sequence
                 return
             seen_ids.add(dedupe_id)
-            if windowed_backfill and is_windowed_backfill_record(record):
-                scope_key = backfill_scope_key(record)
-                event_time_ms = raw_record_time_ms(record)
-                previous_time_ms = last_event_time_by_scope.get(scope_key)
-                if (
-                    event_time_ms is not None
-                    and previous_time_ms is not None
-                    and backfill_idle_timeout_ms > 0
-                    and event_time_ms - previous_time_ms >= backfill_idle_timeout_ms
-                ):
-                    previous_scope = open_scopes.get(scope_key) or record.get('scope') or {}
-                    flush_backfill_window(previous_scope, sequence=sequence, reason='idle_timeout')
-                ingest_record = dict(record)
-                ingest_record.setdefault('session_buffer_threshold', int(getattr(args, 'session_commit_threshold', 20) or 20))
-                ingest_record.setdefault('idle_commit_timeout_ms', 0)
-                ingest_record.setdefault('skip_prior_context', True)
-                if backfill_boundary_requested(record):
-                    ingest_record.setdefault('flush_session_buffer', True)
-                backfill_adapter.ingest(ingest_record, hook=record.get('agent_hook'))
-                materialized = drain_adapter_records(sequence=sequence, fallback_id=dedupe_id)
-                if event_time_ms is not None:
-                    last_event_time_by_scope[scope_key] = event_time_ms
-                open_scopes[scope_key] = record.get('scope') or {}
-                if backfill_boundary_requested(record):
-                    open_scopes.pop(scope_key, None)
-                    last_event_time_by_scope.pop(scope_key, None)
-            else:
-                materialized = materialize_backfill_record(record)
+            materialized = materialize_backfill_record(record)
             if not materialized:
                 metrics.skipped += 1
                 checkpoint_pending_seq = sequence
@@ -2648,26 +2332,13 @@ def run_backfill(args: argparse.Namespace) -> Json:
                 continue
             process_raw_record(sequence, raw_record or {}, existing_dedupe_ids)
 
-    session_index_result = source.session_refs(
-        session_ids=partial.get('session_ids') or [],
+    source_range = source.source_range(start_seq=start_seq, end_seq=args.end_seq)
+    source_items, scan_mode = source.source_refs(
         start_seq=start_seq,
         end_seq=args.end_seq,
-    ) if partial.get('session_ids') else None
-    if session_index_result is not None:
-        session_refs, source_range = session_index_result
-        source_items = iter(session_refs)
-        scan_mode = 'session_index'
-    else:
-        source_range = source.source_range(start_seq=start_seq, end_seq=args.end_seq)
-        if partial.get('session_ids'):
-            source_range['session_index_used'] = False
-            source_range['session_index_fallback_reason'] = 'missing_or_unavailable_session_index'
-        source_items, scan_mode = source.source_refs(
-            start_seq=start_seq,
-            end_seq=args.end_seq,
-            max_empty_scan_shards=args.source_scan_max_empty_shards,
-            source_range=source_range,
-        )
+        max_empty_scan_shards=args.source_scan_max_empty_shards,
+        source_range=source_range,
+    )
 
     if outer_bulk:
         kv.begin_bulk()
@@ -2679,11 +2350,6 @@ def run_backfill(args: argparse.Namespace) -> Json:
                 process_source_batch(source_batch)
                 source_batch = []
         process_source_batch(source_batch)
-        if windowed_backfill:
-            for scope_key, scope in list(open_scopes.items()):
-                flush_backfill_window(scope, sequence=checkpoint_pending_seq, reason='backfill_end')
-                open_scopes.pop(scope_key, None)
-                last_event_time_by_scope.pop(scope_key, None)
         flush()
     finally:
         if outer_bulk:
@@ -2729,8 +2395,6 @@ def run_backfill(args: argparse.Namespace) -> Json:
     summary['raw_store_reader'] = 'matrixark.raw_message_store_reader.v1'
     summary['dry_run'] = bool(args.dry_run)
     summary['dry_run_check_target'] = bool(getattr(args, 'dry_run_check_target', True))
-    summary['backfill_window_policy'] = 'conversation' if windowed_backfill else 'per_record'
-    summary['idle_commit_timeout_ms'] = backfill_idle_timeout_ms
     manifest = {
         'manifest_schema': 'matrixark_context_backfill_manifest_v1',
         'job_id': args.job_id,
@@ -2748,8 +2412,6 @@ def run_backfill(args: argparse.Namespace) -> Json:
         'raw_store_reader': 'matrixark.raw_message_store_reader.v1',
         'dry_run': bool(args.dry_run),
         'dry_run_check_target': bool(getattr(args, 'dry_run_check_target', True)),
-        'backfill_window_policy': summary['backfill_window_policy'],
-        'idle_commit_timeout_ms': backfill_idle_timeout_ms,
         'summary': dict(summary),
     }
     manifest_payload_sha256 = canonical_json_sha256(manifest)
@@ -3953,9 +3615,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--source-prefix', default='matrixark:mcp:raw_ingestion')
     parser.add_argument(
         '--raw-backend',
-        choices=['temporalstore', 'matrixkv', 's3', 'matrixobject', 'objectstore'],
+        choices=['temporalstore', 'matrixkv', 's3', 'objectstore'],
         default=os.environ.get('MATRIXARK_RAW_INGESTION_BACKEND', 'temporalstore'),
-        help='raw ingestion message store that owns source-prefix; use matrixobject for MatrixObject; legacy objectstore alias is accepted',
+        help='raw ingestion message store that owns source-prefix; affects checkpoints, idempotency, manifests, and metrics',
     )
     parser.add_argument('--target-prefix', default='')
     parser.add_argument('--mode', choices=['plan', 'shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'rollback_activation', 'incremental_repair', 'verify_manifest', 'verify_plan_artifacts', 'export_dead_letters', 'read_raw_event'], default='shadow')
@@ -3989,9 +3651,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--partial-filter-json', default='', help='exact-match JSON object filter for partial backfill')
     parser.add_argument('--partial-require-bounded', type=int, choices=[0, 1], default=1, help='require bounded range or filters for partial backfill')
     parser.add_argument('--batch-size', type=int, default=256)
-    parser.add_argument('--backfill-window-policy', choices=['conversation', 'per_record'], default=os.environ.get('MATRIXARK_BACKFILL_WINDOW_POLICY', 'conversation'), help='conversation replays raw messages through session windows; per_record preserves legacy one-record materialization')
-    parser.add_argument('--session-commit-threshold', type=int, default=int(os.environ.get('MATRIXARK_SESSION_COMMIT_THRESHOLD', '20')), help='message threshold for conversation-window backfill extraction commits')
-    parser.add_argument('--idle-commit-timeout-ms', type=int, default=int(os.environ.get('MATRIXARK_IDLE_COMMIT_TIMEOUT_MS', '300000')), help='historical idle gap that commits the previous conversation window during backfill; set 0 to disable')
     parser.add_argument('--plan-window-size', type=int, default=0, help='plan-only bounded source records per execution window; 0 disables chunk planning')
     parser.add_argument('--plan-max-windows', type=int, default=128, help='plan-only maximum windows to emit; 0 emits all windows')
     parser.add_argument('--plan-parallelism', type=int, default=1, help='plan-only number of independent chunk shadows to group into each preparation wave')

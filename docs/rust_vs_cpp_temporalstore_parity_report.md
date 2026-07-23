@@ -14,7 +14,7 @@ The implementation decision remains explicit:
 - no byte-for-byte C++ page/log layout requirement
 - Rust-native HTTP/JSON, RESP, and tonic are the production migration surfaces
 - Rust-native page/log formats are accepted when migration/replay corpus evidence passes
-- live MatrixObjectStore/S3 remains out of scope unless separately reintroduced
+- live ByteStore/S3 remains out of scope unless separately reintroduced
 
 ## Current Evidence Snapshot
 
@@ -174,7 +174,7 @@ Current migration focus:
 1. Promote remaining Rust-local product tests into shared corpus cases or mark them as Rust-only
    internals when they only validate local helpers.
 2. Convert C++ static parity gates into executable shared cases family by family:
-   storage/Raft, control plane, ingestion, Context, Redis/admin, Feature, IPS, and ControlState.
+   storage/Raft, control plane, ingestion, Context, Redis/admin, Feature, IPS, and Risk.
 3. Keep C++ local tests for C++ transport, fixture, allocator, build, and RustRaft integration
    mechanics that are not cross-language product contracts.
 4. Keep Rust local tests for parser/helper/provider mock mechanics that are not TemporalStore
@@ -200,5 +200,5 @@ They are not VikingMem paper-comparable until a live reader endpoint run succeed
 - Native C++ execution for many shared corpus cases that are currently C++ static surface gates,
   including the recent ContextEntity/ContextSegment benchmark-injection contract.
 - Continued migration of Rust-local product tests into the shared corpus.
-- Any future live MatrixObjectStore/S3 requirement, if brought back into scope, needs separate follower-cursor
+- Any future live ByteStore/S3 requirement, if brought back into scope, needs separate follower-cursor
   and Raft-snapshot retention evidence.

@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use temporalstore_snapshot::object_store::{ObjectStore, ObjectStoreError};
 use thiserror::Error;
-use tokio::task::JoinSet;
 
 use crate::block_store::{BlockStoreError, LocalBlockStore};
 use crate::engine::TemporalEngine;
@@ -175,7 +174,6 @@ pub struct SharedStoreReplicator<O> {
     cluster_id: String,
     object_store: Arc<O>,
     retry_policy: SharedStoreRetryPolicy,
-    transfer_concurrency: usize,
 }
 
 impl<O> Clone for SharedStoreReplicator<O> {
@@ -184,7 +182,6 @@ impl<O> Clone for SharedStoreReplicator<O> {
             cluster_id: self.cluster_id.clone(),
             object_store: Arc::clone(&self.object_store),
             retry_policy: self.retry_policy,
-            transfer_concurrency: self.transfer_concurrency,
         }
     }
 }
@@ -212,7 +209,6 @@ where
             cluster_id: cluster_id.into(),
             object_store,
             retry_policy: SharedStoreRetryPolicy::default(),
-            transfer_concurrency: default_transfer_concurrency(),
         }
     }
 
@@ -228,13 +224,7 @@ where
                 max_attempts: retry_policy.max_attempts.max(1),
                 backoff_ms: retry_policy.backoff_ms,
             },
-            transfer_concurrency: default_transfer_concurrency(),
         }
-    }
-
-    pub fn with_transfer_concurrency(mut self, transfer_concurrency: usize) -> Self {
-        self.transfer_concurrency = transfer_concurrency.max(1);
-        self
     }
 
     pub async fn publish_oplog_entry(
@@ -255,7 +245,7 @@ where
             entry_byte_size: entry_bytes.len() as u64,
             entry_sha256: sha256_hex(&entry_bytes),
         };
-        self.put_unique_with_retry(&key, Bytes::from(serde_json::to_vec(&object)?))
+        self.put_with_retry(&key, Bytes::from(serde_json::to_vec(&object)?))
             .await?;
         Ok(())
     }
@@ -296,14 +286,16 @@ where
         shard_id: ShardId,
         block_store: &LocalBlockStore,
     ) -> Result<Vec<u64>, SharedStoreReplicationError> {
-        let mut objects = Vec::new();
         let mut published = Vec::new();
         for page_segment_id in block_store.segment_ids()? {
-            let key = self.page_segment_key(shard_id, page_segment_id);
-            objects.push((key, Bytes::from(block_store.read_segment(page_segment_id)?)));
+            self.object_store
+                .put(
+                    &self.page_segment_key(shard_id, page_segment_id),
+                    Bytes::from(block_store.read_segment(page_segment_id)?),
+                )
+                .await?;
             published.push(page_segment_id);
         }
-        self.put_objects_concurrent(objects).await?;
         Ok(published)
     }
 
@@ -323,19 +315,19 @@ where
             .await?;
 
         let mut page_segments = Vec::new();
-        let mut objects = Vec::new();
         for page_segment_id in block_store.segment_ids()? {
             let bytes = block_store.read_segment(page_segment_id)?;
             let key = format!("{prefix}page_segments/page_segment_{page_segment_id:020}.seg");
+            self.object_store
+                .put(&key, Bytes::from(bytes.clone()))
+                .await?;
             page_segments.push(SharedStorePageSegment {
                 page_segment_id,
-                key: key.clone(),
+                key,
                 byte_size: bytes.len() as u64,
                 sha256: sha256_hex(&bytes),
             });
-            objects.push((key, Bytes::from(bytes)));
         }
-        self.put_objects_concurrent(objects).await?;
 
         let manifest = SharedStoreCheckpointManifest {
             cluster_id: self.cluster_id.clone(),
@@ -367,28 +359,16 @@ where
         engine.install_index_bytes(shard_id, &index)?;
 
         let prefix = self.page_segment_prefix(shard_id);
-        let mut page_keys = self
-            .object_store
-            .list(&prefix)
-            .await?
-            .into_iter()
-            .filter_map(|key| {
-                parse_page_segment_id(&key).map(|page_segment_id| (page_segment_id, key))
-            })
-            .collect::<Vec<_>>();
-        page_keys.sort_by_key(|(page_segment_id, _)| *page_segment_id);
-        let page_segment_ids = page_keys
-            .iter()
-            .map(|(page_segment_id, _)| *page_segment_id)
-            .collect::<Vec<_>>();
-        let page_bytes = self
-            .get_objects_concurrent(page_keys.into_iter().map(|(_, key)| key).collect())
-            .await?;
         let mut restored = Vec::new();
-        for (page_segment_id, (_, bytes)) in page_segment_ids.into_iter().zip(page_bytes) {
+        for key in self.object_store.list(&prefix).await? {
+            let Some(page_segment_id) = parse_page_segment_id(&key) else {
+                continue;
+            };
+            let bytes = self.object_store.get(&key).await?;
             block_store.install_segment(page_segment_id, &bytes)?;
             restored.push(page_segment_id);
         }
+        restored.sort_unstable();
         Ok(restored)
     }
 
@@ -396,16 +376,16 @@ where
         &self,
         shard_id: ShardId,
     ) -> Result<Vec<SharedStoreCheckpointManifest>, SharedStoreReplicationError> {
-        let manifest_keys = self
+        let mut manifests = Vec::new();
+        for key in self
             .object_store
             .list(&self.checkpoints_prefix(shard_id))
             .await?
-            .into_iter()
-            .filter(|key| key.ends_with("/manifest.json"))
-            .collect::<Vec<_>>();
-        let mut manifests = Vec::new();
-        for (_, bytes) in self.get_objects_concurrent(manifest_keys).await? {
-            manifests.push(serde_json::from_slice(&bytes)?);
+        {
+            if !key.ends_with("/manifest.json") {
+                continue;
+            }
+            manifests.push(serde_json::from_slice(&self.object_store.get(&key).await?)?);
         }
         manifests.sort_by_key(|manifest: &SharedStoreCheckpointManifest| {
             (manifest.checkpoint_oplog_index, manifest.created_at_ms)
@@ -428,12 +408,8 @@ where
         )?;
         engine.install_index_bytes(manifest.shard_id, &index)?;
 
-        let mut segments = manifest.page_segments.clone();
-        segments.sort_by_key(|segment| segment.page_segment_id);
-        let segment_bytes = self
-            .get_objects_concurrent(segments.iter().map(|segment| segment.key.clone()).collect())
-            .await?;
-        for (segment, (_, bytes)) in segments.iter().zip(segment_bytes) {
+        for segment in &manifest.page_segments {
+            let bytes = self.object_store.get(&segment.key).await?;
             verify_checksum(&segment.key, &bytes, segment.byte_size, &segment.sha256)?;
             block_store.install_segment(segment.page_segment_id, &bytes)?;
         }
@@ -465,78 +441,39 @@ where
         self.replay_wal(shard_id, after_oplog_index, engine).await
     }
 
-    pub async fn replay_oplog_until(
-        &self,
-        shard_id: ShardId,
-        after_oplog_index: u64,
-        through_oplog_index: u64,
-        engine: &TemporalEngine,
-    ) -> Result<ReplayReport, SharedStoreReplicationError> {
-        self.replay_wal_until(shard_id, after_oplog_index, through_oplog_index, engine)
-            .await
-    }
-
     pub async fn replay_wal(
         &self,
         shard_id: ShardId,
         after_wal_index: u64,
         engine: &TemporalEngine,
     ) -> Result<ReplayReport, SharedStoreReplicationError> {
-        self.replay_wal_bounded(shard_id, after_wal_index, None, engine)
-            .await
-    }
+        let mut keys = self.object_store.list(&self.oplog_prefix(shard_id)).await?;
+        keys.sort();
 
-    pub async fn replay_wal_until(
-        &self,
-        shard_id: ShardId,
-        after_wal_index: u64,
-        through_wal_index: u64,
-        engine: &TemporalEngine,
-    ) -> Result<ReplayReport, SharedStoreReplicationError> {
-        self.replay_wal_bounded(shard_id, after_wal_index, Some(through_wal_index), engine)
-            .await
-    }
-
-    async fn replay_wal_bounded(
-        &self,
-        shard_id: ShardId,
-        after_wal_index: u64,
-        through_wal_index: Option<u64>,
-        engine: &TemporalEngine,
-    ) -> Result<ReplayReport, SharedStoreReplicationError> {
-        let mut next_oplog_index = after_wal_index + 1;
         let mut report = ReplayReport {
             applied: 0,
             last_oplog_index: after_wal_index,
         };
-        loop {
-            if through_wal_index.is_some_and(|through| next_oplog_index > through) {
-                break;
+        for key in keys {
+            let Some(oplog_index) = parse_oplog_index(&key) else {
+                continue;
+            };
+            if oplog_index <= after_wal_index {
+                continue;
             }
-            let (entries, reached_gap) = self
-                .read_contiguous_oplog_entries(shard_id, next_oplog_index, through_wal_index)
-                .await?;
-            if entries.is_empty() {
-                break;
-            }
-            for (oplog_index, entry) in entries {
-                let response = engine.execute(ExecuteRequest {
-                    shard_id,
-                    command: entry.command,
+            let entry = self.read_oplog_entry(&key).await?;
+            let response = engine.execute(ExecuteRequest {
+                shard_id,
+                command: entry.command,
+            });
+            if !response.status.ok {
+                return Err(SharedStoreReplicationError::ApplyFailed {
+                    oplog_index,
+                    status: response.status,
                 });
-                if !response.status.ok {
-                    return Err(SharedStoreReplicationError::ApplyFailed {
-                        oplog_index,
-                        status: response.status,
-                    });
-                }
-                report.applied += 1;
-                report.last_oplog_index = oplog_index;
-                next_oplog_index = oplog_index + 1;
             }
-            if reached_gap {
-                break;
-            }
+            report.applied += 1;
+            report.last_oplog_index = oplog_index;
         }
         Ok(report)
     }
@@ -666,17 +603,16 @@ where
         shard_id: ShardId,
         retain_from_wal_index: u64,
     ) -> Result<SharedStoreGcReport, SharedStoreReplicationError> {
-        let mut delete_keys = Vec::new();
+        let mut deleted_oplog_objects = 0usize;
         for key in self.object_store.list(&self.oplog_prefix(shard_id)).await? {
             let Some(oplog_index) = parse_oplog_index(&key) else {
                 continue;
             };
             if oplog_index < retain_from_wal_index {
-                delete_keys.push(key);
+                self.object_store.delete(&key).await?;
+                deleted_oplog_objects += 1;
             }
         }
-        let deleted_oplog_objects = delete_keys.len();
-        self.delete_keys_concurrent(delete_keys).await?;
         Ok(SharedStoreGcReport {
             shard_id,
             deleted_oplog_objects,
@@ -878,105 +814,15 @@ where
         Ok(serde_json::from_slice(&bytes)?)
     }
 
-    async fn read_oplog_entry_by_index(
-        &self,
-        shard_id: ShardId,
-        oplog_index: u64,
-    ) -> Result<Option<SharedStoreOplogEntry>, SharedStoreReplicationError> {
-        let key = self.oplog_key(shard_id, oplog_index);
-        match self.read_oplog_entry(&key).await {
-            Ok(entry) => Ok(Some(entry)),
-            Err(SharedStoreReplicationError::ObjectStore(ObjectStoreError::NotFound(_))) => {
-                Ok(None)
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    async fn read_contiguous_oplog_entries(
-        &self,
-        shard_id: ShardId,
-        start_oplog_index: u64,
-        through_oplog_index: Option<u64>,
-    ) -> Result<(Vec<(u64, SharedStoreOplogEntry)>, bool), SharedStoreReplicationError> {
-        if through_oplog_index.is_some_and(|through| start_oplog_index > through) {
-            return Ok((Vec::new(), false));
-        }
-        let Some(first) = self
-            .read_oplog_entry_by_index(shard_id, start_oplog_index)
-            .await?
-        else {
-            return Ok((Vec::new(), true));
-        };
-        let mut entries = vec![(start_oplog_index, first)];
-        let window = self.transfer_concurrency.max(1);
-        if window == 1 {
-            return Ok((entries, false));
-        }
-        let tail_count = through_oplog_index
-            .map(|through| through.saturating_sub(start_oplog_index) as usize)
-            .unwrap_or(window - 1)
-            .min(window - 1);
-
-        let mut join_set = JoinSet::new();
-        for offset in 1..=tail_count {
-            let oplog_index = start_oplog_index + offset as u64;
-            let replicator = self.clone();
-            join_set.spawn(async move {
-                let entry = replicator
-                    .read_oplog_entry_by_index(shard_id, oplog_index)
-                    .await;
-                (oplog_index, entry)
-            });
-        }
-
-        let mut tail = Vec::new();
-        while let Some(joined) = join_set.join_next().await {
-            tail.push(joined.map_err(join_error)?);
-        }
-        tail.sort_by_key(|(oplog_index, _)| *oplog_index);
-
-        for (oplog_index, result) in tail {
-            match result {
-                Ok(Some(entry)) => entries.push((oplog_index, entry)),
-                Ok(None) => return Ok((entries, true)),
-                Err(err) => return Err(err),
-            }
-        }
-        Ok((entries, false))
-    }
-
     async fn put_with_retry(
         &self,
         key: &str,
         bytes: Bytes,
     ) -> Result<(), SharedStoreReplicationError> {
-        self.put_with_retry_inner(key, bytes, false).await
-    }
-
-    async fn put_unique_with_retry(
-        &self,
-        key: &str,
-        bytes: Bytes,
-    ) -> Result<(), SharedStoreReplicationError> {
-        self.put_with_retry_inner(key, bytes, true).await
-    }
-
-    async fn put_with_retry_inner(
-        &self,
-        key: &str,
-        bytes: Bytes,
-        unique: bool,
-    ) -> Result<(), SharedStoreReplicationError> {
         let attempts = self.retry_policy.max_attempts.max(1);
         let mut last_error = None;
         for attempt in 0..attempts {
-            let result = if unique {
-                self.object_store.put_unique(key, bytes.clone()).await
-            } else {
-                self.object_store.put(key, bytes.clone()).await
-            };
-            match result {
+            match self.object_store.put(key, bytes.clone()).await {
                 Ok(()) => return Ok(()),
                 Err(err) => {
                     last_error = Some(err);
@@ -995,134 +841,11 @@ where
     async fn delete_prefix(&self, prefix: &str) -> Result<usize, SharedStoreReplicationError> {
         let keys = self.object_store.list(prefix).await?;
         let deleted = keys.len();
-        self.delete_keys_concurrent(keys).await?;
+        for key in keys {
+            self.object_store.delete(&key).await?;
+        }
         Ok(deleted)
     }
-
-    async fn put_objects_concurrent(
-        &self,
-        objects: Vec<(String, Bytes)>,
-    ) -> Result<(), SharedStoreReplicationError> {
-        if self.transfer_concurrency <= 1 {
-            for (key, bytes) in objects {
-                self.put_with_retry(&key, bytes).await?;
-            }
-            return Ok(());
-        }
-
-        let mut join_set = JoinSet::new();
-        let mut next_to_submit = 0usize;
-        while next_to_submit < objects.len() || !join_set.is_empty() {
-            while next_to_submit < objects.len() && join_set.len() < self.transfer_concurrency {
-                let (key, bytes) = objects[next_to_submit].clone();
-                let replicator = self.clone();
-                join_set.spawn(async move { replicator.put_with_retry(&key, bytes).await });
-                next_to_submit += 1;
-            }
-            let Some(joined) = join_set.join_next().await else {
-                continue;
-            };
-            joined.map_err(join_error)?.map_err(|err| {
-                join_set.abort_all();
-                err
-            })?;
-        }
-        Ok(())
-    }
-
-    async fn get_objects_concurrent(
-        &self,
-        keys: Vec<String>,
-    ) -> Result<Vec<(String, Bytes)>, SharedStoreReplicationError> {
-        if self.transfer_concurrency <= 1 {
-            let mut out = Vec::with_capacity(keys.len());
-            for key in keys {
-                let bytes = self.object_store.get(&key).await?;
-                out.push((key, bytes));
-            }
-            return Ok(out);
-        }
-
-        let mut join_set = JoinSet::new();
-        let mut next_to_submit = 0usize;
-        let mut out = Vec::with_capacity(keys.len());
-        while next_to_submit < keys.len() || !join_set.is_empty() {
-            while next_to_submit < keys.len() && join_set.len() < self.transfer_concurrency {
-                let key = keys[next_to_submit].clone();
-                let store = Arc::clone(&self.object_store);
-                let index = next_to_submit;
-                join_set.spawn(async move {
-                    let bytes = store.get(&key).await?;
-                    Ok::<_, SharedStoreReplicationError>((index, key, bytes))
-                });
-                next_to_submit += 1;
-            }
-            let Some(joined) = join_set.join_next().await else {
-                continue;
-            };
-            match joined.map_err(join_error)? {
-                Ok(item) => out.push(item),
-                Err(err) => {
-                    join_set.abort_all();
-                    return Err(err);
-                }
-            }
-        }
-        out.sort_by_key(|(index, _, _)| *index);
-        Ok(out
-            .into_iter()
-            .map(|(_, key, bytes)| (key, bytes))
-            .collect())
-    }
-
-    async fn delete_keys_concurrent(
-        &self,
-        keys: Vec<String>,
-    ) -> Result<(), SharedStoreReplicationError> {
-        if self.transfer_concurrency <= 1 {
-            for key in keys {
-                self.object_store.delete(&key).await?;
-            }
-            return Ok(());
-        }
-
-        let mut join_set = JoinSet::new();
-        let mut next_to_submit = 0usize;
-        while next_to_submit < keys.len() || !join_set.is_empty() {
-            while next_to_submit < keys.len() && join_set.len() < self.transfer_concurrency {
-                let key = keys[next_to_submit].clone();
-                let store = Arc::clone(&self.object_store);
-                join_set.spawn(async move { store.delete(&key).await.map_err(Into::into) });
-                next_to_submit += 1;
-            }
-            let Some(joined) = join_set.join_next().await else {
-                continue;
-            };
-            match joined.map_err(join_error)? {
-                Ok(()) => {}
-                Err(err) => {
-                    join_set.abort_all();
-                    return Err(err);
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-fn default_transfer_concurrency() -> usize {
-    std::env::var("TS_SHARED_STORE_TRANSFER_CONCURRENCY")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(8)
-}
-
-fn join_error(err: tokio::task::JoinError) -> SharedStoreReplicationError {
-    SharedStoreReplicationError::Io(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        format!("shared-store transfer task failed: {err}"),
-    ))
 }
 
 impl<O> SharedStoreStorageWriter<O>
@@ -1175,66 +898,6 @@ where
         max_entries: usize,
     ) -> Result<SharedStoreFlushReport, SharedStoreReplicationError> {
         let limit = max_entries.max(1);
-        let mut drained = std::collections::VecDeque::new();
-        {
-            let mut pending = self
-                .pending
-                .lock()
-                .expect("shared-store async queue lock poisoned");
-            for _ in 0..limit {
-                let Some(entry) = pending.pop_front() else {
-                    break;
-                };
-                drained.push_back(entry);
-            }
-        }
-
-        let mut last_oplog_index = 0;
-        let mut flushed = 0usize;
-        while let Some(entry) = drained.pop_front() {
-            last_oplog_index = entry.oplog_index;
-            if let Err(err) = self.replicator.publish_oplog_entry(entry.clone()).await {
-                let mut to_requeue = Vec::with_capacity(drained.len() + 1);
-                let mut pending = self
-                    .pending
-                    .lock()
-                    .expect("shared-store async queue lock poisoned");
-                to_requeue.push(entry);
-                while let Some(entry) = drained.pop_front() {
-                    to_requeue.push(entry);
-                }
-                while let Some(entry) = to_requeue.pop() {
-                    pending.push_front(entry);
-                }
-                return Err(err);
-            }
-            flushed += 1;
-        }
-        let remaining = {
-            let pending = self
-                .pending
-                .lock()
-                .expect("shared-store async queue lock poisoned");
-            pending.len()
-        };
-        Ok(SharedStoreFlushReport {
-            flushed,
-            remaining,
-            last_oplog_index,
-        })
-    }
-
-    pub async fn flush_pending_concurrent(
-        &self,
-        max_entries: usize,
-        max_in_flight: usize,
-    ) -> Result<SharedStoreFlushReport, SharedStoreReplicationError> {
-        let limit = max_entries.max(1);
-        let max_in_flight = max_in_flight.max(1);
-        if max_in_flight == 1 {
-            return self.flush_pending(limit).await;
-        }
-
         let mut drained = Vec::new();
         {
             let mut pending = self
@@ -1249,67 +912,26 @@ where
             }
         }
 
-        if drained.is_empty() {
-            let remaining = self.queued_len();
-            return Ok(SharedStoreFlushReport {
-                flushed: 0,
-                remaining,
-                last_oplog_index: 0,
-            });
-        }
-
-        let mut next_to_submit = 0usize;
-        let mut flushed = 0usize;
-        let mut last_oplog_index = 0u64;
-        let mut join_set = JoinSet::new();
-        while next_to_submit < drained.len() || !join_set.is_empty() {
-            while next_to_submit < drained.len() && join_set.len() < max_in_flight {
-                let entry = drained[next_to_submit].clone();
-                let replicator = self.replicator.clone();
-                let entry_index = next_to_submit;
-                join_set.spawn(async move {
-                    let oplog_index = entry.oplog_index;
-                    let result = replicator.publish_oplog_entry(entry).await;
-                    (entry_index, oplog_index, result)
-                });
-                next_to_submit += 1;
-            }
-
-            let Some(joined) = join_set.join_next().await else {
-                continue;
-            };
-            let (entry_index, oplog_index, result) = joined.map_err(|err| {
-                SharedStoreReplicationError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("shared-store flush task failed: {err}"),
-                ))
-            })?;
-            if let Err(err) = result {
-                join_set.abort_all();
-                while join_set.join_next().await.is_some() {}
-                self.requeue_unflushed(&drained, entry_index);
+        let mut last_oplog_index = 0;
+        for (index, entry) in drained.iter().cloned().enumerate() {
+            last_oplog_index = entry.oplog_index;
+            if let Err(err) = self.replicator.publish_oplog_entry(entry).await {
+                let mut pending = self
+                    .pending
+                    .lock()
+                    .expect("shared-store async queue lock poisoned");
+                for entry in drained[index..].iter().rev().cloned() {
+                    pending.push_front(entry);
+                }
                 return Err(err);
             }
-            flushed += 1;
-            last_oplog_index = last_oplog_index.max(oplog_index);
         }
-
         let remaining = self.queued_len();
         Ok(SharedStoreFlushReport {
-            flushed,
+            flushed: drained.len(),
             remaining,
             last_oplog_index,
         })
-    }
-
-    fn requeue_unflushed(&self, drained: &[SharedStoreOplogEntry], failed_index: usize) {
-        let mut pending = self
-            .pending
-            .lock()
-            .expect("shared-store async queue lock poisoned");
-        for entry in drained[failed_index..].iter().rev() {
-            pending.push_front(entry.clone());
-        }
     }
 }
 

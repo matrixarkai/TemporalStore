@@ -175,7 +175,7 @@ tests.
 
 ## Proxy SDK API
 
-The proxy SDKs use the same logical capability as the direct SDKs:
+The proxy SDKs use the same logical data model as the direct SDKs:
 
 - STRING: put/get with optional TTL.
 - COMMON: delete, expire, TTL.
@@ -184,7 +184,7 @@ The proxy SDKs use the same logical capability as the direct SDKs:
 - FEATURE: raw timestamped feature points with filters.
 - SEQUENCE FEATURE: typed long-sequence rows with filters.
 - IPS: add/query recent instances.
-- CONTROL_STATE: increment and count over a time window.
+- RISK: increment and count over a time window.
 
 Current proxy SDK entry points:
 

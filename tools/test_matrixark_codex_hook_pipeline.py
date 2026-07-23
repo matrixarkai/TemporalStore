@@ -91,8 +91,6 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "session_id": "session_batch",
                     },
                     "metadata": {"node_path": ["tenant:tenant_batch", "user:user_batch", "session:session_batch"]},
-                    "session_buffer_enabled": False,
-                    "auto_batch_extract": False,
                 },
             )
             self.assertEqual("accepted", result["status"])
@@ -102,225 +100,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("context_event", record_types)
             self.assertIn("context_embedding", record_types)
             self.assertIn("context_index", record_types)
-            self.assertNotIn("session_buffer_event", record_types)
+            self.assertIn("session_buffer_event", record_types)
             self.assertIn("context_summary_dirty", record_types)
             index_records = [record for record in records if record.get("record_type") == "context_index"]
             self.assertTrue(index_records)
             self.assertTrue(all("timestamp_key_ms" in record for record in index_records))
             self.assertTrue(all(isinstance(record.get("ref_hashes"), list) for record in index_records))
             self.assertTrue(all("index_hash" not in record for record in index_records))
-
-    def test_message_ingest_writes_session_buffer_by_default(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            event_log = Path(tmp_dir) / "matrixark-message-session-buffer.jsonl"
-            adapter = CountingLocalAdapter(event_log)
-            server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
-            result = server.call_tool(
-                "matrixark_ingest",
-                {
-                    "messages": [{"role": "user", "content": "Batch this session message explicitly."}],
-                    "scope": {
-                        "account_id": "acct_batch",
-                        "tenant_id": "tenant_batch",
-                        "user_id": "user_batch",
-                        "session_id": "session_batch",
-                    },
-                    "metadata": {"node_path": ["tenant:tenant_batch", "user:user_batch", "session:session_batch"]},
-                },
-            )
-            self.assertEqual("accepted", result["status"])
-            self.assertEqual("lightweight_event", result["sync_write_mode"])
-            self.assertEqual("async_pending", result["extraction_mode"])
-            self.assertTrue(result["session_buffer"]["enabled"])
-            self.assertTrue(result["session_buffer"]["auto_batch_extract"])
-            records = adapter.read_all()
-            self.assertTrue(any(record.get("record_type") == "session_buffer_event" for record in records))
-            self.assertTrue(any(record.get("record_type") == "context_event" for record in records))
-            self.assertFalse(any(record.get("record_type") == "context_embedding" for record in records))
-
-    def test_message_ingest_can_opt_out_of_session_buffering(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            event_log = Path(tmp_dir) / "matrixark-message-no-session-buffer.jsonl"
-            adapter = CountingLocalAdapter(event_log)
-            server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
-            result = server.call_tool(
-                "matrixark_ingest",
-                {
-                    "messages": [{"role": "user", "content": "Handle this message immediately."}],
-                    "scope": {
-                        "account_id": "acct_immediate",
-                        "tenant_id": "tenant_immediate",
-                        "user_id": "user_immediate",
-                        "session_id": "session_immediate",
-                    },
-                    "metadata": {"node_path": ["tenant:tenant_immediate", "user:user_immediate", "session:session_immediate"]},
-                    "session_buffer_enabled": False,
-                    "auto_batch_extract": False,
-                },
-            )
-            self.assertEqual("accepted", result["status"])
-            self.assertFalse(result["session_buffer"]["enabled"])
-            records = adapter.read_all()
-            self.assertTrue(any(record.get("record_type") == "context_event" for record in records))
-            self.assertFalse(any(record.get("record_type") == "session_buffer_event" for record in records))
-
-    def test_default_session_buffer_commits_at_vikingmem_threshold(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            event_log = Path(tmp_dir) / "matrixark-vikingmem-threshold.jsonl"
-            adapter = CountingLocalAdapter(event_log)
-            server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
-            result = {}
-            for index in range(20):
-                result = server.call_tool(
-                    "matrixark_ingest",
-                    {
-                        "messages": [{"role": "user", "content": f"Threshold batch message {index}."}],
-                        "scope": {
-                            "account_id": "acct_threshold",
-                            "tenant_id": "tenant_threshold",
-                            "user_id": "user_threshold",
-                            "session_id": "session_threshold",
-                        },
-                        "metadata": {"node_path": ["tenant:tenant_threshold", "user:user_threshold", "session:session_threshold"]},
-                    },
-                )
-            self.assertEqual("accepted", result["status"])
-            self.assertEqual("committed", result["auto_batch_extract_result"]["status"])
-            self.assertEqual(20, result["auto_batch_extract_result"]["committed_event_count"])
-            records = adapter.read_all()
-            self.assertTrue(any(record.get("record_type") == "context_batch_commit" for record in records))
-
-    def test_session_done_signal_commits_buffer_below_threshold(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            event_log = Path(tmp_dir) / "matrixark-session-done-flush.jsonl"
-            adapter = CountingLocalAdapter(event_log)
-            server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
-            result = {}
-            for index in range(3):
-                result = server.call_tool(
-                    "matrixark_ingest",
-                    {
-                        "messages": [{"role": "user", "content": f"Short task message {index}."}],
-                        "scope": {
-                            "account_id": "acct_done",
-                            "tenant_id": "tenant_done",
-                            "user_id": "user_done",
-                            "session_id": "session_done",
-                        },
-                        "metadata": {"node_path": ["tenant:tenant_done", "user:user_done", "session:session_done"]},
-                        "conversation_done": index == 2,
-                    },
-                )
-            self.assertEqual("accepted", result["status"])
-            self.assertTrue(result["session_buffer"]["boundary_commit_requested"])
-            self.assertEqual("committed", result["auto_batch_extract_result"]["status"])
-            self.assertEqual("hook_boundary", result["auto_batch_extract_result"]["commit_reason"])
-            self.assertEqual(3, result["auto_batch_extract_result"]["committed_event_count"])
-            records = adapter.read_all()
-            self.assertTrue(any(record.get("record_type") == "context_batch_commit" and record.get("trigger_policy") == "force" for record in records))
-
-    def test_lifecycle_stop_signal_commits_buffer_below_threshold(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            event_log = Path(tmp_dir) / "matrixark-lifecycle-stop-flush.jsonl"
-            adapter = CountingLocalAdapter(event_log)
-            server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
-            result = server.call_tool(
-                "matrixark_ingest",
-                {
-                    "messages": [{"role": "assistant", "content": "The task is complete."}],
-                    "scope": {
-                        "account_id": "acct_stop",
-                        "tenant_id": "tenant_stop",
-                        "user_id": "user_stop",
-                        "session_id": "session_stop",
-                    },
-                    "metadata": {"node_path": ["tenant:tenant_stop", "user:user_stop", "session:session_stop"]},
-                    "lifecycle_event_type": "session_end",
-                },
-            )
-            self.assertEqual("committed", result["auto_batch_extract_result"]["status"])
-            self.assertEqual("hook_boundary", result["auto_batch_extract_result"]["commit_reason"])
-            self.assertEqual(1, result["auto_batch_extract_result"]["committed_event_count"])
-
-    def test_default_idle_timeout_commits_previous_buffered_window(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            event_log = Path(tmp_dir) / "matrixark-default-idle-timeout.jsonl"
-            adapter = CountingLocalAdapter(event_log)
-            server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
-            scope = {
-                "account_id": "acct_idle",
-                "tenant_id": "tenant_idle",
-                "user_id": "user_idle",
-                "session_id": "session_idle",
-            }
-            metadata = {"node_path": ["tenant:tenant_idle", "user:user_idle", "session:session_idle"]}
-            with mock.patch("tools.matrixark_mcp_core.now_ms", return_value=1_000), mock.patch(
-                "tools.matrixark_mcp_local_adapter.now_ms", return_value=1_000
-            ):
-                first = server.call_tool(
-                    "matrixark_ingest",
-                    {
-                        "messages": [{"role": "user", "content": "Start a short idle session."}],
-                        "scope": scope,
-                        "metadata": metadata,
-                    },
-                )
-            self.assertEqual("deferred", first["idle_commit_result"]["status"])
-            with mock.patch("tools.matrixark_mcp_core.now_ms", return_value=301_001), mock.patch(
-                "tools.matrixark_mcp_local_adapter.now_ms", return_value=301_001
-            ):
-                second = server.call_tool(
-                    "matrixark_ingest",
-                    {
-                        "messages": [{"role": "user", "content": "Resume after the default idle timeout."}],
-                        "scope": scope,
-                        "metadata": metadata,
-                    },
-                )
-            self.assertEqual("committed", second["idle_commit_result"]["status"])
-            self.assertEqual("idle_timeout", second["idle_commit_result"]["commit_reason"])
-            self.assertEqual(1, second["idle_commit_result"]["committed_event_count"])
-            self.assertGreaterEqual(second["idle_commit_result"]["idle_elapsed_ms"], 300_000)
-            self.assertEqual(1, second["session_buffer"]["pending_event_count"])
-
-    def test_idle_timeout_zero_disables_default_idle_commit(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            event_log = Path(tmp_dir) / "matrixark-idle-timeout-disabled.jsonl"
-            adapter = CountingLocalAdapter(event_log)
-            server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
-            scope = {
-                "account_id": "acct_idle_off",
-                "tenant_id": "tenant_idle_off",
-                "user_id": "user_idle_off",
-                "session_id": "session_idle_off",
-            }
-            metadata = {"node_path": ["tenant:tenant_idle_off", "user:user_idle_off", "session:session_idle_off"]}
-            with mock.patch("tools.matrixark_mcp_core.now_ms", return_value=1_000), mock.patch(
-                "tools.matrixark_mcp_local_adapter.now_ms", return_value=1_000
-            ):
-                server.call_tool(
-                    "matrixark_ingest",
-                    {
-                        "messages": [{"role": "user", "content": "Do not idle commit this session."}],
-                        "scope": scope,
-                        "metadata": metadata,
-                        "idle_commit_timeout_ms": 0,
-                    },
-                )
-            with mock.patch("tools.matrixark_mcp_core.now_ms", return_value=601_001), mock.patch(
-                "tools.matrixark_mcp_local_adapter.now_ms", return_value=601_001
-            ):
-                result = server.call_tool(
-                    "matrixark_ingest",
-                    {
-                        "messages": [{"role": "user", "content": "Still no idle commit because timeout is disabled."}],
-                        "scope": scope,
-                        "metadata": metadata,
-                        "idle_commit_timeout_ms": 0,
-                    },
-                )
-            self.assertIsNone(result["idle_commit_result"])
-            self.assertEqual(2, result["session_buffer"]["pending_event_count"])
 
     def test_batch_extract_events_are_timestamp_keyed_under_segment_parent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -531,7 +317,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertEqual("ok", msg["status"])
             self.assertTrue(msg["ingest"].get("event_id_hash"))
-            self.assertIn("context_pack_id", msg["retrieve"])
+            self.assertTrue(msg["retrieve"]["context_pack_id"])
 
             resource_result = self.run_hook(
                 repo,
@@ -610,19 +396,21 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "audit_mode": "full",
                 },
             )
-            ref_types = {str(ref.get("ref_type")) for ref in pack["selected_refs"]}
+            ref_types = {str(group.get("type")) for group in pack["groups"]}
             self.assertIn("event", ref_types)
             self.assertIn("resource_chunk", ref_types)
             self.assertIn("skill_section", ref_types)
-            self.assertGreaterEqual(sum(1 for ref in pack["selected_refs"] if ref.get("ref_type") == "resource_chunk"), 1)
-            self.assertGreaterEqual(sum(1 for ref in pack["selected_refs"] if ref.get("ref_type") == "skill_section"), 1)
+            self.assertGreaterEqual(pack["counts"]["refs"].get("resource_chunk", 0), 1)
+            self.assertGreaterEqual(pack["counts"]["refs"].get("skill_section", 0), 1)
             self.assertNotIn("context_assembly_policy", pack)
             self.assertNotIn("recall_policy", pack)
             audit = next(record for record in reversed(server.adapter.read_all()) if record.get("record_type") == "context_pack_audit")
-            self.assertEqual(pack["pack_id"], audit.get("context_pack_id"))
-            replay = server.call_tool("matrixark_replay", {"scope": scope, "context_pack_id": pack["pack_id"], "enable_replay": True})
+            pushdown = audit["recall_policy"]["backend_retrieval_pushdown"]
+            self.assertEqual("adapter_prefilter", pushdown["execution_mode"])
+            self.assertGreater(pushdown["dropped_by_type"], 0)
+            replay = server.call_tool("matrixark_replay", {"scope": scope, "context_pack_id": pack["context_pack_id"], "enable_replay": True})
             audits = [row for row in replay["events"] if row.get("record_type") == "context_pack_audit"]
-            self.assertTrue(any(row.get("context_pack_id") == pack["pack_id"] for row in audits))
+            self.assertTrue(any(row.get("context_pack_id") == pack["context_pack_id"] for row in audits))
 
 
 if __name__ == "__main__":

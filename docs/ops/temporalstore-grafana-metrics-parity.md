@@ -44,7 +44,7 @@ Rust metrics:
 - `temporalstore_raft_node_lag`
 - `temporalstore_raft_node_apply_lag`
 
-Grafana panels cover commit/apply lag, majority, and lease validity. Alerts cover majority loss, split-brain control_state, slow followers, and stuck apply.
+Grafana panels cover commit/apply lag, majority, and lease validity. Alerts cover majority loss, split-brain risk, slow followers, and stuck apply.
 
 ### metaserver_scheduler
 

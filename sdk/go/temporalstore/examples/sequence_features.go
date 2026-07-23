@@ -79,13 +79,13 @@ func main() {
 	}
 	fmt.Printf("rows=%+v\n", rows)
 
-	control_stateKey := "go:user:42:control_state"
-	if err := client.ControlStateIncrement(control_stateKey, 1, 24*3600, temporalstore.ControlStateOneMinute, "go-control_state-1", 0); err != nil {
+	riskKey := "go:user:42:risk"
+	if err := client.RiskIncrement(riskKey, 1, 24*3600, temporalstore.RiskOneMinute, "go-risk-1", 0); err != nil {
 		log.Fatal(err)
 	}
-	control_stateCount, err := client.ControlStateCount(control_stateKey, temporalstore.ControlStateOneMinute, -1, 0, temporalstore.WindowHour)
+	riskCount, err := client.RiskCount(riskKey, temporalstore.RiskOneMinute, -1, 0, temporalstore.WindowHour)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("control_state_count=%d\n", control_stateCount)
+	fmt.Printf("risk_count=%d\n", riskCount)
 }

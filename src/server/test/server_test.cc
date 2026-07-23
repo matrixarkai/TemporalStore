@@ -62,7 +62,7 @@ class ServerTest : public testing::Test {
     void SetUp() override {
         StartMetaServer();
 
-        matrixobjectstore_init();
+        bytestore_init();
 
         Start();
         Load();
@@ -82,7 +82,7 @@ class ServerTest : public testing::Test {
 
     void TearDown() override {
         Stop();
-        matrixobjectstore_shutdown();
+        bytestore_shutdown();
         StopMetaServer();
     }
 

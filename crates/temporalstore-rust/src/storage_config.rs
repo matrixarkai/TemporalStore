@@ -8,7 +8,6 @@ pub const TS_COMPACTION_WATERMARK_BYTES: &str = "TS_COMPACTION_WATERMARK_BYTES";
 pub const TS_COLD_SCAN_NO_CACHE_FILL: &str = "TS_COLD_SCAN_NO_CACHE_FILL";
 pub const TS_PAGE_INDEX_CACHE_BYTES: &str = "TS_PAGE_INDEX_CACHE_BYTES";
 pub const TS_BLOCK_INDEX_CACHE_BYTES: &str = "TS_BLOCK_INDEX_CACHE_BYTES";
-pub const TS_BLOCK_STORE_SYNC_ON_APPEND: &str = "TS_BLOCK_STORE_SYNC_ON_APPEND";
 
 pub const DEFAULT_CONTEXT_PAGE_TARGET_BYTES: usize = 64 * 1024;
 pub const DEFAULT_BLOCK_SEGMENT_TARGET_BYTES: u64 = 1 << 30;
@@ -18,7 +17,6 @@ pub const DEFAULT_COMPACTION_WATERMARK_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_COLD_SCAN_NO_CACHE_FILL: bool = true;
 pub const DEFAULT_PAGE_INDEX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_BLOCK_INDEX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
-pub const DEFAULT_BLOCK_STORE_SYNC_ON_APPEND: bool = true;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageTuningConfig {
@@ -30,7 +28,6 @@ pub struct StorageTuningConfig {
     pub cold_scan_no_cache_fill: bool,
     pub page_index_cache_bytes: u64,
     pub block_index_cache_bytes: u64,
-    pub block_store_sync_on_append: bool,
 }
 
 impl Default for StorageTuningConfig {
@@ -44,7 +41,6 @@ impl Default for StorageTuningConfig {
             cold_scan_no_cache_fill: DEFAULT_COLD_SCAN_NO_CACHE_FILL,
             page_index_cache_bytes: DEFAULT_PAGE_INDEX_CACHE_BYTES,
             block_index_cache_bytes: DEFAULT_BLOCK_INDEX_CACHE_BYTES,
-            block_store_sync_on_append: DEFAULT_BLOCK_STORE_SYNC_ON_APPEND,
         }
     }
 }
@@ -90,12 +86,6 @@ impl StorageTuningConfig {
                 get(TS_BLOCK_INDEX_CACHE_BYTES),
                 defaults.block_index_cache_bytes,
             ),
-            block_store_sync_on_append: parse_bool(
-                get(TS_BLOCK_STORE_SYNC_ON_APPEND)
-                    .or_else(|| get("TEMPORALSTORE_BLOCK_STORE_SYNC_ON_APPEND"))
-                    .or_else(|| get("TS_PAGE_STORE_SYNC_ON_APPEND")),
-                defaults.block_store_sync_on_append,
-            ),
         }
     }
 
@@ -104,7 +94,7 @@ impl StorageTuningConfig {
             .min(self.stream_max_blob_size)
     }
 
-    pub fn env_names() -> [&'static str; 9] {
+    pub fn env_names() -> [&'static str; 8] {
         [
             TS_CONTEXT_PAGE_TARGET_BYTES,
             TS_BLOCK_SEGMENT_TARGET_BYTES,
@@ -114,7 +104,6 @@ impl StorageTuningConfig {
             TS_COLD_SCAN_NO_CACHE_FILL,
             TS_PAGE_INDEX_CACHE_BYTES,
             TS_BLOCK_INDEX_CACHE_BYTES,
-            TS_BLOCK_STORE_SYNC_ON_APPEND,
         ]
     }
 }
@@ -129,14 +118,6 @@ pub fn effective_block_segment_target_bytes() -> u64 {
 
 pub fn storage_zone_size_bytes() -> u64 {
     StorageTuningConfig::from_env().storage_zone_size
-}
-
-pub fn cold_scan_no_cache_fill() -> bool {
-    StorageTuningConfig::from_env().cold_scan_no_cache_fill
-}
-
-pub fn block_store_sync_on_append() -> bool {
-    StorageTuningConfig::from_env().block_store_sync_on_append
 }
 
 fn parse_u64(value: Option<String>, default: u64) -> u64 {
@@ -193,10 +174,6 @@ mod tests {
             config.block_index_cache_bytes,
             DEFAULT_BLOCK_INDEX_CACHE_BYTES
         );
-        assert_eq!(
-            config.block_store_sync_on_append,
-            DEFAULT_BLOCK_STORE_SYNC_ON_APPEND
-        );
     }
 
     #[test]
@@ -213,7 +190,6 @@ mod tests {
                 "TS_COLD_SCAN_NO_CACHE_FILL",
                 "TS_PAGE_INDEX_CACHE_BYTES",
                 "TS_BLOCK_INDEX_CACHE_BYTES",
-                "TS_BLOCK_STORE_SYNC_ON_APPEND",
             ]
         );
     }
@@ -230,7 +206,6 @@ mod tests {
             (TS_COLD_SCAN_NO_CACHE_FILL, "false"),
             (TS_PAGE_INDEX_CACHE_BYTES, "2097152"),
             (TS_BLOCK_INDEX_CACHE_BYTES, "4194304"),
-            (TS_BLOCK_STORE_SYNC_ON_APPEND, "false"),
         ]);
         let config = StorageTuningConfig::from_getter(|name| env.get(name).map(|v| v.to_string()));
         assert_eq!(config.context_page_target_bytes, 32 * 1024);
@@ -242,6 +217,5 @@ mod tests {
         assert!(!config.cold_scan_no_cache_fill);
         assert_eq!(config.page_index_cache_bytes, 2 * 1024 * 1024);
         assert_eq!(config.block_index_cache_bytes, 4 * 1024 * 1024);
-        assert!(!config.block_store_sync_on_append);
     }
 }

@@ -733,10 +733,6 @@ def compact_record_scope(record: Json) -> Json:
     scope_key = existing_scope_key or (canonical_scope_key(scope) if scope else "")
     if scope_key:
         compacted["scope_key"] = scope_key
-        if record_type == "context_event":
-            session_id = scope.get("session_id")
-            if session_id is not None and str(session_id):
-                compacted["session_id"] = str(session_id)
         compacted.pop("scope", None)
     if str(compacted.get("scope_key") or ""):
         for field in COMPACT_DERIVED_SCOPE_FIELDS:
@@ -943,10 +939,6 @@ def materialize_serving_records(record: Json) -> list[Json]:
     scope_key = canonical_scope_key(scope) if isinstance(scope, dict) and scope else existing_scope_key
     if scope_key:
         serving["scope_key"] = scope_key
-    if record_type == "context_event" and isinstance(scope, dict):
-        session_id = scope.get("session_id")
-        if session_id is not None and str(session_id):
-            serving["session_id"] = str(session_id)
     serving.pop("scope", None)
 
     serving.pop("node_id", None)

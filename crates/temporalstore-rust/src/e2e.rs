@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::mem;
 use std::sync::{Arc, Mutex, RwLock};
 
 use serde::{Deserialize, Serialize};
@@ -148,9 +147,11 @@ impl AsyncStorageJournal {
 
     pub fn flush_all(&self) -> usize {
         let mut inner = self.inner.lock().expect("async storage lock poisoned");
-        let mut queued = mem::take(&mut inner.queued);
-        let flushed = queued.len();
-        inner.flushed.extend(queued.drain(..));
+        let mut flushed = 0;
+        while let Some(request) = inner.queued.pop_front() {
+            inner.flushed.push(request);
+            flushed += 1;
+        }
         flushed
     }
 
@@ -423,16 +424,15 @@ fn is_write(command: &Command) -> bool {
             | Command::FeatureReplace { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
-            | Command::SequenceAddWithPolicy { .. }
             | Command::IpsAdd { .. }
             | Command::IpsAddWithOptions { .. }
             | Command::IpsLoad { .. }
             | Command::IpsRemove { .. }
             | Command::IpsDelete { .. }
-            | Command::ControlStateIncrement { .. }
-            | Command::ControlStateIncrementWithOptions { .. }
-            | Command::ControlStateSet { .. }
-            | Command::ControlStateSetAndGet { .. }
+            | Command::RiskIncrement { .. }
+            | Command::RiskIncrementWithOptions { .. }
+            | Command::RiskSet { .. }
+            | Command::RiskSetAndGet { .. }
     )
 }
 

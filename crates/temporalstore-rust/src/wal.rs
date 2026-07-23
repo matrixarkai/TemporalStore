@@ -117,7 +117,7 @@ pub enum WriteAheadLogModel {
     Feature,
     Sequence,
     Ips,
-    ControlState,
+    Risk,
     Context,
     Admin,
     Unknown,
@@ -183,10 +183,6 @@ pub struct WriteAheadLogInfo {
 }
 
 pub const WRITE_AHEAD_LOG_FORMAT_VERSION: u32 = 1;
-const WRITE_AHEAD_LOG_BATCH_RECORD_ESTIMATE_BYTES: usize = 192;
-const WRITE_AHEAD_LOG_SCAN_RECORD_ESTIMATE_BYTES: u64 = 192;
-const WRITE_AHEAD_LOG_SCAN_MAX_PREALLOC_RECORDS: usize = 4096;
-const WRITE_AHEAD_LOG_SCAN_READER_BUFFER_MAX_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct LocalWriteAheadLogStore {
@@ -229,15 +225,6 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         command: Command,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
-        self.append_with_sync(shard_id, command, true)
-    }
-
-    pub fn append_with_sync(
-        &self,
-        shard_id: ShardId,
-        command: Command,
-        sync: bool,
-    ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
@@ -255,88 +242,11 @@ impl LocalWriteAheadLogStore {
             metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
             command,
         };
-        let report = append_record_locked(&mut inner, &record, sync)?;
+        let report = append_record_locked(&mut inner, &record, true)?;
         inner.stats.last_sequence = report.current_sequence;
+        inner.stats.last_flushed_sequence = report.current_sequence;
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
         Ok(record)
-    }
-
-    pub fn append_batch_with_sync(
-        &self,
-        shard_id: ShardId,
-        commands: impl IntoIterator<Item = Command>,
-        sync: bool,
-    ) -> Result<Vec<WriteAheadLogRecord>, WriteAheadLogError> {
-        let commands = commands.into_iter().collect::<Vec<_>>();
-        if commands.is_empty() {
-            return Ok(Vec::new());
-        }
-        if commands.len() == 1 {
-            let command = commands
-                .into_iter()
-                .next()
-                .expect("one-command WAL batch has exactly one command");
-            return self
-                .append_with_sync(shard_id, command, sync)
-                .map(|record| vec![record]);
-        }
-
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        fs::create_dir_all(&inner.root)?;
-        let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
-            Some(sequence) => sequence,
-            None => {
-                let sequence = last_wal_sequence_at(&inner.root, shard_id)?;
-                inner.last_sequence_by_shard.insert(shard_id, sequence);
-                sequence
-            }
-        };
-        let path = write_ahead_log_path(&inner.root, shard_id);
-        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
-        let mut records = Vec::with_capacity(commands.len());
-        let mut bytes_written = 0_u64;
-        let mut batch_bytes = Vec::with_capacity(
-            commands
-                .len()
-                .saturating_mul(WRITE_AHEAD_LOG_BATCH_RECORD_ESTIMATE_BYTES),
-        );
-
-        for (index, command) in commands.into_iter().enumerate() {
-            let sequence = last_sequence.saturating_add(index as u64).saturating_add(1);
-            let record = WriteAheadLogRecord {
-                shard_id,
-                sequence,
-                metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
-                command,
-            };
-            let before_len = batch_bytes.len();
-            serde_json::to_writer(&mut batch_bytes, &record)?;
-            batch_bytes.push(b'\n');
-            bytes_written =
-                bytes_written.saturating_add(batch_bytes.len().saturating_sub(before_len) as u64);
-            records.push(record);
-        }
-        file.write_all(&batch_bytes)?;
-
-        if sync {
-            file.flush()?;
-            file.sync_data()?;
-            sync_parent_dir(&path)?;
-            inner.stats.flushes += 1;
-            inner.stats.syncs += 1;
-            if let Some(last) = records.last() {
-                inner.stats.last_flushed_sequence = last.sequence;
-            }
-        }
-        let persistent_bytes = file.metadata()?.len();
-        if let Some(last) = records.last() {
-            inner.stats.last_sequence = last.sequence;
-            inner.last_sequence_by_shard.insert(shard_id, last.sequence);
-        }
-        inner.stats.writes = inner.stats.writes.saturating_add(records.len() as u64);
-        inner.stats.bytes_written = inner.stats.bytes_written.saturating_add(bytes_written);
-        inner.stats.persistent_bytes = persistent_bytes;
-        Ok(records)
     }
 
     pub fn append_replayed_record(
@@ -357,15 +267,14 @@ impl LocalWriteAheadLogStore {
         };
         if record.sequence <= last_sequence {
             let path = write_ahead_log_path(&inner.root, record.shard_id);
-            let persistent_bytes = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
             return Ok(WriteAheadLogAppendReport {
                 shard_id: record.shard_id,
                 requested_sequence: record.sequence,
                 current_sequence: last_sequence,
                 appended: false,
-                offset: persistent_bytes,
+                offset: path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
                 size: 0,
-                persistent_bytes,
+                persistent_bytes: path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
             });
         }
         let report = append_record_locked(&mut inner, &record, true)?;
@@ -383,37 +292,15 @@ impl LocalWriteAheadLogStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, WriteAheadLogError> {
-        if size == 0 {
-            let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-            inner.stats.reads = inner.stats.reads.saturating_add(1);
-            return Ok(Vec::new());
-        }
-        let root = {
-            let inner = self.inner.lock().expect("write-ahead log lock poisoned");
-            inner.root.clone()
-        };
-        let path = write_ahead_log_path(&root, shard_id);
-        let mut file = File::open(path)?;
-        let file_len = file.metadata()?.len();
-        if offset >= file_len {
-            let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-            inner.stats.reads = inner.stats.reads.saturating_add(1);
-            return Ok(Vec::new());
-        }
-        let read_size = size.min(file_len.saturating_sub(offset));
-        file.seek(SeekFrom::Start(offset))?;
-        let read_size_usize = usize::try_from(read_size).map_err(|_| {
-            WriteAheadLogError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "write-ahead log range read size is too large",
-            ))
-        })?;
-        let mut bytes = vec![0; read_size_usize];
-        file.read_exact(&mut bytes)?;
-        let read = bytes.len();
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        inner.stats.reads = inner.stats.reads.saturating_add(1);
-        inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(read as u64);
+        let path = write_ahead_log_path(&inner.root, shard_id);
+        let mut file = File::open(path)?;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = vec![0; size as usize];
+        let read = file.read(&mut bytes)?;
+        bytes.truncate(read);
+        inner.stats.reads += 1;
+        inner.stats.bytes_read += read as u64;
         Ok(bytes)
     }
 
@@ -424,34 +311,17 @@ impl LocalWriteAheadLogStore {
         end_offset: u64,
         max_bytes: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, WriteAheadLogError> {
-        if max_bytes == 0 || start_offset >= end_offset {
-            let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-            inner.stats.scans = inner.stats.scans.saturating_add(1);
-            return Ok(Vec::new());
-        }
-        let root = {
-            let inner = self.inner.lock().expect("write-ahead log lock poisoned");
-            inner.root.clone()
-        };
-        let _ = last_wal_sequence_at(&root, shard_id)?;
-        let path = write_ahead_log_path(&root, shard_id);
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let _ = last_wal_sequence_at(&inner.root, shard_id)?;
+        let path = write_ahead_log_path(&inner.root, shard_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(start_offset))?;
-        let reader_capacity =
-            usize::try_from(max_bytes.min(WRITE_AHEAD_LOG_SCAN_READER_BUFFER_MAX_BYTES as u64))
-                .unwrap_or(WRITE_AHEAD_LOG_SCAN_READER_BUFFER_MAX_BYTES)
-                .max(1024);
-        let mut reader = BufReader::with_capacity(reader_capacity, file);
+        let mut reader = BufReader::new(file);
         let mut offset = start_offset;
         let mut total = 0;
-        let scan_capacity = max_bytes
-            .saturating_div(WRITE_AHEAD_LOG_SCAN_RECORD_ESTIMATE_BYTES)
-            .saturating_add(1)
-            .min(WRITE_AHEAD_LOG_SCAN_MAX_PREALLOC_RECORDS as u64)
-            as usize;
-        let mut records = Vec::with_capacity(scan_capacity);
+        let mut records = Vec::new();
         loop {
-            let mut line = Vec::with_capacity(WRITE_AHEAD_LOG_SCAN_RECORD_ESTIMATE_BYTES as usize);
+            let mut line = Vec::new();
             let read = reader.read_until(b'\n', &mut line)?;
             if read == 0 {
                 break;
@@ -464,9 +334,8 @@ impl LocalWriteAheadLogStore {
             offset = next_offset;
             total += read as u64;
         }
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        inner.stats.scans = inner.stats.scans.saturating_add(1);
-        inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(total);
+        inner.stats.scans += 1;
+        inner.stats.bytes_read += total;
         Ok(records)
     }
 
@@ -506,7 +375,7 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         retain_from_sequence: u64,
     ) -> Result<WriteAheadLogGcReport, WriteAheadLogError> {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let path = write_ahead_log_path(&inner.root, shard_id);
         if !path.exists() {
@@ -522,12 +391,7 @@ impl LocalWriteAheadLogStore {
         let file = File::open(&path)?;
         let reader = BufReader::new(file);
         let mut records_before = 0usize;
-        let retained_capacity = bytes_before
-            .saturating_div(WRITE_AHEAD_LOG_SCAN_RECORD_ESTIMATE_BYTES)
-            .saturating_add(1)
-            .min(WRITE_AHEAD_LOG_SCAN_MAX_PREALLOC_RECORDS as u64)
-            as usize;
-        let mut retained = Vec::with_capacity(retained_capacity);
+        let mut retained = Vec::new();
         for line in reader.lines() {
             let line = line?;
             if line.trim().is_empty() {
@@ -553,8 +417,6 @@ impl LocalWriteAheadLogStore {
         fs::rename(&temp_path, &path)?;
         sync_parent_dir(&path)?;
         let bytes_after = path.metadata()?.len();
-        inner.stats.bytes_written = bytes_after;
-        inner.stats.persistent_bytes = bytes_after;
         Ok(WriteAheadLogGcReport {
             shard_id,
             retain_from_sequence,
@@ -649,10 +511,11 @@ fn append_record_locked(
     sync: bool,
 ) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
     let path = write_ahead_log_path(&inner.root, record.shard_id);
+    let offset = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let mut bytes = serde_json::to_vec(record)?;
+    bytes.push(b'\n');
     let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
-    let offset = file.metadata()?.len();
-    serde_json::to_writer(&mut file, record)?;
-    file.write_all(b"\n")?;
+    file.write_all(&bytes)?;
     if sync {
         file.flush()?;
         file.sync_data()?;
@@ -661,10 +524,9 @@ fn append_record_locked(
         inner.stats.syncs += 1;
         inner.stats.last_flushed_sequence = record.sequence;
     }
-    let persistent_bytes = file.metadata()?.len();
-    let bytes_written = persistent_bytes.saturating_sub(offset);
+    let persistent_bytes = path.metadata()?.len();
     inner.stats.writes += 1;
-    inner.stats.bytes_written += bytes_written;
+    inner.stats.bytes_written += bytes.len() as u64;
     inner.stats.persistent_bytes = persistent_bytes;
     Ok(WriteAheadLogAppendReport {
         shard_id: record.shard_id,
@@ -672,7 +534,7 @@ fn append_record_locked(
         current_sequence: record.sequence,
         appended: true,
         offset,
-        size: bytes_written,
+        size: bytes.len() as u64,
         persistent_bytes,
     })
 }
@@ -791,8 +653,8 @@ fn command_model(command: &Command) -> WriteAheadLogModel {
         WriteAheadLogModel::Sequence
     } else if name.starts_with("ips_") {
         WriteAheadLogModel::Ips
-    } else if name.starts_with("control_state_") {
-        WriteAheadLogModel::ControlState
+    } else if name.starts_with("risk_") {
+        WriteAheadLogModel::Risk
     } else if name.starts_with("context_") {
         WriteAheadLogModel::Context
     } else {

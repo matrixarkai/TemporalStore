@@ -66,7 +66,7 @@ The packaged client loop executed these modules once per iteration before reachi
 | `SET` | 1,525 |
 | `FEATURE` time sequence | 1,525 |
 | `IPS` | 1,525 |
-| `CONTROL_STATE` window count | 1,525 |
+| `RISK` window count | 1,525 |
 
 TemporalAggregate did not pass in this deployed artifact:
 

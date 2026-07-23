@@ -23,6 +23,7 @@ target_link_libraries(bcache2-shared
     /usr/lib/x86_64-linux-gnu/libfmt.so
     OpenSSL::SSL
     OpenSSL::Crypto
+    ev
     /usr/lib/x86_64-linux-gnu/libabsl_throw_delegate.so
     /usr/lib/x86_64-linux-gnu/libabsl_time_zone.so
     /usr/lib/x86_64-linux-gnu/libabsl_raw_logging_internal.so

@@ -41,7 +41,7 @@ collapsed into the shared runner, or deleted from `tools/rust_product_test_basel
 | Ops/scale/fault behavior | 20 | `readiness.rs`, `bin/readiness_gate.rs`, `bin/external_chaos_gate.rs`, `replica_replay.rs` | Readiness blockers, chaos/fault evidence, rolling restart, replay safety, scale/SLO reports. |
 | Feature model behavior | 12 | `engine.rs`, `unified_temporalstore_corpus.rs` | Packed timestamped pages, nested point/proto semantics, policy/filter/aggregate lifecycle. |
 | Ingestion behavior | 9 | `ingestion.rs`, server ingestion routes | Kafka offsets, rebalance/backpressure, Flink checkpoints, dead letters, lag metrics, restart idempotence. |
-| Control State behavior | 8 | `engine.rs`, `unified_temporalstore_corpus.rs` | CPC/list/manager/debug/window semantics. |
+| Risk model behavior | 8 | `engine.rs`, `unified_temporalstore_corpus.rs` | CPC/list/manager/debug/window semantics. |
 | Sequence model behavior | 4 | `engine.rs`, `unified_temporalstore_corpus.rs` | Ordering, bounds, batch/filter groups, C++ feature-row shape. |
 | Context model and pipeline behavior | 7 | `context_workflow.rs`, Context model tests | Event/segment/entity/index/embedding/summary/compression, query debug flow, prompt-pack ordering. |
 | IPS model behavior | 4 | `engine.rs`, `unified_temporalstore_corpus.rs` | Snapshot/stat/filter metadata, batch-last grouping, action/table/request metadata. |

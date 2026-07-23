@@ -60,7 +60,7 @@ set(BCACHE2_CLIENT_EXAMPLE_LIBS
     set_proto_lib
     feature_proto_lib
     ips_proto_lib
-    control_state_proto_lib
+    risk_proto_lib
     temporal_aggregate_proto_lib
     byte
     absl_base

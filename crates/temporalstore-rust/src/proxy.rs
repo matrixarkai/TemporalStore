@@ -1,9 +1,8 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 mod commands;
 mod config;
@@ -20,8 +19,7 @@ use policy::{proxy_policy_rejection, proxy_serving_mode_from_meta, proxy_serving
 use response::execute_error;
 
 use crate::client::{
-    ClientStats, ClientTopologyCacheReport, ClientTopologyRefreshReport,
-    MatrixArkBatchAppendRequest, MatrixArkRetrieveContextPackRequest, ReplicaReadPolicy,
+    ClientStats, ClientTopologyCacheReport, ClientTopologyRefreshReport, ReplicaReadPolicy,
     RequestOptions, TableOptions, TemporalStoreClient,
 };
 use crate::http::{get_json_with_options, post_json_with_options, HttpRequest, HttpRequestOptions};
@@ -31,9 +29,8 @@ use crate::meta::{
     TopologyVersionReport, TopologyVersionRequest,
 };
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
-    ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, ControlStateFamily, ControlStateFolType,
-    SequenceFeatureRow, SequenceQuerySpec, ShardId, Status, StringSetCondition,
+    BatchExecuteRequest, BatchExecuteResponse, Command, ExecuteRequest, ExecuteResponse,
+    FeatureFilter, FeatureWritePolicy, RiskFolType, ShardId, Status,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -127,41 +124,6 @@ pub struct ProxyStats {
     pub admission_rejections: u64,
     pub heartbeat_total: u64,
     pub auto_register_total: u64,
-}
-
-#[derive(Debug, Default)]
-struct ProxyStatsState {
-    execute_requests: AtomicU64,
-    batch_execute_requests: AtomicU64,
-    route_cache_hits: AtomicU64,
-    route_cache_misses: AtomicU64,
-    route_refreshes: AtomicU64,
-    backend_errors: AtomicU64,
-    continuous_backend_failures: AtomicU64,
-    metaserver_errors: AtomicU64,
-    bad_requests: AtomicU64,
-    admission_rejections: AtomicU64,
-    heartbeat_total: AtomicU64,
-    auto_register_total: AtomicU64,
-}
-
-impl ProxyStatsState {
-    fn snapshot(&self) -> ProxyStats {
-        ProxyStats {
-            execute_requests: self.execute_requests.load(Ordering::Relaxed),
-            batch_execute_requests: self.batch_execute_requests.load(Ordering::Relaxed),
-            route_cache_hits: self.route_cache_hits.load(Ordering::Relaxed),
-            route_cache_misses: self.route_cache_misses.load(Ordering::Relaxed),
-            route_refreshes: self.route_refreshes.load(Ordering::Relaxed),
-            backend_errors: self.backend_errors.load(Ordering::Relaxed),
-            continuous_backend_failures: self.continuous_backend_failures.load(Ordering::Relaxed),
-            metaserver_errors: self.metaserver_errors.load(Ordering::Relaxed),
-            bad_requests: self.bad_requests.load(Ordering::Relaxed),
-            admission_rejections: self.admission_rejections.load(Ordering::Relaxed),
-            heartbeat_total: self.heartbeat_total.load(Ordering::Relaxed),
-            auto_register_total: self.auto_register_total.load(Ordering::Relaxed),
-        }
-    }
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -453,7 +415,6 @@ pub struct ProxyConfigUpdateReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyOpenTableRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     #[serde(default)]
@@ -470,7 +431,6 @@ pub struct ProxyOpenTableResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyTableExecuteRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub command: Command,
@@ -478,7 +438,6 @@ pub struct ProxyTableExecuteRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyTableBatchExecuteRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub commands: Vec<Command>,
@@ -486,7 +445,6 @@ pub struct ProxyTableBatchExecuteRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyKeyCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
@@ -494,46 +452,23 @@ pub struct ProxyKeyCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxySetCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    #[serde(deserialize_with = "proxy_bytes_from_json")]
     pub value: Vec<u8>,
-    #[serde(default, alias = "ttl")]
-    pub ttl_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxySetExCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    #[serde(deserialize_with = "proxy_bytes_from_json")]
     pub value: Vec<u8>,
-    #[serde(alias = "ttl")]
     pub ttl_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxySetConditionalCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub key: String,
-    #[serde(deserialize_with = "proxy_bytes_from_json")]
-    pub value: Vec<u8>,
-    #[serde(default)]
-    pub ttl_ms: Option<u64>,
-    pub condition: StringSetCondition,
-    #[serde(default)]
-    pub return_old: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyHashCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
@@ -542,193 +477,50 @@ pub struct ProxyHashCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyHashSetCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
     pub field: String,
-    #[serde(deserialize_with = "proxy_bytes_from_json")]
     pub value: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyHashIncrByCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub key: String,
-    pub field: String,
-    pub increment: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyHashMultiGetCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    #[serde(default, deserialize_with = "proxy_string_vec_from_json")]
     pub fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyHashMultiSetCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    #[serde(default, deserialize_with = "proxy_hash_entries_from_json")]
     pub entries: Vec<(String, Vec<u8>)>,
-    #[serde(default, deserialize_with = "proxy_string_vec_from_json")]
-    pub fields: Vec<String>,
-    #[serde(default, deserialize_with = "proxy_vec_bytes_from_json")]
-    pub values: Vec<Vec<u8>>,
-}
-
-impl ProxyHashMultiSetCommandRequest {
-    fn entries(&self) -> Result<Vec<(String, Vec<u8>)>, Status> {
-        if !self.entries.is_empty() {
-            return Ok(self.entries.clone());
-        }
-        if self.fields.len() != self.values.len() {
-            return Err(Status::error(
-                "bad_request",
-                format!(
-                    "fields/values length mismatch: fields={}, values={}",
-                    self.fields.len(),
-                    self.values.len()
-                ),
-            ));
-        }
-        Ok(self
-            .fields
-            .iter()
-            .cloned()
-            .zip(self.values.iter().cloned())
-            .collect())
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxySetMemberCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    #[serde(deserialize_with = "proxy_bytes_from_json")]
     pub member: Vec<u8>,
-}
-
-fn proxy_bytes_from_json<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    proxy_bytes_value(value).map_err(serde::de::Error::custom)
-}
-
-fn proxy_vec_bytes_from_json<'de, D>(deserializer: D) -> Result<Vec<Vec<u8>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
-    values
-        .into_iter()
-        .map(proxy_bytes_value)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(serde::de::Error::custom)
-}
-
-fn proxy_string_vec_from_json<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
-    values
-        .into_iter()
-        .map(proxy_string_value)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(serde::de::Error::custom)
-}
-
-fn proxy_string_value(value: serde_json::Value) -> Result<String, String> {
-    match value {
-        serde_json::Value::String(value) => Ok(value),
-        value => proxy_bytes_value(value).map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
-    }
-}
-
-fn proxy_hash_entries_from_json<'de, D>(deserializer: D) -> Result<Vec<(String, Vec<u8>)>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
-    values
-        .into_iter()
-        .map(|value| match value {
-            serde_json::Value::Array(mut items) if items.len() == 2 => {
-                let raw_value = items.pop().unwrap();
-                let raw_field = items.pop().unwrap();
-                let field = raw_field
-                    .as_str()
-                    .ok_or_else(|| "hash entry field must be a string".to_string())?
-                    .to_string();
-                Ok((field, proxy_bytes_value(raw_value)?))
-            }
-            serde_json::Value::Object(mut object) => {
-                let field = object
-                    .remove("field")
-                    .and_then(|value| value.as_str().map(ToOwned::to_owned))
-                    .ok_or_else(|| "hash entry field must be present".to_string())?;
-                let value = object
-                    .remove("value")
-                    .ok_or_else(|| "hash entry value must be present".to_string())?;
-                Ok((field, proxy_bytes_value(value)?))
-            }
-            _ => Err("hash entry must be [field, value] or {field, value}".to_string()),
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(serde::de::Error::custom)
-}
-
-fn proxy_bytes_value(value: serde_json::Value) -> Result<Vec<u8>, String> {
-    match value {
-        serde_json::Value::Null => Ok(Vec::new()),
-        serde_json::Value::String(value) => Ok(value.into_bytes()),
-        serde_json::Value::Array(_) => serde_json::from_value(value).map_err(|err| err.to_string()),
-        serde_json::Value::Object(mut object) => {
-            if let Some(bytes) = object.remove("bytes") {
-                serde_json::from_value(bytes).map_err(|err| err.to_string())
-            } else if let Some(value) = object.remove("value") {
-                proxy_bytes_value(value)
-            } else {
-                serde_json::to_vec(&serde_json::Value::Object(object))
-                    .map_err(|err| err.to_string())
-            }
-        }
-        value => serde_json::to_vec(&value).map_err(|err| err.to_string()),
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyExpireCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    #[serde(alias = "ttl")]
     pub ttl_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyFeatureAddCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    #[serde(default)]
-    pub format: Option<String>,
-    #[serde(alias = "point_list")]
     pub points: Vec<crate::types::FeaturePoint>,
     #[serde(default)]
     pub policy: Option<FeatureWritePolicy>,
@@ -736,49 +528,33 @@ pub struct ProxyFeatureAddCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyFeatureQueryCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    #[serde(alias = "start_ts")]
     pub start_ms: u64,
-    #[serde(alias = "end_ts")]
     pub end_ms: u64,
     #[serde(default)]
     pub count: Option<usize>,
     #[serde(default)]
-    pub format: Option<String>,
-    #[serde(default)]
     pub filters: Vec<FeatureFilter>,
-    #[serde(default)]
-    pub fields: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyFeatureReplaceCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    #[serde(alias = "start_ts")]
     pub start_ms: u64,
-    #[serde(alias = "end_ts")]
     pub end_ms: u64,
-    #[serde(default)]
-    pub format: Option<String>,
-    #[serde(alias = "point_list")]
     pub points: Vec<crate::types::FeaturePoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyFeatureAggQueryCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    #[serde(alias = "start_ts")]
     pub start_ms: u64,
-    #[serde(alias = "end_ts")]
     pub end_ms: u64,
     pub aggregator: String,
     #[serde(default)]
@@ -787,49 +563,30 @@ pub struct ProxyFeatureAggQueryCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxySequenceAddCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    #[serde(alias = "row_list")]
     pub rows: Vec<crate::types::SequenceFeatureRow>,
-    #[serde(default)]
-    pub policy: Option<FeatureWritePolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxySequenceQueryCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    #[serde(alias = "start_ts")]
     pub start_ms: u64,
-    #[serde(alias = "end_ts")]
     pub end_ms: u64,
-    #[serde(alias = "limit")]
     pub count: usize,
     #[serde(default)]
     pub filters: Vec<FeatureFilter>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxySequenceBatchQueryCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub queries: Vec<SequenceQuerySpec>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyIpsAddCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    #[serde(alias = "ts", alias = "occur_time")]
     pub timestamp_ms: u64,
-    #[serde(deserialize_with = "proxy_bytes_from_json")]
     pub instance: Vec<u8>,
     #[serde(default)]
     pub action_type: Option<u32>,
@@ -841,7 +598,6 @@ pub struct ProxyIpsAddCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyIpsQueryLastCommandRequest {
-    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
@@ -849,781 +605,45 @@ pub struct ProxyIpsQueryLastCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyIpsRangeCommandRequest {
-    #[serde(alias = "namespace_name")]
+pub struct ProxyRiskIncrementCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    #[serde(alias = "start_ts")]
-    pub start_ms: u64,
-    #[serde(alias = "end_ts")]
-    pub end_ms: u64,
-    #[serde(default)]
-    pub count: Option<usize>,
-    #[serde(default)]
-    pub action_type: Option<u32>,
-    #[serde(default)]
-    pub table_id: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyIpsBatchQueryLastCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub keys: Vec<String>,
-    pub count: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyIpsLoadCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub key: String,
-    pub points: Vec<FeaturePoint>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyIpsRemoveCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub key: String,
-    #[serde(alias = "ts", alias = "occur_time")]
     pub timestamp_ms: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyControlStateIncrementCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub key: String,
-    #[serde(alias = "ts", alias = "occur_time")]
-    pub timestamp_ms: u64,
-    #[serde(alias = "value")]
     pub amount: i64,
-    #[serde(
-        default,
-        alias = "precision",
-        deserialize_with = "proxy_optional_precision_ms_from_json"
-    )]
+    #[serde(default)]
     pub precision_ms: Option<u64>,
-    #[serde(default, alias = "ttl")]
+    #[serde(default)]
     pub ttl_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyControlStateCountCommandRequest {
-    #[serde(alias = "namespace_name")]
+pub struct ProxyRiskCountCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    #[serde(alias = "start_ts")]
     pub start_ms: u64,
-    #[serde(alias = "end_ts")]
     pub end_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyControlStateQueryCommandRequest {
-    #[serde(alias = "namespace_name")]
+pub struct ProxyRiskHsetCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    #[serde(alias = "start_ts")]
-    pub start_ms: u64,
-    #[serde(alias = "end_ts")]
-    pub end_ms: u64,
-    pub aggregator: String,
-    #[serde(default)]
-    pub count: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyControlStateChangeAddCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub key: String,
-    #[serde(alias = "ts", alias = "occur_time")]
     pub timestamp_ms: u64,
-    #[serde(deserialize_with = "proxy_bytes_from_json")]
+    pub amount: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyRiskFolSetCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
     pub value: Vec<u8>,
-    #[serde(
-        default,
-        alias = "precision",
-        deserialize_with = "proxy_optional_precision_ms_from_json"
-    )]
-    pub precision_ms: Option<u64>,
-    #[serde(default, alias = "ttl")]
-    pub ttl_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyControlStateFamilySetCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub family: ControlStateFamily,
-    pub key: String,
-    #[serde(alias = "ts", alias = "occur_time")]
-    pub timestamp_ms: u64,
-    #[serde(alias = "value")]
-    pub amount: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyControlStateFamilyQueryCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub family: ControlStateFamily,
-    pub key: String,
-    #[serde(alias = "start_ts")]
-    pub start_ms: u64,
-    #[serde(alias = "end_ts")]
-    pub end_ms: u64,
-    pub aggregator: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyControlStateFamilySetAndGetCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub family: ControlStateFamily,
-    pub key: String,
-    #[serde(alias = "ts", alias = "occur_time")]
-    pub timestamp_ms: u64,
-    #[serde(alias = "value")]
-    pub amount: i64,
-    #[serde(alias = "start_ts")]
-    pub start_ms: u64,
-    #[serde(alias = "end_ts")]
-    pub end_ms: u64,
-    pub aggregator: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextUpsertNodeCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub node: crate::types::ContextNode,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextGetNodeCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub node_hash: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextGetNodesCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub node_hashes: Vec<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextWriteEventCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub node_hash: u64,
-    pub event: crate::types::ContextEvent,
-    #[serde(default)]
-    pub first_write_only: bool,
-    #[serde(default)]
-    pub cold_storage: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextWriteExtractedEventCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub node_hash: u64,
-    pub event: crate::types::ContextEvent,
-    #[serde(default)]
-    pub indexes: crate::types::ContextExtractedEventIndexes,
-    #[serde(default)]
-    pub first_write_only: bool,
-    #[serde(default)]
-    pub cold_storage: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextQueryEventsCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub node_hash: u64,
-    pub start_time_ms: u64,
-    pub end_time_ms: u64,
-    #[serde(default)]
-    pub limit: Option<usize>,
-    #[serde(default)]
-    pub current_valid_only: bool,
-    #[serde(default)]
-    pub as_of_ms: u64,
-    #[serde(default)]
-    pub kinds: Vec<u32>,
-    #[serde(default)]
-    pub statuses: Vec<u32>,
-    #[serde(default)]
-    pub min_confidence: f32,
-    #[serde(default)]
-    pub min_importance: f32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextWriteIndexRefCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub index_name: String,
-    pub index_value_hash: u64,
-    #[serde(default)]
-    pub scope_hash: u64,
-    pub event_time_ms: u64,
-    pub index_ref: crate::types::ContextIndexRef,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextQueryIndexCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub index_name: String,
-    pub index_value_hash: u64,
-    #[serde(default)]
-    pub scope_hash: u64,
-    pub start_time_ms: u64,
-    pub end_time_ms: u64,
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextQueryIndexIntersectionCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub predicates: Vec<crate::types::ContextIndexLookup>,
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextWritePackAuditCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub audit: crate::types::ContextPackAudit,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextQueryPackAuditCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub session_hash: u64,
-    pub start_time_ms: u64,
-    pub end_time_ms: u64,
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextMarkSummaryDirtyCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub marker: crate::types::ContextSummaryDirtyMarker,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextQuerySummaryDirtyCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub node_hash: u64,
-    pub start_time_ms: u64,
-    pub end_time_ms: u64,
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextUpsertEntityCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub entity: crate::types::ContextEntity,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextGetEntityCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub node_hash: u64,
-    pub entity_hash: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextQueryEntitiesCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub node_hash: u64,
-    pub entity_hashes: Vec<u64>,
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextUpsertChildRefCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub child_ref: crate::types::ContextChildRef,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextQueryChildrenCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub parent_hash: u64,
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextUpsertEmbeddingCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub embedding: crate::types::ContextEmbedding,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextQueryEmbeddingsCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub ref_hashes: Vec<u64>,
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextTraverseTreeCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub start_node_hash: u64,
-    pub query_vector: Vec<f32>,
-    #[serde(default)]
-    pub max_depth: Option<u32>,
-    #[serde(default)]
-    pub top_k_per_depth: Option<usize>,
-    #[serde(default)]
-    pub max_children_scored_per_parent: Option<usize>,
-    #[serde(default)]
-    pub max_candidate_nodes: Option<usize>,
-    #[serde(default)]
-    pub leaf_only: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextUpsertSummaryCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub summary: crate::types::ContextSummary,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextQuerySummariesCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub node_hash: u64,
-    pub level: u32,
-    pub as_of_ms: u64,
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextWriteCompressionEventCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub event: crate::types::ContextCompressionEvent,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextQueryCompressionEventsCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub node_hashes: Vec<u64>,
-    pub start_time_ms: u64,
-    pub end_time_ms: u64,
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextCompressEventsCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub node_hash: u64,
-    pub source_start_ms: u64,
-    pub source_end_ms: u64,
-    pub compressed_time_ms: u64,
-    #[serde(default)]
-    pub max_source_events: Option<usize>,
-    #[serde(default)]
-    pub min_confidence: f32,
-    #[serde(default)]
-    pub min_importance: f32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyContextQueryNodeContextCommandRequest {
-    pub namespace: String,
-    pub table_name: String,
-    pub tenant_hash: u64,
-    pub node_hash: u64,
-    #[serde(default)]
-    pub summary_level: Option<u32>,
-    pub as_of_ms: u64,
-    #[serde(default)]
-    pub cold_start_time_ms: u64,
-    #[serde(default)]
-    pub cold_end_time_ms: u64,
-    #[serde(default)]
-    pub compression_limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyControlStateHsetCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub key: String,
-    #[serde(default)]
-    pub timestamp_ms: u64,
-    #[serde(default)]
-    pub amount: i64,
-    #[serde(default)]
-    pub value: Option<serde_json::Value>,
-    #[serde(default, alias = "occur_time")]
-    pub occur_time_seconds: u64,
-    #[serde(default)]
-    pub ttl_ms: u64,
-    #[serde(default, alias = "ttl")]
-    pub ttl_seconds: u64,
-    #[serde(default)]
-    pub precision_ms: Option<u64>,
-    #[serde(default)]
-    pub htype: ProxyControlStateHType,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyControlStateHqueryCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub key: String,
-    #[serde(default)]
-    pub start_ms: Option<u64>,
-    #[serde(default)]
-    pub end_ms: Option<u64>,
-    #[serde(default)]
-    pub windows: Vec<ProxyControlStateWindow>,
-    #[serde(default)]
-    pub htype: ProxyControlStateHType,
-    #[serde(default)]
-    pub aggregator: Option<String>,
-    #[serde(default)]
-    pub precision_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ProxyControlStateHType {
-    #[default]
-    Count,
-    Min,
-    Max,
-    Change,
-}
-
-impl<'de> Deserialize<'de> for ProxyControlStateHType {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value {
-            serde_json::Value::Number(number) => match number.as_i64() {
-                Some(0) => Ok(Self::Count),
-                Some(1) => Ok(Self::Min),
-                Some(2) => Ok(Self::Max),
-                Some(3) => Ok(Self::Change),
-                _ => Err(serde::de::Error::custom("unknown ControlStateHType value")),
-            },
-            serde_json::Value::String(value) => match value.as_str() {
-                "COUNT" | "count" | "Count" | "0" => Ok(Self::Count),
-                "MIN" | "min" | "Min" | "1" => Ok(Self::Min),
-                "MAX" | "max" | "Max" | "2" => Ok(Self::Max),
-                "CHANGE" | "change" | "Change" | "3" => Ok(Self::Change),
-                _ => Err(serde::de::Error::custom("unknown ControlStateHType value")),
-            },
-            _ => Err(serde::de::Error::custom(
-                "ControlStateHType must be a string or integer",
-            )),
-        }
-    }
-}
-
-impl ProxyControlStateHType {
-    fn aggregator(self) -> &'static str {
-        match self {
-            Self::Count => "sum",
-            Self::Min => "min",
-            Self::Max => "max",
-            Self::Change => "change",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyControlStateFolSetCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub key: String,
-    #[serde(default)]
-    pub value: serde_json::Value,
-    #[serde(default)]
     pub occur_time_ms: u64,
-    #[serde(default, alias = "occur_time")]
-    pub occur_time_seconds: u64,
-    #[serde(default)]
     pub ttl_ms: u64,
-    #[serde(default, alias = "ttl")]
-    pub ttl_seconds: u64,
-    #[serde(default = "default_control_state_fol_type")]
-    pub fol_type: ControlStateFolType,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyControlStateCpcSetCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub key: String,
-    #[serde(default)]
-    pub values: Vec<String>,
-    #[serde(default)]
-    pub timestamp_ms: u64,
-    #[serde(default, alias = "occur_time")]
-    pub occur_time_seconds: u64,
-    #[serde(default)]
-    pub ttl_ms: u64,
-    #[serde(default, alias = "ttl")]
-    pub ttl_seconds: u64,
-    #[serde(
-        default,
-        alias = "precision",
-        deserialize_with = "proxy_optional_precision_ms_from_json"
-    )]
-    pub precision_ms: Option<u64>,
-    #[serde(default)]
-    pub dont_upgrade_cpc: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyControlStateCpcQueryCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub key: String,
-    #[serde(default)]
-    pub start_ms: Option<u64>,
-    #[serde(default)]
-    pub end_ms: Option<u64>,
-    #[serde(default = "default_control_state_cpc_aggregator")]
-    pub aggregator: String,
-    #[serde(default)]
-    pub windows: Vec<ProxyControlStateWindow>,
-    #[serde(default)]
-    pub with_detail: bool,
-    #[serde(
-        default,
-        alias = "precision",
-        deserialize_with = "proxy_optional_precision_ms_from_json"
-    )]
-    pub precision_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyControlStateManagerCommandRequest {
-    #[serde(alias = "namespace_name")]
-    pub namespace: String,
-    pub table_name: String,
-    pub key: String,
-    #[serde(default)]
-    pub op_type: Option<serde_json::Value>,
-    #[serde(default)]
-    pub field_list: Vec<ProxyControlStateManagerKvPair>,
-    #[serde(default)]
-    pub start_offset: String,
-    #[serde(default)]
-    pub end_offset: String,
-    #[serde(default)]
-    pub is_cpc: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyControlStateManagerKvPair {
-    pub key: String,
-    pub value: String,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyControlStateWindow {
-    #[serde(default)]
-    pub start_offset: i64,
-    #[serde(default)]
-    pub end_offset: i64,
-    #[serde(default)]
-    pub unit: ProxyControlStateWindowUnit,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ProxyControlStateWindowUnit {
-    Second,
-    Minute,
-    #[default]
-    Hour,
-    Day,
-}
-
-impl<'de> Deserialize<'de> for ProxyControlStateWindowUnit {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value {
-            serde_json::Value::Number(number) => match number.as_i64() {
-                Some(0) => Ok(Self::Second),
-                Some(1) => Ok(Self::Minute),
-                Some(2) => Ok(Self::Hour),
-                Some(3) => Ok(Self::Day),
-                _ => Err(serde::de::Error::custom("unknown ControlStateWindowUnit value")),
-            },
-            serde_json::Value::String(value) => match value.as_str() {
-                "Second" | "SECOND" | "second" | "0" => Ok(Self::Second),
-                "Minute" | "MINUTE" | "minute" | "1" => Ok(Self::Minute),
-                "Hour" | "HOUR" | "hour" | "2" => Ok(Self::Hour),
-                "Day" | "DAY" | "day" | "3" => Ok(Self::Day),
-                _ => Err(serde::de::Error::custom("unknown ControlStateWindowUnit value")),
-            },
-            _ => Err(serde::de::Error::custom(
-                "ControlStateWindowUnit must be a string or integer",
-            )),
-        }
-    }
-}
-
-impl ProxyControlStateWindowUnit {
-    fn duration_ms(self) -> i64 {
-        match self {
-            Self::Second => 1_000,
-            Self::Minute => 60_000,
-            Self::Hour => 60 * 60_000,
-            Self::Day => 24 * 60 * 60_000,
-        }
-    }
-}
-
-fn default_control_state_cpc_aggregator() -> String {
-    "sum".to_string()
-}
-
-fn default_control_state_fol_type() -> ControlStateFolType {
-    ControlStateFolType::First
-}
-
-fn proxy_optional_precision_ms_from_json<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
-    value
-        .map(proxy_precision_ms_value)
-        .transpose()
-        .map_err(serde::de::Error::custom)
-}
-
-fn proxy_precision_ms_value(value: serde_json::Value) -> Result<u64, String> {
-    match value {
-        serde_json::Value::Null => Ok(0),
-        serde_json::Value::Number(number) => number
-            .as_u64()
-            .map(cpp_control_state_precision_to_ms)
-            .ok_or_else(|| "precision must be a non-negative integer".to_string()),
-        serde_json::Value::String(value) => {
-            if let Ok(number) = value.parse::<u64>() {
-                return Ok(cpp_control_state_precision_to_ms(number));
-            }
-            match value.as_str() {
-                "DISABLE" | "disable" => Ok(0),
-                "OneSecond" | "one_second" => Ok(1_000),
-                "FiveSeconds" | "five_seconds" => Ok(5_000),
-                "TenSeconds" | "ten_seconds" => Ok(10_000),
-                "OneMinute" | "one_minute" => Ok(60_000),
-                "FiveMinutes" | "five_minutes" => Ok(5 * 60_000),
-                "TenMinutes" | "ten_minutes" => Ok(10 * 60_000),
-                "OneHour" | "one_hour" => Ok(60 * 60_000),
-                "OneDay" | "one_day" => Ok(24 * 60 * 60_000),
-                "OneMonth" | "one_month" => Ok(30 * 24 * 60 * 60_000),
-                _ => Err("unknown ControlStatePrecision value".to_string()),
-            }
-        }
-        _ => Err("precision must be a string or integer".to_string()),
-    }
-}
-
-fn cpp_control_state_precision_to_ms(value: u64) -> u64 {
-    match value {
-        10 => 1_000,
-        14 => 5_000,
-        19 => 10_000,
-        30 => 60_000,
-        34 => 5 * 60_000,
-        39 => 10 * 60_000,
-        50 => 60 * 60_000,
-        60 => 24 * 60 * 60_000,
-        80 => 30 * 24 * 60 * 60_000,
-        value => value,
-    }
+    pub fol_type: RiskFolType,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1681,9 +701,7 @@ struct ProxyInner {
     options: RwLock<ProxyOptions>,
     client: RwLock<TemporalStoreClient>,
     last_client_stats: RwLock<ClientStats>,
-    client_stats_sync_due_ms: AtomicU64,
-    route_invalidation_due_ms: AtomicU64,
-    stats: ProxyStatsState,
+    stats: RwLock<ProxyStats>,
     service_discovery: RwLock<ProxyServiceDiscoveryState>,
     boot_time_ms: u64,
 }
@@ -1695,9 +713,7 @@ impl ProxyService {
                 client: RwLock::new(proxy_client_from_options(&options)),
                 options: RwLock::new(options),
                 last_client_stats: RwLock::default(),
-                client_stats_sync_due_ms: AtomicU64::new(0),
-                route_invalidation_due_ms: AtomicU64::new(0),
-                stats: ProxyStatsState::default(),
+                stats: RwLock::default(),
                 service_discovery: RwLock::default(),
                 boot_time_ms: now_ms(),
             }),
@@ -1706,21 +722,6 @@ impl ProxyService {
 
     pub fn handle(&self, request: HttpRequest) -> (u16, Vec<u8>) {
         use crate::http::{json_response, parse_json};
-        macro_rules! proxy_command_route {
-            ($request_ty:ty, |$req:ident| $builder:block) => {
-                match parse_json::<$request_ty>(&request.body) {
-                    Ok(req) => {
-                        let $req: $request_ty = req;
-                        let (namespace, table_name, command) = $builder;
-                        json_response(
-                            200,
-                            &self.table_execute_command(namespace, table_name, command),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            };
-        }
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/health") => json_response(200, &Status::ok()),
             ("GET", "/metrics") | ("GET", "/ProxyService/Metrics") => {
@@ -1860,27 +861,7 @@ impl ProxyService {
                     }
                 }
             }
-            ("POST", "/ProxyService/MatrixArkBatchAppendRecords")
-            | ("POST", "/matrixark/append_records")
-            | ("POST", "/matrixark/batch_append_records") => {
-                match parse_json::<MatrixArkBatchAppendRequest>(&request.body) {
-                    Ok(req) => match self.client().matrixark_batch_append_records_request(req) {
-                        Ok(appended_records) => json_response(
-                            200,
-                            &serde_json::json!({
-                                "status": Status::ok(),
-                                "appended_records": appended_records,
-                            }),
-                        ),
-                        Err(err) => json_response(
-                            400,
-                            &Status::error("matrixark_batch_append_error", err.to_string()),
-                        ),
-                    },
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/Get") | ("POST", "/Get") => {
+            ("POST", "/ProxyService/Get") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,
@@ -1889,20 +870,12 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/Set") | ("POST", "/Set") => {
+            ("POST", "/ProxyService/Set") => {
                 match parse_json::<ProxySetCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = if let Some(ttl_ms) = req.ttl_ms {
-                            Command::StringSetEx {
-                                key: req.key,
-                                value: req.value,
-                                ttl_ms,
-                            }
-                        } else {
-                            Command::StringSet {
-                                key: req.key,
-                                value: req.value,
-                            }
+                        let command = Command::StringSet {
+                            key: req.key,
+                            value: req.value,
                         };
                         json_response(
                             200,
@@ -1916,7 +889,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/SetEx") | ("POST", "/SetEx") => {
+            ("POST", "/ProxyService/SetEx") => {
                 match parse_json::<ProxySetExCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::StringSetEx {
@@ -1936,32 +909,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/StringSetConditional") | ("POST", "/StringSetConditional") => {
-                match parse_json::<ProxySetConditionalCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::StringSetConditional {
-                            key: req.key,
-                            value: req.value,
-                            ttl_ms: req.ttl_ms,
-                            condition: req.condition,
-                            return_old: req.return_old,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/Delete")
-            | ("POST", "/ProxyService/CommonDelete")
-            | ("POST", "/Delete")
-            | ("POST", "/CommonDelete") => {
+            ("POST", "/ProxyService/Delete") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,
@@ -1970,7 +918,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/Expire") | ("POST", "/Expire") => {
+            ("POST", "/ProxyService/Expire") => {
                 match parse_json::<ProxyExpireCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::CommonExpire {
@@ -1989,7 +937,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/Ttl") | ("POST", "/Ttl") => {
+            ("POST", "/ProxyService/Ttl") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,
@@ -1998,7 +946,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/Exists") | ("POST", "/Exists") => {
+            ("POST", "/ProxyService/Exists") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,
@@ -2007,9 +955,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/FeatureAdd")
-            | ("POST", "/FeatureAdd")
-            | ("POST", "/ProxyService/FeatureAppendWithPolicy") => {
+            ("POST", "/ProxyService/FeatureAdd") => {
                 match parse_json::<ProxyFeatureAddCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = if let Some(policy) = req.policy {
@@ -2036,9 +982,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/FeatureQuery")
-            | ("POST", "/FeatureQuery")
-            | ("POST", "/ProxyService/FeatureQueryFiltered") => {
+            ("POST", "/ProxyService/FeatureQuery") => {
                 match parse_json::<ProxyFeatureQueryCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = if req.filters.is_empty() {
@@ -2057,15 +1001,13 @@ impl ProxyService {
                                 filters: req.filters,
                             }
                         };
-                        let fields = feature_query_fields(&req.fields);
-                        let response = self.table_execute(ProxyTableExecuteRequest {
-                            namespace: req.namespace,
-                            table_name: req.table_name,
-                            command,
-                        });
                         json_response(
                             200,
-                            &feature_points_response_json_with_fields(response, &fields),
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
                         )
                     }
                     Err(err) => self.bad_execute_request(err),
@@ -2123,21 +1065,12 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/SequenceAdd")
-            | ("POST", "/ProxyService/SequenceAddWithPolicy") => {
+            ("POST", "/ProxyService/SequenceAdd") => {
                 match parse_json::<ProxySequenceAddCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = if let Some(policy) = req.policy {
-                            Command::SequenceAddWithPolicy {
-                                key: req.key,
-                                rows: req.rows,
-                                policy,
-                            }
-                        } else {
-                            Command::SequenceAdd {
-                                key: req.key,
-                                rows: req.rows,
-                            }
+                        let command = Command::SequenceAdd {
+                            key: req.key,
+                            rows: req.rows,
                         };
                         json_response(
                             200,
@@ -2161,22 +1094,6 @@ impl ProxyService {
                             count: req.count,
                             filters: req.filters,
                         };
-                        let response = self.table_execute(ProxyTableExecuteRequest {
-                            namespace: req.namespace,
-                            table_name: req.table_name,
-                            command,
-                        });
-                        json_response(200, &sequence_rows_response_json(response))
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/SequenceBatchQuery") => {
-                match parse_json::<ProxySequenceBatchQueryCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::SequenceBatchQuery {
-                            queries: req.queries,
-                        };
                         json_response(
                             200,
                             &self.table_execute(ProxyTableExecuteRequest {
@@ -2189,7 +1106,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/IpsAdd") | ("POST", "/ProxyService/IpsAddWithOptions") => {
+            ("POST", "/ProxyService/IpsAdd") => {
                 match parse_json::<ProxyIpsAddCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::IpsAddWithOptions {
@@ -2231,206 +1148,11 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/IpsQuery") | ("POST", "/ProxyService/IpsQueryWithOptions") => {
-                match parse_json::<ProxyIpsRangeCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::IpsQueryRangeWithOptions {
-                            key: req.key,
-                            start_ms: req.start_ms,
-                            end_ms: req.end_ms,
-                            count: req.count,
-                            action_type: req.action_type,
-                            table_id: req.table_id,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/IpsBatchQueryLast") => {
-                match parse_json::<ProxyIpsBatchQueryLastCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::IpsBatchQueryLast {
-                            keys: req.keys,
-                            count: req.count,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/IpsStat") => {
-                match parse_json::<ProxyIpsRangeCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::IpsStat {
-                            key: req.key,
-                            start_ms: req.start_ms,
-                            end_ms: req.end_ms,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/IpsFilter") => {
-                match parse_json::<ProxyIpsRangeCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::IpsFilter {
-                            key: req.key,
-                            start_ms: req.start_ms,
-                            end_ms: req.end_ms,
-                            count: req.count,
-                            action_type: req.action_type,
-                            table_id: req.table_id,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/IpsSnapshot") => {
-                match parse_json::<ProxyIpsRangeCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::IpsSnapshot {
-                            key: req.key,
-                            start_ms: req.start_ms,
-                            end_ms: req.end_ms,
-                            count: req.count,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/IpsSnapshotReport") => {
-                match parse_json::<ProxyIpsRangeCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::IpsSnapshotReport {
-                            key: req.key,
-                            start_ms: req.start_ms,
-                            end_ms: req.end_ms,
-                            count: req.count,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/IpsLoad") => {
-                match parse_json::<ProxyIpsLoadCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::IpsLoad {
-                            key: req.key,
-                            points: req.points,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/IpsRemove") => {
-                match parse_json::<ProxyIpsRemoveCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::IpsRemove {
-                            key: req.key,
-                            timestamp_ms: req.timestamp_ms,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/IpsDelete") => {
-                match parse_json::<ProxyKeyCommandRequest>(&request.body) {
-                    Ok(req) => json_response(
-                        200,
-                        &self.table_command(req, |key| Command::IpsDelete { key }),
-                    ),
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/IpsCount") => {
-                match parse_json::<ProxyIpsRangeCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::IpsCount {
-                            key: req.key,
-                            start_ms: req.start_ms,
-                            end_ms: req.end_ms,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/ControlStateIncrement")
-            | ("POST", "/ProxyService/ControlStateIncrementWithOptions") => {
-                match parse_json::<ProxyControlStateIncrementCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/RiskIncrement") => {
+                match parse_json::<ProxyRiskIncrementCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = if req.precision_ms.is_some() || req.ttl_ms.is_some() {
-                            Command::ControlStateIncrementWithOptions {
+                            Command::RiskIncrementWithOptions {
                                 key: req.key,
                                 timestamp_ms: req.timestamp_ms,
                                 amount: req.amount,
@@ -2438,7 +1160,7 @@ impl ProxyService {
                                 ttl_ms: req.ttl_ms,
                             }
                         } else {
-                            Command::ControlStateIncrement {
+                            Command::RiskIncrement {
                                 key: req.key,
                                 timestamp_ms: req.timestamp_ms,
                                 amount: req.amount,
@@ -2456,10 +1178,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/ControlStateCount") => {
-                match parse_json::<ProxyControlStateCountCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/RiskCount") => {
+                match parse_json::<ProxyRiskCountCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::ControlStateCount {
+                        let command = Command::RiskCount {
                             key: req.key,
                             start_ms: req.start_ms,
                             end_ms: req.end_ms,
@@ -2476,213 +1198,35 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/ControlStateQuery") => {
-                match parse_json::<ProxyControlStateQueryCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/RiskHset") => {
+                match parse_json::<ProxyRiskHsetCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::ControlStateQuery {
-                            key: req.key,
-                            start_ms: req.start_ms,
-                            end_ms: req.end_ms,
-                            aggregator: req.aggregator,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/ControlStateDetail") => {
-                match parse_json::<ProxyControlStateQueryCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::ControlStateDetail {
-                            key: req.key,
-                            start_ms: req.start_ms,
-                            end_ms: req.end_ms,
-                            count: req.count,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/ControlStateChangeAdd") => {
-                match parse_json::<ProxyControlStateChangeAddCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::ControlStateChangeAdd {
+                        let command = Command::RiskSet {
+                            family: crate::types::RiskFamily::H,
                             key: req.key,
                             timestamp_ms: req.timestamp_ms,
+                            amount: req.amount,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/RiskFolSet") => {
+                match parse_json::<ProxyRiskFolSetCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::RiskFolSet {
+                            key: req.key,
                             value: req.value,
-                            precision_ms: req.precision_ms,
+                            occur_time_ms: req.occur_time_ms,
                             ttl_ms: req.ttl_ms,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/ControlStateFamilySet") => {
-                match parse_json::<ProxyControlStateFamilySetCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::ControlStateSet {
-                            family: req.family,
-                            key: req.key,
-                            timestamp_ms: req.timestamp_ms,
-                            amount: req.amount,
-                            precision_ms: None,
-                            ttl_ms: None,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/ControlStateFamilyQuery") => {
-                match parse_json::<ProxyControlStateFamilyQueryCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::ControlStateFamilyQuery {
-                            family: req.family,
-                            key: req.key,
-                            start_ms: req.start_ms,
-                            end_ms: req.end_ms,
-                            aggregator: req.aggregator,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/ControlStateFamilySetAndGet") => {
-                match parse_json::<ProxyControlStateFamilySetAndGetCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::ControlStateSetAndGet {
-                            family: req.family,
-                            key: req.key,
-                            timestamp_ms: req.timestamp_ms,
-                            amount: req.amount,
-                            start_ms: req.start_ms,
-                            end_ms: req.end_ms,
-                            aggregator: req.aggregator,
-                            precision_ms: None,
-                            ttl_ms: None,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/ControlStateHset") | ("POST", "/ControlStateHset") => {
-                match parse_json::<ProxyControlStateHsetCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let ttl_ms = control_state_hset_request_ttl_ms(&req);
-                        let command = Command::ControlStateSet {
-                            family: crate::types::ControlStateFamily::H,
-                            key: req.key.clone(),
-                            timestamp_ms: control_state_hset_timestamp_ms(&req),
-                            amount: control_state_hset_amount(&req),
-                            precision_ms: req.precision_ms,
-                            ttl_ms,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/ControlStateHquery") | ("POST", "/ControlStateHquery") => {
-                match parse_json::<ProxyControlStateHqueryCommandRequest>(&request.body) {
-                    Ok(req) => json_response(200, &self.control_state_hquery(req)),
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/ControlStateCPCSet") | ("POST", "/ControlStateCPCSet") => {
-                match parse_json::<ProxyControlStateCpcSetCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let timestamp_ms = control_state_cpc_set_timestamp_ms(&req);
-                        let ttl_ms = control_state_cpc_set_ttl_ms(&req);
-                        let command = Command::ControlStateSet {
-                            family: ControlStateFamily::Cpc,
-                            key: req.key,
-                            timestamp_ms,
-                            amount: req.values.len() as i64,
-                            precision_ms: req.precision_ms,
-                            ttl_ms,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/ControlStateCPCQuery") | ("POST", "/ControlStateCPCQuery") => {
-                match parse_json::<ProxyControlStateCpcQueryCommandRequest>(&request.body) {
-                    Ok(req) => json_response(200, &self.control_state_cpc_query(req)),
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/ControlStateFolSet") | ("POST", "/ControlStateFolSet") => {
-                match parse_json::<ProxyControlStateFolSetCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::ControlStateFolSet {
-                            key: req.key,
-                            value: control_state_fol_value_bytes(&req.value),
-                            occur_time_ms: control_state_fol_time_ms(
-                                req.occur_time_ms,
-                                req.occur_time_seconds,
-                            ),
-                            ttl_ms: control_state_fol_ttl_ms(req.ttl_ms, req.ttl_seconds),
                             fol_type: req.fol_type,
                         };
                         json_response(
@@ -2697,475 +1241,25 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/ControlStateFolQuery") | ("POST", "/ControlStateFolQuery") => {
+            ("POST", "/ProxyService/RiskFolQuery") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let response = self.table_command(req, |key| Command::ControlStateFolQuery { key });
-                        json_response(200, &control_state_fol_query_response_json(response))
-                    }
+                    Ok(req) => json_response(
+                        200,
+                        &self.table_command(req, |key| Command::RiskFolQuery { key }),
+                    ),
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/ControlStateManager") | ("POST", "/ControlStateManager") => {
-                match parse_json::<ProxyControlStateManagerCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let response = self.table_execute(ProxyTableExecuteRequest {
-                            namespace: req.namespace,
-                            table_name: req.table_name,
-                            command: Command::ControlStateManager {
-                                key: req.key,
-                                op_type: control_state_manager_op_type(req.op_type.as_ref()),
-                                field_list: req
-                                    .field_list
-                                    .into_iter()
-                                    .map(|item| (item.key, item.value))
-                                    .collect(),
-                                start_offset: req.start_offset,
-                                end_offset: req.end_offset,
-                                is_cpc: req.is_cpc,
-                            },
-                        });
-                        json_response(200, &hash_entries_response_json(response, true))
-                    }
+            ("POST", "/ProxyService/RiskManager") => {
+                match parse_json::<ProxyKeyCommandRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &self.table_command(req, |key| Command::RiskManager { key }),
+                    ),
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/ControlStateDebug") => {
-                match parse_json::<ProxyControlStateCountCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::ControlStateDebug {
-                            key: req.key,
-                            start_ms: req.start_ms,
-                            end_ms: req.end_ms,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/ContextNodeUpsert")
-            | ("POST", "/ProxyService/ContextUpsertNode") => {
-                proxy_command_route!(ProxyContextUpsertNodeCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextUpsertNode {
-                            tenant_hash: req.tenant_hash,
-                            node: req.node,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextNodeGet") | ("POST", "/ProxyService/ContextGetNode") => {
-                proxy_command_route!(ProxyContextGetNodeCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextGetNode {
-                            tenant_hash: req.tenant_hash,
-                            node_hash: req.node_hash,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextNodesGet")
-            | ("POST", "/ProxyService/ContextGetNodes") => {
-                proxy_command_route!(ProxyContextGetNodesCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextGetNodes {
-                            tenant_hash: req.tenant_hash,
-                            node_hashes: req.node_hashes,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextWriteEvent") => {
-                proxy_command_route!(ProxyContextWriteEventCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextWriteEvent {
-                            tenant_hash: req.tenant_hash,
-                            node_hash: req.node_hash,
-                            event: req.event,
-                            first_write_only: req.first_write_only,
-                            cold_storage: req.cold_storage,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextWriteExtractedEvent") => {
-                proxy_command_route!(ProxyContextWriteExtractedEventCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextWriteExtractedEvent {
-                            tenant_hash: req.tenant_hash,
-                            node_hash: req.node_hash,
-                            event: req.event,
-                            indexes: req.indexes,
-                            first_write_only: req.first_write_only,
-                            cold_storage: req.cold_storage,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextQueryEvents") => {
-                proxy_command_route!(ProxyContextQueryEventsCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextQueryEvents {
-                            tenant_hash: req.tenant_hash,
-                            node_hash: req.node_hash,
-                            start_time_ms: req.start_time_ms,
-                            end_time_ms: req.end_time_ms,
-                            limit: req.limit,
-                            current_valid_only: req.current_valid_only,
-                            as_of_ms: req.as_of_ms,
-                            kinds: req.kinds,
-                            statuses: req.statuses,
-                            min_confidence: req.min_confidence,
-                            min_importance: req.min_importance,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextWriteIndexRef") => {
-                proxy_command_route!(ProxyContextWriteIndexRefCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextWriteIndexRef {
-                            tenant_hash: req.tenant_hash,
-                            index_name: req.index_name,
-                            index_value_hash: req.index_value_hash,
-                            scope_hash: req.scope_hash,
-                            event_time_ms: req.event_time_ms,
-                            index_ref: req.index_ref,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextQueryIndex") => {
-                proxy_command_route!(ProxyContextQueryIndexCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextQueryIndex {
-                            tenant_hash: req.tenant_hash,
-                            index_name: req.index_name,
-                            index_value_hash: req.index_value_hash,
-                            scope_hash: req.scope_hash,
-                            start_time_ms: req.start_time_ms,
-                            end_time_ms: req.end_time_ms,
-                            limit: req.limit,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextQueryIndexIntersection") => {
-                proxy_command_route!(ProxyContextQueryIndexIntersectionCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextQueryIndexIntersection {
-                            tenant_hash: req.tenant_hash,
-                            predicates: req.predicates,
-                            limit: req.limit,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextWritePackAudit") => {
-                proxy_command_route!(ProxyContextWritePackAuditCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextWritePackAudit {
-                            tenant_hash: req.tenant_hash,
-                            audit: req.audit,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextQueryPackAudit") => {
-                proxy_command_route!(ProxyContextQueryPackAuditCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextQueryPackAudit {
-                            tenant_hash: req.tenant_hash,
-                            session_hash: req.session_hash,
-                            start_time_ms: req.start_time_ms,
-                            end_time_ms: req.end_time_ms,
-                            limit: req.limit,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextMarkSummaryDirty") => {
-                proxy_command_route!(ProxyContextMarkSummaryDirtyCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextMarkSummaryDirty {
-                            tenant_hash: req.tenant_hash,
-                            marker: req.marker,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextQuerySummaryDirty") => {
-                proxy_command_route!(ProxyContextQuerySummaryDirtyCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextQuerySummaryDirty {
-                            tenant_hash: req.tenant_hash,
-                            node_hash: req.node_hash,
-                            start_time_ms: req.start_time_ms,
-                            end_time_ms: req.end_time_ms,
-                            limit: req.limit,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextUpsertEntity") => {
-                proxy_command_route!(ProxyContextUpsertEntityCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextUpsertEntity {
-                            tenant_hash: req.tenant_hash,
-                            entity: req.entity,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextGetEntity") => {
-                proxy_command_route!(ProxyContextGetEntityCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextGetEntity {
-                            tenant_hash: req.tenant_hash,
-                            node_hash: req.node_hash,
-                            entity_hash: req.entity_hash,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextQueryEntities") => {
-                proxy_command_route!(ProxyContextQueryEntitiesCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextQueryEntities {
-                            tenant_hash: req.tenant_hash,
-                            node_hash: req.node_hash,
-                            entity_hashes: req.entity_hashes,
-                            limit: req.limit,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextUpsertChildRef") => {
-                proxy_command_route!(ProxyContextUpsertChildRefCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextUpsertChildRef {
-                            tenant_hash: req.tenant_hash,
-                            child_ref: req.child_ref,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextQueryChildren") => {
-                proxy_command_route!(ProxyContextQueryChildrenCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextQueryChildren {
-                            tenant_hash: req.tenant_hash,
-                            parent_hash: req.parent_hash,
-                            limit: req.limit,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextUpsertEmbedding") => {
-                proxy_command_route!(ProxyContextUpsertEmbeddingCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextUpsertEmbedding {
-                            tenant_hash: req.tenant_hash,
-                            embedding: req.embedding,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextQueryEmbeddings") => {
-                proxy_command_route!(ProxyContextQueryEmbeddingsCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextQueryEmbeddings {
-                            tenant_hash: req.tenant_hash,
-                            ref_hashes: req.ref_hashes,
-                            limit: req.limit,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextTraverseTree") => {
-                proxy_command_route!(ProxyContextTraverseTreeCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextTraverseTree {
-                            tenant_hash: req.tenant_hash,
-                            start_node_hash: req.start_node_hash,
-                            query_vector: req.query_vector,
-                            max_depth: req.max_depth,
-                            top_k_per_depth: req.top_k_per_depth,
-                            max_children_scored_per_parent: req.max_children_scored_per_parent,
-                            max_candidate_nodes: req.max_candidate_nodes,
-                            leaf_only: req.leaf_only,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextUpsertSummary") => {
-                proxy_command_route!(ProxyContextUpsertSummaryCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextUpsertSummary {
-                            tenant_hash: req.tenant_hash,
-                            summary: req.summary,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextQuerySummaries") => {
-                proxy_command_route!(ProxyContextQuerySummariesCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextQuerySummaries {
-                            tenant_hash: req.tenant_hash,
-                            node_hash: req.node_hash,
-                            level: req.level,
-                            as_of_ms: req.as_of_ms,
-                            limit: req.limit,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextWriteCompressionEvent") => {
-                proxy_command_route!(ProxyContextWriteCompressionEventCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextWriteCompressionEvent {
-                            tenant_hash: req.tenant_hash,
-                            event: req.event,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextQueryCompressionEvents") => {
-                proxy_command_route!(ProxyContextQueryCompressionEventsCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextQueryCompressionEvents {
-                            tenant_hash: req.tenant_hash,
-                            node_hashes: req.node_hashes,
-                            start_time_ms: req.start_time_ms,
-                            end_time_ms: req.end_time_ms,
-                            limit: req.limit,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextCompressEvents") => {
-                proxy_command_route!(ProxyContextCompressEventsCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextCompressEvents {
-                            tenant_hash: req.tenant_hash,
-                            node_hash: req.node_hash,
-                            source_start_ms: req.source_start_ms,
-                            source_end_ms: req.source_end_ms,
-                            compressed_time_ms: req.compressed_time_ms,
-                            max_source_events: req.max_source_events,
-                            min_confidence: req.min_confidence,
-                            min_importance: req.min_importance,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/ContextQueryNodeContext") => {
-                proxy_command_route!(ProxyContextQueryNodeContextCommandRequest, |req| {
-                    (
-                        req.namespace,
-                        req.table_name,
-                        Command::ContextQueryNodeContext {
-                            tenant_hash: req.tenant_hash,
-                            node_hash: req.node_hash,
-                            summary_level: req.summary_level,
-                            as_of_ms: req.as_of_ms,
-                            cold_start_time_ms: req.cold_start_time_ms,
-                            cold_end_time_ms: req.cold_end_time_ms,
-                            compression_limit: req.compression_limit,
-                        },
-                    )
-                })
-            }
-            ("POST", "/ProxyService/MatrixArkRetrieveContextPack")
-            | ("POST", "/matrixark/retrieve_context_pack") => {
-                match parse_json::<MatrixArkRetrieveContextPackRequest>(&request.body) {
-                    Ok(req) => match self
-                        .client()
-                        .matrixark_retrieve_context_pack_native_json(req)
-                    {
-                        Ok(pack) => json_response(200, &pack),
-                        Err(err) => json_response(
-                            400,
-                            &Status::error("context_pack_error", err.to_string()),
-                        ),
-                    },
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/MatrixArkScanCandidates")
-            | ("POST", "/matrixark/scan_candidates") => {
-                match parse_json::<MatrixArkRetrieveContextPackRequest>(&request.body) {
-                    Ok(req) => match self.client().matrixark_scan_candidates_native_json(req) {
-                        Ok(candidates) => json_response(200, &candidates),
-                        Err(err) => json_response(
-                            400,
-                            &Status::error("scan_candidates_error", err.to_string()),
-                        ),
-                    },
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/HGet") | ("POST", "/HGet") => {
+            ("POST", "/ProxyService/HGet") => {
                 match parse_json::<ProxyHashCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::HashGet {
@@ -3184,7 +1278,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/HSet") | ("POST", "/HSet") => {
+            ("POST", "/ProxyService/HSet") => {
                 match parse_json::<ProxyHashSetCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::HashSet {
@@ -3204,30 +1298,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/HIncrBy")
-            | ("POST", "/ProxyService/HashIncrBy")
-            | ("POST", "/HIncrBy")
-            | ("POST", "/HashIncrBy") => {
-                match parse_json::<ProxyHashIncrByCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let command = Command::HashIncrBy {
-                            key: req.key,
-                            field: req.field,
-                            increment: req.increment,
-                        };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/HDel") | ("POST", "/HDel") => {
+            ("POST", "/ProxyService/HDel") => {
                 match parse_json::<ProxyHashCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::HashDelete {
@@ -3246,38 +1317,12 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/HMGet") | ("POST", "/HMGet") => {
+            ("POST", "/ProxyService/HMGet") => {
                 match parse_json::<ProxyHashMultiGetCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::HashMultiGet {
                             key: req.key,
                             fields: req.fields,
-                        };
-                        let response = self.table_execute(ProxyTableExecuteRequest {
-                            namespace: req.namespace,
-                            table_name: req.table_name,
-                            command,
-                        });
-                        json_response(200, &hmget_response_json(response))
-                    }
-                    Err(err) => self.bad_execute_request(err),
-                }
-            }
-            ("POST", "/ProxyService/HMSet") | ("POST", "/HMSet") => {
-                match parse_json::<ProxyHashMultiSetCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let entries = match req.entries() {
-                            Ok(entries) => entries,
-                            Err(status) => {
-                                return json_response(
-                                    400,
-                                    &execute_error(status.code, status.message),
-                                )
-                            }
-                        };
-                        let command = Command::HashMultiSet {
-                            key: req.key,
-                            entries,
                         };
                         json_response(
                             200,
@@ -3291,21 +1336,40 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/HGetAll") | ("POST", "/HGetAll") => {
-                match parse_json::<ProxyKeyCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/HMSet") => {
+                match parse_json::<ProxyHashMultiSetCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let response = self.table_command(req, |key| Command::HashGetAll { key });
-                        json_response(200, &hash_entries_response_json(response, false))
+                        let command = Command::HashMultiSet {
+                            key: req.key,
+                            entries: req.entries,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
                     }
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/HLen") | ("POST", "/HLen") => {
+            ("POST", "/ProxyService/HGetAll") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
-                    Ok(req) => {
-                        let response = self.table_command(req, |key| Command::HashLen { key });
-                        json_response(200, &integer_response_json(response, "len"))
-                    }
+                    Ok(req) => json_response(
+                        200,
+                        &self.table_command(req, |key| Command::HashGetAll { key }),
+                    ),
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/HLen") => {
+                match parse_json::<ProxyKeyCommandRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &self.table_command(req, |key| Command::HashLen { key }),
+                    ),
                     Err(err) => self.bad_execute_request(err),
                 }
             }
@@ -3363,8 +1427,9 @@ impl ProxyService {
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
         self.inner
             .stats
-            .execute_requests
-            .fetch_add(1, Ordering::Relaxed);
+            .write()
+            .expect("proxy stats lock poisoned")
+            .execute_requests += 1;
         if let Some(status) =
             self.check_admission_for_commands(std::slice::from_ref(&request.command))
         {
@@ -3375,21 +1440,16 @@ impl ProxyService {
             .client()
             .execute_with_options(request, RequestOptions::default())
             .unwrap_or_else(|err| execute_error("server_error", err.to_string()));
-        self.sync_client_stats_throttled();
+        self.sync_client_stats();
         response
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
         self.inner
             .stats
-            .batch_execute_requests
-            .fetch_add(1, Ordering::Relaxed);
-        if request.commands.is_empty() {
-            return BatchExecuteResponse {
-                status: Status::ok(),
-                responses: Vec::new(),
-            };
-        }
+            .write()
+            .expect("proxy stats lock poisoned")
+            .batch_execute_requests += 1;
         if let Some(status) = self.check_admission_for_commands(&request.commands) {
             return BatchExecuteResponse {
                 status,
@@ -3404,7 +1464,7 @@ impl ProxyService {
                 status: Status::error("server_error", err.to_string()),
                 responses: Vec::new(),
             });
-        self.sync_client_stats_throttled();
+        self.sync_client_stats();
         response
     }
 
@@ -3427,21 +1487,21 @@ impl ProxyService {
                         table.table_name().to_string(),
                         options.clone(),
                     );
-                    self.sync_client_stats_throttled();
+                    self.sync_client_stats();
                     return ProxyOpenTableResponse {
                         status: Status::ok(),
                         options: Some(table.options().into()),
                     };
                 }
                 let options = table.options();
-                self.sync_client_stats_throttled();
+                self.sync_client_stats();
                 ProxyOpenTableResponse {
                     status: Status::ok(),
                     options: Some(options.into()),
                 }
             }
             Err(err) => {
-                self.sync_client_stats_throttled();
+                self.sync_client_stats();
                 ProxyOpenTableResponse {
                     status: Status::error("metaserver_error", err.to_string()),
                     options: None,
@@ -3453,20 +1513,20 @@ impl ProxyService {
     pub fn table_execute(&self, request: ProxyTableExecuteRequest) -> ExecuteResponse {
         self.inner
             .stats
-            .execute_requests
-            .fetch_add(1, Ordering::Relaxed);
-        let command = request.command;
-        if let Some(status) = self.check_admission_for_commands(std::slice::from_ref(&command)) {
+            .write()
+            .expect("proxy stats lock poisoned")
+            .execute_requests += 1;
+        if let Some(status) =
+            self.check_admission_for_commands(std::slice::from_ref(&request.command))
+        {
             return execute_error(status.code, status.message);
         }
         self.invalidate_cached_routes_if_meta_changed();
-        let response = match self.table_for_request_ref(&request.namespace, &request.table_name) {
-            Ok(table) => table
-                .execute(command)
-                .unwrap_or_else(|err| execute_error("server_error", err.to_string())),
-            Err(err) => execute_error("server_error", err.to_string()),
-        };
-        self.sync_client_stats_throttled();
+        let response = self
+            .table_for_request(request.namespace, request.table_name)
+            .and_then(|table| table.execute(request.command))
+            .unwrap_or_else(|err| execute_error("server_error", err.to_string()));
+        self.sync_client_stats();
         response
     }
 
@@ -3476,14 +1536,9 @@ impl ProxyService {
     ) -> BatchExecuteResponse {
         self.inner
             .stats
-            .batch_execute_requests
-            .fetch_add(1, Ordering::Relaxed);
-        if request.commands.is_empty() {
-            return BatchExecuteResponse {
-                status: Status::ok(),
-                responses: Vec::new(),
-            };
-        }
+            .write()
+            .expect("proxy stats lock poisoned")
+            .batch_execute_requests += 1;
         if let Some(status) = self.check_admission_for_commands(&request.commands) {
             return BatchExecuteResponse {
                 status,
@@ -3492,13 +1547,13 @@ impl ProxyService {
         }
         self.invalidate_cached_routes_if_meta_changed();
         let response = self
-            .table_for_request_ref(&request.namespace, &request.table_name)
+            .table_for_request(request.namespace, request.table_name)
             .and_then(|table| table.batch_execute(request.commands))
             .unwrap_or_else(|err| BatchExecuteResponse {
                 status: Status::error("server_error", err.to_string()),
                 responses: Vec::new(),
             });
-        self.sync_client_stats_throttled();
+        self.sync_client_stats();
         response
     }
 
@@ -3514,201 +1569,16 @@ impl ProxyService {
         })
     }
 
-    fn control_state_hquery(&self, request: ProxyControlStateHqueryCommandRequest) -> serde_json::Value {
-        let bounds = control_state_hquery_bounds(&request);
-        let aggregator = request
-            .aggregator
-            .clone()
-            .unwrap_or_else(|| request.htype.aggregator().to_string());
-        let mut commands = Vec::with_capacity(bounds.len());
-        for (start_ms, end_ms) in bounds {
-            commands.push(Command::ControlStateFamilyQuery {
-                family: ControlStateFamily::H,
-                key: request.key.clone(),
-                start_ms,
-                end_ms,
-                aggregator: aggregator.clone(),
-            });
-        }
-        let expected_len = commands.len();
-        let (mut status, responses) = match self.execute_control_state_query_batch(
-            &request.namespace,
-            &request.table_name,
-            commands,
-        ) {
-            Ok(result) => result,
-            Err(status) => {
-                return serde_json::json!({
-                    "status": status,
-                    "result_list": Vec::<serde_json::Value>::new(),
-                    "responses": Vec::<ExecuteResponse>::new(),
-                });
-            }
-        };
-        let mut result_list = Vec::with_capacity(expected_len);
-        for response in responses.iter() {
-            if !response.status.ok && status.ok {
-                status = response.status.clone();
-            }
-            let result = match &response.response {
-                CommandResponse::Integer { value } => *value,
-                _ => 0,
-            };
-            result_list.push(serde_json::json!({
-                "has_result": response.status.ok,
-                "result": result,
-            }));
-        }
-        serde_json::json!({
-            "status": status,
-            "result_list": result_list,
-            "responses": responses,
-        })
-    }
-
-    fn control_state_cpc_query(&self, request: ProxyControlStateCpcQueryCommandRequest) -> serde_json::Value {
-        let bounds = control_state_cpc_query_bounds(&request);
-        let mut commands = Vec::with_capacity(bounds.len());
-        for (start_ms, end_ms) in bounds {
-            commands.push(Command::ControlStateFamilyQuery {
-                family: ControlStateFamily::Cpc,
-                key: request.key.clone(),
-                start_ms,
-                end_ms,
-                aggregator: request.aggregator.clone(),
-            });
-        }
-        let expected_len = commands.len();
-        let (mut status, responses) = match self.execute_control_state_query_batch(
-            &request.namespace,
-            &request.table_name,
-            commands,
-        ) {
-            Ok(result) => result,
-            Err(status) => {
-                return serde_json::json!({
-                    "status": status,
-                    "count_list": Vec::<i64>::new(),
-                    "detail_lists": Vec::<serde_json::Value>::new(),
-                    "responses": Vec::<ExecuteResponse>::new(),
-                });
-            }
-        };
-        let mut count_list = Vec::with_capacity(expected_len);
-        let mut detail_lists = Vec::with_capacity(expected_len);
-        for response in responses.iter() {
-            if !response.status.ok && status.ok {
-                status = response.status.clone();
-            }
-            let count = match &response.response {
-                CommandResponse::Integer { value } => *value,
-                _ => 0,
-            };
-            count_list.push(count);
-        }
-        if request.with_detail {
-            detail_lists = count_list
-                .iter()
-                .map(|count| serde_json::json!({ "detail": [count.to_string()] }))
-                .collect();
-        }
-        serde_json::json!({
-            "status": status,
-            "count_list": count_list,
-            "detail_lists": detail_lists,
-            "responses": responses,
-        })
-    }
-
-    fn execute_control_state_query_batch(
-        &self,
-        namespace: &str,
-        table_name: &str,
-        commands: Vec<Command>,
-    ) -> Result<(Status, Vec<ExecuteResponse>), Status> {
-        let expected_len = commands.len();
-        if expected_len == 0 {
-            return Ok((Status::ok(), Vec::new()));
-        }
-        if let Some(status) = self.check_admission_for_commands(&commands) {
-            let response_status = Status::error(status.code, status.message);
-            let response = ExecuteResponse {
-                status: response_status.clone(),
-                response: CommandResponse::Empty,
-            };
-            return Ok((response_status, vec![response; expected_len]));
-        }
-        let table = self
-            .table_for_request_ref(namespace, table_name)
-            .map_err(|err| Status::error("server_error", err.to_string()))?;
-        let batch_response =
-            table
-                .batch_execute(commands)
-                .unwrap_or_else(|err| BatchExecuteResponse {
-                    status: Status::error("server_error", err.to_string()),
-                    responses: Vec::new(),
-                });
-        let mut status = Status::ok();
-        let responses = if batch_response.status.ok {
-            let mut list = batch_response.responses;
-            if list.len() < expected_len {
-                let missing = expected_len - list.len();
-                list.extend(
-                    std::iter::repeat(ExecuteResponse {
-                        status: Status::error("bad_response", "batch response length mismatch"),
-                        response: CommandResponse::Empty,
-                    })
-                    .take(missing),
-                );
-            } else if list.len() > expected_len {
-                list.truncate(expected_len);
-            }
-            if list.len() != expected_len {
-                status = Status::error("bad_response", "batch response length mismatch");
-            }
-            list
-        } else {
-            status = batch_response.status.clone();
-            let response = ExecuteResponse {
-                status: status.clone(),
-                response: CommandResponse::Empty,
-            };
-            vec![response; expected_len]
-        };
-        Ok((status, responses))
-    }
-
-    fn table_execute_command(
-        &self,
-        namespace: String,
-        table_name: String,
-        command: Command,
-    ) -> ExecuteResponse {
-        self.table_execute(ProxyTableExecuteRequest {
-            namespace,
-            table_name,
-            command,
-        })
-    }
-
     fn table_for_request(
         &self,
         namespace: String,
         table_name: String,
     ) -> Result<crate::client::TemporalStoreTable, crate::client::ClientError> {
-        self.table_for_request_ref(&namespace, &table_name)
-    }
-
-    fn table_for_request_ref(
-        &self,
-        namespace: &str,
-        table_name: &str,
-    ) -> Result<crate::client::TemporalStoreTable, crate::client::ClientError> {
         let client = self.client();
         client
-            .cached_table_ref(namespace, table_name)
+            .cached_table(namespace.clone(), table_name.clone())
             .map(Ok)
-            .unwrap_or_else(|| client.open_table_from_meta_ref(namespace, table_name))
+            .unwrap_or_else(|| client.open_table_from_meta(namespace, table_name))
     }
 
     pub fn update_options(&self, options: ProxyOptions) {
@@ -3762,7 +1632,7 @@ impl ProxyService {
             status: Status::ok(),
             meta_addr: options.meta_addr,
             route_cache_size: self.client().route_cache_size(),
-            stats: self.inner.stats.snapshot(),
+            stats: *self.inner.stats.read().expect("proxy stats lock poisoned"),
             boot_time_ms: self.inner.boot_time_ms,
         }
     }
@@ -3775,14 +1645,14 @@ impl ProxyService {
             meta_addr: options.meta_addr.clone(),
             config_version: proxy_config_version(&options),
             route_cache_size: self.client().route_cache_size(),
-            stats: self.inner.stats.snapshot(),
+            stats: *self.inner.stats.read().expect("proxy stats lock poisoned"),
         }
     }
 
     pub fn preflight_report(&self) -> ProxyPreflightReport {
-        self.sync_client_stats_for_report();
+        self.sync_client_stats();
         let options = self.options();
-        let stats = self.inner.stats.snapshot();
+        let stats = *self.inner.stats.read().expect("proxy stats lock poisoned");
         let client_stats = self.client().stats();
         let route_cache_size = self.client().route_cache_size();
         let mut topology_cache = self.client().topology_cache_report();
@@ -3874,7 +1744,7 @@ impl ProxyService {
 
     pub fn policy_report(&self) -> ProxyPolicyReport {
         let options = self.options();
-        let stats = self.inner.stats.snapshot();
+        let stats = *self.inner.stats.read().expect("proxy stats lock poisoned");
         ProxyPolicyReport {
             serving_mode: options.serving_mode,
             drop_percent: options.drop_percent.min(100),
@@ -4090,9 +1960,9 @@ impl ProxyService {
     }
 
     pub fn prometheus_metrics(&self) -> String {
-        self.sync_client_stats_for_report();
+        self.sync_client_stats();
         let options = self.options();
-        let stats = self.inner.stats.snapshot();
+        let stats = *self.inner.stats.read().expect("proxy stats lock poisoned");
         let client = self.client().stats();
         let mut out = String::new();
         out.push_str("# HELP temporalstore_proxy_requests_total Proxy request counters by kind.\n");
@@ -4307,8 +2177,9 @@ impl ProxyService {
             Err(err) => {
                 self.inner
                     .stats
-                    .metaserver_errors
-                    .fetch_add(1, Ordering::Relaxed);
+                    .write()
+                    .expect("proxy stats lock poisoned")
+                    .metaserver_errors += 1;
                 ProxyTopologyRefreshResponse {
                     status: Status::error("refresh_failed", err.to_string()),
                     report: None,
@@ -4337,8 +2208,9 @@ impl ProxyService {
         let options = self.options();
         self.inner
             .stats
-            .heartbeat_total
-            .fetch_add(1, Ordering::Relaxed);
+            .write()
+            .expect("proxy stats lock poisoned")
+            .heartbeat_total += 1;
         let request = ProxyHeartbeatRequest {
             proxy_addr: options.proxy_addr.clone(),
             namespace: options.namespace.clone(),
@@ -4415,8 +2287,9 @@ impl ProxyService {
     fn auto_register_proxy(&self, options: &ProxyOptions) -> AckResponse {
         self.inner
             .stats
-            .auto_register_total
-            .fetch_add(1, Ordering::Relaxed);
+            .write()
+            .expect("proxy stats lock poisoned")
+            .auto_register_total += 1;
         let response = post_json_with_options::<_, AckResponse>(
             &options.meta_addr,
             "/proxies/register",
@@ -4521,8 +2394,9 @@ impl ProxyService {
             if count_error {
                 self.inner
                     .stats
-                    .metaserver_errors
-                    .fetch_add(1, Ordering::Relaxed);
+                    .write()
+                    .expect("proxy stats lock poisoned")
+                    .metaserver_errors += 1;
             }
             Status::error("metaserver_error", err.to_string())
         })
@@ -4543,83 +2417,25 @@ impl ProxyService {
             .clone()
     }
 
-    fn sync_client_stats_throttled(&self) {
-        self.sync_client_stats_inner(25);
-    }
-
-    fn sync_client_stats_for_report(&self) {
-        self.sync_client_stats_inner(0);
-    }
-
-    fn sync_client_stats_inner(&self, min_interval_ms: u64) {
-        if min_interval_ms > 0 {
-            let now = now_ms();
-            let due = self.inner.client_stats_sync_due_ms.load(Ordering::Acquire);
-            if now < due {
-                return;
-            }
-            let next_due = now.saturating_add(min_interval_ms);
-            if self
-                .inner
-                .client_stats_sync_due_ms
-                .compare_exchange(due, next_due, Ordering::AcqRel, Ordering::Acquire)
-                .is_err()
-            {
-                return;
-            }
-        }
+    fn sync_client_stats(&self) {
         let current = self.client().stats();
         let mut last = self
             .inner
             .last_client_stats
             .write()
             .expect("proxy client stats lock poisoned");
-        let route_cache_hits_delta = if current.route_cache_hits >= last.route_cache_hits {
-            current.route_cache_hits - last.route_cache_hits
-        } else {
-            current.route_cache_hits
-        };
-        let route_cache_misses_delta = if current.route_cache_misses >= last.route_cache_misses {
-            current.route_cache_misses - last.route_cache_misses
-        } else {
-            current.route_cache_misses
-        };
-        let route_refreshes_delta = if current.route_refreshes >= last.route_refreshes {
-            current.route_refreshes - last.route_refreshes
-        } else {
-            current.route_refreshes
-        };
-        let backend_errors_delta = if current.backend_errors >= last.backend_errors {
-            current.backend_errors - last.backend_errors
-        } else {
-            current.backend_errors
-        };
-        let continuous_backend_failures_delta =
-            if current.continuous_backend_failures >= last.continuous_backend_failures {
-                current.continuous_backend_failures - last.continuous_backend_failures
-            } else {
-                current.continuous_backend_failures
-            };
-        self.inner
-            .stats
+        let mut stats = self.inner.stats.write().expect("proxy stats lock poisoned");
+        stats.route_cache_hits += current
             .route_cache_hits
-            .fetch_add(route_cache_hits_delta, Ordering::Relaxed);
-        self.inner
-            .stats
+            .saturating_sub(last.route_cache_hits);
+        stats.route_cache_misses += current
             .route_cache_misses
-            .fetch_add(route_cache_misses_delta, Ordering::Relaxed);
-        self.inner
-            .stats
-            .route_refreshes
-            .fetch_add(route_refreshes_delta, Ordering::Relaxed);
-        self.inner
-            .stats
-            .backend_errors
-            .fetch_add(backend_errors_delta, Ordering::Relaxed);
-        self.inner
-            .stats
+            .saturating_sub(last.route_cache_misses);
+        stats.route_refreshes += current.route_refreshes.saturating_sub(last.route_refreshes);
+        stats.backend_errors += current.backend_errors.saturating_sub(last.backend_errors);
+        stats.continuous_backend_failures += current
             .continuous_backend_failures
-            .fetch_add(continuous_backend_failures_delta, Ordering::Relaxed);
+            .saturating_sub(last.continuous_backend_failures);
         *last = current;
     }
 
@@ -4632,17 +2448,14 @@ impl ProxyService {
     }
 
     fn check_admission_for_commands(&self, commands: &[Command]) -> Option<Status> {
-        let options = self
-            .inner
-            .options
-            .read()
-            .expect("proxy options lock poisoned");
+        let options = self.options();
         let status = proxy_policy_rejection(&options, commands);
         if status.is_some() {
             self.inner
                 .stats
-                .admission_rejections
-                .fetch_add(1, Ordering::Relaxed);
+                .write()
+                .expect("proxy stats lock poisoned")
+                .admission_rejections += 1;
         }
         status
     }
@@ -4651,38 +2464,16 @@ impl ProxyService {
         if self.client().route_cache_size() == 0 {
             return;
         }
-        let now = now_ms();
-        let options = self
-            .inner
-            .options
-            .read()
-            .expect("proxy options lock poisoned");
-        let refresh_interval_ms = options.route_cache_ttl_ms.max(50);
-        let mut due = self.inner.route_invalidation_due_ms.load(Ordering::Relaxed);
-        loop {
-            if now < due {
-                return;
-            }
-            let next_due = now.saturating_add(refresh_interval_ms);
-            match self.inner.route_invalidation_due_ms.compare_exchange(
-                due,
-                next_due,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => break,
-                Err(current_due) => due = current_due,
-            }
-        }
         let _ = self.client().invalidate_routes_from_meta_topology();
-        self.sync_client_stats_throttled();
+        self.sync_client_stats();
     }
 
     fn inc_bad_request(&self) {
         self.inner
             .stats
-            .bad_requests
-            .fetch_add(1, Ordering::Relaxed);
+            .write()
+            .expect("proxy stats lock poisoned")
+            .bad_requests += 1;
     }
 
     fn bad_execute_request(&self, err: impl std::fmt::Display) -> (u16, Vec<u8>) {
@@ -4690,350 +2481,6 @@ impl ProxyService {
         self.inc_bad_request();
         json_response(400, &execute_error("bad_request", err.to_string()))
     }
-}
-
-fn control_state_cpc_timestamp_ms(timestamp_ms: u64) -> u64 {
-    if timestamp_ms == 0 {
-        now_ms()
-    } else if timestamp_ms < 10_000_000_000 {
-        timestamp_ms.saturating_mul(1_000)
-    } else {
-        timestamp_ms
-    }
-}
-
-fn execute_response_json(response: ExecuteResponse) -> serde_json::Value {
-    serde_json::to_value(response).unwrap_or_else(|err| {
-        serde_json::json!({
-            "status": Status::error("serialization_error", err.to_string()),
-            "response": CommandResponse::Empty,
-        })
-    })
-}
-
-fn response_object_mut(
-    value: &mut serde_json::Value,
-) -> Option<&mut serde_json::Map<String, serde_json::Value>> {
-    value
-        .get_mut("response")
-        .and_then(|response| response.as_object_mut())
-}
-
-fn hmget_response_json(response: ExecuteResponse) -> serde_json::Value {
-    let aliases = match &response.response {
-        CommandResponse::Values { values } => {
-            let response_values = values
-                .iter()
-                .map(|value| value.clone().unwrap_or_default())
-                .collect::<Vec<_>>();
-            let exists = values
-                .iter()
-                .map(|value| value.is_some())
-                .collect::<Vec<bool>>();
-            Some((response_values, exists))
-        }
-        _ => None,
-    };
-    let mut value = execute_response_json(response);
-    if let (Some((values, exists)), Some(response)) = (aliases, response_object_mut(&mut value)) {
-        response.insert("values".to_string(), serde_json::json!(values));
-        response.insert("exists".to_string(), serde_json::json!(exists));
-    }
-    value
-}
-
-fn feature_points_response_json_with_fields(
-    response: ExecuteResponse,
-    fields: &[String],
-) -> serde_json::Value {
-    let point_list = match &response.response {
-        CommandResponse::FeaturePoints { points } => Some(feature_point_list_json(
-            &project_feature_points(points, fields),
-        )),
-        _ => None,
-    };
-    let mut value = execute_response_json(response);
-    if let (Some(point_list), Some(response)) = (point_list, response_object_mut(&mut value)) {
-        response.insert("point_list".to_string(), serde_json::json!(point_list));
-    }
-    value
-}
-
-fn feature_point_list_json(points: &[FeaturePoint]) -> Vec<serde_json::Value> {
-    points
-        .iter()
-        .map(|point| {
-            serde_json::json!({
-                "ts": point.timestamp_ms,
-                "timestamp": point.timestamp_ms,
-                "timestamp_ms": point.timestamp_ms,
-                "value": point.value,
-            })
-        })
-        .collect()
-}
-
-fn feature_query_fields(fields: &str) -> Vec<String> {
-    fields
-        .split(|ch: char| ch == ',' || ch == ';' || ch.is_ascii_whitespace())
-        .map(str::trim)
-        .filter(|field| matches!(*field, "gid" | "action_type" | "duration" | "author_id"))
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-fn project_feature_points(points: &[FeaturePoint], fields: &[String]) -> Vec<FeaturePoint> {
-    if fields.is_empty() {
-        return points.to_vec();
-    }
-    points
-        .iter()
-        .map(|point| {
-            SequenceFeatureRow::decode_cpp_feature_value(point.timestamp_ms, &point.value)
-                .map(|row| FeaturePoint {
-                    timestamp_ms: point.timestamp_ms,
-                    value: encode_projected_cpp_feature_value(&row, fields),
-                })
-                .unwrap_or_else(|| point.clone())
-        })
-        .collect()
-}
-
-fn encode_projected_cpp_feature_value(row: &SequenceFeatureRow, fields: &[String]) -> Vec<u8> {
-    let mut out = Vec::new();
-    for field in fields {
-        match field.as_str() {
-            "gid" => encode_proxy_varint_field(&mut out, 1, row.gid),
-            "action_type" => encode_proxy_varint_field(&mut out, 2, row.action_type as u64),
-            "duration" => encode_proxy_varint_field(&mut out, 3, row.duration as u64),
-            "author_id" => encode_proxy_varint_field(&mut out, 4, row.author_id),
-            _ => {}
-        }
-    }
-    out
-}
-
-fn encode_proxy_varint_field(out: &mut Vec<u8>, field_number: u64, value: u64) {
-    encode_proxy_varint(out, field_number << 3);
-    encode_proxy_varint(out, value);
-}
-
-fn encode_proxy_varint(out: &mut Vec<u8>, mut value: u64) {
-    while value >= 0x80 {
-        out.push((value as u8 & 0x7f) | 0x80);
-        value >>= 7;
-    }
-    out.push(value as u8);
-}
-
-fn sequence_rows_response_json(response: ExecuteResponse) -> serde_json::Value {
-    let row_list = match &response.response {
-        CommandResponse::SequenceRows { rows } => Some(rows.clone()),
-        _ => None,
-    };
-    let mut value = execute_response_json(response);
-    if let (Some(row_list), Some(response)) = (row_list, response_object_mut(&mut value)) {
-        response.insert("row_list".to_string(), serde_json::json!(row_list));
-    }
-    value
-}
-
-fn hash_entries_response_json(
-    response: ExecuteResponse,
-    include_result: bool,
-) -> serde_json::Value {
-    let aliases = match &response.response {
-        CommandResponse::HashEntries { entries } => {
-            let fields = entries
-                .iter()
-                .map(|(field, _)| field.clone())
-                .collect::<Vec<_>>();
-            let values = entries
-                .iter()
-                .map(|(_, value)| value.clone())
-                .collect::<Vec<_>>();
-            let result = entries
-                .iter()
-                .map(|(key, value)| {
-                    serde_json::json!({
-                        "key": key,
-                        "value": String::from_utf8_lossy(value).into_owned(),
-                    })
-                })
-                .collect::<Vec<_>>();
-            Some((fields, values, result))
-        }
-        _ => None,
-    };
-    let mut value = execute_response_json(response);
-    if let (Some((fields, values, result)), Some(response)) =
-        (aliases, response_object_mut(&mut value))
-    {
-        response.insert("fields".to_string(), serde_json::json!(fields));
-        response.insert("values".to_string(), serde_json::json!(values));
-        if include_result {
-            response.insert("result".to_string(), serde_json::json!(result));
-        }
-    }
-    value
-}
-
-fn integer_response_json(response: ExecuteResponse, alias: &str) -> serde_json::Value {
-    let integer = match &response.response {
-        CommandResponse::Integer { value } => Some(*value),
-        _ => None,
-    };
-    let mut value = execute_response_json(response);
-    if let (Some(integer), Some(response)) = (integer, response_object_mut(&mut value)) {
-        response.insert(alias.to_string(), serde_json::json!(integer));
-    }
-    value
-}
-
-fn control_state_fol_query_response_json(response: ExecuteResponse) -> serde_json::Value {
-    let result = match &response.response {
-        CommandResponse::Bytes { value } => value
-            .as_ref()
-            .map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
-        _ => None,
-    };
-    let mut value = execute_response_json(response);
-    if let (Some(result), Some(response)) = (result, response_object_mut(&mut value)) {
-        response.insert("result".to_string(), serde_json::json!(result));
-    }
-    value
-}
-
-fn control_state_hset_timestamp_ms(request: &ProxyControlStateHsetCommandRequest) -> u64 {
-    if request.timestamp_ms != 0 {
-        return control_state_cpc_timestamp_ms(request.timestamp_ms);
-    }
-    control_state_cpc_timestamp_ms(request.occur_time_seconds)
-}
-
-fn control_state_cpc_set_timestamp_ms(request: &ProxyControlStateCpcSetCommandRequest) -> u64 {
-    if request.timestamp_ms != 0 {
-        return control_state_cpc_timestamp_ms(request.timestamp_ms);
-    }
-    control_state_cpc_timestamp_ms(request.occur_time_seconds)
-}
-
-fn control_state_hset_ttl_ms(ttl_seconds: u64) -> Option<u64> {
-    (ttl_seconds > 0).then(|| ttl_seconds.saturating_mul(1_000))
-}
-
-fn control_state_hset_request_ttl_ms(request: &ProxyControlStateHsetCommandRequest) -> Option<u64> {
-    if request.ttl_ms != 0 {
-        return Some(request.ttl_ms);
-    }
-    control_state_hset_ttl_ms(request.ttl_seconds)
-}
-
-fn control_state_cpc_set_ttl_ms(request: &ProxyControlStateCpcSetCommandRequest) -> Option<u64> {
-    if request.ttl_ms != 0 {
-        return Some(request.ttl_ms);
-    }
-    control_state_hset_ttl_ms(request.ttl_seconds)
-}
-
-fn control_state_hset_amount(request: &ProxyControlStateHsetCommandRequest) -> i64 {
-    if request.amount != 0 {
-        return request.amount;
-    }
-    match request.value.as_ref() {
-        Some(value) if value.is_i64() => value.as_i64().unwrap_or_default(),
-        Some(value) if value.is_u64() => value.as_u64().unwrap_or_default() as i64,
-        Some(value) if value.is_f64() => value.as_f64().unwrap_or_default() as i64,
-        Some(value) => value
-            .as_str()
-            .and_then(|text| text.trim().parse::<i64>().ok())
-            .unwrap_or_else(|| {
-                if matches!(request.htype, ProxyControlStateHType::Count) {
-                    1
-                } else {
-                    0
-                }
-            }),
-        None => {
-            if matches!(request.htype, ProxyControlStateHType::Count) {
-                1
-            } else {
-                0
-            }
-        }
-    }
-}
-
-fn control_state_fol_value_bytes(value: &serde_json::Value) -> Vec<u8> {
-    if let Some(text) = value.as_str() {
-        return text.as_bytes().to_vec();
-    }
-    if let Some(items) = value.as_array() {
-        return items
-            .iter()
-            .map(|item| item.as_u64().unwrap_or_default() as u8)
-            .collect();
-    }
-    if value.is_null() {
-        Vec::new()
-    } else {
-        value.to_string().into_bytes()
-    }
-}
-
-fn control_state_fol_time_ms(occur_time_ms: u64, occur_time_seconds: u64) -> u64 {
-    if occur_time_ms != 0 {
-        return control_state_cpc_timestamp_ms(occur_time_ms);
-    }
-    control_state_cpc_timestamp_ms(occur_time_seconds)
-}
-
-fn control_state_fol_ttl_ms(ttl_ms: u64, ttl_seconds: u64) -> u64 {
-    if ttl_ms != 0 {
-        ttl_ms
-    } else {
-        ttl_seconds.saturating_mul(1_000)
-    }
-}
-
-fn control_state_manager_op_type(value: Option<&serde_json::Value>) -> Option<String> {
-    match value {
-        Some(serde_json::Value::Number(number)) => number.as_i64().map(|value| value.to_string()),
-        Some(serde_json::Value::String(value)) if !value.trim().is_empty() => {
-            Some(value.trim().to_string())
-        }
-        _ => None,
-    }
-}
-
-fn control_state_cpc_query_bounds(request: &ProxyControlStateCpcQueryCommandRequest) -> Vec<(u64, u64)> {
-    if let (Some(start_ms), Some(end_ms)) = (request.start_ms, request.end_ms) {
-        return vec![(start_ms, end_ms)];
-    }
-    control_state_window_bounds(&request.windows)
-}
-
-fn control_state_hquery_bounds(request: &ProxyControlStateHqueryCommandRequest) -> Vec<(u64, u64)> {
-    if let (Some(start_ms), Some(end_ms)) = (request.start_ms, request.end_ms) {
-        return vec![(start_ms, end_ms)];
-    }
-    control_state_window_bounds(&request.windows)
-}
-
-fn control_state_window_bounds(windows: &[ProxyControlStateWindow]) -> Vec<(u64, u64)> {
-    if windows.is_empty() {
-        return vec![(0, u64::MAX)];
-    }
-    let now = now_ms() as i64;
-    windows
-        .iter()
-        .map(|window| {
-            let unit_ms = window.unit.duration_ms();
-            let start = now.saturating_add(window.start_offset.saturating_mul(unit_ms));
-            let end = now.saturating_add(window.end_offset.saturating_mul(unit_ms));
-            (start.max(0) as u64, end.max(0) as u64)
-        })
-        .collect()
 }
 
 fn proxy_operational_surface_entry(
@@ -6195,41 +3642,27 @@ mod tests {
                         ("a".to_string(), b"1".to_vec()),
                         ("b".to_string(), b"2".to_vec()),
                     ],
-                    fields: Vec::new(),
-                    values: Vec::new(),
                 })
                 .unwrap(),
             )
             .status
             .ok
         );
-        let hmget_body = serde_json::to_vec(&ProxyHashMultiGetCommandRequest {
-            namespace: "ns".to_string(),
-            table_name: "tbl".to_string(),
-            key: "cpp-proxy-hm".to_string(),
-            fields: vec!["a".to_string(), "missing".to_string()],
-        })
-        .unwrap();
         assert_eq!(
-            command_alias("/ProxyService/HMGet", hmget_body.clone()).response,
+            command_alias(
+                "/ProxyService/HMGet",
+                serde_json::to_vec(&ProxyHashMultiGetCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-hm".to_string(),
+                    fields: vec!["a".to_string(), "missing".to_string()],
+                })
+                .unwrap(),
+            )
+            .response,
             CommandResponse::Values {
                 values: vec![Some(b"1".to_vec()), None]
             }
-        );
-        let (code, hmget_alias_body) = proxy.handle(HttpRequest {
-            method: "POST".to_string(),
-            path: "/ProxyService/HMGet".to_string(),
-            body: hmget_body,
-        });
-        assert_eq!(code, 200, "HMGet alias response should return HTTP 200");
-        let hmget_aliases = parse_json::<serde_json::Value>(&hmget_alias_body).unwrap();
-        assert_eq!(
-            hmget_aliases["response"]["values"],
-            serde_json::json!([[49], []])
-        );
-        assert_eq!(
-            hmget_aliases["response"]["exists"],
-            serde_json::json!([true, false])
         );
         assert_eq!(
             command_alias(
@@ -6355,7 +3788,6 @@ mod tests {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
                     key: "cpp-proxy-feature".to_string(),
-                    format: None,
                     points: vec![crate::types::FeaturePoint {
                         timestamp_ms: 10,
                         value: b"7".to_vec(),
@@ -6368,19 +3800,13 @@ mod tests {
         );
         assert!(
             command_alias(
-                "/ProxyService/ControlStateHset",
-                serde_json::to_vec(&ProxyControlStateHsetCommandRequest {
+                "/ProxyService/RiskHset",
+                serde_json::to_vec(&ProxyRiskHsetCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-control_state".to_string(),
+                    key: "cpp-proxy-risk".to_string(),
                     timestamp_ms: 10,
                     amount: 5,
-                    value: None,
-                    occur_time_seconds: 0,
-                    ttl_ms: 0,
-                    ttl_seconds: 0,
-                    precision_ms: None,
-                    htype: ProxyControlStateHType::Count,
                 })
                 .unwrap(),
             )

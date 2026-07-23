@@ -1,21 +1,31 @@
-use std::collections::{BTreeMap, BTreeSet};
+﻿use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::block_store::{BlockAddress, LocalBlockStore};
 use crate::types::{
-    FeatureFilter, FeatureFilterOp, FeaturePoint, IpsSnapshotReport, IpsStats, ControlStateFamily,
+    FeatureFilter, FeatureFilterOp, FeaturePoint, IpsSnapshotReport, IpsStats, RiskFamily,
     SequenceFeatureRow, ShardId,
 };
 use matrixcache::MultiLayerCache;
 
-use super::packed_pages::{
-    decode_feature_page_strict, read_feature_points_cached_batch,
-    read_feature_points_from_pages_in_range,
-};
+use super::packed_pages::{decode_feature_page_strict, read_feature_point};
 use super::state::PackedFeaturePageDecode;
-use super::{parse_i64, slot_index_object_page_addresses, ShardState};
-
-fn decode_sequence_row_value(bytes: &[u8]) -> Option<SequenceFeatureRow> {
-    serde_json::from_slice(bytes).ok()
+use super::{parse_i64, read_page_bytes, ShardState};
+pub(super) fn read_sequence_row(
+    cache: &MultiLayerCache,
+    block_store: &LocalBlockStore,
+    shard_id: ShardId,
+    timestamp_ms: u64,
+    address: &BlockAddress,
+) -> Option<SequenceFeatureRow> {
+    let bytes = read_page_bytes(cache, block_store, shard_id, address)?;
+    match decode_feature_page_strict(&bytes) {
+        PackedFeaturePageDecode::Packed(points) => points
+            .into_iter()
+            .find(|point| point.timestamp_ms == timestamp_ms)
+            .and_then(|point| serde_json::from_slice(&point.value).ok()),
+        PackedFeaturePageDecode::Legacy => serde_json::from_slice(&bytes).ok(),
+        PackedFeaturePageDecode::Corrupt(_) => None,
+    }
 }
 
 pub(super) fn sequence_filter_matches(row: &SequenceFeatureRow, filter: &FeatureFilter) -> bool {
@@ -47,54 +57,24 @@ pub(super) fn sequence_rows_in_range(
     count: usize,
     filters: &[FeatureFilter],
 ) -> Vec<SequenceFeatureRow> {
-    let points = shard
+    shard
         .sequences
         .get(key)
         .map(|series| {
-            let refs = series
+            series
                 .range(start_ms..=end_ms)
                 .take(count)
-                .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone()))
-                .collect::<Vec<_>>();
-            read_feature_points_cached_batch(cache, block_store, shard_id, &refs)
+                .filter_map(|(timestamp_ms, address)| {
+                    read_sequence_row(cache, block_store, shard_id, *timestamp_ms, address)
+                })
+                .filter(|row| {
+                    filters
+                        .iter()
+                        .all(|filter| sequence_filter_matches(row, filter))
+                })
+                .collect()
         })
-        .unwrap_or_else(|| {
-            let addresses = slot_index_object_page_addresses(shard, "sequence", key);
-            read_feature_points_from_pages_in_range(
-                cache,
-                block_store,
-                shard_id,
-                &addresses,
-                start_ms,
-                end_ms,
-                count,
-            )
-        });
-    points
-        .into_iter()
-        .filter_map(|point| decode_sequence_row_value(&point.value))
-        .filter(|row| {
-            filters
-                .iter()
-                .all(|filter| sequence_filter_matches(row, filter))
-        })
-        .collect()
-}
-
-pub(super) fn is_supported_feature_aggregate(aggregator: &str) -> bool {
-    matches!(
-        aggregator.trim().to_ascii_lowercase().as_str(),
-        "" | "count"
-            | "events"
-            | "sum"
-            | "avg"
-            | "average"
-            | "min"
-            | "max"
-            | "first"
-            | "last"
-            | "latest"
-    )
+        .unwrap_or_default()
 }
 
 pub(super) fn aggregate_feature_values(values: &[Vec<u8>], aggregator: &str) -> i64 {
@@ -119,13 +99,13 @@ pub(super) fn aggregate_feature_values(values: &[Vec<u8>], aggregator: &str) -> 
             .max()
             .unwrap_or_default(),
         "first" => values.first().and_then(parse_i64).unwrap_or_default(),
-        "last" | "latest" => values.last().and_then(parse_i64).unwrap_or_default(),
+        "last" => values.last().and_then(parse_i64).unwrap_or_default(),
         "count" | "events" | "" => values.len() as i64,
-        _ => 0,
+        _ => values.len() as i64,
     }
 }
 
-pub(super) fn aggregate_control_state_values(values: &[i64], aggregator: &str) -> i64 {
+pub(super) fn aggregate_risk_values(values: &[i64], aggregator: &str) -> i64 {
     match aggregator.to_ascii_lowercase().as_str() {
         "sum" | "count" | "" => values.iter().sum(),
         "events" | "len" => values.len() as i64,
@@ -137,13 +117,13 @@ pub(super) fn aggregate_control_state_values(values: &[i64], aggregator: &str) -
     }
 }
 
-pub(super) fn is_control_state_change_aggregator(aggregator: &str) -> bool {
+pub(super) fn is_risk_change_aggregator(aggregator: &str) -> bool {
     aggregator.eq_ignore_ascii_case("change")
 }
 
-pub(super) fn count_control_state_changes(shard: &ShardState, key: &str, start_ms: u64, end_ms: u64) -> i64 {
+pub(super) fn count_risk_changes(shard: &ShardState, key: &str, start_ms: u64, end_ms: u64) -> i64 {
     let mut unique = BTreeSet::new();
-    if let Some(series) = shard.control_state_changes.get(key) {
+    if let Some(series) = shard.risk_changes.get(key) {
         for (_, values) in series.range(start_ms..=end_ms) {
             unique.extend(values.iter().cloned());
         }
@@ -151,15 +131,15 @@ pub(super) fn count_control_state_changes(shard: &ShardState, key: &str, start_m
     unique.len() as i64
 }
 
-pub(super) fn control_state_family_key(family: ControlStateFamily, key: &str) -> String {
-    format!("control_state:{}:{key}", control_state_family_name(family))
+pub(super) fn risk_family_key(family: RiskFamily, key: &str) -> String {
+    format!("risk:{}:{key}", risk_family_name(family))
 }
 
-pub(super) fn control_state_family_name(family: ControlStateFamily) -> &'static str {
+pub(super) fn risk_family_name(family: RiskFamily) -> &'static str {
     match family {
-        ControlStateFamily::H => "h",
-        ControlStateFamily::Cpc => "cpc",
-        ControlStateFamily::Fol => "fol",
+        RiskFamily::H => "h",
+        RiskFamily::Cpc => "cpc",
+        RiskFamily::Fol => "fol",
     }
 }
 
@@ -177,25 +157,15 @@ pub(super) fn ips_points_in_range(
         .ips
         .get(key)
         .map(|series| {
-            let refs = series
+            series
                 .range(start_ms..=end_ms)
                 .take(count.unwrap_or(usize::MAX))
-                .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone()))
-                .collect::<Vec<_>>();
-            read_feature_points_cached_batch(cache, block_store, shard_id, &refs)
+                .filter_map(|(timestamp_ms, address)| {
+                    read_feature_point(cache, block_store, shard_id, *timestamp_ms, address)
+                })
+                .collect()
         })
-        .unwrap_or_else(|| {
-            let addresses = slot_index_object_page_addresses(shard, "ips", key);
-            read_feature_points_from_pages_in_range(
-                cache,
-                block_store,
-                shard_id,
-                &addresses,
-                start_ms,
-                end_ms,
-                count.unwrap_or(usize::MAX),
-            )
-        })
+        .unwrap_or_default()
 }
 
 pub(super) fn ips_points_in_range_with_options(
@@ -222,7 +192,7 @@ pub(super) fn ips_points_in_range_with_options(
             count,
         );
     };
-    let refs = series
+    series
         .range(start_ms..=end_ms)
         .filter(|(_, meta)| {
             action_type
@@ -233,9 +203,10 @@ pub(super) fn ips_points_in_range_with_options(
                     .unwrap_or(true)
         })
         .take(count.unwrap_or(usize::MAX))
-        .map(|(timestamp_ms, meta)| (*timestamp_ms, meta.address.clone()))
-        .collect::<Vec<_>>();
-    read_feature_points_cached_batch(cache, block_store, shard_id, &refs)
+        .filter_map(|(timestamp_ms, meta)| {
+            read_feature_point(cache, block_store, shard_id, *timestamp_ms, &meta.address)
+        })
+        .collect()
 }
 
 pub(super) fn empty_ips_snapshot_report(
@@ -282,30 +253,27 @@ pub(super) fn ips_snapshot_report_in_range(
         requested_count,
     );
     let stats = ips_stats_in_range(shard, &key, start_ms, end_ms);
-    let mut unique_page_refs = BTreeMap::<ProductPageIdentityKey, BlockAddress>::new();
+    let mut page_refs = HashSet::<BlockAddress>::new();
     let mut page_segment_ids = BTreeSet::<u64>::new();
+    let mut packed_timestamped_page_count = 0usize;
     if let Some(series) = shard.ips.get(&key) {
         for (_, address) in series.range(start_ms..=end_ms) {
-            if unique_page_refs
-                .insert(product_page_identity_key(address), address.clone())
-                .is_none()
-            {
+            if page_refs.insert(address.clone()) {
                 page_segment_ids.insert(address.page_segment_id);
+                if read_page_bytes(cache, block_store, shard_id, address)
+                    .map(|bytes| {
+                        matches!(
+                            decode_feature_page_strict(&bytes),
+                            PackedFeaturePageDecode::Packed(_)
+                        )
+                    })
+                    .unwrap_or(false)
+                {
+                    packed_timestamped_page_count += 1;
+                }
             }
         }
     }
-    let unique_page_refs = unique_page_refs.into_values().collect::<Vec<_>>();
-    let packed_timestamped_page_count = block_store
-        .read_cold_batch(&unique_page_refs)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|bytes| {
-            matches!(
-                decode_feature_page_strict(bytes),
-                PackedFeaturePageDecode::Packed(_)
-            )
-        })
-        .count();
     IpsSnapshotReport {
         key,
         start_ms,
@@ -317,32 +285,10 @@ pub(super) fn ips_snapshot_report_in_range(
         last_timestamp_ms: stats.last_timestamp_ms,
         action_type_counts: stats.action_type_counts,
         table_id_counts: stats.table_id_counts,
-        unique_page_ref_count: unique_page_refs.len(),
+        unique_page_ref_count: page_refs.len(),
         packed_timestamped_page_count,
         page_segment_ids: page_segment_ids.into_iter().collect(),
     }
-}
-
-type ProductPageIdentityKey = (
-    u64,
-    u64,
-    u64,
-    Option<u64>,
-    Option<u64>,
-    Option<u32>,
-    Option<u64>,
-);
-
-fn product_page_identity_key(address: &BlockAddress) -> ProductPageIdentityKey {
-    (
-        address.page_segment_id,
-        address.offset,
-        address.length,
-        address.page_id,
-        address.object_id,
-        address.routing_slot,
-        address.generation,
-    )
 }
 
 pub(super) fn ips_stats_in_range(

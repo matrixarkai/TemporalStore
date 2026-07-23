@@ -6,10 +6,10 @@ The Rust repo is a clean open-source TemporalStore-shaped implementation, but it
 
 What exists today:
 
-- a typed command API for common, string, hash, set, feature, sequence, and the implemented IPS/ControlState subset
+- a typed command API for common, string, hash, set, feature, sequence, and the implemented IPS/Risk subset
 - a TemporalStore Rust engine with shard-local indexes, local append-only page segment files, and read-through memory/disk cache
 - HTTP binaries for metaserver, server, proxy, and client
-- a Redis RESP proxy covering common string/hash/set commands plus feature, IPS, and ControlState extensions
+- a Redis RESP proxy covering common string/hash/set commands plus feature, IPS, and Risk extensions
 - an in-process Raft behavior model for data replication, metaserver replication, promotion, scale up/down, and replica read policy tests
 - an S3-compatible snapshot crate with manifest-last visibility, checksum verification, retention, stale restore guard, and Prometheus metric names
 - local smoke scripts, AWS existing-EKS Terraform, and compatibility-style tests
@@ -25,8 +25,8 @@ What is still missing versus C++:
 - full C++ `ObjectManager` memory layout, stable object/page ids, slot ownership, merged dump, and
   page compaction; Rust already has logical object/page-ref/dirty-slot stats, append-only oplog and
   index-log streams, GC retention boundaries, and readonly replica replay from primary streams
-- full Feature, IPS, and ControlState semantics from the C++ extension protos
-- MatrixObjectStore stream backend parity, blockcache/mtcache-compatible cache engine, legacy C++ wire SDK
+- full Feature, IPS, and Risk semantics from the C++ extension protos
+- ByteStore stream backend parity, blockcache/mtcache-compatible cache engine, legacy C++ wire SDK
   compatibility, full dashboards/runbooks, and operational tooling. Rust already has shared-store
   object/file flows, local multi-layer cache, local quota/admission, heartbeat/load reporting, and
   Prometheus metric output.
@@ -37,7 +37,7 @@ So the right framing is: the Rust code is a good open-source v1 skeleton and loc
 
 | Area | Main files | What it does |
 | --- | --- | --- |
-| Public API model | `crates/temporalstore-rust/src/types.rs` | Defines `Command`, `CommandResponse`, request/response structs, shard id, feature/control_state/sequence shapes. |
+| Public API model | `crates/temporalstore-rust/src/types.rs` | Defines `Command`, `CommandResponse`, request/response structs, shard id, feature/risk/sequence shapes. |
 | Engine | `crates/temporalstore-rust/src/engine.rs` | Owns loaded shard state, executes commands, appends values to page files, updates indexes, persists index JSON, reads through cache/block store. |
 | Page storage | `crates/temporalstore-rust/src/block_store.rs` | Appends raw bytes to local `page_segment_*.seg` files and returns `BlockAddress { page_segment_id, offset, length }`. |
 | Multi-layer cache | `crates/temporalstore-rust/src/cache.rs` | L1 in-memory cache plus L2 local disk block cache. Disk blocks use a versioned envelope with optional zstd compression. Disk hits are decoded and promoted back to memory. Writes invalidate affected keys. |
@@ -81,7 +81,7 @@ key -> crc64 slot -> partition set -> primary/secondary server -> worker -> obje
 - `features: key -> timestamp -> BlockAddress`
 - `sequences: key -> timestamp -> BlockAddress`
 - `ips: key -> timestamp -> BlockAddress`
-- `control_state: key -> timestamp -> i64`
+- `risk: key -> timestamp -> i64`
 - `expires_at_ms: key -> expire timestamp`
 
 For most data types, Rust stores bytes in the local block store and keeps only the page address in the index. On mutation, the engine appends a new value, updates the per-shard index, invalidates related cache entries, and persists the full shard index as JSON. On read miss, it follows the stored `BlockAddress` into the page segment file, reads the bytes, caches the page bytes under a page-address block key, builds the response, and caches the serialized response.
@@ -243,14 +243,14 @@ From the C++ deep-dive docs and local source, C++ TemporalStore is a mature serv
 - dirty index and slot tracking
 - background `StorageManager` dump/merge/load
 - `SlotStore` and `PageStore`
-- local file and MatrixObjectStore stream backends
+- local file and ByteStore stream backends
 - optional block/page cache
 - readonly replica replay from primary
 - heartbeat/load reporting
 - quota and admission control
 - legacy C++ wire/protobuf SDK/runtime integration
 - RustRaft/internal raft dependency
-- richer Feature, IPS, and ControlState modules
+- richer Feature, IPS, and Risk modules
 
 That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. It means replacing a storage engine, routing layer, distributed metadata service, replication runtime, model-specific feature stores, deployment flow, and internal dependencies.
 
@@ -262,20 +262,20 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 | Feature API | Append/query/replace/delete/agg plus write-policy append with typed client and RESP coverage | Rich feature point/range/write policy support | Need C++ proto-compatible nested feature shape and exact aggregate semantics. |
 | Sequence API | Typed rows, filters, and batch query | Part of richer feature/data modules | Need exact C++ sequence edge-case policy if required by callers. |
 | IPS | Add/query-last/range/batch/remove/delete/count plus idempotent/dimensional add, dimension-filtered range, local load, range snapshot, stats, and named filter with typed client and RESP coverage | Rich add/batch query/remove/load/delete/stat/filter/snap behavior | Missing production snap metadata and server aggregation. |
-| ControlState | Increment/count plus precision/TTL increment, sum/min/max/first/last/events/detail with typed client and RESP coverage | Rich H/CPC/FOL/query/manager/window/precision semantics | Missing CPC/list-specific behavior and manager APIs. |
+| Risk | Increment/count plus precision/TTL increment, sum/min/max/first/last/events/detail with typed client and RESP coverage | Rich H/CPC/FOL/query/manager/window/precision semantics | Missing CPC/list-specific behavior and manager APIs. |
 | Local storage | Local page segments + JSON index, oplog/index-log, periodic dirty-shard dump scheduling, and local live-page rewrite compaction | Oplog + page/slot store + dump/recover | Need native ObjectManager runtime mechanics, SlotStore layout transitions, stream-backed zones, page compaction tied to model layout/tombstones, mature StorageManager loops, merged dump/load, and optional binary log/header parity if migration requires it. |
 | Cache | Rust-native memory + bounded SSD block cache with policy admission, hotness, pinning, write-through accounting, weighted hotness/LRU pressure eviction, warmup, and inspection metrics | mtcache/blockcache-like production cache | Rust-native multi-tier replacement policy, pinned-handle accounting/eviction guards, DRAM/PMEM/SSD placement semantics, async writeback/backpressure counters, and mature latency metrics are covered by weighted hotness/LRU memory plus SSD eviction, pin/unpin state, pinned-skip counters, `CacheTieringPolicy` placement decisions, write-through/backpressure counters, and get/put latency metrics. PMEM is treated as an SSD-class persistent tier in Rust. CacheLib/mtcache binary/API compatibility remains optional only if that compatibility is re-scoped. |
 | Replication | In-process behavior model | RustRaft-backed production replication | Need real Raft library and networked nodes. |
 | Metaserver | Simple route + in-process raft model | Full topology and routing control plane | Need namespace/table/shard/slot topology and heartbeat. |
 | Read policy | Pin-primary default, optional replica reads | Primary/secondary serving with readonly replay | Need real lag control/read-index/lease semantics. |
-| Snapshot | S3-compatible snapshot store crate | C++ storage/load ecosystem, MatrixObjectStore/local streams | Need actual engine/Raft integration. |
+| Snapshot | S3-compatible snapshot store crate | C++ storage/load ecosystem, ByteStore/local streams | Need actual engine/Raft integration. |
 | Redis | Useful RESP adapter | C++ has product protocol/SDKs, not just Redis | Need exact client compatibility depending on migration target. |
 | Deployment | Docker + existing-EKS Terraform | Internal production deployment system | Need service discovery, autoscale controllers, dashboards, runbooks. |
 | Observability | Snapshot metrics and local stats | Production metrics/logging/tracing | Need metrics HTTP endpoint and raft/storage/cache dashboards. |
 
 ## Pros Of The Rust Rewrite
 
-- **Open-source friendly:** avoids direct dependence on internal non-open-source `byte`, `rustraft`, `mtcache`, MatrixObjectStore, and related infrastructure.
+- **Open-source friendly:** avoids direct dependence on internal non-open-source `byte`, `rustraft`, `mtcache`, ByteStore, and related infrastructure.
 - **Safer implementation base:** Rust reduces memory safety and lifetime bugs common in large C++ storage engines.
 - **Clear API model:** one central `Command` enum makes behavior easy to inspect, serialize, test, and wrap with Redis/HTTP/proxy layers.
 - **Fast local iteration:** TemporalStore Rust engine and in-process workflow tests run without a full internal deployment.
@@ -283,12 +283,12 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 - **S3 snapshot design is explicit:** snapshot code has immutable object layout, checksum verification, retention, and metrics from the start.
 - **Good migration harness:** compatibility-style tests can be expanded from C++ behavior into Rust without booting a whole production stack.
 
-## Cons/ControlStates Of The Rust Rewrite
+## Cons/Risks Of The Rust Rewrite
 
 - **Not production equivalent yet:** the current implementation proves flows but does not have production storage, replication, or topology.
 - **Consensus is only modeled:** the local Raft module must be replaced by a real Raft implementation.
 - **Storage durability is incomplete:** page files plus JSON indexes are useful for local tests, but production needs WAL/oplog, atomic install, compaction, crash recovery, and checksums.
-- **C++ semantics are deep:** IPS and ControlState alone are large domain modules, not small Redis-style command aliases.
+- **C++ semantics are deep:** IPS and Risk alone are large domain modules, not small Redis-style command aliases.
 - **Performance is unknown:** simple locks, JSON indexes, local disk cache, and per-value appends are not benchmarked against C++.
 - **Wire compatibility is not done:** Redis compatibility is helpful, but C++ clients expect legacy C++ wire/protobuf-specific behavior.
 - **Ops surface is thin:** no metrics server, dashboards, autoscale controller, production service discovery, auth, TLS, or chaos suite yet.
@@ -297,16 +297,16 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 
 - **Mature engine:** already has object manager, oplog, page/slot dump/load, stream backends, and production-tested data modules.
 - **Operational reality:** metaserver routing, primary/secondary roles, readonly replay, and internal deployment assumptions are already represented.
-- **Complete domain semantics:** Feature, IPS, ControlState, and related models are much richer than the Rust subset.
+- **Complete domain semantics:** Feature, IPS, Risk, and related models are much richer than the Rust subset.
 - **Existing clients:** C++ protocol/SDK integration is already aligned with current callers.
 - **Performance history:** cache, block store, background dump, and worker architecture were designed for low-latency serving.
 
 ## Cons Of Keeping/Using The C++ Code
 
-- **Hard to open source:** critical dependencies like `byte`, `rustraft`, `mtcache`, MatrixObjectStore, and likely internal build/runtime pieces are not open source.
+- **Hard to open source:** critical dependencies like `byte`, `rustraft`, `mtcache`, ByteStore, and likely internal build/runtime pieces are not open source.
 - **Complex build/dependency graph:** legacy C++ RPC/protobuf/library ABI details make external builds harder.
 - **Harder to simplify:** historical naming and internal architecture make a clean public product harder to explain and maintain.
-- **Memory safety control_state:** C++ needs stricter review and testing discipline for lifetime, concurrency, and ABI issues.
+- **Memory safety risk:** C++ needs stricter review and testing discipline for lifetime, concurrency, and ABI issues.
 - **Operational coupling:** the code assumes internal infrastructure that must be replaced or shimmed for AWS/open-source users.
 
 ## What Is Missing Before Rust Can Replace C++
@@ -325,7 +325,7 @@ P0, required for a serious distributed alpha:
 
 P1, required for production-like parity:
 
-- full C++ Feature/IPS/ControlState semantics
+- full C++ Feature/IPS/Risk semantics
 - C++ protobuf/legacy C++ wire compatibility or a documented migration API
 - production cache backend, likely CacheLib via FFI or a Rust cache with SSD tier support; the
   current Rust cache is a local memory plus disk read-through cache
@@ -337,7 +337,7 @@ P1, required for production-like parity:
   scheduling
 - full C++ placement policy beyond current load-aware/location-diverse replica fill and heartbeat
   load reporting
-- production MatrixObjectStore stream backend; current shared-store work covers local file/object-store
+- production ByteStore stream backend; current shared-store work covers local file/object-store
   checkpoint, page, index, and oplog flows
 - distributed quota and admission plus kill switch wiring across real services; local
   shard/table/tenant QPS admission and shard `maxmemory_bytes` admission already exist

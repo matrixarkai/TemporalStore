@@ -49,9 +49,9 @@ The shared cases are:
 - `ips_options_range`: IPS add/query range with action/table/request metadata.
 - `ips_snapshot_stat_filter_batch`: IPS load, batch-last grouping, snapshot, metadata filter,
   stats, and snapshot-report behavior.
-- `control_state_counter_window`: ControlState increment/count over a time window.
-- `control_state_family_query_and_delete`: C++ control_state-family set/query plus common delete cleanup.
-- `control_state_manager_debug_fol`: ControlState set-and-get, first/last FOL selection, manager summary, and
+- `risk_counter_window`: Risk increment/count over a time window.
+- `risk_family_query_and_delete`: C++ risk-family set/query plus common delete cleanup.
+- `risk_manager_debug_fol`: Risk set-and-get, first/last FOL selection, manager summary, and
   debug window report behavior.
 - `context_node_roundtrip`: Context node upsert/read.
 - `context_event_index_audit_dirty_models`: Context event, secondary index, prompt-pack audit, and
@@ -290,7 +290,7 @@ The native C++ executor must:
 - execute each command against C++ TemporalStore
 - compare the actual logical response to `expect`
 - restart or reload the local C++ engine when `restart_before=true`
-- fail closed on unknown command fields, missing expected fields, unsupported capabilities, or
+- fail closed on unknown command fields, missing expected fields, unsupported data models, or
   response mismatches
 
 ## Running Both Codebases
@@ -610,7 +610,7 @@ unification. Ten C++-named Rust-local behavior groups were promoted into executa
 feature_policy_filter_aggregate_lifecycle
 sequence_batch_filter_groups
 ips_snapshot_stat_filter_batch
-control_state_manager_debug_fol
+risk_manager_debug_fol
 storage_dump_load_recovery
 storage_fault_matrix
 storage_follower_safe_gc
@@ -621,7 +621,7 @@ storage_shared_store_async_replay
 
 These cases cover advanced Feature append policy, aggregate query, replace/delete lifecycle,
 filtered C++ feature-row payloads, Sequence filtered queries, scan-bound count semantics, batch
-query groups, missing sequence groups, IPS snapshot/filter/stat/batch metadata behavior, and ControlState
+query groups, missing sequence groups, IPS snapshot/filter/stat/batch metadata behavior, and Risk
 manager/debug/FOL behavior. The storage cases cover slot dump/load restart recovery, manifest
 fault rejection, follower-cursor lifecycle protection, cache refill from page-store refs, and sync
 plus async local shared-store replay.

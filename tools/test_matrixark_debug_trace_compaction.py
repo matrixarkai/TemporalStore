@@ -65,7 +65,7 @@ class MatrixArkDebugTraceCompactionTest(unittest.TestCase):
         self.assertNotIn("context_event_key", payload)
         self.assertNotIn("source_locator", payload)
 
-    def test_capability_rows_use_short_aliases_and_drop_forensic_fields(self) -> None:
+    def test_data_model_rows_use_short_aliases_and_drop_forensic_fields(self) -> None:
         aliases = trace_runner.ReportAliases()
         event = trace_runner.compact_context_event(
             {
@@ -113,7 +113,7 @@ class MatrixArkDebugTraceCompactionTest(unittest.TestCase):
         indexes = trace_runner.compact_context_indexes(
             [
                 {
-                    "capability": "context_event",
+                    "data_model": "context_event",
                     "index_name": "event_type:approval",
                     "timestamp_key_ms": 1782681920550,
                     "node_hash": 2100209595829882121,
@@ -147,14 +147,14 @@ class MatrixArkDebugTraceCompactionTest(unittest.TestCase):
         indexes = trace_runner.compact_context_indexes(
             [
                 {
-                    "capability": "resource_fact",
+                    "data_model": "resource_fact",
                     "index_name": "entity_type:resource_owner",
                     "node_hash": 7,
                     "ref_type": "resource_fact",
                     "ref_hashes": list(range(20, 29)),
                 },
                 {
-                    "capability": "context_batch_commit",
+                    "data_model": "context_batch_commit",
                     "index_name": "event_type:confirmation",
                     "node_hash": 7,
                     "ref_hashes": [1, 2, 3],

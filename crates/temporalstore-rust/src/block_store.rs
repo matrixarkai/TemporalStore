@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -7,9 +7,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::storage_config::{
-    block_store_sync_on_append, effective_block_segment_target_bytes, storage_zone_size_bytes,
-};
+use crate::storage_config::{effective_block_segment_target_bytes, storage_zone_size_bytes};
 
 mod paths;
 mod record;
@@ -22,13 +20,13 @@ use paths::{
 use record::{
     decode_page_record, default_page_record_compression_enabled,
     default_page_record_compression_level, default_page_record_compression_min_bytes,
-    encode_page_record_into, inspect_segment, logical_range_from_segment, sha256_hex,
-    summarize_segment, PageRecordCompression, PAGE_RECORD_HEADER_LEN,
+    encode_page_record, inspect_segment, logical_range_from_segment, sha256_hex, summarize_segment,
+    PageRecordCompression,
 };
 #[cfg(test)]
 use record::{
-    PAGE_RECORD_COMPRESSION_NONE, PAGE_RECORD_COMPRESSION_ZSTD, PAGE_RECORD_MAGIC,
-    PAGE_RECORD_VERSION,
+    PAGE_RECORD_COMPRESSION_NONE, PAGE_RECORD_COMPRESSION_ZSTD, PAGE_RECORD_HEADER_LEN,
+    PAGE_RECORD_MAGIC, PAGE_RECORD_VERSION,
 };
 
 #[derive(Debug, Error)]
@@ -104,12 +102,8 @@ impl BlockAddress {
 pub struct BlockStoreStats {
     pub writes: u64,
     pub reads: u64,
-    #[serde(default)]
-    pub cold_reads: u64,
     pub bytes_written: u64,
     pub bytes_read: u64,
-    #[serde(default)]
-    pub cold_bytes_read: u64,
     #[serde(default)]
     pub logical_bytes_written: u64,
     #[serde(default)]
@@ -130,17 +124,9 @@ pub struct BlockStoreOptions {
     pub compression_min_bytes: usize,
     #[serde(default = "default_page_record_compression_level")]
     pub compression_level: i32,
-    #[serde(default = "default_block_store_sync_on_append")]
-    pub sync_on_append: bool,
 }
 
 pub type BlockAppendRecord = (Vec<u8>, Option<u64>, Option<u32>);
-pub type BlockAppendRecordRef<'a> = (&'a [u8], Option<u64>, Option<u32>);
-
-const BATCH_APPEND_BUFFER_TARGET_BYTES: usize = 1024 * 1024;
-const BATCH_APPEND_RECORD_ENVELOPE_ESTIMATE_BYTES: usize = 192;
-const COALESCED_READ_MAX_GAP_BYTES: u64 = 4 * 1024;
-const COALESCED_READ_MAX_GROUP_BYTES: u64 = 1024 * 1024;
 
 impl Default for BlockStoreOptions {
     fn default() -> Self {
@@ -148,13 +134,8 @@ impl Default for BlockStoreOptions {
             compression_enabled: default_page_record_compression_enabled(),
             compression_min_bytes: default_page_record_compression_min_bytes(),
             compression_level: default_page_record_compression_level(),
-            sync_on_append: default_block_store_sync_on_append(),
         }
     }
-}
-
-fn default_block_store_sync_on_append() -> bool {
-    block_store_sync_on_append()
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -541,43 +522,7 @@ struct BlockStoreInner {
     options: BlockStoreOptions,
     extents: BTreeMap<u64, BlockStoreExtentDescriptor>,
     extent_manifest_reconciled_on_open: bool,
-    active_append_file: Option<File>,
     stats: BlockStoreStats,
-}
-
-#[derive(Debug, Clone)]
-struct PendingExtentAppend {
-    page_segment_id: u64,
-    physical_bytes: u64,
-    logical_bytes_written: u64,
-    first_page_id: u64,
-    last_page_id: u64,
-}
-
-impl PendingExtentAppend {
-    fn new(
-        page_segment_id: u64,
-        physical_bytes: u64,
-        logical_bytes_written: u64,
-        page_id: u64,
-    ) -> Self {
-        Self {
-            page_segment_id,
-            physical_bytes,
-            logical_bytes_written,
-            first_page_id: page_id,
-            last_page_id: page_id,
-        }
-    }
-
-    fn add(&mut self, physical_bytes: u64, logical_bytes_written: u64, page_id: u64) {
-        self.physical_bytes = physical_bytes;
-        self.logical_bytes_written = self
-            .logical_bytes_written
-            .saturating_add(logical_bytes_written);
-        self.first_page_id = self.first_page_id.min(page_id);
-        self.last_page_id = self.last_page_id.max(page_id);
-    }
 }
 
 impl LocalBlockStore {
@@ -625,7 +570,6 @@ impl LocalBlockStore {
                 options,
                 extents,
                 extent_manifest_reconciled_on_open,
-                active_append_file: None,
                 stats: BlockStoreStats::default(),
             })),
         }
@@ -650,53 +594,51 @@ impl LocalBlockStore {
         routing_slot: Option<u32>,
     ) -> Result<BlockAddress, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
+        fs::create_dir_all(&inner.root)?;
         let segment_target_bytes = effective_block_segment_target_bytes();
         let mut page_id = inner.next_page_id;
         let mut extent_id = extent_id_for_segment(inner.page_segment_id);
-        let record_len_upper_bound = PAGE_RECORD_HEADER_LEN.saturating_add(bytes.len());
-        if should_roll_before_append(
-            inner.write_offset,
-            record_len_upper_bound as u64,
-            segment_target_bytes,
-        ) {
-            roll_segment_inner(&mut inner)?;
-            page_id = inner.next_page_id;
-            extent_id = extent_id_for_segment(inner.page_segment_id);
-        }
-        let mut record_bytes = Vec::with_capacity(record_len_upper_bound);
-        let record = encode_page_record_into(
+        let mut record = encode_page_record(
             bytes,
             page_id,
             object_id,
             routing_slot,
             extent_id,
             inner.options,
-            &mut record_bytes,
         )?;
+        if should_roll_before_append(
+            inner.write_offset,
+            record.bytes.len() as u64,
+            segment_target_bytes,
+        ) {
+            roll_segment_inner(&mut inner)?;
+            page_id = inner.next_page_id;
+            extent_id = extent_id_for_segment(inner.page_segment_id);
+            record = encode_page_record(
+                bytes,
+                page_id,
+                object_id,
+                routing_slot,
+                extent_id,
+                inner.options,
+            )?;
+        }
+        let path = segment_path(&inner.root, inner.page_segment_id);
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         let address = BlockAddress {
             page_segment_id: inner.page_segment_id,
             offset: inner.write_offset,
-            length: record.record_len as u64,
+            length: record.bytes.len() as u64,
             page_id: Some(page_id),
             object_id,
             routing_slot,
             generation: Some(page_id),
             extent_id: Some(extent_id),
-            sha256: Some(record.sha256_hex.clone()),
+            sha256: Some(sha256_hex(bytes)),
         };
-        let sync_on_append = inner.options.sync_on_append;
-        if inner.active_append_file.is_none() {
-            let path = segment_path(&inner.root, inner.page_segment_id);
-            inner.active_append_file =
-                Some(OpenOptions::new().create(true).append(true).open(path)?);
-        }
-        if let Some(file) = inner.active_append_file.as_mut() {
-            file.write_all(&record_bytes)?;
-            if sync_on_append {
-                file.flush()?;
-                file.sync_data()?;
-            }
-        }
+        file.write_all(&record.bytes)?;
+        file.flush()?;
+        file.sync_data()?;
         inner.next_page_id = inner.next_page_id.saturating_add(1);
         inner.write_offset += address.length;
         let page_segment_id = inner.page_segment_id;
@@ -708,9 +650,7 @@ impl LocalBlockStore {
             record.logical_len as u64,
             page_id,
         );
-        if inner.options.sync_on_append {
-            persist_extent_manifest(&inner.root, &inner.extents)?;
-        }
+        persist_extent_manifest(&inner.root, &inner.extents)?;
         inner.stats.writes += 1;
         inner.stats.bytes_written += address.length;
         inner.stats.logical_bytes_written += record.logical_len as u64;
@@ -726,133 +666,80 @@ impl LocalBlockStore {
         &self,
         records: Vec<BlockAppendRecord>,
     ) -> Result<Vec<BlockAddress>, BlockStoreError> {
-        if records.is_empty() {
-            return Ok(Vec::new());
-        }
-        if records.len() == 1 {
-            let (bytes, object_id, routing_slot) = records
-                .into_iter()
-                .next()
-                .expect("one-record batch has exactly one record");
-            return self
-                .append_with_page_metadata(&bytes, object_id, routing_slot)
-                .map(|address| vec![address]);
-        }
-        let pending_buffer_capacity = records
-            .iter()
-            .map(|(bytes, _, _)| {
-                bytes
-                    .len()
-                    .saturating_add(BATCH_APPEND_RECORD_ENVELOPE_ESTIMATE_BYTES)
-            })
-            .sum::<usize>()
-            .min(BATCH_APPEND_BUFFER_TARGET_BYTES);
-        self.append_batch_with_page_metadata_iter(
-            records.len(),
-            pending_buffer_capacity,
-            records.iter().map(|(bytes, object_id, routing_slot)| {
-                (bytes.as_slice(), *object_id, *routing_slot)
-            }),
-        )
-    }
-
-    pub fn append_batch_with_page_metadata_refs(
-        &self,
-        records: &[BlockAppendRecordRef<'_>],
-    ) -> Result<Vec<BlockAddress>, BlockStoreError> {
-        if records.is_empty() {
-            return Ok(Vec::new());
-        }
-        if records.len() == 1 {
-            let (bytes, object_id, routing_slot) = records[0];
-            return self
-                .append_with_page_metadata(bytes, object_id, routing_slot)
-                .map(|address| vec![address]);
-        }
-        let pending_buffer_capacity = records
-            .iter()
-            .map(|(bytes, _, _)| {
-                bytes
-                    .len()
-                    .saturating_add(BATCH_APPEND_RECORD_ENVELOPE_ESTIMATE_BYTES)
-            })
-            .sum::<usize>()
-            .min(BATCH_APPEND_BUFFER_TARGET_BYTES);
-        self.append_batch_with_page_metadata_iter(
-            records.len(),
-            pending_buffer_capacity,
-            records.iter().copied(),
-        )
-    }
-
-    fn append_batch_with_page_metadata_iter<'a>(
-        &self,
-        record_count: usize,
-        pending_buffer_capacity: usize,
-        records: impl IntoIterator<Item = BlockAppendRecordRef<'a>>,
-    ) -> Result<Vec<BlockAddress>, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+        fs::create_dir_all(&inner.root)?;
         let segment_target_bytes = effective_block_segment_target_bytes();
-        let mut addresses = Vec::with_capacity(record_count);
+        let mut file = None::<File>;
+        let mut addresses = Vec::with_capacity(records.len());
         let mut writes = 0u64;
         let mut bytes_written = 0u64;
         let mut logical_bytes_written = 0u64;
         let mut compressed_records_written = 0u64;
         let mut compression_bytes_saved = 0u64;
-        let mut pending_segment_bytes = Vec::with_capacity(pending_buffer_capacity);
-        let mut pending_extent_append: Option<PendingExtentAppend> = None;
 
         for (bytes, object_id, routing_slot) in records {
             let mut page_id = inner.next_page_id;
             let mut extent_id = extent_id_for_segment(inner.page_segment_id);
-            let record_len_upper_bound = PAGE_RECORD_HEADER_LEN.saturating_add(bytes.len());
-            if should_roll_before_append(
-                inner.write_offset,
-                record_len_upper_bound as u64,
-                segment_target_bytes,
-            ) {
-                flush_active_append_buffer_inner(&mut inner, &mut pending_segment_bytes, false)?;
-                apply_pending_extent_append(&mut inner.extents, &mut pending_extent_append);
-                roll_segment_inner(&mut inner)?;
-                page_id = inner.next_page_id;
-                extent_id = extent_id_for_segment(inner.page_segment_id);
-            }
-            let record = encode_page_record_into(
-                bytes,
+            let mut record = encode_page_record(
+                &bytes,
                 page_id,
                 object_id,
                 routing_slot,
                 extent_id,
                 inner.options,
-                &mut pending_segment_bytes,
             )?;
+            if should_roll_before_append(
+                inner.write_offset,
+                record.bytes.len() as u64,
+                segment_target_bytes,
+            ) {
+                if let Some(mut current) = file.take() {
+                    current.flush()?;
+                    current.sync_data()?;
+                }
+                roll_segment_inner(&mut inner)?;
+                page_id = inner.next_page_id;
+                extent_id = extent_id_for_segment(inner.page_segment_id);
+                record = encode_page_record(
+                    &bytes,
+                    page_id,
+                    object_id,
+                    routing_slot,
+                    extent_id,
+                    inner.options,
+                )?;
+            }
+            if file.is_none() {
+                let path = segment_path(&inner.root, inner.page_segment_id);
+                file = Some(OpenOptions::new().create(true).append(true).open(path)?);
+            }
             let address = BlockAddress {
                 page_segment_id: inner.page_segment_id,
                 offset: inner.write_offset,
-                length: record.record_len as u64,
+                length: record.bytes.len() as u64,
                 page_id: Some(page_id),
                 object_id,
                 routing_slot,
                 generation: Some(page_id),
                 extent_id: Some(extent_id),
-                sha256: Some(record.sha256_hex.clone()),
+                sha256: Some(sha256_hex(&bytes)),
             };
-            if pending_segment_bytes.len() >= BATCH_APPEND_BUFFER_TARGET_BYTES {
-                flush_active_append_buffer_inner(&mut inner, &mut pending_segment_bytes, false)?;
+            if let Some(current) = file.as_mut() {
+                current.write_all(&record.bytes)?;
             }
             inner.next_page_id = inner.next_page_id.saturating_add(1);
             inner.write_offset += address.length;
             let page_segment_id = inner.page_segment_id;
             let write_offset = inner.write_offset;
-            record_pending_extent_append(
+            upsert_extent_after_append(
                 &mut inner.extents,
-                &mut pending_extent_append,
-                PendingExtentAppend::new(
-                    page_segment_id,
-                    write_offset,
-                    record.logical_len as u64,
-                    page_id,
-                ),
+                page_segment_id,
+                write_offset,
+                record.logical_len as u64,
+                page_id,
             );
             writes = writes.saturating_add(1);
             bytes_written = bytes_written.saturating_add(address.length);
@@ -864,11 +751,11 @@ impl LocalBlockStore {
             }
             addresses.push(address);
         }
-        flush_active_append_buffer_inner(&mut inner, &mut pending_segment_bytes, true)?;
-        apply_pending_extent_append(&mut inner.extents, &mut pending_extent_append);
-        if inner.options.sync_on_append {
-            persist_extent_manifest(&inner.root, &inner.extents)?;
+        if let Some(mut current) = file {
+            current.flush()?;
+            current.sync_data()?;
         }
+        persist_extent_manifest(&inner.root, &inner.extents)?;
         inner.stats.writes = inner.stats.writes.saturating_add(writes);
         inner.stats.bytes_written = inner.stats.bytes_written.saturating_add(bytes_written);
         inner.stats.logical_bytes_written = inner
@@ -891,28 +778,14 @@ impl LocalBlockStore {
         roll_segment_inner(&mut inner)
     }
 
-    fn read_with_cache_policy(
-        &self,
-        address: &BlockAddress,
-        no_cache_fill: bool,
-    ) -> Result<Vec<u8>, BlockStoreError> {
-        let root = {
-            let inner = self.inner.lock().expect("block store lock poisoned");
-            inner.root.clone()
-        };
-        let path = segment_path(&root, address.page_segment_id);
+    pub fn read(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        let path = segment_path(&inner.root, address.page_segment_id);
         let mut file = File::open(path)?;
-        let file_len = file.metadata()?.len();
-        if address.offset >= file_len || address.length > file_len.saturating_sub(address.offset) {
-            return Err(BlockStoreError::Io(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "block address range exceeds segment length",
-            )));
-        }
         file.seek(SeekFrom::Start(address.offset))?;
-        let mut encoded = vec![0; address.length as usize];
-        file.read_exact(&mut encoded)?;
-        let decoded = decode_page_record(&encoded, address)?;
+        let mut bytes = vec![0; address.length as usize];
+        file.read_exact(&mut bytes)?;
+        let decoded = decode_page_record(&bytes, address)?;
         let bytes = decoded.payload;
         if let Some(expected) = &address.sha256 {
             let actual = sha256_hex(&bytes);
@@ -926,342 +799,13 @@ impl LocalBlockStore {
                 });
             }
         }
-        {
-            let mut inner = self.inner.lock().expect("block store lock poisoned");
-            inner.stats.reads = inner.stats.reads.saturating_add(1);
-            inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(address.length);
-            if no_cache_fill {
-                inner.stats.cold_reads = inner.stats.cold_reads.saturating_add(1);
-                inner.stats.cold_bytes_read =
-                    inner.stats.cold_bytes_read.saturating_add(address.length);
-            }
-            inner.stats.logical_bytes_read = inner
-                .stats
-                .logical_bytes_read
-                .saturating_add(decoded.logical_len as u64);
-            if decoded.compression == PageRecordCompression::Zstd {
-                inner.stats.compressed_records_read =
-                    inner.stats.compressed_records_read.saturating_add(1);
-            }
+        inner.stats.reads += 1;
+        inner.stats.bytes_read += address.length;
+        inner.stats.logical_bytes_read += decoded.logical_len as u64;
+        if decoded.compression == PageRecordCompression::Zstd {
+            inner.stats.compressed_records_read += 1;
         }
         Ok(bytes)
-    }
-
-    pub fn read(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
-        self.read_with_cache_policy(address, false)
-    }
-
-    fn read_batch_with_cache_policy(
-        &self,
-        addresses: &[BlockAddress],
-        no_cache_fill: bool,
-    ) -> Vec<Result<Vec<u8>, BlockStoreError>> {
-        if addresses.len() == 1 {
-            return vec![self.read_with_cache_policy(&addresses[0], no_cache_fill)];
-        }
-        if addresses.is_empty() {
-            return Vec::new();
-        }
-        if addresses.windows(2).all(|window| window[0] == window[1]) {
-            return match self.read_with_cache_policy(&addresses[0], no_cache_fill) {
-                Ok(bytes) => duplicate_read_success_results(addresses.len(), bytes),
-                Err(err) => {
-                    let err_text = err.to_string();
-                    let mut results = Vec::with_capacity(addresses.len());
-                    results.push(Err(err));
-                    results.extend((1..addresses.len()).map(|_| {
-                        Err(BlockStoreError::Io(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            err_text.clone(),
-                        )))
-                    }));
-                    results
-                }
-            };
-        }
-        let mut seen = HashSet::with_capacity(addresses.len());
-        if addresses.iter().all(|address| seen.insert(address)) {
-            return self.read_batch_with_cache_policy_deduped(addresses, no_cache_fill);
-        }
-        let mut duplicate_groups =
-            HashMap::<BlockAddress, Vec<usize>>::with_capacity(addresses.len());
-        for (index, address) in addresses.iter().enumerate() {
-            duplicate_groups
-                .entry(address.clone())
-                .or_default()
-                .push(index);
-        }
-        if duplicate_groups.len() == 1 {
-            let Some((address, indexes)) = duplicate_groups.into_iter().next() else {
-                return Vec::new();
-            };
-            let read_result = self.read_with_cache_policy(&address, no_cache_fill);
-            let mut results = empty_optional_read_results(addresses.len());
-            match read_result {
-                Ok(bytes) => fill_duplicate_read_success(&mut results, indexes, bytes),
-                Err(err) => {
-                    let err_text = err.to_string();
-                    let mut iter = indexes.into_iter();
-                    if let Some(first_index) = iter.next() {
-                        results[first_index] = Some(Err(err));
-                    }
-                    for index in iter {
-                        results[index] = Some(Err(BlockStoreError::Io(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            err_text.clone(),
-                        ))));
-                    }
-                }
-            }
-            return finalize_optional_read_results(results);
-        }
-        if duplicate_groups.len() < addresses.len() {
-            let unique_entries = duplicate_groups
-                .iter()
-                .map(|(address, indexes)| (address, indexes.clone()))
-                .collect::<Vec<_>>();
-            let unique_addresses = unique_entries
-                .iter()
-                .map(|(address, _)| *address)
-                .collect::<Vec<_>>();
-            let unique_results =
-                self.read_batch_with_cache_policy_deduped_refs(&unique_addresses, no_cache_fill);
-            let mut results = empty_optional_read_results(addresses.len());
-            for ((_, indexes), read_result) in unique_entries.into_iter().zip(unique_results) {
-                match read_result {
-                    Ok(bytes) => fill_duplicate_read_success(&mut results, indexes, bytes),
-                    Err(err) => {
-                        let err_text = err.to_string();
-                        let mut iter = indexes.into_iter();
-                        if let Some(first_index) = iter.next() {
-                            results[first_index] = Some(Err(err));
-                        }
-                        for index in iter {
-                            results[index] = Some(Err(BlockStoreError::Io(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                err_text.clone(),
-                            ))));
-                        }
-                    }
-                }
-            }
-            return finalize_optional_read_results(results);
-        }
-        self.read_batch_with_cache_policy_deduped(addresses, no_cache_fill)
-    }
-
-    fn read_batch_with_cache_policy_deduped(
-        &self,
-        addresses: &[BlockAddress],
-        no_cache_fill: bool,
-    ) -> Vec<Result<Vec<u8>, BlockStoreError>> {
-        let address_refs = addresses.iter().collect::<Vec<_>>();
-        self.read_batch_with_cache_policy_deduped_refs(&address_refs, no_cache_fill)
-    }
-
-    fn read_batch_with_cache_policy_deduped_refs(
-        &self,
-        addresses: &[&BlockAddress],
-        no_cache_fill: bool,
-    ) -> Vec<Result<Vec<u8>, BlockStoreError>> {
-        let root = {
-            let inner = self.inner.lock().expect("block store lock poisoned");
-            inner.root.clone()
-        };
-        struct SegmentReadHandle {
-            file: File,
-            len: u64,
-        }
-
-        let mut files = HashMap::<u64, SegmentReadHandle>::with_capacity(addresses.len().min(64));
-        let mut results = (0..addresses.len()).map(|_| None).collect::<Vec<_>>();
-        let mut read_order = addresses
-            .iter()
-            .enumerate()
-            .map(|(index, address)| (index, *address))
-            .collect::<Vec<_>>();
-        read_order.sort_by(|(_, left), (_, right)| {
-            left.page_segment_id
-                .cmp(&right.page_segment_id)
-                .then_with(|| left.offset.cmp(&right.offset))
-                .then_with(|| left.length.cmp(&right.length))
-        });
-        let mut stats_reads = 0_u64;
-        let mut stats_bytes_read = 0_u64;
-        let mut stats_cold_reads = 0_u64;
-        let mut stats_cold_bytes_read = 0_u64;
-        let mut stats_logical_bytes_read = 0_u64;
-        let mut stats_compressed_records_read = 0_u64;
-        let mut cursor = 0;
-        while cursor < read_order.len() {
-            let group_start = cursor;
-            let (_, first_address) = read_order[group_start];
-            let page_segment_id = first_address.page_segment_id;
-            let group_offset = first_address.offset;
-            let mut group_end = first_address.offset.saturating_add(first_address.length);
-            cursor += 1;
-            while cursor < read_order.len() {
-                let (_, next_address) = read_order[cursor];
-                if next_address.page_segment_id != page_segment_id {
-                    break;
-                }
-                let next_end = next_address.offset.saturating_add(next_address.length);
-                if next_address.offset == group_end {
-                    group_end = next_end;
-                    cursor += 1;
-                    continue;
-                }
-                if next_address.offset <= group_end {
-                    group_end = group_end.max(next_end);
-                    cursor += 1;
-                    continue;
-                }
-                let gap = next_address.offset.saturating_sub(group_end);
-                let coalesced_len = next_end.saturating_sub(group_offset);
-                if gap > COALESCED_READ_MAX_GAP_BYTES
-                    || coalesced_len > COALESCED_READ_MAX_GROUP_BYTES
-                {
-                    break;
-                }
-                group_end = next_end;
-                cursor += 1;
-            }
-
-            let group_bytes = (|| {
-                let handle = match files.entry(page_segment_id) {
-                    std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                    std::collections::hash_map::Entry::Vacant(entry) => {
-                        let path = segment_path(&root, page_segment_id);
-                        let file = File::open(path)?;
-                        let len = file.metadata()?.len();
-                        entry.insert(SegmentReadHandle { file, len })
-                    }
-                };
-                if group_offset >= handle.len || group_end > handle.len {
-                    return Err(BlockStoreError::Io(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "coalesced block read range exceeds segment length",
-                    )));
-                }
-                handle.file.seek(SeekFrom::Start(group_offset))?;
-                let group_len =
-                    usize::try_from(group_end.saturating_sub(group_offset)).map_err(|_| {
-                        BlockStoreError::Io(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "coalesced block read range is too large",
-                        ))
-                    })?;
-                let mut encoded = vec![0; group_len];
-                handle.file.read_exact(&mut encoded)?;
-                Ok::<_, BlockStoreError>(encoded)
-            })();
-
-            match group_bytes {
-                Ok(encoded_group) => {
-                    let physical_bytes_read = encoded_group.len() as u64;
-                    stats_bytes_read = stats_bytes_read.saturating_add(physical_bytes_read);
-                    if no_cache_fill {
-                        stats_cold_bytes_read =
-                            stats_cold_bytes_read.saturating_add(physical_bytes_read);
-                    }
-                    for (result_index, address) in &read_order[group_start..cursor] {
-                        let result = (|| {
-                            let start = address.offset.saturating_sub(group_offset) as usize;
-                            let end = start.saturating_add(address.length as usize);
-                            let encoded = encoded_group.get(start..end).ok_or_else(|| {
-                                BlockStoreError::Io(std::io::Error::new(
-                                    std::io::ErrorKind::UnexpectedEof,
-                                    "coalesced block read slice out of range",
-                                ))
-                            })?;
-                            let decoded = decode_page_record(encoded, address)?;
-                            let bytes = decoded.payload;
-                            if let Some(expected) = &address.sha256 {
-                                let actual = sha256_hex(&bytes);
-                                if &actual != expected {
-                                    return Err(BlockStoreError::ChecksumMismatch {
-                                        page_segment_id: address.page_segment_id,
-                                        offset: address.offset,
-                                        length: address.length,
-                                        expected: expected.clone(),
-                                        actual,
-                                    });
-                                }
-                            }
-                            stats_reads = stats_reads.saturating_add(1);
-                            if no_cache_fill {
-                                stats_cold_reads = stats_cold_reads.saturating_add(1);
-                            }
-                            stats_logical_bytes_read =
-                                stats_logical_bytes_read.saturating_add(decoded.logical_len as u64);
-                            if decoded.compression == PageRecordCompression::Zstd {
-                                stats_compressed_records_read =
-                                    stats_compressed_records_read.saturating_add(1);
-                            }
-                            Ok(bytes)
-                        })();
-                        results[*result_index] = Some(result);
-                    }
-                }
-                Err(err) => {
-                    let err_text = err.to_string();
-                    let mut first = Some(err);
-                    for (result_index, _) in &read_order[group_start..cursor] {
-                        results[*result_index] = Some(match first.take() {
-                            Some(err) => Err(err),
-                            None => Err(BlockStoreError::Io(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                err_text.clone(),
-                            ))),
-                        });
-                    }
-                }
-            }
-        }
-        if stats_reads > 0 || stats_bytes_read > 0 {
-            let mut inner = self.inner.lock().expect("block store lock poisoned");
-            inner.stats.reads = inner.stats.reads.saturating_add(stats_reads);
-            inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(stats_bytes_read);
-            inner.stats.cold_reads = inner.stats.cold_reads.saturating_add(stats_cold_reads);
-            inner.stats.cold_bytes_read = inner
-                .stats
-                .cold_bytes_read
-                .saturating_add(stats_cold_bytes_read);
-            inner.stats.logical_bytes_read = inner
-                .stats
-                .logical_bytes_read
-                .saturating_add(stats_logical_bytes_read);
-            inner.stats.compressed_records_read = inner
-                .stats
-                .compressed_records_read
-                .saturating_add(stats_compressed_records_read);
-        }
-        results
-            .into_iter()
-            .map(|result| {
-                result.unwrap_or_else(|| {
-                    Err(BlockStoreError::Io(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "ordered block read result missing",
-                    )))
-                })
-            })
-            .collect()
-    }
-
-    pub fn read_batch(&self, addresses: &[BlockAddress]) -> Vec<Result<Vec<u8>, BlockStoreError>> {
-        self.read_batch_with_cache_policy(addresses, false)
-    }
-
-    pub fn read_cold(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
-        self.read_with_cache_policy(address, true)
-    }
-
-    pub fn read_cold_batch(
-        &self,
-        addresses: &[BlockAddress],
-    ) -> Vec<Result<Vec<u8>, BlockStoreError>> {
-        self.read_batch_with_cache_policy(addresses, true)
     }
 
     pub fn read_range(
@@ -1270,37 +814,15 @@ impl LocalBlockStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, BlockStoreError> {
-        if size == 0 {
-            return Ok(Vec::new());
-        }
-        let root = self
-            .inner
-            .lock()
-            .expect("block store lock poisoned")
-            .root
-            .clone();
-        let path = segment_path(&root, page_segment_id);
-        let mut file = File::open(path)?;
-        let file_len = file.metadata()?.len();
-        if offset >= file_len {
-            let mut inner = self.inner.lock().expect("block store lock poisoned");
-            inner.stats.reads = inner.stats.reads.saturating_add(1);
-            return Ok(Vec::new());
-        }
-        let read_size = size.min(file_len.saturating_sub(offset));
-        file.seek(SeekFrom::Start(offset))?;
-        let read_size_usize = usize::try_from(read_size).map_err(|_| {
-            BlockStoreError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "block range read size is too large",
-            ))
-        })?;
-        let mut bytes = vec![0; read_size_usize];
-        file.read_exact(&mut bytes)?;
-        let read = bytes.len() as u64;
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        inner.stats.reads = inner.stats.reads.saturating_add(1);
-        inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(read);
+        let path = segment_path(&inner.root, page_segment_id);
+        let mut file = File::open(path)?;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut bytes = vec![0; size as usize];
+        let read = file.read(&mut bytes)?;
+        bytes.truncate(read);
+        inner.stats.reads += 1;
+        inner.stats.bytes_read += read as u64;
         Ok(bytes)
     }
 
@@ -1310,48 +832,15 @@ impl LocalBlockStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, BlockStoreError> {
-        if size == 0 {
-            return Ok(Vec::new());
-        }
-        let (root, readable_prefix_physical_bytes) = {
-            let inner = self.inner.lock().expect("block store lock poisoned");
-            (
-                inner.root.clone(),
-                inner
-                    .extents
-                    .get(&page_segment_id)
-                    .map(|extent| extent.readable_prefix_physical_bytes)
-                    .filter(|prefix| *prefix > 0),
-            )
-        };
-        let path = segment_path(&root, page_segment_id);
-        let mut file = File::open(path)?;
-        let physical_len = file.metadata()?.len();
-        let physical_limit = readable_prefix_physical_bytes
-            .unwrap_or(physical_len)
-            .min(physical_len);
-        let physical_limit_usize = usize::try_from(physical_limit).map_err(|_| {
-            BlockStoreError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "logical block range read size is too large",
-            ))
-        })?;
-        let mut segment = vec![0; physical_limit_usize];
-        file.read_exact(&mut segment)?;
-        let physical_bytes_read = segment.len() as u64;
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        let path = segment_path(&inner.root, page_segment_id);
+        let segment = fs::read(path)?;
         let range = logical_range_from_segment(&segment, page_segment_id, offset, size)?;
         let bytes = range.bytes;
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
-        inner.stats.reads = inner.stats.reads.saturating_add(1);
-        inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(physical_bytes_read);
-        inner.stats.logical_bytes_read = inner
-            .stats
-            .logical_bytes_read
-            .saturating_add(bytes.len() as u64);
-        inner.stats.compressed_records_read = inner
-            .stats
-            .compressed_records_read
-            .saturating_add(range.compressed_records_read);
+        inner.stats.reads += 1;
+        inner.stats.bytes_read += bytes.len() as u64;
+        inner.stats.logical_bytes_read += bytes.len() as u64;
+        inner.stats.compressed_records_read += range.compressed_records_read;
         Ok(bytes)
     }
 
@@ -1372,9 +861,6 @@ impl LocalBlockStore {
     ) -> Result<(), BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
-        if page_segment_id >= inner.page_segment_id {
-            flush_active_append_file_inner(&mut inner)?;
-        }
         let path = segment_path(&inner.root, page_segment_id);
         let temp_path = path.with_extension(format!(
             "seg.tmp.{}",
@@ -1441,11 +927,13 @@ impl LocalBlockStore {
     }
 
     pub fn segment_ids(&self) -> Result<Vec<u64>, BlockStoreError> {
-        let (root, expected_segments) = {
-            let inner = self.inner.lock().expect("block store lock poisoned");
-            (inner.root.clone(), inner.extents.len())
-        };
-        let mut ids = Vec::with_capacity(expected_segments);
+        let root = self
+            .inner
+            .lock()
+            .expect("block store lock poisoned")
+            .root
+            .clone();
+        let mut ids = Vec::new();
         if !root.exists() {
             return Ok(ids);
         }
@@ -1571,7 +1059,7 @@ impl LocalBlockStore {
     ) -> Result<BlockStoreGcPolicyPlan, BlockStoreError> {
         let candidates =
             self.gc_utility_candidates(retain_from_page_segment_id, live_page_segment_ids)?;
-        let mut selected_page_segment_ids = Vec::with_capacity(candidates.len());
+        let mut selected_page_segment_ids = Vec::new();
         let mut selected_physical_bytes = 0_u64;
         let candidate_physical_bytes = candidates.iter().map(|candidate| candidate.bytes).sum();
         let candidate_total_bytes = candidates
@@ -1660,74 +1148,57 @@ impl LocalBlockStore {
         let inner = self.inner.lock().expect("block store lock poisoned");
         let current_page_segment_id = inner.page_segment_id;
         let live_page_segment_ids = live_page_segment_ids.into_iter().collect::<BTreeSet<_>>();
-        let segment_ids = segment_ids_at_with_capacity(&inner.root, inner.extents.len())?;
-        struct GcSegmentSnapshot {
-            page_segment_id: u64,
-            bytes: u64,
-            zone_id: u64,
-            created_unix_ms: Option<u64>,
-            updated_unix_ms: Option<u64>,
-        }
-        let segment_snapshots = segment_ids
-            .iter()
-            .map(|page_segment_id| {
-                let bytes = segment_path(&inner.root, *page_segment_id)
-                    .metadata()
-                    .map(|metadata| metadata.len())
-                    .unwrap_or_default();
-                let extent = inner.extents.get(page_segment_id);
-                GcSegmentSnapshot {
-                    page_segment_id: *page_segment_id,
-                    bytes,
-                    zone_id: extent
-                        .map(|extent| extent.extent_id)
-                        .unwrap_or_else(|| extent_id_for_segment(*page_segment_id)),
-                    created_unix_ms: extent.and_then(|extent| extent.created_unix_ms),
-                    updated_unix_ms: extent.and_then(|extent| extent.updated_unix_ms),
-                }
-            })
-            .collect::<Vec<_>>();
+        let segment_ids = segment_ids_at(&inner.root)?;
         let mut zone_total_bytes = BTreeMap::<u64, u64>::new();
         let mut zone_used_bytes = BTreeMap::<u64, u64>::new();
-        for snapshot in &segment_snapshots {
-            *zone_total_bytes.entry(snapshot.zone_id).or_default() = zone_total_bytes
-                .get(&snapshot.zone_id)
+        for page_segment_id in &segment_ids {
+            let bytes = segment_path(&inner.root, *page_segment_id)
+                .metadata()
+                .map(|metadata| metadata.len())
+                .unwrap_or_default();
+            let zone_id = inner
+                .extents
+                .get(page_segment_id)
+                .map(|extent| extent.extent_id)
+                .unwrap_or_else(|| extent_id_for_segment(*page_segment_id));
+            *zone_total_bytes.entry(zone_id).or_default() = zone_total_bytes
+                .get(&zone_id)
                 .copied()
                 .unwrap_or_default()
-                .saturating_add(snapshot.bytes);
-            let below_retention_floor = snapshot.page_segment_id < retain_from_page_segment_id;
-            let is_current = snapshot.page_segment_id == current_page_segment_id;
-            let is_live = live_page_segment_ids.contains(&snapshot.page_segment_id);
+                .saturating_add(bytes);
+            let below_retention_floor = *page_segment_id < retain_from_page_segment_id;
+            let is_current = *page_segment_id == current_page_segment_id;
+            let is_live = live_page_segment_ids.contains(page_segment_id);
             if !below_retention_floor || is_current || is_live {
-                *zone_used_bytes.entry(snapshot.zone_id).or_default() = zone_used_bytes
-                    .get(&snapshot.zone_id)
+                *zone_used_bytes.entry(zone_id).or_default() = zone_used_bytes
+                    .get(&zone_id)
                     .copied()
                     .unwrap_or_default()
-                    .saturating_add(snapshot.bytes);
+                    .saturating_add(bytes);
             }
         }
-        let mut candidates = Vec::with_capacity(segment_snapshots.len());
+        let mut candidates = Vec::new();
         let now = now_unix_ms();
-        for snapshot in segment_snapshots {
-            let page_segment_id = snapshot.page_segment_id;
+        for page_segment_id in segment_ids {
             let below_retention_floor = page_segment_id < retain_from_page_segment_id;
             let is_current = page_segment_id == current_page_segment_id;
             let is_live = live_page_segment_ids.contains(&page_segment_id);
             if below_retention_floor && !is_current && !is_live {
-                let bytes = snapshot.bytes;
-                let created_unix_ms = snapshot.created_unix_ms;
-                let updated_unix_ms = snapshot.updated_unix_ms;
+                let bytes = segment_path(&inner.root, page_segment_id)
+                    .metadata()
+                    .map(|metadata| metadata.len())
+                    .unwrap_or_default();
+                let extent = inner.extents.get(&page_segment_id);
+                let created_unix_ms = extent.and_then(|extent| extent.created_unix_ms);
+                let updated_unix_ms = extent.and_then(|extent| extent.updated_unix_ms);
                 let age_ms = updated_unix_ms
                     .or(created_unix_ms)
                     .map(|timestamp| now.saturating_sub(timestamp));
-                let total_bytes = zone_total_bytes
-                    .get(&snapshot.zone_id)
-                    .copied()
-                    .unwrap_or(bytes);
-                let used_bytes = zone_used_bytes
-                    .get(&snapshot.zone_id)
-                    .copied()
-                    .unwrap_or_default();
+                let zone_id = extent
+                    .map(|extent| extent.extent_id)
+                    .unwrap_or_else(|| extent_id_for_segment(page_segment_id));
+                let total_bytes = zone_total_bytes.get(&zone_id).copied().unwrap_or(bytes);
+                let used_bytes = zone_used_bytes.get(&zone_id).copied().unwrap_or_default();
                 let stale_bytes = total_bytes.saturating_sub(used_bytes);
                 let utility_basis_points = if total_bytes == 0 {
                     0
@@ -1795,18 +1266,17 @@ impl LocalBlockStore {
         }
         let current_page_segment_id = inner.page_segment_id;
         let live_page_segment_ids = live_page_segment_ids.into_iter().collect::<BTreeSet<_>>();
-        let segment_ids = segment_ids_at_with_capacity(&inner.root, inner.extents.len())?;
-        let mut removed = Vec::with_capacity(segment_ids.len());
-        let mut retained = Vec::with_capacity(segment_ids.len());
-        let mut delayed_destroy_ids = Vec::with_capacity(segment_ids.len());
-        let mut retained_live = Vec::with_capacity(live_page_segment_ids.len());
-        let mut retained_current = Vec::with_capacity(1);
+        let mut removed = Vec::new();
+        let mut retained = Vec::new();
+        let mut delayed_destroy_ids = Vec::new();
+        let mut retained_live = Vec::new();
+        let mut retained_current = Vec::new();
         let mut removed_physical_bytes = 0;
         let mut retained_physical_bytes = 0;
         let mut delayed_destroy_physical_bytes = 0;
         let mut retained_live_physical_bytes = 0;
         let mut retained_current_physical_bytes = 0;
-        for page_segment_id in segment_ids {
+        for page_segment_id in segment_ids_at(&inner.root)? {
             let segment_physical_bytes = segment_path(&inner.root, page_segment_id)
                 .metadata()
                 .map(|metadata| metadata.len())
@@ -1898,11 +1368,8 @@ impl LocalBlockStore {
     pub fn purge_delayed_destroy_segments_with_report(
         &self,
     ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
-        let root = {
-            let inner = self.inner.lock().expect("block store lock poisoned");
-            inner.root.clone()
-        };
-        let trash_dir = delayed_destroy_dir(&root);
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        let trash_dir = delayed_destroy_dir(&inner.root);
         let mut purged = Vec::new();
         let mut purged_physical_bytes = 0;
         if !trash_dir.exists() {
@@ -1913,29 +1380,17 @@ impl LocalBlockStore {
             let Some(id) = delayed_destroy_segment_id_from_name(&entry.file_name()) else {
                 continue;
             };
-            let path = entry.path();
-            let physical_bytes = match entry.metadata() {
-                Ok(metadata) => metadata.len(),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(err) => return Err(BlockStoreError::Io(err)),
-            };
-            match fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(err) => return Err(BlockStoreError::Io(err)),
-            }
-            purged_physical_bytes += physical_bytes;
+            purged_physical_bytes += entry
+                .metadata()
+                .map(|metadata| metadata.len())
+                .unwrap_or_default();
+            fs::remove_file(entry.path())?;
+            set_extent_state(&mut inner.extents, id, BlockStoreExtentState::Purged);
             purged.push(id);
         }
         purged.sort_unstable();
         sync_dir(&trash_dir)?;
-        if !purged.is_empty() {
-            let mut inner = self.inner.lock().expect("block store lock poisoned");
-            for id in &purged {
-                set_extent_state(&mut inner.extents, *id, BlockStoreExtentState::Purged);
-            }
-            persist_extent_manifest(&inner.root, &inner.extents)?;
-        }
+        persist_extent_manifest(&inner.root, &inner.extents)?;
         Ok(BlockStorePurgeDelayedDestroyReport {
             purged_page_segment_ids: purged,
             purged_physical_bytes,
@@ -2238,61 +1693,6 @@ impl LocalBlockStore {
     }
 }
 
-fn fill_duplicate_read_success(
-    results: &mut [Option<Result<Vec<u8>, BlockStoreError>>],
-    indexes: Vec<usize>,
-    bytes: Vec<u8>,
-) {
-    let mut remaining = indexes.len();
-    for index in indexes {
-        if remaining == 1 {
-            results[index] = Some(Ok(bytes));
-            break;
-        } else {
-            results[index] = Some(Ok(bytes.clone()));
-            remaining = remaining.saturating_sub(1);
-        }
-    }
-}
-
-fn empty_optional_read_results(len: usize) -> Vec<Option<Result<Vec<u8>, BlockStoreError>>> {
-    (0..len).map(|_| None).collect()
-}
-
-fn finalize_optional_read_results(
-    results: Vec<Option<Result<Vec<u8>, BlockStoreError>>>,
-) -> Vec<Result<Vec<u8>, BlockStoreError>> {
-    results
-        .into_iter()
-        .map(|result| {
-            result.unwrap_or_else(|| {
-                Err(BlockStoreError::Io(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "coalesced block read result missing",
-                )))
-            })
-        })
-        .collect()
-}
-
-fn duplicate_read_success_results(
-    len: usize,
-    bytes: Vec<u8>,
-) -> Vec<Result<Vec<u8>, BlockStoreError>> {
-    let mut results = Vec::with_capacity(len);
-    let mut remaining = len;
-    while remaining > 0 {
-        if remaining == 1 {
-            results.push(Ok(bytes));
-            break;
-        } else {
-            results.push(Ok(bytes.clone()));
-            remaining = remaining.saturating_sub(1);
-        }
-    }
-    results
-}
-
 fn should_roll_before_append(
     write_offset: u64,
     record_len: u64,
@@ -2306,24 +1706,18 @@ fn roll_segment_inner(
 ) -> Result<BlockStoreRollReport, BlockStoreError> {
     fs::create_dir_all(&inner.root)?;
     let previous_page_segment_id = inner.page_segment_id;
-    flush_active_append_file_inner(inner)?;
-    let mut next_page_segment_id = inner.page_segment_id.saturating_add(1);
-    let (path, file) = loop {
-        let path = segment_path(&inner.root, next_page_segment_id);
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => break (path, file),
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                next_page_segment_id = next_page_segment_id.saturating_add(1);
-            }
-            Err(err) => return Err(BlockStoreError::Io(err)),
-        }
-    };
-    inner.page_segment_id = next_page_segment_id;
+    let next_from_current = inner.page_segment_id.saturating_add(1);
+    let next_from_disk = segment_ids_at(&inner.root)?
+        .into_iter()
+        .max()
+        .map(|id| id.saturating_add(1))
+        .unwrap_or_default();
+    inner.page_segment_id = next_from_current.max(next_from_disk);
     inner.write_offset = 0;
-    if inner.options.sync_on_append {
-        file.sync_all()?;
-        sync_parent_dir(&path)?;
-    }
+    let path = segment_path(&inner.root, inner.page_segment_id);
+    let file = File::create(&path)?;
+    file.sync_all()?;
+    sync_parent_dir(&path)?;
     let transition_unix_ms = now_unix_ms();
     if let Some(previous) = inner.extents.get_mut(&previous_page_segment_id) {
         previous.state = BlockStoreExtentState::Sealed;
@@ -2346,49 +1740,15 @@ fn roll_segment_inner(
     };
     let page_segment_id = inner.page_segment_id;
     inner.extents.insert(page_segment_id, new_extent);
-    persist_extent_manifest_with_policy(&inner.root, &inner.extents, inner.options.sync_on_append)?;
+    persist_extent_manifest(&inner.root, &inner.extents)?;
     Ok(BlockStoreRollReport {
         previous_page_segment_id,
         new_page_segment_id: inner.page_segment_id,
     })
 }
 
-fn flush_active_append_file_inner(inner: &mut BlockStoreInner) -> Result<(), BlockStoreError> {
-    if let Some(mut active_file) = inner.active_append_file.take() {
-        if inner.options.sync_on_append {
-            active_file.flush()?;
-            active_file.sync_data()?;
-        }
-    }
-    Ok(())
-}
-
-fn flush_active_append_buffer_inner(
-    inner: &mut BlockStoreInner,
-    pending_bytes: &mut Vec<u8>,
-    sync_if_configured: bool,
-) -> Result<(), BlockStoreError> {
-    if pending_bytes.is_empty() {
-        return Ok(());
-    }
-    if inner.active_append_file.is_none() {
-        let path = segment_path(&inner.root, inner.page_segment_id);
-        inner.active_append_file = Some(OpenOptions::new().create(true).append(true).open(path)?);
-    }
-    let sync_on_append = inner.options.sync_on_append;
-    if let Some(active_file) = inner.active_append_file.as_mut() {
-        active_file.write_all(pending_bytes)?;
-        pending_bytes.clear();
-        if sync_if_configured && sync_on_append {
-            active_file.flush()?;
-            active_file.sync_data()?;
-        }
-    }
-    Ok(())
-}
-
 fn extent_lifecycle_states(summary: &BlockStoreExtentSummary) -> Vec<String> {
-    let mut states = Vec::with_capacity(4);
+    let mut states = Vec::new();
     if summary.active_extents > 0 {
         states.push("active".to_string());
     }
@@ -2483,9 +1843,7 @@ fn extent_zone_usage(
             (left, None) => left,
         };
     }
-    let mut usage = Vec::with_capacity(zones.len());
-    usage.extend(zones.into_values().map(|acc| acc.usage));
-    usage
+    zones.into_values().map(|acc| acc.usage).collect()
 }
 
 impl Default for LocalBlockStore {
@@ -2850,14 +2208,6 @@ fn persist_extent_manifest(
     root: &Path,
     extents: &BTreeMap<u64, BlockStoreExtentDescriptor>,
 ) -> Result<(), BlockStoreError> {
-    persist_extent_manifest_with_policy(root, extents, true)
-}
-
-fn persist_extent_manifest_with_policy(
-    root: &Path,
-    extents: &BTreeMap<u64, BlockStoreExtentDescriptor>,
-    sync_manifest: bool,
-) -> Result<(), BlockStoreError> {
     fs::create_dir_all(root)?;
     let path = extent_manifest_path(root);
     let temp_path = path.with_extension(format!(
@@ -2882,14 +2232,10 @@ fn persist_extent_manifest_with_policy(
         })?;
         temp.write_all(b"\n")?;
         temp.flush()?;
-        if sync_manifest {
-            temp.sync_all()?;
-        }
+        temp.sync_all()?;
     }
     fs::rename(&temp_path, &path)?;
-    if sync_manifest {
-        sync_parent_dir(&path)?;
-    }
+    sync_parent_dir(&path)?;
     Ok(())
 }
 
@@ -3013,24 +2359,6 @@ fn upsert_extent_after_append(
     logical_bytes_written: u64,
     page_id: u64,
 ) {
-    upsert_extent_after_batch_append(
-        extents,
-        page_segment_id,
-        physical_bytes,
-        logical_bytes_written,
-        page_id,
-        page_id,
-    );
-}
-
-fn upsert_extent_after_batch_append(
-    extents: &mut BTreeMap<u64, BlockStoreExtentDescriptor>,
-    page_segment_id: u64,
-    physical_bytes: u64,
-    logical_bytes_written: u64,
-    first_page_id: u64,
-    last_page_id: u64,
-) {
     let extent = extents
         .entry(page_segment_id)
         .or_insert(BlockStoreExtentDescriptor {
@@ -3041,8 +2369,8 @@ fn upsert_extent_after_batch_append(
             logical_bytes: 0,
             created_unix_ms: Some(now_unix_ms()),
             updated_unix_ms: Some(now_unix_ms()),
-            first_page_id: Some(first_page_id),
-            last_page_id: Some(last_page_id),
+            first_page_id: Some(page_id),
+            last_page_id: Some(page_id),
             readable_prefix_physical_bytes: 0,
             has_corruption: false,
             first_error_offset: None,
@@ -3063,52 +2391,13 @@ fn upsert_extent_after_batch_append(
     extent.first_page_id = Some(
         extent
             .first_page_id
-            .map_or(first_page_id, |first| first.min(first_page_id)),
+            .map_or(page_id, |first| first.min(page_id)),
     );
     extent.last_page_id = Some(
         extent
             .last_page_id
-            .map_or(last_page_id, |last| last.max(last_page_id)),
+            .map_or(page_id, |last| last.max(page_id)),
     );
-}
-
-fn apply_pending_extent_append(
-    extents: &mut BTreeMap<u64, BlockStoreExtentDescriptor>,
-    pending: &mut Option<PendingExtentAppend>,
-) {
-    let Some(update) = pending.take() else {
-        return;
-    };
-    upsert_extent_after_batch_append(
-        extents,
-        update.page_segment_id,
-        update.physical_bytes,
-        update.logical_bytes_written,
-        update.first_page_id,
-        update.last_page_id,
-    );
-}
-
-fn record_pending_extent_append(
-    extents: &mut BTreeMap<u64, BlockStoreExtentDescriptor>,
-    pending: &mut Option<PendingExtentAppend>,
-    update: PendingExtentAppend,
-) {
-    if pending
-        .as_ref()
-        .is_some_and(|pending| pending.page_segment_id != update.page_segment_id)
-    {
-        apply_pending_extent_append(extents, pending);
-    }
-    if let Some(pending) = pending.as_mut() {
-        pending.add(
-            update.physical_bytes,
-            update.logical_bytes_written,
-            update.last_page_id,
-        );
-    } else {
-        *pending = Some(update);
-    }
 }
 
 fn set_extent_state(
@@ -3231,14 +2520,7 @@ fn compact_extract_extent_offset(address: u64) -> u32 {
 }
 
 fn segment_ids_at(root: &Path) -> Result<Vec<u64>, BlockStoreError> {
-    segment_ids_at_with_capacity(root, 0)
-}
-
-fn segment_ids_at_with_capacity(
-    root: &Path,
-    expected_segments: usize,
-) -> Result<Vec<u64>, BlockStoreError> {
-    let mut ids = Vec::with_capacity(expected_segments);
+    let mut ids = Vec::new();
     if !root.exists() {
         return Ok(ids);
     }

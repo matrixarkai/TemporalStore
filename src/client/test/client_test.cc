@@ -29,7 +29,7 @@ class ClientTest : public testing::Test {
  public:
     void SetUp() override {
         FLAGS_feature_max_size = UINT64_MAX;
-        matrixobjectstore_init();
+        bytestore_init();
         bcache2::MiniCluster::Options options;
         options.work_dir = temp_dir.GetDir();
         options.server_count = 1;
@@ -48,7 +48,7 @@ class ClientTest : public testing::Test {
 
     void TearDown() override {
         cluster_.Stop();
-        matrixobjectstore_shutdown();
+        bytestore_shutdown();
     }
 
     TempDir temp_dir;

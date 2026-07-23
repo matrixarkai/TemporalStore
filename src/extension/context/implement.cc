@@ -521,7 +521,6 @@ Status ValidateExtractedContextIndexes(const ExtractedContextIndexes& indexes) {
     return Status::OK();
 }
 
-#ifndef BCACHE2_OPEN_SOURCE_SURFACE
 Status ValidateAuditRef(const AuditRef& ref) {
     if (ref.node_hash() == 0 || ref.event_time_ms() == 0) {
         return Status::InvalidArgument("audit ref node_hash and event_time_ms are required");
@@ -556,7 +555,6 @@ Status ValidatePackAudit(const ContextPackAudit& audit) {
     }
     return Status::OK();
 }
-#endif
 
 uint64_t StableHash64(const std::string& value) {
     uint64_t hash = 1469598103934665603ULL;
@@ -1958,7 +1956,6 @@ Status RetrieveContextPack(ExecuteEnv* env, const RetrieveContextPackRequest& re
 }
 REGISTER_FUNCTION(CONTEXT, RETRIEVE_CONTEXT_PACK, RetrieveContextPack, Read);
 
-#ifndef BCACHE2_OPEN_SOURCE_SURFACE
 Status WritePackAudit(ExecuteEnv* env, const WritePackAuditRequest& request,
                       WritePackAuditResponse* response) {
     Status status = ValidateTenant(request.tenant_hash());
@@ -2026,7 +2023,6 @@ Status QueryPackAudit(ExecuteEnv* env, const QueryPackAuditRequest& request,
     return Status::OK();
 }
 REGISTER_FUNCTION(CONTEXT, QUERY_PACK_AUDIT, QueryPackAudit, Read);
-#endif
 
 Status MarkSummaryDirty(ExecuteEnv* env, const MarkSummaryDirtyRequest& request,
                         MarkSummaryDirtyResponse* response) {

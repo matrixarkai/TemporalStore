@@ -116,7 +116,7 @@ struct IpsLastQuery {
     int64_t last_instances = 10;
 };
 
-enum class ControlStatePrecision {
+enum class RiskPrecision {
     kOneSecond,
     kFiveSeconds,
     kTenSeconds,
@@ -128,17 +128,17 @@ enum class ControlStatePrecision {
     kOneMonth,
 };
 
-enum class ControlStateWindowUnit {
+enum class RiskWindowUnit {
     kSecond,
     kMinute,
     kHour,
     kDay,
 };
 
-struct ControlStateWindow {
+struct RiskWindow {
     int64_t start = -1;
     int64_t end = 0;
-    ControlStateWindowUnit unit = ControlStateWindowUnit::kHour;
+    RiskWindowUnit unit = RiskWindowUnit::kHour;
 };
 
 struct HashEntry {
@@ -202,10 +202,10 @@ class TemporalStoreClient {
     Status AddIpsInstance(const IpsInstance& instance);
     Status QueryIpsLastInstances(const IpsLastQuery& query, std::vector<IpsFeatureStat>* features);
 
-    Status ControlStateIncrement(const std::string& key, int64_t amount, uint64_t ttl_seconds,
-                         ControlStatePrecision precision, const std::string& uuid = "",
+    Status RiskIncrement(const std::string& key, int64_t amount, uint64_t ttl_seconds,
+                         RiskPrecision precision, const std::string& uuid = "",
                          uint64_t occur_time_seconds = 0);
-    Status ControlStateCount(const std::string& key, ControlStatePrecision precision, const ControlStateWindow& window,
+    Status RiskCount(const std::string& key, RiskPrecision precision, const RiskWindow& window,
                      int64_t* count);
 
  private:

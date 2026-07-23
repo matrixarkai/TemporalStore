@@ -1625,42 +1625,42 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     return bcache2::Status::OK();
 }
 
-bcache2::client::ControlStatePrecision ToControlStatePrecision(temporalstore_control_state_precision_t precision) {
+bcache2::client::RiskPrecision ToRiskPrecision(temporalstore_risk_precision_t precision) {
     switch (precision) {
-    case TEMPORALSTORE_CONTROL_STATE_ONE_SECOND:
-        return bcache2::client::ControlStatePrecision::kOneSecond;
-    case TEMPORALSTORE_CONTROL_STATE_FIVE_SECONDS:
-        return bcache2::client::ControlStatePrecision::kFiveSeconds;
-    case TEMPORALSTORE_CONTROL_STATE_TEN_SECONDS:
-        return bcache2::client::ControlStatePrecision::kTenSeconds;
-    case TEMPORALSTORE_CONTROL_STATE_ONE_MINUTE:
-        return bcache2::client::ControlStatePrecision::kOneMinute;
-    case TEMPORALSTORE_CONTROL_STATE_FIVE_MINUTES:
-        return bcache2::client::ControlStatePrecision::kFiveMinutes;
-    case TEMPORALSTORE_CONTROL_STATE_TEN_MINUTES:
-        return bcache2::client::ControlStatePrecision::kTenMinutes;
-    case TEMPORALSTORE_CONTROL_STATE_ONE_HOUR:
-        return bcache2::client::ControlStatePrecision::kOneHour;
-    case TEMPORALSTORE_CONTROL_STATE_ONE_DAY:
-        return bcache2::client::ControlStatePrecision::kOneDay;
-    case TEMPORALSTORE_CONTROL_STATE_ONE_MONTH:
-        return bcache2::client::ControlStatePrecision::kOneMonth;
+    case TEMPORALSTORE_RISK_ONE_SECOND:
+        return bcache2::client::RiskPrecision::kOneSecond;
+    case TEMPORALSTORE_RISK_FIVE_SECONDS:
+        return bcache2::client::RiskPrecision::kFiveSeconds;
+    case TEMPORALSTORE_RISK_TEN_SECONDS:
+        return bcache2::client::RiskPrecision::kTenSeconds;
+    case TEMPORALSTORE_RISK_ONE_MINUTE:
+        return bcache2::client::RiskPrecision::kOneMinute;
+    case TEMPORALSTORE_RISK_FIVE_MINUTES:
+        return bcache2::client::RiskPrecision::kFiveMinutes;
+    case TEMPORALSTORE_RISK_TEN_MINUTES:
+        return bcache2::client::RiskPrecision::kTenMinutes;
+    case TEMPORALSTORE_RISK_ONE_HOUR:
+        return bcache2::client::RiskPrecision::kOneHour;
+    case TEMPORALSTORE_RISK_ONE_DAY:
+        return bcache2::client::RiskPrecision::kOneDay;
+    case TEMPORALSTORE_RISK_ONE_MONTH:
+        return bcache2::client::RiskPrecision::kOneMonth;
     }
-    return bcache2::client::ControlStatePrecision::kOneMinute;
+    return bcache2::client::RiskPrecision::kOneMinute;
 }
 
-bcache2::client::ControlStateWindowUnit ToWindowUnit(temporalstore_window_unit_t unit) {
+bcache2::client::RiskWindowUnit ToWindowUnit(temporalstore_window_unit_t unit) {
     switch (unit) {
     case TEMPORALSTORE_WINDOW_SECOND:
-        return bcache2::client::ControlStateWindowUnit::kSecond;
+        return bcache2::client::RiskWindowUnit::kSecond;
     case TEMPORALSTORE_WINDOW_MINUTE:
-        return bcache2::client::ControlStateWindowUnit::kMinute;
+        return bcache2::client::RiskWindowUnit::kMinute;
     case TEMPORALSTORE_WINDOW_HOUR:
-        return bcache2::client::ControlStateWindowUnit::kHour;
+        return bcache2::client::RiskWindowUnit::kHour;
     case TEMPORALSTORE_WINDOW_DAY:
-        return bcache2::client::ControlStateWindowUnit::kDay;
+        return bcache2::client::RiskWindowUnit::kDay;
     }
-    return bcache2::client::ControlStateWindowUnit::kHour;
+    return bcache2::client::RiskWindowUnit::kHour;
 }
 
 bcache2::client::TemporalFeatureFilterOp ToFeatureFilterOp(
@@ -2378,21 +2378,21 @@ int temporalstore_query_ips_last_instances(temporalstore_client_t* client, const
     return Finish(status, error_message);
 }
 
-int temporalstore_control_state_increment(temporalstore_client_t* client, const char* key, int64_t amount,
+int temporalstore_risk_increment(temporalstore_client_t* client, const char* key, int64_t amount,
                                  uint64_t ttl_seconds,
-                                 temporalstore_control_state_precision_t precision, const char* uuid,
+                                 temporalstore_risk_precision_t precision, const char* uuid,
                                  uint64_t occur_time_seconds, char** error_message) {
     bcache2::Status status = CheckClient(client);
     if (status.ok()) {
-        status = client->impl->ControlStateIncrement(key ? key : "", amount, ttl_seconds,
-                                             ToControlStatePrecision(precision), uuid ? uuid : "",
+        status = client->impl->RiskIncrement(key ? key : "", amount, ttl_seconds,
+                                             ToRiskPrecision(precision), uuid ? uuid : "",
                                              occur_time_seconds);
     }
     return Finish(status, error_message);
 }
 
-int temporalstore_control_state_count(temporalstore_client_t* client, const char* key,
-                             temporalstore_control_state_precision_t precision, int64_t window_start,
+int temporalstore_risk_count(temporalstore_client_t* client, const char* key,
+                             temporalstore_risk_precision_t precision, int64_t window_start,
                              int64_t window_end, temporalstore_window_unit_t window_unit,
                              int64_t* count, char** error_message) {
     if (count == nullptr) {
@@ -2400,11 +2400,11 @@ int temporalstore_control_state_count(temporalstore_client_t* client, const char
     }
     bcache2::Status status = CheckClient(client);
     if (status.ok()) {
-        bcache2::client::ControlStateWindow window;
+        bcache2::client::RiskWindow window;
         window.start = window_start;
         window.end = window_end;
         window.unit = ToWindowUnit(window_unit);
-        status = client->impl->ControlStateCount(key ? key : "", ToControlStatePrecision(precision), window,
+        status = client->impl->RiskCount(key ? key : "", ToRiskPrecision(precision), window,
                                          count);
     }
     return Finish(status, error_message);

@@ -1,4 +1,4 @@
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 pub type ShardId = u64;
 
@@ -29,15 +29,12 @@ impl Status {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FeaturePoint {
-    #[serde(alias = "ts", alias = "timestamp")]
     pub timestamp_ms: u64,
-    #[serde(deserialize_with = "bytes_from_json")]
     pub value: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SequenceFeatureRow {
-    #[serde(alias = "ts", alias = "timestamp")]
     pub timestamp_ms: u64,
     pub gid: u64,
     pub action_type: u32,
@@ -95,34 +92,7 @@ impl SequenceFeatureRow {
     }
 }
 
-fn bytes_from_json<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    bytes_value(value).map_err(serde::de::Error::custom)
-}
-
-fn bytes_value(value: serde_json::Value) -> Result<Vec<u8>, String> {
-    match value {
-        serde_json::Value::Null => Ok(Vec::new()),
-        serde_json::Value::String(value) => Ok(value.into_bytes()),
-        serde_json::Value::Array(_) => serde_json::from_value(value).map_err(|err| err.to_string()),
-        serde_json::Value::Object(mut object) => {
-            if let Some(bytes) = object.remove("bytes") {
-                serde_json::from_value(bytes).map_err(|err| err.to_string())
-            } else if let Some(value) = object.remove("value") {
-                bytes_value(value)
-            } else {
-                serde_json::to_vec(&serde_json::Value::Object(object))
-                    .map_err(|err| err.to_string())
-            }
-        }
-        value => serde_json::to_vec(&value).map_err(|err| err.to_string()),
-    }
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FeatureFilterOp {
     Equal,
@@ -133,44 +103,6 @@ pub enum FeatureFilterOp {
     LessOrEqual,
 }
 
-impl<'de> Deserialize<'de> for FeatureFilterOp {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value {
-            serde_json::Value::Number(number) => match number.as_i64() {
-                Some(0) => Ok(Self::Equal),
-                Some(1) => Ok(Self::NotEqual),
-                Some(2) => Ok(Self::GreaterThan),
-                Some(3) => Ok(Self::LessThan),
-                Some(4) => Ok(Self::GreaterOrEqual),
-                Some(5) => Ok(Self::LessOrEqual),
-                _ => Err(serde::de::Error::custom("unknown FeatureFilterOp value")),
-            },
-            serde_json::Value::String(value) => match value.as_str() {
-                "equal" | "Equal" | "EQUAL" | "=" | "==" | "0" => Ok(Self::Equal),
-                "not_equal" | "NotEqual" | "NOT_EQUAL" | "!=" | "1" => Ok(Self::NotEqual),
-                "greater_than" | "GreaterThan" | "GREATER_THAN" | ">" | "2" => {
-                    Ok(Self::GreaterThan)
-                }
-                "less_than" | "LessThan" | "LESS_THAN" | "<" | "3" => Ok(Self::LessThan),
-                "greater_or_equal" | "GreaterOrEqual" | "GREATER_OR_EQUAL" | ">=" | "4" => {
-                    Ok(Self::GreaterOrEqual)
-                }
-                "less_or_equal" | "LessOrEqual" | "LESS_OR_EQUAL" | "<=" | "5" => {
-                    Ok(Self::LessOrEqual)
-                }
-                _ => Err(serde::de::Error::custom("unknown FeatureFilterOp value")),
-            },
-            _ => Err(serde::de::Error::custom(
-                "FeatureFilterOp must be a string or integer",
-            )),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StringSetCondition {
@@ -179,44 +111,19 @@ pub enum StringSetCondition {
     IfNotExists,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FeatureWritePolicy {
     Upsert,
+    #[serde(alias = "FIRST", alias = "first", alias = "NX", alias = "nx")]
     InsertIfAbsent,
+    #[serde(alias = "UPDATE", alias = "update", alias = "XX", alias = "xx")]
     ReplaceExisting,
+    #[serde(alias = "BLOCK", alias = "block")]
     Block,
 }
 
-impl<'de> Deserialize<'de> for FeatureWritePolicy {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value {
-            serde_json::Value::Number(number) => match number.as_i64() {
-                Some(0) => Ok(Self::Upsert),
-                Some(1) => Ok(Self::Block),
-                Some(2) => Ok(Self::InsertIfAbsent),
-                Some(3) => Ok(Self::ReplaceExisting),
-                _ => Err(serde::de::Error::custom("unknown WritePolicy value")),
-            },
-            serde_json::Value::String(value) => match value.as_str() {
-                "UPSERT" | "upsert" | "Upsert" | "0" => Ok(Self::Upsert),
-                "BLOCK" | "block" | "Block" | "1" => Ok(Self::Block),
-                "FIRST" | "first" | "First" | "NX" | "nx" | "2" => Ok(Self::InsertIfAbsent),
-                "UPDATE" | "update" | "Update" | "XX" | "xx" | "3" => Ok(Self::ReplaceExisting),
-                _ => Err(serde::de::Error::custom("unknown WritePolicy value")),
-            },
-            _ => Err(serde::de::Error::custom(
-                "WritePolicy must be a string or integer",
-            )),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FeatureFilter {
     pub field: String,
     pub op: FeatureFilterOp,
@@ -261,36 +168,6 @@ impl FeatureFilter {
     }
 }
 
-impl<'de> Deserialize<'de> for FeatureFilter {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct StructuredFeatureFilter {
-            field: String,
-            op: FeatureFilterOp,
-            value: u64,
-        }
-
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value {
-            serde_json::Value::String(filter) => {
-                Self::parse_cpp_filter(&filter).map_err(serde::de::Error::custom)
-            }
-            value => {
-                let filter: StructuredFeatureFilter =
-                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-                Ok(Self {
-                    field: filter.field,
-                    op: filter.op,
-                    value: filter.value,
-                })
-            }
-        }
-    }
-}
-
 pub fn parse_cpp_feature_filters<'a>(
     filters: impl IntoIterator<Item = &'a str>,
 ) -> Result<Vec<FeatureFilter>, String> {
@@ -315,11 +192,8 @@ pub fn parse_cpp_feature_filters<'a>(
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SequenceQuerySpec {
     pub key: String,
-    #[serde(alias = "start_ts")]
     pub start_ms: u64,
-    #[serde(alias = "end_ts")]
     pub end_ms: u64,
-    #[serde(alias = "limit")]
     pub count: usize,
     #[serde(default)]
     pub filters: Vec<FeatureFilter>,
@@ -353,41 +227,17 @@ pub struct IpsSnapshotReport {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ControlStateFamily {
+pub enum RiskFamily {
     H,
     Cpc,
     Fol,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ControlStateFolType {
+pub enum RiskFolType {
     First,
     Last,
-}
-
-impl<'de> Deserialize<'de> for ControlStateFolType {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value {
-            serde_json::Value::Number(number) => match number.as_i64() {
-                Some(0) => Ok(Self::First),
-                Some(1) => Ok(Self::Last),
-                _ => Err(serde::de::Error::custom("unknown ControlStateFolType value")),
-            },
-            serde_json::Value::String(value) => match value.as_str() {
-                "FIRST" | "first" | "First" | "0" => Ok(Self::First),
-                "LAST" | "last" | "Last" | "1" => Ok(Self::Last),
-                _ => Err(serde::de::Error::custom("unknown ControlStateFolType value")),
-            },
-            _ => Err(serde::de::Error::custom(
-                "ControlStateFolType must be a string or integer",
-            )),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -620,7 +470,6 @@ pub type ContextNodeModel = ContextNode;
 pub type ContextEventModel = ContextEvent;
 pub type ContextSegment = ContextEvent;
 pub type ContextIndexModel = ContextIndexRef;
-#[cfg(not(feature = "open-source-surface"))]
 pub type ContextAuditModel = ContextPackAudit;
 pub type ContextDirtyModel = ContextSummaryDirtyMarker;
 pub type ContextChildModel = ContextChildRef;
@@ -641,7 +490,6 @@ pub struct ContextModelDescriptor {
 pub const CONTEXT_NODE_MODEL_ID: u8 = 9;
 pub const CONTEXT_EVENT_MODEL_ID: u8 = 10;
 pub const CONTEXT_INDEX_MODEL_ID: u8 = 11;
-#[cfg(not(feature = "open-source-surface"))]
 pub const CONTEXT_AUDIT_MODEL_ID: u8 = 12;
 pub const CONTEXT_DIRTY_MODEL_ID: u8 = 13;
 pub const CONTEXT_CHILD_MODEL_ID: u8 = 14;
@@ -689,7 +537,6 @@ pub fn context_model_descriptors() -> Vec<ContextModelDescriptor> {
             "FeatureOrSet",
             &["ContextIndex", "ContextIndexRef", "ctx:index"],
         ),
-        #[cfg(not(feature = "open-source-surface"))]
         context_model_descriptor_entry(
             CONTEXT_AUDIT_MODEL_ID,
             "ContextAuditModel",
@@ -1403,11 +1250,6 @@ pub enum Command {
         key: String,
         rows: Vec<SequenceFeatureRow>,
     },
-    SequenceAddWithPolicy {
-        key: String,
-        rows: Vec<SequenceFeatureRow>,
-        policy: FeatureWritePolicy,
-    },
     SequenceQuery {
         key: String,
         start_ms: u64,
@@ -1507,12 +1349,12 @@ pub enum Command {
         #[serde(default)]
         table_id: Option<u64>,
     },
-    ControlStateIncrement {
+    RiskIncrement {
         key: String,
         timestamp_ms: u64,
         amount: i64,
     },
-    ControlStateIncrementWithOptions {
+    RiskIncrementWithOptions {
         key: String,
         timestamp_ms: u64,
         amount: i64,
@@ -1521,7 +1363,7 @@ pub enum Command {
         #[serde(default)]
         ttl_ms: Option<u64>,
     },
-    ControlStateChangeAdd {
+    RiskChangeAdd {
         key: String,
         timestamp_ms: u64,
         value: Vec<u8>,
@@ -1530,78 +1372,60 @@ pub enum Command {
         #[serde(default)]
         ttl_ms: Option<u64>,
     },
-    ControlStateCount {
+    RiskCount {
         key: String,
         start_ms: u64,
         end_ms: u64,
     },
-    ControlStateQuery {
+    RiskQuery {
         key: String,
         start_ms: u64,
         end_ms: u64,
         aggregator: String,
     },
-    ControlStateDetail {
+    RiskDetail {
         key: String,
         start_ms: u64,
         end_ms: u64,
         #[serde(default)]
         count: Option<usize>,
     },
-    ControlStateSet {
-        family: ControlStateFamily,
+    RiskSet {
+        family: RiskFamily,
         key: String,
         timestamp_ms: u64,
         amount: i64,
-        #[serde(default)]
-        precision_ms: Option<u64>,
-        #[serde(default)]
-        ttl_ms: Option<u64>,
     },
-    ControlStateSetAndGet {
-        family: ControlStateFamily,
+    RiskSetAndGet {
+        family: RiskFamily,
         key: String,
         timestamp_ms: u64,
         amount: i64,
         start_ms: u64,
         end_ms: u64,
         aggregator: String,
-        #[serde(default)]
-        precision_ms: Option<u64>,
-        #[serde(default)]
-        ttl_ms: Option<u64>,
     },
-    ControlStateFamilyQuery {
-        family: ControlStateFamily,
+    RiskFamilyQuery {
+        family: RiskFamily,
         key: String,
         start_ms: u64,
         end_ms: u64,
         aggregator: String,
     },
-    ControlStateFolSet {
+    RiskFolSet {
         key: String,
         value: Vec<u8>,
         occur_time_ms: u64,
         ttl_ms: u64,
-        fol_type: ControlStateFolType,
+        fol_type: RiskFolType,
     },
-    ControlStateFolQuery {
+    RiskFolQuery {
         key: String,
     },
-    ControlStateManager {
+    RiskManager {
         key: String,
-        #[serde(default)]
-        op_type: Option<String>,
-        #[serde(default)]
-        field_list: Vec<(String, String)>,
-        #[serde(default)]
-        start_offset: String,
-        #[serde(default)]
-        end_offset: String,
-        #[serde(default)]
-        is_cpc: Option<bool>,
     },
-    ControlStateDebug {
+    RiskDebug {
         key: String,
         start_ms: u64,
         end_ms: u64,
@@ -1931,7 +1755,6 @@ pub enum CommandResponse {
         node: Option<ContextNode>,
     },
     ContextNodes {
-        #[serde(default)]
         nodes: Vec<ContextNode>,
     },
     ContextObjectKey {

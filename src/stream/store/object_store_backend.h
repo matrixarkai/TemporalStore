@@ -3,13 +3,12 @@
 #include <absl/strings/match.h>
 
 #include <string>
-#include <vector>
 
 namespace bcache2 {
 namespace stream {
 
 enum class ObjectStoreBackend {
-    kMatrixObjectStore,
+    kByteStore,
     kS3,
     kCephS3,
     kCephRados,
@@ -18,59 +17,9 @@ enum class ObjectStoreBackend {
     kUnknown,
 };
 
-struct ObjectStoreBackendCapabilities {
-    const char* backend = "unknown";
-    const char* uri_scheme = "unknown";
-    bool runtime_linked = false;
-    bool operations_fail_closed = true;
-
-    // Canonical generic object-store capability names shared with Rust and S3-style adapters.
-    bool atomic_publish = false;
-    bool unique_put = false;
-    bool conditional_create = false;
-    bool direct_upload_from_path = false;
-    bool direct_download_to_path = false;
-    bool metadata_head = false;
-    bool prefix_list = false;
-    bool paginated_list = false;
-    bool delete_capability = false;
-    bool bulk_delete = false;
-    bool object_copy = false;
-    bool prefix_delete = false;
-    bool byte_range_read = false;
-    bool checksum_sha256 = false;
-    bool opaque_object_validators = false;
-    bool object_version_ids = false;
-    bool split_services = false;
-    bool s3_compatible = false;
-    bool local_file_compatible = false;
-
-    // Compatibility aliases for older C++ call sites. New public reports should prefer
-    // the canonical fields above.
-    bool condition_metadata = false;
-    bool metadata_stat = false;
-    bool append_write = false;
-    bool delete_object = false;
-    bool copy_or_rename = false;
-};
-
-struct CanonicalObjectStoreBackendCapabilities {
-    const char* backend = "unknown";
-    const char* uri_scheme = "unknown";
-    bool runtime_linked = false;
-    bool operations_fail_closed = true;
-    std::vector<std::string> operations;
-    std::vector<std::string> validators;
-    bool split_services = false;
-    bool s3_compatible = false;
-    bool local_file_compatible = false;
-};
-
 inline ObjectStoreBackend DetectObjectStoreBackend(const std::string& uri) {
-    if (absl::StartsWith(uri, "matrixobject://") ||
-        absl::StartsWith(uri, "matrixobjectstore://") ||
-        absl::StartsWith(uri, "blob://") || absl::StartsWith(uri, "local://")) {
-        return ObjectStoreBackend::kMatrixObjectStore;
+    if (absl::StartsWith(uri, "blob://") || absl::StartsWith(uri, "local://")) {
+        return ObjectStoreBackend::kByteStore;
     }
     if (absl::StartsWith(uri, "s3://")) {
         return ObjectStoreBackend::kS3;
@@ -95,135 +44,22 @@ inline ObjectStoreBackend DetectObjectStoreBackend(const std::string& uri) {
 
 inline const char* ObjectStoreBackendName(ObjectStoreBackend backend) {
     switch (backend) {
-    case ObjectStoreBackend::kMatrixObjectStore:
-        return "matrixobject";
+    case ObjectStoreBackend::kByteStore:
+        return "ByteStore";
     case ObjectStoreBackend::kS3:
-        return "s3";
+        return "S3";
     case ObjectStoreBackend::kCephS3:
-        return "ceph_s3";
+        return "CephS3";
     case ObjectStoreBackend::kCephRados:
-        return "ceph_rados";
+        return "CephRados";
     case ObjectStoreBackend::kSharedFile:
-        return "shared_file";
+        return "SharedFile";
     case ObjectStoreBackend::kLocalFile:
-        return "local_file";
+        return "LocalFile";
     case ObjectStoreBackend::kUnknown:
-        return "unknown";
+        return "Unknown";
     }
-    return "unknown";
-}
-
-inline bool ObjectStoreBackendRuntimeLinked(ObjectStoreBackend backend) {
-    switch (backend) {
-    case ObjectStoreBackend::kMatrixObjectStore:
-    case ObjectStoreBackend::kSharedFile:
-    case ObjectStoreBackend::kLocalFile:
-        return true;
-    case ObjectStoreBackend::kS3:
-    case ObjectStoreBackend::kCephS3:
-#ifdef BCACHE2_ENABLE_S3_STORE
-        return true;
-#else
-        return false;
-#endif
-    case ObjectStoreBackend::kCephRados:
-    case ObjectStoreBackend::kUnknown:
-        return false;
-    }
-    return false;
-}
-
-inline const char* ObjectStoreBackendUriScheme(ObjectStoreBackend backend) {
-    switch (backend) {
-    case ObjectStoreBackend::kMatrixObjectStore:
-        return "matrixobject";
-    case ObjectStoreBackend::kS3:
-        return "s3";
-    case ObjectStoreBackend::kCephS3:
-        return "ceph+s3";
-    case ObjectStoreBackend::kCephRados:
-        return "rados";
-    case ObjectStoreBackend::kSharedFile:
-        return "shared-file";
-    case ObjectStoreBackend::kLocalFile:
-        return "file";
-    case ObjectStoreBackend::kUnknown:
-        return "unknown";
-    }
-    return "unknown";
-}
-
-inline ObjectStoreBackendCapabilities ObjectStoreBackendCapabilityReport(ObjectStoreBackend backend) {
-    const bool runtime_linked = ObjectStoreBackendRuntimeLinked(backend);
-    const bool file_like =
-        backend == ObjectStoreBackend::kLocalFile || backend == ObjectStoreBackend::kSharedFile;
-    const bool matrixobject = backend == ObjectStoreBackend::kMatrixObjectStore;
-    const bool s3_compatible =
-        backend == ObjectStoreBackend::kS3 || backend == ObjectStoreBackend::kCephS3;
-    const bool native_rados = backend == ObjectStoreBackend::kCephRados;
-    const bool object_api = matrixobject || file_like || s3_compatible || native_rados;
-    ObjectStoreBackendCapabilities report;
-    report.backend = ObjectStoreBackendName(backend);
-    report.uri_scheme = ObjectStoreBackendUriScheme(backend);
-    report.runtime_linked = runtime_linked;
-    report.operations_fail_closed = object_api && !runtime_linked;
-    report.atomic_publish = object_api;
-    report.unique_put = object_api;
-    report.conditional_create = object_api;
-    report.direct_upload_from_path = object_api;
-    report.direct_download_to_path = object_api;
-    report.metadata_head = object_api;
-    report.prefix_list = object_api;
-    report.paginated_list = object_api;
-    report.delete_capability = object_api;
-    report.bulk_delete = object_api;
-    report.object_copy = object_api;
-    report.prefix_delete = object_api;
-    report.byte_range_read = object_api;
-    report.checksum_sha256 = object_api;
-    report.opaque_object_validators = object_api;
-    report.object_version_ids = matrixobject || s3_compatible;
-    report.split_services = matrixobject;
-    report.s3_compatible = s3_compatible;
-    report.local_file_compatible = file_like;
-
-    report.condition_metadata = report.conditional_create;
-    report.metadata_stat = report.metadata_head;
-    report.append_write = report.unique_put;
-    report.delete_object = report.delete_capability;
-    report.copy_or_rename = report.object_copy;
-    return report;
-}
-
-inline CanonicalObjectStoreBackendCapabilities CanonicalObjectStoreBackendCapabilityReport(
-    ObjectStoreBackend backend) {
-    const auto report = ObjectStoreBackendCapabilityReport(backend);
-    CanonicalObjectStoreBackendCapabilities canonical;
-    canonical.backend = report.backend;
-    canonical.uri_scheme = report.uri_scheme;
-    canonical.runtime_linked = report.runtime_linked;
-    canonical.operations_fail_closed = report.operations_fail_closed;
-    if (report.atomic_publish) canonical.operations.emplace_back("atomic_publish");
-    if (report.unique_put) canonical.operations.emplace_back("unique_put");
-    if (report.conditional_create) canonical.operations.emplace_back("conditional_create");
-    if (report.direct_upload_from_path) canonical.operations.emplace_back("direct_upload_from_path");
-    if (report.direct_download_to_path) canonical.operations.emplace_back("direct_download_to_path");
-    if (report.metadata_head) canonical.operations.emplace_back("metadata_head");
-    if (report.prefix_list) canonical.operations.emplace_back("prefix_list");
-    if (report.paginated_list) canonical.operations.emplace_back("paginated_list");
-    if (report.delete_capability) canonical.operations.emplace_back("delete_capability");
-    if (report.bulk_delete) canonical.operations.emplace_back("bulk_delete");
-    if (report.object_copy) canonical.operations.emplace_back("object_copy");
-    if (report.prefix_delete) canonical.operations.emplace_back("prefix_delete");
-    if (report.byte_range_read) canonical.operations.emplace_back("byte_range_read");
-    if (report.checksum_sha256) canonical.validators.emplace_back("checksum_sha256");
-    if (report.opaque_object_validators)
-        canonical.validators.emplace_back("opaque_object_validators");
-    if (report.object_version_ids) canonical.validators.emplace_back("object_version_ids");
-    canonical.split_services = report.split_services;
-    canonical.s3_compatible = report.s3_compatible;
-    canonical.local_file_compatible = report.local_file_compatible;
-    return canonical;
+    return "Unknown";
 }
 
 }  // namespace stream
