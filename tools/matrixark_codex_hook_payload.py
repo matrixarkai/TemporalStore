@@ -174,6 +174,9 @@ def prompt_from_input_messages(value: str) -> str:
     if "<codex_delegation>" in stripped:
         parts = [part.strip() for part in re.split(r",\s*(?=<codex_delegation>)", stripped) if part.strip()]
         return parts[-1] if parts else stripped
+    line_parts = [part.strip() for part in re.split(r"(?:\r?\n|\\n)\s*,", stripped) if part.strip()]
+    if len(line_parts) > 1:
+        return line_parts[-1]
     return stripped
 
 
