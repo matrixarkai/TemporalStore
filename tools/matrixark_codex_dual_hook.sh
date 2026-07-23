@@ -386,8 +386,16 @@ base = "http://" + os.environ.get("MATRIXARK_RUST_SERVICE_PROXY_ADDR", "127.0.0.
 meta = "http://" + os.environ.get("MATRIXARK_RUST_SERVICE_META_ADDR", "127.0.0.1:17101")
 session_id = identity.get("session_id") or os.environ.get("MATRIXARK_HOOK_SESSION_ID") or "codex-live-active-hook"
 session_id = f"codex:{session_id}" if not str(session_id).startswith("codex:") else str(session_id)
-record_hash = hashlib.sha256(f"{session_id}\n{prompt}".encode("utf-8", "replace")).hexdigest()
-record_marker = Path(os.environ.get("MATRIXARK_CODEX_HOOK_IDEMPOTENCY_DIR", "")) / f"record-rust-{record_hash}"
+event_name = os.environ.get("EVENT", "UserPromptSubmit")
+payload_hash = hashlib.sha256(raw_payload_bytes).hexdigest()
+turn_component = identity.get("turn_id") or payload_hash
+record_hash = hashlib.sha256(f"{session_id}\n{turn_component}\n{prompt}".encode("utf-8", "replace")).hexdigest()
+idempotency_dir = Path(os.environ.get("MATRIXARK_CODEX_HOOK_IDEMPOTENCY_DIR", ""))
+user_prompt_marker = idempotency_dir / f"user-prompt-rust-{record_hash}"
+if event_name == "Stop" and user_prompt_marker.exists():
+    print(f"skip stop prompt already ingested by UserPromptSubmit session={session_id} hash={record_hash[:12]}", file=__import__("sys").stderr)
+    raise SystemExit(0)
+record_marker = idempotency_dir / f"record-rust-{event_name}-{record_hash}"
 try:
     record_marker.mkdir()
 except FileExistsError:
@@ -395,7 +403,7 @@ except FileExistsError:
     raise SystemExit(0)
 except Exception:
     pass
-hook_id = f"{os.environ.get('EVENT', 'UserPromptSubmit')}:{record_hash[:16]}"
+hook_id = f"{event_name}:{record_hash[:16]}"
 synthetic_markers = (
     "matrixark synthetic",
     "synthetic probe",
@@ -521,7 +529,7 @@ raw_record = {
     "session_id_source": identity.get("session_id_source") or "fallback",
     "thread_id": identity.get("thread_id") or "",
     "turn_id": identity.get("turn_id") or "",
-    "codex_api_event": os.environ.get("EVENT", "UserPromptSubmit"),
+    "codex_api_event": event_name,
     "hook_id": hook_id,
     "hook_type": "before_llm",
     "hook_observed_at_ms": now_ms,
@@ -534,13 +542,14 @@ serving_record = {
     "session_id_source": identity.get("session_id_source") or "fallback",
     "thread_id": identity.get("thread_id") or "",
     "turn_id": identity.get("turn_id") or "",
-    "codex_api_event": os.environ.get("EVENT", "UserPromptSubmit"),
+    "codex_api_event": event_name,
     "hook_id": hook_id,
     "hook_type": "before_llm",
     "hook_observed_at_ms": now_ms,
     **retention_fields(prompt),
 }
 
+published_raw = False
 for count_key, records_prefix, record in (
     (f"{prefix}:raw_ingestion:record_count", f"{prefix}:raw_ingestion:records", raw_record),
     (f"{prefix}:record_count", f"{prefix}:records", serving_record),
@@ -559,8 +568,16 @@ for count_key, records_prefix, record in (
             f"published {records_prefix} sequence={sequence} field={field}",
             file=__import__("sys").stderr,
         )
+        if record.get("record_type") == "agent_message":
+            published_raw = True
     except Exception as exc:
         print(f"publish {records_prefix} failed: {exc}", file=__import__("sys").stderr)
+
+if event_name == "UserPromptSubmit" and published_raw:
+    try:
+        user_prompt_marker.mkdir()
+    except Exception:
+        pass
 PY
 }
 
@@ -843,8 +860,16 @@ table = os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table")
 prefix = os.environ.get("MATRIXARK_CPP_TEMPORALSTORE_PREFIX", "matrixark:codex-hook:cpp-live-v2")
 session_id = identity.get("session_id") or os.environ.get("MATRIXARK_HOOK_SESSION_ID") or "codex-live-active-hook"
 session_id = f"codex:{session_id}" if not str(session_id).startswith("codex:") else str(session_id)
-record_hash = hashlib.sha256(f"{session_id}\n{prompt}".encode("utf-8", "replace")).hexdigest()
-record_marker = Path(os.environ.get("MATRIXARK_CODEX_HOOK_IDEMPOTENCY_DIR", "")) / f"record-cpp-{record_hash}"
+event_name = os.environ.get("EVENT", "UserPromptSubmit")
+payload_hash = hashlib.sha256(raw_payload_bytes).hexdigest()
+turn_component = identity.get("turn_id") or payload_hash
+record_hash = hashlib.sha256(f"{session_id}\n{turn_component}\n{prompt}".encode("utf-8", "replace")).hexdigest()
+idempotency_dir = Path(os.environ.get("MATRIXARK_CODEX_HOOK_IDEMPOTENCY_DIR", ""))
+user_prompt_marker = idempotency_dir / f"user-prompt-cpp-{record_hash}"
+if event_name == "Stop" and user_prompt_marker.exists():
+    print(f"skip stop prompt already ingested by UserPromptSubmit session={session_id} hash={record_hash[:12]}", file=sys.stderr)
+    raise SystemExit(0)
+record_marker = idempotency_dir / f"record-cpp-{event_name}-{record_hash}"
 try:
     record_marker.mkdir()
 except FileExistsError:
@@ -852,7 +877,7 @@ except FileExistsError:
     raise SystemExit(0)
 except Exception:
     pass
-hook_id = f"{os.environ.get('EVENT', 'UserPromptSubmit')}:{record_hash[:16]}"
+hook_id = f"{event_name}:{record_hash[:16]}"
 synthetic_markers = (
     "matrixark synthetic",
     "synthetic probe",
@@ -930,7 +955,7 @@ common = {
     "session_id_source": identity.get("session_id_source") or "fallback",
     "thread_id": identity.get("thread_id") or "",
     "turn_id": identity.get("turn_id") or "",
-    "codex_api_event": os.environ.get("EVENT", "UserPromptSubmit"),
+    "codex_api_event": event_name,
     "hook_id": hook_id,
     "hook_type": "before_llm",
     "hook_observed_at_ms": now_ms,
@@ -939,6 +964,7 @@ common = {
 raw_record = {"record_type": "agent_message", "text": prompt, **common}
 serving_record = {"record_type": "context_event", "text": "user: " + prompt, **common}
 
+published_raw = False
 for count_key, records_prefix, record in (
     (f"{prefix}:raw_ingestion:record_count", f"{prefix}:raw_ingestion:records", raw_record),
     (f"{prefix}:record_count", f"{prefix}:records", serving_record),
@@ -954,8 +980,16 @@ for count_key, records_prefix, record in (
         hset_value(records_prefix, field, record)
         set_value(count_key, sequence)
         print(f"published {records_prefix} sequence={sequence} field={field}", file=sys.stderr)
+        if record.get("record_type") == "agent_message":
+            published_raw = True
     except Exception as exc:
         print(f"publish {records_prefix} failed: {exc}", file=sys.stderr)
+
+if event_name == "UserPromptSubmit" and published_raw:
+    try:
+        user_prompt_marker.mkdir()
+    except Exception:
+        pass
 PY
 }
 
