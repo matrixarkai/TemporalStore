@@ -187,11 +187,18 @@ def first_text(source, keys):
     return ""
 
 
+def nested_source(source, key):
+    if not isinstance(source, dict):
+        return {}
+    value = source.get(key)
+    return value if isinstance(value, (dict, str)) else {}
+
+
 prompt = first_text(payload, ["prompt", "message", "text", "input", "user_prompt", "userPrompt"])
 if not prompt:
     for nested_key in ("hookInput", "hook_input", "payload", "event", "data"):
         prompt = first_text(
-            payload.get(nested_key) if isinstance(payload, dict) else {},
+            nested_source(payload, nested_key),
             ["prompt", "message", "text", "input", "user_prompt", "userPrompt"],
         )
         if prompt:
@@ -457,11 +464,17 @@ def first_text(source, keys):
             return value.strip()
     return ""
 
+def nested_source(source, key):
+    if not isinstance(source, dict):
+        return {}
+    value = source.get(key)
+    return value if isinstance(value, (dict, str)) else {}
+
 prompt = first_text(payload, ["prompt", "message", "text", "input", "user_prompt", "userPrompt"])
 if not prompt:
     for nested_key in ("hookInput", "hook_input", "payload", "event", "data"):
         prompt = first_text(
-            payload.get(nested_key) if isinstance(payload, dict) else {},
+            nested_source(payload, nested_key),
             ["prompt", "message", "text", "input", "user_prompt", "userPrompt"],
         )
         if prompt:
