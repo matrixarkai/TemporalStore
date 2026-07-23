@@ -61,6 +61,20 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         identity = extract_identity(payload)
         self.assertEqual("codex:019f8d12-86c6-7100-9a44-7537cdd30aec", identity["session_id"])
 
+    def test_loose_stop_payload_extracts_latest_newline_separated_input_message(self) -> None:
+        raw = (
+            '-- {"type:agent-turn-complete,thread-id:019efad7-2f87-77e1-b082-c294fcb5e731,'
+            'input-messages:[inference for llm\\n,'
+            'vllm, sglang, others for comparison\\n,'
+            'MatrixArk natural live acceptance after launcher bash fix]}"'
+        )
+        payload = decode_payload(raw.encode("utf-8"))
+
+        self.assertEqual(
+            "MatrixArk natural live acceptance after launcher bash fix",
+            extract_prompt(payload, event="Stop"),
+        )
+
     def test_env_thread_identity_fallback_when_payload_has_no_session(self) -> None:
         identity = extract_identity(
             {"hook_event_name": "Stop", "transcript_path": "ignored.jsonl"},

@@ -207,10 +207,28 @@ def prompt_from_input_messages(value):
     matches = re.findall(r"<input>(.*?)</input>", value, re.DOTALL)
     if matches:
         return matches[-1].strip()
-    parts = [part.strip() for part in value.split(",<codex_delegation>") if part.strip()]
-    if len(parts) > 1:
-        return ("<codex_delegation>" + parts[-1]).strip()
-    return value.strip()
+    stripped = value.strip().strip("[]").strip()
+    if not stripped:
+        return ""
+    try:
+        parsed = json.loads(value if value.lstrip().startswith("[") else f"[{value}]")
+        if isinstance(parsed, list):
+            parts = [
+                str(part).strip()
+                for part in parsed
+                if isinstance(part, (str, int, float)) and str(part).strip()
+            ]
+            if parts:
+                return parts[-1]
+    except Exception:
+        pass
+    if "<codex_delegation>" in stripped:
+        parts = [part.strip() for part in re.split(r",\s*(?=<codex_delegation>)", stripped) if part.strip()]
+        return parts[-1] if parts else stripped
+    line_parts = [part.strip() for part in re.split(r"(?:\r?\n|\\n)\s*,", stripped) if part.strip()]
+    if len(line_parts) > 1:
+        return line_parts[-1]
+    return stripped
 
 def payload_field(source, keys):
     if not isinstance(source, dict):
@@ -618,10 +636,28 @@ def prompt_from_input_messages(value):
     matches = re.findall(r"<input>(.*?)</input>", value, re.DOTALL)
     if matches:
         return matches[-1].strip()
-    parts = [part.strip() for part in value.split(",<codex_delegation>") if part.strip()]
-    if len(parts) > 1:
-        return ("<codex_delegation>" + parts[-1]).strip()
-    return value.strip()
+    stripped = value.strip().strip("[]").strip()
+    if not stripped:
+        return ""
+    try:
+        parsed = json.loads(value if value.lstrip().startswith("[") else f"[{value}]")
+        if isinstance(parsed, list):
+            parts = [
+                str(part).strip()
+                for part in parsed
+                if isinstance(part, (str, int, float)) and str(part).strip()
+            ]
+            if parts:
+                return parts[-1]
+    except Exception:
+        pass
+    if "<codex_delegation>" in stripped:
+        parts = [part.strip() for part in re.split(r",\s*(?=<codex_delegation>)", stripped) if part.strip()]
+        return parts[-1] if parts else stripped
+    line_parts = [part.strip() for part in re.split(r"(?:\r?\n|\\n)\s*,", stripped) if part.strip()]
+    if len(line_parts) > 1:
+        return line_parts[-1]
+    return stripped
 
 def payload_field(source, keys):
     if not isinstance(source, dict):
