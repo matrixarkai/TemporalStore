@@ -1,6 +1,7 @@
 param(
     [string]$WslDistro = "",
     [string]$RepoPath = "/root/src/github-services/TemporalStore",
+    [string]$WindowsRepoPath = "",
     [string]$ImageName = "matrixark-temporalstore-rust:win-local",
     [string]$ContainerName = "temporalstore-rust-win",
     [string]$VolumeName = "temporalstore-rust-win-data",
@@ -9,6 +10,9 @@ param(
     [int]$CacheMemoryBytes = 67108864,
     [switch]$InstallDockerDesktop,
     [switch]$BuildReleaseBinaries,
+    [switch]$BuildImageFromLocalBinaries,
+    [switch]$PullImage,
+    [switch]$SkipImagePull,
     [switch]$SkipImageBuild,
     [switch]$SkipRun,
     [switch]$SkipSmoke,
@@ -130,6 +134,9 @@ function Wait-DockerReady {
 
 function Invoke-Wsl {
     param([string]$Command)
+    if (-not $script:ResolvedWslDistro) {
+        throw "WSL is only required for -BuildReleaseBinaries or -BuildImageFromLocalBinaries. Pass -WslDistro if auto-detection is not available."
+    }
     Invoke-Checked "wsl.exe" @("-d", $script:ResolvedWslDistro, "--", "bash", "-lc", $Command) "WSL command"
 }
 
@@ -220,6 +227,27 @@ function Build-DockerImage {
     }
     Write-Step "Build Docker image $ImageName"
     Invoke-Checked $Docker @("build", "-t", $ImageName, $Context) "Docker image build"
+}
+
+function Ensure-DockerImage {
+    param([string]$Docker)
+    if ($BuildImageFromLocalBinaries -or $BuildReleaseBinaries) {
+        return
+    }
+    Write-Step "Validate Docker image $ImageName"
+    & $Docker image inspect $ImageName *> $null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Using local Docker image: $ImageName"
+        return
+    }
+    if ($SkipImagePull) {
+        throw "Docker image $ImageName was not found locally. Remove -SkipImagePull, pass -PullImage, or build it with -BuildImageFromLocalBinaries."
+    }
+    if ($PullImage) {
+        Invoke-Checked $Docker @("pull", $ImageName) "Docker image pull"
+        return
+    }
+    throw "Docker image $ImageName was not found locally. For no-WSL install, provide/pull a prebuilt image. For maintainer builds, use -BuildImageFromLocalBinaries."
 }
 
 function Run-TemporalStoreContainer {
@@ -317,8 +345,18 @@ function Install-CodexHookWrapperIfRequested {
         return
     }
     Write-Step "Install Codex hook wrappers"
-    Invoke-Wsl "command -v python3 >/dev/null"
-    $repoRoot = Convert-WslPathToUnc $RepoPath
+    $python = Get-Command python.exe -ErrorAction SilentlyContinue
+    if (-not $python) {
+        $python = Get-Command python3.exe -ErrorAction SilentlyContinue
+    }
+    if (-not $python) {
+        throw "python.exe or python3.exe was not found. Install Python on Windows before installing the Codex hook wrapper."
+    }
+    if ($WindowsRepoPath) {
+        $repoRoot = (Resolve-Path -LiteralPath $WindowsRepoPath).Path
+    } else {
+        $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+    }
     $agentHook = Join-Path $repoRoot "tools\matrixark_agent_hook.py"
     if (-not (Test-Path $agentHook)) {
         throw "Missing $agentHook; cannot install Codex hook wrapper."
@@ -332,24 +370,34 @@ function Install-CodexHookWrapperIfRequested {
     $hookWrapper = Join-Path $HookInstallDir "matrixark-codex-hook-rust-docker.cmd"
     $proxyWrapperPs1 = Join-Path $HookInstallDir "matrixark-rust-proxy-docker.ps1"
     $hookWrapperPs1 = Join-Path $HookInstallDir "matrixark-codex-hook-rust-docker.ps1"
-    $proxyWrapperSh = Join-Path $HookInstallDir "matrixark-rust-proxy-docker.sh"
-    $hookWrapperSh = Join-Path $HookInstallDir "matrixark-codex-hook-rust-docker.sh"
-    $dockerWslPath = Convert-WindowsPathToWsl $Docker
-    $proxyWrapperWsl = Convert-WindowsPathToWsl $proxyWrapperSh
-    $hookWrapperWsl = Convert-WindowsPathToWsl $hookWrapperSh
+    $dockerEscaped = $Docker.Replace("'", "''")
+    $pythonEscaped = $python.Source.Replace("'", "''")
+    $agentHookEscaped = $agentHook.Replace("'", "''")
+    $proxyWrapperEscaped = $proxyWrapper.Replace("'", "''")
     $containerEscaped = $ContainerName.Replace("%", "%%")
     $hookPrefixEscaped = $HookPrefix.Replace("%", "%%")
 
     $proxyPowerShellContent = @"
 `$ErrorActionPreference = "Stop"
-& wsl.exe -d "$script:ResolvedWslDistro" -- bash "$proxyWrapperWsl" @args
+& '$dockerEscaped' exec -i `
+  -e TS_CACHE_DIR=/var/lib/temporalstore/cache `
+  -e TS_PAGE_STORE_DIR=/var/lib/temporalstore/pages `
+  -e TS_INDEX_DIR=/var/lib/temporalstore/indexes `
+  -e TS_REPLICA_REPLAY_CURSOR_DIR=/var/lib/temporalstore/replica-replay-cursors `
+  '$ContainerName' matrixark_rust_proxy --serve
 exit `$LASTEXITCODE
 "@
     Set-Content -LiteralPath $proxyWrapperPs1 -Value $proxyPowerShellContent -Encoding ascii
 
     $hookPowerShellContent = @"
 `$ErrorActionPreference = "Stop"
-& wsl.exe -d "$script:ResolvedWslDistro" -- bash "$hookWrapperWsl" @args
+`$env:MATRIXARK_MCP_BACKEND = "temporalstore-rust"
+`$env:MATRIXARK_TEMPORALSTORE_RUST_PROXY = '$proxyWrapperEscaped'
+`$env:MATRIXARK_TEMPORALSTORE_PREFIX = "$HookPrefix"
+`$env:MATRIXARK_TEMPORALSTORE_METASERVER = "127.0.0.1:$MetaPort"
+`$env:MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS = "60000"
+`$env:MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS = "60000"
+& '$pythonEscaped' '$agentHookEscaped' --agent codex --event UserPromptSubmit --backend temporalstore-rust @args
 exit `$LASTEXITCODE
 "@
     Set-Content -LiteralPath $hookWrapperPs1 -Value $hookPowerShellContent -Encoding ascii
@@ -366,61 +414,35 @@ exit `$LASTEXITCODE
     ) -join "`r`n"
     Set-Content -LiteralPath $hookWrapper -Value $hookContent -Encoding ascii
 
-    $proxyShell = @"
-#!/usr/bin/env bash
-set -euo pipefail
-exec "$dockerWslPath" exec -i \
-  -e TS_CACHE_DIR=/var/lib/temporalstore/cache \
-  -e TS_PAGE_STORE_DIR=/var/lib/temporalstore/pages \
-  -e TS_INDEX_DIR=/var/lib/temporalstore/indexes \
-  -e TS_REPLICA_REPLAY_CURSOR_DIR=/var/lib/temporalstore/replica-replay-cursors \
-  "$ContainerName" matrixark_rust_proxy --serve
-"@
-    [System.IO.File]::WriteAllText(
-        $proxyWrapperSh,
-        ($proxyShell -replace "`r`n", "`n"),
-        [System.Text.Encoding]::ASCII
-    )
-
-    $hookShell = @"
-#!/usr/bin/env bash
-set -euo pipefail
-export MATRIXARK_MCP_BACKEND=temporalstore-rust
-export MATRIXARK_TEMPORALSTORE_RUST_PROXY="$proxyWrapperWsl"
-export MATRIXARK_TEMPORALSTORE_PREFIX="$HookPrefix"
-export MATRIXARK_TEMPORALSTORE_METASERVER=127.0.0.1:$MetaPort
-export MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS=60000
-export MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS=60000
-cd "$RepoPath"
-exec python3 "$RepoPath/tools/matrixark_agent_hook.py" --agent codex --event UserPromptSubmit --backend temporalstore-rust "`$@"
-"@
-    [System.IO.File]::WriteAllText(
-        $hookWrapperSh,
-        ($hookShell -replace "`r`n", "`n"),
-        [System.Text.Encoding]::ASCII
-    )
-
     Write-Host "Rust proxy wrapper: $proxyWrapper"
     Write-Host "Codex hook wrapper: $hookWrapper"
     Write-Host "PowerShell proxy wrapper: $proxyWrapperPs1"
     Write-Host "PowerShell Codex hook wrapper: $hookWrapperPs1"
-    Write-Host "WSL proxy wrapper: $proxyWrapperSh"
-    Write-Host "WSL Codex hook wrapper: $hookWrapperSh"
     Write-Host "Use the Codex hook command above for UserPromptSubmit. Use matching wrappers for Stop/PostToolUse if your Codex hook configuration supports multiple lifecycle events."
 }
 
-$script:ResolvedWslDistro = Resolve-WslDistro
 Write-Step "Resolved dependencies"
-Write-Host "WSL distro: $script:ResolvedWslDistro"
+Write-Host "Docker image: $ImageName"
+if ($BuildReleaseBinaries -or $BuildImageFromLocalBinaries) {
+    $script:ResolvedWslDistro = Resolve-WslDistro
+    Write-Host "WSL distro: $script:ResolvedWslDistro"
+} else {
+    $script:ResolvedWslDistro = ""
+    Write-Host "WSL distro: not required for prebuilt-image install"
+}
 
 Install-DockerDesktopIfRequested
 Start-DockerDesktop
 $docker = Resolve-Docker
 Wait-DockerReady $docker
 Build-ReleaseBinariesIfRequested
-$releaseDir = Assert-ReleaseBinaries
-$context = New-DockerContext $releaseDir
-Build-DockerImage $docker $context
+if ($BuildReleaseBinaries -or $BuildImageFromLocalBinaries) {
+    $releaseDir = Assert-ReleaseBinaries
+    $context = New-DockerContext $releaseDir
+    Build-DockerImage $docker $context
+} else {
+    Ensure-DockerImage $docker
+}
 Run-TemporalStoreContainer $docker
 Invoke-SmokeValidation $docker
 Install-CodexHookWrapperIfRequested $docker
