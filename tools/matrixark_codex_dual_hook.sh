@@ -377,6 +377,7 @@ if not isinstance(prompt, str) or not prompt.strip():
         pass
     print(f"skip empty prompt event={os.environ.get('EVENT', 'UserPromptSubmit')} keys={keys}", file=__import__("sys").stderr)
     raise SystemExit(0)
+prompt = prompt.strip()
 
 now_ms = int(time.time() * 1000)
 namespace = os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns")
@@ -853,6 +854,7 @@ if not prompt:
         pass
     print(f"skip empty prompt event={os.environ.get('EVENT', 'UserPromptSubmit')} keys={keys}", file=sys.stderr)
     raise SystemExit(0)
+prompt = prompt.strip()
 
 now_ms = int(time.time() * 1000)
 namespace = os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns")
