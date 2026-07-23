@@ -9,9 +9,43 @@ from argparse import Namespace
 from pathlib import Path
 
 import matrixark_codex_hook as hook
+from matrixark_codex_hook_payload import decode_payload, extract_identity, extract_prompt
 
 
 class MatrixArkCodexHookOutputTest(unittest.TestCase):
+    def test_loose_stop_payload_extracts_current_input_message_and_thread_identity(self) -> None:
+        raw = (
+            '-- {"type:agent-turn-complete,thread-id:019f8cb5-b4d5-77f2-8c82-0499440da36f,'
+            'turn-id:019f8cd9-7669-7891-ab92-7353efe82e4d,'
+            'cwd:C:\\Users\\Deeproute\\Documents\\Codex,client:Codex Desktop,'
+            'input-messages:[older prompt,'
+            '<codex_delegation>\\n <input>fresh old task prompt should win</input>\\n</codex_delegation>]}"'
+        )
+        payload = decode_payload(raw.encode("utf-8"))
+
+        self.assertEqual("fresh old task prompt should win", extract_prompt(payload, event="Stop"))
+        identity = extract_identity(payload)
+        self.assertEqual("codex:019f8cb5-b4d5-77f2-8c82-0499440da36f", identity["session_id"])
+        self.assertEqual("019f8cb5-b4d5-77f2-8c82-0499440da36f", identity["thread_id"])
+        self.assertEqual("019f8cd9-7669-7891-ab92-7353efe82e4d", identity["turn_id"])
+
+    def test_json_user_prompt_payload_extracts_prompt_and_session_identity(self) -> None:
+        payload = decode_payload(
+            json.dumps(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "019efad7-2f87-77e1-b082-c294fcb5e731",
+                    "turn_id": "019f-turn",
+                    "prompt": "natural current prompt",
+                }
+            ).encode("utf-8")
+        )
+
+        self.assertEqual("natural current prompt", extract_prompt(payload, event="UserPromptSubmit"))
+        identity = extract_identity(payload)
+        self.assertEqual("codex:019efad7-2f87-77e1-b082-c294fcb5e731", identity["session_id"])
+        self.assertEqual("019f-turn", identity["turn_id"])
+
     def test_hook_trace_records_output_summary(self) -> None:
         class Adapter:
             def __init__(self) -> None:

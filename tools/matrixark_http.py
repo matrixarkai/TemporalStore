@@ -112,6 +112,13 @@ _CODEX_HOOK_SYNTHETIC_MARKERS = {
     "proof",
     "reply ok only",
     "current thread fix",
+    "matrixark legacy notify",
+    "matrixark node launcher",
+    "matrixark utf8 spooled hook",
+    "matrixark wsl direct canonical",
+    "matrixark app-server",
+    "hook capture",
+    "queryable row",
 }
 
 
