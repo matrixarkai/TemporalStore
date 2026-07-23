@@ -320,7 +320,7 @@ def stop_fallback_prompt(source):
     return latest.strip()
 
 
-identity = extract_identity(payload)
+identity = extract_identity(payload, env=os.environ)
 prompt = extract_prompt(payload, event=os.environ.get("EVENT", "UserPromptSubmit"))
 if not prompt:
     prompt = stop_fallback_prompt(payload)
@@ -729,7 +729,7 @@ def stop_fallback_prompt(source):
         latest = match.group(1).strip()
     return latest.strip()
 
-identity = extract_identity(payload)
+identity = extract_identity(payload, env=os.environ)
 prompt = extract_prompt(payload, event=os.environ.get("EVENT", "UserPromptSubmit"))
 if not prompt:
     prompt = stop_fallback_prompt(payload)

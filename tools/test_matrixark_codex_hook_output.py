@@ -46,6 +46,31 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("codex:019efad7-2f87-77e1-b082-c294fcb5e731", identity["session_id"])
         self.assertEqual("019f-turn", identity["turn_id"])
 
+    def test_loose_stop_payload_preserves_single_prompt_with_commas(self) -> None:
+        raw = (
+            '-- {"type:agent-turn-complete,thread-id:019f8d12-86c6-7100-9a44-7537cdd30aec,'
+            'input-messages:[QUERY TOP 10 MESSAGES FROM C++ AND RUST TEMPORALSTORE WITH DETAILS TO COMPARE, '
+            'MAKE SURE CURRENT THREAD IS FETCHED]}"'
+        )
+        payload = decode_payload(raw.encode("utf-8"))
+
+        self.assertIn(
+            "QUERY TOP 10 MESSAGES FROM C++ AND RUST TEMPORALSTORE",
+            extract_prompt(payload, event="Stop"),
+        )
+        identity = extract_identity(payload)
+        self.assertEqual("codex:019f8d12-86c6-7100-9a44-7537cdd30aec", identity["session_id"])
+
+    def test_env_thread_identity_fallback_when_payload_has_no_session(self) -> None:
+        identity = extract_identity(
+            {"hook_event_name": "Stop", "transcript_path": "ignored.jsonl"},
+            env={"CODEX_THREAD_ID": "019f8d12-86c6-7100-9a44-7537cdd30aec"},
+        )
+
+        self.assertEqual("codex:019f8d12-86c6-7100-9a44-7537cdd30aec", identity["session_id"])
+        self.assertEqual("019f8d12-86c6-7100-9a44-7537cdd30aec", identity["thread_id"])
+        self.assertEqual("env", identity["session_id_source"])
+
     def test_hook_trace_records_output_summary(self) -> None:
         class Adapter:
             def __init__(self) -> None:

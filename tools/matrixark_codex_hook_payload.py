@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Mapping
 
 Json = dict[str, Any]
 
@@ -27,6 +27,9 @@ PROMPT_KEYS = (
 SESSION_KEYS = ("session_id", "session-id", "sessionId", "conversation_id", "conversation-id", "conversationId")
 THREAD_KEYS = ("thread_id", "thread-id", "threadId", "codex_thread_id", "codex-thread-id", "codexThreadId")
 TURN_KEYS = ("turn_id", "turn-id", "turnId")
+ENV_SESSION_KEYS = ("CODEX_SESSION_ID", "CODEX_CONVERSATION_ID", "MATRIXARK_HOOK_SESSION_ID")
+ENV_THREAD_KEYS = ("CODEX_THREAD_ID", "CODEX_TASK_ID")
+ENV_TURN_KEYS = ("CODEX_TURN_ID",)
 NESTED_KEYS = ("hookInput", "hook_input", "payload", "event", "data", "params", "turn", "metadata")
 FIELD_BOUNDARY_KEYS = PROMPT_KEYS + SESSION_KEYS + THREAD_KEYS + TURN_KEYS + (
     "type",
@@ -127,6 +130,16 @@ def _dict_field(source: Any, keys: tuple[str, ...] | list[str]) -> str:
     return ""
 
 
+def _env_field(env: Mapping[str, str] | None, keys: tuple[str, ...] | list[str]) -> str:
+    if not env:
+        return ""
+    for key in keys:
+        value = env.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def _sources(payload: Any) -> list[Any]:
     found = [payload]
     if isinstance(payload, dict):
@@ -143,8 +156,25 @@ def prompt_from_input_messages(value: str) -> str:
     matches = re.findall(r"<input>(.*?)</input>", value, re.DOTALL)
     if matches:
         return matches[-1].strip()
-    parts = [part.strip() for part in re.split(r",\s*(?=<codex_delegation>|[^,\[]+$)", value) if part.strip()]
-    return parts[-1] if parts else value.strip()
+    stripped = value.strip().strip("[]").strip()
+    if not stripped:
+        return ""
+    try:
+        parsed = json.loads(value if value.lstrip().startswith("[") else f"[{value}]")
+        if isinstance(parsed, list):
+            parts = [
+                str(part).strip()
+                for part in parsed
+                if isinstance(part, (str, int, float)) and str(part).strip()
+            ]
+            if parts:
+                return parts[-1]
+    except Exception:
+        pass
+    if "<codex_delegation>" in stripped:
+        parts = [part.strip() for part in re.split(r",\s*(?=<codex_delegation>)", stripped) if part.strip()]
+        return parts[-1] if parts else stripped
+    return stripped
 
 
 def extract_prompt(payload: Any, *, event: str = "UserPromptSubmit") -> str:
@@ -169,7 +199,7 @@ def extract_prompt(payload: Any, *, event: str = "UserPromptSubmit") -> str:
     return ""
 
 
-def extract_identity(payload: Any) -> Json:
+def extract_identity(payload: Any, *, env: Mapping[str, str] | None = None) -> Json:
     loose = loose_fields(payload) if isinstance(payload, str) else {}
     session_id = ""
     thread_id = ""
@@ -182,6 +212,13 @@ def extract_identity(payload: Any) -> Json:
         if session_id or thread_id:
             source_name = "payload_field"
             break
+    if not (session_id or thread_id):
+        session_id = _env_field(env, ENV_SESSION_KEYS)
+        thread_id = _env_field(env, ENV_THREAD_KEYS)
+        if session_id or thread_id:
+            source_name = "env"
+    if not turn_id:
+        turn_id = _env_field(env, ENV_TURN_KEYS)
     canonical = session_id or thread_id
     if canonical and not canonical.startswith("codex:"):
         canonical = f"codex:{canonical}"
