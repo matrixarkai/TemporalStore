@@ -12,6 +12,18 @@
         ]
       }
     ],
+    "sessionStart": [
+      {
+        "matcher": "clear|startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" SessionStart",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
     "session_start": [
       {
         "matcher": "clear|startup|resume",
@@ -36,6 +48,18 @@
         ]
       }
     ],
+    "userPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" UserPromptSubmit",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
     "user_prompt_submit": [
       {
         "matcher": "*",
@@ -49,6 +73,18 @@
       }
     ],
     "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" PostToolUse",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "postToolUse": [
       {
         "matcher": "*",
         "hooks": [
@@ -97,6 +133,18 @@
       }
     ],
     "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"__NODE__\" \"__PLUGIN_ROOT__/scripts/temporalstore_hook_launcher.mjs\" PreCompact",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "preCompact": [
       {
         "matcher": "*",
         "hooks": [

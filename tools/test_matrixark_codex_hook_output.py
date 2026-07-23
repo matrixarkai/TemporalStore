@@ -45,7 +45,25 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("natural current prompt", extract_prompt(payload, event="UserPromptSubmit"))
         identity = extract_identity(payload)
         self.assertEqual("codex:019efad7-2f87-77e1-b082-c294fcb5e731", identity["session_id"])
+        self.assertEqual("019efad7-2f87-77e1-b082-c294fcb5e731", identity["thread_id"])
         self.assertEqual("019f-turn", identity["turn_id"])
+
+    def test_user_prompt_payload_preserves_explicit_thread_identity(self) -> None:
+        payload = decode_payload(
+            json.dumps(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "019efad7-2f87-77e1-b082-c294fcb5e731",
+                    "thread_id": "019f8d12-86c6-7100-9a44-7537cdd30aec",
+                    "turn_id": "019f-turn",
+                    "prompt": "delegated prompt",
+                }
+            ).encode("utf-8")
+        )
+
+        identity = extract_identity(payload)
+        self.assertEqual("codex:019efad7-2f87-77e1-b082-c294fcb5e731", identity["session_id"])
+        self.assertEqual("019f8d12-86c6-7100-9a44-7537cdd30aec", identity["thread_id"])
 
     def test_loose_stop_payload_preserves_single_prompt_with_commas(self) -> None:
         raw = (

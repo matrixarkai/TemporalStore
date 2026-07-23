@@ -236,6 +236,11 @@ def extract_identity(payload: Any, *, env: Mapping[str, str] | None = None) -> J
             source_name = "env"
     if not turn_id:
         turn_id = _env_field(env, ENV_TURN_KEYS)
+    if session_id and not thread_id and re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        session_id,
+    ):
+        thread_id = session_id
     canonical = session_id or thread_id
     if canonical and not canonical.startswith("codex:"):
         canonical = f"codex:{canonical}"
