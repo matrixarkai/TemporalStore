@@ -178,6 +178,8 @@ def loose_payload_field(text, wanted_keys):
     if not isinstance(text, str) or not text.strip():
         return ""
     body = loose_payload_body(text)
+    boundary = r'(?:input-messages|input_messages|inputMessages|prompt|message|text|input|input_prompt|input-prompt|user_prompt|user-prompt|userPrompt|session_id|session-id|sessionId|conversation_id|conversation-id|conversationId|thread_id|thread-id|threadId|codex_thread_id|codex-thread-id|codexThreadId|turn_id|turn-id|turnId|type|cwd|client|model|hook_event_name|hook-event-name|transcript_path|transcript-path|last_assistant_message|last-assistant-message)'
+    input_message_keys = {"input-messages", "input_messages", "inputMessages"}
     for key in wanted_keys:
         match = re.search(r'"?' + re.escape(key) + r'\s*:', body)
         if not match:
@@ -185,6 +187,13 @@ def loose_payload_field(text, wanted_keys):
         value_start = match.end()
         while value_start < len(body) and body[value_start].isspace():
             value_start += 1
+        if key in input_message_keys:
+            next_match = re.search(r',\s*"?' + boundary + r'"?\s*:', body[value_start:])
+            value_end = value_start + next_match.start() if next_match else len(body)
+            value = body[value_start:value_end].strip().strip(",").strip().strip('}"').strip()
+            if value.startswith("[") and value.endswith("]"):
+                value = value[1:-1].strip()
+            return value
         if value_start < len(body) and body[value_start] == "[":
             depth = 0
             for pos in range(value_start, len(body)):
@@ -624,6 +633,8 @@ def loose_payload_field(text, wanted_keys):
     if not isinstance(text, str) or not text.strip():
         return ""
     body = loose_payload_body(text)
+    boundary = r'(?:input-messages|input_messages|inputMessages|prompt|message|text|input|input_prompt|input-prompt|user_prompt|user-prompt|userPrompt|session_id|session-id|sessionId|conversation_id|conversation-id|conversationId|thread_id|thread-id|threadId|codex_thread_id|codex-thread-id|codexThreadId|turn_id|turn-id|turnId|type|cwd|client|model|hook_event_name|hook-event-name|transcript_path|transcript-path|last_assistant_message|last-assistant-message)'
+    input_message_keys = {"input-messages", "input_messages", "inputMessages"}
     for key in wanted_keys:
         match = re.search(r'"?' + re.escape(key) + r'\s*:', body)
         if not match:
@@ -631,6 +642,13 @@ def loose_payload_field(text, wanted_keys):
         value_start = match.end()
         while value_start < len(body) and body[value_start].isspace():
             value_start += 1
+        if key in input_message_keys:
+            next_match = re.search(r',\s*"?' + boundary + r'"?\s*:', body[value_start:])
+            value_end = value_start + next_match.start() if next_match else len(body)
+            value = body[value_start:value_end].strip().strip(",").strip().strip('}"').strip()
+            if value.startswith("[") and value.endswith("]"):
+                value = value[1:-1].strip()
+            return value
         if value_start < len(body) and body[value_start] == "[":
             depth = 0
             for pos in range(value_start, len(body)):
