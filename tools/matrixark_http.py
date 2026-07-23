@@ -94,24 +94,19 @@ HTTP_TOOL_ROUTES: dict[str, str] = {
 
 _CODEX_HOOK_SHARD_SIZE = 10000
 _CODEX_HOOK_SYNTHETIC_MARKERS = {
-    "probe",
-    "smoke",
-    "synthetic",
+    "matrixark synthetic",
+    "synthetic probe",
+    "codex-live-probe",
+    "codex-cpp-live-probe",
+    "manual validation",
+    "hook verification",
+    "reply ok only",
     "manual ingestion",
-    "verification",
     "stdin check",
     "cmd stdin check",
     "service publisher",
     "registered codex hook config verification",
-    "real marker check",
     "fixed raw ingestion probe",
-    "codex-live-probe",
-    "codex-cpp-live-probe",
-    "debug",
-    "test message",
-    "proof",
-    "reply ok only",
-    "current thread fix",
     "matrixark legacy notify",
     "matrixark node launcher",
     "matrixark utf8 spooled hook",
@@ -120,6 +115,22 @@ _CODEX_HOOK_SYNTHETIC_MARKERS = {
     "hook capture",
     "queryable row",
 }
+
+
+def _hook_text_is_synthetic(text_value: str) -> bool:
+    normalized = " ".join(str(text_value or "").lower().split())
+    if normalized.startswith("user: "):
+        normalized = normalized[6:].strip()
+    if not normalized:
+        return False
+    if normalized.startswith(("probe ", "smoke ", "debug ", "test message ")):
+        return True
+    padded = f" {normalized} "
+    if " smoke " in padded or " proof " in padded:
+        return True
+    if normalized.startswith("you are a helpful assistant. you will be presented with a user prompt, and your job is to provide a short title"):
+        return True
+    return any(marker in normalized for marker in _CODEX_HOOK_SYNTHETIC_MARKERS)
 
 
 def _hook_decode_value(value: Any) -> str | None:
@@ -348,14 +359,9 @@ def _hook_is_real_user(record: Json, role: str, text_value: str, *, real_user_on
         return False
     if include_synthetic:
         return True
-    if record.get("synthetic") is True:
+    if record.get("synthetic") is True and _hook_text_is_synthetic(text_value):
         return False
-    marker_blob = " ".join(
-        str(record.get(key, ""))
-        for key in ("record_class", "retention_class", "origin", "session_id", "source_kind")
-    ).lower()
-    marker_blob = f"{text_value.lower()} {marker_blob}"
-    return not any(marker in marker_blob for marker in _CODEX_HOOK_SYNTHETIC_MARKERS)
+    return not _hook_text_is_synthetic(text_value)
 
 
 def _hook_infer_role(record: Json, role: str, text_value: str) -> str:
@@ -373,7 +379,10 @@ def _hook_infer_role(record: Json, role: str, text_value: str) -> str:
 
 
 def _hook_row_identity(row: Json) -> tuple[str, str, str]:
-    text_key = " ".join(str(row.get("text", "")).lower().split())[:512]
+    text = " ".join(str(row.get("text", "")).lower().split())
+    if text.startswith("user: "):
+        text = text[6:].strip()
+    text_key = text[:512]
     return (str(row.get("backend") or ""), str(row.get("session_id") or ""), text_key)
 
 
@@ -454,7 +463,7 @@ def _hook_collect(reader: _HookStoreReader, prefix: str, args: Json) -> Json:
                     "source_field": source_field,
                     "record_type": record.get("record_type"),
                     "source_kind": record.get("source_kind"),
-                    "synthetic": bool(record.get("synthetic", False)),
+                    "synthetic": bool(record.get("synthetic", False)) and _hook_text_is_synthetic(text_value),
                     "record_keys": sorted(k for k in record.keys() if k not in {"messages", "text", "content", "message"})[:48],
                 }
             )

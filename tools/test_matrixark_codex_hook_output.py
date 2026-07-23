@@ -9,6 +9,7 @@ from argparse import Namespace
 from pathlib import Path
 
 import matrixark_codex_hook as hook
+import matrixark_http
 from matrixark_codex_hook_payload import decode_payload, extract_identity, extract_prompt
 
 
@@ -349,6 +350,124 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("codex-cpp-session-1", serving["scope"]["session_id"])
         self.assertEqual("UserPromptSubmit", serving["metadata"]["codex_event"])
         self.assertIn("real hooked Codex message", serving["text"])
+
+    def test_retention_keeps_acceptance_prompt_that_mentions_synthetic_rows(self) -> None:
+        fields = hook.hook_retention_fields(
+            text=(
+                "Fix MatrixArk Codex realtime hook ingestion/query. "
+                "Query top K with validation/probe/synthetic rows hidden by default."
+            ),
+            role="user",
+            now_ms=123,
+        )
+
+        self.assertFalse(fields["synthetic"])
+        self.assertEqual("normal", fields["retention_class"])
+
+    def test_retention_marks_explicit_synthetic_probe_debug(self) -> None:
+        fields = hook.hook_retention_fields(
+            text="MatrixArk synthetic probe global cmd bash 1784781133",
+            role="user",
+            now_ms=123,
+        )
+
+        self.assertTrue(fields["synthetic"])
+        self.assertEqual("debug", fields["retention_class"])
+
+    def test_query_filter_keeps_natural_prompt_with_stale_synthetic_flag(self) -> None:
+        text = (
+            "Fix MatrixArk Codex realtime hook ingestion/query. "
+            "Query top K with validation/probe/synthetic rows hidden by default."
+        )
+
+        self.assertTrue(
+            matrixark_http._hook_is_real_user(
+                {"synthetic": True, "record_type": "agent_message"},
+                "user",
+                text,
+                real_user_only=True,
+                include_synthetic=False,
+            )
+        )
+        self.assertFalse(
+            matrixark_http._hook_is_real_user(
+                {"synthetic": True, "record_type": "agent_message"},
+                "user",
+                "MatrixArk synthetic probe global cmd bash 1784781133",
+                real_user_only=True,
+                include_synthetic=False,
+            )
+        )
+        self.assertFalse(
+            matrixark_http._hook_is_real_user(
+                {"synthetic": False, "record_type": "agent_message"},
+                "user",
+                "manual validation loose payload parser row 1784778866123",
+                real_user_only=True,
+                include_synthetic=False,
+            )
+        )
+        self.assertFalse(
+            matrixark_http._hook_is_real_user(
+                {"synthetic": False, "record_type": "agent_message"},
+                "user",
+                "You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a task.",
+                real_user_only=True,
+                include_synthetic=False,
+            )
+        )
+        self.assertFalse(
+            matrixark_http._hook_is_real_user(
+                {"synthetic": False, "record_type": "context_event"},
+                "user",
+                "user: You are a helpful assistant. You will be presented with a user prompt, and your job is to provide a short title for a task.",
+                real_user_only=True,
+                include_synthetic=False,
+            )
+        )
+        self.assertFalse(
+            matrixark_http._hook_is_real_user(
+                {"synthetic": False, "record_type": "agent_message"},
+                "user",
+                "MatrixArk cmd wrapper direct smoke 1784771237422",
+                real_user_only=True,
+                include_synthetic=False,
+            )
+        )
+        self.assertFalse(
+            matrixark_http._hook_is_real_user(
+                {"synthetic": False, "record_type": "agent_message"},
+                "user",
+                "matrixark plain string prompt hook proof 1784770203",
+                real_user_only=True,
+                include_synthetic=False,
+            )
+        )
+
+    def test_hook_dedupe_prefers_raw_over_context_event_user_prefix(self) -> None:
+        rows = matrixark_http._hook_dedupe_rows(
+            [
+                {
+                    "backend": "c++",
+                    "session_id": "codex:session",
+                    "text": "user: same prompt",
+                    "timestamp_ms": 100,
+                    "sequence": 1,
+                    "projection": "records",
+                },
+                {
+                    "backend": "c++",
+                    "session_id": "codex:session",
+                    "text": "same prompt",
+                    "timestamp_ms": 100,
+                    "sequence": 2,
+                    "projection": "raw_ingestion",
+                },
+            ]
+        )
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual("raw_ingestion", rows[0]["projection"])
 
 if __name__ == "__main__":
     unittest.main()
