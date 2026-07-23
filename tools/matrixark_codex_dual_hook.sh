@@ -115,6 +115,7 @@ publish_rust_service_records() {
   python3 - "$TMP_PAYLOAD" 2>>"$LOG_DIR/rust-service-publish.err" <<'PY'
 import json
 import os
+import re
 import time
 import urllib.request
 from pathlib import Path
@@ -138,15 +139,51 @@ except Exception as exc:
             }, separators=(",", ":")) + "\n")
     except Exception:
         pass
-    payload = {}
+    fallback_text = payload_text.strip() if "payload_text" in locals() else ""
+    payload = fallback_text if fallback_text else {}
 
-def first_text(source, keys):
+def loose_payload_fields(text):
+    fields = {}
+    if not isinstance(text, str) or not text.strip():
+        return fields
+    body = text.strip()
+    if body.startswith("{") and body.endswith("}"):
+        body = body[1:-1]
+    if body.startswith('"') and body.endswith('"'):
+        body = body[1:-1]
+    matches = list(re.finditer(r"([A-Za-z_][A-Za-z0-9_-]*):", body))
+    for index, match in enumerate(matches):
+        key = match.group(1)
+        value_start = match.end()
+        value_end = matches[index + 1].start() - 1 if index + 1 < len(matches) else len(body)
+        value = body[value_start:value_end].strip().strip(",").strip()
+        if value:
+            fields[key] = value
+    return fields
+
+def payload_field(source, keys):
     if not isinstance(source, dict):
         return ""
     for key in keys:
         value = source.get(key)
         if isinstance(value, str) and value.strip():
-            return value
+            return value.strip()
+    return ""
+
+def first_text(source, keys):
+    if isinstance(source, str) and source.strip():
+        text = source.strip()
+        loose = loose_payload_fields(text)
+        event_type = loose.get("type", "")
+        if event_type and event_type != "user-prompt-submit":
+            return payload_field(loose, keys)
+        return text
+    if not isinstance(source, dict):
+        return ""
+    for key in keys:
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return ""
 
 
@@ -154,7 +191,7 @@ prompt = first_text(payload, ["prompt", "message", "text", "input", "user_prompt
 if not prompt:
     for nested_key in ("hookInput", "hook_input", "payload", "event", "data"):
         prompt = first_text(
-            payload.get(nested_key),
+            payload.get(nested_key) if isinstance(payload, dict) else {},
             ["prompt", "message", "text", "input", "user_prompt", "userPrompt"],
         )
         if prompt:
@@ -186,10 +223,10 @@ table = os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table")
 prefix = os.environ.get("MATRIXARK_RUST_TEMPORALSTORE_PREFIX", "matrixark:codex-hook:rust-live-v2")
 base = "http://" + os.environ.get("MATRIXARK_RUST_SERVICE_PROXY_ADDR", "127.0.0.1:17100")
 meta = "http://" + os.environ.get("MATRIXARK_RUST_SERVICE_META_ADDR", "127.0.0.1:17101")
+loose_payload = loose_payload_fields(payload) if isinstance(payload, str) else {}
 session_id = (
-    payload.get("session_id")
-    or payload.get("conversation_id")
-    or payload.get("thread_id")
+    payload_field(payload, ["session_id", "conversation_id", "thread_id", "thread-id"])
+    or payload_field(loose_payload, ["session_id", "conversation_id", "thread_id", "thread-id"])
     or os.environ.get("MATRIXARK_HOOK_SESSION_ID")
     or "codex-live-active-hook"
 )
@@ -341,6 +378,7 @@ publish_cpp_direct_records() {
   python3 - "$TMP_PAYLOAD" 2>>"$LOG_DIR/cpp-direct-publish.err" <<'PY'
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -372,9 +410,45 @@ except Exception as exc:
             }, separators=(",", ":")) + "\n")
     except Exception:
         pass
-    payload = {}
+    fallback_text = payload_text.strip() if "payload_text" in locals() else ""
+    payload = fallback_text if fallback_text else {}
+
+def loose_payload_fields(text):
+    fields = {}
+    if not isinstance(text, str) or not text.strip():
+        return fields
+    body = text.strip()
+    if body.startswith("{") and body.endswith("}"):
+        body = body[1:-1]
+    if body.startswith('"') and body.endswith('"'):
+        body = body[1:-1]
+    matches = list(re.finditer(r"([A-Za-z_][A-Za-z0-9_-]*):", body))
+    for index, match in enumerate(matches):
+        key = match.group(1)
+        value_start = match.end()
+        value_end = matches[index + 1].start() - 1 if index + 1 < len(matches) else len(body)
+        value = body[value_start:value_end].strip().strip(",").strip()
+        if value:
+            fields[key] = value
+    return fields
+
+def payload_field(source, keys):
+    if not isinstance(source, dict):
+        return ""
+    for key in keys:
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 def first_text(source, keys):
+    if isinstance(source, str) and source.strip():
+        text = source.strip()
+        loose = loose_payload_fields(text)
+        event_type = loose.get("type", "")
+        if event_type and event_type != "user-prompt-submit":
+            return payload_field(loose, keys)
+        return text
     if not isinstance(source, dict):
         return ""
     for key in keys:
@@ -386,7 +460,10 @@ def first_text(source, keys):
 prompt = first_text(payload, ["prompt", "message", "text", "input", "user_prompt", "userPrompt"])
 if not prompt:
     for nested_key in ("hookInput", "hook_input", "payload", "event", "data"):
-        prompt = first_text(payload.get(nested_key), ["prompt", "message", "text", "input", "user_prompt", "userPrompt"])
+        prompt = first_text(
+            payload.get(nested_key) if isinstance(payload, dict) else {},
+            ["prompt", "message", "text", "input", "user_prompt", "userPrompt"],
+        )
         if prompt:
             break
 if not prompt:
@@ -414,10 +491,10 @@ now_ms = int(time.time() * 1000)
 namespace = os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns")
 table = os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table")
 prefix = os.environ.get("MATRIXARK_CPP_TEMPORALSTORE_PREFIX", "matrixark:codex-hook:cpp-live-v2")
+loose_payload = loose_payload_fields(payload) if isinstance(payload, str) else {}
 session_id = (
-    payload.get("session_id")
-    or payload.get("conversation_id")
-    or payload.get("thread_id")
+    payload_field(payload, ["session_id", "conversation_id", "thread_id", "thread-id"])
+    or payload_field(loose_payload, ["session_id", "conversation_id", "thread_id", "thread-id"])
     or os.environ.get("MATRIXARK_HOOK_SESSION_ID")
     or "codex-live-active-hook"
 )
