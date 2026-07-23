@@ -20,6 +20,50 @@ The container runs the metaserver and datanode as long-lived processes. Client
 and benchmark code should call the proxy or direct SDK, not embed storage in the
 Python hook path.
 
+## One-Command Installer
+
+The preferred path is the PowerShell installer:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File .\tools\install_windows_docker_temporalstore.ps1 `
+  -InstallDockerDesktop `
+  -BuildReleaseBinaries
+```
+
+If Docker Desktop and release binaries are already present:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File .\tools\install_windows_docker_temporalstore.ps1
+```
+
+Useful options:
+
+```text
+-WslDistro <name>                 Default: Ubuntu2204Deeproute
+-RepoPath <path>                  Default: /root/src/github-services/TemporalStore
+-ImageName <name:tag>             Default: matrixark-temporalstore-rust:win-local
+-ContainerName <name>             Default: temporalstore-rust-win
+-VolumeName <name>                Default: temporalstore-rust-win-data
+-MetaPort <port>                  Default: 17101
+-DataPort <port>                  Default: 17102
+-InstallDockerDesktop             Install Docker Desktop through winget
+-BuildReleaseBinaries             Build Rust release binaries before packaging
+-SkipImageBuild                   Reuse an existing Docker image
+-SkipRun                          Build only, do not start the container
+-SkipSmoke                        Skip health and write/read validation
+-NoRestartPersistenceCheck        Skip restart persistence validation
+```
+
+The script performs the same steps documented below:
+
+- starts Docker Desktop and waits for the engine;
+- validates the four Rust release binaries;
+- builds a small Windows Docker image from those binaries;
+- starts metaserver and datanode with a persistent Docker volume;
+- validates health, write/read, and restart persistence.
+
 ## Prerequisites
 
 Install Docker Desktop on Windows:
@@ -335,4 +379,3 @@ runtime. Docker Desktop itself should report its proxy settings through:
 ```powershell
 & $docker info
 ```
-
