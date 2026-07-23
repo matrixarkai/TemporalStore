@@ -85,6 +85,7 @@ def loose_field(text: Any, keys: tuple[str, ...] | list[str]) -> str:
         return ""
     body = _strip_loose_envelope(text)
     boundary = "|".join(re.escape(key) for key in FIELD_BOUNDARY_KEYS)
+    input_message_keys = {"input-messages", "input_messages", "inputMessages"}
     for key in keys:
         match = _find_loose_key(body, key)
         if not match:
@@ -92,6 +93,13 @@ def loose_field(text: Any, keys: tuple[str, ...] | list[str]) -> str:
         value_start = match.end()
         while value_start < len(body) and body[value_start].isspace():
             value_start += 1
+        if key in input_message_keys:
+            next_match = re.search(r',\s*"?(?:' + boundary + r')"?\s*:', body[value_start:])
+            value_end = value_start + next_match.start() if next_match else len(body)
+            value = body[value_start:value_end].strip().strip(",").strip().strip('}"').strip()
+            if value.startswith("[") and value.endswith("]"):
+                value = value[1:-1].strip()
+            return value
         if value_start < len(body) and body[value_start] == "[":
             depth = 0
             for pos in range(value_start, len(body)):

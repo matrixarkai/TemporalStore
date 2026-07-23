@@ -76,6 +76,22 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             extract_prompt(payload, event="Stop"),
         )
 
+    def test_loose_stop_payload_keeps_delegations_after_bracketed_tail(self) -> None:
+        raw = (
+            '-- {"type:agent-turn-complete,thread-id:019efad7-2f87-77e1-b082-c294fcb5e731,'
+            'input-messages:[inference for llm\\n,vllm, sglang\\n,deep dive into vllm and sglang\\n,]\\n,'
+            '<codex_delegation>\\n'
+            ' <source_thread_id>019f8d12-86c6-7100-9a44-7537cdd30aec</source_thread_id>\\n'
+            ' <input>MatrixArk trace live add-llm payload capture 1784782700: reply with one concise sentence about hook payloads.</input>\\n'
+            '</codex_delegation>]}"'
+        )
+        payload = decode_payload(raw.encode("utf-8"))
+
+        self.assertEqual(
+            "MatrixArk trace live add-llm payload capture 1784782700: reply with one concise sentence about hook payloads.",
+            extract_prompt(payload, event="Stop"),
+        )
+
     def test_env_thread_identity_fallback_when_payload_has_no_session(self) -> None:
         identity = extract_identity(
             {"hook_event_name": "Stop", "transcript_path": "ignored.jsonl"},
