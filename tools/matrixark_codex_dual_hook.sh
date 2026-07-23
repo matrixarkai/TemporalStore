@@ -394,6 +394,9 @@ synthetic_markers = (
     "service publisher",
     "hook fixed raw ingestion probe",
     "registered codex hook config verification",
+    "proof",
+    "reply ok only",
+    "current thread fix",
 )
 
 
@@ -808,6 +811,9 @@ synthetic_markers = (
     "service publisher",
     "hook fixed raw ingestion probe",
     "registered codex hook config verification",
+    "proof",
+    "reply ok only",
+    "current thread fix",
 )
 
 def retention_fields(prompt_text):

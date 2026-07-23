@@ -109,6 +109,9 @@ _CODEX_HOOK_SYNTHETIC_MARKERS = {
     "codex-cpp-live-probe",
     "debug",
     "test message",
+    "proof",
+    "reply ok only",
+    "current thread fix",
 }
 
 
