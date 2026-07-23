@@ -155,6 +155,8 @@ def loose_payload_fields(text):
     if not isinstance(text, str) or not text.strip():
         return fields
     body = text.strip()
+    if body.startswith("--"):
+        body = body[2:].strip()
     if body.startswith("{") and body.endswith("}"):
         body = body[1:-1]
     if body.startswith('"') and body.endswith('"'):
@@ -168,6 +170,47 @@ def loose_payload_fields(text):
         if value:
             fields[key] = value
     return fields
+
+def loose_payload_field(text, wanted_keys):
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    body = text.strip()
+    if body.startswith("--"):
+        body = body[2:].strip()
+    if body.startswith("{") and body.endswith("}"):
+        body = body[1:-1]
+    for key in wanted_keys:
+        marker = f"{key}:"
+        start = body.find(marker)
+        if start < 0:
+            continue
+        value_start = start + len(marker)
+        if value_start < len(body) and body[value_start] == "[":
+            depth = 0
+            for pos in range(value_start, len(body)):
+                ch = body[pos]
+                if ch == "[":
+                    depth += 1
+                elif ch == "]":
+                    depth -= 1
+                    if depth == 0:
+                        return body[value_start + 1:pos].strip()
+            return body[value_start + 1:].strip()
+        next_match = re.search(r",\s*[A-Za-z_][A-Za-z0-9_-]*:", body[value_start:])
+        value_end = value_start + next_match.start() if next_match else len(body)
+        return body[value_start:value_end].strip().strip(",").strip()
+    return ""
+
+def prompt_from_input_messages(value):
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    matches = re.findall(r"<input>(.*?)</input>", value, re.DOTALL)
+    if matches:
+        return matches[-1].strip()
+    parts = [part.strip() for part in value.split(",<codex_delegation>") if part.strip()]
+    if len(parts) > 1:
+        return ("<codex_delegation>" + parts[-1]).strip()
+    return value.strip()
 
 def payload_field(source, keys):
     if not isinstance(source, dict):
@@ -184,6 +227,9 @@ def first_text(source, keys):
         loose = loose_payload_fields(text)
         event_type = loose.get("type", "")
         if event_type and event_type != "user-prompt-submit":
+            input_messages = loose_payload_field(text, ["input-messages", "input_messages"])
+            if input_messages:
+                return prompt_from_input_messages(input_messages)
             return payload_field(loose, keys)
         return text
     if not isinstance(source, dict):
@@ -507,6 +553,8 @@ def loose_payload_fields(text):
     if not isinstance(text, str) or not text.strip():
         return fields
     body = text.strip()
+    if body.startswith("--"):
+        body = body[2:].strip()
     if body.startswith("{") and body.endswith("}"):
         body = body[1:-1]
     if body.startswith('"') and body.endswith('"'):
@@ -520,6 +568,47 @@ def loose_payload_fields(text):
         if value:
             fields[key] = value
     return fields
+
+def loose_payload_field(text, wanted_keys):
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    body = text.strip()
+    if body.startswith("--"):
+        body = body[2:].strip()
+    if body.startswith("{") and body.endswith("}"):
+        body = body[1:-1]
+    for key in wanted_keys:
+        marker = f"{key}:"
+        start = body.find(marker)
+        if start < 0:
+            continue
+        value_start = start + len(marker)
+        if value_start < len(body) and body[value_start] == "[":
+            depth = 0
+            for pos in range(value_start, len(body)):
+                ch = body[pos]
+                if ch == "[":
+                    depth += 1
+                elif ch == "]":
+                    depth -= 1
+                    if depth == 0:
+                        return body[value_start + 1:pos].strip()
+            return body[value_start + 1:].strip()
+        next_match = re.search(r",\s*[A-Za-z_][A-Za-z0-9_-]*:", body[value_start:])
+        value_end = value_start + next_match.start() if next_match else len(body)
+        return body[value_start:value_end].strip().strip(",").strip()
+    return ""
+
+def prompt_from_input_messages(value):
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    matches = re.findall(r"<input>(.*?)</input>", value, re.DOTALL)
+    if matches:
+        return matches[-1].strip()
+    parts = [part.strip() for part in value.split(",<codex_delegation>") if part.strip()]
+    if len(parts) > 1:
+        return ("<codex_delegation>" + parts[-1]).strip()
+    return value.strip()
 
 def payload_field(source, keys):
     if not isinstance(source, dict):
@@ -536,6 +625,9 @@ def first_text(source, keys):
         loose = loose_payload_fields(text)
         event_type = loose.get("type", "")
         if event_type and event_type != "user-prompt-submit":
+            input_messages = loose_payload_field(text, ["input-messages", "input_messages"])
+            if input_messages:
+                return prompt_from_input_messages(input_messages)
             return payload_field(loose, keys)
         return text
     if not isinstance(source, dict):
