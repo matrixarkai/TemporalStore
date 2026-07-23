@@ -213,9 +213,6 @@ def loose_payload_field(text, wanted_keys):
 def prompt_from_input_messages(value):
     if not isinstance(value, str) or not value.strip():
         return ""
-    matches = re.findall(r"<input>(.*?)</input>", value, re.DOTALL)
-    if matches:
-        return matches[-1].strip()
     stripped = value.strip().strip("[]").strip()
     if not stripped:
         return ""
@@ -231,13 +228,22 @@ def prompt_from_input_messages(value):
                 return parts[-1]
     except Exception:
         pass
-    if "<codex_delegation>" in stripped:
-        parts = [part.strip() for part in re.split(r",\s*(?=<codex_delegation>)", stripped) if part.strip()]
-        return parts[-1] if parts else stripped
-    line_parts = [part.strip() for part in re.split(r"(?:\r?\n|\\n)\s*,", stripped) if part.strip()]
-    if len(line_parts) > 1:
-        return line_parts[-1]
-    return stripped
+
+    parts = [
+        part.strip().strip(",").strip()
+        for part in re.split(r"(?:\r?\n|\\n)\s*,|,\s*(?=<codex_delegation>)", stripped)
+        if part.strip().strip(",").strip()
+    ]
+    if not parts:
+        parts = [stripped]
+
+    candidates = []
+    for part in parts:
+        matches = re.findall(r"<input>(.*?)</input>", part, re.DOTALL)
+        candidate = matches[-1].strip() if matches else part.strip()
+        if candidate:
+            candidates.append(candidate)
+    return candidates[-1] if candidates else stripped
 
 def payload_field(source, keys):
     if not isinstance(source, dict):
@@ -252,7 +258,7 @@ def first_text(source, keys):
     if isinstance(source, str) and source.strip():
         text = source.strip()
         loose = loose_payload_fields(text)
-        input_messages = loose_payload_field(text, ["input-messages", "input_messages"])
+        input_messages = loose_payload_field(text, ["input-messages", "input_messages", "inputMessages"])
         if input_messages:
             return prompt_from_input_messages(input_messages)
         event_type = loose.get("type", "")
@@ -668,9 +674,6 @@ def loose_payload_field(text, wanted_keys):
 def prompt_from_input_messages(value):
     if not isinstance(value, str) or not value.strip():
         return ""
-    matches = re.findall(r"<input>(.*?)</input>", value, re.DOTALL)
-    if matches:
-        return matches[-1].strip()
     stripped = value.strip().strip("[]").strip()
     if not stripped:
         return ""
@@ -686,13 +689,22 @@ def prompt_from_input_messages(value):
                 return parts[-1]
     except Exception:
         pass
-    if "<codex_delegation>" in stripped:
-        parts = [part.strip() for part in re.split(r",\s*(?=<codex_delegation>)", stripped) if part.strip()]
-        return parts[-1] if parts else stripped
-    line_parts = [part.strip() for part in re.split(r"(?:\r?\n|\\n)\s*,", stripped) if part.strip()]
-    if len(line_parts) > 1:
-        return line_parts[-1]
-    return stripped
+
+    parts = [
+        part.strip().strip(",").strip()
+        for part in re.split(r"(?:\r?\n|\\n)\s*,|,\s*(?=<codex_delegation>)", stripped)
+        if part.strip().strip(",").strip()
+    ]
+    if not parts:
+        parts = [stripped]
+
+    candidates = []
+    for part in parts:
+        matches = re.findall(r"<input>(.*?)</input>", part, re.DOTALL)
+        candidate = matches[-1].strip() if matches else part.strip()
+        if candidate:
+            candidates.append(candidate)
+    return candidates[-1] if candidates else stripped
 
 def payload_field(source, keys):
     if not isinstance(source, dict):
@@ -707,7 +719,7 @@ def first_text(source, keys):
     if isinstance(source, str) and source.strip():
         text = source.strip()
         loose = loose_payload_fields(text)
-        input_messages = loose_payload_field(text, ["input-messages", "input_messages"])
+        input_messages = loose_payload_field(text, ["input-messages", "input_messages", "inputMessages"])
         if input_messages:
             return prompt_from_input_messages(input_messages)
         event_type = loose.get("type", "")
