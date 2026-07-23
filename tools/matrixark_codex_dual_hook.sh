@@ -150,18 +150,24 @@ except Exception as exc:
     fallback_text = payload_text.strip() if "payload_text" in locals() else ""
     payload = fallback_text if fallback_text else {}
 
+def loose_payload_body(text):
+    body = text.strip().lstrip("﻿").strip()
+    if body.startswith("--"):
+        body = body[2:].strip()
+    if body.startswith("{"):
+        body = body[1:].strip()
+    if body.endswith("}"):
+        body = body[:-1].strip()
+    if body.startswith('"') and body.endswith('"'):
+        body = body[1:-1]
+    return body
+
 def loose_payload_fields(text):
     fields = {}
     if not isinstance(text, str) or not text.strip():
         return fields
-    body = text.strip()
-    if body.startswith("--"):
-        body = body[2:].strip()
-    if body.startswith("{") and body.endswith("}"):
-        body = body[1:-1]
-    if body.startswith('"') and body.endswith('"'):
-        body = body[1:-1]
-    matches = list(re.finditer(r"([A-Za-z_][A-Za-z0-9_-]*):", body))
+    body = loose_payload_body(text)
+    matches = list(re.finditer(r'"?([A-Za-z_][A-Za-z0-9_-]*)\s*:', body))
     for index, match in enumerate(matches):
         key = match.group(1)
         value_start = match.end()
@@ -174,17 +180,14 @@ def loose_payload_fields(text):
 def loose_payload_field(text, wanted_keys):
     if not isinstance(text, str) or not text.strip():
         return ""
-    body = text.strip()
-    if body.startswith("--"):
-        body = body[2:].strip()
-    if body.startswith("{") and body.endswith("}"):
-        body = body[1:-1]
+    body = loose_payload_body(text)
     for key in wanted_keys:
-        marker = f"{key}:"
-        start = body.find(marker)
-        if start < 0:
+        match = re.search(r'"?' + re.escape(key) + r'\s*:', body)
+        if not match:
             continue
-        value_start = start + len(marker)
+        value_start = match.end()
+        while value_start < len(body) and body[value_start].isspace():
+            value_start += 1
         if value_start < len(body) and body[value_start] == "[":
             depth = 0
             for pos in range(value_start, len(body)):
@@ -196,7 +199,7 @@ def loose_payload_field(text, wanted_keys):
                     if depth == 0:
                         return body[value_start + 1:pos].strip()
             return body[value_start + 1:].strip()
-        next_match = re.search(r",\s*[A-Za-z_][A-Za-z0-9_-]*:", body[value_start:])
+        next_match = re.search(r',\s*"?[A-Za-z_][A-Za-z0-9_-]*\s*:', body[value_start:])
         value_end = value_start + next_match.start() if next_match else len(body)
         return body[value_start:value_end].strip().strip(",").strip()
     return ""
@@ -225,12 +228,15 @@ def first_text(source, keys):
     if isinstance(source, str) and source.strip():
         text = source.strip()
         loose = loose_payload_fields(text)
+        input_messages = loose_payload_field(text, ["input-messages", "input_messages"])
+        if input_messages:
+            return prompt_from_input_messages(input_messages)
         event_type = loose.get("type", "")
         if event_type and event_type != "user-prompt-submit":
-            input_messages = loose_payload_field(text, ["input-messages", "input_messages"])
-            if input_messages:
-                return prompt_from_input_messages(input_messages)
             return payload_field(loose, keys)
+        if loose:
+            value = payload_field(loose, keys)
+            return value if value else ""
         return text
     if not isinstance(source, dict):
         return ""
@@ -276,6 +282,8 @@ def read_recent_transcript_text(path, max_bytes=8_000_000):
         return ""
 
 def stop_fallback_prompt(source):
+    if os.environ.get("MATRIXARK_CODEX_ALLOW_TRANSCRIPT_FALLBACK", "0") != "1":
+        return ""
     if os.environ.get("EVENT", "UserPromptSubmit") != "Stop":
         return ""
     transcript = transcript_path_from(source)
@@ -560,18 +568,24 @@ except Exception as exc:
     fallback_text = payload_text.strip() if "payload_text" in locals() else ""
     payload = fallback_text if fallback_text else {}
 
+def loose_payload_body(text):
+    body = text.strip().lstrip("﻿").strip()
+    if body.startswith("--"):
+        body = body[2:].strip()
+    if body.startswith("{"):
+        body = body[1:].strip()
+    if body.endswith("}"):
+        body = body[:-1].strip()
+    if body.startswith('"') and body.endswith('"'):
+        body = body[1:-1]
+    return body
+
 def loose_payload_fields(text):
     fields = {}
     if not isinstance(text, str) or not text.strip():
         return fields
-    body = text.strip()
-    if body.startswith("--"):
-        body = body[2:].strip()
-    if body.startswith("{") and body.endswith("}"):
-        body = body[1:-1]
-    if body.startswith('"') and body.endswith('"'):
-        body = body[1:-1]
-    matches = list(re.finditer(r"([A-Za-z_][A-Za-z0-9_-]*):", body))
+    body = loose_payload_body(text)
+    matches = list(re.finditer(r'"?([A-Za-z_][A-Za-z0-9_-]*)\s*:', body))
     for index, match in enumerate(matches):
         key = match.group(1)
         value_start = match.end()
@@ -584,17 +598,14 @@ def loose_payload_fields(text):
 def loose_payload_field(text, wanted_keys):
     if not isinstance(text, str) or not text.strip():
         return ""
-    body = text.strip()
-    if body.startswith("--"):
-        body = body[2:].strip()
-    if body.startswith("{") and body.endswith("}"):
-        body = body[1:-1]
+    body = loose_payload_body(text)
     for key in wanted_keys:
-        marker = f"{key}:"
-        start = body.find(marker)
-        if start < 0:
+        match = re.search(r'"?' + re.escape(key) + r'\s*:', body)
+        if not match:
             continue
-        value_start = start + len(marker)
+        value_start = match.end()
+        while value_start < len(body) and body[value_start].isspace():
+            value_start += 1
         if value_start < len(body) and body[value_start] == "[":
             depth = 0
             for pos in range(value_start, len(body)):
@@ -606,7 +617,7 @@ def loose_payload_field(text, wanted_keys):
                     if depth == 0:
                         return body[value_start + 1:pos].strip()
             return body[value_start + 1:].strip()
-        next_match = re.search(r",\s*[A-Za-z_][A-Za-z0-9_-]*:", body[value_start:])
+        next_match = re.search(r',\s*"?[A-Za-z_][A-Za-z0-9_-]*\s*:', body[value_start:])
         value_end = value_start + next_match.start() if next_match else len(body)
         return body[value_start:value_end].strip().strip(",").strip()
     return ""
@@ -635,12 +646,15 @@ def first_text(source, keys):
     if isinstance(source, str) and source.strip():
         text = source.strip()
         loose = loose_payload_fields(text)
+        input_messages = loose_payload_field(text, ["input-messages", "input_messages"])
+        if input_messages:
+            return prompt_from_input_messages(input_messages)
         event_type = loose.get("type", "")
         if event_type and event_type != "user-prompt-submit":
-            input_messages = loose_payload_field(text, ["input-messages", "input_messages"])
-            if input_messages:
-                return prompt_from_input_messages(input_messages)
             return payload_field(loose, keys)
+        if loose:
+            value = payload_field(loose, keys)
+            return value if value else ""
         return text
     if not isinstance(source, dict):
         return ""
@@ -685,6 +699,8 @@ def read_recent_transcript_text(path, max_bytes=8_000_000):
         return ""
 
 def stop_fallback_prompt(source):
+    if os.environ.get("MATRIXARK_CODEX_ALLOW_TRANSCRIPT_FALLBACK", "0") != "1":
+        return ""
     if os.environ.get("EVENT", "UserPromptSubmit") != "Stop":
         return ""
     transcript = transcript_path_from(source)
