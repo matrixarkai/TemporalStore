@@ -126,16 +126,13 @@ import re
 import time
 import urllib.request
 from pathlib import Path
+from tools.matrixark_codex_hook_payload import decode_payload, extract_identity, extract_prompt
 
 payload_path = __import__("sys").argv[1]
 try:
     payload_b64 = os.environ.get("MATRIXARK_CODEX_DIRECT_PAYLOAD_B64", "")
     raw_payload_bytes = base64.b64decode(payload_b64) if payload_b64 else Path(payload_path).read_bytes()
-    if len(raw_payload_bytes) > 3 and raw_payload_bytes[1] == 0 and raw_payload_bytes[3] == 0:
-        payload_text = raw_payload_bytes.decode("utf-16le", "replace")
-    else:
-        payload_text = raw_payload_bytes.decode("utf-8-sig", "replace")
-    payload = json.loads(payload_text) if payload_text.strip() else {}
+    payload = decode_payload(raw_payload_bytes)
 except Exception as exc:
     try:
         with open(os.environ.get("MATRIXARK_CODEX_HOOK_DIAG_LOG", ""), "a", encoding="utf-8") as diag:
@@ -147,7 +144,7 @@ except Exception as exc:
             }, separators=(",", ":")) + "\n")
     except Exception:
         pass
-    fallback_text = payload_text.strip() if "payload_text" in locals() else ""
+    fallback_text = raw_payload_bytes.decode("utf-8-sig", "replace").strip() if "raw_payload_bytes" in locals() else ""
     payload = fallback_text if fallback_text else {}
 
 def loose_payload_body(text):
@@ -323,22 +320,10 @@ def stop_fallback_prompt(source):
     return latest.strip()
 
 
-PROMPT_KEYS = ["prompt", "message", "text", "input", "input_prompt", "input-prompt", "input_messages", "input-messages", "user_prompt", "userPrompt"]
-prompt = first_text(payload, PROMPT_KEYS)
-if not prompt:
-    for nested_key in ("hookInput", "hook_input", "payload", "event", "data"):
-        prompt = first_text(
-            nested_source(payload, nested_key),
-            PROMPT_KEYS,
-        )
-        if prompt:
-            break
+identity = extract_identity(payload)
+prompt = extract_prompt(payload, event=os.environ.get("EVENT", "UserPromptSubmit"))
 if not prompt:
     prompt = stop_fallback_prompt(payload)
-if isinstance(prompt, str):
-    matches = re.findall(r"<input>(.*?)</input>", prompt, re.DOTALL)
-    if matches:
-        prompt = matches[-1].strip()
 if not isinstance(prompt, str) or not prompt.strip():
     keys = sorted(payload.keys()) if isinstance(payload, dict) else []
     env_lengths = {
@@ -366,13 +351,7 @@ table = os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table")
 prefix = os.environ.get("MATRIXARK_RUST_TEMPORALSTORE_PREFIX", "matrixark:codex-hook:rust-live-v2")
 base = "http://" + os.environ.get("MATRIXARK_RUST_SERVICE_PROXY_ADDR", "127.0.0.1:17100")
 meta = "http://" + os.environ.get("MATRIXARK_RUST_SERVICE_META_ADDR", "127.0.0.1:17101")
-loose_payload = loose_payload_fields(payload) if isinstance(payload, str) else {}
-session_id = (
-    payload_field(payload, ["session_id", "conversation_id", "thread_id", "thread-id"])
-    or payload_field(loose_payload, ["session_id", "conversation_id", "thread_id", "thread-id"])
-    or os.environ.get("MATRIXARK_HOOK_SESSION_ID")
-    or "codex-live-active-hook"
-)
+session_id = identity.get("session_id") or os.environ.get("MATRIXARK_HOOK_SESSION_ID") or "codex-live-active-hook"
 session_id = f"codex:{session_id}" if not str(session_id).startswith("codex:") else str(session_id)
 record_hash = hashlib.sha256(f"{session_id}\n{prompt}".encode("utf-8", "replace")).hexdigest()
 record_marker = Path(os.environ.get("MATRIXARK_CODEX_HOOK_IDEMPOTENCY_DIR", "")) / f"record-rust-{record_hash}"
@@ -397,6 +376,13 @@ synthetic_markers = (
     "proof",
     "reply ok only",
     "current thread fix",
+    "matrixark legacy notify",
+    "matrixark node launcher",
+    "matrixark utf8 spooled hook",
+    "matrixark wsl direct canonical",
+    "matrixark app-server",
+    "hook capture",
+    "queryable row",
 )
 
 
@@ -482,7 +468,9 @@ raw_record = {
     "role": "user",
     "text": prompt,
     "session_id": session_id,
-    "session_id_source": "payload_field",
+    "session_id_source": identity.get("session_id_source") or "fallback",
+    "thread_id": identity.get("thread_id") or "",
+    "turn_id": identity.get("turn_id") or "",
     "codex_api_event": os.environ.get("EVENT", "UserPromptSubmit"),
     "hook_id": hook_id,
     "hook_type": "before_llm",
@@ -493,7 +481,9 @@ serving_record = {
     "record_type": "context_event",
     "text": "user: " + prompt,
     "session_id": session_id,
-    "session_id_source": "payload_field",
+    "session_id_source": identity.get("session_id_source") or "fallback",
+    "thread_id": identity.get("thread_id") or "",
+    "turn_id": identity.get("turn_id") or "",
     "codex_api_event": os.environ.get("EVENT", "UserPromptSubmit"),
     "hook_id": hook_id,
     "hook_type": "before_llm",
@@ -539,6 +529,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from tools.matrixark_codex_hook_payload import decode_payload, extract_identity, extract_prompt
 
 payload_path = sys.argv[1]
 repo = Path(os.environ.get("MATRIXARK_REPO_ROOT") or Path.cwd())
@@ -552,11 +543,7 @@ except Exception as exc:
 try:
     payload_b64 = os.environ.get("MATRIXARK_CODEX_DIRECT_PAYLOAD_B64", "")
     raw_payload_bytes = base64.b64decode(payload_b64) if payload_b64 else Path(payload_path).read_bytes()
-    if len(raw_payload_bytes) > 3 and raw_payload_bytes[1] == 0 and raw_payload_bytes[3] == 0:
-        payload_text = raw_payload_bytes.decode("utf-16le", "replace")
-    else:
-        payload_text = raw_payload_bytes.decode("utf-8-sig", "replace")
-    payload = json.loads(payload_text) if payload_text.strip() else {}
+    payload = decode_payload(raw_payload_bytes)
 except Exception as exc:
     try:
         with open(os.environ.get("MATRIXARK_CODEX_HOOK_DIAG_LOG", ""), "a", encoding="utf-8") as diag:
@@ -568,7 +555,7 @@ except Exception as exc:
             }, separators=(",", ":")) + "\n")
     except Exception:
         pass
-    fallback_text = payload_text.strip() if "payload_text" in locals() else ""
+    fallback_text = raw_payload_bytes.decode("utf-8-sig", "replace").strip() if "raw_payload_bytes" in locals() else ""
     payload = fallback_text if fallback_text else {}
 
 def loose_payload_body(text):
@@ -742,22 +729,10 @@ def stop_fallback_prompt(source):
         latest = match.group(1).strip()
     return latest.strip()
 
-PROMPT_KEYS = ["prompt", "message", "text", "input", "input_prompt", "input-prompt", "input_messages", "input-messages", "user_prompt", "userPrompt"]
-prompt = first_text(payload, PROMPT_KEYS)
-if not prompt:
-    for nested_key in ("hookInput", "hook_input", "payload", "event", "data"):
-        prompt = first_text(
-            nested_source(payload, nested_key),
-            PROMPT_KEYS,
-        )
-        if prompt:
-            break
+identity = extract_identity(payload)
+prompt = extract_prompt(payload, event=os.environ.get("EVENT", "UserPromptSubmit"))
 if not prompt:
     prompt = stop_fallback_prompt(payload)
-if isinstance(prompt, str):
-    matches = re.findall(r"<input>(.*?)</input>", prompt, re.DOTALL)
-    if matches:
-        prompt = matches[-1].strip()
 if not prompt:
     keys = sorted(payload.keys()) if isinstance(payload, dict) else []
     env_lengths = {
@@ -783,13 +758,7 @@ now_ms = int(time.time() * 1000)
 namespace = os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns")
 table = os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table")
 prefix = os.environ.get("MATRIXARK_CPP_TEMPORALSTORE_PREFIX", "matrixark:codex-hook:cpp-live-v2")
-loose_payload = loose_payload_fields(payload) if isinstance(payload, str) else {}
-session_id = (
-    payload_field(payload, ["session_id", "conversation_id", "thread_id", "thread-id"])
-    or payload_field(loose_payload, ["session_id", "conversation_id", "thread_id", "thread-id"])
-    or os.environ.get("MATRIXARK_HOOK_SESSION_ID")
-    or "codex-live-active-hook"
-)
+session_id = identity.get("session_id") or os.environ.get("MATRIXARK_HOOK_SESSION_ID") or "codex-live-active-hook"
 session_id = f"codex:{session_id}" if not str(session_id).startswith("codex:") else str(session_id)
 record_hash = hashlib.sha256(f"{session_id}\n{prompt}".encode("utf-8", "replace")).hexdigest()
 record_marker = Path(os.environ.get("MATRIXARK_CODEX_HOOK_IDEMPOTENCY_DIR", "")) / f"record-cpp-{record_hash}"
@@ -814,6 +783,13 @@ synthetic_markers = (
     "proof",
     "reply ok only",
     "current thread fix",
+    "matrixark legacy notify",
+    "matrixark node launcher",
+    "matrixark utf8 spooled hook",
+    "matrixark wsl direct canonical",
+    "matrixark app-server",
+    "hook capture",
+    "queryable row",
 )
 
 def retention_fields(prompt_text):
@@ -852,7 +828,9 @@ def hset_value(key, field, record):
 common = {
     "role": "user",
     "session_id": session_id,
-    "session_id_source": "payload_field",
+    "session_id_source": identity.get("session_id_source") or "fallback",
+    "thread_id": identity.get("thread_id") or "",
+    "turn_id": identity.get("turn_id") or "",
     "codex_api_event": os.environ.get("EVENT", "UserPromptSubmit"),
     "hook_id": hook_id,
     "hook_type": "before_llm",
