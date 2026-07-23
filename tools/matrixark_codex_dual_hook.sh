@@ -117,12 +117,27 @@ import json
 import os
 import time
 import urllib.request
+from pathlib import Path
 
 payload_path = __import__("sys").argv[1]
 try:
-    with open(payload_path, "r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-except Exception:
+    raw_payload_bytes = Path(payload_path).read_bytes()
+    if len(raw_payload_bytes) > 3 and raw_payload_bytes[1] == 0 and raw_payload_bytes[3] == 0:
+        payload_text = raw_payload_bytes.decode("utf-16le", "replace")
+    else:
+        payload_text = raw_payload_bytes.decode("utf-8-sig", "replace")
+    payload = json.loads(payload_text) if payload_text.strip() else {}
+except Exception as exc:
+    try:
+        with open(os.environ.get("MATRIXARK_CODEX_HOOK_DIAG_LOG", ""), "a", encoding="utf-8") as diag:
+            diag.write(json.dumps({
+                "ts_ms": int(time.time() * 1000),
+                "event": os.environ.get("EVENT", "UserPromptSubmit"),
+                "payload_parse_error": str(exc),
+                "payload_path": payload_path,
+            }, separators=(",", ":")) + "\n")
+    except Exception:
+        pass
     payload = {}
 
 def first_text(source, keys):
@@ -340,9 +355,23 @@ except Exception as exc:
     raise SystemExit(0)
 
 try:
-    with open(payload_path, "r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-except Exception:
+    raw_payload_bytes = Path(payload_path).read_bytes()
+    if len(raw_payload_bytes) > 3 and raw_payload_bytes[1] == 0 and raw_payload_bytes[3] == 0:
+        payload_text = raw_payload_bytes.decode("utf-16le", "replace")
+    else:
+        payload_text = raw_payload_bytes.decode("utf-8-sig", "replace")
+    payload = json.loads(payload_text) if payload_text.strip() else {}
+except Exception as exc:
+    try:
+        with open(os.environ.get("MATRIXARK_CODEX_HOOK_DIAG_LOG", ""), "a", encoding="utf-8") as diag:
+            diag.write(json.dumps({
+                "ts_ms": int(time.time() * 1000),
+                "event": os.environ.get("EVENT", "UserPromptSubmit"),
+                "payload_parse_error": str(exc),
+                "payload_path": payload_path,
+            }, separators=(",", ":")) + "\n")
+    except Exception:
+        pass
     payload = {}
 
 def first_text(source, keys):
