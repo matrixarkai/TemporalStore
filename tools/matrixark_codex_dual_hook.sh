@@ -7,14 +7,19 @@ ROOT="${MATRIXARK_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$ROOT"
 
 TMP_PAYLOAD="$(mktemp /tmp/matrixark-codex-dual-hook.XXXXXX.json)"
-trap 'rm -f "$TMP_PAYLOAD"' EXIT
+DIRECT_PAYLOAD="$(mktemp /tmp/matrixark-codex-dual-hook-direct.XXXXXX.json)"
+trap 'rm -f "$TMP_PAYLOAD" "$DIRECT_PAYLOAD"' EXIT
 cat >"$TMP_PAYLOAD"
+cp "$TMP_PAYLOAD" "$DIRECT_PAYLOAD"
+MATRIXARK_CODEX_DIRECT_PAYLOAD_B64="$(base64 -w 0 "$TMP_PAYLOAD" 2>/dev/null || base64 "$TMP_PAYLOAD" | tr -d '\n')"
+export MATRIXARK_CODEX_DIRECT_PAYLOAD_B64
 
 LOG_DIR="${MATRIXARK_CODEX_HOOK_LOG_DIR:-$ROOT/.local/runtime/matrixark-codex-dual-hook/logs}"
 mkdir -p "$LOG_DIR"
 IDEMPOTENCY_DIR="${MATRIXARK_CODEX_HOOK_IDEMPOTENCY_DIR:-$ROOT/.local/runtime/matrixark-codex-dual-hook/idempotency}"
 mkdir -p "$IDEMPOTENCY_DIR"
 find "$IDEMPOTENCY_DIR" -type d -mmin +10 -name 'hook-*' -exec rm -rf {} + 2>/dev/null || true
+find "$IDEMPOTENCY_DIR" -type d -mmin +1440 -name 'record-*' -exec rm -rf {} + 2>/dev/null || true
 PAYLOAD_HASH="$(sha256sum "$TMP_PAYLOAD" | awk '{print $1}')"
 PAYLOAD_BYTES="$(wc -c <"$TMP_PAYLOAD" | tr -d '[:space:]')"
 DIAG_LOG="$LOG_DIR/dispatch-diagnostics.jsonl"
@@ -112,8 +117,10 @@ publish_rust_service_records() {
   MATRIXARK_RUST_TEMPORALSTORE_PREFIX="${MATRIXARK_RUST_TEMPORALSTORE_PREFIX:-matrixark:codex-hook:rust-live-v2}" \
   MATRIXARK_RUST_SERVICE_PROXY_ADDR="${MATRIXARK_RUST_SERVICE_PROXY_ADDR:-127.0.0.1:17100}" \
   MATRIXARK_RUST_SERVICE_META_ADDR="${MATRIXARK_RUST_SERVICE_META_ADDR:-127.0.0.1:17101}" \
-  python3 - "$TMP_PAYLOAD" 2>>"$LOG_DIR/rust-service-publish.err" <<'PY'
+  python3 - "$DIRECT_PAYLOAD" 2>>"$LOG_DIR/rust-service-publish.err" <<'PY'
+import base64
 import json
+import hashlib
 import os
 import re
 import time
@@ -122,7 +129,8 @@ from pathlib import Path
 
 payload_path = __import__("sys").argv[1]
 try:
-    raw_payload_bytes = Path(payload_path).read_bytes()
+    payload_b64 = os.environ.get("MATRIXARK_CODEX_DIRECT_PAYLOAD_B64", "")
+    raw_payload_bytes = base64.b64decode(payload_b64) if payload_b64 else Path(payload_path).read_bytes()
     if len(raw_payload_bytes) > 3 and raw_payload_bytes[1] == 0 and raw_payload_bytes[3] == 0:
         payload_text = raw_payload_bytes.decode("utf-16le", "replace")
     else:
@@ -193,16 +201,78 @@ def nested_source(source, key):
     value = source.get(key)
     return value if isinstance(value, (dict, str)) else {}
 
+def transcript_path_from(source):
+    if isinstance(source, str):
+        return payload_field(loose_payload_fields(source), ["transcript_path", "transcriptPath"])
+    if not isinstance(source, dict):
+        return ""
+    candidates = [source]
+    for nested_key in ("hookInput", "hook_input", "payload", "event", "data"):
+        nested = nested_source(source, nested_key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+    for candidate in candidates:
+        value = payload_field(candidate, ["transcript_path", "transcriptPath"])
+        if value:
+            return value
+    return ""
 
-prompt = first_text(payload, ["prompt", "message", "text", "input", "user_prompt", "userPrompt"])
+def stop_fallback_prompt(source):
+    if os.environ.get("EVENT", "UserPromptSubmit") != "Stop":
+        return ""
+    transcript = transcript_path_from(source)
+    if not transcript:
+        return ""
+    path = Path(transcript)
+    if not path.exists() or path.stat().st_size > 50_000_000:
+        return ""
+    latest = ""
+    try:
+        for line in path.read_text("utf-8", errors="replace").splitlines():
+            try:
+                row = json.loads(line.lstrip("\ufeff"))
+            except Exception:
+                continue
+            payload_row = row.get("payload") if isinstance(row, dict) else {}
+            if not isinstance(payload_row, dict):
+                continue
+            row_type = payload_row.get("type")
+            if row.get("type") == "response_item" and row_type == "message" and payload_row.get("role") == "user":
+                parts = []
+                for item in payload_row.get("content") or []:
+                    if isinstance(item, dict) and isinstance(item.get("text"), str):
+                        parts.append(item["text"])
+                text = "\n".join(part.strip() for part in parts if part.strip()).strip()
+            elif row.get("type") == "event_msg" and row_type == "user_message":
+                text = payload_row.get("message") if isinstance(payload_row.get("message"), str) else ""
+            else:
+                text = ""
+            if text.strip():
+                latest = text.strip()
+    except Exception:
+        return ""
+    match = re.search(r"<input>(.*?)</input>", latest, re.DOTALL)
+    if match:
+        latest = match.group(1).strip()
+    return latest.strip()
+
+
+PROMPT_KEYS = ["prompt", "message", "text", "input", "input_prompt", "input-prompt", "input_messages", "input-messages", "user_prompt", "userPrompt"]
+prompt = first_text(payload, PROMPT_KEYS)
 if not prompt:
     for nested_key in ("hookInput", "hook_input", "payload", "event", "data"):
         prompt = first_text(
             nested_source(payload, nested_key),
-            ["prompt", "message", "text", "input", "user_prompt", "userPrompt"],
+            PROMPT_KEYS,
         )
         if prompt:
             break
+if not prompt:
+    prompt = stop_fallback_prompt(payload)
+if isinstance(prompt, str):
+    matches = re.findall(r"<input>(.*?)</input>", prompt, re.DOTALL)
+    if matches:
+        prompt = matches[-1].strip()
 if not isinstance(prompt, str) or not prompt.strip():
     keys = sorted(payload.keys()) if isinstance(payload, dict) else []
     env_lengths = {
@@ -238,7 +308,16 @@ session_id = (
     or "codex-live-active-hook"
 )
 session_id = f"codex:{session_id}" if not str(session_id).startswith("codex:") else str(session_id)
-hook_id = f"{os.environ.get('EVENT', 'UserPromptSubmit')}:{now_ms}"
+record_hash = hashlib.sha256(f"{session_id}\n{prompt}".encode("utf-8", "replace")).hexdigest()
+record_marker = Path(os.environ.get("MATRIXARK_CODEX_HOOK_IDEMPOTENCY_DIR", "")) / f"record-rust-{record_hash}"
+try:
+    record_marker.mkdir()
+except FileExistsError:
+    print(f"skip duplicate prompt session={session_id} hash={record_hash[:12]}", file=__import__("sys").stderr)
+    raise SystemExit(0)
+except Exception:
+    pass
+hook_id = f"{os.environ.get('EVENT', 'UserPromptSubmit')}:{record_hash[:16]}"
 synthetic_markers = (
     "probe",
     "smoke",
@@ -382,8 +461,10 @@ publish_cpp_direct_records() {
   MATRIXARK_CPP_TEMPORALSTORE_PREFIX="${MATRIXARK_CPP_TEMPORALSTORE_PREFIX:-matrixark:codex-hook:cpp-live-v2}" \
   MATRIXARK_CPP_TEMPORALSTORE_METASERVER="${MATRIXARK_CPP_TEMPORALSTORE_METASERVER:-127.0.0.1:18000}" \
   TEMPORALSTORE_LIB="${TEMPORALSTORE_LIB:-$ROOT/output-ubuntu22/release/sdk/lib/libbcache2.so}" \
-  python3 - "$TMP_PAYLOAD" 2>>"$LOG_DIR/cpp-direct-publish.err" <<'PY'
+  python3 - "$DIRECT_PAYLOAD" 2>>"$LOG_DIR/cpp-direct-publish.err" <<'PY'
+import base64
 import json
+import hashlib
 import os
 import re
 import sys
@@ -400,7 +481,8 @@ except Exception as exc:
     raise SystemExit(0)
 
 try:
-    raw_payload_bytes = Path(payload_path).read_bytes()
+    payload_b64 = os.environ.get("MATRIXARK_CODEX_DIRECT_PAYLOAD_B64", "")
+    raw_payload_bytes = base64.b64decode(payload_b64) if payload_b64 else Path(payload_path).read_bytes()
     if len(raw_payload_bytes) > 3 and raw_payload_bytes[1] == 0 and raw_payload_bytes[3] == 0:
         payload_text = raw_payload_bytes.decode("utf-16le", "replace")
     else:
@@ -470,15 +552,77 @@ def nested_source(source, key):
     value = source.get(key)
     return value if isinstance(value, (dict, str)) else {}
 
-prompt = first_text(payload, ["prompt", "message", "text", "input", "user_prompt", "userPrompt"])
+def transcript_path_from(source):
+    if isinstance(source, str):
+        return payload_field(loose_payload_fields(source), ["transcript_path", "transcriptPath"])
+    if not isinstance(source, dict):
+        return ""
+    candidates = [source]
+    for nested_key in ("hookInput", "hook_input", "payload", "event", "data"):
+        nested = nested_source(source, nested_key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+    for candidate in candidates:
+        value = payload_field(candidate, ["transcript_path", "transcriptPath"])
+        if value:
+            return value
+    return ""
+
+def stop_fallback_prompt(source):
+    if os.environ.get("EVENT", "UserPromptSubmit") != "Stop":
+        return ""
+    transcript = transcript_path_from(source)
+    if not transcript:
+        return ""
+    path = Path(transcript)
+    if not path.exists() or path.stat().st_size > 50_000_000:
+        return ""
+    latest = ""
+    try:
+        for line in path.read_text("utf-8", errors="replace").splitlines():
+            try:
+                row = json.loads(line.lstrip("\ufeff"))
+            except Exception:
+                continue
+            payload_row = row.get("payload") if isinstance(row, dict) else {}
+            if not isinstance(payload_row, dict):
+                continue
+            row_type = payload_row.get("type")
+            if row.get("type") == "response_item" and row_type == "message" and payload_row.get("role") == "user":
+                parts = []
+                for item in payload_row.get("content") or []:
+                    if isinstance(item, dict) and isinstance(item.get("text"), str):
+                        parts.append(item["text"])
+                text = "\n".join(part.strip() for part in parts if part.strip()).strip()
+            elif row.get("type") == "event_msg" and row_type == "user_message":
+                text = payload_row.get("message") if isinstance(payload_row.get("message"), str) else ""
+            else:
+                text = ""
+            if text.strip():
+                latest = text.strip()
+    except Exception:
+        return ""
+    match = re.search(r"<input>(.*?)</input>", latest, re.DOTALL)
+    if match:
+        latest = match.group(1).strip()
+    return latest.strip()
+
+PROMPT_KEYS = ["prompt", "message", "text", "input", "input_prompt", "input-prompt", "input_messages", "input-messages", "user_prompt", "userPrompt"]
+prompt = first_text(payload, PROMPT_KEYS)
 if not prompt:
     for nested_key in ("hookInput", "hook_input", "payload", "event", "data"):
         prompt = first_text(
             nested_source(payload, nested_key),
-            ["prompt", "message", "text", "input", "user_prompt", "userPrompt"],
+            PROMPT_KEYS,
         )
         if prompt:
             break
+if not prompt:
+    prompt = stop_fallback_prompt(payload)
+if isinstance(prompt, str):
+    matches = re.findall(r"<input>(.*?)</input>", prompt, re.DOTALL)
+    if matches:
+        prompt = matches[-1].strip()
 if not prompt:
     keys = sorted(payload.keys()) if isinstance(payload, dict) else []
     env_lengths = {
@@ -512,7 +656,16 @@ session_id = (
     or "codex-live-active-hook"
 )
 session_id = f"codex:{session_id}" if not str(session_id).startswith("codex:") else str(session_id)
-hook_id = f"{os.environ.get('EVENT', 'UserPromptSubmit')}:{now_ms}"
+record_hash = hashlib.sha256(f"{session_id}\n{prompt}".encode("utf-8", "replace")).hexdigest()
+record_marker = Path(os.environ.get("MATRIXARK_CODEX_HOOK_IDEMPOTENCY_DIR", "")) / f"record-cpp-{record_hash}"
+try:
+    record_marker.mkdir()
+except FileExistsError:
+    print(f"skip duplicate prompt session={session_id} hash={record_hash[:12]}", file=sys.stderr)
+    raise SystemExit(0)
+except Exception:
+    pass
+hook_id = f"{os.environ.get('EVENT', 'UserPromptSubmit')}:{record_hash[:16]}"
 synthetic_markers = (
     "probe",
     "smoke",
@@ -591,13 +744,14 @@ for count_key, records_prefix, record in (
 PY
 }
 
+publish_rust_service_records || true
+publish_cpp_direct_records || true
+
 run_cpp_hook >"$LOG_DIR/cpp-$EVENT.out" 2>"$LOG_DIR/cpp-$EVENT.err" &
 CPP_PID=$!
 
 status=0
 run_rust_hook || status=$?
-publish_rust_service_records || true
-publish_cpp_direct_records || true
 
 if ! wait "$CPP_PID"; then
   true
