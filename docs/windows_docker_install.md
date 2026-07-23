@@ -1,8 +1,8 @@
 # Windows Docker Installation Manual
 
 This guide installs TemporalStore into Windows Docker Desktop for local
-production-style testing. It keeps the source and build artifacts in the
-canonical shared repo:
+production-style testing and Codex hook ingestion with Rust TemporalStore. By
+default, the installer expects the source and build artifacts in:
 
 ```text
 /root/src/github-services/TemporalStore
@@ -20,6 +20,39 @@ The container runs the metaserver and datanode as long-lived processes. Client
 and benchmark code should call the proxy or direct SDK, not embed storage in the
 Python hook path.
 
+## Dependency Summary
+
+Required for the Rust Docker runtime:
+
+```text
+Windows 10/11 or Windows Server with WSL2 support
+PowerShell 5.1 or newer
+Docker Desktop with Linux containers
+WSL2 Linux distro, such as Ubuntu 22.04
+git inside WSL
+Rust toolchain inside WSL: rustup, rustc, cargo
+Python 3 inside WSL, for the Codex hook adapter
+```
+
+Required for Codex hook integration:
+
+```text
+Docker Desktop running
+TemporalStore Rust container running
+Codex configured to execute the generated hook wrapper
+```
+
+Optional:
+
+```text
+winget, only when using -InstallDockerDesktop
+HTTP/HTTPS proxy, only when your network requires it
+```
+
+The installer does not require private paths, credentials, generated caches, or
+WSL bind mounts into Docker. It copies only release binaries into a temporary
+Windows Docker build context.
+
 ## One-Command Installer
 
 The preferred path is the PowerShell installer:
@@ -28,7 +61,8 @@ The preferred path is the PowerShell installer:
 powershell -ExecutionPolicy Bypass `
   -File .\tools\install_windows_docker_temporalstore.ps1 `
   -InstallDockerDesktop `
-  -BuildReleaseBinaries
+  -BuildReleaseBinaries `
+  -InstallCodexHookWrapper
 ```
 
 If Docker Desktop and release binaries are already present:
@@ -41,7 +75,7 @@ powershell -ExecutionPolicy Bypass `
 Useful options:
 
 ```text
--WslDistro <name>                 Default: Ubuntu2204Deeproute
+-WslDistro <name>                 Default: auto-detect first WSL distro
 -RepoPath <path>                  Default: /root/src/github-services/TemporalStore
 -ImageName <name:tag>             Default: matrixark-temporalstore-rust:win-local
 -ContainerName <name>             Default: temporalstore-rust-win
@@ -54,6 +88,11 @@ Useful options:
 -SkipRun                          Build only, do not start the container
 -SkipSmoke                        Skip health and write/read validation
 -NoRestartPersistenceCheck        Skip restart persistence validation
+-InstallCodexHookWrapper          Generate Windows .cmd wrappers for Codex hook use
+-HookInstallDir <path>            Default: %USERPROFILE%\.matrixark\hooks
+-HookPrefix <prefix>              Default: matrixark:codex-hook:rust
+-HttpProxy <url>                  Optional proxy for winget/Docker install
+-HttpsProxy <url>                 Optional proxy for winget/Docker install
 ```
 
 The script performs the same steps documented below:
@@ -62,21 +101,76 @@ The script performs the same steps documented below:
 - validates the four Rust release binaries;
 - builds a small Windows Docker image from those binaries;
 - starts metaserver and datanode with a persistent Docker volume;
-- validates health, write/read, and restart persistence.
+- validates health, write/read, and restart persistence;
+- optionally writes Codex hook wrappers.
+
+## Codex Hook Wrapper
+
+Install Rust TemporalStore plus hook wrappers:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File .\tools\install_windows_docker_temporalstore.ps1 `
+  -BuildReleaseBinaries `
+  -InstallCodexHookWrapper
+```
+
+The wrapper files are written to:
+
+```text
+%USERPROFILE%\.matrixark\hooks\matrixark-rust-proxy-docker.cmd
+%USERPROFILE%\.matrixark\hooks\matrixark-codex-hook-rust-docker.cmd
+%USERPROFILE%\.matrixark\hooks\matrixark-rust-proxy-docker.ps1
+%USERPROFILE%\.matrixark\hooks\matrixark-codex-hook-rust-docker.ps1
+%USERPROFILE%\.matrixark\hooks\matrixark-rust-proxy-docker.sh
+%USERPROFILE%\.matrixark\hooks\matrixark-codex-hook-rust-docker.sh
+```
+
+Use this command as the Codex `UserPromptSubmit` hook command:
+
+```text
+%USERPROFILE%\.matrixark\hooks\matrixark-codex-hook-rust-docker.cmd
+```
+
+The Codex hook wrapper sets:
+
+```text
+MATRIXARK_MCP_BACKEND=temporalstore-rust
+MATRIXARK_TEMPORALSTORE_RUST_PROXY=<generated docker-exec proxy wrapper>
+MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:codex-hook:rust
+MATRIXARK_TEMPORALSTORE_METASERVER=127.0.0.1:17101
+```
+
+The proxy wrapper runs:
+
+```text
+Codex -> .cmd wrapper -> PowerShell wrapper -> WSL python3 hook adapter
+      -> WSL proxy wrapper -> Windows Docker Desktop
+      -> docker exec -i temporalstore-rust-win matrixark_rust_proxy --serve
+```
+
+That gives Codex a stable Windows command while the actual Rust TemporalStore
+runtime and persistent storage live inside Docker.
+
+For agents or Codex installations that support multiple lifecycle hooks, use
+the same wrapper pattern for `Stop`, `PostToolUse`, and session boundary hooks.
+For the first open-source path, `UserPromptSubmit` is the minimal real-time
+prompt ingestion hook.
 
 ## Prerequisites
 
 Install Docker Desktop on Windows:
 
 ```powershell
-$env:HTTP_PROXY='http://127.0.0.1:7892'
-$env:HTTPS_PROXY='http://127.0.0.1:7892'
-winget install --id Docker.DockerDesktop `
-  --accept-package-agreements `
-  --accept-source-agreements `
-  --silent `
-  --disable-interactivity
+powershell -ExecutionPolicy Bypass `
+  -File .\tools\install_windows_docker_temporalstore.ps1 `
+  -InstallDockerDesktop `
+  -SkipImageBuild `
+  -SkipRun `
+  -SkipSmoke
 ```
+
+If your network requires a proxy, pass `-HttpProxy` and `-HttpsProxy` explicitly.
 
 Start Docker Desktop:
 
@@ -102,10 +196,10 @@ desktop-linux
 
 ## Build Or Refresh Release Binaries
 
-Use the canonical WSL repo and build release binaries before packaging them:
+Use the WSL repo and build release binaries before packaging them:
 
 ```powershell
-wsl -d Ubuntu2204Deeproute -- bash -lc `
+wsl -- bash -lc `
   "cd /root/src/github-services/TemporalStore && \
    git fetch origin main && \
    cargo build --release -p temporalstore-rust --bins"
@@ -122,7 +216,8 @@ Required release binaries:
 
 ## Build The Windows Docker Image
 
-Create a small Windows build context that contains only the runtime binaries:
+Create a small Windows build context that contains only the runtime binaries.
+Replace `$distro` if your WSL distro has a different name:
 
 ```powershell
 $dockerBin='C:\Program Files\Docker\Docker\resources\bin'
@@ -132,7 +227,8 @@ $env:PATH="$dockerBin;$env:PATH"
 $ctx=Join-Path $env:TEMP ('temporalstore-rust-win-docker-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force $ctx | Out-Null
 
-$src='\\wsl.localhost\Ubuntu2204Deeproute\root\src\github-services\TemporalStore\target\release'
+$distro=((wsl -l -q | Select-Object -First 1) -replace "`0", "").Trim()
+$src="\\wsl.localhost\$distro\root\src\github-services\TemporalStore\target\release"
 foreach ($name in @(
   'matrixark_rust_metaserver',
   'matrixark_rust_datanode',
