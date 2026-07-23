@@ -469,5 +469,13 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(1, len(rows))
         self.assertEqual("raw_ingestion", rows[0]["projection"])
 
+    def test_query_effective_synthetic_status_uses_text_classifier(self) -> None:
+        self.assertTrue(matrixark_http._hook_text_is_synthetic("matrixark plain string prompt hook proof 1784770203"))
+        self.assertFalse(
+            matrixark_http._hook_text_is_synthetic(
+                "Fix MatrixArk query with validation/probe/synthetic rows hidden by default"
+            )
+        )
+
 if __name__ == "__main__":
     unittest.main()

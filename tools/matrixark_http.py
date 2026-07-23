@@ -463,7 +463,7 @@ def _hook_collect(reader: _HookStoreReader, prefix: str, args: Json) -> Json:
                     "source_field": source_field,
                     "record_type": record.get("record_type"),
                     "source_kind": record.get("source_kind"),
-                    "synthetic": bool(record.get("synthetic", False)) and _hook_text_is_synthetic(text_value),
+                    "synthetic": _hook_text_is_synthetic(text_value),
                     "record_keys": sorted(k for k in record.keys() if k not in {"messages", "text", "content", "message"})[:48],
                 }
             )
