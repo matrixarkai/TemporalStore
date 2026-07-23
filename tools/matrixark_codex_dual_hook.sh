@@ -263,6 +263,18 @@ def transcript_path_from(source):
             return value
     return ""
 
+def read_recent_transcript_text(path, max_bytes=8_000_000):
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            if size > max_bytes:
+                fh.seek(max(0, size - max_bytes))
+                fh.readline()
+            data = fh.read(max_bytes)
+        return data.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
 def stop_fallback_prompt(source):
     if os.environ.get("EVENT", "UserPromptSubmit") != "Stop":
         return ""
@@ -270,11 +282,11 @@ def stop_fallback_prompt(source):
     if not transcript:
         return ""
     path = Path(transcript)
-    if not path.exists() or path.stat().st_size > 50_000_000:
+    if not path.exists():
         return ""
     latest = ""
     try:
-        for line in path.read_text("utf-8", errors="replace").splitlines():
+        for line in read_recent_transcript_text(path).splitlines():
             try:
                 row = json.loads(line.lstrip("\ufeff"))
             except Exception:
@@ -660,6 +672,18 @@ def transcript_path_from(source):
             return value
     return ""
 
+def read_recent_transcript_text(path, max_bytes=8_000_000):
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            if size > max_bytes:
+                fh.seek(max(0, size - max_bytes))
+                fh.readline()
+            data = fh.read(max_bytes)
+        return data.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
 def stop_fallback_prompt(source):
     if os.environ.get("EVENT", "UserPromptSubmit") != "Stop":
         return ""
@@ -667,11 +691,11 @@ def stop_fallback_prompt(source):
     if not transcript:
         return ""
     path = Path(transcript)
-    if not path.exists() or path.stat().st_size > 50_000_000:
+    if not path.exists():
         return ""
     latest = ""
     try:
-        for line in path.read_text("utf-8", errors="replace").splitlines():
+        for line in read_recent_transcript_text(path).splitlines():
             try:
                 row = json.loads(line.lstrip("\ufeff"))
             except Exception:
