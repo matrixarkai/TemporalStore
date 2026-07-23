@@ -382,18 +382,19 @@ except Exception:
     pass
 hook_id = f"{os.environ.get('EVENT', 'UserPromptSubmit')}:{record_hash[:16]}"
 synthetic_markers = (
-    "probe",
-    "smoke",
-    "verification",
-    "manual",
+    "matrixark synthetic",
+    "synthetic probe",
+    "codex-live-probe",
+    "codex-cpp-live-probe",
+    "manual validation",
+    "hook verification",
+    "reply ok only",
+    "manual ingestion",
     "stdin check",
     "cmd stdin check",
     "service publisher",
     "hook fixed raw ingestion probe",
     "registered codex hook config verification",
-    "proof",
-    "reply ok only",
-    "current thread fix",
     "matrixark legacy notify",
     "matrixark node launcher",
     "matrixark utf8 spooled hook",
@@ -404,8 +405,24 @@ synthetic_markers = (
 )
 
 
+def is_synthetic_prompt(prompt_text):
+    normalized = " ".join((prompt_text or "").lower().split())
+    if normalized.startswith("user: "):
+        normalized = normalized[6:].strip()
+    if not normalized:
+        return False
+    if normalized.startswith(("probe ", "smoke ", "debug ", "test message ")):
+        return True
+    padded = f" {normalized} "
+    if " smoke " in padded or " proof " in padded:
+        return True
+    if normalized.startswith("you are a helpful assistant. you will be presented with a user prompt, and your job is to provide a short title"):
+        return True
+    return any(marker in normalized for marker in synthetic_markers)
+
+
 def retention_fields(prompt_text):
-    synthetic = any(marker in (prompt_text or "").lower() for marker in synthetic_markers)
+    synthetic = is_synthetic_prompt(prompt_text)
     return {"synthetic": synthetic}
 
 
@@ -807,18 +824,19 @@ except Exception:
     pass
 hook_id = f"{os.environ.get('EVENT', 'UserPromptSubmit')}:{record_hash[:16]}"
 synthetic_markers = (
-    "probe",
-    "smoke",
-    "verification",
-    "manual",
+    "matrixark synthetic",
+    "synthetic probe",
+    "codex-live-probe",
+    "codex-cpp-live-probe",
+    "manual validation",
+    "hook verification",
+    "reply ok only",
+    "manual ingestion",
     "stdin check",
     "cmd stdin check",
     "service publisher",
     "hook fixed raw ingestion probe",
     "registered codex hook config verification",
-    "proof",
-    "reply ok only",
-    "current thread fix",
     "matrixark legacy notify",
     "matrixark node launcher",
     "matrixark utf8 spooled hook",
@@ -828,8 +846,23 @@ synthetic_markers = (
     "queryable row",
 )
 
+def is_synthetic_prompt(prompt_text):
+    normalized = " ".join((prompt_text or "").lower().split())
+    if normalized.startswith("user: "):
+        normalized = normalized[6:].strip()
+    if not normalized:
+        return False
+    if normalized.startswith(("probe ", "smoke ", "debug ", "test message ")):
+        return True
+    padded = f" {normalized} "
+    if " smoke " in padded or " proof " in padded:
+        return True
+    if normalized.startswith("you are a helpful assistant. you will be presented with a user prompt, and your job is to provide a short title"):
+        return True
+    return any(marker in normalized for marker in synthetic_markers)
+
 def retention_fields(prompt_text):
-    return {"synthetic": any(marker in (prompt_text or "").lower() for marker in synthetic_markers)}
+    return {"synthetic": is_synthetic_prompt(prompt_text)}
 
 try:
     client = Client(

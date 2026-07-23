@@ -1244,10 +1244,14 @@ def hook_storage_options() -> Json:
 
 
 SYNTHETIC_HOOK_TEXT_MARKERS = (
-    "probe",
-    "smoke",
-    "verification",
-    "manual",
+    "matrixark synthetic",
+    "synthetic probe",
+    "codex-live-probe",
+    "codex-cpp-live-probe",
+    "manual validation",
+    "hook verification",
+    "reply ok only",
+    "manual ingestion",
     "stdin check",
     "cmd stdin check",
     "service publisher",
@@ -1263,9 +1267,24 @@ SYNTHETIC_HOOK_TEXT_MARKERS = (
 )
 
 
+def is_synthetic_hook_text(text: str) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    if normalized.startswith("user: "):
+        normalized = normalized[6:].strip()
+    if not normalized:
+        return False
+    if normalized.startswith(("probe ", "smoke ", "debug ", "test message ")):
+        return True
+    padded = f" {normalized} "
+    if " smoke " in padded or " proof " in padded:
+        return True
+    if normalized.startswith("you are a helpful assistant. you will be presented with a user prompt, and your job is to provide a short title"):
+        return True
+    return any(marker in normalized for marker in SYNTHETIC_HOOK_TEXT_MARKERS)
+
+
 def hook_retention_fields(*, text: str, role: str, now_ms: int) -> Json:
-    lowered = str(text or "").lower()
-    synthetic = any(marker in lowered for marker in SYNTHETIC_HOOK_TEXT_MARKERS)
+    synthetic = is_synthetic_hook_text(text)
     if not synthetic:
         return {
             "origin": "codex_hook",
