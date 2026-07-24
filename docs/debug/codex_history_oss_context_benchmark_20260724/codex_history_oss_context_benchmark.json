@@ -1,0 +1,882 @@
+{
+  "schema": "matrixark_codex_history_oss_context_benchmark_v1",
+  "generated_at": "2026-07-24T03:32:29.275075+00:00",
+  "token_budget": 1536,
+  "ingestion": {
+    "log_root": "/mnt/c/Users/Deeproute/.codex/sessions",
+    "sessions_seen": 7,
+    "context_event_count": 154,
+    "context_segment_count": 17,
+    "context_entity_count": 9,
+    "context_summary_count": 8,
+    "mode": "historical_codex_jsonl_backfill_to_context_models"
+  },
+  "providers": [
+    {
+      "name": "ollama",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "model": "qwen2.5:7b",
+      "ready": false,
+      "models": null,
+      "error": "models endpoint returned no available models"
+    },
+    {
+      "name": "vllm",
+      "base_url": "http://127.0.0.1:8000/v1",
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "ready": false,
+      "models": null,
+      "error": "URLError: <urlopen error [Errno 111] Connection refused>"
+    }
+  ],
+  "queries": [
+    {
+      "query": "What did the user ask about Rust TemporalStore hooks and real-time ingestion?",
+      "context_pack": {
+        "query": "What did the user ask about Rust TemporalStore hooks and real-time ingestion?",
+        "token_budget": 1536,
+        "used_tokens": 1536,
+        "selected_refs": [
+          {
+            "score": 64.98,
+            "ref_type": "segment",
+            "ref_id": "423dbcd8a2433962",
+            "tokens": 361,
+            "text": "user: REBASE ALL CHANGES\nuser: COMMIT ALL CHANGES TO REMOTE MAIN\nuser: QUERY TOP 10 MESSAGES FROM C++ AND RUST TEMPORALSTORE WITH DETAILS TO COMPARE, MAKE SURE RECENT MESSAGES IN \"ADD LLM INFERENCE\" AND CURRENT THREAD ARE FETCHED, OTHERWISE CREATE A GOAL TO FIX IT\nuser: test again in current session\nuser: TEST THREAD IN CURRENT SESSION AGAIN\nuser: I STOPPED THE OTHER THREAD, SO CAN YOU SEE PREVIOUS MESSAGES BEFORE THE STOP?\nuser: WHY? WE SHOULD NOT WAIT FOR \"STOP\", AS WE SHOULD INGEST ANY MESSAGE REALTIME IN STEAD OF WAITING FOR \"STOP\"? USUALLY WHEN \"STOP\" FIRES?\nuser: NO INGESTION IS DUE TO ASYNC INGESTION IN OUR CODE AS WE WANTED TO ANALYZE MORE MESSAGES? BUT WE SHOULD RECEIVE MORE MESSAGES UPON \"STOP? RAW MESSAGES SHOULD BE STORED ANYWAY THOUGH EXTRACTION CAN WAIT? CAN YOU DOUBLE CHECK\nuser: CAN YOU CONFIRM IF USERPROMPTSUBMIT FIRES UPON EVERY PROMPT? IF SO, DO WE STORE THE RAW MESSAGE IMMEDIATELY? IF SO, WE SHOULD BE ABLE TO QUERY THE MESSAGE RIGHT AWAY? QUEUING FOR EXTRACTION IS A DIFFERENT STORY\nuser: CREATE A GOAL TO FIX THIS ISSUE: So the real failing invariant is: prompt typed -> UserPromptSubmit fires -> raw row immediately stored -> query sees it The current observed pat"
+          },
+          {
+            "score": 64.86,
+            "ref_type": "segment",
+            "ref_id": "05cb9abba357a42f",
+            "tokens": 254,
+            "text": "user: any existing products already to compare?\nuser: for openviking, when users input a query, openviking will understand the query first, or the llm model will handle the query first\nuser: llm and cursor only use local context today for prompt engineering?\nuser: UPDATE OUR PROTAL CODE IN MATRIXARKAI/MATRIXARKAI WITH MORE LLM CONTEXT FOR THE LLM BLOG ON TOP OF THE THREE PRODUCTS\nuser: WHAT WE SHOULD TELL APART OF CONTEXT STORAGE BETWEEN TEMPORALSTORE AND MATRIXDB\nuser: WHAT'S LOCAL VECTORDB FR OPENVIKING IF RUNNING LOCALLY? THE RUST DB ONLY STORE THE FILE PATH INSTEAD OF OBJECT?\nuser: WHAT IS MEANING OF CANONICAL\nuser: PUSH THE PORTAL CODE BACK\nuser: UPDATE THE SKILL THAT ALWAYS COMMIT THE CODE TO ORIGINAL ONCE DONE\nuser: POLISH THE WEBSITE MORE AS WE ARE GOING TO BE LLM CONTEXT MANAGEMENT MORE\nuser: DON'T MENTION OPENVIKING IN THE WEBSITE, NOT MENTION\nuser: PRIMARY FOR LLM CONTEXT MANAGEMENT AND PROMPT ENGINEERING, THEN FEATURE STORE; CAN USE TEMPORALSTORE ALONE, OR USE OUR THREE PRODUCTS FOR BETTER"
+          },
+          {
+            "score": 55.0,
+            "ref_type": "summary",
+            "ref_id": "89fe1a496aeb90c8",
+            "tokens": 145,
+            "text": "Session 019ea4c9-a88c-71e1-baca-df7ff879e020 has 60 user prompts. Recent focus: use different color for matrixark for all content as below: Great for orchestration, retrieval, agents, and memory abstractions. MatrixArk gives those applications durable temporal state, request-time freshness, replay, and production storage boundaries. for the customers (vertical ai) blog, that should say what we can help there as a company build llm context management (llm)and memory on top of open source temporalstore should be separate from build that on top of the three products should be "
+          },
+          {
+            "score": 54.99,
+            "ref_type": "summary",
+            "ref_id": "fbbdc949dd5d47f8",
+            "tokens": 145,
+            "text": "Session 019efad7-2f87-77e1-b082-c294fcb5e731 has 13 user prompts. Recent focus: OPEN LATEST RUST TEMPORALSTORE CODE IN VIM CONSOLE WITH CSCOPE, CTAGS, TAGLIST ENABLED, OPEN THE MAIN FILE AND \"GF\" AVAILABLE GOING TO OTHER FILES WE WANT UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /root/src/github-services/TemporalStore && vim -N ... + ~~ The token '&&' is not a valid statement separator in this version. - CategoryInfo : ParserError: (:) [], ParentContainsErrorRecordException OPEN TH"
+          },
+          {
+            "score": 54.96,
+            "ref_type": "segment",
+            "ref_id": "d9df9e7925595943",
+            "tokens": 83,
+            "text": "user: MatrixArk app-server explicit hooks proof 1784772500011. Reply OK only.\nuser: test again in a new thread\nuser: TEST AGAIN IN HOOK THREAD\nuser: QUERY TEMPORALSTORE TO SEE IF THE NEW MESSAGE IN CURRENT THREAD AND THEOTHER THREAD HAVE BEEN RECEIVED AND INGESTED\nuser: CONTINUE TEST ELSEWHERE\nuser: COTINUE TEST AGAIN ELSEWHERE"
+          },
+          {
+            "score": 54.89,
+            "ref_type": "segment",
+            "ref_id": "5f6d33d7d94a7424",
+            "tokens": 305,
+            "text": "user: inference for llm\nuser: vllm, sglang, others for comparison\nuser: deep dive into vllm and sglang\nuser: haha, from another session/conversation, haiou jiang\nuser: haha, from another session/conversation, haiou jiang\nuser: HAIOU JIANG FROM ADD LLM INFERENCE\nuser: HAIOU JIANG 2 FROM LLM INFERENCE\nuser: HAIOU JIANG 3 FROM LLM INFERENCE FOR TESTING\nuser: OPEN LATEST RUST TEMPORALSTORE CODE IN VIM CONSOLE WITH CSCOPE, CTAGS, TAGLIST ENABLED, OPEN THE MAIN FILE AND \"GF\" AVAILABLE GOING TO OTHER FILES WE WANT\nuser: UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /root/src/github-services/TemporalStore && vim -N ... + ~~ The token '&&' is not a valid statement separator in this version. - CategoryInfo : ParserError: (:) [], ParentContainsErrorRecordException\nuser: OPEN THE VIM CONSOLE FOR ME, MAKE SURE THE RUST MAIN FILE IS OPENED\nuser: wsl: A localhost proxy configuration was detected but not mirrored into WSL. WSL in NAT mode does not support localhost proxies. VIM - Vi IMproved 8.2 (2019 Dec 12, compiled May 20 2026 21:28:11) Too many \"+command\", \"-c command\" or \"--cmd command\" arguments More"
+          },
+          {
+            "score": 54.88,
+            "ref_type": "segment",
+            "ref_id": "5b5de3c3375c9b24",
+            "tokens": 243,
+            "text": "user: update the website for why TemporalStore is game-changing for LLM context management\nuser: use specific examples for how gamechanging for prompt engineering using such context vs before\nuser: LLM infrastructure for context, prompts, memory, and runtime reuse. Prompt engineering alone is becoming too narrow. The stronger company category is context engineering / context infrastructure: deciding what the model should know, remember, retrieve, trust, ignore, reuse, and audit at request time.\nuser: can we link the product pages and highlight them in the portal page\nuser: the top right can be a small diagram, with the context stuff on top of the 3 products, while temporalstore should be more weighted\nuser: Speed should be serverless, as matrixdb is serverless db\nuser: time should be time and speed for temporal store, as speed and latency is a big win for temporal store\nuser: use different color for matrixark for all content as below: Great for orchestration"
+          }
+        ],
+        "source_tokens": 5316
+      },
+      "answers": [
+        {
+          "provider": "none_ready",
+          "with_context": {
+            "ok": false,
+            "answer": "",
+            "error": "No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready."
+          },
+          "without_context": {
+            "ok": false,
+            "answer": "",
+            "error": "No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready."
+          }
+        }
+      ]
+    },
+    {
+      "query": "What did the user ask about C++ and Rust TemporalStore parity?",
+      "context_pack": {
+        "query": "What did the user ask about C++ and Rust TemporalStore parity?",
+        "token_budget": 1536,
+        "used_tokens": 1536,
+        "selected_refs": [
+          {
+            "score": 64.98,
+            "ref_type": "segment",
+            "ref_id": "423dbcd8a2433962",
+            "tokens": 361,
+            "text": "user: REBASE ALL CHANGES\nuser: COMMIT ALL CHANGES TO REMOTE MAIN\nuser: QUERY TOP 10 MESSAGES FROM C++ AND RUST TEMPORALSTORE WITH DETAILS TO COMPARE, MAKE SURE RECENT MESSAGES IN \"ADD LLM INFERENCE\" AND CURRENT THREAD ARE FETCHED, OTHERWISE CREATE A GOAL TO FIX IT\nuser: test again in current session\nuser: TEST THREAD IN CURRENT SESSION AGAIN\nuser: I STOPPED THE OTHER THREAD, SO CAN YOU SEE PREVIOUS MESSAGES BEFORE THE STOP?\nuser: WHY? WE SHOULD NOT WAIT FOR \"STOP\", AS WE SHOULD INGEST ANY MESSAGE REALTIME IN STEAD OF WAITING FOR \"STOP\"? USUALLY WHEN \"STOP\" FIRES?\nuser: NO INGESTION IS DUE TO ASYNC INGESTION IN OUR CODE AS WE WANTED TO ANALYZE MORE MESSAGES? BUT WE SHOULD RECEIVE MORE MESSAGES UPON \"STOP? RAW MESSAGES SHOULD BE STORED ANYWAY THOUGH EXTRACTION CAN WAIT? CAN YOU DOUBLE CHECK\nuser: CAN YOU CONFIRM IF USERPROMPTSUBMIT FIRES UPON EVERY PROMPT? IF SO, DO WE STORE THE RAW MESSAGE IMMEDIATELY? IF SO, WE SHOULD BE ABLE TO QUERY THE MESSAGE RIGHT AWAY? QUEUING FOR EXTRACTION IS A DIFFERENT STORY\nuser: CREATE A GOAL TO FIX THIS ISSUE: So the real failing invariant is: prompt typed -> UserPromptSubmit fires -> raw row immediately stored -> query sees it The current observed pat"
+          },
+          {
+            "score": 64.86,
+            "ref_type": "segment",
+            "ref_id": "05cb9abba357a42f",
+            "tokens": 254,
+            "text": "user: any existing products already to compare?\nuser: for openviking, when users input a query, openviking will understand the query first, or the llm model will handle the query first\nuser: llm and cursor only use local context today for prompt engineering?\nuser: UPDATE OUR PROTAL CODE IN MATRIXARKAI/MATRIXARKAI WITH MORE LLM CONTEXT FOR THE LLM BLOG ON TOP OF THE THREE PRODUCTS\nuser: WHAT WE SHOULD TELL APART OF CONTEXT STORAGE BETWEEN TEMPORALSTORE AND MATRIXDB\nuser: WHAT'S LOCAL VECTORDB FR OPENVIKING IF RUNNING LOCALLY? THE RUST DB ONLY STORE THE FILE PATH INSTEAD OF OBJECT?\nuser: WHAT IS MEANING OF CANONICAL\nuser: PUSH THE PORTAL CODE BACK\nuser: UPDATE THE SKILL THAT ALWAYS COMMIT THE CODE TO ORIGINAL ONCE DONE\nuser: POLISH THE WEBSITE MORE AS WE ARE GOING TO BE LLM CONTEXT MANAGEMENT MORE\nuser: DON'T MENTION OPENVIKING IN THE WEBSITE, NOT MENTION\nuser: PRIMARY FOR LLM CONTEXT MANAGEMENT AND PROMPT ENGINEERING, THEN FEATURE STORE; CAN USE TEMPORALSTORE ALONE, OR USE OUR THREE PRODUCTS FOR BETTER"
+          },
+          {
+            "score": 55.0,
+            "ref_type": "summary",
+            "ref_id": "89fe1a496aeb90c8",
+            "tokens": 145,
+            "text": "Session 019ea4c9-a88c-71e1-baca-df7ff879e020 has 60 user prompts. Recent focus: use different color for matrixark for all content as below: Great for orchestration, retrieval, agents, and memory abstractions. MatrixArk gives those applications durable temporal state, request-time freshness, replay, and production storage boundaries. for the customers (vertical ai) blog, that should say what we can help there as a company build llm context management (llm)and memory on top of open source temporalstore should be separate from build that on top of the three products should be "
+          },
+          {
+            "score": 54.99,
+            "ref_type": "summary",
+            "ref_id": "fbbdc949dd5d47f8",
+            "tokens": 145,
+            "text": "Session 019efad7-2f87-77e1-b082-c294fcb5e731 has 13 user prompts. Recent focus: OPEN LATEST RUST TEMPORALSTORE CODE IN VIM CONSOLE WITH CSCOPE, CTAGS, TAGLIST ENABLED, OPEN THE MAIN FILE AND \"GF\" AVAILABLE GOING TO OTHER FILES WE WANT UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /root/src/github-services/TemporalStore && vim -N ... + ~~ The token '&&' is not a valid statement separator in this version. - CategoryInfo : ParserError: (:) [], ParentContainsErrorRecordException OPEN TH"
+          },
+          {
+            "score": 54.89,
+            "ref_type": "segment",
+            "ref_id": "5f6d33d7d94a7424",
+            "tokens": 305,
+            "text": "user: inference for llm\nuser: vllm, sglang, others for comparison\nuser: deep dive into vllm and sglang\nuser: haha, from another session/conversation, haiou jiang\nuser: haha, from another session/conversation, haiou jiang\nuser: HAIOU JIANG FROM ADD LLM INFERENCE\nuser: HAIOU JIANG 2 FROM LLM INFERENCE\nuser: HAIOU JIANG 3 FROM LLM INFERENCE FOR TESTING\nuser: OPEN LATEST RUST TEMPORALSTORE CODE IN VIM CONSOLE WITH CSCOPE, CTAGS, TAGLIST ENABLED, OPEN THE MAIN FILE AND \"GF\" AVAILABLE GOING TO OTHER FILES WE WANT\nuser: UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /root/src/github-services/TemporalStore && vim -N ... + ~~ The token '&&' is not a valid statement separator in this version. - CategoryInfo : ParserError: (:) [], ParentContainsErrorRecordException\nuser: OPEN THE VIM CONSOLE FOR ME, MAKE SURE THE RUST MAIN FILE IS OPENED\nuser: wsl: A localhost proxy configuration was detected but not mirrored into WSL. WSL in NAT mode does not support localhost proxies. VIM - Vi IMproved 8.2 (2019 Dec 12, compiled May 20 2026 21:28:11) Too many \"+command\", \"-c command\" or \"--cmd command\" arguments More"
+          },
+          {
+            "score": 54.88,
+            "ref_type": "segment",
+            "ref_id": "5b5de3c3375c9b24",
+            "tokens": 326,
+            "text": "user: update the website for why TemporalStore is game-changing for LLM context management\nuser: use specific examples for how gamechanging for prompt engineering using such context vs before\nuser: LLM infrastructure for context, prompts, memory, and runtime reuse. Prompt engineering alone is becoming too narrow. The stronger company category is context engineering / context infrastructure: deciding what the model should know, remember, retrieve, trust, ignore, reuse, and audit at request time.\nuser: can we link the product pages and highlight them in the portal page\nuser: the top right can be a small diagram, with the context stuff on top of the 3 products, while temporalstore should be more weighted\nuser: Speed should be serverless, as matrixdb is serverless db\nuser: time should be time and speed for temporal store, as speed and latency is a big win for temporal store\nuser: use different color for matrixark for all content as below: Great for orchestration, retrieval, agents, and memory abstractions. MatrixArk gives those applications durable temporal state, request-time freshness, replay, and production storage boundaries.\nuser: for the customers (vertical ai) blog, that should "
+          }
+        ],
+        "source_tokens": 5316
+      },
+      "answers": [
+        {
+          "provider": "none_ready",
+          "with_context": {
+            "ok": false,
+            "answer": "",
+            "error": "No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready."
+          },
+          "without_context": {
+            "ok": false,
+            "answer": "",
+            "error": "No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready."
+          }
+        }
+      ]
+    },
+    {
+      "query": "What did the user ask about Windows Docker installation for TemporalStore?",
+      "context_pack": {
+        "query": "What did the user ask about Windows Docker installation for TemporalStore?",
+        "token_budget": 1536,
+        "used_tokens": 1536,
+        "selected_refs": [
+          {
+            "score": 55.0,
+            "ref_type": "summary",
+            "ref_id": "89fe1a496aeb90c8",
+            "tokens": 145,
+            "text": "Session 019ea4c9-a88c-71e1-baca-df7ff879e020 has 60 user prompts. Recent focus: use different color for matrixark for all content as below: Great for orchestration, retrieval, agents, and memory abstractions. MatrixArk gives those applications durable temporal state, request-time freshness, replay, and production storage boundaries. for the customers (vertical ai) blog, that should say what we can help there as a company build llm context management (llm)and memory on top of open source temporalstore should be separate from build that on top of the three products should be "
+          },
+          {
+            "score": 54.88,
+            "ref_type": "segment",
+            "ref_id": "5b5de3c3375c9b24",
+            "tokens": 402,
+            "text": "user: update the website for why TemporalStore is game-changing for LLM context management\nuser: use specific examples for how gamechanging for prompt engineering using such context vs before\nuser: LLM infrastructure for context, prompts, memory, and runtime reuse. Prompt engineering alone is becoming too narrow. The stronger company category is context engineering / context infrastructure: deciding what the model should know, remember, retrieve, trust, ignore, reuse, and audit at request time.\nuser: can we link the product pages and highlight them in the portal page\nuser: the top right can be a small diagram, with the context stuff on top of the 3 products, while temporalstore should be more weighted\nuser: Speed should be serverless, as matrixdb is serverless db\nuser: time should be time and speed for temporal store, as speed and latency is a big win for temporal store\nuser: use different color for matrixark for all content as below: Great for orchestration, retrieval, agents, and memory abstractions. MatrixArk gives those applications durable temporal state, request-time freshness, replay, and production storage boundaries.\nuser: for the customers (vertical ai) blog, that should "
+          },
+          {
+            "score": 54.86,
+            "ref_type": "segment",
+            "ref_id": "05cb9abba357a42f",
+            "tokens": 254,
+            "text": "user: any existing products already to compare?\nuser: for openviking, when users input a query, openviking will understand the query first, or the llm model will handle the query first\nuser: llm and cursor only use local context today for prompt engineering?\nuser: UPDATE OUR PROTAL CODE IN MATRIXARKAI/MATRIXARKAI WITH MORE LLM CONTEXT FOR THE LLM BLOG ON TOP OF THE THREE PRODUCTS\nuser: WHAT WE SHOULD TELL APART OF CONTEXT STORAGE BETWEEN TEMPORALSTORE AND MATRIXDB\nuser: WHAT'S LOCAL VECTORDB FR OPENVIKING IF RUNNING LOCALLY? THE RUST DB ONLY STORE THE FILE PATH INSTEAD OF OBJECT?\nuser: WHAT IS MEANING OF CANONICAL\nuser: PUSH THE PORTAL CODE BACK\nuser: UPDATE THE SKILL THAT ALWAYS COMMIT THE CODE TO ORIGINAL ONCE DONE\nuser: POLISH THE WEBSITE MORE AS WE ARE GOING TO BE LLM CONTEXT MANAGEMENT MORE\nuser: DON'T MENTION OPENVIKING IN THE WEBSITE, NOT MENTION\nuser: PRIMARY FOR LLM CONTEXT MANAGEMENT AND PROMPT ENGINEERING, THEN FEATURE STORE; CAN USE TEMPORALSTORE ALONE, OR USE OUR THREE PRODUCTS FOR BETTER"
+          },
+          {
+            "score": 44.99,
+            "ref_type": "segment",
+            "ref_id": "3e36c89df8c08b3b",
+            "tokens": 49,
+            "text": "user: WHAT SHOULD WE DO FOR THIS \"the Stop payload extraction still has a stale-message edge case worth tightening separately.\" QUERY TOP 10 AND SHOW ME THE DETAILS FOR EACH MESSAGE AND HOOK API"
+          },
+          {
+            "score": 44.98,
+            "ref_type": "segment",
+            "ref_id": "423dbcd8a2433962",
+            "tokens": 361,
+            "text": "user: REBASE ALL CHANGES\nuser: COMMIT ALL CHANGES TO REMOTE MAIN\nuser: QUERY TOP 10 MESSAGES FROM C++ AND RUST TEMPORALSTORE WITH DETAILS TO COMPARE, MAKE SURE RECENT MESSAGES IN \"ADD LLM INFERENCE\" AND CURRENT THREAD ARE FETCHED, OTHERWISE CREATE A GOAL TO FIX IT\nuser: test again in current session\nuser: TEST THREAD IN CURRENT SESSION AGAIN\nuser: I STOPPED THE OTHER THREAD, SO CAN YOU SEE PREVIOUS MESSAGES BEFORE THE STOP?\nuser: WHY? WE SHOULD NOT WAIT FOR \"STOP\", AS WE SHOULD INGEST ANY MESSAGE REALTIME IN STEAD OF WAITING FOR \"STOP\"? USUALLY WHEN \"STOP\" FIRES?\nuser: NO INGESTION IS DUE TO ASYNC INGESTION IN OUR CODE AS WE WANTED TO ANALYZE MORE MESSAGES? BUT WE SHOULD RECEIVE MORE MESSAGES UPON \"STOP? RAW MESSAGES SHOULD BE STORED ANYWAY THOUGH EXTRACTION CAN WAIT? CAN YOU DOUBLE CHECK\nuser: CAN YOU CONFIRM IF USERPROMPTSUBMIT FIRES UPON EVERY PROMPT? IF SO, DO WE STORE THE RAW MESSAGE IMMEDIATELY? IF SO, WE SHOULD BE ABLE TO QUERY THE MESSAGE RIGHT AWAY? QUEUING FOR EXTRACTION IS A DIFFERENT STORY\nuser: CREATE A GOAL TO FIX THIS ISSUE: So the real failing invariant is: prompt typed -> UserPromptSubmit fires -> raw row immediately stored -> query sees it The current observed pat"
+          },
+          {
+            "score": 44.94,
+            "ref_type": "entity",
+            "ref_id": "825c3af3add4dc62",
+            "tokens": 63,
+            "text": "codex_hook appears in 3 historical Codex user prompts; latest: WHAT SHOULD WE DO FOR THIS \"the Stop payload extraction still has a stale-message edge case worth tightening separately.\" QUERY TOP 10 AND SHOW ME THE DETAILS FOR EACH MESSAGE AND HOOK API"
+          },
+          {
+            "score": 44.93,
+            "ref_type": "segment",
+            "ref_id": "3c9f8f30548ca032",
+            "tokens": 239,
+            "text": "user: FILL GAPS VS PDF DESIGN\nuser: PRODUCTION READY CODE\nuser: PRODUCTION READY AND GAP FILLS\nuser: PRODUCTION READY FOR ALL MODULES\nuser: FILL GAPS VS PDF DESIGN\nuser: did you see the recent downloaded bytestore. pdf with detailed design?\nuser: did you see the recent downloaded bytestore. pdf with detailed design?\nuser: loc of the code completed\nuser: line of code of the mvp code base\nuser: did u see BYTESTORE LAB SIMULATION CODE in downloads, we should use similar PROTOS\nuser: create a goal refer to bytestore lab simulation code and other bytestore related code, refer to bytestore.pdf design, repeat and write the production ready code for object store in c++, focused on functionalities and performance for now, no testing and monitoring stuff now, ge bytestore production ready\nuser: refer to bytestorelab-master, \"C:\\Users\\Deeproute\\Downloads\\bytestore_cache-master.tar.gz\" and bytestoretools-master, most importantly the bytestore.pdf design"
+          },
+          {
+            "score": 44.89,
+            "ref_type": "segment",
+            "ref_id": "5f6d33d7d94a7424",
+            "tokens": 23,
+            "text": "user: inference for llm\nuser: vllm, sglang, others for comparison\nuser: deep dive into vllm "
+          }
+        ],
+        "source_tokens": 5316
+      },
+      "answers": [
+        {
+          "provider": "none_ready",
+          "with_context": {
+            "ok": false,
+            "answer": "",
+            "error": "No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready."
+          },
+          "without_context": {
+            "ok": false,
+            "answer": "",
+            "error": "No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready."
+          }
+        }
+      ]
+    },
+    {
+      "query": "What did the user ask about context management data fields and compaction?",
+      "context_pack": {
+        "query": "What did the user ask about context management data fields and compaction?",
+        "token_budget": 1536,
+        "used_tokens": 1536,
+        "selected_refs": [
+          {
+            "score": 55.0,
+            "ref_type": "summary",
+            "ref_id": "89fe1a496aeb90c8",
+            "tokens": 145,
+            "text": "Session 019ea4c9-a88c-71e1-baca-df7ff879e020 has 60 user prompts. Recent focus: use different color for matrixark for all content as below: Great for orchestration, retrieval, agents, and memory abstractions. MatrixArk gives those applications durable temporal state, request-time freshness, replay, and production storage boundaries. for the customers (vertical ai) blog, that should say what we can help there as a company build llm context management (llm)and memory on top of open source temporalstore should be separate from build that on top of the three products should be "
+          },
+          {
+            "score": 54.88,
+            "ref_type": "segment",
+            "ref_id": "5b5de3c3375c9b24",
+            "tokens": 402,
+            "text": "user: update the website for why TemporalStore is game-changing for LLM context management\nuser: use specific examples for how gamechanging for prompt engineering using such context vs before\nuser: LLM infrastructure for context, prompts, memory, and runtime reuse. Prompt engineering alone is becoming too narrow. The stronger company category is context engineering / context infrastructure: deciding what the model should know, remember, retrieve, trust, ignore, reuse, and audit at request time.\nuser: can we link the product pages and highlight them in the portal page\nuser: the top right can be a small diagram, with the context stuff on top of the 3 products, while temporalstore should be more weighted\nuser: Speed should be serverless, as matrixdb is serverless db\nuser: time should be time and speed for temporal store, as speed and latency is a big win for temporal store\nuser: use different color for matrixark for all content as below: Great for orchestration, retrieval, agents, and memory abstractions. MatrixArk gives those applications durable temporal state, request-time freshness, replay, and production storage boundaries.\nuser: for the customers (vertical ai) blog, that should "
+          },
+          {
+            "score": 45.0,
+            "ref_type": "entity",
+            "ref_id": "841a5ed5c5641b71",
+            "tokens": 69,
+            "text": "context_management appears in 24 historical Codex user prompts; latest: build llm context management (llm)and memory on top of open source temporalstore should be separate from build that on top of the three products should be in separate blogs and tell the diff in each one"
+          },
+          {
+            "score": 44.99,
+            "ref_type": "segment",
+            "ref_id": "3e36c89df8c08b3b",
+            "tokens": 49,
+            "text": "user: WHAT SHOULD WE DO FOR THIS \"the Stop payload extraction still has a stale-message edge case worth tightening separately.\" QUERY TOP 10 AND SHOW ME THE DETAILS FOR EACH MESSAGE AND HOOK API"
+          },
+          {
+            "score": 44.94,
+            "ref_type": "entity",
+            "ref_id": "825c3af3add4dc62",
+            "tokens": 63,
+            "text": "codex_hook appears in 3 historical Codex user prompts; latest: WHAT SHOULD WE DO FOR THIS \"the Stop payload extraction still has a stale-message edge case worth tightening separately.\" QUERY TOP 10 AND SHOW ME THE DETAILS FOR EACH MESSAGE AND HOOK API"
+          },
+          {
+            "score": 44.93,
+            "ref_type": "summary",
+            "ref_id": "86e5bac1b0c49349",
+            "tokens": 249,
+            "text": "Cross-session user memory synthesized from child session summaries and selected topic state: context_management: context_management appears in 24 historical Codex user prompts; latest: build llm context management (llm)and memory on top of open source temporalstore should be separate from build that on top of the three products should be in separate blogs and tell the diff in each one; temporalstore: temporalstore appears in 18 historical Codex user prompts; latest: UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /root/src/github-services/TemporalStore && vim -N ... + ~~ The token '&&' is not ; matrixobject_shared_storage: matrixobject_shared_storage appears in 12 historical Codex user prompts; latest: WE HAVE DONE RENAME OF CODE FOLDERS (NO \"LAB\") BUT THEY ARE NOT IN THE COMMIT HISTORY OF MATRIXOBJECTSTORE REMOTE MAIN?; cpp_temporalstore: cpp_temporalstore appears in 12 historical Codex u"
+          },
+          {
+            "score": 44.93,
+            "ref_type": "segment",
+            "ref_id": "3c9f8f30548ca032",
+            "tokens": 239,
+            "text": "user: FILL GAPS VS PDF DESIGN\nuser: PRODUCTION READY CODE\nuser: PRODUCTION READY AND GAP FILLS\nuser: PRODUCTION READY FOR ALL MODULES\nuser: FILL GAPS VS PDF DESIGN\nuser: did you see the recent downloaded bytestore. pdf with detailed design?\nuser: did you see the recent downloaded bytestore. pdf with detailed design?\nuser: loc of the code completed\nuser: line of code of the mvp code base\nuser: did u see BYTESTORE LAB SIMULATION CODE in downloads, we should use similar PROTOS\nuser: create a goal refer to bytestore lab simulation code and other bytestore related code, refer to bytestore.pdf design, repeat and write the production ready code for object store in c++, focused on functionalities and performance for now, no testing and monitoring stuff now, ge bytestore production ready\nuser: refer to bytestorelab-master, \"C:\\Users\\Deeproute\\Downloads\\bytestore_cache-master.tar.gz\" and bytestoretools-master, most importantly the bytestore.pdf design"
+          },
+          {
+            "score": 44.92,
+            "ref_type": "segment",
+            "ref_id": "68d88c4a8bd5a7bc",
+            "tokens": 320,
+            "text": "user: Close BYTESTORE.pdf design gaps:Represent LogFile/segment GC with SegmentInfoProto, ManifestProto, MetaProto, BitMapProto, and discard bitsets from the lab protos. Track live/stale/discarded bytes, logical write amplification, space amplification, and discard candidate ranges. Batch discard ranges per segment/LogFile and merge adjacent ranges before calling discard. Keep compaction as a fallback path for fragmented ranges.\nuser: Close BYTESTORE.pdf design gaps:Represent LogFile/segment GC with SegmentInfoProto, ManifestProto, MetaProto, BitMapProto, and discard bitsets from the lab protos. Track live/stale/discarded bytes, logical write amplification, space amplification, and discard candidate ranges. Batch discard ranges per segment/LogFile and merge adjacent ranges before calling discard. Keep compaction as a fallback path for fragmented ranges.\nuser: Close BYTESTORE.pdf design gaps:Represent LogFile/segment GC with SegmentInfoProto, ManifestProto, MetaProto, BitMapProto, and discard bitsets from the lab protos. Track live/stale/discarded bytes, logical write amplification, space amplification, and discard candidate ranges. Batch discard ranges per segment/LogFile and merge"
+          }
+        ],
+        "source_tokens": 5316
+      },
+      "answers": [
+        {
+          "provider": "none_ready",
+          "with_context": {
+            "ok": false,
+            "answer": "",
+            "error": "No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready."
+          },
+          "without_context": {
+            "ok": false,
+            "answer": "",
+            "error": "No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready."
+          }
+        }
+      ]
+    },
+    {
+      "query": "What did the user ask about Qwen, Ollama, vLLM, LoCoMo, LongMemEval, and VikingMem benchmarking?",
+      "context_pack": {
+        "query": "What did the user ask about Qwen, Ollama, vLLM, LoCoMo, LongMemEval, and VikingMem benchmarking?",
+        "token_budget": 1536,
+        "used_tokens": 1536,
+        "selected_refs": [
+          {
+            "score": 45.0,
+            "ref_type": "summary",
+            "ref_id": "89fe1a496aeb90c8",
+            "tokens": 145,
+            "text": "Session 019ea4c9-a88c-71e1-baca-df7ff879e020 has 60 user prompts. Recent focus: use different color for matrixark for all content as below: Great for orchestration, retrieval, agents, and memory abstractions. MatrixArk gives those applications durable temporal state, request-time freshness, replay, and production storage boundaries. for the customers (vertical ai) blog, that should say what we can help there as a company build llm context management (llm)and memory on top of open source temporalstore should be separate from build that on top of the three products should be "
+          },
+          {
+            "score": 44.99,
+            "ref_type": "segment",
+            "ref_id": "3e36c89df8c08b3b",
+            "tokens": 49,
+            "text": "user: WHAT SHOULD WE DO FOR THIS \"the Stop payload extraction still has a stale-message edge case worth tightening separately.\" QUERY TOP 10 AND SHOW ME THE DETAILS FOR EACH MESSAGE AND HOOK API"
+          },
+          {
+            "score": 44.94,
+            "ref_type": "entity",
+            "ref_id": "825c3af3add4dc62",
+            "tokens": 63,
+            "text": "codex_hook appears in 3 historical Codex user prompts; latest: WHAT SHOULD WE DO FOR THIS \"the Stop payload extraction still has a stale-message edge case worth tightening separately.\" QUERY TOP 10 AND SHOW ME THE DETAILS FOR EACH MESSAGE AND HOOK API"
+          },
+          {
+            "score": 44.93,
+            "ref_type": "segment",
+            "ref_id": "3c9f8f30548ca032",
+            "tokens": 239,
+            "text": "user: FILL GAPS VS PDF DESIGN\nuser: PRODUCTION READY CODE\nuser: PRODUCTION READY AND GAP FILLS\nuser: PRODUCTION READY FOR ALL MODULES\nuser: FILL GAPS VS PDF DESIGN\nuser: did you see the recent downloaded bytestore. pdf with detailed design?\nuser: did you see the recent downloaded bytestore. pdf with detailed design?\nuser: loc of the code completed\nuser: line of code of the mvp code base\nuser: did u see BYTESTORE LAB SIMULATION CODE in downloads, we should use similar PROTOS\nuser: create a goal refer to bytestore lab simulation code and other bytestore related code, refer to bytestore.pdf design, repeat and write the production ready code for object store in c++, focused on functionalities and performance for now, no testing and monitoring stuff now, ge bytestore production ready\nuser: refer to bytestorelab-master, \"C:\\Users\\Deeproute\\Downloads\\bytestore_cache-master.tar.gz\" and bytestoretools-master, most importantly the bytestore.pdf design"
+          },
+          {
+            "score": 44.89,
+            "ref_type": "segment",
+            "ref_id": "5f6d33d7d94a7424",
+            "tokens": 305,
+            "text": "user: inference for llm\nuser: vllm, sglang, others for comparison\nuser: deep dive into vllm and sglang\nuser: haha, from another session/conversation, haiou jiang\nuser: haha, from another session/conversation, haiou jiang\nuser: HAIOU JIANG FROM ADD LLM INFERENCE\nuser: HAIOU JIANG 2 FROM LLM INFERENCE\nuser: HAIOU JIANG 3 FROM LLM INFERENCE FOR TESTING\nuser: OPEN LATEST RUST TEMPORALSTORE CODE IN VIM CONSOLE WITH CSCOPE, CTAGS, TAGLIST ENABLED, OPEN THE MAIN FILE AND \"GF\" AVAILABLE GOING TO OTHER FILES WE WANT\nuser: UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /root/src/github-services/TemporalStore && vim -N ... + ~~ The token '&&' is not a valid statement separator in this version. - CategoryInfo : ParserError: (:) [], ParentContainsErrorRecordException\nuser: OPEN THE VIM CONSOLE FOR ME, MAKE SURE THE RUST MAIN FILE IS OPENED\nuser: wsl: A localhost proxy configuration was detected but not mirrored into WSL. WSL in NAT mode does not support localhost proxies. VIM - Vi IMproved 8.2 (2019 Dec 12, compiled May 20 2026 21:28:11) Too many \"+command\", \"-c command\" or \"--cmd command\" arguments More"
+          },
+          {
+            "score": 44.88,
+            "ref_type": "segment",
+            "ref_id": "5b5de3c3375c9b24",
+            "tokens": 402,
+            "text": "user: update the website for why TemporalStore is game-changing for LLM context management\nuser: use specific examples for how gamechanging for prompt engineering using such context vs before\nuser: LLM infrastructure for context, prompts, memory, and runtime reuse. Prompt engineering alone is becoming too narrow. The stronger company category is context engineering / context infrastructure: deciding what the model should know, remember, retrieve, trust, ignore, reuse, and audit at request time.\nuser: can we link the product pages and highlight them in the portal page\nuser: the top right can be a small diagram, with the context stuff on top of the 3 products, while temporalstore should be more weighted\nuser: Speed should be serverless, as matrixdb is serverless db\nuser: time should be time and speed for temporal store, as speed and latency is a big win for temporal store\nuser: use different color for matrixark for all content as below: Great for orchestration, retrieval, agents, and memory abstractions. MatrixArk gives those applications durable temporal state, request-time freshness, replay, and production storage boundaries.\nuser: for the customers (vertical ai) blog, that should "
+          },
+          {
+            "score": 44.86,
+            "ref_type": "segment",
+            "ref_id": "05cb9abba357a42f",
+            "tokens": 254,
+            "text": "user: any existing products already to compare?\nuser: for openviking, when users input a query, openviking will understand the query first, or the llm model will handle the query first\nuser: llm and cursor only use local context today for prompt engineering?\nuser: UPDATE OUR PROTAL CODE IN MATRIXARKAI/MATRIXARKAI WITH MORE LLM CONTEXT FOR THE LLM BLOG ON TOP OF THE THREE PRODUCTS\nuser: WHAT WE SHOULD TELL APART OF CONTEXT STORAGE BETWEEN TEMPORALSTORE AND MATRIXDB\nuser: WHAT'S LOCAL VECTORDB FR OPENVIKING IF RUNNING LOCALLY? THE RUST DB ONLY STORE THE FILE PATH INSTEAD OF OBJECT?\nuser: WHAT IS MEANING OF CANONICAL\nuser: PUSH THE PORTAL CODE BACK\nuser: UPDATE THE SKILL THAT ALWAYS COMMIT THE CODE TO ORIGINAL ONCE DONE\nuser: POLISH THE WEBSITE MORE AS WE ARE GOING TO BE LLM CONTEXT MANAGEMENT MORE\nuser: DON'T MENTION OPENVIKING IN THE WEBSITE, NOT MENTION\nuser: PRIMARY FOR LLM CONTEXT MANAGEMENT AND PROMPT ENGINEERING, THEN FEATURE STORE; CAN USE TEMPORALSTORE ALONE, OR USE OUR THREE PRODUCTS FOR BETTER"
+          },
+          {
+            "score": 35.0,
+            "ref_type": "entity",
+            "ref_id": "841a5ed5c5641b71",
+            "tokens": 69,
+            "text": "context_management appears in 24 historical Codex user prompts; latest: build llm context management (llm)and memory on top of open source temporalstore should be separate from build that on top of the three products should be in separate blogs and tell the diff in each one"
+          },
+          {
+            "score": 34.99,
+            "ref_type": "summary",
+            "ref_id": "fbbdc949dd5d47f8",
+            "tokens": 10,
+            "text": "Session 019efad7-2f87-77e1-b082-c294fcb5"
+          }
+        ],
+        "source_tokens": 5316
+      },
+      "answers": [
+        {
+          "provider": "none_ready",
+          "with_context": {
+            "ok": false,
+            "answer": "",
+            "error": "No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready."
+          },
+          "without_context": {
+            "ok": false,
+            "answer": "",
+            "error": "No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready."
+          }
+        }
+      ]
+    },
+    {
+      "query": "What did the user ask about MatrixObject, shared storage, S3, and object storage?",
+      "context_pack": {
+        "query": "What did the user ask about MatrixObject, shared storage, S3, and object storage?",
+        "token_budget": 1536,
+        "used_tokens": 1536,
+        "selected_refs": [
+          {
+            "score": 64.86,
+            "ref_type": "segment",
+            "ref_id": "05cb9abba357a42f",
+            "tokens": 254,
+            "text": "user: any existing products already to compare?\nuser: for openviking, when users input a query, openviking will understand the query first, or the llm model will handle the query first\nuser: llm and cursor only use local context today for prompt engineering?\nuser: UPDATE OUR PROTAL CODE IN MATRIXARKAI/MATRIXARKAI WITH MORE LLM CONTEXT FOR THE LLM BLOG ON TOP OF THE THREE PRODUCTS\nuser: WHAT WE SHOULD TELL APART OF CONTEXT STORAGE BETWEEN TEMPORALSTORE AND MATRIXDB\nuser: WHAT'S LOCAL VECTORDB FR OPENVIKING IF RUNNING LOCALLY? THE RUST DB ONLY STORE THE FILE PATH INSTEAD OF OBJECT?\nuser: WHAT IS MEANING OF CANONICAL\nuser: PUSH THE PORTAL CODE BACK\nuser: UPDATE THE SKILL THAT ALWAYS COMMIT THE CODE TO ORIGINAL ONCE DONE\nuser: POLISH THE WEBSITE MORE AS WE ARE GOING TO BE LLM CONTEXT MANAGEMENT MORE\nuser: DON'T MENTION OPENVIKING IN THE WEBSITE, NOT MENTION\nuser: PRIMARY FOR LLM CONTEXT MANAGEMENT AND PROMPT ENGINEERING, THEN FEATURE STORE; CAN USE TEMPORALSTORE ALONE, OR USE OUR THREE PRODUCTS FOR BETTER"
+          },
+          {
+            "score": 55.0,
+            "ref_type": "summary",
+            "ref_id": "89fe1a496aeb90c8",
+            "tokens": 145,
+            "text": "Session 019ea4c9-a88c-71e1-baca-df7ff879e020 has 60 user prompts. Recent focus: use different color for matrixark for all content as below: Great for orchestration, retrieval, agents, and memory abstractions. MatrixArk gives those applications durable temporal state, request-time freshness, replay, and production storage boundaries. for the customers (vertical ai) blog, that should say what we can help there as a company build llm context management (llm)and memory on top of open source temporalstore should be separate from build that on top of the three products should be "
+          },
+          {
+            "score": 44.99,
+            "ref_type": "segment",
+            "ref_id": "3e36c89df8c08b3b",
+            "tokens": 49,
+            "text": "user: WHAT SHOULD WE DO FOR THIS \"the Stop payload extraction still has a stale-message edge case worth tightening separately.\" QUERY TOP 10 AND SHOW ME THE DETAILS FOR EACH MESSAGE AND HOOK API"
+          },
+          {
+            "score": 44.94,
+            "ref_type": "segment",
+            "ref_id": "ac8e9648e1362037",
+            "tokens": 1088,
+            "text": "user: refer to bytestorelab-master, bytestorelab-master, bytestoretools-master, \\BYTESTORE.pdf, add a new remote repo, say MatrixObjectStore, or a better name than, MatrixObjectStore, not not not visible now, keep secret/stealth now\nuser: create a goal refer to bytestore lab simulation code and other bytestore related code, refer to bytestore.pdf design, repeat and write the production ready code for object store in c++, focused on functionalities and performance for now, no testing and monitoring stuff now, ge bytestore production readycreate a goal refer to bytestore lab simulation code and other bytestore related code, refer to bytestore.pdf design, repeat and write the production ready code for object store in c++, focused on functionalities and performance for now, no testing and monitoring stuff now, ge bytestore production readycreate a goal refer to bytestore lab simulation code and other bytestore related code, refer to bytestore.pdf design, repeat and write the production ready code for object store in c++, focused on functionalities and performance for now, no testing and monitoring stuff now, ge bytestore production ready\nuser: create a goal: refer to bytestore lab simu"
+          }
+        ],
+        "source_tokens": 5316
+      },
+      "answers": [
+        {
+          "provider": "none_ready",
+          "with_context": {
+            "ok": false,
+            "answer": "",
+            "error": "No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready."
+          },
+          "without_context": {
+            "ok": false,
+            "answer": "",
+            "error": "No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready."
+          }
+        }
+      ]
+    }
+  ],
+  "samples": {
+    "context_events": [
+      {
+        "event_id": "fee4135851a8a6b7",
+        "timestamp": "2026-07-23T22:55:16.199Z",
+        "timestamp_ms": 1784847316199,
+        "session_id": "019f8d12-86c6-7100-9a44-7537cdd30aec",
+        "source_file": "/mnt/c/Users/Deeproute/.codex/sessions/2026/07/23/rollout-2026-07-23T11-43-49-019f8d12-86c6-7100-9a44-7537cdd30aec.jsonl",
+        "line_no": 5131,
+        "role": "user",
+        "text": "CONTINUE TEST AGAIN, QUERY FROM C++ AND RUST; I INGESTED ANOTHER MESSAGE IN ANOTHER THREAD, CHECK, IF NOT THERE, CREATE A GOAL"
+      },
+      {
+        "event_id": "01bb4d3884a899fb",
+        "timestamp": "2026-07-23T22:55:39.461Z",
+        "timestamp_ms": 1784847339461,
+        "session_id": "019f8cb5-b4d5-77f2-8c82-0499440da36f",
+        "source_file": "/mnt/c/Users/Deeproute/.codex/sessions/2026/07/23/rollout-2026-07-23T10-02-31-019f8cb5-b4d5-77f2-8c82-0499440da36f.jsonl",
+        "line_no": 199,
+        "role": "user",
+        "text": "COTINUE TEST AGAIN ELSEWHERE"
+      },
+      {
+        "event_id": "9ca4f82acd6f4a2e",
+        "timestamp": "2026-07-23T22:58:37.265Z",
+        "timestamp_ms": 1784847517265,
+        "session_id": "019f8d12-86c6-7100-9a44-7537cdd30aec",
+        "source_file": "/mnt/c/Users/Deeproute/.codex/sessions/2026/07/23/rollout-2026-07-23T11-43-49-019f8d12-86c6-7100-9a44-7537cdd30aec.jsonl",
+        "line_no": 5156,
+        "role": "user",
+        "text": "WHAT SHOULD WE DO FOR THIS \"the Stop payload extraction still has a stale-message edge case worth tightening separately.\" QUERY TOP 10 AND SHOW ME THE DETAILS FOR EACH MESSAGE AND HOOK API"
+      },
+      {
+        "event_id": "771d3505fa5040e9",
+        "timestamp": "2026-07-24T02:51:24.940Z",
+        "timestamp_ms": 1784861484940,
+        "session_id": "019efad7-2f87-77e1-b082-c294fcb5e731",
+        "source_file": "/mnt/c/Users/Deeproute/.codex/sessions/2026/06/24/rollout-2026-06-24T11-14-26-019efad7-2f87-77e1-b082-c294fcb5e731.jsonl",
+        "line_no": 282,
+        "role": "user",
+        "text": "OPEN LATEST RUST TEMPORALSTORE CODE IN VIM CONSOLE WITH CSCOPE, CTAGS, TAGLIST ENABLED, OPEN THE MAIN FILE AND \"GF\" AVAILABLE GOING TO OTHER FILES WE WANT"
+      },
+      {
+        "event_id": "79222c40138253b4",
+        "timestamp": "2026-07-24T02:55:34.360Z",
+        "timestamp_ms": 1784861734360,
+        "session_id": "019efad7-2f87-77e1-b082-c294fcb5e731",
+        "source_file": "/mnt/c/Users/Deeproute/.codex/sessions/2026/06/24/rollout-2026-06-24T11-14-26-019efad7-2f87-77e1-b082-c294fcb5e731.jsonl",
+        "line_no": 362,
+        "role": "user",
+        "text": "UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /root/src/github-services/TemporalStore && vim -N ... + ~~ The token '&&' is not a valid statement separator in this version. - CategoryInfo : ParserError: (:) [], ParentContainsErrorRecordException"
+      },
+      {
+        "event_id": "50f5d12af9a07785",
+        "timestamp": "2026-07-24T03:00:13.956Z",
+        "timestamp_ms": 1784862013956,
+        "session_id": "019efad7-2f87-77e1-b082-c294fcb5e731",
+        "source_file": "/mnt/c/Users/Deeproute/.codex/sessions/2026/06/24/rollout-2026-06-24T11-14-26-019efad7-2f87-77e1-b082-c294fcb5e731.jsonl",
+        "line_no": 411,
+        "role": "user",
+        "text": "OPEN THE VIM CONSOLE FOR ME, MAKE SURE THE RUST MAIN FILE IS OPENED"
+      },
+      {
+        "event_id": "bcde4cfd1003119b",
+        "timestamp": "2026-07-24T03:03:33.425Z",
+        "timestamp_ms": 1784862213425,
+        "session_id": "019efad7-2f87-77e1-b082-c294fcb5e731",
+        "source_file": "/mnt/c/Users/Deeproute/.codex/sessions/2026/06/24/rollout-2026-06-24T11-14-26-019efad7-2f87-77e1-b082-c294fcb5e731.jsonl",
+        "line_no": 482,
+        "role": "user",
+        "text": "wsl: A localhost proxy configuration was detected but not mirrored into WSL. WSL in NAT mode does not support localhost proxies. VIM - Vi IMproved 8.2 (2019 Dec 12, compiled May 20 2026 21:28:11) Too many \"+command\", \"-c command\" or \"--cmd command\" arguments More info with: \"vim -h\""
+      },
+      {
+        "event_id": "91a9a59b1ded59ae",
+        "timestamp": "2026-07-24T03:10:27.627Z",
+        "timestamp_ms": 1784862627627,
+        "session_id": "019efad7-2f87-77e1-b082-c294fcb5e731",
+        "source_file": "/mnt/c/Users/Deeproute/.codex/sessions/2026/06/24/rollout-2026-06-24T11-14-26-019efad7-2f87-77e1-b082-c294fcb5e731.jsonl",
+        "line_no": 515,
+        "role": "user",
+        "text": "UPDATE THE SKILLS AS WELL"
+      }
+    ],
+    "context_segments": [
+      {
+        "segment_id": "a8eff275d834c703",
+        "session_id": "019f8cba-501b-71e1-96bc-1221d045f4c4",
+        "start_ms": 1784772467054,
+        "end_ms": 1784772467054,
+        "event_ids": [
+          "92eedf1fb5452c72"
+        ],
+        "text": "user: MatrixArk cachebuster CLI proof 1784772600421. Reply OK only."
+      },
+      {
+        "segment_id": "423dbcd8a2433962",
+        "session_id": "019f8d12-86c6-7100-9a44-7537cdd30aec",
+        "start_ms": 1784778447429,
+        "end_ms": 1784847316199,
+        "event_ids": [
+          "6309cb4a7ea49b46",
+          "2fc03031d932bf82",
+          "86bb55c5a8ceb0a4",
+          "630ec99ca87a9af4",
+          "8d73318698f6caae",
+          "61f1783a7eb78c8a",
+          "1e726c1f394ed7b0",
+          "c245124ab347aa70",
+          "9376d74e7467a941",
+          "98bfe596d76cd3cc",
+          "440d50ced1cb5793",
+          "fee4135851a8a6b7"
+        ],
+        "text": "user: REBASE ALL CHANGES\nuser: COMMIT ALL CHANGES TO REMOTE MAIN\nuser: QUERY TOP 10 MESSAGES FROM C++ AND RUST TEMPORALSTORE WITH DETAILS TO COMPARE, MAKE SURE RECENT MESSAGES IN \"ADD LLM INFERENCE\" AND CURRENT THREAD ARE FETCHED, OTHERWISE CREATE A GOAL TO FIX IT\nuser: test again in current session\nuser: TEST THREAD IN CURRENT SESSION AGAIN\nuser: I STOPPED THE OTHER THREAD, SO CAN YOU SEE PREVIOUS MESSAGES BEFORE THE STOP?\nuser: WHY? WE SHOULD NOT WAIT FOR \"STOP\", AS WE SHOULD INGEST ANY MESSAGE REALTIME IN STEAD OF WAITING FOR \"STOP\"? USUALLY WHEN \"STOP\" FIRES?\nuser: NO INGESTION IS DUE TO ASYNC INGESTION IN OUR CODE AS WE WANTED TO ANALYZE MORE MESSAGES? BUT WE SHOULD RECEIVE MORE MESSAGES UPON \"STOP? RAW MESSAGES SHOULD BE STORED ANYWAY THOUGH EXTRACTION CAN WAIT? CAN YOU DOUBLE CHECK\nuser: CAN YOU CONFIRM IF USERPROMPTSUBMIT FIRES UPON EVERY PROMPT? IF SO, DO WE STORE THE RAW MESSAGE IMMEDIATELY? IF SO, WE SHOULD BE ABLE TO QUERY THE MESSAGE RIGHT AWAY? QUEUING FOR EXTRACTION IS A DIFFERENT STORY\nuser: CREATE A GOAL TO FIX THIS ISSUE: So the real failing invariant is: prompt typed -> UserPromptSubmit fires -> raw row immediately stored -> query sees it The current observed path is: prompt typed -> no UserPromptSubmit seen -> Stop later -> extracted raw row stored\nuser: CONTINUE TEST\nuser: CONTINUE TEST AGAIN, QUERY FROM C++ AND RUST; I INGESTED ANOTHER MESSAGE IN ANOTHER THREAD, CHECK, IF NOT THERE, CREATE A GOAL"
+      },
+      {
+        "segment_id": "3e36c89df8c08b3b",
+        "session_id": "019f8d12-86c6-7100-9a44-7537cdd30aec",
+        "start_ms": 1784847517265,
+        "end_ms": 1784847517265,
+        "event_ids": [
+          "9ca4f82acd6f4a2e"
+        ],
+        "text": "user: WHAT SHOULD WE DO FOR THIS \"the Stop payload extraction still has a stale-message edge case worth tightening separately.\" QUERY TOP 10 AND SHOW ME THE DETAILS FOR EACH MESSAGE AND HOOK API"
+      },
+      {
+        "segment_id": "67901f36e164c512",
+        "session_id": "019f8f44-d601-7fb3-b86e-646b04728dea",
+        "start_ms": 1784815098378,
+        "end_ms": 1784815098378,
+        "event_ids": [
+          "1de38c70c2be47b0"
+        ],
+        "text": "user: MatrixArk CLI control UserPromptSubmit emission 1784815341. Reply OK only."
+      }
+    ],
+    "context_entities": [
+      {
+        "entity_id": "841a5ed5c5641b71",
+        "entity_type": "topic",
+        "name": "context_management",
+        "session_ids": [
+          "019ea4c9-a88c-71e1-baca-df7ff879e020"
+        ],
+        "support_event_ids": [
+          "8cd144f83aa2281d",
+          "a5069996618c4f87",
+          "7f5a0de81330a20b",
+          "ea49811de195b11e",
+          "28ca1d7d53772ab9",
+          "2450700e8493e94b",
+          "95a5331de243a2a2",
+          "bae55168f576dcde",
+          "712ab6e8785a6fae",
+          "9f1c30743c697b8e",
+          "b3fe6cd518950c0c",
+          "c89fda1128501382",
+          "313d2db333253c27",
+          "65863ec864d549c3",
+          "c1ac5a4dd8ac4e4c",
+          "4240adbef9be44a8"
+        ],
+        "state": "context_management appears in 24 historical Codex user prompts; latest: build llm context management (llm)and memory on top of open source temporalstore should be separate from build that on top of the three products should be in separate blogs and tell the diff in each one"
+      },
+      {
+        "entity_id": "ba63271c83beee3c",
+        "entity_type": "topic",
+        "name": "temporalstore",
+        "session_ids": [
+          "019ea4c9-a88c-71e1-baca-df7ff879e020",
+          "019efad7-2f87-77e1-b082-c294fcb5e731",
+          "019f8cb5-b4d5-77f2-8c82-0499440da36f",
+          "019f8d12-86c6-7100-9a44-7537cdd30aec"
+        ],
+        "support_event_ids": [
+          "0ec9c8217bc42e2c",
+          "a6893cdecf44391f",
+          "c7a9612d2dfd60f8",
+          "c5b88b42e87ade39",
+          "fc4df3da72f196ed",
+          "7f5a0de81330a20b",
+          "28ca1d7d53772ab9",
+          "2450700e8493e94b",
+          "b3fe6cd518950c0c",
+          "c89fda1128501382",
+          "c1ac5a4dd8ac4e4c",
+          "4240adbef9be44a8",
+          "86bb55c5a8ceb0a4",
+          "3a5fe295f5898cb1",
+          "771d3505fa5040e9",
+          "79222c40138253b4"
+        ],
+        "state": "temporalstore appears in 18 historical Codex user prompts; latest: UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /root/src/github-services/TemporalStore && vim -N ... + ~~ The token '&&' is not "
+      },
+      {
+        "entity_id": "6936c89b17a8e704",
+        "entity_type": "topic",
+        "name": "matrixobject_shared_storage",
+        "session_ids": [
+          "019ea4c9-a88c-71e1-baca-df7ff879e020",
+          "019efb19-68bf-7d83-903e-10e8b8060256"
+        ],
+        "support_event_ids": [
+          "6884b1955144bc91",
+          "49e789ffd7848226",
+          "e4907bbcd6863cc5",
+          "d02367c0bc178aef",
+          "0d903cb7be4b1e31",
+          "8445522342c3068f",
+          "07d4c6ee0bbcf904",
+          "3ec0694670f8ff25",
+          "399e4da5ffe44109",
+          "84539f16e3dcd06e",
+          "c372a1e0b0d58de9",
+          "83ef3731dcbbb4b9"
+        ],
+        "state": "matrixobject_shared_storage appears in 12 historical Codex user prompts; latest: WE HAVE DONE RENAME OF CODE FOLDERS (NO \"LAB\") BUT THEY ARE NOT IN THE COMMIT HISTORY OF MATRIXOBJECTSTORE REMOTE MAIN?"
+      },
+      {
+        "entity_id": "c8e4bc3ae098a28b",
+        "entity_type": "topic",
+        "name": "cpp_temporalstore",
+        "session_ids": [
+          "019efb19-68bf-7d83-903e-10e8b8060256",
+          "019f8d12-86c6-7100-9a44-7537cdd30aec"
+        ],
+        "support_event_ids": [
+          "b28208c3dda0356c",
+          "73145e7a02461f29",
+          "2f6707457d0af492",
+          "866f3cf4292e0cf6",
+          "0c2663d40a416c68",
+          "3a77023befd6ed20",
+          "59dc9527c80185f0",
+          "0d903cb7be4b1e31",
+          "8445522342c3068f",
+          "3ec0694670f8ff25",
+          "86bb55c5a8ceb0a4",
+          "fee4135851a8a6b7"
+        ],
+        "state": "cpp_temporalstore appears in 12 historical Codex user prompts; latest: CONTINUE TEST AGAIN, QUERY FROM C++ AND RUST; I INGESTED ANOTHER MESSAGE IN ANOTHER THREAD, CHECK, IF NOT THERE, CREATE A GOAL"
+      },
+      {
+        "entity_id": "39996b85df16d97f",
+        "entity_type": "topic",
+        "name": "rust_temporalstore",
+        "session_ids": [
+          "019ea4c9-a88c-71e1-baca-df7ff879e020",
+          "019efad7-2f87-77e1-b082-c294fcb5e731",
+          "019f8d12-86c6-7100-9a44-7537cdd30aec"
+        ],
+        "support_event_ids": [
+          "8f1d48e77e5420c8",
+          "b6534ab902efde2f",
+          "10d5855d4f7a6325",
+          "2450700e8493e94b",
+          "65863ec864d549c3",
+          "86bb55c5a8ceb0a4",
+          "fee4135851a8a6b7",
+          "771d3505fa5040e9",
+          "50f5d12af9a07785"
+        ],
+        "state": "rust_temporalstore appears in 9 historical Codex user prompts; latest: OPEN THE VIM CONSOLE FOR ME, MAKE SURE THE RUST MAIN FILE IS OPENED"
+      },
+      {
+        "entity_id": "1aa584de4f4174df",
+        "entity_type": "topic",
+        "name": "storage_engine",
+        "session_ids": [
+          "019ea4c9-a88c-71e1-baca-df7ff879e020"
+        ],
+        "support_event_ids": [
+          "8150aec2737d89a5",
+          "7f5a0de81330a20b",
+          "8ac1ed884895200d"
+        ],
+        "state": "storage_engine appears in 3 historical Codex user prompts; latest: use different color for matrixark for all content as below: Great for orchestration, retrieval, agents, and memory abstractions. MatrixArk gives those applications durable temporal state, request-time freshness, replay, "
+      },
+      {
+        "entity_id": "825c3af3add4dc62",
+        "entity_type": "topic",
+        "name": "codex_hook",
+        "session_ids": [
+          "019f8cb5-b4d5-77f2-8c82-0499440da36f",
+          "019f8d12-86c6-7100-9a44-7537cdd30aec"
+        ],
+        "support_event_ids": [
+          "c2e9f92fb0a8ebd4",
+          "8fab3d933e677259",
+          "9ca4f82acd6f4a2e"
+        ],
+        "state": "codex_hook appears in 3 historical Codex user prompts; latest: WHAT SHOULD WE DO FOR THIS \"the Stop payload extraction still has a stale-message edge case worth tightening separately.\" QUERY TOP 10 AND SHOW ME THE DETAILS FOR EACH MESSAGE AND HOOK API"
+      },
+      {
+        "entity_id": "7d395f7c83cd91cc",
+        "entity_type": "topic",
+        "name": "oss_reader_benchmark",
+        "session_ids": [
+          "019efad7-2f87-77e1-b082-c294fcb5e731"
+        ],
+        "support_event_ids": [
+          "9a2ab5eb2b5d6b37",
+          "e02a34f46ae374b8"
+        ],
+        "state": "oss_reader_benchmark appears in 2 historical Codex user prompts; latest: deep dive into vllm and sglang"
+      }
+    ],
+    "context_summaries": [
+      {
+        "summary_id": "70f02f89e804693c",
+        "summary_type": "session_l0",
+        "scope": "session:019efb19-68bf-7d83-903e-10e8b8060256",
+        "source_ids": [
+          "07d4c6ee0bbcf904",
+          "59985749889a12f2",
+          "3ec0694670f8ff25",
+          "d231c3729b01f552",
+          "399e4da5ffe44109",
+          "fb96a4f485fe6b3e",
+          "dccd3f90a6593894",
+          "7c1cb662c2b23de0",
+          "84539f16e3dcd06e",
+          "eb62b975025f1417",
+          "c372a1e0b0d58de9",
+          "83ef3731dcbbb4b9"
+        ],
+        "text": "Session 019efb19-68bf-7d83-903e-10e8b8060256 has 60 user prompts. Recent focus: WHY SO LITTLE CODE? WE HAVE WORKED FOR A LONG TIME BUT STILL NO BIG DIFF VS THE LAB CODE push changes of MatrixObjectStore from all local branches to remote main branch, including origin/main and other local branches, we should have more code any separate root server service right now? or still only one objectstore service now; have we done the separation of other services such as root server, block server , chunk server? WE HAVE DONE A LOT OF RAFT SPECIFIC CODE CHANGES BUT WHY THEY ARE NOT IN T"
+      },
+      {
+        "summary_id": "138cfb025af177f5",
+        "summary_type": "session_l0",
+        "scope": "session:019f8cb5-b4d5-77f2-8c82-0499440da36f",
+        "source_ids": [
+          "c2e9f92fb0a8ebd4",
+          "760a29a51a9d94ad",
+          "8fab3d933e677259",
+          "3a5fe295f5898cb1",
+          "4240b981fadf9a4b",
+          "01bb4d3884a899fb"
+        ],
+        "text": "Session 019f8cb5-b4d5-77f2-8c82-0499440da36f has 6 user prompts. Recent focus: test again in a new thread TEST AGAIN IN HOOK THREAD QUERY TEMPORALSTORE TO SEE IF THE NEW MESSAGE IN CURRENT THREAD AND THEOTHER THREAD HAVE BEEN RECEIVED AND INGESTED CONTINUE TEST ELSEWHERE COTINUE TEST AGAIN ELSEWHERE"
+      },
+      {
+        "summary_id": "e9fcda2c76a92b97",
+        "summary_type": "session_l0",
+        "scope": "session:019f8cba-501b-71e1-96bc-1221d045f4c4",
+        "source_ids": [
+          "92eedf1fb5452c72"
+        ],
+        "text": "Session 019f8cba-501b-71e1-96bc-1221d045f4c4 has 1 user prompts. Recent focus: MatrixArk cachebuster CLI proof 1784772600421. Reply OK only."
+      },
+      {
+        "summary_id": "8e679547e337c604",
+        "summary_type": "session_l0",
+        "scope": "session:019f8d12-86c6-7100-9a44-7537cdd30aec",
+        "source_ids": [
+          "2fc03031d932bf82",
+          "86bb55c5a8ceb0a4",
+          "630ec99ca87a9af4",
+          "8d73318698f6caae",
+          "61f1783a7eb78c8a",
+          "1e726c1f394ed7b0",
+          "c245124ab347aa70",
+          "9376d74e7467a941",
+          "98bfe596d76cd3cc",
+          "440d50ced1cb5793",
+          "fee4135851a8a6b7",
+          "9ca4f82acd6f4a2e"
+        ],
+        "text": "Session 019f8d12-86c6-7100-9a44-7537cdd30aec has 13 user prompts. Recent focus: CAN YOU CONFIRM IF USERPROMPTSUBMIT FIRES UPON EVERY PROMPT? IF SO, DO WE STORE THE RAW MESSAGE IMMEDIATELY? IF SO, WE SHOULD BE ABLE TO QUERY THE MESSAGE RIGHT AWAY? QUEUING FOR EXTRACTION IS A DIFFERENT STORY CREATE A GOAL TO FIX THIS ISSUE: So the real failing invariant is: prompt typed -> UserPromptSubmit fires -> raw row immediately stored -> query sees it The current observed path is: prompt typed -> no UserPromptSubmit seen -> Stop later -> extracted raw row stored CONTINUE TEST CONTINUE "
+      },
+      {
+        "summary_id": "b9244fda34a4327f",
+        "summary_type": "session_l0",
+        "scope": "session:019f8f44-d601-7fb3-b86e-646b04728dea",
+        "source_ids": [
+          "1de38c70c2be47b0"
+        ],
+        "text": "Session 019f8f44-d601-7fb3-b86e-646b04728dea has 1 user prompts. Recent focus: MatrixArk CLI control UserPromptSubmit emission 1784815341. Reply OK only."
+      },
+      {
+        "summary_id": "86e5bac1b0c49349",
+        "summary_type": "user_l1",
+        "scope": "tenant:tenant_codex/user:deeproute",
+        "source_ids": [
+          "841a5ed5c5641b71",
+          "ba63271c83beee3c",
+          "6936c89b17a8e704",
+          "c8e4bc3ae098a28b",
+          "39996b85df16d97f",
+          "1aa584de4f4174df",
+          "825c3af3add4dc62",
+          "7d395f7c83cd91cc"
+        ],
+        "text": "Cross-session user memory synthesized from child session summaries and selected topic state: context_management: context_management appears in 24 historical Codex user prompts; latest: build llm context management (llm)and memory on top of open source temporalstore should be separate from build that on top of the three products should be in separate blogs and tell the diff in each one; temporalstore: temporalstore appears in 18 historical Codex user prompts; latest: UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /root/src/github-services/TemporalStore && vim -N ... + ~~ The token '&&' is not ; matrixobject_shared_storage: matrixobject_shared_storage appears in 12 historical Codex user prompts; latest: WE HAVE DONE RENAME OF CODE FOLDERS (NO \"LAB\") BUT THEY ARE NOT IN THE COMMIT HISTORY OF MATRIXOBJECTSTORE REMOTE MAIN?; cpp_temporalstore: cpp_temporalstore appears in 12 historical Codex u"
+      }
+    ]
+  }
+}
