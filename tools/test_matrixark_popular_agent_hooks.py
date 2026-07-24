@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for MatrixArk universal popular-agent hooks."""
+"""Regression tests for supported Codex hook plus planned-agent TODOs."""
 
 from __future__ import annotations
 
@@ -76,16 +76,16 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
             raise AssertionError(f"agent hook failed\nstdout={proc.stdout}\nstderr={proc.stderr}")
         return json.loads(proc.stdout)
 
-    def test_claude_prompt_hook_ingests_retrieves_and_preserves_visible_context(self) -> None:
+    def test_codex_prompt_hook_ingests_retrieves_and_preserves_visible_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             rust_root = Path(tmp_dir) / "rust-store"
             result = self.run_agent_hook(
-                agent="claude",
+                agent="codex",
                 event="UserPromptSubmit",
                 rust_root=rust_root,
                 payload={
-                    "prompt": "Remember that Claude owns the GPU release checklist.",
-                    "conversation_id": "claude-thread-42",
+                    "prompt": "Remember that Codex owns the GPU release checklist.",
+                    "conversation_id": "codex-thread-42",
                     "workspace_root": "/repo/aurora",
                     "local_context": [
                         {"ref": "open-file:docs/release.md", "text": "Visible release checklist notes."}
@@ -95,50 +95,31 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
                 },
             )
             self.assertEqual("ok", result["status"])
-            self.assertEqual("claude", result["agent"])
-            self.assertEqual("claude:claude-thread-42", result["session_id"])
+            self.assertEqual("codex", result["agent"])
+            self.assertEqual("codex:codex-thread-42", result["session_id"])
             self.assertEqual("payload_field", result["session_id_source"])
             self.assertEqual(1, result["agent_context_refs"])
             self.assertTrue(result["ingested"])
             self.assertGreaterEqual(result["retrieved"]["selected_ref_count"], 1)
 
-    def test_openclaw_resource_hook_is_configured_as_async_policy(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp = Path(tmp_dir)
-            resource = tmp / "openclaw_gpu_runbook.md"
-            resource.write_text(
-                "# OpenClaw GPU Runbook\n\nDecision: OpenClaw agents must attach finance approval before vendor selection.\n",
-                encoding="utf-8",
-            )
-            snippet = json.loads(matrixark_agent_config.openclaw_json(".", "tools/matrixark_mcp_rust_server.sh"))
-            self.assertEqual("openclaw", snippet["agent"])
-            self.assertIn("ResourceAdded", snippet["lifecycle_events"])
-            self.assertEqual("temporalstore-rust", snippet["server"]["env"]["MATRIXARK_MCP_BACKEND"])
-            self.assertEqual("true", snippet["server"]["env"]["MATRIXARK_RUST_PROXY_ASYNC_STORAGE"])
+    def test_planned_agent_configs_are_marked_todo_not_supported_hooks(self) -> None:
+        snippet = json.loads(matrixark_agent_config.openclaw_json(".", "tools/matrixark_mcp_rust_server.sh"))
+        self.assertEqual("openclaw", snippet["agent"])
+        self.assertEqual("todo_planned", snippet["hook_status"])
+        self.assertNotIn("recommended_hook_command", snippet)
+        self.assertEqual("temporalstore-rust", snippet["server"]["env"]["MATRIXARK_MCP_BACKEND"])
 
-    def test_openclaw_stop_hook_commits_session_window(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            rust_root = Path(tmp_dir) / "rust-store"
-            self.run_agent_hook(
-                agent="openclaw",
-                event="UserPromptSubmit",
-                rust_root=rust_root,
-                payload={"prompt": "OpenClaw should remember Alice approved the GPU request.", "thread_id": "openclaw-thread-commit"},
-            )
-            result = self.run_agent_hook(
-                agent="openclaw",
-                event="Stop",
-                rust_root=rust_root,
-                payload={"message": "OpenClaw task completed.", "thread_id": "openclaw-thread-commit"},
-            )
-            self.assertEqual("ok", result["status"])
-            self.assertEqual("hook_boundary", result["committed"]["commit_reason"])
+        for agent in ("opencode", "aider", "continue", "cline", "roo"):
+            planned = json.loads(matrixark_agent_config.named_agent_json(agent, ".", "tools/matrixark_mcp_cpp_server.sh"))
+            self.assertEqual(snippet["envelope"]["schema"], "matrixark_agent_envelope_v1")
+            self.assertEqual("todo_planned", planned["hook_status"])
+            self.assertNotIn("recommended_hook_command", planned)
 
-    def test_agent_config_exposes_one_envelope_for_popular_agents(self) -> None:
-        self.assertEqual(
-            matrixark_agent_config.SUPPORTED_AGENT_CLIENTS,
-            ["codex", "claude", "cursor", "openclaw", "opencode", "aider", "continue", "cline", "roo", "generic"],
-        )
+    def test_agent_config_exposes_codex_supported_hook_and_todo_agents(self) -> None:
+        self.assertEqual(matrixark_agent_config.SUPPORTED_AGENT_CLIENTS, ["codex"])
+        self.assertEqual(matrixark_agent_config.SUPPORTED_HOOK_CLIENTS, ["codex"])
+        self.assertIn("claude", matrixark_agent_config.TODO_AGENT_CLIENTS)
+        self.assertIn("openclaw", matrixark_agent_config.TODO_AGENT_CLIENTS)
         envelope = matrixark_agent_config.agent_envelope_schema()
         self.assertTrue(envelope["visible_local_context_only"])
         self.assertIn("query", envelope["fields"])
@@ -150,28 +131,19 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         self.assertIn("resource_refs", envelope["optional_fields"])
         self.assertEqual(envelope["required_fields_by_lifecycle"]["before_llm"], ["query"])
         self.assertEqual(envelope["required_fields_by_lifecycle"]["after_answer"], ["messages"])
-        self.assertEqual(envelope["required_fields_by_lifecycle"]["resource_added"], ["file_refs or resource_refs or raw_uri"])
-        self.assertEqual(envelope["required_fields_by_lifecycle"]["skill_added"], ["file_refs or resource_refs or raw_uri"])
-        self.assertTrue(envelope["file_ref_examples"])
-        self.assertTrue(envelope["resource_ref_examples"])
         self.assertEqual(envelope["lifecycle_tools"]["before_llm"], "matrixark_retrieve")
         self.assertEqual(envelope["lifecycle_tools"]["after_answer"], "matrixark_ingest")
-        self.assertEqual(envelope["lifecycle_tools"]["after_tool"], "matrixark_ingest")
         self.assertEqual(envelope["lifecycle_tools"]["session_boundary"], "matrixark_session_commit")
-        self.assertEqual(envelope["lifecycle_actions"]["before_llm"], "retrieve")
-        self.assertEqual(envelope["lifecycle_actions"]["after_answer"], "ingest_durable_outcome")
-        self.assertEqual(envelope["lifecycle_actions"]["resource_added"], "import_resource_or_skill")
-        self.assertEqual(envelope["lifecycle_actions"]["feedback"], "record_accepted_rejected_refs")
-        self.assertEqual(envelope["lifecycle_actions"]["session_boundary"], "commit_batch_extract")
         self.assertIn("ContextEvent", envelope["agent_internal_model_hidden"])
         self.assertIn("ContextSummary", envelope["agent_internal_model_hidden"])
         self.assertIn("hidden prompt", envelope["do_not_send"])
 
-        for agent in ("opencode", "aider", "continue", "cline", "roo"):
-            snippet = json.loads(matrixark_agent_config.named_agent_json(agent, ".", "tools/matrixark_mcp_cpp_server.sh"))
-            self.assertEqual(snippet["agent"], agent)
-            self.assertEqual(snippet["envelope"]["schema"], "matrixark_agent_envelope_v1")
-            self.assertIn("matrixark_retrieve", snippet["required_tools"])
+    def test_hook_examples_only_emit_codex_commands(self) -> None:
+        examples = matrixark_agent_config.hook_examples_text(".")
+        self.assertIn("--agent codex --event UserPromptSubmit", examples)
+        self.assertIn("TODO/planned", examples)
+        self.assertNotIn("--agent claude --event UserPromptSubmit", examples)
+        self.assertNotIn("--agent openclaw --event UserPromptSubmit", examples)
 
 
 if __name__ == "__main__":

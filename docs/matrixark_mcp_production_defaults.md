@@ -16,9 +16,11 @@ These assumptions define the v1 MatrixArk MCP and orchestrator boundary.
 
 ## Agent Envelope
 
-Codex, Claude, Cursor, OpenClaw, OpenCode, Aider, Continue, Cline/Roo, and
-generic agents are clients of one MatrixArk envelope. The generated source of
-truth is `tools/matrixark_agent_config.py`.
+Codex is the only production-supported hook client today. Claude Code,
+Claude Desktop, Cursor, OpenClaw, OpenCode, Aider, Continue, Cline/Roo, and
+generic agents are TODO/planned integrations until their hook payloads,
+registration, session identity, and reload behavior are validated. The
+generated source of truth is `tools/matrixark_agent_config.py`.
 
 The envelope carries:
 
@@ -93,7 +95,7 @@ PYTHONPATH=tools:. python3 -m unittest \
 ```
 
 Production gates include `validate_open_source_readiness.py`, module-boundary
-tests, access-governance tests, popular-agent hook tests, backend-policy tests,
+tests, access-governance tests, Codex hook tests plus TODO coverage for planned agents, backend-policy tests,
 and the C++/Rust scale matrix gate.
 
 The production posture is intentionally conservative: Python is the protocol and
