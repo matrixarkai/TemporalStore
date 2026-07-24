@@ -419,6 +419,29 @@ exit `$LASTEXITCODE
     Write-Host "PowerShell proxy wrapper: $proxyWrapperPs1"
     Write-Host "PowerShell Codex hook wrapper: $hookWrapperPs1"
     Write-Host "Use the Codex hook command above for UserPromptSubmit. Use matching wrappers for Stop/PostToolUse if your Codex hook configuration supports multiple lifecycle events."
+
+    if (-not $SkipSmoke) {
+        Write-Step "Validate Codex hook wrapper ingest through Docker proxy"
+        $smokePayload = @{
+            hook_event_name = "UserPromptSubmit"
+            session_id = "windows-docker-hook-smoke"
+            prompt = "Windows Docker Codex hook smoke through Rust proxy"
+            transcript_path = ""
+            metadata = @{
+                source = "windows_docker_installer"
+                runtime = "docker"
+                backend = "temporalstore-rust"
+            }
+        } | ConvertTo-Json -Depth 8 -Compress
+        $hookOutput = $smokePayload | & $hookWrapper
+        Write-Host "hook response: $hookOutput"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Codex hook wrapper smoke failed with exit code $LASTEXITCODE"
+        }
+        if ($hookOutput -notmatch '"status"\s*:\s*"ok"' -or $hookOutput -notmatch '"ingested"\s*:\s*true') {
+            throw "Codex hook wrapper smoke did not report successful ingestion."
+        }
+    }
 }
 
 Write-Step "Resolved dependencies"

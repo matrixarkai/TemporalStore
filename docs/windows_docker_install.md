@@ -21,8 +21,9 @@ matrixark_rust_direct_sdk
 ```
 
 The container keeps the metaserver and datanode alive as long-running services.
-Host clients call `matrixark_rust_proxy` through `docker exec`; the Python hook
-does not embed storage.
+This is **not** Rust embedded mode. Host clients call the containerized
+`matrixark_rust_proxy` through `docker exec`; the Python hook is only a thin
+adapter and does not embed storage.
 
 ```mermaid
 flowchart LR
@@ -165,6 +166,28 @@ Codex -> Windows .cmd wrapper -> Windows PowerShell wrapper
 
 No WSL process participates in this runtime hook path.
 
+### Ingestion Contract
+
+Windows Docker ingestion is:
+
+```text
+Codex UserPromptSubmit payload
+-> matrixark-codex-hook-rust-docker.cmd
+-> matrixark_agent_hook.py
+-> matrixark-rust-proxy-docker.cmd
+-> docker exec -i temporalstore-rust-win matrixark_rust_proxy --serve
+-> Rust metaserver + datanode in the container
+-> /var/lib/temporalstore on the persistent Docker volume
+```
+
+So the Windows image must include `matrixark_rust_proxy`; otherwise Codex hook
+ingestion is not supported. The proxy is the client boundary, while
+`matrixark_rust_metaserver` and `matrixark_rust_datanode` are the long-lived
+services. `matrixark_rust_direct_sdk` can also be shipped in the image for
+future direct SDK clients, but the generated Windows Codex hook uses the proxy
+wrapper because it is process-isolated and easy to invoke from Codex.
+
+
 ### Generated Hook Files
 
 `matrixark-rust-proxy-docker.cmd` is a stable Windows command that starts a
@@ -271,8 +294,10 @@ $payload = @{
 $payload | & "$env:USERPROFILE\.matrixark\hooks\matrixark-codex-hook-rust-docker.cmd"
 ```
 
-The command should return a JSON response with a successful status. After that,
-use the MatrixArk management portal or query tool to fetch recent records under:
+The command should return a JSON response with `"status": "ok"` and
+`"ingested": true`. The installer runs this same hook smoke automatically when
+`-InstallCodexHookWrapper` is used and `-SkipSmoke` is not set. After that, use
+the MatrixArk management portal or query tool to fetch recent records under:
 
 ```text
 prefix = matrixark:codex-hook:rust
