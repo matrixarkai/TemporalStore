@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo="${TEMPORALSTORE_REPO:-/root/src/github-services/TemporalStore}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+default_repo="$(cd "$script_dir/.." && pwd)"
+
+repo="${TEMPORALSTORE_REPO:-$default_repo}"
 install_dir="${TEMPORALSTORE_INSTALL_DIR:-$HOME/.local/temporalstore}"
 data_dir="${TEMPORALSTORE_DATA_DIR:-$HOME/.local/share/temporalstore}"
 meta_port="${TEMPORALSTORE_META_PORT:-17101}"
@@ -15,6 +18,7 @@ skip_run=0
 skip_smoke=0
 install_hook=0
 write_systemd_user=0
+check_prereqs=0
 
 usage() {
   cat <<'EOF'
@@ -23,7 +27,7 @@ Usage: install_linux_temporalstore.sh [options]
 Build and deploy Rust TemporalStore on Linux.
 
 Options:
-  --repo PATH                 Source repo. Default: /root/src/github-services/TemporalStore
+  --repo PATH                 Source repo. Default: repo containing this script
   --install-dir PATH          Install prefix. Default: ~/.local/temporalstore
   --data-dir PATH             Persistent data root. Default: ~/.local/share/temporalstore
   --meta-port PORT            Metaserver port. Default: 17101
@@ -31,6 +35,7 @@ Options:
   --build                     Build release binaries before install
   --skip-build                Do not build; require release binaries to exist
   --skip-run                  Install only; do not start services
+  --check-prereqs             Check dependencies and paths, then exit
   --skip-smoke                Skip health/write/read validation
   --install-codex-hook        Generate Linux Codex hook wrappers
   --hook-dir PATH             Hook wrapper dir. Default: ~/.matrixark/hooks
@@ -56,6 +61,7 @@ while [[ $# -gt 0 ]]; do
     --skip-build) skip_build=1; shift ;;
     --skip-run) skip_run=1; shift ;;
     --skip-smoke) skip_smoke=1; shift ;;
+    --check-prereqs) check_prereqs=1; shift ;;
     --install-codex-hook) install_hook=1; shift ;;
     --hook-dir) hook_dir="$2"; shift 2 ;;
     --hook-prefix) hook_prefix="$2"; shift 2 ;;
@@ -101,6 +107,23 @@ with urllib.request.urlopen(sys.argv[1], timeout=10) as resp:
 PY
 }
 
+print_plan() {
+  cat <<EOF
+Resolved TemporalStore install plan:
+  repo:        $repo
+  install dir: $install_dir
+  data dir:    $data_dir
+  metaserver:  127.0.0.1:$meta_port
+  datanode:    127.0.0.1:$data_port
+  build:       $do_build
+  skip build:  $skip_build
+  skip run:    $skip_run
+  smoke test:  $((1 - skip_smoke))
+  hook dir:    $hook_dir
+  hook prefix: $hook_prefix
+EOF
+}
+
 stop_pid_file() {
   local pid_file="$1"
   if [[ -f "$pid_file" ]]; then
@@ -127,11 +150,20 @@ index_dir="$data_dir/indexes"
 cursor_dir="$data_dir/replica-replay-cursors"
 
 step "Resolve dependencies"
+print_plan
 need_cmd python3
-if [[ "$do_build" -eq 1 ]]; then
-  need_cmd git
-  need_cmd cargo
-  need_cmd rustc
+need_cmd git
+if [[ "$do_build" -eq 1 || "$skip_build" -eq 0 || "$check_prereqs" -eq 1 ]]; then
+  command -v cargo >/dev/null 2>&1 || echo "warning: cargo not found; required when release binaries are missing or --build is used" >&2
+  command -v rustc >/dev/null 2>&1 || echo "warning: rustc not found; required when release binaries are missing or --build is used" >&2
+fi
+
+if [[ ! -f "$repo/Cargo.toml" ]]; then
+  echo "repo does not look like a TemporalStore checkout: $repo" >&2
+  echo "clone it first, then run this script from the repo root:" >&2
+  echo "  git clone https://github.com/bjmeetsfo/TemporalStore.git" >&2
+  echo "  cd TemporalStore" >&2
+  exit 1
 fi
 
 if [[ "$do_build" -eq 0 && "$skip_build" -eq 0 ]]; then
@@ -140,7 +172,14 @@ if [[ "$do_build" -eq 0 && "$skip_build" -eq 0 ]]; then
   fi
 fi
 
+if [[ "$check_prereqs" -eq 1 ]]; then
+  echo "Prerequisite check complete. Next: ./tools/install_linux_temporalstore.sh --build"
+  exit 0
+fi
+
 if [[ "$do_build" -eq 1 ]]; then
+  need_cmd cargo
+  need_cmd rustc
   step "Build Rust TemporalStore release binaries"
   (cd "$repo" && git fetch origin main && cargo build --release -p temporalstore-rust --bins)
 fi

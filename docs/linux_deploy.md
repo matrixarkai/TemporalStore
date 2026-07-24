@@ -1,7 +1,17 @@
 # Linux Build And Deploy Manual
 
 This guide builds and deploys Rust TemporalStore on Linux without Docker. It is
-the native Linux counterpart to the Windows Docker installer.
+written for a fresh user starting from a clean Ubuntu machine.
+
+If you are not sure which platform guide to use, start with
+[TemporalStore Install Guide](INSTALL.md).
+
+## What This Installs
+
+The installer builds or installs four Rust binaries, starts local metaserver and
+datanode services, creates persistent storage directories, and runs a basic
+write/read smoke test. It does not require MatrixObject, S3, Raft clusters, or
+OSS model downloads for the first local install.
 
 The recommended local Linux deployment runs:
 
@@ -31,7 +41,7 @@ behavior predictable across local development and production-style testing.
 
 ## Dependencies
 
-Required:
+Required packages and tools:
 
 ```text
 Linux x86_64
@@ -41,8 +51,33 @@ git
 rustup/rustc/cargo
 ```
 
-For service management, user-mode `systemd` is optional. The installer can run
-the services directly with pid files and logs.
+For service management, user-mode `systemd` is optional. By default, the
+installer runs services directly with pid files and logs.
+
+On a fresh Ubuntu host:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y bash git curl ca-certificates python3 build-essential pkg-config libssl-dev
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+```
+
+Then clone and enter the repo:
+
+```bash
+git clone https://github.com/bjmeetsfo/TemporalStore.git
+cd TemporalStore
+```
+
+Run the prerequisite check:
+
+```bash
+./tools/install_linux_temporalstore.sh --check-prereqs
+```
+
+The script defaults to the repo that contains the script. Maintainers can still
+override it with `--repo /root/src/github-services/TemporalStore`.
 
 ## One-Command Build And Deploy
 
@@ -67,7 +102,7 @@ MatrixArk/TemporalStore hooks and benchmark runners.
 Default paths:
 
 ```text
-repo:        /root/src/github-services/TemporalStore
+repo:        repository containing this script
 install dir: ~/.local/temporalstore
 data dir:    ~/.local/share/temporalstore
 metaserver:  127.0.0.1:17101
@@ -92,13 +127,14 @@ The installer:
 ## Useful Options
 
 ```text
---repo PATH                 Source repo. Default: /root/src/github-services/TemporalStore
+--repo PATH                 Source repo. Default: repo containing this script
 --install-dir PATH          Install prefix. Default: ~/.local/temporalstore
 --data-dir PATH             Persistent data root. Default: ~/.local/share/temporalstore
 --meta-port PORT            Metaserver port. Default: 17101
 --data-port PORT            Datanode port. Default: 17102
 --build                     Build release binaries before install
 --skip-build                Do not build; require release binaries to exist
+--check-prereqs             Check dependencies and paths, then exit
 --skip-run                  Install only; do not start services
 --skip-smoke                Skip health and write/read validation
 --install-codex-hook        Generate Linux Codex hook wrappers
@@ -243,6 +279,33 @@ printf '%s\n' '{"hook_event_name":"UserPromptSubmit","session_id":"manual-linux-
 
 If this succeeds but natural prompts do not appear, TemporalStore is healthy and
 the remaining issue is Codex hook registration or reload.
+
+## First Failure Checklist
+
+If installation fails, check in this order:
+
+```bash
+python3 --version
+git --version
+rustc --version
+cargo --version
+```
+
+If ports are already in use:
+
+```bash
+ss -ltnp | grep -E ':17101|:17102' || true
+```
+
+If services start but health fails:
+
+```bash
+tail -n 120 ~/.local/share/temporalstore/logs/metaserver.log
+tail -n 120 ~/.local/share/temporalstore/logs/datanode.log
+```
+
+The local smoke test only uses string write/read APIs. Context management,
+Codex hook ingestion, and OSS model extraction are later layers.
 
 ## OSS Model Setup
 

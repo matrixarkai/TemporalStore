@@ -1,8 +1,17 @@
 # macOS Build And Deploy Manual
 
 This guide builds and deploys Rust TemporalStore on macOS. It mirrors the Linux
-native deployment and uses the same OpenViking/VikingMem-style OSS model setup
-flow.
+native deployment and is written for a fresh user starting from a clean Mac.
+
+If you are not sure which platform guide to use, start with
+[TemporalStore Install Guide](INSTALL.md).
+
+## What This Installs
+
+The installer builds or installs four Rust binaries, starts local metaserver and
+datanode services, creates persistent storage directories, and runs a basic
+write/read smoke test. It does not require Docker, MatrixObject, S3, a Raft
+cluster, or OSS model downloads for the first local install.
 
 The recommended local macOS deployment runs:
 
@@ -47,11 +56,21 @@ rustup-init -y
 source "$HOME/.cargo/env"
 ```
 
+Then clone this repository and run commands from the repo root.
+
 If you already have Rust through Homebrew or rustup, keep the existing toolchain.
 
 ## One-Command Build And Deploy
 
 From the repo:
+
+```bash
+git clone https://github.com/bjmeetsfo/TemporalStore.git
+cd TemporalStore
+./tools/install_macos_temporalstore.sh --check-prereqs
+```
+
+Then build and deploy:
 
 ```bash
 ./tools/install_macos_temporalstore.sh --build
@@ -67,7 +86,7 @@ source .local/context-oss-models/context_oss_models.env
 Default paths:
 
 ```text
-repo:        ~/src/TemporalStore
+repo:        repository containing this script
 install dir: ~/.local/temporalstore
 data dir:    ~/Library/Application Support/TemporalStore
 metaserver:  127.0.0.1:17101
@@ -93,13 +112,14 @@ The installer:
 ## Useful Options
 
 ```text
---repo PATH                 Source repo. Default: ~/src/TemporalStore
+--repo PATH                 Source repo. Default: repo containing this script
 --install-dir PATH          Install prefix. Default: ~/.local/temporalstore
 --data-dir PATH             Persistent data root. Default: ~/Library/Application Support/TemporalStore
 --meta-port PORT            Metaserver port. Default: 17101
 --data-port PORT            Datanode port. Default: 17102
 --build                     Build release binaries before install
 --skip-build                Do not build; require release binaries to exist
+--check-prereqs             Check dependencies and paths, then exit
 --skip-run                  Install only; do not start services
 --skip-smoke                Skip health and write/read validation
 --install-codex-hook        Generate macOS Codex hook wrappers
@@ -239,6 +259,34 @@ printf '%s\n' '{"hook_event_name":"UserPromptSubmit","session_id":"manual-macos-
 
 If this succeeds but natural prompts do not appear, TemporalStore is healthy and
 the remaining issue is Codex hook registration or reload.
+
+## First Failure Checklist
+
+If installation fails, check in this order:
+
+```bash
+python3 --version
+git --version
+rustc --version
+cargo --version
+```
+
+If ports are already in use:
+
+```bash
+lsof -nP -iTCP:17101 -sTCP:LISTEN || true
+lsof -nP -iTCP:17102 -sTCP:LISTEN || true
+```
+
+If services start but health fails:
+
+```bash
+tail -n 120 "$HOME/Library/Application Support/TemporalStore/logs/metaserver.log"
+tail -n 120 "$HOME/Library/Application Support/TemporalStore/logs/datanode.log"
+```
+
+The local smoke test only uses string write/read APIs. Context management,
+Codex hook ingestion, and OSS model extraction are later layers.
 
 ## OSS Model Setup
 
