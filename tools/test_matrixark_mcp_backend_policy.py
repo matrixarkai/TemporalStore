@@ -3744,12 +3744,29 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(dropped["cross_session_policy"]["selected_ref_count"], 1)
 
     def test_shared_context_budget_caps_shared_resources_and_skills(self) -> None:
-        shared_policy = mcp.build_shared_context_policy(
+        capped_policy = mcp_core.build_shared_context_policy(
+            {
+                "shared_context": {
+                    "resource_budget_tokens": 900,
+                    "resource_max_budget_ratio": 0.2,
+                    "skill_budget_tokens": 900,
+                    "skill_max_budget_ratio": 0.05,
+                }
+            },
+            {},
+            remote_budget_tokens=1000,
+        )
+        self.assertEqual(capped_policy["resource_budget_tokens"], 200)
+        self.assertEqual(capped_policy["skill_budget_tokens"], 50)
+        self.assertEqual(capped_policy["resource_max_budget_ratio"], 0.2)
+        self.assertEqual(capped_policy["skill_max_budget_ratio"], 0.05)
+
+        shared_policy = mcp_core.build_shared_context_policy(
             {"shared_context": {"resource_budget_tokens": 8, "skill_budget_tokens": 8}},
             {},
             remote_budget_tokens=1000,
         )
-        selected, used_tokens, dropped = mcp.select_token_budgeted_refs(
+        selected, used_tokens, dropped = mcp_core.select_token_budgeted_refs(
             [
                 {
                     "ref_type": "resource_chunk",
