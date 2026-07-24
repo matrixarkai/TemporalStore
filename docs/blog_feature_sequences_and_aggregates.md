@@ -7,6 +7,17 @@ and computes serving-time aggregates over those observations.
 This blog explains how long sequence features work, how aggregates should be
 modeled, and how to keep online reads fast.
 
+## Related MatrixArk Blogs And Manuals
+
+This blog expands the older MatrixArk feature notes and keeps the public design
+aligned with the first open-source surface:
+
+- [TemporalStore sequence feature benchmark](feature_sequence_benchmark.md)
+- [MatrixArk MCP C++/Rust Feature parity](matrixark_mcp_cpp_rust_feature_parity.md)
+- [TemporalStore open-source surface](open_source_surface.md)
+- [Control State technical blog](blog_control_state_frequency_caps.md)
+- [Context Management technical blog](blog_context_management_temporalstore.md)
+
 ## Why Long Sequence Features
 
 Many recommendation, ads, search, and personalization systems need histories:
@@ -325,8 +336,8 @@ Feature and Control State are complementary:
 - Control State stores current decisions, counters, caps, quotas, suppression,
   and eligibility.
 
-If the question is “what happened over time?”, use Feature. If the question is
-“should this request be allowed now?”, use Control State.
+If the question is "what happened over time?", use Feature. If the question is
+"should this request be allowed now?", use Control State.
 
 ## Operational Metrics
 
@@ -350,3 +361,19 @@ Keep multi-cardinality and aggregate serving inside Feature. Add only the
 aggregates that are exact, stable, and measurable in the first release. Gate
 sketches and approximate high-cardinality features until their semantics are
 fully production ready.
+
+## Implementation Checklist
+
+When implementing Feature and FeatureAggregate behavior:
+
+- Keep FeatureAggregate inside Feature; do not introduce a separate public
+  capability for each cardinality.
+- Keep online sequence reads bounded by timestamp and count.
+- Use raw rows for recent explainability and small windows.
+- Use sealed buckets for longer aggregate windows.
+- Keep first-release aggregates exact: count, sum, min, max, avg, first,
+  latest.
+- Gate sketches such as HLL, top-k, heavy hitters, histograms, and percentiles
+  until accuracy and merge semantics are production ready.
+- Track rows scanned, rows decoded, buckets read, and raw-tail scans in
+  benchmark reports.
