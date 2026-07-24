@@ -1,9 +1,19 @@
 # Windows Docker Installation Manual
 
 This guide installs Rust TemporalStore on Windows using Docker Desktop. The
-normal open-source/runtime path does **not** require WSL: use a prebuilt Docker
-image, run the container, and point clients or Codex hook wrappers at the
-containerized Rust proxy.
+normal open-source/runtime path does **not** require WSL. A fresh Windows user
+only needs Docker Desktop, PowerShell, this repository, and a prebuilt Docker
+image.
+
+If you are not sure which platform guide to use, start with
+[TemporalStore Install Guide](INSTALL.md).
+
+## What This Installs
+
+The installer starts one Linux container with Rust TemporalStore metaserver,
+datanode, proxy, and direct SDK binaries. It creates a persistent Docker volume
+for storage, checks health, runs a write/read smoke test, and can generate Codex
+hook wrapper files.
 
 WSL is only a maintainer convenience for rebuilding Linux release binaries and
 building a local Docker image from source. End users should not need WSL for a
@@ -45,6 +55,17 @@ Docker Desktop with Linux containers
 Prebuilt TemporalStore Docker image, either local or pullable
 ```
 
+Fresh Windows setup:
+
+```powershell
+winget install --id Git.Git --accept-package-agreements --accept-source-agreements
+winget install --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements
+winget install --id Docker.DockerDesktop --accept-package-agreements --accept-source-agreements
+```
+
+After installing Docker Desktop, start it once and wait until `docker info`
+works in PowerShell.
+
 Required only if you install Codex hook wrappers:
 
 ```text
@@ -58,6 +79,16 @@ Optional maintainer/build dependencies:
 ```text
 WSL2 Linux distro
 git, rustc, cargo inside WSL
+```
+
+Clone the repo and run commands from the repo root:
+
+```powershell
+git clone https://github.com/bjmeetsfo/TemporalStore.git
+cd TemporalStore
+powershell -ExecutionPolicy Bypass `
+  -File .\tools\install_windows_docker_temporalstore.ps1 `
+  -CheckPrereqs
 ```
 
 ## One-Command Runtime Install
@@ -98,6 +129,7 @@ The installer:
 -PullImage                        Pull ImageName when it is not local
 -SkipImagePull                    Require ImageName to already exist locally
 -SkipRun                          Validate/build only, do not start the container
+-CheckPrereqs                     Check Docker, image/build prerequisites, and paths, then exit
 -SkipSmoke                        Skip health and write/read validation
 -NoRestartPersistenceCheck        Skip restart persistence validation
 -InstallCodexHookWrapper          Generate Windows .cmd/.ps1 wrappers for Codex
@@ -223,6 +255,32 @@ python.exe <repo>\tools\matrixark_agent_hook.py `
 The hook adapter reads the Codex hook payload from standard input when Codex
 provides it. It sends the prompt envelope to Rust TemporalStore through
 `MATRIXARK_TEMPORALSTORE_RUST_PROXY`.
+
+### First Failure Checklist
+
+If installation fails, check in this order:
+
+```powershell
+git --version
+python --version
+docker version
+docker info
+```
+
+If ports are already in use:
+
+```powershell
+netstat -ano | findstr ":17101 :17102"
+```
+
+If the container starts but health fails:
+
+```powershell
+docker logs --tail 200 temporalstore-rust-win
+```
+
+The Windows smoke test only uses string write/read APIs. Context management,
+Codex hook ingestion, and OSS model extraction are later layers.
 
 ### Hook Registration
 

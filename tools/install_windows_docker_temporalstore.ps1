@@ -14,6 +14,7 @@ param(
     [switch]$PullImage,
     [switch]$SkipImagePull,
     [switch]$SkipImageBuild,
+    [switch]$CheckPrereqs,
     [switch]$SkipRun,
     [switch]$SkipSmoke,
     [switch]$NoRestartPersistenceCheck,
@@ -30,6 +31,20 @@ function Write-Step {
     param([string]$Message)
     Write-Host ""
     Write-Host "== $Message ==" -ForegroundColor Cyan
+}
+
+function Write-InstallPlan {
+    Write-Host "Resolved TemporalStore Windows Docker install plan:"
+    Write-Host "  image:       $ImageName"
+    Write-Host "  container:   $ContainerName"
+    Write-Host "  volume:      $VolumeName"
+    Write-Host "  metaserver:  127.0.0.1:$MetaPort"
+    Write-Host "  datanode:    127.0.0.1:$DataPort"
+    Write-Host "  build image: $BuildImageFromLocalBinaries"
+    Write-Host "  pull image:  $PullImage"
+    Write-Host "  skip run:    $SkipRun"
+    Write-Host "  smoke test:  $(-not $SkipSmoke)"
+    Write-Host "  hook prefix: $HookPrefix"
 }
 
 function Invoke-Checked {
