@@ -1902,8 +1902,8 @@ Status RetrieveContextPack(ExecuteEnv* env, const RetrieveContextPackRequest& re
     telemetry->set_score_ms(ElapsedSinceMs(score_start_ms));
 
     const uint64_t pack_start_ms = NowSteadyMs();
-    const uint32_t max_refs = TraversalLimit(request.max_selected_refs(), 20, kMaxLimit);
-    const uint32_t max_tokens = request.max_context_tokens() == 0 ? 4096
+    const uint32_t max_refs = TraversalLimit(request.max_selected_refs(), 64, kMaxLimit);
+    const uint32_t max_tokens = request.max_context_tokens() == 0 ? 128000
                                                                  : request.max_context_tokens();
     uint32_t used_tokens = 0;
     for (const auto& candidate : scored_candidates) {
