@@ -49,6 +49,7 @@ HOOK_TOOL_CALL_TIMEOUT_MS = _env_int("MATRIXARK_HOOK_TOOL_CALL_TIMEOUT_MS", 8000
 HOOK_RETRIEVE_TIMEOUT_MS = _env_int("MATRIXARK_HOOK_RETRIEVE_TIMEOUT_MS", 5000, minimum=0)
 HOOK_AUTO_BATCH_EXTRACT = os.environ.get("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", "").strip().lower() in {"1", "true", "yes", "on"}
 HOOK_FAST_ASYNC_INGEST = os.environ.get("MATRIXARK_HOOK_FAST_ASYNC_INGEST", "").strip().lower() in {"1", "true", "yes", "on"}
+HOOK_COMPACT_HOT_PREFIX_ONLY = os.environ.get("MATRIXARK_HOOK_COMPACT_HOT_PREFIX_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
 
 RESOURCE_TYPE_BY_SUFFIX = {
     ".md": "md",
@@ -540,6 +541,8 @@ def _run_best_effort_with_timeout(name: str, timeout_ms: int, fn: Any, *args: An
 
 
 def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, status: str = "ok", skip_reason: str = "", error: str = "") -> None:
+    if HOOK_COMPACT_HOT_PREFIX_ONLY:
+        return
     completed_at_ms = int(time.time() * 1000)
     trace["completed_at_ms"] = completed_at_ms
     try:
@@ -1719,7 +1722,7 @@ def main() -> int:
                 hook_warning = timeout_warning(ingest)
 
         commit = {}
-        if should_commit_session(args.event) and not hook_warning:
+        if should_commit_session(args.event) and not hook_warning and not HOOK_COMPACT_HOT_PREFIX_ONLY:
             commit_reason = commit_reason_for_event(args.event)
             commit = trace_tool_call(
                 server,
@@ -1750,7 +1753,7 @@ def main() -> int:
 
         retrieve = {}
         query = args.query or text[:500]
-        if (args.event == "UserPromptSubmit" or args.query) and not hook_warning:
+        if (args.event == "UserPromptSubmit" or args.query) and not hook_warning and not HOOK_COMPACT_HOT_PREFIX_ONLY:
             retrieve = trace_tool_call(
                 server,
                 "matrixark_retrieve",
@@ -1782,7 +1785,8 @@ def main() -> int:
         if args.codex_strict_output:
             output = strict_codex_stdout(output)
         print(json.dumps(output, sort_keys=True))
-        spawn_rollout_backfill_child(args)
+        if not HOOK_COMPACT_HOT_PREFIX_ONLY:
+            spawn_rollout_backfill_child(args)
     except Exception as exc:
         try:
             append_hook_trace(server, trace, status="error", error=f"{type(exc).__name__}: {exc}")

@@ -51,7 +51,8 @@ run_cpp_hook() {
     export MATRIXARK_REPO_ROOT="$ROOT"
     export MATRIXARK_MCP_BACKEND=temporalstore-direct
     export MATRIXARK_TEMPORALSTORE_METASERVER="${MATRIXARK_CPP_TEMPORALSTORE_METASERVER:-127.0.0.1:18000}"
-    export MATRIXARK_TEMPORALSTORE_PREFIX="${MATRIXARK_CPP_TEMPORALSTORE_PREFIX:-matrixark:codex-hook:cpp-live-v2}"
+    CPP_HOT_PREFIX="${MATRIXARK_CPP_TEMPORALSTORE_PREFIX:-matrixark:codex-hook:cpp-live-v2}"
+    export MATRIXARK_TEMPORALSTORE_PREFIX="${MATRIXARK_CPP_FULL_HOOK_PREFIX:-${CPP_HOT_PREFIX}:debug}"
     export MATRIXARK_HOOK_AUTOSTART_CPP="${MATRIXARK_HOOK_AUTOSTART_CPP:-1}"
     export MATRIXARK_CPP_DEPLOY_DIR="${MATRIXARK_CPP_DEPLOY_DIR:-$ROOT/.local/runtime/matrixark-cpp-live}"
     export MATRIXARK_HOOK_FAIL_OPEN=1
@@ -378,6 +379,10 @@ if not isinstance(prompt, str) or not prompt.strip():
     print(f"skip empty prompt event={os.environ.get('EVENT', 'UserPromptSubmit')} keys={keys}", file=__import__("sys").stderr)
     raise SystemExit(0)
 prompt = prompt.strip()
+event_name = os.environ.get("EVENT", "UserPromptSubmit")
+if event_name != "UserPromptSubmit":
+    print(f"skip non-user-prompt rust hot publish event={event_name}", file=__import__("sys").stderr)
+    raise SystemExit(0)
 
 now_ms = int(time.time() * 1000)
 namespace = os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns")
@@ -635,24 +640,15 @@ def rust_live_extraction_records():
             }
         )
     summary_id = hashlib.sha256(f"summary\n{session_id}\n{record_hash}".encode("utf-8")).hexdigest()[:16]
-    records.extend(
-        [
-            {
-                "record_type": "context_summary_dirty",
-                "summary_id": summary_id,
-                "summary_type": "session_l0",
-                "reason": "live_prompt_ingested",
-                **common_extracted,
-            },
-            {
-                "record_type": "context_summary",
-                "summary_id": summary_id,
-                "summary_type": "session_l0",
-                "scope": f"session:{session_id}",
-                "text": compact_text(f"Latest Codex user prompt: {prompt}", 900),
-                **common_extracted,
-            },
-        ]
+    records.append(
+        {
+            "record_type": "context_summary",
+            "summary_id": summary_id,
+            "summary_type": "session_l0",
+            "scope": f"session:{session_id}",
+            "text": compact_text(f"Latest Codex user prompt: {prompt}", 900),
+            **common_extracted,
+        }
     )
     return records
 
@@ -961,6 +957,10 @@ if not prompt:
     print(f"skip empty prompt event={os.environ.get('EVENT', 'UserPromptSubmit')} keys={keys}", file=sys.stderr)
     raise SystemExit(0)
 prompt = prompt.strip()
+event_name = os.environ.get("EVENT", "UserPromptSubmit")
+if event_name != "UserPromptSubmit":
+    print(f"skip non-user-prompt cpp hot publish event={event_name}", file=sys.stderr)
+    raise SystemExit(0)
 
 now_ms = int(time.time() * 1000)
 namespace = os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns")
@@ -1057,6 +1057,74 @@ def set_value(key, value):
 def hset_value(key, field, record):
     client.hset(key, field, json.dumps(record, separators=(",", ":")))
 
+def compact_text(value, limit=420):
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+def live_topic_entities(prompt_text):
+    lowered = (prompt_text or "").lower()
+    topics = [
+        ("rust_temporalstore", ("rust", "rust temporalstore", "rust hook", "rust service")),
+        ("cpp_temporalstore", ("c++", "cpp", "c++ temporalstore")),
+        ("codex_hook", ("codex", "hook", "userpromptsubmit", "realtime ingestion")),
+        ("context_management", ("context", "entity", "summary", "segment", "retrieval")),
+        ("oss_reader_benchmark", ("qwen", "ollama", "vllm", "locomo", "longmemeval", "vikingmem")),
+        ("storage_engine", ("storage", "page", "block", "zone", "stream", "raft", "gc")),
+        ("matrixobject_shared_storage", ("matrixobject", "s3", "object storage", "shared storage")),
+    ]
+    selected = []
+    for name, needles in topics:
+        if any(needle in lowered for needle in needles):
+            selected.append(name)
+    return selected[:4]
+
+def cpp_live_extraction_records():
+    if event_name != "UserPromptSubmit" or is_synthetic_prompt(prompt):
+        return []
+    common_extracted = {
+        "session_id": session_id,
+        "thread_id": identity.get("thread_id") or "",
+        "turn_id": identity.get("turn_id") or "",
+        "source_hook_id": hook_id,
+        "updated_at_ms": now_ms,
+    }
+    segment_id = hashlib.sha256(f"segment\n{record_hash}".encode("utf-8")).hexdigest()[:16]
+    records = [
+        {
+            "record_type": "context_segment",
+            "segment_id": segment_id,
+            "text": compact_text(prompt, 900),
+            **common_extracted,
+        }
+    ]
+    for topic in live_topic_entities(prompt):
+        entity_id = hashlib.sha256(f"entity\n{session_id}\n{topic}".encode("utf-8")).hexdigest()[:16]
+        records.append({
+            "record_type": "context_entity",
+            "entity_id": entity_id,
+            "entity_type": "topic",
+            "name": topic,
+            "state": compact_text(f"{topic}: {prompt}", 700),
+            **common_extracted,
+        })
+        records.append({
+            "record_type": "context_index",
+            "index_name": f"entity_type:{topic}",
+            "ref_type": "context_entity",
+            "ref_id": entity_id,
+            **common_extracted,
+        })
+    summary_id = hashlib.sha256(f"summary\n{session_id}\n{record_hash}".encode("utf-8")).hexdigest()[:16]
+    records.append({
+        "record_type": "context_summary",
+        "summary_id": summary_id,
+        "summary_type": "session_l0",
+        "scope": f"session:{session_id}",
+        "text": compact_text(f"Latest Codex user prompt: {prompt}", 900),
+        **common_extracted,
+    })
+    return records
+
 common = {
     "role": "user",
     "session_id": session_id,
@@ -1072,26 +1140,44 @@ common = {
 raw_record = {"record_type": "agent_message", "text": prompt, **common}
 serving_record = {"record_type": "context_event", "text": "user: " + prompt, **common}
 
+def append_record(count_key, records_prefix, record):
+    try:
+        sequence = int(get_value(count_key) or "0") + 1
+    except Exception:
+        sequence = 1
+    legacy_field = f"{sequence:020d}"
+    legacy_sharded_key = f"{records_prefix}:{sequence // 10000:06d}"
+    page_key = f"{records_prefix}:{sequence // 256:06d}"
+    page_field = f"{sequence % 256:020d}"
+    hset_value(page_key, page_field, record)
+    hset_value(legacy_sharded_key, legacy_field, record)
+    hset_value(records_prefix, legacy_field, record)
+    set_value(count_key, sequence)
+    print(f"published {records_prefix} sequence={sequence} field={page_field} type={record.get('record_type')}", file=sys.stderr)
+    return sequence
+
 published_raw = False
 for count_key, records_prefix, record in (
     (f"{prefix}:raw_ingestion:record_count", f"{prefix}:raw_ingestion:records", raw_record),
     (f"{prefix}:record_count", f"{prefix}:records", serving_record),
 ):
     try:
-        sequence = int(get_value(count_key) or "0") + 1
-    except Exception:
-        sequence = 1
-    field = f"{sequence:020d}"
-    sharded_key = f"{records_prefix}:{sequence // 10000:06d}"
-    try:
-        hset_value(sharded_key, field, record)
-        hset_value(records_prefix, field, record)
-        set_value(count_key, sequence)
-        print(f"published {records_prefix} sequence={sequence} field={field}", file=sys.stderr)
+        append_record(count_key, records_prefix, record)
         if record.get("record_type") == "agent_message":
             published_raw = True
     except Exception as exc:
         print(f"publish {records_prefix} failed: {exc}", file=sys.stderr)
+
+if published_raw:
+    for extracted_record in cpp_live_extraction_records():
+        try:
+            append_record(
+                f"{prefix}:raw_ingestion:record_count",
+                f"{prefix}:raw_ingestion:records",
+                extracted_record,
+            )
+        except Exception as exc:
+            print(f"publish cpp live extraction failed: {exc}", file=sys.stderr)
 
 if event_name == "UserPromptSubmit" and published_raw:
     try:
