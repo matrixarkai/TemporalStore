@@ -283,6 +283,46 @@ If manual smoke works but real prompts do not appear, the Docker runtime is
 healthy and the remaining issue is Codex hook registration/reload, not
 TemporalStore storage.
 
+## OSS Model Setup
+
+The Windows Docker install keeps TemporalStore in Docker, but the Codex hook and
+benchmark orchestration can still use the same OpenViking/VikingMem-style OSS
+model setup from the Linux manual.
+
+Recommended path:
+
+```powershell
+wsl -- bash -lc "cd /root/src/github-services/TemporalStore && ./tools/install_context_oss_models.sh"
+```
+
+Then source the generated env file before running Linux-side benchmark or hook
+commands:
+
+```bash
+source /root/src/github-services/TemporalStore/.local/context-oss-models/context_oss_models.env
+```
+
+For a pure Windows hook, install Windows Python dependencies equivalent to
+`tools/context_oss_models_requirements.txt`, then set:
+
+```text
+MATRIXARK_EMBEDDING_PROVIDER=oss
+MATRIXARK_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+MATRIXARK_EMBEDDING_MODEL_PATH=<local downloaded model path>
+TEMPORALSTORE_READER_BASE_URL=http://127.0.0.1:11434/v1
+TEMPORALSTORE_READER_MODEL=qwen2.5:0.5b
+```
+
+Ollama should expose an OpenAI-compatible endpoint at:
+
+```text
+http://127.0.0.1:11434/v1
+```
+
+The first open-source Windows path should prefer the Docker TemporalStore
+runtime plus Linux/WSL OSS model setup for benchmarks. Host-Windows model setup
+is supported, but it is more sensitive to Python, Torch, and GPU driver drift.
+
 ## Maintainer: Build Image From Source
 
 Use this only when refreshing the Docker image from the local source tree:
