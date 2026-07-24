@@ -555,7 +555,7 @@ serving_record = {
     **retention_fields(prompt),
 }
 
-def append_record(count_key, records_prefix, record):
+def append_record(count_key, records_prefix, record, hot_count_key=None):
     try:
         sequence = int(get_value(count_key) or "0") + 1
     except Exception:
@@ -568,6 +568,12 @@ def append_record(count_key, records_prefix, record):
     hset_value(legacy_sharded_key, legacy_field, record)
     hset_value(records_prefix, legacy_field, record)
     set_value(count_key, sequence)
+    if hot_count_key:
+        try:
+            hot_sequence = int(get_value(hot_count_key) or "0") + 1
+        except Exception:
+            hot_sequence = 1
+        set_value(hot_count_key, hot_sequence)
     print(
         f"published {records_prefix} sequence={sequence} field={page_field} type={record.get('record_type')}",
         file=__import__("sys").stderr,
@@ -659,7 +665,7 @@ for count_key, records_prefix, record in (
     (f"{prefix}:record_count", f"{prefix}:records", serving_record),
 ):
     try:
-        append_record(count_key, records_prefix, record)
+        append_record(count_key, records_prefix, record, count_key.replace(":record_count", ":hot_record_count"))
         if record.get("record_type") == "agent_message":
             published_raw = True
     except Exception as exc:
@@ -672,6 +678,7 @@ if published_raw:
                 f"{prefix}:raw_ingestion:record_count",
                 f"{prefix}:raw_ingestion:records",
                 extracted_record,
+                f"{prefix}:raw_ingestion:hot_record_count",
             )
         except Exception as exc:
             print(f"publish rust live extraction failed: {exc}", file=__import__("sys").stderr)
@@ -1140,7 +1147,7 @@ common = {
 raw_record = {"record_type": "agent_message", "text": prompt, **common}
 serving_record = {"record_type": "context_event", "text": "user: " + prompt, **common}
 
-def append_record(count_key, records_prefix, record):
+def append_record(count_key, records_prefix, record, hot_count_key=None):
     try:
         sequence = int(get_value(count_key) or "0") + 1
     except Exception:
@@ -1153,6 +1160,12 @@ def append_record(count_key, records_prefix, record):
     hset_value(legacy_sharded_key, legacy_field, record)
     hset_value(records_prefix, legacy_field, record)
     set_value(count_key, sequence)
+    if hot_count_key:
+        try:
+            hot_sequence = int(get_value(hot_count_key) or "0") + 1
+        except Exception:
+            hot_sequence = 1
+        set_value(hot_count_key, hot_sequence)
     print(f"published {records_prefix} sequence={sequence} field={page_field} type={record.get('record_type')}", file=sys.stderr)
     return sequence
 
@@ -1162,7 +1175,7 @@ for count_key, records_prefix, record in (
     (f"{prefix}:record_count", f"{prefix}:records", serving_record),
 ):
     try:
-        append_record(count_key, records_prefix, record)
+        append_record(count_key, records_prefix, record, count_key.replace(":record_count", ":hot_record_count"))
         if record.get("record_type") == "agent_message":
             published_raw = True
     except Exception as exc:
@@ -1175,6 +1188,7 @@ if published_raw:
                 f"{prefix}:raw_ingestion:record_count",
                 f"{prefix}:raw_ingestion:records",
                 extracted_record,
+                f"{prefix}:raw_ingestion:hot_record_count",
             )
         except Exception as exc:
             print(f"publish cpp live extraction failed: {exc}", file=sys.stderr)
