@@ -165,6 +165,124 @@ Codex -> Windows .cmd wrapper -> Windows PowerShell wrapper
 
 No WSL process participates in this runtime hook path.
 
+### Generated Hook Files
+
+`matrixark-rust-proxy-docker.cmd` is a stable Windows command that starts a
+single proxy request over Docker:
+
+```text
+powershell.exe -NoProfile -ExecutionPolicy Bypass ^
+  -File "%USERPROFILE%\.matrixark\hooks\matrixark-rust-proxy-docker.ps1" %*
+```
+
+`matrixark-rust-proxy-docker.ps1` runs:
+
+```powershell
+docker exec -i temporalstore-rust-win `
+  -e TS_CACHE_DIR=/var/lib/temporalstore/cache `
+  -e TS_PAGE_STORE_DIR=/var/lib/temporalstore/pages `
+  -e TS_INDEX_DIR=/var/lib/temporalstore/indexes `
+  -e TS_REPLICA_REPLAY_CURSOR_DIR=/var/lib/temporalstore/replica-replay-cursors `
+  matrixark_rust_proxy --serve
+```
+
+`matrixark-codex-hook-rust-docker.cmd` is the command to register with Codex.
+It calls `matrixark-codex-hook-rust-docker.ps1`, which sets the TemporalStore
+backend environment and runs:
+
+```powershell
+python.exe <repo>\tools\matrixark_agent_hook.py `
+  --agent codex `
+  --event UserPromptSubmit `
+  --backend temporalstore-rust
+```
+
+The hook adapter reads the Codex hook payload from standard input when Codex
+provides it. It sends the prompt envelope to Rust TemporalStore through
+`MATRIXARK_TEMPORALSTORE_RUST_PROXY`.
+
+### Hook Registration
+
+Register this command for Codex `UserPromptSubmit`:
+
+```text
+%USERPROFILE%\.matrixark\hooks\matrixark-codex-hook-rust-docker.cmd
+```
+
+The hook should be global for the local Codex installation, not per task. When
+Codex supports global hook configuration, use one global `UserPromptSubmit`
+entry so new prompts from new or existing tasks go through the same command.
+
+Expected global hook shape:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "command": "%USERPROFILE%\\.matrixark\\hooks\\matrixark-codex-hook-rust-docker.cmd"
+      }
+    ]
+  }
+}
+```
+
+If your Codex build uses a different hook config file format, keep the same
+command and lifecycle event. Do not create per-task hook scripts unless you are
+debugging a single isolated task.
+
+### Hook Payload And Scope
+
+The hook adapter normalizes Codex input into one agent envelope:
+
+```text
+agent: codex
+lifecycle event: UserPromptSubmit
+backend: temporalstore-rust
+prefix: matrixark:codex-hook:rust
+thread/session id: from Codex payload when available
+message text: visible user prompt from the hook payload
+```
+
+Use a real Codex thread/conversation/session id when Codex provides one. A fixed
+debug session id should only be used for manual probes, never for real per-task
+memory.
+
+### Verify Hook Installation
+
+First confirm the container is healthy:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing -Uri http://127.0.0.1:17101/health
+Invoke-WebRequest -UseBasicParsing -Uri http://127.0.0.1:17102/health
+```
+
+Then run a local wrapper smoke. This verifies the Windows command, Python hook
+adapter, Docker proxy, and Rust TemporalStore are wired together:
+
+```powershell
+$payload = @{
+  hook_event_name = "UserPromptSubmit"
+  session_id = "manual-hook-smoke"
+  transcript_path = ""
+  prompt = "manual Windows Docker hook smoke"
+} | ConvertTo-Json -Compress
+
+$payload | & "$env:USERPROFILE\.matrixark\hooks\matrixark-codex-hook-rust-docker.cmd"
+```
+
+The command should return a JSON response with a successful status. After that,
+use the MatrixArk management portal or query tool to fetch recent records under:
+
+```text
+prefix = matrixark:codex-hook:rust
+session_id = manual-hook-smoke
+```
+
+If manual smoke works but real prompts do not appear, the Docker runtime is
+healthy and the remaining issue is Codex hook registration/reload, not
+TemporalStore storage.
+
 ## Maintainer: Build Image From Source
 
 Use this only when refreshing the Docker image from the local source tree:
