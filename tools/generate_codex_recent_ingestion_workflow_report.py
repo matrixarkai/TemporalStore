@@ -92,9 +92,16 @@ def scan_rust(base: str, limit: int = 500) -> tuple[int, list[dict[str, Any]]]:
     count = int(bytes_to_str(rust_exec({"kind": "string_get", "key": base + ":record_count"})["response"]["value"]) or 0)
     rows: list[dict[str, Any]] = []
     for sequence in range(count - 1, max(-1, count - limit - 1), -1):
-        key = f"{base}:records:{sequence // 256:06d}"
-        field = f"{sequence % 256:020d}"
-        raw = bytes_to_str(rust_exec({"kind": "hash_get", "key": key, "field": field})["response"]["value"])
+        candidates = (
+            (f"{base}:records:{sequence // 256:06d}", f"{sequence % 256:020d}"),
+            (f"{base}:records:{sequence // 10000:06d}", f"{sequence:020d}"),
+            (f"{base}:records", f"{sequence:020d}"),
+        )
+        raw = ""
+        for key, field in candidates:
+            raw = bytes_to_str(rust_exec({"kind": "hash_get", "key": key, "field": field})["response"]["value"])
+            if raw:
+                break
         if not raw:
             continue
         try:
