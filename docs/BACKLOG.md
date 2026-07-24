@@ -196,6 +196,8 @@ This backlog tracks the missing work found by comparing the local C++ TemporalSt
     - resolve identity and access scope first from API key/SSO/session;
     - same-user cross-session retrieval is enabled by default only in `session_scope=prefer`, not `only`;
     - default cross-session budget is deliberately bounded: 12% normal, 15% broad/evidence, 20% current/latest/multi-hop/date, capped by `MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS` and `MATRIXARK_CROSS_SESSION_MAX_BUDGET_RATIO`;
+
+    - context token budgets are intentionally split: `MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS` is the large total local+remote pack ceiling (default 128000), while `MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS` is only the bounded cross-session slice (default 8192); resource and skill shared-context caps are separate.
     - 20% is a maximum cap, not a quota; unused cross-session budget remains available for same-session continuity, resources, and skills;
     - cross-session candidates must pass `MATRIXARK_CROSS_SESSION_MIN_SCORE` before fanout/top-k/token packing;
     - raw cross-session events/segments must pass `MATRIXARK_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE`; prefer cross-session entities, summaries, and TIME_COMPRESS records unless the query needs high-confidence raw evidence;

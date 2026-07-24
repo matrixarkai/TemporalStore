@@ -1354,7 +1354,7 @@ fn parse_cross_session_policy(
     let max_budget_tokens = config
         .and_then(|cfg| cfg.get("max_budget_tokens"))
         .and_then(Value::as_u64)
-        .unwrap_or(1536);
+        .unwrap_or(8192);
     let mut computed = (remote_budget as f64 * budget_ratio) as u64;
     if remote_budget >= 1200 && computed > 0 {
         computed = computed.max(256);
