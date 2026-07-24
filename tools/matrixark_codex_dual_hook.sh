@@ -550,29 +550,135 @@ serving_record = {
     **retention_fields(prompt),
 }
 
+def append_record(count_key, records_prefix, record):
+    try:
+        sequence = int(get_value(count_key) or "0") + 1
+    except Exception:
+        sequence = 1
+    legacy_sharded_key = f"{records_prefix}:{sequence // 10000:06d}"
+    legacy_field = f"{sequence:020d}"
+    page_key = f"{records_prefix}:{sequence // 256:06d}"
+    page_field = f"{sequence % 256:020d}"
+    hset_value(page_key, page_field, record)
+    hset_value(legacy_sharded_key, legacy_field, record)
+    hset_value(records_prefix, legacy_field, record)
+    set_value(count_key, sequence)
+    print(
+        f"published {records_prefix} sequence={sequence} field={page_field} type={record.get('record_type')}",
+        file=__import__("sys").stderr,
+    )
+    return sequence
+
+
+def compact_text(value, limit=420):
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def live_topic_entities(prompt_text):
+    lowered = (prompt_text or "").lower()
+    topics = [
+        ("rust_temporalstore", ("rust", "rust temporalstore", "rust hook", "rust service")),
+        ("cpp_temporalstore", ("c++", "cpp", "c++ temporalstore")),
+        ("codex_hook", ("codex", "hook", "userpromptsubmit", "realtime ingestion")),
+        ("context_management", ("context", "entity", "summary", "segment", "retrieval")),
+        ("oss_reader_benchmark", ("qwen", "ollama", "vllm", "locomo", "longmemeval", "vikingmem")),
+        ("storage_engine", ("storage", "page", "block", "zone", "stream", "raft", "gc")),
+        ("matrixobject_shared_storage", ("matrixobject", "s3", "object storage", "shared storage")),
+    ]
+    selected = []
+    for name, needles in topics:
+        if any(needle in lowered for needle in needles):
+            selected.append(name)
+    return selected[:4]
+
+
+def rust_live_extraction_records():
+    if event_name != "UserPromptSubmit" or is_synthetic_prompt(prompt):
+        return []
+    common_extracted = {
+        "session_id": session_id,
+        "thread_id": identity.get("thread_id") or "",
+        "turn_id": identity.get("turn_id") or "",
+        "source_hook_id": hook_id,
+        "updated_at_ms": now_ms,
+    }
+    segment_id = hashlib.sha256(f"segment\n{record_hash}".encode("utf-8")).hexdigest()[:16]
+    records = [
+        {
+            "record_type": "context_segment",
+            "segment_id": segment_id,
+            "text": compact_text(prompt, 900),
+            **common_extracted,
+        }
+    ]
+    topics = live_topic_entities(prompt)
+    for topic in topics:
+        entity_id = hashlib.sha256(f"entity\n{session_id}\n{topic}".encode("utf-8")).hexdigest()[:16]
+        records.append(
+            {
+                "record_type": "context_entity",
+                "entity_id": entity_id,
+                "entity_type": "topic",
+                "name": topic,
+                "state": compact_text(f"{topic}: {prompt}", 700),
+                **common_extracted,
+            }
+        )
+        records.append(
+            {
+                "record_type": "context_index",
+                "index_name": f"entity_type:{topic}",
+                "ref_type": "context_entity",
+                "ref_id": entity_id,
+                **common_extracted,
+            }
+        )
+    summary_id = hashlib.sha256(f"summary\n{session_id}\n{record_hash}".encode("utf-8")).hexdigest()[:16]
+    records.extend(
+        [
+            {
+                "record_type": "context_summary_dirty",
+                "summary_id": summary_id,
+                "summary_type": "session_l0",
+                "reason": "live_prompt_ingested",
+                **common_extracted,
+            },
+            {
+                "record_type": "context_summary",
+                "summary_id": summary_id,
+                "summary_type": "session_l0",
+                "scope": f"session:{session_id}",
+                "text": compact_text(f"Latest Codex user prompt: {prompt}", 900),
+                **common_extracted,
+            },
+        ]
+    )
+    return records
+
+
 published_raw = False
 for count_key, records_prefix, record in (
     (f"{prefix}:raw_ingestion:record_count", f"{prefix}:raw_ingestion:records", raw_record),
     (f"{prefix}:record_count", f"{prefix}:records", serving_record),
 ):
     try:
-        sequence = int(get_value(count_key) or "0") + 1
-    except Exception:
-        sequence = 1
-    sharded_key = f"{records_prefix}:{sequence // 10000:06d}"
-    field = f"{sequence:020d}"
-    try:
-        hset_value(sharded_key, field, record)
-        hset_value(records_prefix, field, record)
-        set_value(count_key, sequence)
-        print(
-            f"published {records_prefix} sequence={sequence} field={field}",
-            file=__import__("sys").stderr,
-        )
+        append_record(count_key, records_prefix, record)
         if record.get("record_type") == "agent_message":
             published_raw = True
     except Exception as exc:
         print(f"publish {records_prefix} failed: {exc}", file=__import__("sys").stderr)
+
+if published_raw:
+    for extracted_record in rust_live_extraction_records():
+        try:
+            append_record(
+                f"{prefix}:raw_ingestion:record_count",
+                f"{prefix}:raw_ingestion:records",
+                extracted_record,
+            )
+        except Exception as exc:
+            print(f"publish rust live extraction failed: {exc}", file=__import__("sys").stderr)
 
 if event_name == "UserPromptSubmit" and published_raw:
     try:
