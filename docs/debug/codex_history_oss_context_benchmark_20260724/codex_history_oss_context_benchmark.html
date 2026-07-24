@@ -1,0 +1,85 @@
+<!doctype html><html><head><meta charset='utf-8'><title>Codex History OSS Context Benchmark</title><style>body{font-family:Segoe UI,Arial,sans-serif;margin:32px;color:#172033}pre{white-space:pre-wrap;background:#f8fafc;border:1px solid #d8dee8;padding:16px}</style></head><body><pre># Codex History OSS Context Benchmark
+
+Generated at `2026-07-24T03:32:29.275075+00:00`.
+
+## Summary
+
+- Historical Codex sessions scanned: `7`.
+- Real user prompts ingested into ContextEvent: `154`.
+- ContextSegments generated: `17`.
+- ContextEntities generated: `9`.
+- ContextSummaries generated: `8`.
+- Query count: `6`.
+- Per-query token budget: `1536`.
+
+## Reader Runtime
+
+- `ollama` at `http://127.0.0.1:11434/v1` model `qwen2.5:7b`: **blocked**; error: `models endpoint returned no available models`
+- `vllm` at `http://127.0.0.1:8000/v1` model `Qwen/Qwen2.5-7B-Instruct`: **blocked**; error: `URLError: &lt;urlopen error [Errno 111] Connection refused&gt;`
+
+No deterministic answer templates are used. If all OSS endpoints are blocked, answer rows are marked blocked instead of falling back.
+
+## Token Budget And Savings
+
+|Query|Source tokens|ContextPack tokens|Token reduction|Selected refs|
+|---|---:|---:|---:|---:|
+|What did the user ask about Rust TemporalStore hooks and real-time ingestion?|5316|1536|71.11%|7|
+|What did the user ask about C++ and Rust TemporalStore parity?|5316|1536|71.11%|6|
+|What did the user ask about Windows Docker installation for TemporalStore?|5316|1536|71.11%|8|
+|What did the user ask about context management data fields and compaction?|5316|1536|71.11%|8|
+|What did the user ask about Qwen, Ollama, vLLM, LoCoMo, LongMemEval, and VikingMem benchmarking?|5316|1536|71.11%|9|
+|What did the user ask about MatrixObject, shared storage, S3, and object storage?|5316|1536|71.11%|4|
+
+## OSS Reader Answers
+
+|Provider|Query|With Context|Without Context|Errors|
+|---|---|---|---|---|
+|none_ready|What did the user ask about Rust TemporalStore hooks and real-time ingestion?|BLOCKED|BLOCKED|No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready.|
+|none_ready|What did the user ask about C++ and Rust TemporalStore parity?|BLOCKED|BLOCKED|No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready.|
+|none_ready|What did the user ask about Windows Docker installation for TemporalStore?|BLOCKED|BLOCKED|No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready.|
+|none_ready|What did the user ask about context management data fields and compaction?|BLOCKED|BLOCKED|No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready.|
+|none_ready|What did the user ask about Qwen, Ollama, vLLM, LoCoMo, LongMemEval, and VikingMem benchmarking?|BLOCKED|BLOCKED|No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready.|
+|none_ready|What did the user ask about MatrixObject, shared storage, S3, and object storage?|BLOCKED|BLOCKED|No Qwen/Ollama/vLLM OpenAI-compatible model endpoint was ready.|
+
+## Data Model Samples
+
+### ContextEvents
+
+- `fee4135851a8a6b7` `019f8d12-86c6-7100-9a44-7537cdd30aec` `2026-07-23T22:55:16.199Z`: CONTINUE TEST AGAIN, QUERY FROM C++ AND RUST; I INGESTED ANOTHER MESSAGE IN ANOTHER THREAD, CHECK, IF NOT THERE, CREATE A GOAL
+- `01bb4d3884a899fb` `019f8cb5-b4d5-77f2-8c82-0499440da36f` `2026-07-23T22:55:39.461Z`: COTINUE TEST AGAIN ELSEWHERE
+- `9ca4f82acd6f4a2e` `019f8d12-86c6-7100-9a44-7537cdd30aec` `2026-07-23T22:58:37.265Z`: WHAT SHOULD WE DO FOR THIS &quot;the Stop payload extraction still has a stale-message edge case worth tightening separately.&quot; QUERY TOP 10 AND SHOW ME THE DETAILS FOR EACH MESSAGE AND HOOK API
+- `771d3505fa5040e9` `019efad7-2f87-77e1-b082-c294fcb5e731` `2026-07-24T02:51:24.940Z`: OPEN LATEST RUST TEMPORALSTORE CODE IN VIM CONSOLE WITH CSCOPE, CTAGS, TAGLIST ENABLED, OPEN THE MAIN FILE AND &quot;GF&quot; AVAILABLE GOING TO OTHER FILES WE WANT
+- `79222c40138253b4` `019efad7-2f87-77e1-b082-c294fcb5e731` `2026-07-24T02:55:34.360Z`: UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /root/src/github-services/TemporalStore &amp;&amp; vim -N ... + ~~ The token &#x27;&amp;&amp;&#x27; is not a valid statement separator in this vers
+- `50f5d12af9a07785` `019efad7-2f87-77e1-b082-c294fcb5e731` `2026-07-24T03:00:13.956Z`: OPEN THE VIM CONSOLE FOR ME, MAKE SURE THE RUST MAIN FILE IS OPENED
+- `bcde4cfd1003119b` `019efad7-2f87-77e1-b082-c294fcb5e731` `2026-07-24T03:03:33.425Z`: wsl: A localhost proxy configuration was detected but not mirrored into WSL. WSL in NAT mode does not support localhost proxies. VIM - Vi IMproved 8.2 (2019 Dec 12, compiled May 20 2026 21:28:11) Too many &quot;+command&quot;, &quot;-c command&quot; or &quot;--cmd command&quot; arguments M
+- `91a9a59b1ded59ae` `019efad7-2f87-77e1-b082-c294fcb5e731` `2026-07-24T03:10:27.627Z`: UPDATE THE SKILLS AS WELL
+
+### ContextSegments
+
+- `a8eff275d834c703` `019f8cba-501b-71e1-96bc-1221d045f4c4` events=1: user: MatrixArk cachebuster CLI proof 1784772600421. Reply OK only.
+- `423dbcd8a2433962` `019f8d12-86c6-7100-9a44-7537cdd30aec` events=12: user: REBASE ALL CHANGES
+user: COMMIT ALL CHANGES TO REMOTE MAIN
+user: QUERY TOP 10 MESSAGES FROM C++ AND RUST TEMPORALSTORE WITH DETAILS TO COMPARE, MAKE SURE RECENT MESSAGES IN &quot;ADD LLM INFERENCE&quot; AND CURRENT THREAD ARE FETCHED, OTHERWISE CREATE A GOAL TO FI
+- `3e36c89df8c08b3b` `019f8d12-86c6-7100-9a44-7537cdd30aec` events=1: user: WHAT SHOULD WE DO FOR THIS &quot;the Stop payload extraction still has a stale-message edge case worth tightening separately.&quot; QUERY TOP 10 AND SHOW ME THE DETAILS FOR EACH MESSAGE AND HOOK API
+- `67901f36e164c512` `019f8f44-d601-7fb3-b86e-646b04728dea` events=1: user: MatrixArk CLI control UserPromptSubmit emission 1784815341. Reply OK only.
+
+### ContextEntities
+
+- `context_management` sessions=1: context_management appears in 24 historical Codex user prompts; latest: build llm context management (llm)and memory on top of open source temporalstore should be separate from build that on top of the three products should be in separate blogs and tell the di
+- `temporalstore` sessions=4: temporalstore appears in 18 historical Codex user prompts; latest: UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /root/src/github-services/TemporalStore &amp;&amp; vim -N ...
+- `matrixobject_shared_storage` sessions=2: matrixobject_shared_storage appears in 12 historical Codex user prompts; latest: WE HAVE DONE RENAME OF CODE FOLDERS (NO &quot;LAB&quot;) BUT THEY ARE NOT IN THE COMMIT HISTORY OF MATRIXOBJECTSTORE REMOTE MAIN?
+- `cpp_temporalstore` sessions=2: cpp_temporalstore appears in 12 historical Codex user prompts; latest: CONTINUE TEST AGAIN, QUERY FROM C++ AND RUST; I INGESTED ANOTHER MESSAGE IN ANOTHER THREAD, CHECK, IF NOT THERE, CREATE A GOAL
+- `rust_temporalstore` sessions=3: rust_temporalstore appears in 9 historical Codex user prompts; latest: OPEN THE VIM CONSOLE FOR ME, MAKE SURE THE RUST MAIN FILE IS OPENED
+- `storage_engine` sessions=1: storage_engine appears in 3 historical Codex user prompts; latest: use different color for matrixark for all content as below: Great for orchestration, retrieval, agents, and memory abstractions. MatrixArk gives those applications durable temporal state, reque
+- `codex_hook` sessions=2: codex_hook appears in 3 historical Codex user prompts; latest: WHAT SHOULD WE DO FOR THIS &quot;the Stop payload extraction still has a stale-message edge case worth tightening separately.&quot; QUERY TOP 10 AND SHOW ME THE DETAILS FOR EACH MESSAGE AND HOOK API
+- `oss_reader_benchmark` sessions=1: oss_reader_benchmark appears in 2 historical Codex user prompts; latest: deep dive into vllm and sglang
+
+### ContextSummaries
+
+- `session_l0` `session:019efb19-68bf-7d83-903e-10e8b8060256`: Session 019efb19-68bf-7d83-903e-10e8b8060256 has 60 user prompts. Recent focus: WHY SO LITTLE CODE? WE HAVE WORKED FOR A LONG TIME BUT STILL NO BIG DIFF VS THE LAB CODE push changes of MatrixObjectStore from all local branches to remote main branch, including
+- `session_l0` `session:019f8cb5-b4d5-77f2-8c82-0499440da36f`: Session 019f8cb5-b4d5-77f2-8c82-0499440da36f has 6 user prompts. Recent focus: test again in a new thread TEST AGAIN IN HOOK THREAD QUERY TEMPORALSTORE TO SEE IF THE NEW MESSAGE IN CURRENT THREAD AND THEOTHER THREAD HAVE BEEN RECEIVED AND INGESTED CONTINUE TES
+- `session_l0` `session:019f8cba-501b-71e1-96bc-1221d045f4c4`: Session 019f8cba-501b-71e1-96bc-1221d045f4c4 has 1 user prompts. Recent focus: MatrixArk cachebuster CLI proof 1784772600421. Reply OK only.
+- `session_l0` `session:019f8d12-86c6-7100-9a44-7537cdd30aec`: Session 019f8d12-86c6-7100-9a44-7537cdd30aec has 13 user prompts. Recent focus: CAN YOU CONFIRM IF USERPROMPTSUBMIT FIRES UPON EVERY PROMPT? IF SO, DO WE STORE THE RAW MESSAGE IMMEDIATELY? IF SO, WE SHOULD BE ABLE TO QUERY THE MESSAGE RIGHT AWAY? QUEUING FOR E
+- `session_l0` `session:019f8f44-d601-7fb3-b86e-646b04728dea`: Session 019f8f44-d601-7fb3-b86e-646b04728dea has 1 user prompts. Recent focus: MatrixArk CLI control UserPromptSubmit emission 1784815341. Reply OK only.
+- `user_l1` `tenant:tenant_codex/user:deeproute`: Cross-session user memory synthesized from child session summaries and selected topic state: context_management: context_management appears in 24 historical Codex user prompts; latest: build llm context management (llm)and memory on top of open source temporal
+</pre></body></html>
