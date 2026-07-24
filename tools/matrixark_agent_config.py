@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Generate MatrixArk agent integration snippets.
 
-The MatrixArk MCP server is the common boundary for Codex, Claude Desktop,
-Cursor, and vertical AI agents.  This helper emits copy-pasteable config for
-the common clients without requiring each integration doc to drift.
+The MatrixArk MCP server is the common boundary for Codex today.
+Claude Code, Cursor, OpenClaw, OpenCode, Aider, Continue, Cline/Roo, and
+generic agents remain TODO/planned integrations until their hook payloads and
+registration flows are validated.
 """
 
 from __future__ import annotations
@@ -14,9 +15,11 @@ import json
 
 DEFAULT_REPO_ROOT = "."
 DEFAULT_LAUNCHER = "tools/matrixark_mcp_rust_server.sh"
-SUPPORTED_AGENT_CLIENTS = [
-    "codex",
+SUPPORTED_AGENT_CLIENTS = ["codex"]
+SUPPORTED_HOOK_CLIENTS = ["codex"]
+TODO_AGENT_CLIENTS = [
     "claude",
+    "claude-code",
     "cursor",
     "openclaw",
     "opencode",
@@ -150,7 +153,8 @@ def claude_code_json(repo_root: str, launcher: str) -> str:
     return json.dumps(
         {
             "matrixark": stdio_server(repo_root, launcher),
-            "usage": "Register this stdio server with the Claude Code MCP configuration path used by your installation.",
+            "status": "todo_planned",
+            "usage": "TODO: validate Claude Code MCP and hook registration before advertising as supported.",
         },
         indent=2,
         sort_keys=True,
@@ -193,16 +197,8 @@ def openclaw_json(repo_root: str, launcher: str) -> str:
             "transport": "stdio",
             "server": stdio_server(repo_root, launcher),
             "envelope": agent_envelope_schema(),
-            "recommended_hook_command": f"python3 {repo_root}/tools/matrixark_agent_hook.py --agent openclaw --event UserPromptSubmit",
-            "lifecycle_events": [
-                "UserPromptSubmit",
-                "PostToolUse",
-                "ResourceAdded",
-                "Feedback",
-                "Stop",
-                "PostCompact",
-                "idle_timeout",
-            ],
+            "hook_status": "todo_planned",
+            "todo": "Validate OpenClaw/OpenCode hook payloads and registration before enabling production hook commands.",
             "required_tools": [
                 "matrixark_retrieve",
                 "matrixark_ingest",
@@ -217,16 +213,8 @@ def openclaw_json(repo_root: str, launcher: str) -> str:
 
 def named_agent_json(agent: str, repo_root: str, launcher: str) -> str:
     payload = json.loads(generic_json(repo_root, launcher, agent=agent))
-    payload["recommended_hook_command"] = f"python3 {repo_root}/tools/matrixark_agent_hook.py --agent {agent} --event UserPromptSubmit"
-    payload["lifecycle_events"] = [
-        "UserPromptSubmit",
-        "PostToolUse",
-        "ResourceAdded",
-        "Feedback",
-        "Stop",
-        "PostCompact",
-        "idle_timeout",
-    ]
+    payload["hook_status"] = "todo_planned"
+    payload["todo"] = f"Validate {agent} hook payloads and registration before enabling production hook commands."
     return json.dumps(payload, indent=2, sort_keys=True)
 
 
@@ -295,49 +283,24 @@ import, feedback, and session commit policy.
 
 def hook_examples_text(repo_root: str) -> str:
     hook = f"{repo_root}/tools/matrixark_agent_hook.py"
-    return f"""# MatrixArk Popular Agent Hook Examples
+    return f"""# MatrixArk Agent Hook Examples
 
-# Claude Code-style hook command
-python3 {hook} --agent claude --event UserPromptSubmit
-python3 {hook} --agent claude --event PostToolUse
-python3 {hook} --agent claude --event Stop
-python3 {hook} --agent claude --event ResourceAdded
-python3 {hook} --agent claude --event Feedback
-
-# Codex hook command
+# Supported today: Codex hook only.
 python3 {hook} --agent codex --event UserPromptSubmit
 python3 {hook} --agent codex --event PostToolUse
 python3 {hook} --agent codex --event Stop
 python3 {hook} --agent codex --event ResourceAdded
 python3 {hook} --agent codex --event Feedback
 
-# Cursor / Windsurf / Cline / Continue fallback hook command
-# Use this when the client has an external hook/task runner. Otherwise use MCP.
-python3 {hook} --agent cursor --event UserPromptSubmit
-python3 {hook} --agent cursor --event ResourceAdded
-python3 {hook} --agent cursor --event Feedback
-python3 {hook} --agent windsurf --event UserPromptSubmit
-python3 {hook} --agent cline --event UserPromptSubmit
-python3 {hook} --agent roo --event UserPromptSubmit
-python3 {hook} --agent continue --event UserPromptSubmit
-
-# Other popular coding and orchestration agents
-python3 {hook} --agent opencode --event UserPromptSubmit
-python3 {hook} --agent openclaw --event UserPromptSubmit
-python3 {hook} --agent aider --event UserPromptSubmit
-python3 {hook} --agent gemini --event UserPromptSubmit
-python3 {hook} --agent qwen-code --event UserPromptSubmit
-python3 {hook} --agent autogen --event UserPromptSubmit
-python3 {hook} --agent langgraph --event UserPromptSubmit
-python3 {hook} --agent crewai --event UserPromptSubmit
-python3 {hook} --agent llamaindex --event UserPromptSubmit
-python3 {hook} --agent semantic-kernel --event UserPromptSubmit
-python3 {hook} --agent dify --event UserPromptSubmit
-python3 {hook} --agent n8n --event UserPromptSubmit
-
-# Generic stdin payload smoke
-echo '{{"prompt":"Alice approved the GPU request.","session_id":"demo-thread"}}' | \\
-  python3 {hook} --agent generic --event UserPromptSubmit --backend local
+# TODO/planned, not production-supported yet:
+# - Claude Code / Claude Desktop hook registration
+# - Cursor / Windsurf / Cline / Roo / Continue hook registration
+# - OpenCode / OpenClaw hook registration
+# - Aider, Gemini/Qwen Code, AutoGen, LangGraph, CrewAI, LlamaIndex,
+#   Semantic Kernel, Dify, n8n, and generic agent hook payload mapping
+#
+# Keep these agents on MCP/manual integration until their lifecycle payloads,
+# session identity, and hook reload behavior are validated end to end.
 """
 
 

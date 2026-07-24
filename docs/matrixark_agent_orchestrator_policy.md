@@ -1,13 +1,16 @@
 # MatrixArk Agent Orchestrator Policy
 
-MatrixArk treats Codex, Claude, Cursor, OpenClaw, OpenCode, Aider, Continue,
-Cline/Roo, and generic agents as clients of one envelope. Agents send visible
-local context, query text, scope hints, token budget estimates, lifecycle event
-type, and optional file/resource references. `file_refs` and `resource_refs` are
-optional; use them only for visible files or resources the agent is allowed to
-send, such as local Markdown/PDF paths or S3 `raw_uri` values. Agents do not need
-to understand ContextEvent, ContextEntity, ContextSummary, ContextEmbedding,
-ContextIndex, ResourceChunk, or SkillSection internals.
+MatrixArk treats Codex as the only production-supported hook client today.
+Claude Code, Claude Desktop, Cursor, OpenClaw, OpenCode, Aider, Continue,
+Cline/Roo, and generic agents remain TODO/planned integrations until their hook
+payloads and registration flows are validated. The shared envelope is still the
+target design: agents send visible local context, query text, scope hints, token
+budget estimates, lifecycle event type, and optional file/resource references.
+`file_refs` and `resource_refs` are optional; use them only for visible files or
+resources the agent is allowed to send, such as local Markdown/PDF paths or S3
+`raw_uri` values. Agents do not need to understand ContextEvent, ContextEntity,
+ContextSummary, ContextEmbedding, ContextIndex, ResourceChunk, or SkillSection
+internals.
 
 ## Lifecycle
 
