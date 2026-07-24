@@ -465,7 +465,7 @@ struct CrossSessionPolicy {
     double budget_ratio = 0.12;
     uint64_t budget_tokens = 0;
     double max_budget_ratio = 0.20;
-    uint64_t max_budget_tokens = 1536;
+    uint64_t max_budget_tokens = 8192;
     uint64_t max_sessions = 3;
     uint64_t max_candidates = 24;
     double min_score = 0.20;
@@ -1206,7 +1206,7 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     if (question_type.empty()) {
         question_type = "fact";
     }
-    uint64_t remote_budget = JsonUintMember(request, "max_context_tokens", 4000);
+    uint64_t remote_budget = JsonUintMember(request, "max_context_tokens", 128000);
     if (const rapidjson::Value* local_budget = JsonObjectMember(request, "local_budget")) {
         remote_budget = JsonUintMember(*local_budget, "remote_budget_tokens", remote_budget);
     }
@@ -1216,7 +1216,7 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     if (current_agent_scope_key.empty()) {
         current_agent_scope_key = "agent:codex";
     }
-    uint64_t max_refs = 24;
+    uint64_t max_refs = 64;
     uint64_t max_global_candidates = 512;
     double min_similarity_score = 0.20;
     std::string budget_fill_policy = "quality_first";
