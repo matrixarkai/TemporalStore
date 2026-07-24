@@ -9,6 +9,20 @@ indexes all live in a time-aware storage engine built for retrieval.
 This blog explains the technical design, the serving data shape, and how the
 ingestion/extraction/retrieval pipeline works.
 
+## Related MatrixArk Blogs And Manuals
+
+This page is the product-level technical blog. It intentionally summarizes and
+links to the deeper MatrixArk context writeups:
+
+- [Context ingestion, extraction, retrieval manual](context_ingestion_extraction_retrieval_manual.md)
+- [MatrixArk context management deep dive](matrixark_context_management_ingestion_extraction_retrieval_blog.md)
+- [Context secondary index mechanism](matrixark_context_secondary_index_mechanism.md)
+- [Secondary-index tree retrieval for LOCOMO-style recall](matrixark_secondary_index_tree_retrieval_locomo_flow.md)
+- [Resource and skill parsing pipeline](matrixark_resource_skill_parsing_pipeline.md)
+- [Context node materialization](matrixark_context_node_materialization.md)
+- [Context tree embedding, summary, and compression contract](context_tree_embedding_summary_compression_contract.md)
+- [Context injection prompt pack contract](context_injection_prompt_pack_contract.md)
+
 ## Why TemporalStore
 
 Context management has three awkward properties:
@@ -262,3 +276,16 @@ as Qwen through Ollama/vLLM and `sentence-transformers/all-MiniLM-L6-v2`.
 Use raw events for evidence. Use summaries, entities, topics, and compact
 indexes for normal recall. The system should preserve detailed history, but the
 serving path should stay small, fast, and scoped.
+
+## Implementation Checklist
+
+Use this blog together with the older MatrixArk context docs when changing the
+implementation:
+
+- Ingestion should write compact hot records and avoid verbose debug fields.
+- ContextNode children should be discovered through parent-child indexes.
+- Secondary indexes should use compact postings, not one row per event.
+- Parent summaries should use child summaries plus selected entity state.
+- Retrieval should prefer placement/index fetch and reserve broad scan for
+  fallback/debug.
+- ContextPack should dedupe refs and avoid repeated internal strings.

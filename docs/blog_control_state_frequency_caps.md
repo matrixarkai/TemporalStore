@@ -9,6 +9,17 @@ problems.
 This blog explains the technical shape and shows how to implement frequency
 caps and related controls on TemporalStore.
 
+## Related MatrixArk Blogs And Manuals
+
+Control State sits next to Context and Feature in the first open-source
+TemporalStore surface. Read this blog with:
+
+- [TemporalStore open-source surface](open_source_surface.md)
+- [Feature sequences and aggregates technical blog](blog_feature_sequences_and_aggregates.md)
+- [Context Management technical blog](blog_context_management_temporalstore.md)
+- [Cross-storage control/agent parity](cross_storage_control_agent_parity.md)
+- [Client/proxy control-plane parity](client_proxy_control_plane_parity.md)
+
 ## Why Control State
 
 Online systems often need to answer questions like:
@@ -284,3 +295,18 @@ capability:
 It should not expose unrelated internal modules or broad Redis collection-clone
 commands. Minimal string/hash Redis compatibility can coexist, but Control
 State should remain the product-level API.
+
+## Implementation Checklist
+
+When implementing or reviewing Control State behavior:
+
+- Keep it generic: counters, caps, quotas, pacing, eligibility, suppression,
+  and risk-style state all use the same capability.
+- Use current-value state with TTL/expiration, not append-only debug history.
+- Make single-key counter updates atomic.
+- Require idempotency when replaying from durable queues.
+- Distinguish API acknowledgement, append acceptance, and durable persistence.
+- Keep high-QPS controls async by default, with sync policy available for
+  critical state.
+- Do not expand the first open-source Redis API beyond minimal string/hash and
+  explicit Control State commands.
