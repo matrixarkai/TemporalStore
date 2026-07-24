@@ -88,8 +88,9 @@ def bytes_to_str(value: Any) -> str:
     return str(value)
 
 
-def scan_rust(base: str, limit: int = 500) -> tuple[int, list[dict[str, Any]]]:
+def scan_rust(base: str, limit: int = 500) -> tuple[int, int, list[dict[str, Any]]]:
     count = int(bytes_to_str(rust_exec({"kind": "string_get", "key": base + ":record_count"})["response"]["value"]) or 0)
+    hot_count = int(bytes_to_str(rust_exec({"kind": "string_get", "key": base + ":hot_record_count"})["response"]["value"]) or 0)
     rows: list[dict[str, Any]] = []
     for sequence in range(count - 1, max(-1, count - limit - 1), -1):
         candidates = (
@@ -109,10 +110,10 @@ def scan_rust(base: str, limit: int = 500) -> tuple[int, list[dict[str, Any]]]:
         except Exception:
             record = {"record_type": "unparsed", "text": raw[:1000]}
         rows.append({"sequence": sequence, "record": record})
-    return count, rows
+    return count, hot_count, rows
 
 
-def scan_cpp(base: str, limit: int = 500) -> tuple[int, list[dict[str, Any]]]:
+def scan_cpp(base: str, limit: int = 500) -> tuple[int, int, list[dict[str, Any]]]:
     sys.path.insert(0, str(ROOT / "sdk" / "python"))
     from temporalstore.client import Client, Options
 
@@ -131,6 +132,10 @@ def scan_cpp(base: str, limit: int = 500) -> tuple[int, list[dict[str, Any]]]:
         count = int(client.get_string(base + ":record_count") or 0)
     except Exception:
         count = 0
+    try:
+        hot_count = int(client.get_string(base + ":hot_record_count") or 0)
+    except Exception:
+        hot_count = 0
     rows = []
     for sequence in range(count - 1, max(-1, count - limit - 1), -1):
         try:
@@ -144,10 +149,10 @@ def scan_cpp(base: str, limit: int = 500) -> tuple[int, list[dict[str, Any]]]:
         except Exception:
             record = {"record_type": "unparsed", "text": raw[:1000]}
         rows.append({"sequence": sequence, "record": record})
-    return count, rows
+    return count, hot_count, rows
 
 
-def summarize_backend(name: str, prefix: str, raw_count: int, raw_rows: list[dict[str, Any]], serving_count: int, serving_rows: list[dict[str, Any]]) -> dict[str, Any]:
+def summarize_backend(name: str, prefix: str, raw_count: int, raw_hot_count: int, raw_rows: list[dict[str, Any]], serving_count: int, serving_hot_count: int, serving_rows: list[dict[str, Any]]) -> dict[str, Any]:
     raw_records = [row(item["record"], item["sequence"]) for item in raw_rows]
     serving_records = [row(item["record"], item["sequence"]) for item in serving_rows]
     raw_types = collections.Counter(item["record_type"] for item in raw_records)
@@ -159,8 +164,12 @@ def summarize_backend(name: str, prefix: str, raw_count: int, raw_rows: list[dic
     return {
         "backend": name,
         "prefix": prefix,
-        "raw_count": raw_count,
-        "serving_count": serving_count,
+        "raw_count": raw_hot_count or raw_count,
+        "serving_count": serving_hot_count or serving_count,
+        "physical_raw_count": raw_count,
+        "physical_serving_count": serving_count,
+        "compact_hot_raw_count": raw_hot_count,
+        "compact_hot_serving_count": serving_hot_count,
         "recent_raw_type_counts": dict(raw_types),
         "recent_serving_type_counts": dict(serving_types),
         "recent_real_user_prompts": user_prompts[:8],
@@ -213,8 +222,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         "## Backend Counts",
         "",
         render_table(
-            ["Backend", "Prefix", "Raw count", "Serving count", "Recent raw types", "Recent serving types"],
-            [[b["backend"], b["prefix"], b["raw_count"], b["serving_count"], json.dumps(b["recent_raw_type_counts"], sort_keys=True), json.dumps(b["recent_serving_type_counts"], sort_keys=True)] for b in report["backends"]],
+            ["Backend", "Prefix", "Compact hot raw", "Compact hot serving", "Physical raw", "Physical serving", "Recent raw types", "Recent serving types"],
+            [[b["backend"], b["prefix"], b["raw_count"], b["serving_count"], b["physical_raw_count"], b["physical_serving_count"], json.dumps(b["recent_raw_type_counts"], sort_keys=True), json.dumps(b["recent_serving_type_counts"], sort_keys=True)] for b in report["backends"]],
         ),
     ]
     for backend in report["backends"]:
@@ -233,7 +242,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "2. Raw event ingestion is proven by the `raw_ingestion` append sequence and write path metadata.",
         "3. Serving context-event publication is proven when the same prompt appears as `context_event` in the serving prefix.",
         "4. Async extraction is proven only when entity/summary/index rows appear after the raw prompt or when dirty-summary markers are drained by a worker.",
-        "5. In this run, Rust proves steps 1-3. C++ proves steps 1-4 in aggregate, but still mixes audit/trace records into the hot prefix and should be cleaned further.",
+        "5. Compact hot counts are reported separately from physical historical counts, so old C++ debug/audit rows no longer inflate live traffic parity.",
     ])
     return "\n".join(lines) + "\n"
 
@@ -248,10 +257,10 @@ def render_html(markdown: str) -> str:
 
 
 def main() -> None:
-    rust_raw_count, rust_raw = scan_rust(RUST_PREFIX + ":raw_ingestion")
-    rust_serving_count, rust_serving = scan_rust(RUST_PREFIX)
-    cpp_raw_count, cpp_raw = scan_cpp(CPP_PREFIX + ":raw_ingestion")
-    cpp_serving_count, cpp_serving = scan_cpp(CPP_PREFIX)
+    rust_raw_count, rust_raw_hot_count, rust_raw = scan_rust(RUST_PREFIX + ":raw_ingestion")
+    rust_serving_count, rust_serving_hot_count, rust_serving = scan_rust(RUST_PREFIX)
+    cpp_raw_count, cpp_raw_hot_count, cpp_raw = scan_cpp(CPP_PREFIX + ":raw_ingestion")
+    cpp_serving_count, cpp_serving_hot_count, cpp_serving = scan_cpp(CPP_PREFIX)
     report = {
         "generated_at_ms": int(time.time() * 1000),
         "query_paths": {
@@ -259,8 +268,8 @@ def main() -> None:
             "cpp": "TemporalStore Python SDK using libbcache2.so against 127.0.0.1:18000",
         },
         "backends": [
-            summarize_backend("Rust TemporalStore", RUST_PREFIX, rust_raw_count, rust_raw, rust_serving_count, rust_serving),
-            summarize_backend("C++ TemporalStore", CPP_PREFIX, cpp_raw_count, cpp_raw, cpp_serving_count, cpp_serving),
+            summarize_backend("Rust TemporalStore", RUST_PREFIX, rust_raw_count, rust_raw_hot_count, rust_raw, rust_serving_count, rust_serving_hot_count, rust_serving),
+            summarize_backend("C++ TemporalStore", CPP_PREFIX, cpp_raw_count, cpp_raw_hot_count, cpp_raw, cpp_serving_count, cpp_serving_hot_count, cpp_serving),
         ],
     }
     OUT_DIR.mkdir(parents=True, exist_ok=True)
