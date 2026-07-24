@@ -15,6 +15,20 @@ matrixark_rust_direct_sdk
 The metaserver and datanode are long-lived processes. Hooks, clients, and
 benchmarks call the proxy or direct SDK instead of embedding storage in Python.
 
+## Recommended Build OS
+
+Build TemporalStore on Ubuntu for the first Linux release path. We have used
+and validated the Linux build/deploy flow on:
+
+```text
+Ubuntu 22.04 LTS
+Ubuntu 26.04
+```
+
+Other modern Linux distributions may work, but Ubuntu is the recommended and
+documented target because it keeps Rust, glibc, OpenSSL, systemd, and Docker
+behavior predictable across local development and production-style testing.
+
 ## Dependencies
 
 Required:
