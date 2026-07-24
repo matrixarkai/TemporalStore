@@ -146,8 +146,10 @@ DEFAULT_CROSS_SESSION_PREFERRED_REF_TYPES = tuple(
     if item.strip()
 )
 DEFAULT_SHARED_RESOURCE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_SHARED_RESOURCE_BUDGET_RATIO", "0.25"))
+DEFAULT_SHARED_RESOURCE_MAX_BUDGET_RATIO = float(os.environ.get("MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_RATIO", "0.25"))
 DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_TOKENS", "16384"))
 DEFAULT_SHARED_SKILL_BUDGET_RATIO = float(os.environ.get("MATRIXARK_SHARED_SKILL_BUDGET_RATIO", "0.10"))
+DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO = float(os.environ.get("MATRIXARK_SHARED_SKILL_MAX_BUDGET_RATIO", "0.10"))
 DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_SHARED_SKILL_MAX_BUDGET_TOKENS", "8192"))
 DEFAULT_SHARED_CONTEXT_MIN_SCORE = float(os.environ.get("MATRIXARK_SHARED_CONTEXT_MIN_SCORE", "0.20"))
 TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE", "256"))
@@ -4509,19 +4511,33 @@ def build_shared_context_policy(args: Json, ranking: Json, *, remote_budget_toke
     else:
         raise MatrixArkError("shared_context must be an object or boolean")
     enabled = bool(config.get("enabled", True)) and remote_budget_tokens > 0
+    resource_max_budget_ratio = float_arg(
+        config,
+        "resource_max_budget_ratio",
+        DEFAULT_SHARED_RESOURCE_MAX_BUDGET_RATIO,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    skill_max_budget_ratio = float_arg(
+        config,
+        "skill_max_budget_ratio",
+        DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO,
+        minimum=0.0,
+        maximum=1.0,
+    )
     resource_budget_ratio = float_arg(
         config,
         "resource_budget_ratio",
-        DEFAULT_SHARED_RESOURCE_BUDGET_RATIO,
+        min(DEFAULT_SHARED_RESOURCE_BUDGET_RATIO, resource_max_budget_ratio),
         minimum=0.0,
-        maximum=1.0,
+        maximum=resource_max_budget_ratio,
     )
     skill_budget_ratio = float_arg(
         config,
         "skill_budget_ratio",
-        DEFAULT_SHARED_SKILL_BUDGET_RATIO,
+        min(DEFAULT_SHARED_SKILL_BUDGET_RATIO, skill_max_budget_ratio),
         minimum=0.0,
-        maximum=1.0,
+        maximum=skill_max_budget_ratio,
     )
     resource_budget_tokens = int(remote_budget_tokens * resource_budget_ratio)
     skill_budget_tokens = int(remote_budget_tokens * skill_budget_ratio)
@@ -4531,17 +4547,33 @@ def build_shared_context_policy(args: Json, ranking: Json, *, remote_budget_toke
         skill_budget_tokens = integer_arg(config, "skill_budget_tokens", skill_budget_tokens, minimum=0)
     resource_max = integer_arg(config, "resource_max_budget_tokens", DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS, minimum=0)
     skill_max = integer_arg(config, "skill_max_budget_tokens", DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS, minimum=0)
-    if resource_max > 0:
-        resource_budget_tokens = min(resource_budget_tokens, resource_max)
-    if skill_max > 0:
-        skill_budget_tokens = min(skill_budget_tokens, skill_max)
+    resource_ratio_cap = int(remote_budget_tokens * resource_max_budget_ratio) if resource_max_budget_ratio > 0 else 0
+    skill_ratio_cap = int(remote_budget_tokens * skill_max_budget_ratio) if skill_max_budget_ratio > 0 else 0
+    if resource_ratio_cap == 0 and remote_budget_tokens > 0 and resource_max_budget_ratio > 0:
+        resource_ratio_cap = 1
+    if skill_ratio_cap == 0 and remote_budget_tokens > 0 and skill_max_budget_ratio > 0:
+        skill_ratio_cap = 1
+    resource_budget_tokens = min(
+        remote_budget_tokens,
+        resource_budget_tokens,
+        resource_ratio_cap if resource_ratio_cap > 0 else remote_budget_tokens,
+        resource_max if resource_max > 0 else remote_budget_tokens,
+    )
+    skill_budget_tokens = min(
+        remote_budget_tokens,
+        skill_budget_tokens,
+        skill_ratio_cap if skill_ratio_cap > 0 else remote_budget_tokens,
+        skill_max if skill_max > 0 else remote_budget_tokens,
+    )
     min_score = float_arg(config, "min_score", DEFAULT_SHARED_CONTEXT_MIN_SCORE, minimum=0.0, maximum=1.0)
     return {
         "enabled": enabled,
         "mode": "bounded_shared_context" if enabled else "disabled",
         "decision": "tenant_or_global_shared_resources_and_skills_visible_after_access_scope_then_quota_bounded" if enabled else "disabled_by_budget_or_config",
         "resource_budget_ratio": round(resource_budget_ratio, 6),
+        "resource_max_budget_ratio": round(resource_max_budget_ratio, 6),
         "skill_budget_ratio": round(skill_budget_ratio, 6),
+        "skill_max_budget_ratio": round(skill_max_budget_ratio, 6),
         "resource_budget_tokens": resource_budget_tokens if enabled else 0,
         "skill_budget_tokens": skill_budget_tokens if enabled else 0,
         "resource_max_budget_tokens": resource_max,
