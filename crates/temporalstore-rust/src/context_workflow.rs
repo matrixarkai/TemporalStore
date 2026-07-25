@@ -4189,6 +4189,7 @@ pub fn retrieve_context(
             block.uri.clone(),
         )
     });
+    dedupe_context_blocks_by_source_ref(&mut blocks);
     context_query_debug_finalize(
         &mut query_understanding_debug,
         &query_plan,
@@ -4205,6 +4206,42 @@ pub fn retrieve_context(
         fanout_plan,
         parity: context_pipeline_parity_evidence(),
     }
+}
+
+fn dedupe_context_blocks_by_source_ref(blocks: &mut Vec<ContextBlock>) {
+    let mut seen = BTreeMap::<String, usize>::new();
+    let mut deduped = Vec::<ContextBlock>::with_capacity(blocks.len());
+    for block in blocks.drain(..) {
+        let key = if block.source_ref.trim().is_empty() {
+            format!("uri:{}", block.uri)
+        } else {
+            format!(
+                "source:{}:{}",
+                block.node_hash,
+                block.source_ref.trim().to_ascii_lowercase()
+            )
+        };
+        if let Some(existing_index) = seen.get(&key).copied() {
+            if should_replace_context_block_duplicate(&deduped[existing_index], &block) {
+                deduped[existing_index] = block;
+            }
+        } else {
+            seen.insert(key, deduped.len());
+            deduped.push(block);
+        }
+    }
+    *blocks = deduped;
+}
+
+fn should_replace_context_block_duplicate(
+    current: &ContextBlock,
+    candidate: &ContextBlock,
+) -> bool {
+    let current_detail_rank = tier_rank(current.tier);
+    let candidate_detail_rank = tier_rank(candidate.tier);
+    candidate_detail_rank > current_detail_rank
+        || (candidate_detail_rank == current_detail_rank
+            && candidate.text.len() > current.text.len())
 }
 
 pub fn inject_context(
