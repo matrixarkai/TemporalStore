@@ -1190,10 +1190,22 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING")
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
+    let compact_source_replay =
+        std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_COMPACT_SOURCE_REPLAY")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(true);
     let mut ingested_source_sets = BTreeMap::<u64, Vec<u64>>::new();
     let mut retrieved_source_sets = BTreeMap::<u64, Vec<temporalstore_rust::ContextBlock>>::new();
     for (_index, case) in cases.iter().enumerate() {
         let _query_id = case.query_id.as_str();
+        let trace_enabled = external_benchmark_trace_enabled();
+        if trace_enabled {
+            eprintln!(
+                "external_context_benchmark case={} sources={}",
+                case.query_id,
+                case.sources.len()
+            );
+        }
         *dataset_counts.entry(case.dataset.clone()).or_insert(0usize) += 1;
         *category_counts
             .entry(case.category.clone())
@@ -1209,6 +1221,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             max_events
         };
         let retrieval_started = Instant::now();
+        let mut retrieval_ms_override = None;
         let mut blocks = if direct_source_scoring {
             external_direct_source_blocks(case, case_max_events)
         } else {
@@ -1217,70 +1230,89 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             if let Some(blocks) = retrieved_source_sets.get(&source_digest) {
                 blocks.clone()
             } else {
-                let node_hashes =
-                    if let Some(node_hashes) = ingested_source_sets.get(&source_digest) {
-                        node_hashes.clone()
+                let node_hashes = if let Some(node_hashes) =
+                    ingested_source_sets.get(&source_digest)
+                {
+                    node_hashes.clone()
+                } else {
+                    let source_count = case.sources.len() as u64;
+                    let sources = case
+                        .sources
+                        .iter()
+                        .enumerate()
+                        .map(|(source_index, source)| {
+                            let source_id = if source.title.trim().is_empty() {
+                                format!("{}-{source_digest}-{source_index}", case.dataset)
+                            } else {
+                                source.title.clone()
+                            };
+                            ContextExtractRequest {
+                                shard_id: 1,
+                                tenant_hash,
+                                source_kind: source.kind,
+                                source_id,
+                                title: source.title.clone(),
+                                body: source.body.clone(),
+                                timestamp_ms: 1_000
+                                    + source_count.saturating_sub(source_index as u64),
+                                provider: ContextModelProviderConfig::default(),
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    let mut node_hashes = Vec::new();
+                    let mut ingest_ok = true;
+                    if all_source_replay || compact_source_replay {
+                        let started = Instant::now();
+                        match ingest_external_benchmark_sources(engine, tenant_hash, &sources) {
+                            Some(hashes) => node_hashes = hashes,
+                            None => ingest_ok = false,
+                        }
+                        if trace_enabled {
+                            eprintln!(
+                                "external_context_benchmark case={} ingest_all_sources_ms={}",
+                                case.query_id,
+                                started.elapsed().as_millis()
+                            );
+                        }
                     } else {
-                        let source_count = case.sources.len() as u64;
-                        let sources = case
-                            .sources
-                            .iter()
-                            .enumerate()
-                            .map(|(source_index, source)| {
-                                let source_id = if source.title.trim().is_empty() {
-                                    format!("{}-{source_digest}-{source_index}", case.dataset)
-                                } else {
-                                    source.title.clone()
-                                };
-                                ContextExtractRequest {
+                        for chunk in sources.chunks(ingest_chunk_size) {
+                            let started = Instant::now();
+                            let ingest = ingest_extract_context(
+                                engine,
+                                ContextIngestExtractRequest {
                                     shard_id: 1,
                                     tenant_hash,
-                                    source_kind: source.kind,
-                                    source_id,
-                                    title: source.title.clone(),
-                                    body: source.body.clone(),
-                                    timestamp_ms: 1_000
-                                        + source_count.saturating_sub(source_index as u64),
+                                    sources: chunk.to_vec(),
+                                    query: case.query.clone(),
+                                    start_time_ms: 0,
+                                    end_time_ms: 10_000,
+                                    max_events: case_max_events,
                                     provider: ContextModelProviderConfig::default(),
-                                }
-                            })
-                            .collect::<Vec<_>>();
-                        let mut node_hashes = Vec::new();
-                        let mut ingest_ok = true;
-                        if all_source_replay {
-                            match ingest_external_benchmark_sources(engine, tenant_hash, &sources) {
-                                Some(hashes) => node_hashes = hashes,
-                                None => ingest_ok = false,
+                                },
+                            );
+                            if !ingest.status.ok {
+                                ingest_ok = false;
+                                break;
                             }
-                        } else {
-                            for chunk in sources.chunks(ingest_chunk_size) {
-                                let ingest = ingest_extract_context(
-                                    engine,
-                                    ContextIngestExtractRequest {
-                                        shard_id: 1,
-                                        tenant_hash,
-                                        sources: chunk.to_vec(),
-                                        query: case.query.clone(),
-                                        start_time_ms: 0,
-                                        end_time_ms: 10_000,
-                                        max_events: case_max_events,
-                                        provider: ContextModelProviderConfig::default(),
-                                    },
-                                );
-                                if !ingest.status.ok {
-                                    ingest_ok = false;
-                                    break;
-                                }
-                                node_hashes.extend(ingest.node_hashes);
+                            node_hashes.extend(ingest.node_hashes);
+                            if trace_enabled {
+                                eprintln!(
+                                        "external_context_benchmark case={} ingest_chunk_sources={} ingest_ms={}",
+                                        case.query_id,
+                                        chunk.len(),
+                                        started.elapsed().as_millis()
+                                    );
                             }
                         }
-                        if !ingest_ok {
-                            Vec::new()
-                        } else {
-                            ingested_source_sets.insert(source_digest, node_hashes.clone());
-                            node_hashes
-                        }
-                    };
+                    }
+                    if !ingest_ok {
+                        Vec::new()
+                    } else {
+                        ingested_source_sets.insert(source_digest, node_hashes.clone());
+                        node_hashes
+                    }
+                };
+                let retrieve_started = Instant::now();
                 let retrieve = retrieve_context(
                     engine,
                     ContextRetrieveRequest {
@@ -1305,12 +1337,25 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                         provider: ContextModelProviderConfig::default(),
                     },
                 );
+                if trace_enabled {
+                    let elapsed_ms = retrieve_started.elapsed().as_millis();
+                    eprintln!(
+                        "external_context_benchmark case={} retrieve_ms={} blocks={}",
+                        case.query_id,
+                        elapsed_ms,
+                        retrieve.blocks.len()
+                    );
+                    retrieval_ms_override = Some(elapsed_ms);
+                } else {
+                    retrieval_ms_override = Some(retrieve_started.elapsed().as_millis());
+                }
                 retrieved_source_sets.insert(source_digest, retrieve.blocks.clone());
                 retrieve.blocks
             }
         };
         order_external_blocks_by_case_source_order(case, &mut blocks);
-        let retrieval_ms = retrieval_started.elapsed().as_millis();
+        let retrieval_ms =
+            retrieval_ms_override.unwrap_or_else(|| retrieval_started.elapsed().as_millis());
         let hit_rank = hit_source_rank(case, &blocks);
         let matched_terms = count_matched_expected_terms(&blocks, &case.expected_terms);
         let matched_refs = count_matched_expected_refs(&blocks, &case.expected_source_refs);
@@ -1451,6 +1496,12 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         retrieved_source_sets: retrieved_source_sets.len(),
         total_retrieved_blocks,
     }
+}
+
+fn external_benchmark_trace_enabled() -> bool {
+    std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_TRACE")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
 }
 
 fn external_case_source_digest(case: &ExternalContextBenchmarkCase) -> u64 {
@@ -1704,6 +1755,8 @@ fn ingest_external_benchmark_sources(
 ) -> Option<Vec<u64>> {
     let mut node_hashes = Vec::new();
     let source_count = sources.len() as u64;
+    let shard_id = sources.first().map(|source| source.shard_id).unwrap_or(1);
+    let mut commands = Vec::with_capacity(sources.len().saturating_mul(4));
     for (source_index, source) in sources.iter().enumerate() {
         let node_hash = stable_hash64(&format!(
             "external:{}:{}:{}",
@@ -1778,41 +1831,40 @@ fn ingest_external_benchmark_sources(
             reason: 1,
             propagate_depth: 1,
         };
-        let commands = [
-            Command::ContextUpsertNode {
-                tenant_hash,
-                node: node.clone(),
-            },
-            Command::ContextWriteEvent {
-                tenant_hash,
-                node_hash,
-                event,
-                first_write_only: false,
-                cold_storage: false,
-            },
-            Command::ContextWriteIndexRef {
-                tenant_hash,
-                index_name: "source".to_string(),
-                index_value_hash: stable_hash64(&source.source_id),
-                scope_hash: 0,
-                event_time_ms: timestamp_ms,
-                index_ref,
-            },
-            Command::ContextMarkSummaryDirty {
-                tenant_hash,
-                marker: dirty_marker,
-            },
-        ];
-        for command in commands {
-            let response = engine.execute_durable(ExecuteRequest {
-                shard_id: source.shard_id,
-                command,
-            });
-            if !response.status.ok {
-                return None;
-            }
-        }
+        commands.push(Command::ContextUpsertNode {
+            tenant_hash,
+            node: node.clone(),
+        });
+        commands.push(Command::ContextWriteEvent {
+            tenant_hash,
+            node_hash,
+            event,
+            first_write_only: false,
+            cold_storage: false,
+        });
+        commands.push(Command::ContextWriteIndexRef {
+            tenant_hash,
+            index_name: "source".to_string(),
+            index_value_hash: stable_hash64(&source.source_id),
+            scope_hash: 0,
+            event_time_ms: timestamp_ms,
+            index_ref,
+        });
+        commands.push(Command::ContextMarkSummaryDirty {
+            tenant_hash,
+            marker: dirty_marker,
+        });
         node_hashes.push(node_hash);
+    }
+    let response =
+        engine.batch_execute(temporalstore_rust::BatchExecuteRequest { shard_id, commands });
+    if !response.status.ok
+        || response
+            .responses
+            .iter()
+            .any(|response| !response.status.ok)
+    {
+        return None;
     }
     node_hashes.sort_unstable();
     node_hashes.dedup();
