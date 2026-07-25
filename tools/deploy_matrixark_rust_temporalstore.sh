@@ -73,6 +73,30 @@ wait_tcp() {
   return 1
 }
 
+register_proxy_serving() {
+  TS_META_ADDR="$META_ADDR" TS_PROXY_ADDR="$PROXY_ADDR" TS_PROXY_NAMESPACE="$NAMESPACE" python3 - <<'PY_REGISTER_PROXY'
+import json
+import os
+import urllib.request
+
+meta_addr = os.environ["TS_META_ADDR"]
+payload = {
+    "proxy_addr": os.environ["TS_PROXY_ADDR"],
+    "namespace": os.environ.get("TS_PROXY_NAMESPACE", ""),
+}
+request = urllib.request.Request(
+    f"http://{meta_addr}/proxies/register",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={"content-type": "application/json"},
+)
+try:
+    with urllib.request.urlopen(request, timeout=2) as response:
+        response.read()
+except Exception as exc:
+    print(f"warning: failed to reset proxy serving registration: {exc}", file=__import__("sys").stderr)
+PY_REGISTER_PROXY
+}
+
 build_bins() {
   cd "$ROOT"
   CARGO_TARGET_DIR="$TARGET_DIR" cargo build $CARGO_PROFILE_FLAG -p temporalstore-rust \
@@ -96,7 +120,9 @@ start_service() {
     return 0
   fi
   shift
-  "$@" >"$LOG_DIR/$name.out" 2>"$LOG_DIR/$name.err" &
+  # Codex launches this script from short-lived shells. Detach the service so
+  # WSL does not reap it when the launcher exits.
+  nohup "$@" >"$LOG_DIR/$name.out" 2>"$LOG_DIR/$name.err" < /dev/null &
   echo "$!" >"$pid_file"
   echo "started $name pid=$(cat "$pid_file")"
 }
@@ -129,11 +155,13 @@ start_all() {
     "$DATANODE_BIN"
   wait_tcp "$DATANODE_ADDR" matrixark_rust_datanode
 
+  register_proxy_serving
   start_service matrixark_rust_service_proxy env \
     TS_META_ADDR="$META_ADDR" \
     TS_PROXY_BIND_ADDR="$PROXY_ADDR" \
     TS_PROXY_ADVERTISED_ADDR="$PROXY_ADDR" \
     TS_PROXY_NAMESPACE="$NAMESPACE" \
+    TS_PROXY_HEARTBEAT_INTERVAL_MS="${MATRIXARK_RUST_SERVICE_PROXY_HEARTBEAT_INTERVAL_MS:-1000}" \
     "$PROXY_BIN"
   wait_tcp "$PROXY_ADDR" matrixark_rust_service_proxy
 }
