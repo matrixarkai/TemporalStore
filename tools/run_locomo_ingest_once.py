@@ -33,14 +33,17 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from convert_locomo_to_context_jsonl import (  # noqa: E402
     clean_id,
+    expand_evidence_refs_for_sources,
     infer_dataset_name,
     locomo_evidence_window_sources,
     normalize_answers,
     normalize_category,
     normalize_evidence_refs,
+    normalize_ref_for_match,
     normalize_questions,
     record_questions,
     record_sources,
+    source_reference_candidates,
 )
 
 
@@ -330,6 +333,11 @@ def main() -> int:
                 if args.evidence_window is not None and refs
                 else sources
             )
+            scored_refs = (
+                expand_evidence_refs_for_sources(refs, query_sources)
+                if args.evidence_window is not None and refs
+                else refs
+            )
             source_tokens = sum(estimated_tokens(source.get("body", "")) for source in query_sources)
             retrieval_started = time.perf_counter()
             blocks = rank_sources(question, query_sources, args.max_events)
@@ -337,9 +345,9 @@ def main() -> int:
             reader_started = time.perf_counter()
             reader_answer = reader.answer(question, blocks)
             reader_ms = elapsed_ms(reader_started)
-            rank = first_hit_rank(blocks, answers, refs)
+            rank = first_hit_rank(blocks, answers, scored_refs)
             matched_terms = count_matched_terms(blocks, answers)
-            matched_ref_count = count_matched_refs(blocks, refs)
+            matched_ref_count = count_matched_refs(blocks, scored_refs)
             reader_hit = any(answer_equivalent(reader_answer, answer) for answer in answers)
             reader_matched_terms = sum(1 for answer in answers if answer_equivalent(reader_answer, answer))
             case_category = normalize_category(
@@ -361,7 +369,7 @@ def main() -> int:
             reader_latencies_ms.append(reader_ms)
             total_answer_terms += len(answers)
             matched_answer_terms += matched_terms
-            total_refs += len(refs)
+            total_refs += len(scored_refs)
             matched_refs += matched_ref_count
             reader_answer_coverage_count += reader_matched_terms
             row = category[case_category]
@@ -389,7 +397,8 @@ def main() -> int:
                         "miss_type": "retrieval_and_reader" if rank is None and not reader_hit else "retrieval" if rank is None else "reader",
                         "question": question,
                         "answer_terms": answers,
-                        "expected_source_refs": refs,
+                        "expected_source_refs": scored_refs,
+                        "original_expected_source_refs": refs,
                         "reader_answer": reader_answer[:500],
                         "reader_hit": reader_hit,
                         "retrieval_hit": rank is not None,
@@ -409,8 +418,9 @@ def main() -> int:
                     "answer_terms": len(answers),
                     "expected_answer_terms": answers,
                     "matched_retrieval_answer_terms": matched_terms,
-                    "expected_source_refs": len(refs),
-                    "expected_source_ref_ids": refs,
+                    "expected_source_refs": len(scored_refs),
+                    "expected_source_ref_ids": scored_refs,
+                    "original_expected_source_ref_ids": refs,
                     "matched_source_refs": matched_ref_count,
                     "retrieved_blocks": len(blocks),
                     "retrieved_source_ids": [
@@ -639,6 +649,8 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         convert_command.extend(["--dataset-name", args.dataset_name])
     if max_cases:
         convert_command.extend(["--max-questions", str(max_cases)])
+    if args.evidence_window is not None:
+        convert_command.extend(["--evidence-window", str(args.evidence_window)])
     converted = subprocess.run(convert_command, cwd=repo, text=True, capture_output=True, check=False)
     if converted.returncode != 0:
         raise RuntimeError(
@@ -5280,6 +5292,9 @@ def ref_matches(block: dict[str, str], ref: str) -> bool:
     needle = normalize_ref(ref)
     if not needle:
         return False
+    if re.fullmatch(r"d\d+\d+", needle):
+        candidates = {normalize_ref_for_match(value) for value in source_reference_candidates(block)}
+        return needle in candidates
     return needle in normalize_ref(block.get("body", "")) or needle in normalize_ref(block.get("title", ""))
 
 

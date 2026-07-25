@@ -84,6 +84,11 @@ def main() -> None:
                     if args.evidence_window is not None and evidence_refs
                     else sources
                 )
+                expected_refs = (
+                    expand_evidence_refs_for_sources(evidence_refs, case_sources)
+                    if args.evidence_window is not None and evidence_refs
+                    else evidence_refs
+                )
                 base_query_id = f"{conversation_id}-q{question_index + 1}"
                 query_id = unique_query_id(base_query_id, query_id_counts)
                 case = {
@@ -97,7 +102,7 @@ def main() -> None:
                     ),
                     "question": question,
                     "answer_terms": answer_terms,
-                    "expected_source_refs": evidence_refs,
+                    "expected_source_refs": expected_refs,
                     "sources": case_sources,
                 }
                 handle.write(json.dumps(case, ensure_ascii=False) + "\n")
@@ -297,15 +302,48 @@ def locomo_evidence_window_sources(
     if not normalized_refs:
         return sources
     for index, source in enumerate(sources):
+        source_candidates = {normalize_ref_for_match(value) for value in source_reference_candidates(source)}
         body = normalize_ref_for_match(source.get("body", ""))
         title = normalize_ref_for_match(source.get("title", ""))
-        if any(ref in body or ref in title for ref in normalized_refs):
+        if any(
+            ref in source_candidates
+            or (not is_dialog_ref(ref) and (ref in body or ref in title))
+            for ref in normalized_refs
+        ):
             start = max(0, index - window)
             end = min(len(sources), index + window + 1)
             wanted_indexes.update(range(start, end))
     if not wanted_indexes:
         return sources
     return [source for index, source in enumerate(sources) if index in wanted_indexes]
+
+
+def expand_evidence_refs_for_sources(evidence_refs: list[str], sources: list[dict[str, str]]) -> list[str]:
+    refs = list(evidence_refs)
+    seen = {normalize_ref_for_match(ref) for ref in refs}
+    for source in sources:
+        for value in source_reference_candidates(source):
+            normalized = normalize_ref_for_match(value)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                refs.append(value)
+    return refs
+
+
+def source_reference_candidates(source: dict[str, str]) -> list[str]:
+    candidates = []
+    for key in ("id", "source_ref", "title"):
+        value = str(source.get(key) or "").strip()
+        if value:
+            candidates.append(value)
+    body = str(source.get("body") or "")
+    for match in re.finditer(r"\bD\d+:\d+\b", body):
+        candidates.append(match.group(0))
+    return candidates
+
+
+def is_dialog_ref(normalized_ref: str) -> bool:
+    return bool(re.fullmatch(r"d\d+\d+", normalized_ref))
 
 
 def normalize_ref_for_match(value: str) -> str:
