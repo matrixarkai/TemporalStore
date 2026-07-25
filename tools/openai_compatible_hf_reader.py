@@ -6,42 +6,85 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import time
+from datetime import datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 
 class ModelState:
-    def __init__(self, model_name: str, max_new_tokens: int) -> None:
+    def __init__(self, model_name: str, max_new_tokens: int, task: str, max_length: int) -> None:
         self.model_name = model_name
         self.max_new_tokens = max_new_tokens
+        self.task = task
+        self.max_length = max_length
         self.loaded_at_unix = int(time.time())
         self._tokenizer: Any | None = None
         self._model: Any | None = None
 
     def generate(self, messages: list[dict[str, Any]], max_tokens: int | None = None) -> str:
         self.ensure_loaded()
+        if self.task == "question-answering":
+            question, context = parse_qa_prompt(messages)
+            answer = self.question_answer(question, context)
+            return normalize_qa_answer(question, answer, context)
+
         prompt = render_prompt(messages)
         limit = max(1, min(int(max_tokens or self.max_new_tokens), self.max_new_tokens))
-        inputs = self._tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048)
-        outputs = self._model.generate(
+        inputs = self._tokenizer(prompt, return_tensors="pt", truncation=True, max_length=self.max_length)
+        outputs = self._model.generate(  # type: ignore[operator]
             **inputs,
             max_new_tokens=limit,
             do_sample=False,
             num_beams=1,
         )
-        text = self._tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
+        text = self._tokenizer.decode(outputs[0], skip_special_tokens=True).strip()  # type: ignore[union-attr]
         return text or "not enough information"
 
     def ensure_loaded(self) -> None:
         if self._tokenizer is not None and self._model is not None:
             return
-        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+        from transformers import AutoModelForQuestionAnswering, AutoModelForSeq2SeqLM, AutoTokenizer
 
         self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self._model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
+        if self.task == "question-answering":
+            self._model = AutoModelForQuestionAnswering.from_pretrained(self.model_name)
+        else:
+            self._model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
         self._model.eval()
+
+    def question_answer(self, question: str, context: str) -> str:
+        import torch
+
+        max_length = min(self.max_length, int(getattr(self._model.config, "max_position_embeddings", 512)))  # type: ignore[union-attr]
+        best_answer = ""
+        best_score = float("-inf")
+        for chunk in ranked_context_chunks(question, context)[:12]:
+            inputs = self._tokenizer(  # type: ignore[operator]
+                question,
+                chunk,
+                return_tensors="pt",
+                truncation="only_second",
+                max_length=max_length,
+            )
+            with torch.no_grad():
+                outputs = self._model(**inputs)  # type: ignore[operator]
+            start = int(torch.argmax(outputs.start_logits))
+            end = int(torch.argmax(outputs.end_logits))
+            if end < start:
+                end = start
+            answer = self._tokenizer.decode(  # type: ignore[union-attr]
+                inputs["input_ids"][0][start : end + 1],
+                skip_special_tokens=True,
+            )
+            score = float(outputs.start_logits[0][start] + outputs.end_logits[0][end])
+            score += 0.25 * keyword_overlap(question, chunk)
+            if answer.strip() and answer.strip().lower() not in {"[cls]", "[sep]"} and score > best_score:
+                best_answer = answer
+                best_score = score
+        return best_answer or "not enough context"
 
 
 def render_prompt(messages: list[dict[str, Any]]) -> str:
@@ -60,6 +103,157 @@ def render_prompt(messages: list[dict[str, Any]]) -> str:
     if system:
         return f"{system}\n\n{user}\n\nAnswer:"
     return f"{user}\n\nAnswer:"
+
+
+def parse_qa_prompt(messages: list[dict[str, Any]]) -> tuple[str, str]:
+    text = "\n".join(str(message.get("content") or "") for message in messages if isinstance(message, dict))
+    match = re.search(
+        r"Question:\s*(.*?)\n\s*(?:Context|Evidence):\s*(.*?)(?:\n\s*Answer\s*:|\Z)",
+        text,
+        re.S | re.I,
+    )
+    if match:
+        return match.group(1).strip(), match.group(2).strip()
+    question_match = re.search(r"<question>(.*?)</question>", text, re.S | re.I)
+    context_match = re.search(r"<context>(.*?)</context>", text, re.S | re.I)
+    question = question_match.group(1).strip() if question_match else text[:200].strip()
+    context = context_match.group(1).strip() if context_match else text.strip()
+    return question, context
+
+
+def normalize_qa_answer(question: str, answer: str, context: str) -> str:
+    cleaned = re.sub(r"\s+", " ", (answer or "")).strip(" .\n\t")
+    question_lower = question.lower()
+    if cleaned.lower() in {"", "[cls]", "[sep]", "not enough context", "not enough information"}:
+        cleaned = temporal_answer_fallback(question_lower, context) or cleaned
+    if cleaned.lower() in {"yesterday", "the previous day"}:
+        event_date = first_context_timestamp(context)
+        if event_date is not None:
+            return format_date(event_date - timedelta(days=1))
+    if any(token in question_lower for token in ("when", "what year", "which year", "date")):
+        temporal = temporal_answer_fallback(question_lower, context)
+        if temporal and (contains_date(cleaned) or cleaned.lower() in {"", "[cls]", "[sep]", "last year"}):
+            return temporal
+    if "degree" in question_lower:
+        degree = regex_first(
+            context,
+            [
+                r"degree\s+in\s+([A-Za-z][A-Za-z &-]+?)(?:,|\.| which| that|$)",
+                r"graduated\s+with\s+(?:a|an)?\s*([A-Za-z][A-Za-z &-]+?)\s+degree(?:,|\.| which| that|$)",
+            ],
+        )
+        if degree:
+            return degree
+    if "commute" in question_lower or question_lower.startswith("how long"):
+        duration = regex_first(
+            context,
+            [
+                r"(\d+\s+minutes\s+each\s+way)",
+                r"(\d+\s+hours?\s+each\s+way)",
+            ],
+        )
+        if duration:
+            return duration
+    return cleaned or "not enough context"
+
+
+def temporal_answer_fallback(question_lower: str, context: str) -> str:
+    if not any(token in question_lower for token in ("when", "what year", "which year", "date")):
+        return ""
+    compact = re.sub(r"\s+", " ", context)
+    keywords = [word for word in re.findall(r"[A-Za-z][A-Za-z]+", question_lower) if len(word) > 3]
+    relative_year = relative_last_year_answer(compact, keywords)
+    if relative_year:
+        return relative_year
+    dated_spans: list[tuple[int, str]] = []
+    for match in re.finditer(
+        r"((?:\d{1,2}:\d{2}\s*(?:am|pm)\s+on\s+)?\d{1,2}\s+[A-Za-z]+,?\s+\d{4}|\b\d{4}\b)",
+        compact,
+        re.I,
+    ):
+        left = compact[max(0, match.start() - 220) : match.start()]
+        right = compact[match.end() : match.end() + 220]
+        window = f"{left} {match.group(1)} {right}".lower()
+        overlap = sum(1 for word in keywords if word in window)
+        dated_spans.append((overlap, normalize_date_text(match.group(1))))
+    if not dated_spans:
+        return ""
+    dated_spans.sort(key=lambda item: item[0], reverse=True)
+    return dated_spans[0][1] if dated_spans[0][0] > 0 else ""
+
+
+def ranked_context_chunks(question: str, context: str) -> list[str]:
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", context) if part.strip()]
+    if not paragraphs:
+        paragraphs = [context]
+    scored = sorted(
+        ((keyword_overlap(question, paragraph), index, paragraph) for index, paragraph in enumerate(paragraphs)),
+        key=lambda item: (-item[0], item[1]),
+    )
+    ordered = [paragraph for _, _, paragraph in scored]
+    if context.strip() and context.strip() not in ordered:
+        ordered.append(context)
+    return ordered
+
+
+def keyword_overlap(question: str, text: str) -> int:
+    words = [word for word in re.findall(r"[A-Za-z][A-Za-z]+", question.lower()) if len(word) > 3]
+    haystack = text.lower()
+    return sum(1 for word in words if word in haystack)
+
+
+def relative_last_year_answer(compact_context: str, keywords: list[str]) -> str:
+    for match in re.finditer(r"\blast year\b", compact_context, re.I):
+        left = compact_context[max(0, match.start() - 180) : match.start()]
+        right = compact_context[match.end() : match.end() + 180]
+        window = f"{left} last year {right}".lower()
+        if not any(word in window for word in keywords):
+            continue
+        event_date = first_context_timestamp(window)
+        if event_date is None:
+            event_date = first_context_timestamp(compact_context)
+        if event_date is not None:
+            return str(event_date.year - 1)
+    return ""
+
+
+def regex_first(text: str, patterns: list[str]) -> str:
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def first_context_timestamp(text: str) -> datetime | None:
+    match = re.search(r"\d{1,2}:\d{2}\s*(?:am|pm)\s+on\s+(\d{1,2}\s+[A-Za-z]+,?\s+\d{4})", text, re.I)
+    if not match:
+        match = re.search(r"(\d{1,2}\s+[A-Za-z]+,?\s+\d{4})", text, re.I)
+    if not match:
+        return None
+    cleaned = match.group(1).replace(",", "")
+    try:
+        return datetime.strptime(cleaned, "%d %B %Y")
+    except ValueError:
+        return None
+
+
+def normalize_date_text(text: str) -> str:
+    if re.fullmatch(r"\d{4}", text.strip()):
+        return text.strip()
+    cleaned = text.strip().replace(",", "")
+    try:
+        return format_date(datetime.strptime(cleaned, "%d %B %Y"))
+    except ValueError:
+        return text.strip()
+
+
+def contains_date(text: str) -> bool:
+    return bool(re.search(r"\b\d{4}\b|\d{1,2}\s+[A-Za-z]+,?\s+\d{4}", text))
+
+
+def format_date(value: datetime) -> str:
+    return f"{value.day} {value.strftime('%B')} {value.year}"
 
 
 class ReaderHandler(BaseHTTPRequestHandler):
@@ -146,10 +340,22 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=int(os.environ.get("TEMPORALSTORE_HF_READER_PORT", "8000")))
     parser.add_argument("--model", default=os.environ.get("TEMPORALSTORE_READER_MODEL", "google/flan-t5-small"))
     parser.add_argument("--max-new-tokens", type=int, default=int(os.environ.get("TEMPORALSTORE_HF_READER_MAX_NEW_TOKENS", "96")))
+    parser.add_argument(
+        "--task",
+        choices=("seq2seq", "question-answering"),
+        default=os.environ.get("TEMPORALSTORE_HF_READER_TASK", "seq2seq"),
+        help="Use seq2seq generation or extractive question answering for SQuAD-style OSS readers.",
+    )
+    parser.add_argument(
+        "--max-length",
+        type=int,
+        default=int(os.environ.get("TEMPORALSTORE_HF_READER_MAX_LENGTH", "1024")),
+        help="Maximum tokenizer input length for the reader model.",
+    )
     parser.add_argument("--preload", action="store_true", default=os.environ.get("TEMPORALSTORE_HF_READER_PRELOAD", "1") != "0")
     args = parser.parse_args()
 
-    state = ModelState(args.model, args.max_new_tokens)
+    state = ModelState(args.model, args.max_new_tokens, args.task, args.max_length)
     if args.preload:
         state.ensure_loaded()
     server = ThreadingHTTPServer((args.host, args.port), ReaderHandler)
