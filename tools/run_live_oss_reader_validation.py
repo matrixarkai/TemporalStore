@@ -29,6 +29,30 @@ def main() -> int:
     parser.add_argument("--misses", default="/tmp/temporalstore_live_oss_reader_misses.jsonl")
     parser.add_argument("--max-events", type=int, default=128)
     parser.add_argument(
+        "--benchmark-timeout-seconds",
+        type=float,
+        default=1800.0,
+        help="Wall-clock timeout for the underlying benchmark runner. Timeout writes a fail-closed report.",
+    )
+    parser.add_argument(
+        "--reader-timeout-seconds",
+        type=float,
+        default=20.0,
+        help="Per OpenAI-compatible reader request timeout passed to the benchmark runner.",
+    )
+    parser.add_argument(
+        "--reader-max-context-chars",
+        type=int,
+        default=12000,
+        help="Maximum context chars sent to the OSS reader per question.",
+    )
+    parser.add_argument(
+        "--evidence-window",
+        type=int,
+        default=None,
+        help="Diagnostic-only evidence window passed through to the LOCOMO runner.",
+    )
+    parser.add_argument(
         "--skip-rust-temporalstore",
         action="store_true",
         help=(
@@ -62,7 +86,11 @@ def main() -> int:
         "min_case_count": args.min_case_count,
         "min_hit_rate": args.min_hit_rate,
         "benchmark_report": args.benchmark_report,
+        "benchmark_timeout_seconds": args.benchmark_timeout_seconds,
         "misses": args.misses,
+        "reader_timeout_seconds": args.reader_timeout_seconds,
+        "reader_max_context_chars": args.reader_max_context_chars,
+        "evidence_window": args.evidence_window,
         "checked_at_unix": int(started),
         "python_only_diagnostic": bool(args.skip_rust_temporalstore),
         "blockers": [],
@@ -119,31 +147,89 @@ def main() -> int:
             args.misses,
             "--max-events",
             str(args.max_events),
+            "--reader-timeout-seconds",
+            str(args.reader_timeout_seconds),
+            "--reader-max-context-chars",
+            str(args.reader_max_context_chars),
         ]
     )
     if args.skip_rust_temporalstore:
         command.extend(["--skip-rust-temporalstore", "--allow-python-only-diagnostic"])
-    result = subprocess.run(command, cwd=repo, text=True, capture_output=True)
     evidence["command"] = command
+    if args.evidence_window is not None:
+        if args.dataset != "locomo":
+            evidence["blockers"].append("evidence_window_only_supported_for_locomo")
+            return finish(evidence, args.report, started, 2)
+        command.extend(["--evidence-window", str(args.evidence_window)])
+    try:
+        result = subprocess.run(
+            command,
+            cwd=repo,
+            text=True,
+            capture_output=True,
+            timeout=args.benchmark_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        evidence["returncode"] = 124
+        evidence["timed_out"] = True
+        evidence["stdout_tail"] = tail_text(exc.stdout)
+        evidence["stderr_tail"] = tail_text(exc.stderr)
+        evidence["blockers"].append("benchmark_timeout")
+        maybe_attach_benchmark(evidence, args.benchmark_report)
+        return finish(evidence, args.report, started, 124)
     evidence["returncode"] = result.returncode
     evidence["stdout_tail"] = result.stdout[-4000:]
     evidence["stderr_tail"] = result.stderr[-4000:]
     if result.returncode != 0:
         evidence["blockers"].append("benchmark_gate_failed")
-        if Path(args.benchmark_report).exists():
-            evidence["benchmark"] = json.loads(Path(args.benchmark_report).read_text(encoding="utf-8"))
+        maybe_attach_benchmark(evidence, args.benchmark_report)
         return finish(evidence, args.report, started, result.returncode)
 
     benchmark = json.loads(Path(args.benchmark_report).read_text(encoding="utf-8"))
     evidence["benchmark"] = benchmark
-    evidence["ready"] = (
+    evidence["reader_gate_ready"] = (
         benchmark.get("benchmark_quality_ready") is True
         and int(benchmark.get("reader_open_source_calls") or 0) > 0
         and int(benchmark.get("benchmark_threshold_violation_count") or 0) == 0
     )
+    evidence["full_benchmark_evidence_ready"] = (
+        evidence["reader_gate_ready"]
+        and benchmark.get("paper_comparable_claim_ready") is True
+        and benchmark.get("python_only_diagnostic") is not True
+        and benchmark.get("rust_temporalstore_backend_ready") is True
+    )
+    evidence["ready"] = evidence["full_benchmark_evidence_ready"]
+    if not evidence["reader_gate_ready"]:
+        evidence["blockers"].append("reader_gate_not_ready")
+    if benchmark.get("python_only_diagnostic") is True:
+        evidence["blockers"].append("python_only_diagnostic")
+    if benchmark.get("paper_comparable_claim_ready") is not True:
+        evidence["blockers"].append("paper_comparable_claim_not_ready")
+    if benchmark.get("rust_temporalstore_backend_ready") is not True:
+        evidence["blockers"].append("rust_temporalstore_backend_not_ready")
     if not evidence["ready"]:
-        evidence["blockers"].append("benchmark_report_not_ready")
+        evidence["blockers"].append("full_benchmark_evidence_not_ready")
     return finish(evidence, args.report, started, 0 if evidence["ready"] else 1)
+
+
+def tail_text(value: str | bytes | None, limit: int = 4000) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    return value[-limit:]
+
+
+def maybe_attach_benchmark(evidence: dict[str, Any], benchmark_report: str) -> None:
+    path = Path(benchmark_report)
+    if not path.exists():
+        evidence["benchmark_report_present"] = False
+        return
+    evidence["benchmark_report_present"] = True
+    try:
+        evidence["benchmark"] = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - keep the validator fail-closed but inspectable.
+        evidence["benchmark_report_error"] = f"{type(exc).__name__}: {exc}"
 
 
 def probe_reader(base_url: str) -> dict[str, Any]:
