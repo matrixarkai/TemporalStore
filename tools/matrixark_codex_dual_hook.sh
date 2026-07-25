@@ -556,10 +556,13 @@ serving_record = {
 }
 
 def append_record(count_key, records_prefix, record, hot_count_key=None):
-    try:
-        sequence = int(get_value(count_key) or "0") + 1
-    except Exception:
-        sequence = 1
+    if count_key not in counter_cache:
+        try:
+            counter_cache[count_key] = int(get_value(count_key) or "0")
+        except Exception:
+            counter_cache[count_key] = 0
+    counter_cache[count_key] += 1
+    sequence = counter_cache[count_key]
     legacy_sharded_key = f"{records_prefix}:{sequence // 10000:06d}"
     legacy_field = f"{sequence:020d}"
     page_key = f"{records_prefix}:{sequence // 256:06d}"
@@ -569,11 +572,13 @@ def append_record(count_key, records_prefix, record, hot_count_key=None):
     hset_value(records_prefix, legacy_field, record)
     set_value(count_key, sequence)
     if hot_count_key:
-        try:
-            hot_sequence = int(get_value(hot_count_key) or "0") + 1
-        except Exception:
-            hot_sequence = 1
-        set_value(hot_count_key, hot_sequence)
+        if hot_count_key not in counter_cache:
+            try:
+                counter_cache[hot_count_key] = int(get_value(hot_count_key) or "0")
+            except Exception:
+                counter_cache[hot_count_key] = 0
+        counter_cache[hot_count_key] += 1
+        set_value(hot_count_key, counter_cache[hot_count_key])
     print(
         f"published {records_prefix} sequence={sequence} field={page_field} type={record.get('record_type')}",
         file=__import__("sys").stderr,
@@ -658,6 +663,8 @@ def rust_live_extraction_records():
     )
     return records
 
+
+counter_cache = {}
 
 published_raw = False
 for count_key, records_prefix, record in (
@@ -1147,11 +1154,16 @@ common = {
 raw_record = {"record_type": "agent_message", "text": prompt, **common}
 serving_record = {"record_type": "context_event", "text": "user: " + prompt, **common}
 
+counter_cache = {}
+
 def append_record(count_key, records_prefix, record, hot_count_key=None):
-    try:
-        sequence = int(get_value(count_key) or "0") + 1
-    except Exception:
-        sequence = 1
+    if count_key not in counter_cache:
+        try:
+            counter_cache[count_key] = int(get_value(count_key) or "0")
+        except Exception:
+            counter_cache[count_key] = 0
+    counter_cache[count_key] += 1
+    sequence = counter_cache[count_key]
     legacy_field = f"{sequence:020d}"
     legacy_sharded_key = f"{records_prefix}:{sequence // 10000:06d}"
     page_key = f"{records_prefix}:{sequence // 256:06d}"
@@ -1161,11 +1173,13 @@ def append_record(count_key, records_prefix, record, hot_count_key=None):
     hset_value(records_prefix, legacy_field, record)
     set_value(count_key, sequence)
     if hot_count_key:
-        try:
-            hot_sequence = int(get_value(hot_count_key) or "0") + 1
-        except Exception:
-            hot_sequence = 1
-        set_value(hot_count_key, hot_sequence)
+        if hot_count_key not in counter_cache:
+            try:
+                counter_cache[hot_count_key] = int(get_value(hot_count_key) or "0")
+            except Exception:
+                counter_cache[hot_count_key] = 0
+        counter_cache[hot_count_key] += 1
+        set_value(hot_count_key, counter_cache[hot_count_key])
     print(f"published {records_prefix} sequence={sequence} field={page_field} type={record.get('record_type')}", file=sys.stderr)
     return sequence
 
