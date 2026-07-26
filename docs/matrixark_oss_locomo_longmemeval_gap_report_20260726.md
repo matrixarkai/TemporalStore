@@ -16,6 +16,8 @@ This report is intentionally conservative: it records what ran locally, what imp
 - Added an in-process `transformers://...` OSS reader backend for cached Hugging Face models, avoiding the flaky local Ollama HTTP path when CPU-only OSS smoke data is needed.
 - Verified cached `Qwen/Qwen2.5-0.5B-Instruct` loads locally on CPU and can answer a simple prompt through Transformers.
 - Ran a 5-question LoCoMo OSS-reader sample with Qwen 0.5B over the full Rust TemporalStore replay: retrieval hit remained 1.0 and token reduction was 94.11%, but reader hit was 0.0, so the current gap is reader/model quality and compact evidence packing rather than TemporalStore retrieval.
+- Added reader-aware evidence packing that labels selected sources and fills the reader context from compact per-source snippets instead of slicing one body-only string. On the same 5-question LoCoMo sample, Qwen 0.5B reader hit improved from 0.0 to 0.2 while preserving 94.11% token reduction.
+- Ran a 5-record LongMemEval_s OSS-reader sample with Qwen 0.5B: retrieval hit was 1.0, token reduction was 98.01%, and reader hit was 0.2. Reader-aware packing kept the same hit rate but changed which fact the small model answered correctly, confirming the remaining gap is model/ranking quality.
 - Added OpenAI-compatible `/v1/embeddings` support to `tools/openai_compatible_hf_reader.py` using deterministic local hash embeddings.
 - Added causal language model support for Qwen-style OSS readers through the same OpenAI-compatible local server.
 - Added answer normalization and temporal fallback handling for common date formats and "not enough context" responses.
@@ -62,6 +64,9 @@ The local full input files are `/root/matrixark_benchmarks/data/locomo10.json` a
 |---|---:|---:|---:|---:|---:|---:|---|---|
 | Rust TemporalStore full LoCoMo replay | 1,542 | 0.99935 | n/a | n/a | n/a | n/a | Rust TemporalStore full replay ready | Retrieval-ready, reader not included |
 | Qwen 0.5B Transformers LoCoMo 5-question compact sample | 5 | 1.000 | 0.000 | 94.11% | 85.47 ms | 19.39 s | Reused full Rust TemporalStore replay | Gap evidence: retrieval/token savings good, reader quality poor |
+| Qwen 0.5B Transformers LoCoMo 5-question reader-packed sample | 5 | 1.000 | 0.200 | 94.11% | 101.01 ms | 26.53 s | Reused full Rust TemporalStore replay | Small packing win; still reader/model limited |
+| Qwen 0.5B Transformers LongMemEval_s 5-record compact sample | 5 | 1.000 | 0.200 | 98.01% | 205.85 ms | 21.14 s | Rust TemporalStore ready | Gap evidence: retrieval/token savings good, reader quality poor |
+| Qwen 0.5B Transformers LongMemEval_s 5-record reader-packed sample | 5 | 1.000 | 0.200 | 98.01% | 209.08 ms | 30.59 s | Rust TemporalStore ready | Packing changed correct fact, not aggregate quality |
 | MiniLM LoCoMo 3 conversations | 387 | 1.000 | 0.388 | 33.54% | 1.47 ms | 228.04 ms | Rust TemporalStore ready | Diagnostic |
 | MiniLM LongMemEval_s 50 | 50 | 0.980 | 0.560 | 98.59% | 250.06 ms | 305.90 ms | Rust TemporalStore ready | Diagnostic |
 | Qwen LoCoMo tiny | 2 | 1.000 | 1.000 | 0.00% | 4.40 ms | 11.97 s | Rust TemporalStore ready | Smoke only |
@@ -162,6 +167,8 @@ The OSS reader gap remains open:
 - Ollama `qwen2.5:1.5b` passes the tiny four-case capability gate, but full-reader runs stall on CPU because abandoned HTTP generations keep the local llama-server busy even after client-side timeout. Curl wall-time limits and Ollama unload cleanup were added, but the Ollama path is still not the preferred full benchmark route on this machine.
 - Local vLLM is installed, but this WSL environment has no CUDA device, so vLLM was not used for full LoCoMo/LongMemEval evidence.
 - In-process Transformers with cached Qwen 0.5B is stable enough for smoke runs. On a 5-question LoCoMo compact-context sample, it achieved 94.11% token reduction and 1.0 retrieval hit, but 0.0 reader hit. The model returned answers like `not enough context`, `transgender`, `research`, and `2023` where the strict LoCoMo expected terms did not match.
+- Reader-aware source labels and compact snippets improved the same LoCoMo sample to 0.2 reader hit without reducing token savings. The improvement is useful but too small for a competitive claim.
+- On a 5-record LongMemEval_s sample, compact and reader-packed contexts both produced 1.0 retrieval hit, 98.01% token reduction, and 0.2 reader hit. The small model could answer one exact fact but remained unstable on simple retrieved facts.
 
 So the current gap-closure target is not raw TemporalStore retrieval. It is:
 
@@ -213,4 +220,7 @@ So the current gap-closure target is not raw TemporalStore retrieval. It is:
 - `/tmp/openviking_memory_extraction_diagnosis_task_evidence_20260726.json`
 - `/tmp/matrixark_oss_goal_runs/oss_memory_ready_20260726T035752Z/oss_reader_endpoint_20260726T035802Z/locomo_report.rust_temporalstore.json`
 - `/tmp/matrixark_oss_goal_runs/qwen05_transformers_locomo5_ctx2k_report.json`
+- `/tmp/matrixark_oss_goal_runs/qwen05_transformers_locomo5_ctx2k_readerpack_report.json`
+- `/tmp/matrixark_oss_goal_runs/qwen05_transformers_longmem5_ctx2k_report.json`
+- `/tmp/matrixark_oss_goal_runs/qwen05_transformers_longmem5_ctx2k_readerpack_report.json`
 - `/tmp/matrixark_oss_goal_runs/qwen05_transformers_oneq_ctx2k_report.json`
