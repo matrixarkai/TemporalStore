@@ -5708,6 +5708,9 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
         serving_recall["partial_reason"] = deadline.get("fallback_reason") or "deadline"
     if serving_recall:
         compact["recall"] = serving_recall
+    memory_layer_budget = recall_summary.get("memory_layer_budget") if isinstance(recall_summary, dict) else {}
+    if isinstance(memory_layer_budget, dict) and memory_layer_budget:
+        compact["memory_layer_budget"] = memory_layer_budget
     compact.pop("recall_policy", None)
 
     local_policy = compact.get("local_context_policy")
