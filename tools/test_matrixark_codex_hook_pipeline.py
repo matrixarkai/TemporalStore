@@ -441,6 +441,29 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(budget["by_hook_type"]["hook_boundary"]["refs"], 1)
             self.assertGreaterEqual(budget["by_codex_event"]["PostToolUse"]["refs"], 1)
 
+            refresh = adapter.refresh_summaries(
+                {
+                    "scope": {
+                        "account_id": scope["account_id"],
+                        "tenant_id": scope["tenant_id"],
+                        "user_id": scope["user_id"],
+                    },
+                    "limit": 16,
+                    "refreshed_at_ms": 1780000000999,
+                }
+            )
+            profile_summaries = [
+                item
+                for item in refresh.get("refreshed", [])
+                if item.get("node_path") == ["tenant:tenant_async", "user:user_async", "profile:long_term_memory"]
+            ]
+            self.assertTrue(profile_summaries, refresh)
+            self.assertTrue(any("tool" in item.get("source_roles", []) for item in profile_summaries))
+            self.assertTrue(any("hook_boundary" in item.get("source_hook_types", []) for item in profile_summaries))
+            self.assertTrue(any("PostToolUse" in item.get("source_codex_events", []) for item in profile_summaries))
+            self.assertTrue(any("user_profile" in item.get("source_memory_scopes", []) for item in profile_summaries))
+            self.assertTrue(any("cross_session" in item.get("source_session_continuities", []) for item in profile_summaries))
+
     def test_lightweight_async_ingest_threshold_defaults_to_auto_batch_for_messages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-async-default-threshold.jsonl")
