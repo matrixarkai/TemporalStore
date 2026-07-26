@@ -1548,6 +1548,30 @@ class MatrixArkLocalAdapter:
                     if str(record.get("entity_type") or "").strip()
                 }
             )
+            source_roles = sorted(
+                {
+                    str(role).strip()
+                    for record in entity_states
+                    for role in (record.get("source_roles") if isinstance(record.get("source_roles"), list) else [])
+                    if str(role or "").strip()
+                }
+            )
+            source_hook_types = sorted(
+                {
+                    str(hook_type).strip()
+                    for record in entity_states
+                    for hook_type in (record.get("source_hook_types") if isinstance(record.get("source_hook_types"), list) else [])
+                    if str(hook_type or "").strip()
+                }
+            )
+            source_codex_events = sorted(
+                {
+                    str(codex_event).strip()
+                    for record in entity_states
+                    for codex_event in (record.get("source_codex_events") if isinstance(record.get("source_codex_events"), list) else [])
+                    if str(codex_event or "").strip()
+                }
+            )
             source_operator_hashes = [
                 int(record.get("compression_id_hash") or record.get("ref_hash"))
                 for record in operator_states
@@ -1597,6 +1621,9 @@ class MatrixArkLocalAdapter:
                         "source_summary_hashes": source_summary_hashes,
                         "source_entity_hashes": source_entity_hashes,
                         "source_entity_types": source_entity_types,
+                        "source_roles": source_roles,
+                        "source_hook_types": source_hook_types,
+                        "source_codex_events": source_codex_events,
                         "source_operator_hashes": source_operator_hashes,
                         "summary_generation_policy": summary_policy,
                         "dirty_hash": dirty.get("dirty_hash"),
@@ -1659,6 +1686,11 @@ class MatrixArkLocalAdapter:
                         "source_summary_hashes": source_summary_hashes,
                         "source_event_count": len(source_event_ids),
                         "source_summary_count": len(source_summary_hashes),
+                        "source_entity_count": len(source_entity_hashes),
+                        "source_entity_types": source_entity_types,
+                        "source_roles": source_roles,
+                        "source_hook_types": source_hook_types,
+                        "source_codex_events": source_codex_events,
                         "generated_summary_types": [spec[0] for spec in summary_specs],
                         "summary_generation_policy": l1_policy,
                         "time_compression_policy": {
@@ -1686,6 +1718,9 @@ class MatrixArkLocalAdapter:
                     "source_summary_count": len(source_summary_hashes),
                     "source_entity_count": len(source_entity_hashes),
                     "source_entity_types": source_entity_types,
+                    "source_roles": source_roles,
+                    "source_hook_types": source_hook_types,
+                    "source_codex_events": source_codex_events,
                     "source_operator_count": len(source_operator_hashes),
                     "generated_summary_types": [spec[0] for spec in summary_specs],
                     "summary_generation_policy": l1_policy,
