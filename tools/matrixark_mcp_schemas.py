@@ -29,6 +29,16 @@ MESSAGE_SCHEMA: Json = {
     "additionalProperties": True,
 }
 
+EXTRACTION_PHASE_SCHEMA: Json = {
+    "type": "string",
+    "enum": ["provisional", "final", "standalone"],
+    "description": (
+        "Memory extraction phase. provisional is for threshold/idle live checkpoints that may be "
+        "merged or superseded at Stop; final marks a session/task boundary; standalone is for "
+        "explicit non-session batch extraction."
+    ),
+}
+
 SCOPE_SCHEMA: Json = {
     "type": "object",
     "description": "Optional memory scope. Local mode defaults account_id to acct_local, tenant_id to the agent name, and user_id to the local OS account when omitted. Send user_id or session_id when the host agent knows them; both together give the best user and thread grouping.",
@@ -352,6 +362,11 @@ TOOLS: list[Json] = [
                     "type": "integer",
                     "description": "Optional cap for how many pending raw events to commit in this batch. Threshold/rolling commits default to threshold_messages.",
                 },
+                "extraction_phase": EXTRACTION_PHASE_SCHEMA,
+                "final_session_boundary": {
+                    "type": "boolean",
+                    "description": "Set true when this commit is the final semantic boundary for the session/task. Stop/hook_boundary force commits set this automatically.",
+                },
             },
             "additionalProperties": True,
         },
@@ -455,6 +470,21 @@ TOOLS: list[Json] = [
                     "minimum": 0,
                     "description": "Optional extra reserve subtracted from the remote MatrixArk budget so agent-local context and prompt scaffolding do not overflow the shared context budget. Defaults to 5% of max_context_tokens capped at 512.",
                 },
+                "include_retrieval_metrics": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, include compact retrieval metrics such as remote budget, selected ref count, scanned records, cache/pushdown evidence, and drop counters.",
+                },
+                "include_retrieval_debug": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, return the full debug ContextPack instead of the compact prompt-facing pack. Use for audits/tests, not normal prompt assembly.",
+                },
+                "debug_context_pack": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Alias for include_retrieval_debug.",
+                },
                 "reference_time_ms": {
                     "type": "integer",
                     "description": "Optional retrieval clock for deterministic tests and replay.",
@@ -513,6 +543,11 @@ TOOLS: list[Json] = [
                     "type": "boolean",
                     "default": False,
                     "description": "Force one-pass extraction even when the batch is below threshold.",
+                },
+                "extraction_phase": EXTRACTION_PHASE_SCHEMA,
+                "final_session_boundary": {
+                    "type": "boolean",
+                    "description": "True when this batch represents the final semantic boundary for its session/task; false for threshold/idle provisional checkpoints.",
                 },
                 "segment_provider": {
                     "type": "string",
