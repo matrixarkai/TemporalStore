@@ -57,6 +57,7 @@ def main() -> int:
     memory_prompt_tokens = sum_numeric_column(rows, "memory_prompt_tokens")
     memory_chars = sum_numeric_column(rows, "memory_chars")
     retrieved_uri_counts = [retrieved_uri_count(row) for row in rows]
+    answer_in_context = [context_contains_answer(row) for row in rows]
     source_tokens = sum(source_tokens_for_row(row, source_tokens_by_sample) for row in rows)
     archive_fallback_used = any("session_archive_fallback" in str(row.get("tools_used_names") or "") for row in rows)
     blockers = []
@@ -68,6 +69,8 @@ def main() -> int:
         blockers.append("openviking_token_usage_missing")
     if case_count and max(retrieved_uri_counts, default=0) <= 0:
         blockers.append("openviking_retrieved_uris_empty")
+    if case_count and sum(1 for hit in answer_in_context if hit) < case_count:
+        blockers.append("openviking_context_missing_expected_answer")
     if archive_fallback_used:
         blockers.append("openviking_session_archive_fallback_used")
     if args.paper_min_cases and case_count < args.paper_min_cases:
@@ -96,6 +99,8 @@ def main() -> int:
         "openviking_memory_chars": memory_chars,
         "openviking_retrieved_uri_count_avg": safe_div(sum(retrieved_uri_counts), case_count),
         "openviking_retrieved_uri_count_max": max(retrieved_uri_counts, default=0),
+        "benchmark_context_answer_coverage": safe_div(sum(1 for hit in answer_in_context if hit), case_count),
+        "openviking_context_missing_expected_answer_count": sum(1 for hit in answer_in_context if not hit),
         "openviking_session_archive_fallback_used": archive_fallback_used,
         "benchmark_model_contract": model_contract(args),
         "paper_comparable_claim_ready": False,
@@ -202,6 +207,20 @@ def answer_matches(expected: str, actual: str) -> bool:
     if not expected_terms:
         return False
     return len(expected_terms & actual_terms) / len(expected_terms) >= 0.8
+
+
+def context_contains_answer(row: dict[str, str]) -> bool:
+    expected = str(row.get("answer") or "")
+    context = str(row.get("model_input_prompt") or row.get("memory_prompt") or row.get("context") or "")
+    expected_norm = normalize(expected)
+    context_norm = normalize(context)
+    if not expected_norm:
+        return False
+    if expected_norm in context_norm:
+        return True
+    if re.search(r"\d", expected_norm):
+        return False
+    return answer_matches(expected, context)
 
 
 def normalize(value: str) -> str:
@@ -322,6 +341,7 @@ def summarize_row(row: dict[str, str], index: int) -> dict[str, Any]:
         "expected_answer": row.get("answer", ""),
         "reader_answer": row.get("response", ""),
         "reader_hit": reader_hit(row),
+        "expected_answer_in_context": context_contains_answer(row),
         "result": row.get("result", ""),
         "time_cost_seconds": to_float(row.get("time_cost")),
         "evidence": row.get("evidence", ""),
