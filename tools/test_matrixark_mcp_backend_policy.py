@@ -3743,6 +3743,41 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertGreaterEqual(dropped["low_score"], 1)
         self.assertEqual(dropped["cross_session_policy"]["selected_ref_count"], 1)
 
+    def test_user_profile_entities_match_same_user_across_sessions(self) -> None:
+        record = {
+            "record_type": "context_entity",
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "access_scope": {
+                "account_id": "acct_memory",
+                "tenant_id": "tenant_memory",
+                "user_id": "user_memory",
+            },
+        }
+
+        self.assertTrue(
+            mcp_core.access_scope_matches_before_scoring(
+                record,
+                {
+                    "account_id": "acct_memory",
+                    "tenant_id": "tenant_memory",
+                    "user_id": "user_memory",
+                    "session_id": "new_session",
+                },
+            )
+        )
+        self.assertFalse(
+            mcp_core.access_scope_matches_before_scoring(
+                record,
+                {
+                    "account_id": "acct_memory",
+                    "tenant_id": "tenant_memory",
+                    "user_id": "other_user",
+                    "session_id": "new_session",
+                },
+            )
+        )
+
     def test_shared_context_budget_caps_shared_resources_and_skills(self) -> None:
         capped_policy = mcp_core.build_shared_context_policy(
             {

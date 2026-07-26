@@ -137,6 +137,102 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(row.get("context_event_parent_hash") in segment_hashes for row in events))
             self.assertTrue(all(str(row.get("event_time_key", "")).startswith(str(row.get("event_time_ms", 0)).zfill(20)) for row in events))
 
+    def test_batch_extract_promotes_session_entities_to_cross_session_profile_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-memory.jsonl")
+            result = adapter.batch_extract(
+                {
+                    "scope": {
+                        "account_id": "acct_profile",
+                        "tenant_id": "tenant_profile",
+                        "user_id": "user_profile",
+                        "session_id": "session_codex_1",
+                    },
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                "I prefer no external Codex hook logs outside TemporalStore. "
+                                "We will batch user prompts and assistant decisions for extraction."
+                            ),
+                        },
+                        {
+                            "role": "assistant",
+                            "content": "Done. Commit d0152479 pushed; the Rust hook daemon log is /dev/null.",
+                        },
+                    ],
+                    "force": True,
+                }
+            )
+
+            self.assertGreaterEqual(result.get("entities_written", 0), 1)
+            self.assertEqual(result.get("entities_written"), result.get("profile_entities_written"))
+            records = adapter.read_all()
+            session_entities = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "session"
+                and record.get("session_continuity") == "same_session"
+            ]
+            profile_entities = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
+            ]
+            self.assertTrue(session_entities)
+            self.assertEqual(len(session_entities), len(profile_entities))
+            profile_entity = profile_entities[0]
+            self.assertEqual(
+                {"account_id": "acct_profile", "tenant_id": "tenant_profile", "user_id": "user_profile"},
+                profile_entity["access_scope"],
+            )
+            self.assertEqual(["session_codex_1"], profile_entity["source_session_ids"])
+            self.assertTrue(profile_entity["source_entity_hashes"])
+            self.assertTrue(profile_entity["source_refs"])
+            index_names = {
+                record.get("index_name")
+                for record in records
+                if record.get("record_type") == "context_index"
+                and record.get("data_model") == "context_profile_entity"
+            }
+            self.assertIn("memory_scope:user_profile", index_names)
+            self.assertIn("session_continuity:cross_session", index_names)
+            self.assertTrue(any(str(name).startswith("entity_type:") for name in index_names))
+            retrieved = adapter.retrieval_records(
+                scope={
+                    "account_id": "acct_profile",
+                    "tenant_id": "tenant_profile",
+                    "user_id": "user_profile",
+                    "session_id": "later_session",
+                    "session_scope": "prefer",
+                },
+                record_types={"context_entity"},
+            )
+            retrieved_profile_entities = [
+                record
+                for record in retrieved["records"]
+                if record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
+            ]
+            self.assertTrue(retrieved_profile_entities)
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_summary_dirty"
+                    and record.get("dirty_reason") == "profile_entity_promoted"
+                    for record in records
+                )
+            )
+            self.assertFalse(
+                any(
+                    record.get("record_type") == "context_summary"
+                    and record.get("node_path") == ["tenant:tenant_profile", "user:user_profile", "profile:long_term_memory"]
+                    for record in records
+                )
+            )
+
     def test_async_resource_import_uses_bounded_worker_queue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, mock.patch.dict(
             os.environ,
