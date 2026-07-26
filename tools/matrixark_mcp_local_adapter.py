@@ -406,11 +406,25 @@ class MatrixArkLocalAdapter:
         rerank = recall_policy.get("rerank", {}) if isinstance(recall_policy.get("rerank"), dict) else {}
         time_weighted = recall_policy.get("time_weighted_recall", {}) if isinstance(recall_policy.get("time_weighted_recall"), dict) else {}
         dropped_refs = pack.get("dropped_refs", {}) if isinstance(pack.get("dropped_refs"), dict) else {}
-        dropped_ref_count = int(dropped_refs.get("dropped_ref_count") or 0)
+        metric_bucket_counts = (
+            retrieval_metrics.get("dropped_ref_bucket_counts")
+            if isinstance(retrieval_metrics.get("dropped_ref_bucket_counts"), dict)
+            else {}
+        )
+        dropped_ref_bucket_counts = {
+            str(key): int(value)
+            for key, value in (
+                metric_bucket_counts.items()
+                if metric_bucket_counts
+                else ((key, value) for key, value in dropped_refs.items() if isinstance(value, int))
+            )
+            if str(key) != "deadline_exceeded" and int(value) > 0
+        }
+        dropped_ref_count = int(retrieval_metrics.get("dropped_refs") or dropped_refs.get("dropped_ref_count") or 0)
         if not dropped_ref_count and isinstance(dropped_refs.get("refs"), list):
             dropped_ref_count = len(dropped_refs.get("refs") or [])
         if not dropped_ref_count:
-            dropped_ref_count = sum(value for key, value in dropped_refs.items() if isinstance(value, int) and key not in {"deadline_exceeded"})
+            dropped_ref_count = sum(dropped_ref_bucket_counts.values())
         record = {
             "record_type": "context_pack_telemetry",
             "context_pack_id": pack.get("context_pack_id", ""),
@@ -422,7 +436,11 @@ class MatrixArkLocalAdapter:
             "selected_ref_count": len(pack.get("selected_refs", []) or []),
             "selected_ref_counts": pack.get("selected_ref_counts", {}),
             "dropped_ref_count": dropped_ref_count,
-            "dropped_ref_bucket_counts": {k: v for k, v in dropped_refs.items() if isinstance(v, int)},
+            "dropped_ref_bucket_counts": dropped_ref_bucket_counts,
+            "stale_dropped_refs": int(
+                retrieval_metrics.get("stale_dropped_refs")
+                or dropped_ref_bucket_counts.get("stale", 0)
+            ),
             "used_local_context_tokens": pack.get("used_local_context_tokens", 0),
             "used_remote_context_tokens": pack.get("used_remote_context_tokens", 0),
             "total_prompt_context_tokens": pack.get("total_prompt_context_tokens", 0),
@@ -2189,6 +2207,29 @@ class MatrixArkLocalAdapter:
                 )
             elif table == "context_packs" and record_type in {"context_pack_audit", "context_pack_telemetry"}:
                 dropped_refs = record.get("dropped_refs", {})
+                dropped_ref_bucket_counts = (
+                    record.get("dropped_ref_bucket_counts")
+                    if isinstance(record.get("dropped_ref_bucket_counts"), dict)
+                    else {
+                        key: value
+                        for key, value in dropped_refs.items()
+                        if isinstance(dropped_refs, dict)
+                        and isinstance(value, int)
+                        and key != "deadline_exceeded"
+                        and value > 0
+                    }
+                )
+                dropped_ref_count = (
+                    len(dropped_refs.get("refs", []))
+                    if record_type == "context_pack_audit"
+                    and isinstance(dropped_refs, dict)
+                    and isinstance(dropped_refs.get("refs"), list)
+                    else record.get("dropped_ref_count", 0)
+                )
+                if not dropped_ref_count:
+                    dropped_ref_count = sum(
+                        int(value) for value in dropped_ref_bucket_counts.values() if isinstance(value, int)
+                    )
                 memory_layer_budget = record.get("memory_layer_budget")
                 if not isinstance(memory_layer_budget, dict):
                     recall_policy = record.get("recall_policy", {}) if isinstance(record.get("recall_policy"), dict) else {}
@@ -2209,7 +2250,9 @@ class MatrixArkLocalAdapter:
                         "remote_context_budget_tokens": record.get("remote_context_budget_tokens", 0),
                         "requested_max_context_tokens": record.get("requested_max_context_tokens", 0),
                         "selected_ref_count": len(record.get("selected_refs", [])) if record_type == "context_pack_audit" else record.get("selected_ref_count", 0),
-                        "dropped_ref_count": len(dropped_refs.get("refs", [])) if record_type == "context_pack_audit" and isinstance(dropped_refs, dict) else record.get("dropped_ref_count", 0),
+                        "dropped_ref_count": dropped_ref_count,
+                        "dropped_ref_bucket_counts": dropped_ref_bucket_counts,
+                        "stale_dropped_refs": int(record.get("stale_dropped_refs") or dropped_ref_bucket_counts.get("stale", 0)),
                         "memory_layer_budget": memory_layer_budget,
                         "retrieval_request_metadata": retrieval_request_metadata,
                         "retrieval_source": retrieval_request_metadata.get("retrieval_source", retrieval_request_metadata.get("source", "")),
@@ -6347,6 +6390,7 @@ class MatrixArkLocalAdapter:
                             "selected_ref_counts",
                             "dropped_ref_count",
                             "dropped_ref_bucket_counts",
+                            "stale_dropped_refs",
                             "used_local_context_tokens",
                             "used_remote_context_tokens",
                             "total_prompt_context_tokens",
