@@ -5010,6 +5010,7 @@ class MatrixArkLocalAdapter:
                 candidate_metadata.update(record_metadata)
             if isinstance(envelope_metadata, dict):
                 candidate_metadata.update(envelope_metadata)
+            internal_extraction = record.get("internal_extraction") if isinstance(record.get("internal_extraction"), dict) else {}
             candidate = {
                 "ref_type": "event",
                 "ref_hash": record["event_id_hash"],
@@ -5027,6 +5028,9 @@ class MatrixArkLocalAdapter:
                     else "selected by tree path, secondary indexes, and event hybrid score"
                 ),
                 "event_type": event_type,
+                "classification": record.get("classification", ""),
+                "extraction_status": record.get("status", ""),
+                "extraction_mode": internal_extraction.get("mode", ""),
                 "context_class": "resource_fact" if record.get("source_chunk_hash") else "event",
                 "source_chunk_hash": record.get("source_chunk_hash"),
                 "source_ref": record.get("source_ref", ""),

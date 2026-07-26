@@ -13,6 +13,7 @@ from unittest import mock
 from pathlib import Path
 
 import matrixark_codex_hook
+from matrixark_mcp_core import packing_sort_key
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 
 
@@ -34,6 +35,33 @@ class CountingLocalAdapter(MatrixArkLocalAdapter):
 
 
 class MatrixArkCodexHookPipelineTest(unittest.TestCase):
+    def test_pending_async_events_are_demoted_for_budget_packing(self) -> None:
+        pending_event = {
+            "ref_type": "event",
+            "event_type": "pending_async",
+            "classification": "PENDING_ASYNC_EXTRACTION",
+            "extraction_status": "pending",
+            "extraction_mode": "async_pending",
+            "score": 0.92,
+            "text": "assistant: Commit d0152479 pushed and hook pipeline tests passed.",
+        }
+        ordinary_event = {
+            **pending_event,
+            "event_type": "assistant_decision",
+            "classification": "ANSWER",
+            "extraction_status": "observed",
+            "extraction_mode": "one_pass",
+        }
+        extracted_entity = {
+            "ref_type": "entity",
+            "entity_type": "assistant_decision",
+            "score": 0.76,
+            "text": "assistant_decision Commit d0152479 pushed and hook pipeline tests passed.",
+        }
+
+        self.assertGreater(packing_sort_key(ordinary_event, "fact"), packing_sort_key(pending_event, "fact"))
+        self.assertGreater(packing_sort_key(extracted_entity, "fact"), packing_sort_key(pending_event, "fact"))
+
     def run_hook(self, repo: Path, event_log: Path, *, event: str, payload: dict, query: str = "") -> dict:
         cmd = [
             sys.executable,
