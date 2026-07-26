@@ -715,6 +715,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("tool", refreshed_profile["source_roles"])
             self.assertIn("hook_boundary", refreshed_profile["source_hook_types"])
             self.assertIn("Stop", refreshed_profile["source_codex_events"])
+            self.assertIn("user_profile", refreshed_profile["source_memory_scopes"])
+            self.assertIn("cross_session", refreshed_profile["source_session_continuities"])
+            self.assertIn("final", refreshed_profile["source_extraction_phases"])
+            self.assertGreaterEqual(refreshed_profile["source_final_session_boundary_count"], 1)
             records = adapter.read_all()
             profile_summaries = [
                 record
@@ -728,6 +732,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(any("tool" in record.get("source_roles", []) for record in profile_summaries))
             self.assertTrue(any("hook_boundary" in record.get("source_hook_types", []) for record in profile_summaries))
             self.assertTrue(any("Stop" in record.get("source_codex_events", []) for record in profile_summaries))
+            self.assertTrue(any("user_profile" in record.get("source_memory_scopes", []) for record in profile_summaries))
+            self.assertTrue(any("cross_session" in record.get("source_session_continuities", []) for record in profile_summaries))
+            self.assertTrue(any("final" in record.get("source_extraction_phases", []) for record in profile_summaries))
+            self.assertTrue(any(record.get("source_final_session_boundary_count", 0) >= 1 for record in profile_summaries))
             profile_entity_hashes_by_type = {
                 record.get("entity_type"): record.get("entity_hash")
                 for record in profile_entities
@@ -758,18 +766,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 }
             )
             self.assertLessEqual(summary_pack["used_context_tokens"], 90)
-            self.assertTrue(
-                any(
-                    ref.get("ref_type") == "summary"
-                    and "profile:long_term_memory" in str(ref.get("text") or "")
-                    for ref in summary_pack["selected_refs"]
-                )
-            )
-            summary_ref = next(ref for ref in summary_pack["selected_refs"] if ref.get("ref_type") == "summary")
-            self.assertIn("assistant", summary_ref["source_roles"])
-            self.assertIn("tool", summary_ref["source_roles"])
-            self.assertIn("hook_boundary", summary_ref["source_hook_types"])
-            self.assertIn("Stop", summary_ref["source_codex_events"])
+            summary_layer_budget = summary_pack["retrieval_metrics"]["memory_layer_budget"]
+            self.assertGreaterEqual(summary_layer_budget["by_memory_scope"]["user_profile"]["refs"], 1)
+            self.assertGreaterEqual(summary_layer_budget["by_session_continuity"]["cross_session"]["refs"], 1)
+            self.assertGreaterEqual(summary_layer_budget["by_extraction_phase"]["final"]["refs"], 1)
+            self.assertGreaterEqual(summary_layer_budget["final_session_boundary_ref_count"], 1)
 
     def test_async_resource_import_uses_bounded_worker_queue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, mock.patch.dict(

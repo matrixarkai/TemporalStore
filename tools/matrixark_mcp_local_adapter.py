@@ -1619,6 +1619,32 @@ class MatrixArkLocalAdapter:
                     if str(codex_event or "").strip()
                 }
             )
+            source_memory_scopes = sorted(
+                {
+                    str(record.get("memory_scope") or "").strip()
+                    for record in entity_states + child_summaries
+                    if str(record.get("memory_scope") or "").strip()
+                }
+            )
+            source_session_continuities = sorted(
+                {
+                    str(record.get("session_continuity") or "").strip()
+                    for record in entity_states + child_summaries
+                    if str(record.get("session_continuity") or "").strip()
+                }
+            )
+            source_extraction_phases = sorted(
+                {
+                    str(record.get("extraction_phase") or "").strip()
+                    for record in entity_states + child_summaries + events
+                    if str(record.get("extraction_phase") or "").strip()
+                }
+            )
+            source_final_session_boundary_count = sum(
+                1
+                for record in entity_states + child_summaries + events
+                if bool(record.get("final_session_boundary"))
+            )
             source_operator_hashes = [
                 int(record.get("compression_id_hash") or record.get("ref_hash"))
                 for record in operator_states
@@ -1671,6 +1697,14 @@ class MatrixArkLocalAdapter:
                         "source_roles": source_roles,
                         "source_hook_types": source_hook_types,
                         "source_codex_events": source_codex_events,
+                        "source_memory_scopes": source_memory_scopes,
+                        "source_session_continuities": source_session_continuities,
+                        "source_extraction_phases": source_extraction_phases,
+                        "source_final_session_boundary_count": source_final_session_boundary_count,
+                        "memory_scope": "user_profile" if "user_profile" in source_memory_scopes else ("session" if "session" in source_memory_scopes else ""),
+                        "session_continuity": "cross_session" if "cross_session" in source_session_continuities else ("same_session" if "same_session" in source_session_continuities else ""),
+                        "extraction_phase": "final" if "final" in source_extraction_phases else ("provisional" if "provisional" in source_extraction_phases else ""),
+                        "final_session_boundary": source_final_session_boundary_count > 0,
                         "source_operator_hashes": source_operator_hashes,
                         "summary_generation_policy": summary_policy,
                         "dirty_hash": dirty.get("dirty_hash"),
@@ -1738,6 +1772,10 @@ class MatrixArkLocalAdapter:
                         "source_roles": source_roles,
                         "source_hook_types": source_hook_types,
                         "source_codex_events": source_codex_events,
+                        "source_memory_scopes": source_memory_scopes,
+                        "source_session_continuities": source_session_continuities,
+                        "source_extraction_phases": source_extraction_phases,
+                        "source_final_session_boundary_count": source_final_session_boundary_count,
                         "generated_summary_types": [spec[0] for spec in summary_specs],
                         "summary_generation_policy": l1_policy,
                         "time_compression_policy": {
@@ -1768,6 +1806,10 @@ class MatrixArkLocalAdapter:
                     "source_roles": source_roles,
                     "source_hook_types": source_hook_types,
                     "source_codex_events": source_codex_events,
+                    "source_memory_scopes": source_memory_scopes,
+                    "source_session_continuities": source_session_continuities,
+                    "source_extraction_phases": source_extraction_phases,
+                    "source_final_session_boundary_count": source_final_session_boundary_count,
                     "source_operator_count": len(source_operator_hashes),
                     "generated_summary_types": [spec[0] for spec in summary_specs],
                     "summary_generation_policy": l1_policy,
@@ -5140,6 +5182,14 @@ class MatrixArkLocalAdapter:
                             "source_roles": record.get("source_roles", []),
                             "source_hook_types": record.get("source_hook_types", []),
                             "source_codex_events": record.get("source_codex_events", []),
+                            "source_memory_scopes": record.get("source_memory_scopes", []),
+                            "source_session_continuities": record.get("source_session_continuities", []),
+                            "source_extraction_phases": record.get("source_extraction_phases", []),
+                            "source_final_session_boundary_count": record.get("source_final_session_boundary_count", 0),
+                            "memory_scope": record.get("memory_scope", ""),
+                            "session_continuity": record.get("session_continuity", ""),
+                            "extraction_phase": record.get("extraction_phase", ""),
+                            "final_session_boundary": bool(record.get("final_session_boundary", False)),
                             "access_decision": "allowed_by_registry_scope_before_scoring",
                             "access_scope": candidate_access_scope(record),
                             "scope": candidate_access_scope(record),
