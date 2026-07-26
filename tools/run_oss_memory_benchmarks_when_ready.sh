@@ -71,7 +71,7 @@ export TEMPORALSTORE_BENCHMARK_REPORT_DIR="${ARCHIVE_DIR}"
 export TEMPORALSTORE_LOCOMO_INPUT="${LOC_INPUT}"
 export TEMPORALSTORE_LONGMEMEVAL_INPUT="${LONGMEM_INPUT}"
 
-"${ROOT}/tools/run_context_benchmarks_oss_reader_endpoint.sh"
+bash "${ROOT}/tools/run_context_benchmarks_oss_reader_endpoint.sh"
 
 if [[ -f "${LOC_INPUT}" && -f "${OPENVIKING_ARCHIVE}" ]]; then
   python3 "${ROOT}/tools/run_openviking_direct_retrieval_baseline.py" \
