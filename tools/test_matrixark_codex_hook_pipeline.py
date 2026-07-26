@@ -740,6 +740,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     for ref in summary_pack["selected_refs"]
                 )
             )
+            summary_ref = next(ref for ref in summary_pack["selected_refs"] if ref.get("ref_type") == "summary")
+            self.assertIn("assistant", summary_ref["source_roles"])
+            self.assertIn("tool", summary_ref["source_roles"])
+            self.assertIn("hook_boundary", summary_ref["source_hook_types"])
+            self.assertIn("Stop", summary_ref["source_codex_events"])
 
     def test_async_resource_import_uses_bounded_worker_queue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, mock.patch.dict(
