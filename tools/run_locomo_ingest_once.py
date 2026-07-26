@@ -1760,6 +1760,8 @@ class BenchmarkReader:
         return "deterministic"
 
     def open_source_answer_with_wall_timeout(self, question: str, blocks: list[dict[str, str]]) -> str:
+        if shutil.which("curl"):
+            return self.open_source_answer(question, blocks)
         if not hasattr(signal, "SIGALRM"):
             return self.open_source_answer(question, blocks)
         previous_handler = signal.getsignal(signal.SIGALRM)
