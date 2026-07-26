@@ -329,12 +329,34 @@ def retrieval_memory_hierarchy_contract_from_retrieve(pack: Json | None) -> Json
     }
 
 
+def session_commit_memory_layers_written(commit: Json | None) -> Json:
+    if not isinstance(commit, dict) or not commit:
+        return {}
+    entities_written = _int_field(commit, "entities_written")
+    profile_entities_written = _int_field(commit, "profile_entities_written")
+    session_entities_written = max(0, entities_written - profile_entities_written)
+    memory_layers_written: Json = {
+        "session_entities": session_entities_written,
+        "profile_entities": profile_entities_written,
+        "same_session_entities": session_entities_written,
+        "cross_session_entities": profile_entities_written,
+        "extraction_phase": commit.get("extraction_phase"),
+        "final_session_boundary": commit.get("final_session_boundary"),
+    }
+    return {
+        key: value
+        for key, value in memory_layers_written.items()
+        if value not in (None, "", [], {})
+    }
+
+
 def session_commit_summary(commit: Json | None) -> Json:
     if not isinstance(commit, dict) or not commit:
         return {}
     trigger_evidence = commit.get("trigger_evidence") if isinstance(commit.get("trigger_evidence"), dict) else {}
     entities_written = _int_field(commit, "entities_written")
     profile_entities_written = _int_field(commit, "profile_entities_written")
+    session_entities_written = max(0, entities_written - profile_entities_written)
     summary: Json = {
         "status": commit.get("status"),
         "commit_id_hash": commit.get("commit_id_hash"),
@@ -346,8 +368,9 @@ def session_commit_summary(commit: Json | None) -> Json:
         "extraction_context_event_count": commit.get("extraction_context_event_count", 0),
         "segments_written": commit.get("segments_written", 0),
         "entities_written": entities_written,
-        "session_entities_written": max(0, entities_written - profile_entities_written),
+        "session_entities_written": session_entities_written,
         "profile_entities_written": profile_entities_written,
+        "memory_layers_written": session_commit_memory_layers_written(commit),
         "indexes_written": commit.get("indexes_written", 0),
         "index_total_cap": commit.get("index_total_cap"),
         "index_emitted_count": commit.get("index_emitted_count"),
@@ -2085,6 +2108,13 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
                 "reason": "fast_async_pre_ingest_idle_commit_failed",
                 "error": str(exc),
             }
+        if isinstance(pre_ingest_idle_commit_result, dict):
+            memory_layers_written = session_commit_memory_layers_written(pre_ingest_idle_commit_result)
+            if memory_layers_written and "memory_layers_written" not in pre_ingest_idle_commit_result:
+                pre_ingest_idle_commit_result = {
+                    **pre_ingest_idle_commit_result,
+                    "memory_layers_written": memory_layers_written,
+                }
 
     if callable(enqueue_raw):
         enqueue_raw([raw_record])
@@ -2150,6 +2180,13 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
                 "reason": "fast_async_session_commit_failed",
                 "error": str(exc),
             }
+        if isinstance(session_commit_result, dict):
+            memory_layers_written = session_commit_memory_layers_written(session_commit_result)
+            if memory_layers_written and "memory_layers_written" not in session_commit_result:
+                session_commit_result = {
+                    **session_commit_result,
+                    "memory_layers_written": memory_layers_written,
+                }
     return {
         "status": "accepted",
         "sync_write_mode": "hook_fast_async_direct_queue",
