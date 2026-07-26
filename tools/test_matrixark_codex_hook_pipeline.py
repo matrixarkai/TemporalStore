@@ -290,6 +290,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("accepted", first["status"])
             self.assertIsNone(first["auto_batch_extract_result"])
             self.assertEqual(1, first["session_buffer"]["pending_event_count"])
+            self.assertFalse(first["session_buffer"]["threshold_ready"])
+            self.assertFalse(first["session_buffer"]["idle_ready"])
 
             second = adapter.ingest(
                 {
@@ -302,6 +304,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("provisional", second["auto_batch_extract_result"]["extraction_phase"])
             self.assertFalse(second["auto_batch_extract_result"]["final_session_boundary"])
             self.assertEqual(2, second["auto_batch_extract_result"]["committed_event_count"])
+            self.assertTrue(second["session_buffer"]["threshold_ready"])
+            self.assertFalse(second["session_buffer"]["idle_ready"])
             threshold_evidence = second["auto_batch_extract_result"]["trigger_evidence"]
             self.assertTrue(threshold_evidence["threshold_ready"])
             self.assertFalse(threshold_evidence["idle_ready"])
@@ -316,6 +320,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 }
             )
             self.assertEqual(1, third["session_buffer"]["pending_event_count"])
+            self.assertFalse(third["session_buffer"]["threshold_ready"])
+            self.assertFalse(third["session_buffer"]["idle_ready"])
             idle = adapter.session_commit(
                 {
                     "scope": scope,

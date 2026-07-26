@@ -51,6 +51,88 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             except ValueError:
                 pass
 
+    def test_modular_async_ingest_reports_session_buffer_readiness(self) -> None:
+        async_mod = importlib.import_module("tools.matrixark_mcp_async_ingest")
+
+        class Batch:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class Target:
+            def __init__(self) -> None:
+                self.records = []
+                self.pending = []
+                self.commit_calls = []
+
+            def auto_batch_extract_enabled(self, args, *, kind):
+                return bool(args.get("auto_batch_extract"))
+
+            def default_session_node_path(self, scope):
+                return ["tenant:t", "user:u", f"session:{scope['session_id']}"]
+
+            def ensure_context_node_path(self, **kwargs):
+                return {"created": True}
+
+            def write_batch(self, _name):
+                return Batch()
+
+            def mark_node_summary_dirty(self, **_kwargs):
+                return [10]
+
+            def append(self, record):
+                self.records.append(record)
+
+            def session_buffer_enabled(self, args, *, kind):
+                return True
+
+            def append_session_buffer_event(self, **kwargs):
+                self.pending.append({"event_id_hash": kwargs["event_id_hash"], "envelope": kwargs["envelope"]})
+
+            def pending_session_events(self, _scope):
+                return list(self.pending)
+
+            def session_boundary_commit_requested(self, args, *, hook=None):
+                return False
+
+            def session_commit(self, args, *, hook=None):
+                self.commit_calls.append(args)
+                self.pending.clear()
+                return {"status": "committed", "trigger_policy": "threshold"}
+
+        target = Target()
+        envelope = {
+            "kind": "message",
+            "scope": {
+                "account_id": "acct",
+                "tenant_id": "tenant",
+                "user_id": "user",
+                "session_id": "session",
+            },
+            "metadata": {},
+            "messages": [{"role": "user", "content": "first live message"}],
+            "ingestion_time_ms": 123,
+            "storage_options": {},
+            "storage_route": {},
+        }
+        args = {"async_processing": True, "auto_batch_extract": True, "session_buffer_threshold": 2}
+
+        first = async_mod.lightweight_async_accept(target, args, envelope=envelope, hook=None, idle_commit_result={})
+        self.assertFalse(first["session_buffer"]["threshold_ready"])
+        self.assertFalse(first["session_buffer"]["idle_ready"])
+        self.assertEqual(1, first["session_buffer"]["pending_event_count"])
+        self.assertIsNone(first["auto_batch_extract_result"])
+
+        second_envelope = {**envelope, "messages": [{"role": "assistant", "content": "second live message"}], "ingestion_time_ms": 124}
+        second = async_mod.lightweight_async_accept(target, args, envelope=second_envelope, hook=None, idle_commit_result={})
+        self.assertTrue(second["session_buffer"]["threshold_ready"])
+        self.assertFalse(second["session_buffer"]["idle_ready"])
+        self.assertEqual(2, second["session_buffer"]["pending_event_count"])
+        self.assertEqual("committed", second["auto_batch_extract_result"]["status"])
+        self.assertEqual(1, len(target.commit_calls))
+
 
     def test_mcp_entrypoint_reexports_split_modules(self) -> None:
         server_mod = importlib.import_module("tools.matrixark_mcp_server")
