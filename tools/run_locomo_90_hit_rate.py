@@ -65,6 +65,7 @@ def main() -> int:
     parser.add_argument("--rust-temporalstore-score-tolerance", type=float, default=0.0)
     parser.add_argument("--rust-temporalstore-jsonl", default="")
     parser.add_argument("--rust-temporalstore-report", default="")
+    parser.add_argument("--reuse-rust-temporalstore-report", action="store_true")
     parser.add_argument(
         "--require-full-rust-temporalstore-replay",
         action="store_true",
@@ -155,6 +156,8 @@ def main() -> int:
         if args.rust_temporalstore_jsonl:
             command.extend(["--rust-temporalstore-jsonl", args.rust_temporalstore_jsonl])
         command.extend(["--rust-temporalstore-report", rust_report_path])
+        if args.reuse_rust_temporalstore_report:
+            command.append("--reuse-rust-temporalstore-report")
     elif args.allow_python_only_diagnostic:
         command.extend(["--skip-rust-temporalstore", "--allow-python-only-diagnostic"])
     if thresholds["require_open_source_reader"]:
