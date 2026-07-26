@@ -14,6 +14,7 @@ from unittest import mock
 from pathlib import Path
 
 import matrixark_codex_hook
+from matrixark_mcp_context_pack import compact_context_pack_for_serving
 from matrixark_mcp_core import packing_sort_key
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 
@@ -788,6 +789,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "session_id": "later_session",
                     },
                     "session_scope": "prefer",
+                    "question_type": "broad_exploration",
                     "query": "Summarize long term memory about assistant decisions and tool evidence.",
                     "max_context_tokens": 90,
                     "audit_mode": "off",
@@ -803,6 +805,48 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(summary_layer_budget["by_source_role"]["assistant"]["refs"], 1)
             self.assertGreaterEqual(summary_layer_budget["by_hook_type"]["hook_boundary"]["refs"], 1)
             self.assertGreaterEqual(summary_layer_budget["final_session_boundary_ref_count"], 1)
+            serving_summary_pack = compact_context_pack_for_serving(summary_pack)
+            served_items = [
+                item
+                for group in serving_summary_pack.get("groups", [])
+                for item in group.get("items", [])
+            ]
+            self.assertTrue(served_items, serving_summary_pack)
+            self.assertTrue(any(item.get("memory_scope") == "user_profile" for item in served_items))
+            self.assertTrue(any(item.get("final_session_boundary") is True for item in served_items))
+            summary_serving_pack = compact_context_pack_for_serving(
+                {
+                    "context_pack_id": "profile-summary-lineage",
+                    "selected_refs": [
+                        {
+                            "ref_type": "summary",
+                            "context_class": "summary",
+                            "text": record.get("summary_text", ""),
+                            "summary_type": record.get("summary_type"),
+                            "memory_scope": record.get("memory_scope"),
+                            "session_continuity": record.get("session_continuity"),
+                            "extraction_phase": record.get("extraction_phase"),
+                            "final_session_boundary": record.get("final_session_boundary"),
+                            "source_memory_scopes": record.get("source_memory_scopes", []),
+                            "source_session_continuities": record.get("source_session_continuities", []),
+                            "source_extraction_phases": record.get("source_extraction_phases", []),
+                            "source_final_session_boundary_count": record.get("source_final_session_boundary_count", 0),
+                        }
+                        for record in profile_summaries
+                    ],
+                }
+            )
+            summary_items = [
+                item
+                for group in summary_serving_pack.get("groups", [])
+                if group.get("type") == "summary"
+                for item in group.get("items", [])
+            ]
+            self.assertTrue(any(item.get("memory_scope") == "user_profile" for item in summary_items))
+            self.assertTrue(any("user_profile" in item.get("source_memory_scopes", []) for item in summary_items))
+            self.assertTrue(any("cross_session" in item.get("source_session_continuities", []) for item in summary_items))
+            self.assertTrue(any("final" in item.get("source_extraction_phases", []) for item in summary_items))
+            self.assertTrue(any(item.get("final_session_boundary") is True for item in summary_items))
 
     def test_profile_entity_updates_preserve_cross_session_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

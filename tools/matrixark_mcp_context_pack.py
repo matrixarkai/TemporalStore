@@ -413,8 +413,11 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
         ("entity_name", "entity"),
         ("operator", "operator"),
         ("summary_type", "summary_type"),
+        ("memory_scope", "memory_scope"),
+        ("extraction_phase", "extraction_phase"),
         ("resource_version", "version"),
         ("version_state", "version_state"),
+        ("source_final_session_boundary_count", "source_final_session_boundary_count"),
     ]
     for field, alias in optional_field_aliases:
         value = ref.get(field, metadata.get(field))
@@ -423,6 +426,19 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
     session_continuity = str(ref.get("session_continuity") or metadata.get("session_continuity") or "")
     if session_continuity and session_continuity != default_session_continuity:
         item["session_continuity"] = session_continuity
+    if bool(ref.get("final_session_boundary") or metadata.get("final_session_boundary")):
+        item["final_session_boundary"] = True
+    for field in [
+        "source_roles",
+        "source_hook_types",
+        "source_codex_events",
+        "source_memory_scopes",
+        "source_session_continuities",
+        "source_extraction_phases",
+    ]:
+        value = ref.get(field, metadata.get(field))
+        if isinstance(value, list) and value:
+            item[field] = value[:8]
     return item
 
 
