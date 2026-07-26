@@ -1302,6 +1302,22 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 prompt_replay_telemetry[-1]["retrieval_request_metadata"]["retrieval_source"],
             )
             self.assertIn("memory_layer_budget", prompt_replay_telemetry[-1])
+            context_pack_dashboard = MatrixArkLocalAdapter(event_log).ingestion_dashboard(
+                {"scope": telemetry["scope"], "table": "context_packs", "page_size": 5}
+            )
+            dashboard_rows = [
+                row
+                for row in context_pack_dashboard["rows"]
+                if row.get("context_pack_id") == msg["retrieve"]["context_pack_id"]
+            ]
+            self.assertTrue(dashboard_rows, context_pack_dashboard)
+            dashboard_row = dashboard_rows[-1]
+            self.assertEqual("context_pack_telemetry", dashboard_row["row_type"])
+            self.assertEqual("codex_hook_retrieve", dashboard_row["retrieval_source"])
+            self.assertEqual("UserPromptSubmit", dashboard_row["codex_event"])
+            self.assertEqual("before_llm_retrieve", dashboard_row["lifecycle_stage"])
+            self.assertGreater(dashboard_row["remote_context_budget_tokens"], 0)
+            self.assertIn("memory_layer_budget", dashboard_row)
 
             resource_result = self.run_hook(
                 repo,
