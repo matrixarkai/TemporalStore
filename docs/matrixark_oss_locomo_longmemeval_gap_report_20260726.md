@@ -18,7 +18,7 @@ This report is intentionally conservative: it records what ran locally, what imp
 - Added direct diagnostic baselines for OpenViking archived LoCoMo messages and LongMemEval source sessions so retrieval, token savings, and reader quality can be measured even while OpenViking memory extraction returns empty memory records.
 - Added an OSS reader memory-capability probe so weak/smoke readers are not accidentally used for competitive MatrixArk vs OpenViking/VikingMem claims.
 - Installed local Ollama and pulled `qwen2.5:1.5b`; verified Ollama OpenAI-compatible `/v1` serving on `127.0.0.1:11434`.
-- Tightened the OSS reader capability prompt so temporal questions require explicit date/year normalization without forcing unrelated date answers for personal-fact questions.
+- Tightened the OSS reader capability prompt so temporal questions require explicit date/year normalization and personal-fact questions copy the exact answer span, including `degree in X -> X`.
 - Propagated the same temporal/fact-safe OSS reader prompt into the MatrixArk benchmark runner and the OpenViking direct diagnostic baselines so the comparison no longer mixes reader instructions.
 - Added `tools/check_oss_model_readiness.py` so future benchmark continuations can record whether a target OSS reader is actually installed/callable before running quality gates.
 - Added `tools/run_oss_memory_benchmarks_when_ready.sh`, a fail-closed driver that runs model readiness, reader capability, MatrixArk LoCoMo/LongMemEval, and OpenViking direct diagnostic baselines only after the target OSS reader is installed and passes the reader gate.
@@ -33,7 +33,7 @@ This report is intentionally conservative: it records what ran locally, what imp
 |---|---:|---|---|
 | deepset/minilm-uncased-squad2 | `127.0.0.1:18086` | Working | Fast extractive QA diagnostic reader. |
 | Qwen/Qwen2.5-0.5B-Instruct | `127.0.0.1:18087` | Working | Local causal-LM reader; slower but exercises OSS generation path. |
-| Ollama/qwen2.5:1.5b | `127.0.0.1:11434/v1` | Working, smoke-only | Installed locally and benchmarked. Better than 0.5B on some tiny slices, but fails the reader capability quality gate and is too slow for final quality claims. |
+| Ollama/qwen2.5:1.5b | `127.0.0.1:11434/v1` | Working, gate-passed | Installed locally and passes the four-case OSS reader capability gate after extractive prompt tightening. Still smaller than the intended final Qwen 7B/14B reader. |
 | Ollama/qwen2.5:7b | n/a | Download in progress | Readiness check shows the model is not installed yet; pull through proxy reached about 1.0 GB / 4.7 GB and remains active. |
 | vLLM | n/a | Installed/importable, no live service | `vllm` imports locally, but no stable OpenAI-compatible vLLM server was used for these evidence runs. |
 
@@ -43,9 +43,11 @@ This report is intentionally conservative: it records what ran locally, what imp
 |---|---:|---:|---:|---|---|
 | deepset/minilm-uncased-squad2 | 4 | 1.000 | 742.57 ms | competitive_reader_ready | Passes the tiny temporal/personal-fact probe, but remains an extractive diagnostic reader rather than final paper-quality LLM. |
 | Qwen/Qwen2.5-0.5B-Instruct | 4 | 0.750 | 5.41 s | reader_smoke_only | Misses the relative-date LoCoMo probe by answering the conversation timestamp instead of `7 May 2023`; keep as smoke-only until a stronger Qwen/Ollama/vLLM reader is live. |
-| Ollama/qwen2.5:1.5b | 4 | 0.750 | 1.81 s | reader_smoke_only | With the tightened temporal prompt it answers the two temporal probes and one duration probe, but answers `Bachelor's degree` instead of `Business Administration`; quality remains below the 0.90 gate. |
+| Ollama/qwen2.5:1.5b | 4 | 1.000 | 1.52 s | competitive_reader_ready | Passes after the extractive degree-span instruction: `degree in X` means return `X`, not the credential level. |
 
 The gate uses four compact memory QA probes: two LoCoMo temporal questions and two LongMemEval-style personal facts. Default readiness requires at least 0.90 hit rate and p95 under 30 seconds. This does not replace full benchmark scoring; it prevents weak local readers from being mistaken for competitive evidence.
+
+The local full input files are `/root/matrixark_benchmarks/data/locomo10.json` and `/root/matrixark_benchmarks/data/longmemeval_s_cleaned_official_hf.json`. The local LoCoMo file contains 10 conversations and 1,986 QA cases; LongMemEval_s contains 500 records. The default `/tmp/locomo10.json` and `/tmp/longmemeval_s.json` paths are not present in this environment, so benchmark launches must point at the canonical `/root/matrixark_benchmarks/data` files.
 
 ## MatrixArk Results Collected
 
