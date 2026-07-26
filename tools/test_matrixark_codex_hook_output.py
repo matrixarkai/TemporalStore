@@ -274,6 +274,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 "requested_max_context_tokens": 160,
                 "local_context_safety_margin_tokens": 4,
                 "budget_source": "agent_provided_max_context_tokens",
+                "selected_ref_counts": {"event": 1, "entity": 1, "summary": 1},
+                "recall_policy": {
+                    "session_continuity": {
+                        "same_session_selected_ref_count": 1,
+                        "cross_session_selected_ref_count": 2,
+                        "entity_bridge_selected_ref_count": 1,
+                    }
+                },
+                "local_context_policy": {"local_context_count": 1},
                 "selected_refs": [
                     {
                         "ref_type": "context_event",
@@ -305,6 +314,39 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("remote_budget=100", additional)
         self.assertIn("remote_remaining=58", additional)
         self.assertIn("budget_source=agent_provided_max_context_tokens", additional)
+        self.assertIn("Layer summary:", additional)
+        self.assertIn("event=1", additional)
+        self.assertIn("entity=1", additional)
+        self.assertIn("summary=1", additional)
+        self.assertIn("same_session_refs=1", additional)
+        self.assertIn("cross_session_refs=2", additional)
+        self.assertIn("entity_bridge_refs=1", additional)
+        self.assertIn("local_context_refs=1", additional)
+
+    def test_additional_context_layer_summary_falls_back_to_serving_refs(self) -> None:
+        args = Namespace(session_id="codex-session-1")
+        output = hook.codex_hook_output(
+            args=args,
+            status="ok",
+            event="UserPromptSubmit",
+            session_id_source="explicit",
+            agent_context={"local_context": [], "workspace_root": "/repo"},
+            retrieve={
+                "pack_id": "pack-layer-fallback",
+                "selected_refs": [
+                    {"ref_type": "event", "session_continuity": "same_session", "text": "current session prompt"},
+                    {"ref_type": "entity", "memory_scope": "user_profile", "text": "profile decision"},
+                    {"context_class": "summary", "text": "compressed profile summary"},
+                ],
+            },
+            query="memory layers",
+        )
+
+        additional = output["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Layer summary:", additional)
+        self.assertIn("event=1", additional)
+        self.assertIn("entity=1", additional)
+        self.assertIn("summary=1", additional)
 
     def test_grouped_refs_count_and_format_as_additional_context(self) -> None:
         args = Namespace(session_id="codex-session-1")
