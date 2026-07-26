@@ -318,6 +318,8 @@ def main() -> int:
     conversations_loaded = 0
     source_count = 0
     dataset_counts: defaultdict[str, int] = defaultdict(int)
+    unsupported_case_count = 0
+    unsupported_cases: list[dict[str, str]] = []
 
     for record_index, record in enumerate(records):
         if not isinstance(record, dict):
@@ -370,6 +372,25 @@ def main() -> int:
             retrieved_tokens = sum(estimated_tokens(block.get("body", "")) for block in blocks)
             retrieved_source_groups = distinct_source_group_count(blocks)
             query_id = f"{conversation_id}-q{question_index + 1}"
+            unsupported_reason = unsupported_benchmark_reason(
+                answers,
+                scored_refs,
+                query_sources,
+                qa.get("unsupported_reason"),
+                qa.get("unsupported_benchmark_case"),
+            )
+            if unsupported_reason:
+                unsupported_case_count += 1
+                unsupported_cases.append(
+                    {
+                        "query_id": query_id,
+                        "category": case_category,
+                        "reason": unsupported_reason,
+                        "question": question,
+                        "answer_terms": answers,
+                    }
+                )
+                continue
 
             total += 1
             total_source_tokens += source_tokens
@@ -582,6 +603,8 @@ def main() -> int:
             rust_backend_report and rust_backend_report.get("rust_temporalstore_full_replay_ready")
         ),
         "case_count": total,
+        "unsupported_benchmark_case_count": unsupported_case_count,
+        "unsupported_benchmark_cases": unsupported_cases[:200],
         "conversation_count": conversations_loaded,
         "source_count": source_count,
         "hit_rate": hit_rate,
@@ -1554,6 +1577,8 @@ def score_rust_temporalstore_jsonl_with_python(path: Path, max_events: int, *, u
     rr_sum = 0.0
     zero_hit_queries = 0
     zero_hit_query_ids: list[str] = []
+    unsupported_case_count = 0
+    unsupported_cases: list[dict[str, str]] = []
     retrieval_latencies_ms: list[float] = []
     per_query = []
     for case in iter_jsonl_cases(path):
@@ -1562,6 +1587,23 @@ def score_rust_temporalstore_jsonl_with_python(path: Path, max_events: int, *, u
         answers = normalize_answers(case.get("answer_terms") or case.get("expected_terms") or case.get("answers"))
         refs = normalize_evidence_refs(case.get("expected_source_refs") or case.get("evidence"))
         sources = [source for source in case.get("sources", []) if isinstance(source, dict)]
+        unsupported_reason = unsupported_benchmark_reason(
+            answers,
+            refs,
+            sources,
+            case.get("unsupported_reason"),
+            case.get("unsupported_benchmark_case"),
+        )
+        if unsupported_reason:
+            unsupported_case_count += 1
+            unsupported_cases.append(
+                {
+                    "query_id": query_id,
+                    "reason": unsupported_reason,
+                    "question": query,
+                }
+            )
+            continue
         retrieval_started = time.perf_counter()
         blocks = sources if use_source_order else rank_sources(query, sources, max_events)
         retrieval_ms = elapsed_ms(retrieval_started)
@@ -1591,6 +1633,8 @@ def score_rust_temporalstore_jsonl_with_python(path: Path, max_events: int, *, u
         "mean_reciprocal_rank": rr_sum / total if total else 0.0,
         "zero_hit_queries": zero_hit_queries,
         "zero_hit_query_ids": zero_hit_query_ids[:200],
+        "unsupported_benchmark_case_count": unsupported_case_count,
+        "unsupported_benchmark_cases": unsupported_cases[:200],
         "retrieval_p50_ms": percentile(retrieval_latencies_ms, 50),
         "retrieval_p95_ms": percentile(retrieval_latencies_ms, 95),
         "scoring_order": "source_order" if use_source_order else "python_rank_sources",
@@ -5601,6 +5645,31 @@ def ref_matches(block: dict[str, str], ref: str) -> bool:
 
 def normalize_ref(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
+
+def unsupported_benchmark_reason(
+    answers: list[str],
+    refs: list[str],
+    sources: list[dict[str, Any]],
+    explicit_reason: Any = None,
+    explicit_flag: Any = None,
+) -> str:
+    if explicit_reason:
+        return str(explicit_reason)
+    if bool(explicit_flag):
+        return "unsupported_benchmark_case"
+    if refs:
+        return ""
+    normalized_terms = [normalize_ref_for_match(answer) for answer in answers]
+    normalized_terms = [term for term in normalized_terms if term]
+    if not normalized_terms:
+        return "empty_expected_answer_terms"
+    haystack = normalize_ref_for_match(
+        " ".join(f"{source.get('title', '')} {source.get('body', '')}" for source in sources)
+    )
+    if any(term in haystack for term in normalized_terms):
+        return ""
+    return "answer_terms_absent_and_no_evidence_refs"
 
 
 def text_matches(text: str, term: str) -> bool:

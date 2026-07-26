@@ -89,6 +89,7 @@ def main() -> None:
                     if args.evidence_window is not None and evidence_refs
                     else evidence_refs
                 )
+                unsupported_reason = unsupported_benchmark_reason(answer_terms, expected_refs, case_sources)
                 base_query_id = f"{conversation_id}-q{question_index + 1}"
                 query_id = unique_query_id(base_query_id, query_id_counts)
                 case = {
@@ -105,6 +106,9 @@ def main() -> None:
                     "expected_source_refs": expected_refs,
                     "sources": case_sources,
                 }
+                if unsupported_reason:
+                    case["unsupported_benchmark_case"] = True
+                    case["unsupported_reason"] = unsupported_reason
                 handle.write(json.dumps(case, ensure_ascii=False) + "\n")
                 written += 1
         if args.max_questions is not None and written >= args.max_questions:
@@ -328,6 +332,25 @@ def expand_evidence_refs_for_sources(evidence_refs: list[str], sources: list[dic
                 seen.add(normalized)
                 refs.append(value)
     return refs
+
+
+def unsupported_benchmark_reason(
+    answer_terms: list[str],
+    expected_refs: list[str],
+    sources: list[dict[str, str]],
+) -> str:
+    if expected_refs:
+        return ""
+    normalized_terms = [normalize_ref_for_match(term) for term in answer_terms]
+    normalized_terms = [term for term in normalized_terms if term]
+    if not normalized_terms:
+        return "empty_expected_answer_terms"
+    haystack = normalize_ref_for_match(
+        " ".join(f"{source.get('title', '')} {source.get('body', '')}" for source in sources)
+    )
+    if any(term in haystack for term in normalized_terms):
+        return ""
+    return "answer_terms_absent_and_no_evidence_refs"
 
 
 def source_reference_candidates(source: dict[str, str]) -> list[str]:

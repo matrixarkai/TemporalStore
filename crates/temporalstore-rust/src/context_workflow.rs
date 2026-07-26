@@ -3953,7 +3953,13 @@ pub fn retrieve_context(
         .max_summary_nodes
         .max(1)
         .min(summary_scores.len().max(1));
-    let query_aware_event_limit = ((request.max_events.max(1) + 1) / 2).max(2);
+    let replay_all_requested_nodes =
+        request.query.trim().is_empty() && request.max_events >= summary_scores.len();
+    let query_aware_event_limit = if replay_all_requested_nodes {
+        request.max_events.max(1)
+    } else {
+        ((request.max_events.max(1) + 1) / 2).max(2)
+    };
     let event_node_limit = request
         .max_event_nodes
         .max(1)
