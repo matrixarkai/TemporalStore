@@ -45,8 +45,11 @@ def main() -> int:
     )
     parser.add_argument("--reader-base-url", default="http://127.0.0.1:18087/v1")
     parser.add_argument("--reader-model", default="Qwen/Qwen2.5-0.5B-Instruct")
+    parser.add_argument("--embedding-model", default="matrixark-local-hash-embedding")
+    parser.add_argument("--provider-name", default="openviking-direct-archive")
     parser.add_argument("--reader-timeout-seconds", type=float, default=180.0)
     parser.add_argument("--reader-max-tokens", type=int, default=96)
+    parser.add_argument("--reader-max-context-chars", type=int, default=12000)
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument("--report", default="/tmp/openviking_direct_retrieval_locomo_tiny_20260726.json")
     parser.add_argument("--matrixark-report", default="/tmp/matrixark_qwen_locomo_tiny_postfix2_20260726.json")
@@ -57,14 +60,20 @@ def main() -> int:
         "benchmark_family": "locomo",
         "baseline": "openviking_direct_archive_retrieval",
         "claim_status": "diagnostic_not_paper_comparable",
+        "diagnostic_only": True,
         "reader_base_url": args.reader_base_url,
+        "reader_provider_name": args.provider_name,
         "reader_model": args.reader_model,
+        "embedding_model": args.embedding_model,
         "input": args.input,
         "archive": args.archive,
         "top_k": args.top_k,
+        "max_events": args.top_k,
+        "reader_max_context_chars": args.reader_max_context_chars,
         "blockers": [],
         "warnings": [
             "OpenViking memory extraction produced zero recallable memories locally; this run uses archived messages as retrieval corpus.",
+            "If the archive covers fewer sessions than the benchmark questions require, this is a baseline blocker, not a MatrixArk quality win.",
             "Token counts are whitespace-token estimates because the local OSS endpoints do not return reliable usage counters.",
         ],
     }
@@ -95,6 +104,7 @@ def main() -> int:
     total_retrieved_tokens = 0
     retrieval_hits = 0
     reader_hits = 0
+    reader_error_count = 0
     retrieval_latencies: list[float] = []
     reader_latencies: list[float] = []
 
@@ -107,15 +117,15 @@ def main() -> int:
         selected = ranked[: max(1, args.top_k)]
         retrieval_ms = (time.perf_counter() - retrieval_started) * 1000.0
         retrieval_latencies.append(retrieval_ms)
-        retrieved_tokens = sum(token_count(item["text"]) for item in selected)
-        total_retrieved_tokens += retrieved_tokens
         selected_ids = {item["source_ref"] for item in selected}
         hit = bool(expected_evidence & selected_ids)
         retrieval_hits += int(hit)
 
         context = "\n".join(
             f"[{item['source_ref']}] {item['created_at']} {item['text']}" for item in selected
-        )
+        )[: max(1, args.reader_max_context_chars)]
+        retrieved_tokens = token_count(context)
+        total_retrieved_tokens += retrieved_tokens
         reader_started = time.perf_counter()
         answer = call_reader(
             args.reader_base_url,
@@ -127,6 +137,8 @@ def main() -> int:
         )
         reader_ms = (time.perf_counter() - reader_started) * 1000.0
         reader_latencies.append(reader_ms)
+        if answer.startswith("reader_error:"):
+            reader_error_count += 1
         answer_ok = answer_matches(expected_answer, answer, context)
         reader_hits += int(answer_ok)
 
@@ -154,6 +166,11 @@ def main() -> int:
             "case_count": len(per_query),
             "benchmark_hit_at_k": retrieval_hits / n,
             "benchmark_reader_hit_rate": reader_hits / n,
+            "reader_hit_rate": reader_hits / n,
+            "reader_provider_name": args.provider_name,
+            "reader_fallback_count": 0,
+            "reader_error_count": reader_error_count,
+            "reader_open_source_calls": len(per_query),
             "benchmark_avg_retrieved_tokens_per_query": total_retrieved_tokens / n,
             "benchmark_total_retrieved_tokens": total_retrieved_tokens,
             "benchmark_total_source_tokens": source_tokens * n,
@@ -166,6 +183,7 @@ def main() -> int:
             "matrixark_reference": load_matrixark_reference(args.matrixark_report),
         }
     )
+    report["benchmark_model_contract"] = benchmark_model_contract(args, report.get("matrixark_reference") or {})
     return finish(report, args.report, started, 0)
 
 
@@ -319,7 +337,55 @@ def load_matrixark_reference(path: str) -> dict[str, Any]:
         "benchmark_retrieval_p95_ms": data.get("benchmark_retrieval_p95_ms"),
         "benchmark_reader_p95_ms": data.get("benchmark_reader_p95_ms"),
         "claim_status": data.get("claim_status"),
+        "python_only_diagnostic": data.get("python_only_diagnostic"),
+        "benchmark_model_contract": data.get("benchmark_model_contract") or {},
     }
+
+
+def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict[str, Any]) -> dict[str, Any]:
+    reference_contract = matrixark_reference.get("benchmark_model_contract") if isinstance(matrixark_reference, dict) else {}
+    if not isinstance(reference_contract, dict):
+        reference_contract = {}
+    matrixark_reader = str(reference_contract.get("matrixark_reader_model") or args.reader_model).strip()
+    matrixark_embedding = str(reference_contract.get("matrixark_embedding_model") or args.embedding_model).strip()
+    matrixark_max_events = int(reference_contract.get("matrixark_max_events") or args.top_k)
+    matrixark_reader_budget = int(reference_contract.get("matrixark_reader_max_context_chars") or args.reader_max_context_chars)
+    baseline_reader = str(args.reader_model).strip()
+    baseline_embedding = str(args.embedding_model).strip()
+    baseline_max_events = int(args.top_k)
+    baseline_reader_budget = int(args.reader_max_context_chars)
+    return {
+        "matrixark_provider_name": str(reference_contract.get("matrixark_provider_name") or "matrixark").strip(),
+        "matrixark_reader_model": matrixark_reader,
+        "matrixark_embedding_model": matrixark_embedding,
+        "matrixark_max_events": matrixark_max_events,
+        "matrixark_reader_max_context_chars": matrixark_reader_budget,
+        "baseline_provider_name": str(args.provider_name).strip(),
+        "baseline_reader_model": baseline_reader,
+        "baseline_embedding_model": baseline_embedding,
+        "baseline_max_events": baseline_max_events,
+        "baseline_reader_max_context_chars": baseline_reader_budget,
+        "provider_identity_declared": bool(args.provider_name),
+        "reader_model_match": normalized_model_name(matrixark_reader) == normalized_model_name(baseline_reader),
+        "embedding_model_match": normalized_model_name(matrixark_embedding) == normalized_model_name(baseline_embedding),
+        "max_events_match": matrixark_max_events == baseline_max_events,
+        "reader_context_budget_match": matrixark_reader_budget == baseline_reader_budget,
+        "shared_oss_model_contract_required": True,
+        "shared_oss_model_contract_passed": (
+            normalized_model_name(matrixark_reader) == normalized_model_name(baseline_reader)
+            and normalized_model_name(matrixark_embedding) == normalized_model_name(baseline_embedding)
+            and matrixark_max_events == baseline_max_events
+            and matrixark_reader_budget == baseline_reader_budget
+        ),
+        "comparison_rule": (
+            "MatrixArk and OpenViking/VikingMem rows must use the same OSS reader model, "
+            "embedding/encoding model, retrieval block budget, and reader context budget."
+        ),
+    }
+
+
+def normalized_model_name(value: Any) -> str:
+    return re.sub(r"[^a-z0-9._:-]+", "", str(value or "").strip().lower())
 
 
 def finish(report: dict[str, Any], path: str, started: float, code: int) -> int:

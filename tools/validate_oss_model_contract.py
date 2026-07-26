@@ -152,7 +152,11 @@ def normalize_report(path: Path, label: str, errors: list[str]) -> dict[str, Any
         "reader_open_source_calls": to_int(data.get("reader_open_source_calls")),
         "shared_oss_model_contract_required": bool(contract.get("shared_oss_model_contract_required")),
         "shared_oss_model_contract_passed": bool(contract.get("shared_oss_model_contract_passed")),
-        "diagnostic_only": bool(data.get("diagnostic_only") or data.get("python_only_diagnostic")),
+        "diagnostic_only": bool(
+            data.get("diagnostic_only")
+            or data.get("python_only_diagnostic")
+            or "diagnostic" in str(data.get("claim_status") or "").lower()
+        ),
     }
     if not row["shared_oss_model_contract_required"]:
         errors.append(f"{label}: shared_oss_model_contract_not_required")
