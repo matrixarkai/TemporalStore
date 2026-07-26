@@ -13,6 +13,7 @@ try:
         now_ms,
         optional_object,
         optional_string,
+        session_buffer_key_from_scope,
         session_buffer_key,
         stable_hash,
     )
@@ -26,6 +27,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         now_ms,
         optional_object,
         optional_string,
+        session_buffer_key_from_scope,
         session_buffer_key,
         stable_hash,
     )
@@ -119,6 +121,47 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "threshold_messages": threshold,
             "commit_reason": commit_reason,
         }
+    try:
+        overlap_limit = int(args.get("extraction_context_overlap_messages", 2))
+    except (TypeError, ValueError):
+        overlap_limit = 2
+    if force:
+        overlap_limit = 0
+    overlap_limit = max(0, overlap_limit)
+    current_source_event_ids = {int(event_id) for event_id in source_event_ids}
+    committed_event_ids: set[int] = set()
+    session_key = session_buffer_key_from_scope(scope)
+    records_for_overlap = adapter.read_all() if overlap_limit else []
+    for record in records_for_overlap:
+        if record.get("record_type") != "context_batch_commit" or session_buffer_key_from_scope(record.get("scope", {})) != session_key:
+            continue
+        for event_id in record.get("source_event_ids", []):
+            try:
+                committed_event_ids.add(int(event_id))
+            except (TypeError, ValueError):
+                continue
+    overlap_records: list[Json] = []
+    for record in records_for_overlap:
+        if record.get("record_type") != "context_event":
+            continue
+        try:
+            event_id = int(record.get("event_id_hash"))
+        except (TypeError, ValueError):
+            continue
+        if event_id in current_source_event_ids or event_id not in committed_event_ids:
+            continue
+        overlap_records.append(record)
+    overlap_records = overlap_records[-overlap_limit:]
+    extraction_context_messages = [
+        message
+        for message in (message_from_event_record(record) for record in overlap_records)
+        if message
+    ]
+    extraction_context_event_ids = [
+        int(record["event_id_hash"])
+        for record in overlap_records
+        if record.get("event_id_hash") is not None
+    ]
     metadata = optional_object(args, "metadata")
     storage_options = normalize_storage_options(args, metadata)
     if "node_path" not in metadata:
@@ -133,6 +176,8 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "force": True,
             "derive_from_existing_events": True,
             "source_event_ids": source_event_ids,
+            "extraction_context_messages": extraction_context_messages,
+            "extraction_context_event_ids": extraction_context_event_ids,
             "extraction_phase": extraction_phase,
             "final_session_boundary": final_session_boundary,
             "understanding_provider": args.get("understanding_provider"),
@@ -164,6 +209,8 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "final_session_boundary": final_session_boundary,
             "pending_event_count_before_commit": pending_event_count,
             "committed_event_count": len(source_event_ids),
+            "extraction_context_event_ids": extraction_context_event_ids,
+            "extraction_context_event_count": len(extraction_context_event_ids),
             "idle_timeout_ms": idle_timeout_ms,
             "idle_elapsed_ms": idle_elapsed_ms,
             "agent_hook": hook,
@@ -181,6 +228,8 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         "pending_event_count": pending_event_count,
         "committed_event_count": len(source_event_ids),
         "source_event_ids": source_event_ids,
+        "extraction_context_event_ids": extraction_context_event_ids,
+        "extraction_context_event_count": len(extraction_context_event_ids),
         "commit_reason": commit_reason,
         "trigger_policy": trigger_policy,
         "extraction_phase": extraction_phase,

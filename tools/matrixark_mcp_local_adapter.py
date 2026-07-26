@@ -861,6 +861,47 @@ class MatrixArkLocalAdapter:
                 "threshold_messages": threshold,
                 "commit_reason": commit_reason,
             }
+        try:
+            overlap_limit = int(args.get("extraction_context_overlap_messages", 2))
+        except (TypeError, ValueError):
+            overlap_limit = 2
+        if force:
+            overlap_limit = 0
+        overlap_limit = max(0, overlap_limit)
+        current_source_event_ids = {int(event_id) for event_id in source_event_ids}
+        committed_event_ids: set[int] = set()
+        session_key = session_buffer_key_from_scope(scope)
+        records_for_overlap = self.read_all() if overlap_limit else []
+        for record in records_for_overlap:
+            if record.get("record_type") != "context_batch_commit" or session_buffer_key_from_scope(record.get("scope", {})) != session_key:
+                continue
+            for event_id in record.get("source_event_ids", []):
+                try:
+                    committed_event_ids.add(int(event_id))
+                except (TypeError, ValueError):
+                    continue
+        overlap_records: list[Json] = []
+        for record in records_for_overlap:
+            if record.get("record_type") != "context_event":
+                continue
+            try:
+                event_id = int(record.get("event_id_hash"))
+            except (TypeError, ValueError):
+                continue
+            if event_id in current_source_event_ids or event_id not in committed_event_ids:
+                continue
+            overlap_records.append(record)
+        overlap_records = overlap_records[-overlap_limit:]
+        extraction_context_messages = [
+            message
+            for message in (message_from_event_record(record) for record in overlap_records)
+            if message
+        ]
+        extraction_context_event_ids = [
+            int(record["event_id_hash"])
+            for record in overlap_records
+            if record.get("event_id_hash") is not None
+        ]
         metadata = optional_object(args, "metadata")
         storage_options = normalize_storage_options(args, metadata)
         if "node_path" not in metadata:
@@ -875,6 +916,8 @@ class MatrixArkLocalAdapter:
                 "force": True,
                 "derive_from_existing_events": True,
                 "source_event_ids": source_event_ids,
+                "extraction_context_messages": extraction_context_messages,
+                "extraction_context_event_ids": extraction_context_event_ids,
                 "extraction_phase": extraction_phase,
                 "final_session_boundary": final_session_boundary,
                 "understanding_provider": args.get("understanding_provider"),
@@ -906,6 +949,8 @@ class MatrixArkLocalAdapter:
                 "final_session_boundary": final_session_boundary,
                 "pending_event_count_before_commit": pending_event_count,
                 "committed_event_count": len(source_event_ids),
+                "extraction_context_event_ids": extraction_context_event_ids,
+                "extraction_context_event_count": len(extraction_context_event_ids),
                 "idle_timeout_ms": idle_timeout_ms,
                 "idle_elapsed_ms": idle_elapsed_ms,
                 "trigger_evidence": trigger_evidence,
@@ -924,6 +969,8 @@ class MatrixArkLocalAdapter:
             "pending_event_count": pending_event_count,
             "committed_event_count": len(source_event_ids),
             "source_event_ids": source_event_ids,
+            "extraction_context_event_ids": extraction_context_event_ids,
+            "extraction_context_event_count": len(extraction_context_event_ids),
             "commit_reason": commit_reason,
             "trigger_policy": trigger_policy,
             "extraction_phase": extraction_phase,
@@ -3523,6 +3570,29 @@ class MatrixArkLocalAdapter:
 
     def batch_extract(self, args: Json, *, hook: Json | None = None) -> Json:
         envelope = normalize_envelope(args, default_kind="message")
+        extraction_context_messages = args.get("extraction_context_messages", [])
+        if not isinstance(extraction_context_messages, list):
+            extraction_context_messages = []
+        extraction_context_event_ids = (
+            [int(ref) for ref in args.get("extraction_context_event_ids", [])]
+            if isinstance(args.get("extraction_context_event_ids", []), list)
+            else []
+        )
+        extraction_envelope = envelope
+        if extraction_context_messages:
+            extraction_envelope = {
+                **envelope,
+                "messages": [
+                    *envelope["messages"],
+                    *[
+                        dict(message)
+                        for message in extraction_context_messages
+                        if isinstance(message, dict)
+                        and isinstance(message.get("role"), str)
+                        and isinstance(message.get("content"), str)
+                    ],
+                ],
+            }
         hook = validate_hook(hook)
         threshold = args.get("threshold_messages", 20)
         force = bool(args.get("force", False))
@@ -3549,7 +3619,7 @@ class MatrixArkLocalAdapter:
             else collect_prior_context(envelope, prior_records)
         )
         extraction_started_perf = time.perf_counter()
-        extraction = one_pass_memory_extraction(envelope, prior_context=prior_context)
+        extraction = one_pass_memory_extraction(extraction_envelope, prior_context=prior_context)
         self._observe_model_latency("batch_extraction", (time.perf_counter() - extraction_started_perf) * 1000.0)
         batch_text = text_from_messages(envelope["messages"])
         batch_id_hash = stable_hash(
@@ -3620,6 +3690,7 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                         "extraction_phase": extraction_phase,
                         "final_session_boundary": final_session_boundary,
+                        "extraction_context_event_ids": extraction_context_event_ids,
                     }
                 )
                 records_to_append.append(
@@ -3716,6 +3787,7 @@ class MatrixArkLocalAdapter:
                     "source_roles": source_roles,
                     "source_hook_types": source_hook_types,
                     "source_codex_events": source_codex_events,
+                    "extraction_context_event_ids": extraction_context_event_ids,
                     "field_patches": updated_entity.get("field_patches", []),
                     "patch_results": updated_entity.get("patch_results", []),
                     "update_mode": updated_entity.get("update_mode", ""),
@@ -3795,6 +3867,7 @@ class MatrixArkLocalAdapter:
                         "source_hook_types": source_hook_types,
                         "source_codex_events": source_codex_events,
                         "source_batch_id_hash": batch_id_hash,
+                        "extraction_context_event_ids": extraction_context_event_ids,
                         "field_patches": promoted_entity.get("field_patches", []),
                         "patch_results": promoted_entity.get("patch_results", []),
                         "update_mode": promoted_entity.get("update_mode", ""),
@@ -3878,6 +3951,7 @@ class MatrixArkLocalAdapter:
                     "non_contiguous": segment["non_contiguous"],
                     "extraction_phase": extraction_phase,
                     "final_session_boundary": final_session_boundary,
+                    "extraction_context_event_ids": extraction_context_event_ids,
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
@@ -3915,6 +3989,7 @@ class MatrixArkLocalAdapter:
                 "scope": envelope["scope"],
                 "extraction_phase": extraction_phase,
                 "final_session_boundary": final_session_boundary,
+                "extraction_context_event_ids": extraction_context_event_ids,
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
         )
@@ -3970,6 +4045,7 @@ class MatrixArkLocalAdapter:
                 "mode": extraction["mode"],
                 "derive_from_existing_events": derive_from_existing_events,
                 "source_event_ids": event_hashes,
+                "extraction_context_event_ids": extraction_context_event_ids,
                 "extraction_phase": extraction_phase,
                 "final_session_boundary": final_session_boundary,
                 "agent_hook": hook,
@@ -4010,6 +4086,7 @@ class MatrixArkLocalAdapter:
             "token_count_estimate": extraction["token_count_estimate"],
             "events_written": 0 if derive_from_existing_events else len(envelope["messages"]),
             "source_event_count": len(event_hashes),
+            "extraction_context_event_count": len(extraction_context_event_ids),
             "raw_events_duplicated": not derive_from_existing_events,
             "entities_written": len(entity_hashes),
             "profile_entities_written": len(profile_entity_hashes),
