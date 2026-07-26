@@ -477,6 +477,26 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertNotIn("Codex hook heartbeat", additional)
         self.assertIn("real TemporalStore question", additional)
 
+    def test_codex_hook_heartbeat_line_is_filtered_from_rendered_context(self) -> None:
+        args = Namespace(session_id="codex-session-1")
+        heartbeat = "user: Codex hook heartbeat 2026-07-15T13:32:00Z: C++ TemporalStore is live and accepting MatrixArk hook writes."
+        output = hook.codex_hook_output(
+            args=args,
+            status="ok",
+            event="UserPromptSubmit",
+            session_id_source="explicit",
+            agent_context={"local_context": [], "workspace_root": "/repo"},
+            retrieve={
+                "pack_id": "pack-rendered-heartbeat",
+                "context": heartbeat + "\nuser: real rendered TemporalStore memory",
+            },
+            query="real rendered memory",
+        )
+
+        additional = output["hookSpecificOutput"]["additionalContext"]
+        self.assertNotIn("Codex hook heartbeat", additional)
+        self.assertIn("real rendered TemporalStore memory", additional)
+
     def test_non_prompt_event_keeps_audit_json_without_additional_context(self) -> None:
         args = Namespace(session_id="codex-session-1")
         output = hook.codex_hook_output(
