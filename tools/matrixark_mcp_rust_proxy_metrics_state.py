@@ -54,6 +54,7 @@ def initialize_rust_proxy_metrics_state(target: Any) -> None:
         "by_entity_type": {},
         "by_source_role": {},
         "by_hook_type": {},
+        "by_codex_event": {},
         "final_session_boundary_ref_count": 0,
         "provisional_ref_count": 0,
         "final_ref_count": 0,

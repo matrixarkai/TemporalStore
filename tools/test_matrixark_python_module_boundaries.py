@@ -500,6 +500,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "entity_type": "tool_evidence",
                 "source_roles": ["tool"],
                 "source_hook_types": ["hook_boundary"],
+                "source_codex_events": ["PostToolUse"],
             }
         ]
         pack = builder_mod.build_context_pack(
@@ -565,6 +566,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(1, layer_budget["by_entity_type"]["tool_evidence"]["refs"])
         self.assertEqual(1, layer_budget["by_source_role"]["tool"]["refs"])
         self.assertEqual(1, layer_budget["by_hook_type"]["hook_boundary"]["refs"])
+        self.assertEqual(1, layer_budget["by_codex_event"]["PostToolUse"]["refs"])
         self.assertEqual(1, layer_budget["final_session_boundary_ref_count"])
 
         metrics_mod.attach_python_retrieval_metrics(

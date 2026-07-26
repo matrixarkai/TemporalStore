@@ -43,6 +43,7 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
         "by_entity_type": {},
         "by_source_role": {},
         "by_hook_type": {},
+        "by_codex_event": {},
         "final_session_boundary_ref_count": 0,
         "provisional_ref_count": 0,
         "final_ref_count": 0,
@@ -82,6 +83,13 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
             hook_name = str(hook_type or "").strip()
             if hook_name:
                 bucket = breakdown["by_hook_type"].setdefault(hook_name, {"refs": 0, "tokens": 0})
+                bucket["refs"] += 1
+                bucket["tokens"] += token_estimate
+        source_codex_events = ref.get("source_codex_events") if isinstance(ref.get("source_codex_events"), list) else []
+        for codex_event in source_codex_events:
+            event_name = str(codex_event or "").strip()
+            if event_name:
+                bucket = breakdown["by_codex_event"].setdefault(event_name, {"refs": 0, "tokens": 0})
                 bucket["refs"] += 1
                 bucket["tokens"] += token_estimate
         if bool(ref.get("final_session_boundary")):

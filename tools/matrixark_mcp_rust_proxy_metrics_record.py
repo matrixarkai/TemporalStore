@@ -92,6 +92,7 @@ def merge_memory_layer_budget(target: Any, response: Json) -> None:
         "by_entity_type",
         "by_source_role",
         "by_hook_type",
+        "by_codex_event",
     ]:
         _add_bucket_totals(totals.setdefault(bucket_name, {}), budget.get(bucket_name))
     for counter_name in [
