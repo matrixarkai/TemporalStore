@@ -271,6 +271,27 @@ def matrixark_local_recovery_report(
         record for record in compacted
         if record.get("record_type") == "context_summary_dirty" and str(record.get("status") or "dirty") != "completed"
     ]
+    telemetry_records = [
+        record for record in records
+        if record.get("record_type") == "context_pack_telemetry"
+    ]
+    audit_records = [
+        record for record in records
+        if record.get("record_type") == "context_pack_audit"
+    ]
+    telemetry_lifecycle_stages = sorted(
+        {
+            str(metadata.get("lifecycle_stage"))
+            for record in telemetry_records
+            for metadata in [record.get("retrieval_request_metadata")]
+            if isinstance(metadata, dict) and str(metadata.get("lifecycle_stage") or "")
+        }
+    )
+    hook_retrieval_telemetry = [
+        record for record in telemetry_records
+        if isinstance(record.get("retrieval_request_metadata"), dict)
+        and str(record["retrieval_request_metadata"].get("retrieval_source") or record["retrieval_request_metadata"].get("source") or "") == "codex_hook_retrieve"
+    ]
     profile_dirty_summaries = [
         record for record in dirty_summaries
         if str(record.get("dirty_reason") or "") == "profile_entity_promoted"
@@ -319,6 +340,7 @@ def matrixark_local_recovery_report(
         "cache_rebuild": {
             "read_cache_rebuildable_from_durable_log": bool(records) and not blockers,
             "retrieval_cache_rebuildable_from_hot_records": any(count > 0 for count in compacted_hot_counts.values()) and not blockers,
+            "retrieval_visibility_rebuildable_from_durable_log": bool(telemetry_records or audit_records) and not blockers,
             "latest_value_compaction_rebuilt_records": len(compacted),
             "hot_record_types": sorted(RETRIEVAL_HOT_RECORD_TYPES),
         },
@@ -354,6 +376,26 @@ def matrixark_local_recovery_report(
             "profile_dirty_summary_count": len(profile_dirty_summaries),
             "summary_count": int(record_counts.get("context_summary", 0)),
             "readiness": derived_readiness,
+        },
+        "retrieval_visibility": {
+            "telemetry_count": len(telemetry_records),
+            "audit_count": len(audit_records),
+            "hook_retrieval_telemetry_count": len(hook_retrieval_telemetry),
+            "telemetry_rebuildable_from_durable_log": bool(telemetry_records) and not blockers,
+            "context_pack_ids": sorted(
+                {
+                    str(record.get("context_pack_id"))
+                    for record in telemetry_records + audit_records
+                    if str(record.get("context_pack_id") or "")
+                }
+            ),
+            "lifecycle_stages": telemetry_lifecycle_stages,
+            "memory_layer_budget_record_count": sum(1 for record in telemetry_records if isinstance(record.get("memory_layer_budget"), dict)),
+            "selected_ref_count": sum(int(record.get("selected_ref_count") or 0) for record in telemetry_records),
+            "dropped_ref_count": sum(int(record.get("dropped_ref_count") or 0) for record in telemetry_records),
+            "max_remote_context_budget_tokens": max(
+                [int(record.get("remote_context_budget_tokens") or 0) for record in telemetry_records] or [0]
+            ),
         },
         "retrieval_smoke": retrieval_smoke,
         "parse_errors": parse_errors,

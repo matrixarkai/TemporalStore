@@ -6303,6 +6303,8 @@ class MatrixArkLocalAdapter:
                             "used_remote_context_tokens",
                             "total_prompt_context_tokens",
                             "remote_context_budget_tokens",
+                            "memory_layer_budget",
+                            "retrieval_request_metadata",
                             "partial_context_pack",
                             "insufficient_context",
                             "quality_warning_count",

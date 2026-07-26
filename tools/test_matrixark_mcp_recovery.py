@@ -95,6 +95,27 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                 "source_hook_types": ["hook_boundary"],
                 "source_codex_events": ["Stop"],
             },
+            {
+                "record_type": "context_pack_telemetry",
+                "context_pack_id": "pack-recover-1",
+                "query_hash": 901,
+                "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "codex:session-c"},
+                "audit_mode": "telemetry_only",
+                "question_type": "fact",
+                "selected_ref_count": 2,
+                "dropped_ref_count": 1,
+                "used_remote_context_tokens": 42,
+                "remote_context_budget_tokens": 512,
+                "memory_layer_budget": {"by_memory_scope": {"user_profile": {"refs": 1, "tokens": 12}}},
+                "retrieval_request_metadata": {
+                    "retrieval_source": "codex_hook_retrieve",
+                    "codex_event": "UserPromptSubmit",
+                    "hook_type": "user_prompt_submit",
+                    "session_id_source": "payload_field",
+                    "lifecycle_stage": "before_llm_retrieve",
+                },
+                "created_at_ms": 250,
+            },
         ]
 
         report = matrixark_local_recovery_report(
@@ -134,6 +155,17 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertGreaterEqual(report["retrieval_smoke"]["session_continuity_counts"]["cross_session"], 1)
         self.assertGreaterEqual(report["retrieval_smoke"]["extraction_phase_counts"]["final"], 1)
         self.assertGreaterEqual(report["retrieval_smoke"]["final_session_boundary_ref_count"], 1)
+        self.assertEqual(1, report["retrieval_visibility"]["telemetry_count"])
+        self.assertEqual(0, report["retrieval_visibility"]["audit_count"])
+        self.assertEqual(1, report["retrieval_visibility"]["hook_retrieval_telemetry_count"])
+        self.assertTrue(report["retrieval_visibility"]["telemetry_rebuildable_from_durable_log"])
+        self.assertEqual(["before_llm_retrieve"], report["retrieval_visibility"]["lifecycle_stages"])
+        self.assertEqual(["pack-recover-1"], report["retrieval_visibility"]["context_pack_ids"])
+        self.assertEqual(1, report["retrieval_visibility"]["memory_layer_budget_record_count"])
+        self.assertEqual(2, report["retrieval_visibility"]["selected_ref_count"])
+        self.assertEqual(1, report["retrieval_visibility"]["dropped_ref_count"])
+        self.assertEqual(512, report["retrieval_visibility"]["max_remote_context_budget_tokens"])
+        self.assertTrue(report["cache_rebuild"]["retrieval_visibility_rebuildable_from_durable_log"])
         self.assertEqual([], report["blockers"])
 
     def test_recovery_report_detects_corrupt_jsonl_tail(self) -> None:
