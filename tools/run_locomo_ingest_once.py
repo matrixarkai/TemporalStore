@@ -193,6 +193,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--allow-shared-oss-model-drift",
+        action="store_true",
+        default=bool(os.environ.get("MATRIXARK_ALLOW_SHARED_OSS_MODEL_DRIFT")),
+        help=(
+            "Diagnostic-only escape hatch. When unset, any MatrixArk vs VikingMem/OpenViking "
+            "comparison that declares a baseline must use the same OSS reader, embedding, and budgets."
+        ),
+    )
+    parser.add_argument(
         "--reader-base-url",
         default=os.environ.get("TEMPORALSTORE_READER_BASE_URL", ""),
         help="OpenAI-compatible local reader base URL, for example http://127.0.0.1:8000/v1.",
@@ -370,6 +379,7 @@ def main() -> int:
         help="Reuse an existing ready Rust TemporalStore report instead of replaying the corpus again.",
     )
     args = parser.parse_args()
+    args.require_shared_oss_models = shared_oss_model_contract_is_required(args)
     if not args.require_rust_temporalstore and not args.allow_python_only_diagnostic:
         print(
             "Rust TemporalStore backend is required for all benchmark/pipeline evidence; "
@@ -1927,6 +1937,19 @@ def benchmark_model_contract(args: argparse.Namespace, reader: "BenchmarkReader"
             "runtime produced each side."
         ),
     }
+
+
+def shared_oss_model_contract_is_required(args: argparse.Namespace) -> bool:
+    if bool(getattr(args, "allow_shared_oss_model_drift", False)):
+        return False
+    return bool(
+        getattr(args, "require_shared_oss_models", False)
+        or getattr(args, "baseline_provider_name", "")
+        or getattr(args, "baseline_reader_model", "")
+        or getattr(args, "baseline_embedding_model", "")
+        or int(getattr(args, "baseline_max_events", 0) or 0) > 0
+        or int(getattr(args, "baseline_reader_max_context_chars", 0) or 0) > 0
+    )
 
 
 def normalized_model_name(value: str) -> str:

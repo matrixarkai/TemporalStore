@@ -35,6 +35,11 @@ def main() -> int:
     parser.add_argument("--baseline-max-events", type=int, default=0)
     parser.add_argument("--baseline-reader-max-context-chars", type=int, default=0)
     parser.add_argument("--require-shared-oss-models", action="store_true")
+    parser.add_argument(
+        "--allow-shared-oss-model-drift",
+        action="store_true",
+        help="Diagnostic-only escape hatch for intentionally unfair local model/budget experiments.",
+    )
     parser.add_argument("--reader-mode", choices=("deterministic", "open-source", "auto"), default="deterministic")
     parser.add_argument("--reader-provider-name", default="vikingmem-gpt-4o-mini-reader")
     parser.add_argument("--reader-model", default="gpt-4o-mini")
@@ -162,6 +167,8 @@ def main() -> int:
         command.extend(["--baseline-reader-max-context-chars", str(args.baseline_reader_max_context_chars)])
     if args.require_shared_oss_models:
         command.append("--require-shared-oss-models")
+    if args.allow_shared_oss_model_drift:
+        command.append("--allow-shared-oss-model-drift")
     if args.reader_base_url:
         command.extend(["--reader-base-url", args.reader_base_url])
     if args.reader_include_extractive_hint:
