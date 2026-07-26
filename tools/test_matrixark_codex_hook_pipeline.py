@@ -302,7 +302,15 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("memory_scope:user_profile", index_names)
             self.assertIn("session_continuity:cross_session", index_names)
             self.assertTrue(any(str(name).startswith("entity_type:") for name in index_names))
+            self.assertIn("entity_type:assistant_decision", index_names)
             self.assertIn("entity_type:tool_evidence", index_names)
+            self.assertTrue(
+                any(
+                    record.get("entity_type") == "assistant_decision"
+                    and "Commit d0152479 pushed" in str(record.get("state") or "")
+                    for record in profile_entities
+                )
+            )
             self.assertTrue(
                 any(
                     record.get("entity_type") == "tool_evidence"
@@ -352,6 +360,30 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     and ref.get("session_continuity") == "cross_session"
                     and "Exit code: 0" in str(ref.get("text") or ref.get("summary_text") or "")
                     for ref in selected
+                )
+            )
+            decision_pack = adapter.retrieve(
+                {
+                    "scope": {
+                        "account_id": "acct_profile",
+                        "tenant_id": "tenant_profile",
+                        "user_id": "user_profile",
+                        "session_id": "later_session",
+                    },
+                    "session_scope": "prefer",
+                    "query": "What did the assistant decide was done?",
+                    "max_context_tokens": 120,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 2},
+                }
+            )
+            self.assertLessEqual(decision_pack["used_context_tokens"], 120)
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "entity"
+                    and ref.get("entity_type") == "assistant_decision"
+                    and "Commit d0152479 pushed" in str(ref.get("text") or ref.get("summary_text") or "")
+                    for ref in decision_pack["selected_refs"]
                 )
             )
             self.assertTrue(
