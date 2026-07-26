@@ -287,6 +287,8 @@ def session_commit_summary(commit: Json | None) -> Json:
     if not isinstance(commit, dict) or not commit:
         return {}
     trigger_evidence = commit.get("trigger_evidence") if isinstance(commit.get("trigger_evidence"), dict) else {}
+    entities_written = _int_field(commit, "entities_written")
+    profile_entities_written = _int_field(commit, "profile_entities_written")
     summary: Json = {
         "status": commit.get("status"),
         "commit_id_hash": commit.get("commit_id_hash"),
@@ -297,7 +299,13 @@ def session_commit_summary(commit: Json | None) -> Json:
         "source_event_count": commit.get("committed_event_count", len(commit.get("source_event_ids", []))),
         "extraction_context_event_count": commit.get("extraction_context_event_count", 0),
         "segments_written": commit.get("segments_written", 0),
-        "entities_written": commit.get("entities_written", 0),
+        "entities_written": entities_written,
+        "session_entities_written": max(0, entities_written - profile_entities_written),
+        "profile_entities_written": profile_entities_written,
+        "indexes_written": commit.get("indexes_written", 0),
+        "index_total_cap": commit.get("index_total_cap"),
+        "index_emitted_count": commit.get("index_emitted_count"),
+        "index_dropped_by_total_cap_count": commit.get("index_dropped_by_total_cap_count"),
         "raw_events_duplicated": commit.get("raw_events_duplicated"),
     }
     if trigger_evidence:
