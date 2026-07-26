@@ -77,6 +77,35 @@ function roleForEvent(event) {
   return "unknown";
 }
 
+function hookTypeForEvent(event) {
+  if (event === "UserPromptSubmit" || event === "SessionStart") return "before_llm";
+  if (event === "PostToolUse") return "tool_result";
+  if (event === "Stop" || event === "PreCompact") return "session_commit";
+  if (event === "AssistantResponse") return "after_llm";
+  return "agent_event";
+}
+
+function lifecycleStageForEvent(event) {
+  if (event === "UserPromptSubmit" || event === "SessionStart") return "before_llm_retrieve";
+  if (event === "PostToolUse") return "tool_evidence_ingest";
+  if (event === "AssistantResponse") return "after_llm_ingest";
+  if (event === "Stop" || event === "PreCompact") return "session_boundary_commit";
+  return "agent_event";
+}
+
+function shouldRetrieveForEvent(event) {
+  return event === "UserPromptSubmit" || event === "SessionStart";
+}
+
+function shouldCommitForEvent(event) {
+  return event === "Stop" || event === "PreCompact";
+}
+
+function extractionPhaseForEvent(event) {
+  if (event === "Stop" || event === "PreCompact") return "final";
+  return "provisional";
+}
+
 function splitList(value) {
   if (!value) return [];
   return String(value)
@@ -88,9 +117,16 @@ function splitList(value) {
 export function normalizePayload({ event, payload = {}, env = process.env }) {
   const session = resolveSessionId(payload, env);
   const workspaceRoot = resolveWorkspace(payload);
+  const shouldCommit = shouldCommitForEvent(event);
   return {
     agent: env.TEMPORALSTORE_AGENT_NAME || "codex",
     event,
+    hook_type: hookTypeForEvent(event),
+    lifecycle_stage: lifecycleStageForEvent(event),
+    should_retrieve: shouldRetrieveForEvent(event),
+    should_commit: shouldCommit,
+    extraction_phase: extractionPhaseForEvent(event),
+    final_session_boundary: shouldCommit,
     conversation_id: session.conversationId,
     session_id: session.sessionId,
     session_id_source: session.source,
