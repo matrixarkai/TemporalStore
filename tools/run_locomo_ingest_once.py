@@ -255,6 +255,11 @@ def main() -> int:
         default="",
         help="Optional path for the Rust TemporalStore harness JSON report.",
     )
+    parser.add_argument(
+        "--reuse-rust-temporalstore-report",
+        action="store_true",
+        help="Reuse an existing ready Rust TemporalStore report instead of replaying the corpus again.",
+    )
     args = parser.parse_args()
     if not args.require_rust_temporalstore and not args.allow_python_only_diagnostic:
         print(
@@ -269,7 +274,9 @@ def main() -> int:
         args.rust_temporalstore_source_limit = 0
         if args.rust_temporalstore_batch_size <= 0:
             args.rust_temporalstore_batch_size = 64
-    rust_backend_report = run_rust_temporalstore_backend(args) if args.require_rust_temporalstore else None
+    rust_backend_report = load_reusable_rust_temporalstore_report(args)
+    if rust_backend_report is None and args.require_rust_temporalstore:
+        rust_backend_report = run_rust_temporalstore_backend(args)
     reader = BenchmarkReader(
         ReaderConfig(
             mode=args.reader_mode,
@@ -874,6 +881,30 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if not report["rust_temporalstore_backend_ready"]:
         raise RuntimeError(f"Rust TemporalStore backend did not report ready; see {report_path}")
+    return report
+
+
+def load_reusable_rust_temporalstore_report(args: argparse.Namespace) -> dict[str, Any] | None:
+    if not bool(getattr(args, "reuse_rust_temporalstore_report", False)):
+        return None
+    report_arg = str(getattr(args, "rust_temporalstore_report", "") or "").strip()
+    if not report_arg:
+        raise RuntimeError("--reuse-rust-temporalstore-report requires --rust-temporalstore-report")
+    report_path = Path(report_arg)
+    if not report_path.exists():
+        raise RuntimeError(f"Rust TemporalStore report does not exist: {report_path}")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if not isinstance(report, dict):
+        raise RuntimeError(f"Rust TemporalStore report is not a JSON object: {report_path}")
+    if not bool(report.get("rust_temporalstore_backend_ready")):
+        raise RuntimeError(f"Rust TemporalStore report is not ready: {report_path}")
+    if bool(getattr(args, "require_full_rust_temporalstore_replay", False)) and not bool(
+        report.get("rust_temporalstore_full_replay_ready")
+    ):
+        raise RuntimeError(f"Rust TemporalStore report is not full-replay ready: {report_path}")
+    report = dict(report)
+    report["reused_existing_report"] = True
+    report["reused_report_path"] = str(report_path)
     return report
 
 
@@ -1651,7 +1682,7 @@ class BenchmarkReader:
             if self.config.allow_fallback or self.config.mode == "auto":
                 self.fallback_count += 1
                 return extractive_reader_answer(question, blocks)
-            raise
+            return ""
 
     def effective_mode(self) -> str:
         if self.open_source_calls and self.fallback_count:
