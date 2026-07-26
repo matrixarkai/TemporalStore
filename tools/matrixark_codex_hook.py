@@ -707,16 +707,18 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
         result = result_value if isinstance(result_value, dict) else {}
         item["status"] = "ok"
         if name == "matrixark_ingest":
+            auto_batch_extract_result = (
+                result.get("auto_batch_extract_result")
+                if isinstance(result.get("auto_batch_extract_result"), dict)
+                else {}
+            )
             item["result"] = {
                 "status": result.get("status"),
                 "event_id_hash": result.get("event_id_hash"),
                 "node_hash": result.get("node_hash"),
                 "hook_captured": result.get("hook_captured"),
-                "auto_batch_extract_status": (
-                    result.get("auto_batch_extract_result", {}).get("status")
-                    if isinstance(result.get("auto_batch_extract_result"), dict)
-                    else None
-                ),
+                "auto_batch_extract_status": auto_batch_extract_result.get("status"),
+                "auto_batch_extract": session_commit_summary(auto_batch_extract_result),
             }
         elif name == "matrixark_retrieve":
             emitted_refs = [
