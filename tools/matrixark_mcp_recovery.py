@@ -134,6 +134,40 @@ def _retrieval_smoke_from_compacted_records(compacted: list[Json], scope: Json |
     }
 
 
+def _derived_view_readiness(
+    *,
+    source_refs: set[tuple[str, Any]],
+    embedding_refs: set[tuple[str, Any]],
+    indexed_ref_hashes: set[Any],
+    dirty_summary_count: int,
+    summary_count: int,
+) -> Json:
+    missing_embeddings = source_refs - embedding_refs
+    warnings: list[str] = []
+    actions: list[str] = []
+    if missing_embeddings:
+        warnings.append("derived:embeddings_missing_or_stale")
+        actions.append("rebuild context_embedding rows for source events/entities/segments/summaries")
+    if not indexed_ref_hashes and source_refs:
+        warnings.append("derived:indexes_missing")
+        actions.append("rebuild context_index postings from persisted context models")
+    if dirty_summary_count:
+        warnings.append("derived:summaries_dirty")
+        actions.append("run matrixark_refresh_summaries for dirty context nodes")
+    if not summary_count and source_refs:
+        warnings.append("derived:summaries_missing")
+        actions.append("refresh or regenerate context_summary rows from durable source records")
+    return {
+        "status": "rebuild_required" if warnings else "ready",
+        "warnings": warnings,
+        "actions": actions,
+        "missing_embedding_source_ref_count": len(missing_embeddings),
+        "indexed_ref_count": len(indexed_ref_hashes),
+        "dirty_summary_count": dirty_summary_count,
+        "summary_count": summary_count,
+    }
+
+
 def matrixark_local_recovery_report(
     records: list[Json],
     *,
@@ -186,8 +220,16 @@ def matrixark_local_recovery_report(
         blockers.append("recovery:no_hot_serving_records")
 
     retrieval_smoke = _retrieval_smoke_from_compacted_records(compacted, scope)
+    derived_readiness = _derived_view_readiness(
+        source_refs=source_refs,
+        embedding_refs=embedding_refs,
+        indexed_ref_hashes=indexed_ref_hashes,
+        dirty_summary_count=len(dirty_summaries),
+        summary_count=int(record_counts.get("context_summary", 0)),
+    )
+    recovery_status = "empty" if not records else ("repair_required" if blockers else derived_readiness["status"])
     return {
-        "status": "empty" if not records else ("repair_required" if blockers else "ok"),
+        "status": recovery_status,
         "record_count": len(records),
         "compacted_record_count": len(compacted),
         "record_counts": dict(sorted(record_counts.items())),
@@ -223,10 +265,17 @@ def matrixark_local_recovery_report(
             "missing_embedding_source_ref_count": len(source_refs - embedding_refs),
             "dirty_summary_count": len(dirty_summaries),
             "summary_count": int(record_counts.get("context_summary", 0)),
+            "readiness": derived_readiness,
         },
         "retrieval_smoke": retrieval_smoke,
         "parse_errors": parse_errors,
         "blockers": blockers,
+        "warnings": derived_readiness["warnings"] if not blockers else [],
+        "recovery_actions": (
+            ["repair durable log blockers before serving rebuild"] + derived_readiness["actions"]
+            if blockers
+            else derived_readiness["actions"]
+        ),
         "rebuild_plan": [
             "scan durable MatrixArk records",
             "truncate or quarantine corrupt tail if reported",
@@ -258,7 +307,11 @@ def main() -> int:
         args.out.write_text(payload + "\n", encoding="utf-8")
     else:
         print(payload)
-    return 0 if report["status"] in {"ok", "empty"} else 2
+    if report["status"] in {"ready", "empty"}:
+        return 0
+    if report["status"] == "rebuild_required":
+        return 3
+    return 2
 
 
 if __name__ == "__main__":
