@@ -1558,6 +1558,89 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(0, commit_args["idle_timeout_ms"])
         self.assertNotIn("max_messages", commit_args)
 
+    def test_fast_async_hook_ingest_stop_boundary_force_commits_assistant_response(self) -> None:
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.serving_records = []
+                self.session_buffer_records = []
+                self.commit_calls = []
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.serving_records.extend(records)
+
+            def append_session_buffer_event(self, **kwargs):
+                self.session_buffer_records.append(kwargs)
+
+            def pending_session_events(self, scope):
+                return [{"event_id_hash": 1}, {"event_id_hash": 2}, {"event_id_hash": 3}]
+
+            def session_commit(self, args, *, hook=None):
+                self.commit_calls.append((args, hook))
+                return {
+                    "status": "committed",
+                    "trigger_policy": "force",
+                    "extraction_phase": "final",
+                    "final_session_boundary": True,
+                    "committed_event_count": 3,
+                    "entities_written": 4,
+                    "profile_entities_written": 2,
+                    "indexes_written": 6,
+                }
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        args = Namespace(
+            event="Stop",
+            account_id="acct_local",
+            tenant_id="tenant_codex",
+            user_id="deeproute",
+            session_id="codex-session-stop",
+            team="codex",
+            project="temporalstore",
+            session_commit_threshold=20,
+            idle_commit_timeout_ms=0,
+            understanding_provider="rules",
+            segment_provider="deterministic",
+        )
+        server = Server()
+        result = hook.fast_async_hook_ingest(
+            server,
+            args=args,
+            text="Done. The hook now commits the final assistant decision into profile memory.",
+            role="assistant",
+            agent_context={"workspace_root": "/repo"},
+            hook={"session_id_source": "payload_field", "thread_id": "thread-stop"},
+        )
+
+        self.assertEqual("accepted", result["status"])
+        self.assertTrue(result["session_buffer"]["boundary_commit_requested"])
+        self.assertFalse(result["session_buffer"]["threshold_ready"])
+        self.assertEqual("committed", result["session_commit"]["status"])
+        self.assertEqual("force", result["session_commit"]["trigger_policy"])
+        self.assertEqual("final", result["session_commit"]["extraction_phase"])
+        self.assertTrue(result["session_commit"]["final_session_boundary"])
+        self.assertEqual(2, result["session_commit"]["profile_entities_written"])
+        self.assertEqual(2, result["session_commit"]["memory_layers_written"]["profile_entities"])
+        self.assertEqual(1, len(server.adapter.commit_calls))
+        commit_args, commit_hook = server.adapter.commit_calls[0]
+        self.assertEqual("hook_boundary", commit_args["commit_reason"])
+        self.assertTrue(commit_args["force"])
+        self.assertNotIn("max_messages", commit_args)
+        self.assertEqual("session_commit", commit_hook["hook_type"])
+        self.assertEqual("Stop", commit_hook["trigger"])
+        self.assertEqual("thread-stop", commit_hook["thread_id"])
+        self.assertEqual(1, len(server.adapter.session_buffer_records))
+        buffered = server.adapter.session_buffer_records[0]
+        self.assertEqual("assistant", buffered["envelope"]["messages"][0]["role"])
+        self.assertEqual("after_llm", buffered["envelope"]["hook_type"])
+        self.assertEqual("Stop", buffered["envelope"]["codex_event"])
+
     def test_retention_keeps_acceptance_prompt_that_mentions_synthetic_rows(self) -> None:
         fields = hook.hook_retention_fields(
             text=(
