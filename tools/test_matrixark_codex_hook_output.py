@@ -462,6 +462,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             query="real question",
         )
         additional = output["hookSpecificOutput"]["additionalContext"]
+        self.assertEqual(1, output["retrieve"]["selected_ref_count"])
+        self.assertEqual({"event": 1}, output["retrieve"]["layers"]["selected_ref_counts"])
         self.assertNotIn("Codex hook heartbeat", additional)
         self.assertIn("real TemporalStore question", additional)
 

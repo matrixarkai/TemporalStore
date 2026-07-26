@@ -170,10 +170,12 @@ def retrieval_budget_summary_from_retrieve(pack: Json | None) -> Json:
 def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | None = None) -> Json:
     if not isinstance(pack, dict):
         return {}
-    refs = refs if refs is not None else _selected_refs_from_retrieve(pack)
+    all_refs = _selected_refs_from_retrieve(pack)
+    refs = refs if refs is not None else all_refs
     raw_counts = pack.get("selected_ref_counts")
     selected_ref_counts: Json = {}
-    if isinstance(raw_counts, dict):
+    use_pack_counts = refs is all_refs or len(refs) == len(all_refs)
+    if use_pack_counts and isinstance(raw_counts, dict):
         for key, value in raw_counts.items():
             try:
                 count = int(value)
@@ -448,6 +450,9 @@ def codex_hook_output(
     ingest = ingest or {}
     retrieve = retrieve or {}
     commit = commit or {}
+    emitted_refs = [
+        ref for ref in _selected_refs_from_retrieve(retrieve) if not _ref_is_codex_hook_heartbeat(ref)
+    ]
     output: Json = {
         "status": status,
         "event": event,
@@ -467,10 +472,10 @@ def codex_hook_output(
         "resource_type": resource_type,
         "retrieve": {
             "context_pack_id": retrieve.get("context_pack_id") or retrieve.get("pack_id"),
-            "selected_ref_count": selected_ref_count_from_retrieve(retrieve),
+            "selected_ref_count": len(emitted_refs),
             "used_context_tokens": used_context_tokens_from_retrieve(retrieve),
             "budget": retrieval_budget_summary_from_retrieve(retrieve),
-            "layers": retrieval_layer_summary_from_retrieve(retrieve),
+            "layers": retrieval_layer_summary_from_retrieve(retrieve, emitted_refs),
             "additional_context_emitted": False,
         },
         "session_commit": {
