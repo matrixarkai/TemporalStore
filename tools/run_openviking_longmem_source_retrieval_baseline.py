@@ -99,6 +99,7 @@ def main() -> int:
     total_source_tokens = 0
     retrieval_latencies: list[float] = []
     reader_latencies: list[float] = []
+    progress_path = Path(args.report + ".progress.json")
 
     for query_index, item in enumerate(data):
         question = str(item.get("question") or "")
@@ -158,6 +159,21 @@ def main() -> int:
                 "top_context_preview": context[:700],
             }
         )
+        if (query_index + 1) % 25 == 0 or (query_index + 1) == len(data):
+            write_progress(
+                progress_path,
+                completed=query_index + 1,
+                total=len(data),
+                phase="running_reader",
+                last_query_id=per_query[-1]["query_id"],
+                retrieval_hits=retrieval_hits,
+                reader_hits=reader_hits,
+                reader_error_count=reader_error_count,
+                reader_latencies=reader_latencies,
+                retrieval_latencies=retrieval_latencies,
+                total_retrieved_tokens=total_retrieved_tokens,
+                total_source_tokens=total_source_tokens,
+            )
 
     n = max(1, len(per_query))
     report.update(
@@ -183,6 +199,20 @@ def main() -> int:
         }
     )
     report["benchmark_model_contract"] = benchmark_model_contract(args, report.get("matrixark_reference") or {})
+    write_progress(
+        progress_path,
+        completed=len(per_query),
+        total=len(data),
+        phase="complete",
+        last_query_id=per_query[-1]["query_id"] if per_query else "",
+        retrieval_hits=retrieval_hits,
+        reader_hits=reader_hits,
+        reader_error_count=reader_error_count,
+        reader_latencies=reader_latencies,
+        retrieval_latencies=retrieval_latencies,
+        total_retrieved_tokens=total_retrieved_tokens,
+        total_source_tokens=total_source_tokens,
+    )
     return finish(report, args.report, started, 0)
 
 
@@ -342,6 +372,39 @@ def percentile(values: list[float], pct: float) -> float:
         return round(ordered[int(rank)], 3)
     value = ordered[low] * (high - rank) + ordered[high] * (rank - low)
     return round(value, 3)
+
+
+def write_progress(
+    path: Path,
+    *,
+    completed: int,
+    total: int,
+    phase: str,
+    last_query_id: str,
+    retrieval_hits: int,
+    reader_hits: int,
+    reader_error_count: int,
+    reader_latencies: list[float],
+    retrieval_latencies: list[float],
+    total_retrieved_tokens: int,
+    total_source_tokens: int,
+) -> None:
+    n = max(1, completed)
+    progress = {
+        "schema": "openviking_longmem_reader_progress_v1",
+        "phase": phase,
+        "completed_queries": completed,
+        "total_queries": total,
+        "last_query_id": last_query_id,
+        "retrieval_hit_at_k": retrieval_hits / n,
+        "reader_hit_rate": reader_hits / n,
+        "reader_error_count": reader_error_count,
+        "reader_open_source_calls": completed,
+        "retrieval_p95_ms": percentile(retrieval_latencies, 95),
+        "reader_p95_ms": percentile(reader_latencies, 95),
+        "token_reduction_percent": reduction_percent(total_retrieved_tokens, total_source_tokens),
+    }
+    path.write_text(json.dumps(progress, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def load_matrixark_reference(path: str) -> dict[str, Any]:
