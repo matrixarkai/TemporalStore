@@ -1289,6 +1289,19 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreater(telemetry["remote_context_budget_tokens"], 0)
             self.assertEqual(0, telemetry["used_remote_context_tokens"])
             self.assertIn("memory_layer_budget", telemetry)
+            prompt_replay = MatrixArkMcpServer(MatrixArkLocalAdapter(event_log), line_json=True, access_mode="dev").call_tool(
+                "matrixark_replay",
+                {"scope": telemetry["scope"], "context_pack_id": msg["retrieve"]["context_pack_id"], "enable_replay": True},
+            )
+            prompt_replay_telemetry = [
+                row for row in prompt_replay["events"] if row.get("record_type") == "context_pack_telemetry"
+            ]
+            self.assertTrue(prompt_replay_telemetry, prompt_replay)
+            self.assertEqual(
+                "codex_hook_retrieve",
+                prompt_replay_telemetry[-1]["retrieval_request_metadata"]["retrieval_source"],
+            )
+            self.assertIn("memory_layer_budget", prompt_replay_telemetry[-1])
 
             resource_result = self.run_hook(
                 repo,
