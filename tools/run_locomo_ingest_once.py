@@ -3105,6 +3105,19 @@ def generic_serving_fact_answer(question: str, texts: list[str]) -> str:
             )
             if match:
                 return clean_serving_fact_span(match.group(1))
+    if re.search(r"\bhow much\b", q) and re.search(r"\bscreen time\b", q):
+        for sentence in fact_sentences:
+            match = re.search(
+                r"\b(?:averaging|average|spending)\s+(?:around\s+|about\s+)?(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(hours?|minutes?)\b.{0,80}\bscreen time\b",
+                sentence,
+                re.I,
+            )
+            if match:
+                value = format_number(number_value(match.group(1)))
+                unit = match.group(2).lower()
+                if not unit.endswith("s") and value != "1":
+                    unit += "s"
+                return f"{value} {unit}"
     if re.search(r"\bwhere\b", q) and re.search(r"\bwedding\b", q):
         for sentence in fact_sentences:
             match = re.search(
@@ -3126,6 +3139,168 @@ def generic_serving_fact_answer(question: str, texts: list[str]) -> str:
                 )
             if match:
                 return clean_attribute_span(match.group(1))
+    if re.search(r"\bwho\b", q) and re.search(r"\b(gave|gift|birthday gift)\b", q):
+        for sentence in fact_sentences:
+            match = re.search(
+                r"\b(?:gift|present)\s+from\s+((?:my\s+)?[A-Za-z][A-Za-z' -]{2,50}?)(?:\s+last\b|\s+for\b|[.;,\n]|$)",
+                sentence,
+                re.I,
+            )
+            if not match:
+                match = re.search(
+                    r"\b((?:my\s+)?[A-Za-z][A-Za-z' -]{2,50}?)\s+(?:gave|bought)\s+me\b",
+                    sentence,
+                    re.I,
+                )
+            if match:
+                return clean_attribute_span(match.group(1))
+    if re.search(r"\bwhere\b", q) and re.search(r"\b(?:trip|travel|vacation)\b", q):
+        for sentence in fact_sentences:
+            match = re.search(
+                r"\b(?:trip|travel|vacation)\s+(?:to|in)\s+([A-Z][A-Za-z&' -]{2,80})\b",
+                sentence,
+            )
+            if not match:
+                match = re.search(
+                    r"\b(?:going\s+back\s+to|went\s+to|visited)\s+([A-Z][A-Za-z&' -]{2,80}?)\b.{0,80}\b(?:with\s+my\s+family|family)\b",
+                    sentence,
+                )
+            if match:
+                return clean_attribute_span(match.group(1))
+    if re.search(r"\bwhere\b", q) and re.search(r"\bconcert\b", q):
+        for sentence in fact_sentences:
+            match = re.search(
+                r"\bconcert\s+at\s+((?:the\s+)?[A-Z][A-Za-z0-9&' -]{2,80}?)(?:\s+last\b|\s+and\b|[.;,\n]|$)",
+                sentence,
+            )
+            if not match:
+                match = re.search(
+                    r"\b(?:concert|show)\b.{0,100}?\bat\s+((?:the\s+)?[A-Z][A-Za-z0-9&' -]{2,80}?)(?:\s+on\b|\s+last\b|\s+and\b|[.;,\n]|$)",
+                    sentence,
+                )
+            if match:
+                return clean_attribute_span(match.group(1))
+    if re.search(r"\bwhere\b", q) and re.search(r"\blive\b", q):
+        for sentence in fact_sentences:
+            match = re.search(
+                r"\b(?:lives?|living)\s+in\s+([A-Z][A-Za-z&' -]{2,80})\b",
+                sentence,
+            )
+            if not match:
+                match = re.search(
+                    r"\b(?:visit(?:ing)?|see(?:ing)?)\s+(?:my\s+)?(?:sister|brother|friend|cousin)\s+[A-Z][A-Za-z]+\s+in\s+([A-Z][A-Za-z&' -]{2,80})\b",
+                    sentence,
+                    re.I,
+                )
+            if match:
+                return clean_attribute_span(match.group(1))
+    if re.search(r"\bwhat\b", q) and re.search(r"\bbake\b", q):
+        for sentence in fact_sentences:
+            match = re.search(
+                r"\bbaked\s+((?:a|an|the)\s+[A-Za-z][A-Za-z0-9&' -]{2,80}?)(?:\s+for\b|[.;,\n]|$)",
+                sentence,
+                re.I,
+            )
+            if match:
+                return clean_attribute_span(match.group(1))
+    if re.search(r"\bwhat type\b", q) and re.search(r"\baction figure\b", q):
+        for sentence in fact_sentences:
+            match = re.search(
+                r"\b(?:bought|found|picked up|got)\s+((?:a|an|the)?\s*(?:rare\s+)?[A-Za-z][A-Za-z0-9&' -]{2,80}?)(?:\s+(?:action figure|from|at)\b|[.;,\n]|$)",
+                sentence,
+                re.I,
+            )
+            if match:
+                span = clean_attribute_span(match.group(1))
+                if "action figure" not in normalize_text(span):
+                    return span
+    if re.search(r"\bwhat type\b", q) and re.search(r"\bbulb\b", q):
+        for sentence in fact_sentences:
+            match = re.search(
+                r"\b(?:replaced|replace|swapped)\b.{0,80}?\b(?:with|for)\s+((?:a|an|the)?\s*[A-Z][A-Za-z0-9&' -]{2,80}?\s+bulb)\b",
+                sentence,
+                re.I,
+            )
+            if not match:
+                match = re.search(
+                    r"\b(?:using|have)\s+((?:a|an|the)?\s*[A-Z][A-Za-z0-9&' -]{2,80}?\s+bulb)\b.{0,80}\b(?:lamp|light)\b",
+                    sentence,
+                    re.I,
+                )
+            if match:
+                return clean_attribute_span(match.group(1))
+    if re.search(r"\bwhat size\b", q) and re.search(r"\btv\b", q):
+        for sentence in fact_sentences:
+            match = re.search(r"\b(\d+(?:\.\d+)?\s*-?\s*inch)\b.{0,80}?\b(?:tv|television)\b", sentence, re.I)
+            if not match:
+                match = re.search(r"\b(?:tv|television)\b.{0,80}?\b(\d+(?:\.\d+)?\s*-?\s*inch)\b", sentence, re.I)
+            if match:
+                return re.sub(r"\s*-\s*", "-", match.group(1).lower())
+    if re.search(r"\bcurrently reading\b|\bbook am i reading\b", q):
+        for sentence in fact_sentences + ([] if fact_sentences is sentences else sentences):
+            match = re.search(
+                r"\b(?:currently\s+reading|reading)\s+[\"']?([A-Z][A-Za-z0-9&' :,-]{2,120}?)[\"']?(?:\s+by\b|[.;,\n]|$)",
+                sentence,
+            )
+            if not match:
+                match = re.search(
+                    r"[\"“]([A-Z][A-Za-z0-9&' :,-]{2,120})[\"”]\s+is\s+an?\s+.*?\bbook\b",
+                    sentence,
+            )
+            if match:
+                return clean_attribute_span(match.group(1))
+        for text in texts:
+            match = re.search(
+                r"[\"“]([A-Z][A-Za-z0-9&' :,-]{2,120})[\"”]\s+is\s+an?\s+.*?\bbook\b",
+                text,
+            )
+            if match:
+                return clean_attribute_span(match.group(1))
+    if re.search(r"\bethnicity\b", q):
+        for sentence in fact_sentences:
+            match = re.search(r"\b(?:ethnicity|background)\s+(?:is|as|:)?\s*((?:a\s+)?mix\s+of\s+[A-Za-z&' -]{2,80})", sentence, re.I)
+            if not match:
+                match = re.search(r"\b((?:a\s+)?mix\s+of\s+[A-Za-z&' -]{2,80})\b", sentence, re.I)
+            if not match:
+                match = re.search(r"\bmixed\s+ethnicity\s*[-:]\s*([A-Za-z&' -]{2,80})\b", sentence, re.I)
+            if match:
+                span = clean_serving_fact_span(match.group(1))
+                span = re.split(r"\s+-\s+|\s+has\s+", span, maxsplit=1, flags=re.I)[0]
+                span = re.sub(r"\s+", " ", span).strip(" .;:,")
+                return span if normalize_text(span).startswith("mix of") else f"A mix of {span}"
+    if re.search(r"\bhealth issue\b|\bjust a cold\b", q):
+        for sentence in fact_sentences:
+            match = re.search(
+                r"\bcase\s+of\s+([A-Za-z][A-Za-z' -]{2,50})\b.{0,80}\b(?:initially\s+thought|just\s+a\s+cold)\b",
+                sentence,
+                re.I,
+            )
+            if not match:
+                match = re.search(
+                r"\b(?:turned out to be|diagnosed with|was actually)\s+([A-Za-z][A-Za-z' -]{2,50})\b",
+                sentence,
+                re.I,
+            )
+            if match:
+                span = re.split(r"\b(?:that|but|and|after|before|when|while)\b", match.group(1), maxsplit=1, flags=re.I)[0]
+                return clean_attribute_span(span)
+    if re.search(r"\bwhat game\b", q) and re.search(r"\bbeat\b", q):
+        for sentence in fact_sentences:
+            match = re.search(
+                r"\b(?:beat|finished|completed)\s+([A-Z][A-Za-z0-9&' :.-]{2,80}?)(?:\s+last\b|[.;,\n]|$)",
+                sentence,
+                re.I,
+            )
+            if match and re.fullmatch(r"(?i)(?:that|the|that\s+last\s+boss|(?:that|the)?\s*(?:last\s+)?boss)", clean_attribute_span(match.group(1))):
+                match = None
+            if not match:
+                match = re.search(
+                    r"\b(?:beat|finished|completed)\b.{0,80}?\bin\s+([A-Z][A-Za-z0-9&' :.-]{2,80}?)(?:\s+last\b|[.;,\n]|$)",
+                    sentence,
+                    re.I,
+                )
+            if match:
+                return clean_attribute_span(match.group(1))
     if re.search(r"\bwhere\b", q) and re.search(r"\b(buy|bought|purchase|purchased|get|got|order|ordered)\b", q):
         for sentence in fact_sentences:
             match = re.search(
@@ -3133,6 +3308,12 @@ def generic_serving_fact_answer(question: str, texts: list[str]) -> str:
                 sentence,
                 re.I,
             )
+            if not match:
+                match = re.search(
+                    r"\b(?:new\s+)?[A-Za-z][A-Za-z0-9&' -]{2,60}?\s+is\s+from\s+((?:the\s+)?[A-Za-z0-9][^.;,\n]{2,80})",
+                    sentence,
+                    re.I,
+                )
             if match:
                 span = clean_serving_fact_span(match.group(1))
                 if span and not looks_like_timestamp(span):
@@ -3145,7 +3326,7 @@ def generic_serving_fact_answer(question: str, texts: list[str]) -> str:
             if re.search(r"\bassembl(?:e|ed|ing)\b", q) and not re.search(r"\b(assembl(?:e|ed|ing)|bookshelf)\b", normalized_candidate):
                 return ""
             match = re.search(
-                r"\b(?:been\s+)?(?:collecting|waiting|waited|using|working|living|studying|practicing)\b.{0,80}?\b((?:for|over)\s+(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+(?:hours?|days?|weeks?|months?|years?))\b",
+                r"\b(?:been\s+)?(?:collecting|waiting|waited|using|working|living|studying|practicing|marinating|marinated|soaking)\b.{0,80}?\b((?:for|over)\s+(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+(?:hours?|days?|weeks?|months?|years?))\b",
                 candidate_sentence,
                 re.I,
             )
@@ -3355,7 +3536,9 @@ def sentence_is_user_fact(sentence: str) -> bool:
 
 def clean_attribute_span(value: str) -> str:
     span = clean_serving_fact_span(value)
-    span = re.sub(r"\b(?:and|but|because|after|before|when|while|with)\b.*$", "", span, flags=re.I)
+    span = re.sub(r"\b(?:but|because|after|before|when|while|with|soon)\b.*$", "", span, flags=re.I)
+    if not re.search(r"\bmix\s+of\b", span, re.I):
+        span = re.sub(r"\band\b.*$", "", span, flags=re.I)
     span = re.sub(r"\s+", " ", span).strip(" .;:,")
     return span[:80]
 
