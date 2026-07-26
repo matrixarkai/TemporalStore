@@ -23,6 +23,22 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(hasattr(server_mod, "MatrixArkLocalAdapter"))
         self.assertGreaterEqual(len(schemas_mod.TOOLS), 10)
 
+    def test_memory_phase_and_retrieval_budget_fields_are_public_schema(self) -> None:
+        schemas_mod = importlib.import_module("tools.matrixark_mcp_schemas")
+        tools_by_name = {tool["name"]: tool for tool in schemas_mod.TOOLS}
+        session_props = tools_by_name["matrixark_session_commit"]["inputSchema"]["properties"]
+        batch_props = tools_by_name["matrixark_batch_extract"]["inputSchema"]["properties"]
+        retrieve_props = tools_by_name["matrixark_retrieve"]["inputSchema"]["properties"]
+
+        self.assertEqual(["provisional", "final", "standalone"], session_props["extraction_phase"]["enum"])
+        self.assertEqual(["provisional", "final", "standalone"], batch_props["extraction_phase"]["enum"])
+        self.assertIn("final_session_boundary", session_props)
+        self.assertIn("final_session_boundary", batch_props)
+        self.assertIn("include_retrieval_metrics", retrieve_props)
+        self.assertIn("include_retrieval_debug", retrieve_props)
+        self.assertIn("debug_context_pack", retrieve_props)
+        self.assertIn("remote MatrixArk budget", retrieve_props["local_context_safety_margin_tokens"]["description"])
+
     def test_direct_tools_path_imports_still_work_for_script_launches(self) -> None:
         sys.path.insert(0, str(TOOLS_DIR))
         try:
