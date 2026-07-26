@@ -1612,24 +1612,36 @@ class MatrixArkLocalAdapter:
             source_roles = sorted(
                 {
                     str(role).strip()
-                    for record in entity_states
-                    for role in (record.get("source_roles") if isinstance(record.get("source_roles"), list) else [])
+                    for record in events + entity_states + child_summaries
+                    for role in (
+                        record.get("source_roles")
+                        if isinstance(record.get("source_roles"), list)
+                        else [record.get("source_role")]
+                    )
                     if str(role or "").strip()
                 }
             )
             source_hook_types = sorted(
                 {
                     str(hook_type).strip()
-                    for record in entity_states
-                    for hook_type in (record.get("source_hook_types") if isinstance(record.get("source_hook_types"), list) else [])
+                    for record in events + entity_states + child_summaries
+                    for hook_type in (
+                        record.get("source_hook_types")
+                        if isinstance(record.get("source_hook_types"), list)
+                        else [record.get("hook_type")]
+                    )
                     if str(hook_type or "").strip()
                 }
             )
             source_codex_events = sorted(
                 {
                     str(codex_event).strip()
-                    for record in entity_states
-                    for codex_event in (record.get("source_codex_events") if isinstance(record.get("source_codex_events"), list) else [])
+                    for record in events + entity_states + child_summaries
+                    for codex_event in (
+                        record.get("source_codex_events")
+                        if isinstance(record.get("source_codex_events"), list)
+                        else [record.get("codex_event")]
+                    )
                     if str(codex_event or "").strip()
                 }
             )

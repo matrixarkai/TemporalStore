@@ -813,6 +813,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(summary_layer_budget["by_entity_type"]["assistant_decision"]["refs"], 1)
             self.assertGreaterEqual(summary_layer_budget["by_source_role"]["assistant"]["refs"], 1)
             self.assertGreaterEqual(summary_layer_budget["by_hook_type"]["hook_boundary"]["refs"], 1)
+            self.assertGreaterEqual(summary_layer_budget["by_codex_event"]["Stop"]["refs"], 1)
             self.assertGreaterEqual(summary_layer_budget["final_session_boundary_ref_count"], 1)
             serving_summary_pack = compact_context_pack_for_serving(summary_pack)
             served_items = [
@@ -840,6 +841,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                             "source_session_continuities": record.get("source_session_continuities", []),
                             "source_extraction_phases": record.get("source_extraction_phases", []),
                             "source_final_session_boundary_count": record.get("source_final_session_boundary_count", 0),
+                            "source_roles": record.get("source_roles", []),
+                            "source_hook_types": record.get("source_hook_types", []),
+                            "source_codex_events": record.get("source_codex_events", []),
                         }
                         for record in profile_summaries
                     ],
@@ -855,6 +859,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(any("user_profile" in item.get("source_memory_scopes", []) for item in summary_items))
             self.assertTrue(any("cross_session" in item.get("source_session_continuities", []) for item in summary_items))
             self.assertTrue(any("final" in item.get("source_extraction_phases", []) for item in summary_items))
+            self.assertTrue(any("assistant" in item.get("source_roles", []) for item in summary_items))
+            self.assertTrue(any("hook_boundary" in item.get("source_hook_types", []) for item in summary_items))
+            self.assertTrue(any("Stop" in item.get("source_codex_events", []) for item in summary_items))
             self.assertTrue(any(item.get("final_session_boundary") is True for item in summary_items))
 
     def test_profile_entity_updates_preserve_cross_session_lineage(self) -> None:

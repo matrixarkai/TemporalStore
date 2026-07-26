@@ -2364,7 +2364,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
     def test_parent_summary_uses_child_summaries_and_state_not_recursive_raw_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
-            scope = mcp.enrich_scope_with_identity(
+            scope = mcp_core.enrich_scope_with_identity(
                 {"session_id": "parent-summary-session"},
                 {
                     "account_id": "acct_local",
@@ -2398,6 +2398,9 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                         "node_hash": child_hash,
                         "node_path": child_path,
                         "summary_text": "Child summary says finance approved the GPU budget.",
+                        "source_roles": ["assistant"],
+                        "source_hook_types": ["hook_boundary"],
+                        "source_codex_events": ["Stop"],
                         "scope": scope,
                         "updated_at_ms": 1780000000100,
                     },
@@ -2409,6 +2412,9 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                         "entity_type": "approval_state",
                         "entity_name": "gpu_purchase",
                         "state": "Alice approved the GPU purchase after finance review.",
+                        "source_roles": ["user"],
+                        "source_hook_types": ["live_ingest"],
+                        "source_codex_events": ["UserPromptSubmit"],
                         "scope": scope,
                         "updated_at_ms": 1780000000200,
                     },
@@ -2428,6 +2434,9 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                         "node_hash": child_hash,
                         "node_path": child_path,
                         "text": "RAW_LEAF_SHOULD_NOT_APPEAR_IN_PARENT_SUMMARY",
+                        "source_role": "tool",
+                        "hook_type": "hook_boundary",
+                        "codex_event": "PostToolUse",
                         "scope": scope,
                         "updated_at_ms": 1780000000400,
                     },
@@ -2473,6 +2482,84 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 self.assertIn(child_summary_hash, summary["source_summary_hashes"])
                 self.assertIn(entity_hash, summary["source_entity_hashes"])
                 self.assertIn(compression_hash, summary["source_operator_hashes"])
+                self.assertEqual(["assistant", "user"], summary["source_roles"])
+                self.assertEqual(["hook_boundary", "live_ingest"], summary["source_hook_types"])
+                self.assertEqual(["Stop", "UserPromptSubmit"], summary["source_codex_events"])
+
+    def test_leaf_summary_preserves_raw_event_hook_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            scope = mcp_core.enrich_scope_with_identity(
+                {"session_id": "leaf-summary-session"},
+                {
+                    "account_id": "acct_local",
+                    "tenant_id": "tenant_codex",
+                    "user_id": "codex_user",
+                    "session_id": "",
+                    "agent_name": "codex",
+                    "mode": "dev",
+                },
+            )
+            node_path = ["tenant:tenant_codex", "user:codex_user", "session:leaf-summary-session"]
+            node_hash = mcp_core.stable_hash("/".join(node_path))
+            dirty_hash = mcp_core.stable_hash("leaf-summary-dirty")
+            adapter.ensure_context_node_path(
+                node_path=node_path,
+                scope=scope,
+                updated_at_ms=1780000000000,
+            )
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": mcp_core.stable_hash("leaf-user-event"),
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "text": "User asked whether memory should wait for Stop.",
+                        "source_role": "user",
+                        "hook_type": "live_ingest",
+                        "codex_event": "UserPromptSubmit",
+                        "scope": scope,
+                        "updated_at_ms": 1780000000100,
+                    },
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": mcp_core.stable_hash("leaf-tool-event"),
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "text": "Tool evidence: Exit code: 0 proved threshold commit worked.",
+                        "source_role": "tool",
+                        "hook_type": "hook_boundary",
+                        "codex_event": "PostToolUse",
+                        "scope": scope,
+                        "updated_at_ms": 1780000000200,
+                    },
+                    {
+                        "record_type": "context_summary_dirty",
+                        "dirty_hash": dirty_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "dirty_reason": "new_event",
+                        "source_ref_type": "event",
+                        "scope": scope,
+                        "status": "pending",
+                        "updated_at_ms": 1780000000300,
+                    },
+                ]
+            )
+
+            result = adapter.refresh_dirty_node_summaries(scope=scope, limit=4, refreshed_at_ms=1780000000400)
+            self.assertEqual("ok", result["status"])
+            summaries = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") == "context_summary" and record.get("dirty_hash") == dirty_hash
+            ]
+            self.assertTrue(summaries)
+            for summary in summaries:
+                self.assertEqual(["tool", "user"], summary["source_roles"])
+                self.assertEqual(["hook_boundary", "live_ingest"], summary["source_hook_types"])
+                self.assertEqual(["PostToolUse", "UserPromptSubmit"], summary["source_codex_events"])
 
     def test_production_profile_rejects_local_storage(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"
