@@ -15,6 +15,10 @@ def prepare_batch_extract_start(args: Json, *, hook: Json | None) -> Json:
     threshold = args.get("threshold_messages", 20)
     force = bool(args.get("force", False))
     derive_from_existing_events = bool(args.get("derive_from_existing_events", False))
+    extraction_phase = str(args.get("extraction_phase") or "").strip().lower()
+    if extraction_phase not in {"provisional", "final", "standalone"}:
+        extraction_phase = "final" if force else "provisional"
+    final_session_boundary = bool(args.get("final_session_boundary", extraction_phase == "final"))
     source_event_ids = (
         [int(ref) for ref in args.get("source_event_ids", [])]
         if isinstance(args.get("source_event_ids", []), list)
@@ -37,5 +41,7 @@ def prepare_batch_extract_start(args: Json, *, hook: Json | None) -> Json:
         "force": force,
         "derive_from_existing_events": derive_from_existing_events,
         "source_event_ids": source_event_ids,
+        "extraction_phase": extraction_phase,
+        "final_session_boundary": final_session_boundary,
         "deferred_result": deferred_result,
     }

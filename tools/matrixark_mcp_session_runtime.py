@@ -94,6 +94,9 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "idle_elapsed_ms": idle_elapsed_ms,
             "reason": "session buffer below extraction threshold and idle timeout not reached",
         }
+    trigger_policy = "force" if force else "idle_timeout" if idle_ready else "threshold"
+    extraction_phase = "final" if force else "provisional"
+    final_session_boundary = extraction_phase == "final"
     if max_messages is not None:
         commit_limit = max_messages
     elif force or idle_ready:
@@ -130,6 +133,8 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "force": True,
             "derive_from_existing_events": True,
             "source_event_ids": source_event_ids,
+            "extraction_phase": extraction_phase,
+            "final_session_boundary": final_session_boundary,
             "understanding_provider": args.get("understanding_provider"),
             "extraction_provider": args.get("extraction_provider"),
             "segment_provider": args.get("segment_provider"),
@@ -154,7 +159,9 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "message_count": len(messages),
             "threshold_messages": threshold,
             "commit_reason": commit_reason,
-            "trigger_policy": "force" if force else "idle_timeout" if idle_ready else "threshold",
+            "trigger_policy": trigger_policy,
+            "extraction_phase": extraction_phase,
+            "final_session_boundary": final_session_boundary,
             "pending_event_count_before_commit": pending_event_count,
             "committed_event_count": len(source_event_ids),
             "idle_timeout_ms": idle_timeout_ms,
@@ -175,7 +182,9 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         "committed_event_count": len(source_event_ids),
         "source_event_ids": source_event_ids,
         "commit_reason": commit_reason,
-        "trigger_policy": "force" if force else "idle_timeout" if idle_ready else "threshold",
+        "trigger_policy": trigger_policy,
+        "extraction_phase": extraction_phase,
+        "final_session_boundary": final_session_boundary,
         "idle_timeout_ms": idle_timeout_ms,
         "idle_elapsed_ms": idle_elapsed_ms,
         "raw_events_duplicated": False,

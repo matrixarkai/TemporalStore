@@ -143,6 +143,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertEqual("committed", second["auto_batch_extract_result"]["status"])
             self.assertEqual("threshold", second["auto_batch_extract_result"]["trigger_policy"])
+            self.assertEqual("provisional", second["auto_batch_extract_result"]["extraction_phase"])
+            self.assertFalse(second["auto_batch_extract_result"]["final_session_boundary"])
             self.assertEqual(2, second["auto_batch_extract_result"]["committed_event_count"])
 
             third = adapter.ingest(
@@ -165,11 +167,15 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertEqual("committed", idle["status"])
             self.assertEqual("idle_timeout", idle["trigger_policy"])
+            self.assertEqual("provisional", idle["extraction_phase"])
+            self.assertFalse(idle["final_session_boundary"])
             self.assertEqual(1, idle["committed_event_count"])
 
             records = adapter.read_all()
             commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
             self.assertEqual(2, len(commits))
+            self.assertTrue(all(commit.get("extraction_phase") == "provisional" for commit in commits))
+            self.assertTrue(all(commit.get("final_session_boundary") is False for commit in commits))
             committed_ids = {
                 int(event_id)
                 for commit in commits
@@ -243,6 +249,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertEqual("committed", stop["status"])
             self.assertEqual("force", stop["trigger_policy"])
+            self.assertEqual("final", stop["extraction_phase"])
+            self.assertTrue(stop["final_session_boundary"])
             self.assertEqual(2, stop["committed_event_count"])
             self.assertEqual(
                 [int(record["event_id_hash"]) for record in pending_before_stop],
@@ -265,6 +273,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
             self.assertEqual(1, len(commits))
             self.assertEqual(2, commits[0]["committed_event_count"])
+            self.assertEqual("final", commits[0]["extraction_phase"])
+            self.assertTrue(commits[0]["final_session_boundary"])
             assistant_decisions = [
                 record
                 for record in records

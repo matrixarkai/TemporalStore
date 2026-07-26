@@ -58,6 +58,10 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
     threshold = batch_start["threshold"]
     derive_from_existing_events = bool(batch_start["derive_from_existing_events"])
     source_event_ids = list(batch_start["source_event_ids"])
+    extraction_phase = str(batch_start.get("extraction_phase") or "").strip().lower()
+    if extraction_phase not in {"provisional", "final", "standalone"}:
+        extraction_phase = "final" if bool(batch_start.get("force")) else "provisional"
+    final_session_boundary = bool(batch_start.get("final_session_boundary", extraction_phase == "final"))
     if batch_start.get("deferred_result") is not None:
         return batch_start["deferred_result"]
 
@@ -132,6 +136,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "prior_context": prior_context,
                     "agent_hook": hook,
                     "storage_options": envelope.get("storage_options", {}),
+                    "extraction_phase": extraction_phase,
+                    "final_session_boundary": final_session_boundary,
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
@@ -182,6 +188,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "field_patches": updated_entity.get("field_patches", []),
                 "patch_results": updated_entity.get("patch_results", []),
                 "update_mode": updated_entity.get("update_mode", ""),
+                "extraction_phase": extraction_phase,
+                "final_session_boundary": final_session_boundary,
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
         )
@@ -241,6 +249,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "summary_text": segment["summary_text"],
                 "text": segment["text"],
                 "non_contiguous": segment["non_contiguous"],
+                "extraction_phase": extraction_phase,
+                "final_session_boundary": final_session_boundary,
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
         )
@@ -276,6 +286,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             "source_segment_hashes": segment_hashes,
             "source_event_ids": event_hashes,
             "scope": envelope["scope"],
+            "extraction_phase": extraction_phase,
+            "final_session_boundary": final_session_boundary,
             "updated_at_ms": envelope["ingestion_time_ms"],
         }
     )
@@ -330,6 +342,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             "mode": extraction["mode"],
             "derive_from_existing_events": derive_from_existing_events,
             "source_event_ids": event_hashes,
+            "extraction_phase": extraction_phase,
+            "final_session_boundary": final_session_boundary,
             "agent_hook": hook,
             "created_at_ms": now_ms(),
         }
@@ -378,4 +392,6 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         **secondary_index_budget_summary(secondary_index_budget),
         "one_pass": True,
         "threshold_messages": threshold,
+        "extraction_phase": extraction_phase,
+        "final_session_boundary": final_session_boundary,
     }
