@@ -74,6 +74,10 @@ def entity_candidate(
         "node_score": node_score,
         "matched_index_terms": sorted(index_terms),
         "selection_reason": (
+            "selected as cross-session user-profile entity bridge"
+            if str(record.get("memory_scope") or "") == "user_profile"
+            and str(record.get("session_continuity") or "") == "cross_session"
+            else
             "selected by tree path, secondary indexes, and resource entity state score"
             if record.get("source_chunk_hash")
             else "selected by tree path, secondary indexes, and entity state score"
@@ -83,6 +87,13 @@ def entity_candidate(
         "context_class": "resource_entity_fact" if record.get("source_chunk_hash") else "entity",
         "source_chunk_hash": record.get("source_chunk_hash"),
         "source_ref": record.get("source_ref", ""),
+        "source_roles": record.get("source_roles", []),
+        "source_hook_types": record.get("source_hook_types", []),
+        "source_codex_events": record.get("source_codex_events", []),
+        "source_session_ids": record.get("source_session_ids", []),
+        "source_entity_hashes": record.get("source_entity_hashes", []),
+        "memory_scope": record.get("memory_scope", ""),
+        "session_continuity": record.get("session_continuity", ""),
         "metadata": record.get("metadata", {}),
         "scope": candidate_access_scope(record),
         "updated_at_ms": record.get("updated_at_ms", now_ms()),
