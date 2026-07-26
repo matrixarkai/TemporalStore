@@ -472,7 +472,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     evidence and citations.
     """
     _ = include_debug
-    compact: Json = {"context_pack_id": pack.get("context_pack_id", "")}
+    compact: Json = {"context_pack_id": pack.get("context_pack_id") or pack.get("pack_id") or ""}
     selected_refs = pack.get("selected_refs", [])
     if isinstance(selected_refs, list) and (selected_refs or not isinstance(pack.get("groups"), list)):
         default_session_continuity = default_session_continuity_for_pack(selected_refs)

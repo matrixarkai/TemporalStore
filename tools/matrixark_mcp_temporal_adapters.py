@@ -21,6 +21,7 @@ try:
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
         _mcp_debug_log,
+        compact_context_pack_for_serving_flat as compact_context_pack_for_serving,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import *
@@ -36,6 +37,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
         _mcp_debug_log,
+        compact_context_pack_for_serving_flat as compact_context_pack_for_serving,
     )
 
 try:
