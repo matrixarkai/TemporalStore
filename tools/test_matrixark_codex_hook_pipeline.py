@@ -325,6 +325,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     **base_args,
                     "auto_batch_extract": False,
                     "messages": [{"role": "tool", "content": "Exit code: 0\nRan 3 tests in 0.01s\nOK"}],
+                    "metadata": {"hook_type": "hook_boundary", "codex_event": "PostToolUse"},
                 }
             )
             self.assertEqual(1, third["session_buffer"]["pending_event_count"])
@@ -404,6 +405,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             ]
             self.assertTrue(profile_tool_entities)
             self.assertTrue(any("Exit code: 0" in str(record.get("state") or "") for record in profile_tool_entities))
+            self.assertTrue(any("tool" in record.get("source_roles", []) for record in profile_tool_entities))
+            self.assertTrue(any("hook_boundary" in record.get("source_hook_types", []) for record in profile_tool_entities))
+            self.assertTrue(any("PostToolUse" in record.get("source_codex_events", []) for record in profile_tool_entities))
             pack = adapter.retrieve(
                 {
                     "scope": {**scope, "session_id": "later_async_session"},
@@ -426,10 +430,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(selected_tool_refs, selected_refs)
             self.assertTrue(any("Exit code: 0" in str(ref.get("text") or "") for ref in selected_tool_refs))
             self.assertTrue(any(scope["session_id"] in ref.get("source_session_ids", []) for ref in selected_tool_refs))
+            self.assertTrue(any("tool" in ref.get("source_roles", []) for ref in selected_tool_refs))
+            self.assertTrue(any("hook_boundary" in ref.get("source_hook_types", []) for ref in selected_tool_refs))
+            self.assertTrue(any("PostToolUse" in ref.get("source_codex_events", []) for ref in selected_tool_refs))
             budget = pack["memory_layer_budget"]
             self.assertGreaterEqual(budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(budget["by_session_continuity"]["cross_session"]["refs"], 1)
             self.assertGreaterEqual(budget["by_extraction_phase"]["provisional"]["refs"], 1)
+            self.assertGreaterEqual(budget["by_source_role"]["tool"]["refs"], 1)
+            self.assertGreaterEqual(budget["by_hook_type"]["hook_boundary"]["refs"], 1)
+            self.assertGreaterEqual(budget["by_codex_event"]["PostToolUse"]["refs"], 1)
 
     def test_lightweight_async_ingest_threshold_defaults_to_auto_batch_for_messages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

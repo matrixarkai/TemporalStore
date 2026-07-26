@@ -55,6 +55,7 @@ def append_session_buffer_event(
             "node_path": node_path,
             "scope": envelope["scope"],
             "status": "pending",
+            "envelope": envelope,
             "agent_hook": hook,
             "created_at_ms": envelope["ingestion_time_ms"],
         }
@@ -140,7 +141,24 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
     pending = pending_all[:commit_limit] if commit_limit is not None else pending_all
     messages = []
     source_event_ids = []
+    pending_source_hook_types: set[str] = set()
+    pending_source_codex_events: set[str] = set()
     for record in pending:
+        event_envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else {}
+        event_metadata = event_envelope.get("metadata", {}) if isinstance(event_envelope.get("metadata"), dict) else {}
+        event_hook = record.get("agent_hook", {}) if isinstance(record.get("agent_hook"), dict) else {}
+        for value in [event_envelope.get("hook_type"), event_metadata.get("hook_type"), event_hook.get("hook_type")]:
+            if str(value or "").strip():
+                pending_source_hook_types.add(str(value).strip())
+        for values in [event_metadata.get("source_hook_types")]:
+            if isinstance(values, list):
+                pending_source_hook_types.update(str(value).strip() for value in values if str(value or "").strip())
+        for value in [event_envelope.get("codex_event"), event_metadata.get("codex_event"), event_hook.get("codex_event"), event_hook.get("trigger")]:
+            if str(value or "").strip():
+                pending_source_codex_events.add(str(value).strip())
+        for values in [event_metadata.get("source_codex_events")]:
+            if isinstance(values, list):
+                pending_source_codex_events.update(str(value).strip() for value in values if str(value or "").strip())
         message = message_from_event_record(record)
         if not message:
             continue
@@ -198,6 +216,14 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         if record.get("event_id_hash") is not None
     ]
     metadata = optional_object(args, "metadata")
+    if pending_source_hook_types:
+        metadata = {**metadata, "source_hook_types": sorted(pending_source_hook_types)}
+        if "hook_type" not in metadata and len(pending_source_hook_types) == 1:
+            metadata["hook_type"] = next(iter(pending_source_hook_types))
+    if pending_source_codex_events:
+        metadata = {**metadata, "source_codex_events": sorted(pending_source_codex_events)}
+        if "codex_event" not in metadata and len(pending_source_codex_events) == 1:
+            metadata["codex_event"] = next(iter(pending_source_codex_events))
     storage_options = normalize_storage_options(args, metadata)
     if "node_path" not in metadata:
         metadata = {**metadata, "node_path": adapter.default_session_node_path(scope)}
