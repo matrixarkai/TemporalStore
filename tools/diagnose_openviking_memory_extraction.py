@@ -7,6 +7,8 @@ import argparse
 import csv
 import json
 import re
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,10 @@ def main() -> int:
     vlm_tokens = sum_int(rows, "vlm_tokens")
     embedding_tokens = sum_int(rows, "embedding_tokens")
     extraction_enabled = bool((config.get("memory") or {}).get("extraction_enabled"))
+    vlm_api_base = ((config.get("vlm") or {}).get("api_base"))
+    embedding_api_base = (((config.get("embedding") or {}).get("dense") or {}).get("api_base"))
+    vlm_endpoint_probe = probe_openai_models(vlm_api_base)
+    embedding_endpoint_probe = probe_openai_models(embedding_api_base)
     report: dict[str, Any] = {
         "schema": "matrixark_openviking_memory_extraction_diagnosis_v1",
         "config": args.config,
@@ -41,11 +47,21 @@ def main() -> int:
         "total_extracted_memories": sum(extracted_counts),
         "vlm_provider": ((config.get("vlm") or {}).get("provider")),
         "vlm_model": ((config.get("vlm") or {}).get("model")),
-        "vlm_api_base": ((config.get("vlm") or {}).get("api_base")),
+        "vlm_api_base": vlm_api_base,
+        "vlm_endpoint_probe": vlm_endpoint_probe,
         "embedding_model": (((config.get("embedding") or {}).get("dense") or {}).get("model")),
+        "embedding_api_base": embedding_api_base,
+        "embedding_endpoint_probe": embedding_endpoint_probe,
         "baseline_ready": extraction_enabled and sum(extracted_counts) > 0,
         "direct_source_fallback_required": not (extraction_enabled and sum(extracted_counts) > 0),
-        "likely_gap": infer_gap(extraction_enabled, embedding_tokens, vlm_tokens, completion_tokens, extracted_counts),
+        "likely_gap": infer_gap(
+            extraction_enabled,
+            embedding_tokens,
+            vlm_tokens,
+            completion_tokens,
+            extracted_counts,
+            vlm_endpoint_probe,
+        ),
     }
     Path(args.report).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(args.report)
@@ -82,16 +98,34 @@ def infer_gap(
     vlm_tokens: int,
     completion_tokens: int,
     extracted_counts: list[int],
+    vlm_endpoint_probe: dict[str, Any],
 ) -> str:
     if not extraction_enabled:
         return "memory_extraction_disabled"
+    if not vlm_endpoint_probe.get("ok"):
+        return "configured_vlm_endpoint_unreachable_or_not_openai_compatible"
     if embedding_tokens > 0 and vlm_tokens == 0 and completion_tokens == 0:
-        return "messages_archived_and_embedded_but_no_chat_completion_tokens_recorded_for_memory_extraction"
+        return "messages_archived_and_embedded_but_openviking_did_not_record_chat_completion_usage_for_memory_extraction"
     if extracted_counts and sum(extracted_counts) == 0:
         return "memory_extractor_completed_but_returned_zero_memories"
     if not extracted_counts:
         return "no_memory_extraction_completion_log_found"
     return "unknown"
+
+
+def probe_openai_models(api_base: str | None) -> dict[str, Any]:
+    if not api_base:
+        return {"ok": False, "error": "missing_api_base"}
+    url = api_base.rstrip("/") + "/models"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            body = resp.read(4096).decode("utf-8", errors="replace")
+        return {"ok": True, "status": resp.status, "url": url, "body_prefix": body[:500]}
+    except urllib.error.HTTPError as exc:
+        body = exc.read(1024).decode("utf-8", errors="replace")
+        return {"ok": False, "status": exc.code, "url": url, "error": body[:500]}
+    except Exception as exc:  # noqa: BLE001 - local diagnostic should surface the concrete issue.
+        return {"ok": False, "url": url, "error": f"{type(exc).__name__}: {exc}"}
 
 
 if __name__ == "__main__":
