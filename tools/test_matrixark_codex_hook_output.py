@@ -237,6 +237,13 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     "context_pack_id": "pack-1",
                     "selected_ref_count": 2,
                     "budget": {"remote_context_budget_tokens": 100, "used_remote_context_tokens": 12},
+                    "layers": {
+                        "selected_ref_counts": {"event": 1, "entity": 1},
+                        "same_session_refs": 1,
+                        "cross_session_refs": 1,
+                        "entity_bridge_refs": 1,
+                        "profile_memory_refs": 1,
+                    },
                 },
                 "ingest": {"status": "accepted"},
                 "session_commit": {"status": "deferred"},
@@ -253,6 +260,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("ok", record["status"])
         self.assertEqual("pack-1", record["output_summary"]["context_pack_id"])
         self.assertEqual(100, record["output_summary"]["retrieval_budget"]["remote_context_budget_tokens"])
+        self.assertEqual({"event": 1, "entity": 1}, record["output_summary"]["retrieval_layers"]["selected_ref_counts"])
+        self.assertEqual(1, record["output_summary"]["retrieval_layers"]["cross_session_refs"])
+        self.assertEqual(1, record["output_summary"]["retrieval_layers"]["profile_memory_refs"])
         self.assertTrue(record["output_summary"]["strict_additional_context_emitted"])
 
     def test_user_prompt_emit_codex_additional_context_from_selected_refs(self) -> None:
