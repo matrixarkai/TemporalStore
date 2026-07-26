@@ -2158,12 +2158,12 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
             pending_event_count = len(pending_session_events(scope))
         except Exception:
             pending_event_count = 0
+    should_boundary_commit = should_commit_session(args.event)
     should_threshold_commit = (
-        args.event == "UserPromptSubmit"
+        not should_boundary_commit
         and HOOK_AUTO_BATCH_EXTRACT
         and pending_event_count >= threshold
     )
-    should_boundary_commit = should_commit_session(args.event)
     should_idle_commit = should_boundary_commit and commit_reason_for_event(args.event) == "idle_timeout"
     if callable(session_commit) and (should_threshold_commit or should_boundary_commit):
         commit_reason = commit_reason_for_event(args.event) if should_boundary_commit else "threshold"
