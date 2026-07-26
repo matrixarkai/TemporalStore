@@ -37,6 +37,13 @@ OpenViking/VikingMem JSON artifacts before token-savings or reader-quality claim
 It fails closed by default on diagnostic-only rows, reader fallback/errors, and prompt-policy drift;
 exceptions must be explicitly marked with the diagnostic flags.
 
+The benchmark runners also enforce this before report publication. When a MatrixArk run declares a
+baseline provider, baseline reader model, baseline embedding model, retrieved-event budget, or
+reader context budget, `tools/run_locomo_ingest_once.py` automatically treats
+`require_shared_oss_models=true`. The only escape hatch is
+`--allow-shared-oss-model-drift`, which is diagnostic-only and must not be used for MatrixArk vs
+OpenViking/VikingMem quality or token-savings claims.
+
 ## Readiness Levels
 
 Context benchmark readiness and VikingMem paper-comparable claims are separate gates:
@@ -117,6 +124,30 @@ python3 tools/run_longmemeval_s_full_path.py \
   --reader-mode deterministic \
   --report /tmp/temporalstore_longmemeval_full_threshold_policy_result.json \
   --misses /tmp/temporalstore_longmemeval_full_threshold_policy_misses.jsonl
+```
+
+Fair MatrixArk vs OpenViking/VikingMem OSS comparison example:
+
+```bash
+python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile oss_reader_full \
+  --input /tmp/longmemeval_s.json \
+  --reader-mode open-source \
+  --reader-provider-name matrixark-qwen-local \
+  --reader-model qwen2.5:1.5b \
+  --embedding-model matrixark-hash-embedding-32 \
+  --max-events 64 \
+  --reader-max-context-chars 4000 \
+  --baseline-provider-name openviking-qwen-local \
+  --baseline-reader-model qwen2.5:1.5b \
+  --baseline-embedding-model matrixark-hash-embedding-32 \
+  --baseline-max-events 64 \
+  --baseline-reader-max-context-chars 4000 \
+  --reader-no-fallback
+
+python3 tools/validate_oss_model_contract.py \
+  --report /tmp/matrixark_longmemeval_report.json --label matrixark \
+  --report /tmp/openviking_longmemeval_report.json --label openviking
 ```
 
 LOCOMO and LongMemEval_s wrappers require the Rust TemporalStore backend by default. That path
