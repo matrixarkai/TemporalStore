@@ -46,6 +46,19 @@ def initialize_rust_proxy_metrics_state(target: Any) -> None:
     target._cache_misses_total = 0
     target._selected_refs_total = 0
     target._dropped_refs_total = 0
+    target._memory_layer_budget_totals: dict[str, Any] = {
+        "by_memory_scope": {},
+        "by_session_continuity": {},
+        "by_extraction_phase": {},
+        "by_entity_type": {},
+        "by_source_role": {},
+        "by_hook_type": {},
+        "final_session_boundary_ref_count": 0,
+        "provisional_ref_count": 0,
+        "final_ref_count": 0,
+        "total_selected_refs": 0,
+        "total_selected_tokens": 0,
+    }
     target._context_record_counts: dict[str, int] = {}
     target._publish_visibility_calls_total = 0
     target._publish_visibility_keys_total = 0

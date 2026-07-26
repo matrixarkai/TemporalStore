@@ -20,6 +20,10 @@ def metrics_snapshot(client: Any) -> Json:
         elapsed_s = max(0.001, time.time() - self._started_at)
         samples = list(self._latency_samples_ms)
         context_counts = dict(sorted(self._context_record_counts.items()))
+        memory_layer_budget_totals = {
+            key: (dict(value) if isinstance(value, dict) else value)
+            for key, value in self._memory_layer_budget_totals.items()
+        }
         lane_samples = {lane: list(values) for lane, values in self._lane_latency_samples_ms.items()}
         lane_metrics = {
             lane: {
@@ -58,6 +62,8 @@ def metrics_snapshot(client: Any) -> Json:
                 "control": self._lane_worker_counts.get("control", 0),
             },
             "lanes": lane_metrics,
+            "lane_metrics": lane_metrics,
+            "lane_worker_counts": dict(self._lane_worker_counts),
             "write_pool_size": self._lane_worker_counts.get("write", 0),
             "read_pool_size": self._lane_worker_counts.get("read", 0),
             "pack_pool_size": self._lane_worker_counts.get("pack", 0),
@@ -84,6 +90,7 @@ def metrics_snapshot(client: Any) -> Json:
             "cache_misses_total": self._cache_misses_total,
             "selected_refs_total": self._selected_refs_total,
             "dropped_refs_total": self._dropped_refs_total,
+            "memory_layer_budget_totals": memory_layer_budget_totals,
             "publish_visibility": {
                 "calls_total": self._publish_visibility_calls_total,
                 "keys_total": self._publish_visibility_keys_total,
