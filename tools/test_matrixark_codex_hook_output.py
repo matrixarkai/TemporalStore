@@ -411,6 +411,13 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     "final_session_boundary": True,
                     "committed_event_count": 3,
                     "extraction_context_event_count": 0,
+                    "segments_written": 2,
+                    "entities_written": 5,
+                    "profile_entities_written": 2,
+                    "indexes_written": 7,
+                    "index_total_cap": 64,
+                    "index_emitted_count": 7,
+                    "index_dropped_by_total_cap_count": 3,
                     "trigger_evidence": {
                         "pending_event_count": 3,
                         "threshold_messages": 20,
@@ -431,6 +438,13 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("final", item["result"]["extraction_phase"])
         self.assertTrue(item["result"]["final_session_boundary"])
         self.assertEqual(3, item["result"]["source_event_count"])
+        self.assertEqual(2, item["result"]["segments_written"])
+        self.assertEqual(5, item["result"]["entities_written"])
+        self.assertEqual(3, item["result"]["session_entities_written"])
+        self.assertEqual(2, item["result"]["profile_entities_written"])
+        self.assertEqual(7, item["result"]["indexes_written"])
+        self.assertEqual(64, item["result"]["index_total_cap"])
+        self.assertEqual(3, item["result"]["index_dropped_by_total_cap_count"])
         self.assertTrue(item["result"]["trigger_evidence"]["force"])
 
     def test_ingest_tool_call_trace_records_auto_batch_commit_evidence(self) -> None:
@@ -451,6 +465,13 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "final_session_boundary": False,
                         "committed_event_count": 2,
                         "extraction_context_event_count": 1,
+                        "segments_written": 1,
+                        "entities_written": 4,
+                        "profile_entities_written": 1,
+                        "indexes_written": 6,
+                        "index_total_cap": 64,
+                        "index_emitted_count": 6,
+                        "index_dropped_by_total_cap_count": 0,
                         "trigger_evidence": {
                             "pending_event_count": 2,
                             "threshold_messages": 2,
@@ -476,6 +497,13 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertFalse(auto_batch["final_session_boundary"])
         self.assertEqual(2, auto_batch["source_event_count"])
         self.assertEqual(1, auto_batch["extraction_context_event_count"])
+        self.assertEqual(1, auto_batch["segments_written"])
+        self.assertEqual(4, auto_batch["entities_written"])
+        self.assertEqual(3, auto_batch["session_entities_written"])
+        self.assertEqual(1, auto_batch["profile_entities_written"])
+        self.assertEqual(6, auto_batch["indexes_written"])
+        self.assertEqual(64, auto_batch["index_total_cap"])
+        self.assertEqual(0, auto_batch["index_dropped_by_total_cap_count"])
         self.assertTrue(auto_batch["trigger_evidence"]["threshold_ready"])
         self.assertFalse(auto_batch["trigger_evidence"]["idle_ready"])
         decision = item["result"]["auto_batch_extract_decision"]
