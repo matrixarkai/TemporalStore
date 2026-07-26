@@ -244,6 +244,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "entity_bridge_refs": 1,
                         "profile_memory_refs": 1,
                     },
+                    "rendered_context_chars": 37,
                 },
                 "ingest": {"status": "accepted"},
                 "session_commit": {"status": "deferred"},
@@ -263,6 +264,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual({"event": 1, "entity": 1}, record["output_summary"]["retrieval_layers"]["selected_ref_counts"])
         self.assertEqual(1, record["output_summary"]["retrieval_layers"]["cross_session_refs"])
         self.assertEqual(1, record["output_summary"]["retrieval_layers"]["profile_memory_refs"])
+        self.assertEqual(37, record["output_summary"]["rendered_context_chars"])
         self.assertTrue(record["output_summary"]["strict_additional_context_emitted"])
 
     def test_retrieve_tool_call_trace_records_budget_and_layers(self) -> None:
@@ -273,6 +275,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     "context_pack_id": "pack-tool",
                     "used_context_tokens": 33,
                     "remote_context_budget_tokens": 90,
+                    "context": "user: rendered profile decision",
                     "selected_ref_counts": {"event": 2, "entity": 1},
                     "selected_refs": [
                         {
@@ -314,6 +317,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(1, item["result"]["retrieval_layers"]["same_session_refs"])
         self.assertEqual(1, item["result"]["retrieval_layers"]["cross_session_refs"])
         self.assertEqual(1, item["result"]["retrieval_layers"]["profile_memory_refs"])
+        self.assertEqual(len("user: rendered profile decision"), item["result"]["rendered_context_chars"])
 
     def test_user_prompt_emit_codex_additional_context_from_selected_refs(self) -> None:
         args = Namespace(session_id="codex-session-1")
