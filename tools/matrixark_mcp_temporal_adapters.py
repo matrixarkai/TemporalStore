@@ -2835,7 +2835,24 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         local_context = args.get("local_context", [])
         if not isinstance(local_context, list):
             local_context = []
-        watermark_count = self._entry_count_cache if self._entry_count_cache is not None else self._get_count()
+        entry_count_cache = getattr(self, "_entry_count_cache", None)
+        watermark_count = entry_count_cache if entry_count_cache is not None else self._get_count()
+        max_context_tokens = int(args.get("max_context_tokens") or 2048)
+        local_budget = local_context_budget(args)
+        local_tokens = int(local_budget.get("token_estimate", 0))
+        safety_margin_tokens = int(local_budget.get("safety_margin_tokens", 0))
+        remote_context_budget_tokens = max(0, max_context_tokens - local_tokens - safety_margin_tokens)
+        question_type = str(args.get("question_type") or infer_query_type(query))
+        retrieval_session_scope = str(args.get("session_scope") or ranking.get("session_scope") or "prefer").strip().lower()
+        if retrieval_session_scope not in {"prefer", "only"}:
+            retrieval_session_scope = "prefer"
+        cross_session_policy = build_cross_session_policy(
+            args,
+            ranking,
+            question_type=question_type,
+            session_scope=retrieval_session_scope,
+            remote_budget_tokens=remote_context_budget_tokens,
+        )
         resource_version_watermark = str(
             ranking.get("resource_version_watermark")
             or args.get("resource_version_watermark")
@@ -2848,7 +2865,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         )
         request: Json = {
             "api_version": 1,
-            "storage_prefix": self._storage_prefix,
+            "storage_prefix": getattr(self, "_storage_prefix", "matrixark:mcp"),
             "backend": self._backend_label(),
             "watermark_count": watermark_count,
             "append_watermark": watermark_count,
@@ -2857,6 +2874,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "index_posting_watermark": watermark_count,
             "query": query,
             "scope": scope,
+            "session_scope": retrieval_session_scope,
             "scope_key": scope_key,
             "tenant_hash": int(scope.get("tenant_hash") or 0),
             "scope_hash": stable_hash(scope_key) if scope_key else 0,
@@ -2878,15 +2896,17 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "skill_max_refs": int(ranking.get("skill_max_refs") or args.get("skill_max_refs") or 4),
             "cross_session_max_refs": int(ranking.get("cross_session_max_refs") or args.get("cross_session_max_refs") or 4),
             "cross_session_rerank": bool(ranking.get("cross_session_rerank", True)),
+            "cross_session": cross_session_policy,
             "same_session_priority": bool(ranking.get("same_session_priority", True)),
             "leaf_only": bool(ranking.get("leaf_only", False)),
             "allow_broad_scan_fallback": bool(native_retrieve_fallback_allowed(args)),
             "ranking": ranking,
             "storage_options": optional_object(args, "storage_options"),
-            "max_context_tokens": int(args.get("max_context_tokens") or 2048),
+            "max_context_tokens": max_context_tokens,
             "local_context": local_context,
-            "local_context_tokens": int(args.get("local_context_tokens") or 0),
-            "local_context_safety_margin_tokens": args.get("local_context_safety_margin_tokens"),
+            "local_context_tokens": local_tokens,
+            "local_context_safety_margin_tokens": safety_margin_tokens,
+            "remote_context_budget_tokens": remote_context_budget_tokens,
             "reference_time_ms": reference_time_ms,
             "include_superseded": bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
             "include_superseded_resources": bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),

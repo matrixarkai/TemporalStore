@@ -108,6 +108,89 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(isinstance(record.get("ref_hashes"), list) for record in index_records))
             self.assertTrue(all("index_hash" not in record for record in index_records))
 
+    def test_lightweight_async_ingest_threshold_and_idle_commit_flush_session_buffer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-async-threshold-idle.jsonl")
+            scope = {
+                "account_id": "acct_async",
+                "tenant_id": "tenant_async",
+                "user_id": "user_async",
+                "session_id": "session_async",
+            }
+            base_args = {
+                "scope": scope,
+                "async_processing": True,
+                "auto_batch_extract": True,
+                "session_buffer_threshold": 2,
+                "skip_prior_context": True,
+            }
+            first = adapter.ingest(
+                {
+                    **base_args,
+                    "messages": [{"role": "user", "content": "Plan to extract Codex prompts in batches."}],
+                }
+            )
+            self.assertEqual("accepted", first["status"])
+            self.assertIsNone(first["auto_batch_extract_result"])
+            self.assertEqual(1, first["session_buffer"]["pending_event_count"])
+
+            second = adapter.ingest(
+                {
+                    **base_args,
+                    "messages": [{"role": "assistant", "content": "Decision: threshold commits should flush without waiting for Stop."}],
+                }
+            )
+            self.assertEqual("committed", second["auto_batch_extract_result"]["status"])
+            self.assertEqual("threshold", second["auto_batch_extract_result"]["trigger_policy"])
+            self.assertEqual(2, second["auto_batch_extract_result"]["committed_event_count"])
+
+            third = adapter.ingest(
+                {
+                    **base_args,
+                    "auto_batch_extract": False,
+                    "messages": [{"role": "tool", "content": "Exit code: 0\nRan 3 tests in 0.01s\nOK"}],
+                }
+            )
+            self.assertEqual(1, third["session_buffer"]["pending_event_count"])
+            idle = adapter.session_commit(
+                {
+                    "scope": scope,
+                    "threshold_messages": 20,
+                    "force": False,
+                    "idle_timeout_ms": 0,
+                    "commit_reason": "idle_timeout",
+                    "skip_prior_context": True,
+                }
+            )
+            self.assertEqual("committed", idle["status"])
+            self.assertEqual("idle_timeout", idle["trigger_policy"])
+            self.assertEqual(1, idle["committed_event_count"])
+
+            records = adapter.read_all()
+            commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
+            self.assertEqual(2, len(commits))
+            committed_ids = {
+                int(event_id)
+                for commit in commits
+                for event_id in commit.get("source_event_ids", [])
+            }
+            pending_ids = {
+                int(record.get("event_id_hash"))
+                for record in records
+                if record.get("record_type") == "session_buffer_event"
+            }
+            self.assertEqual(pending_ids, committed_ids)
+            self.assertFalse(adapter.pending_session_events(scope))
+            profile_tool_entities = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("entity_type") == "tool_evidence"
+            ]
+            self.assertTrue(profile_tool_entities)
+            self.assertTrue(any("Exit code: 0" in str(record.get("state") or "") for record in profile_tool_entities))
+
     def test_batch_extract_events_are_timestamp_keyed_under_segment_parent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-batch-segment-time.jsonl")
