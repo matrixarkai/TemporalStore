@@ -950,10 +950,31 @@ def run_rust_temporalstore_batches(
     batch_paths = split_rust_temporalstore_jsonl(source_jsonl, batch_size)
     harnesses: list[dict[str, Any]] = []
     batch_reports: list[dict[str, Any]] = []
+    progress_path = report_path.with_suffix(report_path.suffix + ".progress.json")
+    write_rust_temporalstore_batch_progress(
+        progress_path=progress_path,
+        report_path=report_path,
+        source_jsonl=source_jsonl,
+        batch_paths=batch_paths,
+        batch_size=batch_size,
+        current_batch_index=0,
+        phase="starting",
+        batch_reports=batch_reports,
+    )
     for index, batch_path in enumerate(batch_paths, start=1):
         env = dict(base_env)
         env["TEMPORALSTORE_CONTEXT_BENCHMARK_JSONL"] = str(batch_path)
         started = time.perf_counter()
+        write_rust_temporalstore_batch_progress(
+            progress_path=progress_path,
+            report_path=report_path,
+            source_jsonl=source_jsonl,
+            batch_paths=batch_paths,
+            batch_size=batch_size,
+            current_batch_index=index,
+            phase="running_batch",
+            batch_reports=batch_reports,
+        )
         try:
             completed = run_rust_temporalstore_harness(
                 repo=repo,
@@ -1013,9 +1034,63 @@ def run_rust_temporalstore_batches(
         )
         harnesses.append(harness)
         batch_reports.append(batch_report)
+        write_rust_temporalstore_batch_progress(
+            progress_path=progress_path,
+            report_path=report_path,
+            source_jsonl=source_jsonl,
+            batch_paths=batch_paths,
+            batch_size=batch_size,
+            current_batch_index=index,
+            phase="batch_complete",
+            batch_reports=batch_reports,
+        )
     merged = merge_rust_temporalstore_harnesses(harnesses, str(source_jsonl))
     merged["_batch_reports"] = batch_reports
+    write_rust_temporalstore_batch_progress(
+        progress_path=progress_path,
+        report_path=report_path,
+        source_jsonl=source_jsonl,
+        batch_paths=batch_paths,
+        batch_size=batch_size,
+        current_batch_index=len(batch_paths),
+        phase="complete",
+        batch_reports=batch_reports,
+    )
     return merged
+
+
+def write_rust_temporalstore_batch_progress(
+    *,
+    progress_path: Path,
+    report_path: Path,
+    source_jsonl: Path,
+    batch_paths: list[Path],
+    batch_size: int,
+    current_batch_index: int,
+    phase: str,
+    batch_reports: list[dict[str, Any]],
+) -> None:
+    completed_case_count = sum(int(row.get("case_count") or 0) for row in batch_reports)
+    completed_hit_count = sum(
+        round(float(row.get("hit_at_k") or 0.0) * int(row.get("case_count") or 0))
+        for row in batch_reports
+    )
+    progress = {
+        "schema": "matrixark_rust_temporalstore_batch_replay_progress_v1",
+        "phase": phase,
+        "report_path": str(report_path),
+        "source_jsonl": str(source_jsonl),
+        "batch_size": batch_size,
+        "batch_count": len(batch_paths),
+        "current_batch_index": current_batch_index,
+        "completed_batch_count": len(batch_reports),
+        "remaining_batch_count": max(0, len(batch_paths) - len(batch_reports)),
+        "completed_case_count": completed_case_count,
+        "completed_hit_count": completed_hit_count,
+        "completed_hit_at_k": completed_hit_count / completed_case_count if completed_case_count else 0.0,
+        "completed_batches": batch_reports,
+    }
+    progress_path.write_text(json.dumps(progress, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def pack_rust_temporalstore_sources(path: Path, pack_size: int) -> dict[str, Any]:
