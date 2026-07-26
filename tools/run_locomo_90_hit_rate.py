@@ -31,6 +31,13 @@ def main() -> int:
     parser.add_argument("--misses", default="/tmp/temporalstore_locomo_ingest_once_misses.jsonl")
     add_threshold_policy_args(parser)
     parser.add_argument("--max-events", type=int, default=128)
+    parser.add_argument("--embedding-model", default="matrixark-local-hash-embedding")
+    parser.add_argument("--baseline-provider-name", default="")
+    parser.add_argument("--baseline-reader-model", default="")
+    parser.add_argument("--baseline-embedding-model", default="")
+    parser.add_argument("--baseline-max-events", type=int, default=0)
+    parser.add_argument("--baseline-reader-max-context-chars", type=int, default=0)
+    parser.add_argument("--require-shared-oss-models", action="store_true")
     parser.add_argument("--reader-mode", choices=("deterministic", "open-source", "auto"), default="deterministic")
     parser.add_argument("--reader-provider-name", default="vikingmem-gpt-4o-mini-reader")
     parser.add_argument("--reader-model", default="gpt-4o-mini")
@@ -123,6 +130,8 @@ def main() -> int:
         str(thresholds["max_reader_p95_ms"]),
         "--max-events",
         str(args.max_events),
+        "--embedding-model",
+        args.embedding_model,
         "--reader-mode",
         args.reader_mode,
         "--reader-provider-name",
@@ -136,6 +145,18 @@ def main() -> int:
         "--reader-max-context-chars",
         str(args.reader_max_context_chars),
     ]
+    if args.baseline_provider_name:
+        command.extend(["--baseline-provider-name", args.baseline_provider_name])
+    if args.baseline_reader_model:
+        command.extend(["--baseline-reader-model", args.baseline_reader_model])
+    if args.baseline_embedding_model:
+        command.extend(["--baseline-embedding-model", args.baseline_embedding_model])
+    if args.baseline_max_events:
+        command.extend(["--baseline-max-events", str(args.baseline_max_events)])
+    if args.baseline_reader_max_context_chars:
+        command.extend(["--baseline-reader-max-context-chars", str(args.baseline_reader_max_context_chars)])
+    if args.require_shared_oss_models:
+        command.append("--require-shared-oss-models")
     if args.reader_base_url:
         command.extend(["--reader-base-url", args.reader_base_url])
     if args.reader_no_fallback:
