@@ -332,6 +332,68 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(any(record.get("index_name") == "memory_scope:user_profile" for record in profile_indexes))
         self.assertTrue(any(record.get("index_name") == "session_continuity:cross_session" for record in profile_indexes))
 
+    def test_modular_entity_scan_admits_cross_session_profile_bridge(self) -> None:
+        scan_mod = importlib.import_module("tools.matrixark_mcp_retrieve_entity_scan")
+        record = {
+            "record_type": "context_entity",
+            "entity_hash": 77,
+            "node_hash": 88,
+            "node_path": ["tenant:tenant_mod", "user:user_mod", "profile:long_term_memory"],
+            "access_scope": {
+                "account_id": "acct_mod",
+                "tenant_id": "tenant_mod",
+                "user_id": "user_mod",
+            },
+            "entity_type": "assistant_decision",
+            "entity_name": "commit",
+            "state": "Commit abc123 was pushed for modular profile retrieval.",
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "source_session_ids": ["session-a", "session-b"],
+            "source_entity_hashes": [11, 22],
+            "source_roles": ["assistant"],
+            "source_hook_types": ["hook_boundary"],
+            "source_codex_events": ["Stop"],
+            "updated_at_ms": 200,
+        }
+
+        primary, auxiliary, dropped, matched, reason = scan_mod.scan_entity_candidates(
+            [record],
+            retrieval_scope={
+                "account_id": "acct_mod",
+                "tenant_id": "tenant_mod",
+                "user_id": "user_mod",
+                "session_id": "session-c",
+            },
+            selected_by_tree=lambda _record: False,
+            index_terms_by_batch={},
+            index_terms_by_node={},
+            index_terms_by_ref={},
+            secondary_index_filter_groups=[],
+            secondary_index_filter_mode="off",
+            admit_candidate_for_node=lambda _record: True,
+            query_terms={"commit", "abc123"},
+            query_embedding=[],
+            entity_embedding_vectors={},
+            node_scores={},
+            annotate_session_continuity=lambda candidate, _record: candidate,
+            ranking={},
+            reference_time_ms=300,
+            deadline_exceeded=lambda: False,
+        )
+
+        self.assertEqual("", reason)
+        self.assertEqual(0, dropped)
+        self.assertEqual(1, matched)
+        self.assertEqual(1, len(primary))
+        self.assertGreaterEqual(len(auxiliary), 1)
+        candidate = primary[0]
+        self.assertEqual("user_profile", candidate["memory_scope"])
+        self.assertEqual("cross_session", candidate["session_continuity"])
+        self.assertEqual(["session-a", "session-b"], candidate["source_session_ids"])
+        self.assertEqual([11, 22], candidate["source_entity_hashes"])
+        self.assertEqual("selected as cross-session user-profile entity bridge", candidate["selection_reason"])
+
     def test_mcp_entrypoint_reexports_split_modules(self) -> None:
         server_mod = importlib.import_module("tools.matrixark_mcp_server")
         metrics_mod = importlib.import_module("tools.matrixark_mcp_metrics")

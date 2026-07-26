@@ -72,7 +72,11 @@ def scan_entity_candidates(
             continue
         if not access_scope_matches_before_scoring(record, retrieval_scope):
             continue
-        if not selected_by_tree(record):
+        is_profile_entity_bridge = (
+            str(record.get("memory_scope") or "") == "user_profile"
+            and str(record.get("session_continuity") or "") == "cross_session"
+        )
+        if not selected_by_tree(record) and not is_profile_entity_bridge:
             continue
         index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
         if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
