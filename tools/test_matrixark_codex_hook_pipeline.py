@@ -192,6 +192,91 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(profile_tool_entities)
             self.assertTrue(any("Exit code: 0" in str(record.get("state") or "") for record in profile_tool_entities))
 
+    def test_stop_boundary_force_commits_full_live_conversation_tail_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-stop-boundary.jsonl")
+            scope = {
+                "account_id": "acct_stop",
+                "tenant_id": "tenant_stop",
+                "user_id": "user_stop",
+                "session_id": "session_stop_boundary",
+            }
+            base_args = {
+                "scope": scope,
+                "async_processing": True,
+                "auto_batch_extract": False,
+                "session_buffer_threshold": 20,
+                "skip_prior_context": True,
+            }
+            user_ingest = adapter.ingest(
+                {
+                    **base_args,
+                    "messages": [{"role": "user", "content": "Should memory wait for Stop or commit on thresholds?"}],
+                }
+            )
+            assistant_ingest = adapter.ingest(
+                {
+                    **base_args,
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": (
+                                "Decision: threshold and idle commits are provisional checkpoints; "
+                                "Stop force-drains the remaining conversation tail."
+                            ),
+                        }
+                    ],
+                }
+            )
+            self.assertEqual(1, user_ingest["session_buffer"]["pending_event_count"])
+            self.assertEqual(2, assistant_ingest["session_buffer"]["pending_event_count"])
+
+            pending_before_stop = adapter.pending_session_events(scope)
+            stop = adapter.session_commit(
+                {
+                    "scope": scope,
+                    "threshold_messages": 20,
+                    "force": True,
+                    "commit_reason": "hook_boundary",
+                    "skip_prior_context": True,
+                }
+            )
+            self.assertEqual("committed", stop["status"])
+            self.assertEqual("force", stop["trigger_policy"])
+            self.assertEqual(2, stop["committed_event_count"])
+            self.assertEqual(
+                [int(record["event_id_hash"]) for record in pending_before_stop],
+                [int(event_id) for event_id in stop["source_event_ids"]],
+            )
+            self.assertFalse(adapter.pending_session_events(scope))
+
+            second_stop = adapter.session_commit(
+                {
+                    "scope": scope,
+                    "threshold_messages": 20,
+                    "force": True,
+                    "commit_reason": "hook_boundary",
+                    "skip_prior_context": True,
+                }
+            )
+            self.assertEqual("empty", second_stop["status"])
+
+            records = adapter.read_all()
+            commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
+            self.assertEqual(1, len(commits))
+            self.assertEqual(2, commits[0]["committed_event_count"])
+            assistant_decisions = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("entity_type") == "assistant_decision"
+            ]
+            self.assertTrue(assistant_decisions)
+            self.assertTrue(
+                any("Stop force-drains" in str(record.get("state") or "") for record in assistant_decisions)
+            )
+
     def test_compact_hot_prefix_preserves_boundary_session_commits(self) -> None:
         with mock.patch.object(matrixark_codex_hook, "HOOK_COMPACT_HOT_PREFIX_ONLY", True):
             self.assertTrue(matrixark_codex_hook.should_run_session_commit_after_ingest("IdleTimeout", ""))
