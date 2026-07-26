@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -15,8 +17,18 @@ from typing import Any
 
 
 class ModelState:
-    def __init__(self, model_name: str, max_new_tokens: int, task: str, max_length: int) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        max_new_tokens: int,
+        task: str,
+        max_length: int,
+        embedding_model: str,
+        embedding_dim: int,
+    ) -> None:
         self.model_name = model_name
+        self.embedding_model = embedding_model
+        self.embedding_dim = embedding_dim
         self.max_new_tokens = max_new_tokens
         self.task = task
         self.max_length = max_length
@@ -31,7 +43,7 @@ class ModelState:
             answer = self.question_answer(question, context)
             return normalize_qa_answer(question, answer, context)
 
-        prompt = render_prompt(messages)
+        prompt = render_chat_prompt(self._tokenizer, messages) if self.task == "causal-lm" else render_prompt(messages)
         limit = max(1, min(int(max_tokens or self.max_new_tokens), self.max_new_tokens))
         inputs = self._tokenizer(prompt, return_tensors="pt", truncation=True, max_length=self.max_length)
         outputs = self._model.generate(  # type: ignore[operator]
@@ -40,17 +52,23 @@ class ModelState:
             do_sample=False,
             num_beams=1,
         )
-        text = self._tokenizer.decode(outputs[0], skip_special_tokens=True).strip()  # type: ignore[union-attr]
-        return text or "not enough information"
+        generated_ids = outputs[0]
+        if self.task == "causal-lm":
+            generated_ids = generated_ids[inputs["input_ids"].shape[-1] :]
+        text = self._tokenizer.decode(generated_ids, skip_special_tokens=True).strip()  # type: ignore[union-attr]
+        question, context = parse_qa_prompt(messages)
+        return normalize_qa_answer(question, text, context) or "not enough information"
 
     def ensure_loaded(self) -> None:
         if self._tokenizer is not None and self._model is not None:
             return
-        from transformers import AutoModelForQuestionAnswering, AutoModelForSeq2SeqLM, AutoTokenizer
+        from transformers import AutoModelForCausalLM, AutoModelForQuestionAnswering, AutoModelForSeq2SeqLM, AutoTokenizer
 
         self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         if self.task == "question-answering":
             self._model = AutoModelForQuestionAnswering.from_pretrained(self.model_name)
+        elif self.task == "causal-lm":
+            self._model = AutoModelForCausalLM.from_pretrained(self.model_name)
         else:
             self._model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
         self._model.eval()
@@ -105,6 +123,19 @@ def render_prompt(messages: list[dict[str, Any]]) -> str:
     return f"{user}\n\nAnswer:"
 
 
+def render_chat_prompt(tokenizer: Any, messages: list[dict[str, Any]]) -> str:
+    if hasattr(tokenizer, "apply_chat_template"):
+        try:
+            return tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except Exception:
+            pass
+    return render_prompt(messages)
+
+
 def parse_qa_prompt(messages: list[dict[str, Any]]) -> tuple[str, str]:
     text = "\n".join(str(message.get("content") or "") for message in messages if isinstance(message, dict))
     match = re.search(
@@ -124,7 +155,7 @@ def parse_qa_prompt(messages: list[dict[str, Any]]) -> tuple[str, str]:
 def normalize_qa_answer(question: str, answer: str, context: str) -> str:
     cleaned = re.sub(r"\s+", " ", (answer or "")).strip(" .\n\t")
     question_lower = question.lower()
-    if cleaned.lower() in {"", "[cls]", "[sep]", "not enough context", "not enough information"}:
+    if cleaned.lower() in {"", "[cls]", "[sep]", "not enough context", "not enough context provided", "not enough information"}:
         cleaned = temporal_answer_fallback(question_lower, context) or cleaned
     if cleaned.lower() in {"yesterday", "the previous day"}:
         event_date = first_context_timestamp(context)
@@ -167,7 +198,7 @@ def temporal_answer_fallback(question_lower: str, context: str) -> str:
         return relative_year
     dated_spans: list[tuple[int, str]] = []
     for match in re.finditer(
-        r"((?:\d{1,2}:\d{2}\s*(?:am|pm)\s+on\s+)?\d{1,2}\s+[A-Za-z]+,?\s+\d{4}|\b\d{4}\b)",
+        r"((?:\d{1,2}:\d{2}\s*(?:am|pm)\s+on\s+)?(?:\d{1,2}\s+[A-Za-z]+,?\s+\d{4}|[A-Za-z]+\s+\d{1,2},?\s+\d{4})|\b\d{4}\b)",
         compact,
         re.I,
     ):
@@ -226,24 +257,32 @@ def regex_first(text: str, patterns: list[str]) -> str:
 
 
 def first_context_timestamp(text: str) -> datetime | None:
-    match = re.search(r"\d{1,2}:\d{2}\s*(?:am|pm)\s+on\s+(\d{1,2}\s+[A-Za-z]+,?\s+\d{4})", text, re.I)
+    match = re.search(r"\d{1,2}:\d{2}\s*(?:am|pm)\s+on\s+(\d{1,2}\s+[A-Za-z]+,?\s+\d{4}|[A-Za-z]+\s+\d{1,2},?\s+\d{4})", text, re.I)
     if not match:
-        match = re.search(r"(\d{1,2}\s+[A-Za-z]+,?\s+\d{4})", text, re.I)
+        match = re.search(r"(\d{1,2}\s+[A-Za-z]+,?\s+\d{4}|[A-Za-z]+\s+\d{1,2},?\s+\d{4})", text, re.I)
     if not match:
         return None
     cleaned = match.group(1).replace(",", "")
     try:
-        return datetime.strptime(cleaned, "%d %B %Y")
+        return parse_flexible_date(cleaned)
     except ValueError:
         return None
 
+
+def parse_flexible_date(cleaned: str) -> datetime:
+    for pattern in ("%d %B %Y", "%B %d %Y"):
+        try:
+            return datetime.strptime(cleaned, pattern)
+        except ValueError:
+            continue
+    raise ValueError(cleaned)
 
 def normalize_date_text(text: str) -> str:
     if re.fullmatch(r"\d{4}", text.strip()):
         return text.strip()
     cleaned = text.strip().replace(",", "")
     try:
-        return format_date(datetime.strptime(cleaned, "%d %B %Y"))
+        return format_date(parse_flexible_date(cleaned))
     except ValueError:
         return text.strip()
 
@@ -271,6 +310,12 @@ class ReaderHandler(BaseHTTPRequestHandler):
                             "object": "model",
                             "created": self.server.model_state.loaded_at_unix,  # type: ignore[attr-defined]
                             "owned_by": "matrixark-temporalstore",
+                        },
+                        {
+                            "id": self.server.model_state.embedding_model,  # type: ignore[attr-defined]
+                            "object": "model",
+                            "created": self.server.model_state.loaded_at_unix,  # type: ignore[attr-defined]
+                            "owned_by": "matrixark-temporalstore",
                         }
                     ],
                 },
@@ -282,7 +327,11 @@ class ReaderHandler(BaseHTTPRequestHandler):
         self.write_json(HTTPStatus.NOT_FOUND, {"error": {"message": f"unknown path {self.path}"}})
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API.
-        if self.path.rstrip("/") != "/v1/chat/completions":
+        path = self.path.rstrip("/")
+        if path == "/v1/embeddings":
+            self.handle_embeddings()
+            return
+        if path != "/v1/chat/completions":
             self.write_json(HTTPStatus.NOT_FOUND, {"error": {"message": f"unknown path {self.path}"}})
             return
         try:
@@ -313,6 +362,40 @@ class ReaderHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001 - endpoint must report model/load errors as JSON.
             self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": {"message": str(exc)}})
 
+    def handle_embeddings(self) -> None:
+        try:
+            body = self.read_json()
+            raw_input = body.get("input", "")
+            texts = raw_input if isinstance(raw_input, list) else [raw_input]
+            model = str(body.get("model") or self.server.model_state.embedding_model)  # type: ignore[attr-defined]
+            dim = int(self.server.model_state.embedding_dim)  # type: ignore[attr-defined]
+            data = []
+            total_tokens = 0
+            for index, text in enumerate(texts):
+                rendered = json.dumps(text, ensure_ascii=False) if isinstance(text, (dict, list)) else str(text)
+                total_tokens += max(1, len(rendered.split()))
+                data.append(
+                    {
+                        "object": "embedding",
+                        "index": index,
+                        "embedding": hash_embedding(rendered, dim),
+                    }
+                )
+            self.write_json(
+                HTTPStatus.OK,
+                {
+                    "object": "list",
+                    "model": model,
+                    "data": data,
+                    "usage": {
+                        "prompt_tokens": total_tokens,
+                        "total_tokens": total_tokens,
+                    },
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - endpoint must report model/load errors as JSON.
+            self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": {"message": str(exc)}})
+
     def read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or "0")
         raw = self.rfile.read(length)
@@ -334,6 +417,18 @@ class ReaderHandler(BaseHTTPRequestHandler):
             super().log_message(fmt, *args)
 
 
+def hash_embedding(text: str, dim: int) -> list[float]:
+    vector = [0.0] * max(1, dim)
+    for token in re.findall(r"[A-Za-z0-9_./:-]+", text.lower()):
+        digest = hashlib.blake2b(token.encode("utf-8"), digest_size=16).digest()
+        bucket = int.from_bytes(digest[:4], "little") % len(vector)
+        sign = 1.0 if digest[4] & 1 else -1.0
+        weight = 1.0 + (digest[5] % 7) / 10.0
+        vector[bucket] += sign * weight
+    norm = math.sqrt(sum(value * value for value in vector)) or 1.0
+    return [round(value / norm, 8) for value in vector]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a local OpenAI-compatible HF reader endpoint.")
     parser.add_argument("--host", default=os.environ.get("TEMPORALSTORE_HF_READER_HOST", "127.0.0.1"))
@@ -342,9 +437,9 @@ def main() -> int:
     parser.add_argument("--max-new-tokens", type=int, default=int(os.environ.get("TEMPORALSTORE_HF_READER_MAX_NEW_TOKENS", "96")))
     parser.add_argument(
         "--task",
-        choices=("seq2seq", "question-answering"),
+        choices=("seq2seq", "question-answering", "causal-lm"),
         default=os.environ.get("TEMPORALSTORE_HF_READER_TASK", "seq2seq"),
-        help="Use seq2seq generation or extractive question answering for SQuAD-style OSS readers.",
+        help="Use seq2seq, causal language-model generation, or extractive QA for OSS readers.",
     )
     parser.add_argument(
         "--max-length",
@@ -352,10 +447,28 @@ def main() -> int:
         default=int(os.environ.get("TEMPORALSTORE_HF_READER_MAX_LENGTH", "1024")),
         help="Maximum tokenizer input length for the reader model.",
     )
+    parser.add_argument(
+        "--embedding-model",
+        default=os.environ.get("TEMPORALSTORE_HF_EMBEDDING_MODEL", "matrixark-hash-embedding-32"),
+        help="OpenAI-compatible embedding model id exposed by /v1/embeddings.",
+    )
+    parser.add_argument(
+        "--embedding-dim",
+        type=int,
+        default=int(os.environ.get("TEMPORALSTORE_HF_EMBEDDING_DIM", "32")),
+        help="Deterministic hash embedding dimension for local baseline bootstraps.",
+    )
     parser.add_argument("--preload", action="store_true", default=os.environ.get("TEMPORALSTORE_HF_READER_PRELOAD", "1") != "0")
     args = parser.parse_args()
 
-    state = ModelState(args.model, args.max_new_tokens, args.task, args.max_length)
+    state = ModelState(
+        args.model,
+        args.max_new_tokens,
+        args.task,
+        args.max_length,
+        args.embedding_model,
+        args.embedding_dim,
+    )
     if args.preload:
         state.ensure_loaded()
     server = ThreadingHTTPServer((args.host, args.port), ReaderHandler)

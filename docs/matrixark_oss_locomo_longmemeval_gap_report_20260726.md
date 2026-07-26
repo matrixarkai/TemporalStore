@@ -1,130 +1,74 @@
-# MatrixArk OSS LoCoMo / LongMemEval Gap Report - 2026-07-26
+# MatrixArk OSS LoCoMo / LongMemEval Benchmark Gap Report
+
+Date: 2026-07-26
 
 ## Goal
 
-Use local OSS reader models to benchmark MatrixArk/TemporalStore on LoCoMo and
-LongMemEval_s, compare against OpenViking/VikingMem where runnable, and keep the
-gap-closure loop active until quality, token savings, and baseline comparison
-are credible.
+Use local open-source readers to benchmark MatrixArk / TemporalStore memory retrieval against OpenViking / VikingMem-style baselines on LoCoMo and LongMemEval, measure token savings and answer quality, and close the gaps until the comparison is fair.
 
-## Local OSS Reader
+This report is intentionally conservative: it records what ran locally, what improved, and what still blocks an apples-to-apples VikingMem / OpenViking claim.
 
-- Provider: local OpenAI-compatible Hugging Face endpoint.
-- Endpoint: `http://127.0.0.1:18086/v1`.
-- Model: `deepset/minilm-uncased-squad2`.
-- Task: extractive question answering.
-- Runtime status: endpoint responded to `/v1/models` during this run.
+## What Changed In This Pass
 
-This reader is useful for deterministic OSS smoke and medium-slice validation.
-It is not a strong final reader for paper-level LoCoMo or LongMemEval claims.
+- Added OpenAI-compatible `/v1/embeddings` support to `tools/openai_compatible_hf_reader.py` using deterministic local hash embeddings.
+- Added causal language model support for Qwen-style OSS readers through the same OpenAI-compatible local server.
+- Added answer normalization and temporal fallback handling for common date formats and "not enough context" responses.
+- Fixed LoCoMo evidence-window source expansion so `speaker:line` evidence refs match the actual dialogue text candidates instead of silently missing.
+- Kept benchmark scoring fail-closed: paper-comparable claims remain disabled until full datasets and external baselines run under the same budget/model config.
 
-## Code Fixes In This Loop
+## Local OSS Readers
 
-- `tools/openai_compatible_hf_reader.py` already supports extractive QA models.
-- `tools/convert_locomo_to_context_jsonl.py` now expands LoCoMo evidence-window
-  refs into the exact source IDs inside the allowed window.
-- `tools/run_locomo_ingest_once.py` now uses the same expanded refs for Python
-  scoring and passes `--evidence-window` into the Rust TemporalStore conversion.
-- Dialog refs such as `D1:3` are now matched as exact `D<session>:<turn>` refs,
-  preventing false matches like `D13`.
+| Reader | Endpoint | Status | Notes |
+|---|---:|---|---|
+| deepset/minilm-uncased-squad2 | `127.0.0.1:18086` | Working | Fast extractive QA diagnostic reader. |
+| Qwen/Qwen2.5-0.5B-Instruct | `127.0.0.1:18087` | Working | Local causal-LM reader; slower but exercises OSS generation path. |
+| vLLM | n/a | Blocked | Python package/import state is inconsistent locally; no reliable vLLM service yet. |
+| Ollama/Qwen larger models | n/a | Not used in final evidence | Use next for stronger full-run reader quality once model serving is stable. |
 
-## MatrixArk Results
+## MatrixArk Results Collected
 
-### LoCoMo Tiny Diagnostic
+| Run | Cases | Retrieval Hit@K | Reader Hit | Token Reduction | Retrieval p95 | Reader p95 | Backend Evidence | Claim Status |
+|---|---:|---:|---:|---:|---:|---:|---|---|
+| MiniLM LoCoMo 3 conversations | 387 | 1.000 | 0.388 | 33.54% | 1.47 ms | 228.04 ms | Rust TemporalStore ready | Diagnostic |
+| MiniLM LongMemEval_s 50 | 50 | 0.980 | 0.560 | 98.59% | 250.06 ms | 305.90 ms | Rust TemporalStore ready | Diagnostic |
+| Qwen LoCoMo tiny | 2 | 1.000 | 1.000 | 0.00% | 4.40 ms | 11.97 s | Rust TemporalStore ready | Smoke only |
+| Qwen LongMemEval_s tiny | 2 | 1.000 | 1.000 | 93.03% | 233.81 ms | 25.58 s | Python-only diagnostic | Smoke only |
 
-- Input: `/root/matrixark_benchmarks/data/locomo_tiny_1conv.json`.
-- Cases: 2.
-- Evidence window: 2.
-- Retrieval Hit@K: 1.0.
-- Reader hit rate: 1.0.
-- Rust TemporalStore backend ready: true.
-- Rust context-event ingest ready: true.
-- Rust/Python retrieval parity: true.
-- Token reduction: 0.0%.
+Notes:
 
-The 0.0% token reduction is expected for this diagnostic because the source
-universe is pre-narrowed to the gold evidence window. Do not use this run for
-token-savings claims.
+- The LoCoMo tiny token reduction is 0% because the run intentionally used a gold evidence window. It validates reader/retrieval plumbing, not savings.
+- The Qwen LongMemEval tiny run was Python-only because the Rust LongMemEval harness failed readiness on that tiny rerun. That must be fixed before using it as backend evidence.
+- The MiniLM runs are useful engineering diagnostics, but MiniLM is too weak to claim final LLM quality against VikingMem/OpenViking.
 
-### LoCoMo 3-Conversation Diagnostic
+## OpenViking / VikingMem Status
 
-- Input: `/tmp/matrixark_locomo_3conv.json`.
-- Cases: 387.
-- Evidence window: 2.
-- Retrieval Hit@K: 1.0.
-- Reader hit rate: 0.3875968992248062.
-- Reader answer coverage: 0.3801452784503632.
-- Token reduction: 33.54045063704262%.
-- Retrieval p95: 1.4726653002071535 ms.
-- Reader p95: 228.03831559995155 ms.
-- Rust TemporalStore backend ready: true.
-- Rust context-event ingest ready: true.
-- Zero retrieval misses: 0.
+OpenViking source is present at `/root/src/github-services/OpenViking`. The server progressed through Python dependency installation and app startup wiring, but local execution is blocked by the native AGFS/RAGFS binding:
 
-This proves the corrected evidence-window scoring and Rust ingestion/retrieval
-path on a medium LoCoMo slice. The main gap is reader quality: MiniLM often
-extracts partial or relative spans where the benchmark expects normalized
-answers.
+```text
+ImportError: ragfs_python native library is not available: Rust binding not available
+```
 
-### LongMemEval_s 50-Record Slice
+The binding crate requires Rust `1.91.1`, while the available WSL toolchain is Rust/Cargo `1.75.0` and no working `rustup` is currently installed. Until that native binding builds or a compatible prebuilt wheel is available, there is no valid local OpenViking/VikingMem benchmark number to compare against.
 
-- Input: `/tmp/matrixark_longmemeval_s_50.json`.
-- Cases: 50.
-- Retrieval Hit@K: 0.98.
-- Reader hit rate: 0.56.
-- Reader answer coverage: 0.5384615384615384.
-- Token reduction: 98.59427979827794%.
-- Retrieval p95: 250.0640535997263 ms.
-- Reader p95: 305.89553734971537 ms.
-- Rust TemporalStore backend ready: true.
-- Rust context-event ingest ready: true.
-- Zero retrieval misses: 1.
+## Current Gaps
 
-This is the strongest current token-savings result: MatrixArk retrieves compact
-context with very high savings, while quality is limited by the small local QA
-reader.
+1. **External baseline gap:** OpenViking/VikingMem cannot run locally yet because `ragfs_python` is missing.
+2. **Reader strength gap:** Qwen 0.5B works but is slow and small; full comparison should use Qwen 7B/14B or another stronger OSS reader through Ollama or vLLM.
+3. **Backend readiness gap:** Qwen LongMemEval tiny exposed a Rust backend readiness failure in the LongMemEval harness; this needs a real fix, not a Python-only workaround.
+4. **Token-savings methodology gap:** Savings must be computed against the same source universe and token budget. Gold evidence windows are not valid savings evidence.
+5. **Paper-comparable scale gap:** Full LoCoMo 1,542 questions and LongMemEval_s 500 records have not run end-to-end with the same reader, token budget, and baseline.
 
-## OpenViking / VikingMem Baseline Status
+## Next Gap-Closure Steps
 
-Local OpenViking source exists at `/root/src/github-services/OpenViking`.
-The benchmark READMEs require:
+1. Install or vendor a Rust `1.91.1+` toolchain for OpenViking `ragfs_python`, or obtain a compatible prebuilt native binding.
+2. Start OpenViking with the same local OSS reader/embedding endpoint and run import/eval on the same LoCoMo and LongMemEval subsets first.
+3. Fix the Rust LongMemEval harness readiness issue for tiny Qwen runs.
+4. Run full LoCoMo and LongMemEval_s with one stronger OSS reader, same retrieval budget, same threshold profile, and no Python-only diagnostic mode.
+5. Only then publish MatrixArk vs OpenViking/VikingMem quality and token-savings numbers.
 
-- running OpenViking server;
-- importing each dataset into OpenViking;
-- running retrieval/eval;
-- running judge/stat scripts.
+## Evidence Files
 
-That local apples-to-apples baseline has not been completed in this loop.
-Published OpenViking README claims are useful orientation only, not local
-MatrixArk-vs-OpenViking evidence. The local baseline must be run before making
-external comparison claims.
-
-## Gap Closure Plan
-
-1. Replace MiniLM with a stronger OSS reader for final comparison:
-   Qwen 7B/14B via Ollama or vLLM, same token budget, same reader prompt, same
-   scoring profile.
-2. Run full LoCoMo, not evidence-window-only diagnostics:
-   1,542 questions, all conversations, full source universe, explicit token
-   budgets.
-3. Run full LongMemEval_s:
-   500 records, same max events and ContextPack budget for MatrixArk and
-   OpenViking.
-4. Start and configure local OpenViking, then run its import/eval/judge scripts
-   against the same LoCoMo and LongMemEval files.
-5. Report each system with:
-   retrieval Hit@K, reader/judge accuracy, token input, token savings, p50/p95,
-   reader model, embedding model, source budget, and blockers.
-6. Close current MatrixArk gaps:
-   improve LoCoMo answer normalization for relative dates/spans; increase reader
-   strength; test retrieval without gold evidence-window narrowing; investigate
-   the single LongMemEval retrieval miss.
-
-## Current Status
-
-- MatrixArk OSS medium-slice evidence: present.
-- MatrixArk token-savings evidence: strong on LongMemEval_s 50-record slice.
-- MatrixArk reader quality: not competitive enough with MiniLM.
-- OpenViking/VikingMem local comparison: blocked until server/import/eval is
-  run locally.
-- Goal status: active, not complete.
+- `/tmp/matrixark_hfqa_locomo_3conv_e16_w2_afterfix.json`
+- `/tmp/matrixark_hfqa_longmem_50_e16_afterfix.json`
+- `/tmp/matrixark_qwen_locomo_tiny_postfix2_20260726.json`
+- `/tmp/matrixark_qwen_longmem_tiny_pythononly_20260726.json`
