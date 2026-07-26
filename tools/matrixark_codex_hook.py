@@ -1385,6 +1385,67 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         if callable(append_raw):
             append_raw([raw_record])
     enqueue([record])
+    append_session_buffer = getattr(adapter, "append_session_buffer_event", None)
+    if callable(append_session_buffer):
+        append_session_buffer(
+            envelope=record["envelope"],
+            event_id_hash=event_id_hash,
+            node_hash=node_hash,
+            node_path=node_path,
+            hook=hook,
+        )
+    pending_event_count = 0
+    pending_session_events = getattr(adapter, "pending_session_events", None)
+    if callable(pending_session_events):
+        try:
+            pending_event_count = len(pending_session_events(scope))
+        except Exception:
+            pending_event_count = 0
+    session_commit_result: Json = {}
+    session_commit = getattr(adapter, "session_commit", None)
+    threshold = int(getattr(args, "session_commit_threshold", 20) or 20)
+    idle_timeout_ms = int(getattr(args, "idle_commit_timeout_ms", 0) or 0)
+    should_threshold_commit = (
+        args.event == "UserPromptSubmit"
+        and HOOK_AUTO_BATCH_EXTRACT
+        and pending_event_count >= threshold
+    )
+    should_boundary_commit = should_commit_session(args.event)
+    if callable(session_commit) and (should_threshold_commit or should_boundary_commit):
+        commit_reason = commit_reason_for_event(args.event) if should_boundary_commit else "threshold"
+        commit_args: Json = {
+            "scope": scope,
+            "threshold_messages": threshold,
+            "force": should_boundary_commit and commit_reason != "idle_timeout",
+            "commit_reason": commit_reason,
+            "understanding_provider": getattr(args, "understanding_provider", None),
+            "segment_provider": getattr(args, "segment_provider", None),
+            "storage_options": storage_options,
+            "agent_hook": {
+                "source": "codex",
+                "hook_type": "session_commit",
+                "hook_id": f"fast_async_session_commit:{args.event}:{int(time.time() * 1000)}",
+                "observed_at_ms": int(time.time() * 1000),
+                "idempotency_key": f"fast-async-session-commit:{args.event}:{session_id}:{event_id_hash}",
+                "trigger": args.event,
+                "auto_captured": True,
+                "session_id_source": (hook or {}).get("session_id_source", ""),
+            },
+        }
+        if commit_reason == "idle_timeout" and idle_timeout_ms > 0:
+            commit_args["idle_timeout_ms"] = idle_timeout_ms
+        if should_threshold_commit:
+            commit_args["max_messages"] = threshold
+        try:
+            session_commit_result = session_commit(commit_args, hook=commit_args["agent_hook"])
+        except TypeError:
+            session_commit_result = session_commit(commit_args)
+        except Exception as exc:
+            session_commit_result = {
+                "status": "error",
+                "reason": "fast_async_session_commit_failed",
+                "error": str(exc),
+            }
     return {
         "status": "accepted",
         "sync_write_mode": "hook_fast_async_direct_queue",
@@ -1393,6 +1454,14 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "async_pipeline_status": "pending",
         "event_id_hash": event_id_hash,
         "node_hash": node_hash,
+        "session_buffer": {
+            "registered": callable(append_session_buffer),
+            "pending_event_count": pending_event_count,
+            "threshold_messages": threshold,
+            "auto_batch_extract": HOOK_AUTO_BATCH_EXTRACT,
+        },
+        "auto_batch_extract_result": session_commit_result if should_threshold_commit else {},
+        "session_commit": session_commit_result if should_boundary_commit else {},
         "storage_options": storage_options,
         "hook_captured": hook is not None,
         "extraction_mode": "async_pending",

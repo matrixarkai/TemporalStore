@@ -374,12 +374,19 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             def __init__(self) -> None:
                 self.raw_records = []
                 self.serving_records = []
+                self.session_buffer_records = []
 
             def enqueue_raw_ingestion_records(self, records):
                 self.raw_records.extend(records)
 
             def _enqueue_direct_write(self, records):
                 self.serving_records.extend(records)
+
+            def append_session_buffer_event(self, **kwargs):
+                self.session_buffer_records.append(kwargs)
+
+            def pending_session_events(self, scope):
+                return []
 
         class Server:
             def __init__(self) -> None:
@@ -418,6 +425,133 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("codex-cpp-session-1", serving["scope"]["session_id"])
         self.assertEqual("UserPromptSubmit", serving["metadata"]["codex_event"])
         self.assertIn("real hooked Codex message", serving["text"])
+        self.assertEqual(1, len(server.adapter.session_buffer_records))
+        self.assertTrue(result["session_buffer"]["registered"])
+
+    def test_fast_async_hook_ingest_runs_threshold_batch_commit(self) -> None:
+        original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT
+        hook.HOOK_AUTO_BATCH_EXTRACT = True
+
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.serving_records = []
+                self.session_buffer_records = []
+                self.commit_calls = []
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.serving_records.extend(records)
+
+            def append_session_buffer_event(self, **kwargs):
+                self.session_buffer_records.append(kwargs)
+
+            def pending_session_events(self, scope):
+                return [{"event_id_hash": 1}, {"event_id_hash": 2}]
+
+            def session_commit(self, args, *, hook=None):
+                self.commit_calls.append((args, hook))
+                return {"status": "accepted", "entities_written": 2, "indexes_written": 3}
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        try:
+            args = Namespace(
+                event="UserPromptSubmit",
+                account_id="acct_local",
+                tenant_id="tenant_codex",
+                user_id="deeproute",
+                session_id="codex-session-threshold",
+                team="codex",
+                project="temporalstore",
+                session_commit_threshold=2,
+                idle_commit_timeout_ms=300000,
+                understanding_provider="rules",
+                segment_provider="deterministic",
+            )
+            server = Server()
+            result = hook.fast_async_hook_ingest(
+                server,
+                args=args,
+                text="batch me into entities",
+                role="user",
+                agent_context={"workspace_root": "/repo"},
+                hook={"session_id_source": "payload_field"},
+            )
+        finally:
+            hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+
+        self.assertEqual("accepted", result["auto_batch_extract_result"]["status"])
+        self.assertEqual(1, len(server.adapter.commit_calls))
+        commit_args, commit_hook = server.adapter.commit_calls[0]
+        self.assertEqual("threshold", commit_args["commit_reason"])
+        self.assertFalse(commit_args["force"])
+        self.assertEqual(2, commit_args["threshold_messages"])
+        self.assertEqual(2, commit_args["max_messages"])
+        self.assertEqual("session_commit", commit_hook["hook_type"])
+
+    def test_fast_async_hook_ingest_commits_assistant_stop_boundary(self) -> None:
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.serving_records = []
+                self.session_buffer_records = []
+                self.commit_calls = []
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.serving_records.extend(records)
+
+            def append_session_buffer_event(self, **kwargs):
+                self.session_buffer_records.append(kwargs)
+
+            def pending_session_events(self, scope):
+                return [{"event_id_hash": 1}]
+
+            def session_commit(self, args, *, hook=None):
+                self.commit_calls.append((args, hook))
+                return {"status": "accepted", "entities_written": 1}
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        args = Namespace(
+            event="Stop",
+            account_id="acct_local",
+            tenant_id="tenant_codex",
+            user_id="deeproute",
+            session_id="codex-session-stop",
+            team="codex",
+            project="temporalstore",
+            session_commit_threshold=20,
+            idle_commit_timeout_ms=300000,
+            understanding_provider="rules",
+            segment_provider="deterministic",
+        )
+        server = Server()
+        result = hook.fast_async_hook_ingest(
+            server,
+            args=args,
+            text="Done. Commit d0152479 pushed and tests passed.",
+            role="assistant",
+            agent_context={"workspace_root": "/repo"},
+            hook={"session_id_source": "payload_field"},
+        )
+
+        self.assertEqual("accepted", result["session_commit"]["status"])
+        self.assertEqual(1, len(server.adapter.raw_records))
+        self.assertEqual("assistant", server.adapter.raw_records[0]["messages"][0]["role"])
+        self.assertEqual(1, len(server.adapter.commit_calls))
+        commit_args, _commit_hook = server.adapter.commit_calls[0]
+        self.assertEqual("hook_boundary", commit_args["commit_reason"])
+        self.assertTrue(commit_args["force"])
 
     def test_retention_keeps_acceptance_prompt_that_mentions_synthetic_rows(self) -> None:
         fields = hook.hook_retention_fields(
@@ -566,6 +700,17 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertNotIn("cpp-$EVENT.out", combined)
         self.assertNotIn("rust-service-publish.err", combined)
         self.assertNotIn("cpp-direct-publish.err", combined)
+
+    def test_live_codex_hooks_enable_assistant_capture_and_auto_batch_extraction(self) -> None:
+        tools_dir = Path(__file__).resolve().parents[1] / "tools"
+        cpp_script = (tools_dir / "matrixark_codex_cpp_hook.sh").read_text()
+        rust_script = (tools_dir / "matrixark_codex_rust_hook.sh").read_text()
+        dual_script = (tools_dir / "matrixark_codex_dual_hook.sh").read_text()
+
+        self.assertIn('MATRIXARK_CODEX_CPP_USER_PROMPTS_ONLY="${MATRIXARK_CODEX_CPP_USER_PROMPTS_ONLY:-0}"', cpp_script)
+        self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', cpp_script)
+        self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', rust_script)
+        self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', dual_script)
 
     def test_dual_hook_keeps_derived_context_out_of_raw_ingestion(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_dual_hook.sh").read_text()
