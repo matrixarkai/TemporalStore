@@ -772,6 +772,85 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(summary_layer_budget["by_extraction_phase"]["final"]["refs"], 1)
             self.assertGreaterEqual(summary_layer_budget["final_session_boundary_ref_count"], 1)
 
+    def test_profile_entity_updates_preserve_cross_session_lineage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-entity-update.jsonl")
+            base_scope = {
+                "account_id": "acct_profile_update",
+                "tenant_id": "tenant_profile_update",
+                "user_id": "user_profile_update",
+            }
+            first = adapter.batch_extract(
+                {
+                    "scope": {**base_scope, "session_id": "session_profile_update_1"},
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "Done. Commit aaa111 pushed and profile memory update tests passed.",
+                        }
+                    ],
+                    "metadata": {"hook_type": "hook_boundary", "codex_event": "Stop"},
+                    "force": True,
+                }
+            )
+            second = adapter.batch_extract(
+                {
+                    "scope": {**base_scope, "session_id": "session_profile_update_2"},
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "Done. Commit bbb222 pushed and cross-session lineage was preserved.",
+                        }
+                    ],
+                    "metadata": {"hook_type": "hook_boundary", "codex_event": "Stop"},
+                    "force": True,
+                }
+            )
+
+            self.assertGreaterEqual(first.get("profile_entities_written", 0), 1)
+            self.assertGreaterEqual(second.get("profile_entities_written", 0), 1)
+            records = adapter.read_all()
+            profile_decisions = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
+                and record.get("entity_type") == "assistant_decision"
+            ]
+            self.assertEqual(1, len(profile_decisions))
+            profile_decision = profile_decisions[0]
+            self.assertEqual(
+                ["session_profile_update_1", "session_profile_update_2"],
+                profile_decision["source_session_ids"],
+            )
+            self.assertGreaterEqual(len(profile_decision["source_entity_hashes"]), 2)
+            self.assertIn("assistant", profile_decision["source_roles"])
+            self.assertIn("hook_boundary", profile_decision["source_hook_types"])
+            self.assertIn("Stop", profile_decision["source_codex_events"])
+            self.assertIn("aaa111", profile_decision["state"])
+            self.assertIn("bbb222", profile_decision["state"])
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**base_scope, "session_id": "session_profile_update_3"},
+                    "session_scope": "prefer",
+                    "query": "aaa111 bbb222 assistant",
+                    "max_context_tokens": 500,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 10},
+                }
+            )
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "entity"
+                    and ref.get("memory_scope") == "user_profile"
+                    and ref.get("session_continuity") == "cross_session"
+                    and "bbb222" in str(ref.get("text") or ref.get("summary_text") or "")
+                    for ref in pack["selected_refs"]
+                )
+            )
+
     def test_async_resource_import_uses_bounded_worker_queue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, mock.patch.dict(
             os.environ,

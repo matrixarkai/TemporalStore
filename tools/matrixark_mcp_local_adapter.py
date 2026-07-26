@@ -3885,6 +3885,37 @@ class MatrixArkLocalAdapter:
                     entity_name=updated_entity["entity_name"],
                 )
                 promoted_entity = apply_entity_patches(previous_profile_entity, updated_entity)
+                previous_profile = previous_profile_entity or {}
+                previous_profile_state = str(previous_profile.get("state") or "")
+                promoted_state = str(promoted_entity.get("state") or "")
+                if previous_profile_state and previous_profile_state.lower() not in promoted_state.lower():
+                    promoted_entity = {
+                        **promoted_entity,
+                        "state": summarize_text(previous_profile_state + " " + promoted_state, limit=320),
+                        "previous_state": previous_profile_state,
+                    }
+                profile_source_session_ids = ordered_unique_any(
+                    list(previous_profile.get("source_session_ids", []))
+                    + ([source_session_id] if source_session_id else [])
+                )
+                profile_source_entity_hashes = ordered_unique_any(
+                    list(previous_profile.get("source_entity_hashes", [])) + [entity_hash]
+                )
+                profile_source_refs = ordered_unique_any(
+                    list(previous_profile.get("source_refs", [])) + list(promoted_entity.get("source_refs", []))
+                )
+                profile_source_event_ids = ordered_unique_any(
+                    list(previous_profile.get("source_event_ids", [])) + source_event_ids
+                )
+                profile_source_roles = ordered_unique_any(
+                    list(previous_profile.get("source_roles", [])) + source_roles
+                )
+                profile_source_hook_types = ordered_unique_any(
+                    list(previous_profile.get("source_hook_types", [])) + source_hook_types
+                )
+                profile_source_codex_events = ordered_unique_any(
+                    list(previous_profile.get("source_codex_events", [])) + source_codex_events
+                )
                 profile_entity_hashes.append(profile_entity_hash)
                 records_to_append.append(
                     {
@@ -3901,13 +3932,13 @@ class MatrixArkLocalAdapter:
                         "previous_state": promoted_entity.get("previous_state", ""),
                         "confidence": promoted_entity["confidence"],
                         "operator": promoted_entity["operator"],
-                        "source_refs": promoted_entity["source_refs"],
-                        "source_event_ids": source_event_ids,
-                        "source_session_ids": [source_session_id] if source_session_id else [],
-                        "source_entity_hashes": [entity_hash],
-                        "source_roles": source_roles,
-                        "source_hook_types": source_hook_types,
-                        "source_codex_events": source_codex_events,
+                        "source_refs": profile_source_refs,
+                        "source_event_ids": profile_source_event_ids,
+                        "source_session_ids": profile_source_session_ids,
+                        "source_entity_hashes": profile_source_entity_hashes,
+                        "source_roles": profile_source_roles,
+                        "source_hook_types": profile_source_hook_types,
+                        "source_codex_events": profile_source_codex_events,
                         "source_batch_id_hash": batch_id_hash,
                         "extraction_context_event_ids": extraction_context_event_ids,
                         "field_patches": promoted_entity.get("field_patches", []),
@@ -5308,7 +5339,11 @@ class MatrixArkLocalAdapter:
                 continue
             if not access_scope_matches_before_scoring(record, retrieval_scope):
                 continue
-            if not selected_by_tree(record):
+            is_profile_entity_bridge = (
+                str(record.get("memory_scope") or "") == "user_profile"
+                and str(record.get("session_continuity") or "") == "cross_session"
+            )
+            if not selected_by_tree(record) and not is_profile_entity_bridge:
                 continue
             index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
             if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
@@ -5335,6 +5370,9 @@ class MatrixArkLocalAdapter:
                 "node_score": node_score,
                 "matched_index_terms": sorted(index_terms),
                 "selection_reason": (
+                    "selected as cross-session user-profile entity bridge"
+                    if is_profile_entity_bridge
+                    else
                     "selected by tree path, secondary indexes, and resource entity state score"
                     if record.get("source_chunk_hash")
                     else "selected by tree path, secondary indexes, and entity state score"
