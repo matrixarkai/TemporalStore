@@ -447,6 +447,7 @@ class MatrixArkLocalAdapter:
             "remote_context_budget_tokens": pack.get("remote_context_budget_tokens", 0),
             "requested_max_context_tokens": pack.get("requested_max_context_tokens", 0),
             "memory_layer_budget": memory_layer_budget,
+            "quality_warnings": pack.get("quality_warnings", []) or [],
             "partial_context_pack": bool(pack.get("partial_context_pack", False)),
             "insufficient_context": bool(pack.get("insufficient_context", False)),
             "quality_warning_count": len(pack.get("quality_warnings", []) or []),
@@ -2259,7 +2260,7 @@ class MatrixArkLocalAdapter:
                         "codex_event": retrieval_request_metadata.get("codex_event", ""),
                         "hook_type": retrieval_request_metadata.get("hook_type", ""),
                         "lifecycle_stage": retrieval_request_metadata.get("lifecycle_stage", ""),
-                        "quality_warnings": record.get("quality_warnings", []) if record_type == "context_pack_audit" else {"count": record.get("quality_warning_count", 0)},
+                        "quality_warnings": record.get("quality_warnings", []) if record_type == "context_pack_audit" else record.get("quality_warnings", {"count": record.get("quality_warning_count", 0)}),
                         "scope": candidate_access_scope(record),
                         "created_at_ms": record.get("created_at_ms", 0),
                     }
@@ -5960,9 +5961,27 @@ class MatrixArkLocalAdapter:
             shared_context_policy=shared_context_policy,
         )
         partial_context_pack = bool(dropped_over_budget.get("deadline_exceeded"))
+        request_metadata = optional_object(args, "metadata")
         quality_warnings = []
         if partial_context_pack:
             quality_warnings.append(f"retrieval_deadline_exceeded:{dropped_over_budget.get('deadline_reason', 'deadline_during_context_pack')}")
+        session_id_source = str(
+            request_metadata.get("session_id_source")
+            or request_metadata.get("codex_session_id_source")
+            or ""
+        )
+        session_identity_policy = {
+            "session_id_source": session_id_source,
+            "strong_session_identity": session_id_source in {"explicit", "payload_field", "payload_path_hash"},
+            "fallback_session_identity": session_id_source in {"state_file", "state_file_created"},
+            "risk": (
+                "workspace_fallback_may_merge_multiple_codex_tasks"
+                if session_id_source in {"state_file", "state_file_created"}
+                else ""
+            ),
+        }
+        if session_identity_policy["fallback_session_identity"]:
+            quality_warnings.append(f"session_identity_fallback:{session_id_source}")
         context_pack_id = stable_hash(f"{query}:{selected}:{now_ms()}")
         context_pack_id_text = str(context_pack_id)
         recall_reinforcement_enabled = bool(ranking.get("recall_reinforcement", True))
@@ -6108,6 +6127,7 @@ class MatrixArkLocalAdapter:
                     "cross_session_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "cross_session"),
                     "entity_bridge_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "cross_session" and item.get("ref_type") == "entity"),
                 },
+                "session_identity": session_identity_policy,
                 "memory_layer_budget": memory_layer_budget,
                 "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
                 "shared_context": dropped_over_budget.get("shared_context_policy", shared_context_policy),
@@ -6267,7 +6287,7 @@ class MatrixArkLocalAdapter:
             query=query,
             scope=scope,
             audit_mode=audit_mode,
-            request_metadata=optional_object(args, "metadata"),
+            request_metadata=request_metadata,
             audit_sample_rate=audit_sample_rate,
         )
         pack["operational_visibility_policy"] = visibility_decision
