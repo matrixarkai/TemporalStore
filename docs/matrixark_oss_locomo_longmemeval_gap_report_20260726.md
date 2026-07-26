@@ -19,7 +19,8 @@ This report is intentionally conservative: it records what ran locally, what imp
 - Added an OSS reader memory-capability probe so weak/smoke readers are not accidentally used for competitive MatrixArk vs OpenViking/VikingMem claims.
 - Installed local Ollama and pulled `qwen2.5:1.5b`; verified Ollama OpenAI-compatible `/v1` serving on `127.0.0.1:11434`.
 - Tightened the OSS reader capability prompt so temporal questions require explicit date/year normalization without forcing unrelated date answers for personal-fact questions.
-- Attempted `qwen2.5:7b` through the configured WSL network proxy; the pull reached only about 475 MB / 4.7 GB after the 15 minute command cap, so 7B remains a network/download blocker for this pass.
+- Propagated the same temporal/fact-safe OSS reader prompt into the MatrixArk benchmark runner and the OpenViking direct diagnostic baselines so the comparison no longer mixes reader instructions.
+- Attempted `qwen2.5:7b` through the configured WSL network proxy; the blocking pull reached only about 475 MB / 4.7 GB after the 15 minute command cap. A background pull is now running and had reached about 491 MB / 4.7 GB, with roughly two hours still estimated at the observed throughput.
 - Kept benchmark scoring fail-closed: paper-comparable claims remain disabled until full datasets and external baselines run under the same budget/model config.
 
 ## Local OSS Readers
@@ -52,6 +53,8 @@ The gate uses four compact memory QA probes: two LoCoMo temporal questions and t
 | Qwen LongMemEval_s tiny | 2 | 1.000 | 1.000 | 93.03% | 233.81 ms | 25.58 s | Python-only diagnostic | Smoke only |
 | Ollama Qwen 1.5B LoCoMo tiny | 2 | 1.000 | 0.500 | 0.00% | 4.92 ms | 58.35 s | Python-only diagnostic | Gate failed: reader p95 and one temporal answer miss |
 | Ollama Qwen 1.5B LongMemEval_s tiny | 2 | 1.000 | 1.000 | 93.03% | 402.84 ms | 58.43 s | Python-only diagnostic | Gate failed only on reader p95 |
+| Ollama Qwen 1.5B LoCoMo tiny, shared prompt | 2 | 1.000 | 0.500 | 0.00% | 3.36 ms | 57.70 s | Python-only diagnostic | Same retrieval; prompt alignment did not fix Qwen 1.5B temporal confusion |
+| Ollama Qwen 1.5B LongMemEval_s tiny, shared prompt | 2 | 1.000 | 0.500 | 93.03% | 373.04 ms | 57.57 s | Python-only diagnostic | Prompt alignment fixed the degree case but missed the commute case in this run |
 
 Notes:
 
@@ -84,6 +87,8 @@ OpenViking tiny eval results:
 | OpenViking-style direct source retrieval + MiniLM LongMemEval_s tiny | 2 | 1.000 | 1.000 | 96.87% | 89.42 ms | 5.33 s | Fallback source retrieval works; not OpenViking memory recall |
 | OpenViking direct archive retrieval + Ollama Qwen 1.5B LoCoMo tiny | 2 | 1.000 | n/a | 52.50% | 0.54 ms | 63.61 s | Retrieval works; reader latency too high for final claims |
 | OpenViking-style direct source retrieval + Ollama Qwen 1.5B LongMemEval_s tiny | 2 | 1.000 | n/a | 96.87% | 76.77 ms | 71.01 s | Source retrieval works; reader latency too high and still not official memory recall |
+| OpenViking direct archive retrieval + Ollama Qwen 1.5B LoCoMo tiny, shared prompt | 2 | 1.000 | 0.000 | 52.50% | 0.46 ms | 56.27 s | Prompt-aligned retrieval works; reader still fails both tiny LoCoMo answers |
+| OpenViking-style direct source retrieval + Ollama Qwen 1.5B LongMemEval_s tiny, shared prompt | 2 | 1.000 | 0.500 | 96.87% | 63.12 ms | 59.01 s | Prompt-aligned source retrieval works; reader quality/latency still not final-claim ready |
 
 The MiniLM VikingBot run answered both questions as `2026` for expected answers `7 May 2023` and `2022`. The Qwen VikingBot run reached the local Qwen endpoint, but answered with a fragment of VikingBot tool instructions instead of using tools/retrieval. Direct OpenViking recall is now technically callable, but the memory-enabled Qwen import produced `memories_extracted: {}` and `memory_diff.json` contained no adds, updates, or deletes.
 
@@ -117,10 +122,11 @@ For LongMemEval, the official OpenViking importer initially failed every session
 The local Ollama Qwen 1.5B path is now installed and callable, so the OSS model path itself is no longer blocked. It is still not strong enough for competitive LoCoMo/LongMemEval claims:
 
 - Reader gate: 3/4 correct, p95 1.81 s, failed quality because it answered `Bachelor's degree` instead of the requested `Business Administration` fact.
-- MatrixArk LoCoMo tiny: retrieval hit 1.0, reader hit 0.5, p95 retrieval 4.92 ms, p95 reader 58.35 s, gate failed.
-- MatrixArk LongMemEval tiny: retrieval hit 1.0, reader hit 1.0, token reduction 93.03%, p95 retrieval 402.84 ms, p95 reader 58.43 s, gate failed only on reader latency.
-- OpenViking direct LoCoMo archive: retrieval hit 1.0, token reduction 52.50%, p95 retrieval 0.54 ms, p95 reader 63.61 s.
-- OpenViking direct LongMemEval source: retrieval hit 1.0, token reduction 96.87%, p95 retrieval 76.77 ms, p95 reader 71.01 s.
+- MatrixArk LoCoMo tiny: retrieval hit 1.0, reader hit 0.5, p95 retrieval 4.92 ms, p95 reader 58.35 s, gate failed. With the shared prompt, retrieval stayed 1.0 and reader hit stayed 0.5, so the remaining issue is model quality rather than a missing prompt instruction.
+- MatrixArk LongMemEval tiny: retrieval hit 1.0, reader hit 1.0, token reduction 93.03%, p95 retrieval 402.84 ms, p95 reader 58.43 s, gate failed only on reader latency. With the shared prompt, reader hit varied to 0.5, showing Qwen 1.5B is not stable enough for final claims.
+- OpenViking direct LoCoMo archive: retrieval hit 1.0, token reduction 52.50%, p95 retrieval 0.46-0.54 ms, p95 reader 56-64 s depending on prompt.
+- OpenViking direct LongMemEval source: retrieval hit 1.0, token reduction 96.87%, p95 retrieval 63-77 ms, p95 reader 59-71 s depending on prompt.
+- A reader-only snippet-packing experiment reduced latency on LoCoMo but also reduced reader hit rate, so it was not kept as a production benchmark fix. The next gap is a stronger reader, not more narrow prompt surgery around Qwen 1.5B.
 
 The practical gap is now precise: retrieval can find the tiny evidence on both MatrixArk and direct OpenViking diagnostics, but the local generative reader needs either a faster/stronger serving stack or a larger model before we can run full LoCoMo 1,542-question and LongMemEval_s 500-record comparisons with defensible LLM quality.
 
@@ -150,4 +156,11 @@ The practical gap is now precise: retrieval can find the tiny evidence on both M
 - `/tmp/matrixark_qwen25_15b_locomo_tiny_benchmark_20260726.json`
 - `/tmp/matrixark_qwen25_15b_longmem_tiny_validation_20260726.json`
 - `/tmp/matrixark_qwen25_15b_longmem_tiny_benchmark_20260726.json`
+- `/tmp/matrixark_qwen25_15b_locomo_tiny_validation_promptfix_20260726.json`
+- `/tmp/matrixark_qwen25_15b_locomo_tiny_benchmark_promptfix_20260726.json`
+- `/tmp/matrixark_qwen25_15b_longmem_tiny_validation_promptfix_20260726.json`
+- `/tmp/matrixark_qwen25_15b_longmem_tiny_benchmark_promptfix_20260726.json`
+- `/tmp/openviking_direct_retrieval_locomo_tiny_qwen25_15b_ollama_promptfix_20260726.json`
+- `/tmp/openviking_direct_source_longmem_tiny_qwen25_15b_ollama_promptfix_20260726.json`
 - `/tmp/ollama_pull_qwen25_7b_20260726.log`
+- `/tmp/ollama_pull_qwen25_7b_bg_20260726.log`
