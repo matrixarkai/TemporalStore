@@ -4490,6 +4490,7 @@ class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
                         "by_memory_scope": {"user_profile": {"refs": 2, "tokens": 34}},
                         "by_session_continuity": {"cross_session": {"refs": 2, "tokens": 34}},
                         "by_extraction_phase": {"final": {"refs": 1, "tokens": 20}},
+                        "by_ref_type": {"summary": {"refs": 1, "tokens": 20}},
                         "by_entity_type": {"decision": {"refs": 1, "tokens": 20}},
                         "by_source_role": {"assistant": {"refs": 1, "tokens": 20}},
                         "by_hook_type": {"hook_boundary": {"refs": 1, "tokens": 20}},
@@ -4518,6 +4519,7 @@ class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
         layer_totals = metrics["memory_layer_budget_totals"]
         self.assertEqual(layer_totals["by_memory_scope"]["user_profile"], {"refs": 2, "tokens": 34})
         self.assertEqual(layer_totals["by_session_continuity"]["cross_session"], {"refs": 2, "tokens": 34})
+        self.assertEqual(layer_totals["by_ref_type"]["summary"], {"refs": 1, "tokens": 20})
         self.assertEqual(layer_totals["by_entity_type"]["decision"], {"refs": 1, "tokens": 20})
         self.assertEqual(layer_totals["by_source_role"]["assistant"], {"refs": 1, "tokens": 20})
         self.assertEqual(layer_totals["by_hook_type"]["hook_boundary"], {"refs": 1, "tokens": 20})

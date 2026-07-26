@@ -50,6 +50,7 @@ def initialize_rust_proxy_metrics_state(target: Any) -> None:
         "by_memory_scope": {},
         "by_session_continuity": {},
         "by_extraction_phase": {},
+        "by_ref_type": {},
         "by_entity_type": {},
         "by_source_role": {},
         "by_hook_type": {},

@@ -5795,6 +5795,7 @@ class MatrixArkLocalAdapter:
                 "by_memory_scope": {},
                 "by_session_continuity": {},
                 "by_extraction_phase": {},
+                "by_ref_type": {},
                 "by_entity_type": {},
                 "by_source_role": {},
                 "by_hook_type": {},
@@ -5814,6 +5815,7 @@ class MatrixArkLocalAdapter:
                     ("memory_scope", "by_memory_scope", "unscoped"),
                     ("session_continuity", "by_session_continuity", "neutral"),
                     ("extraction_phase", "by_extraction_phase", "unknown"),
+                    ("ref_type", "by_ref_type", "unknown"),
                 ]:
                     value = str(ref.get(field) or default_value)
                     bucket = breakdown[bucket_name].setdefault(value, {"refs": 0, "tokens": 0})
