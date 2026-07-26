@@ -37,6 +37,8 @@ def main() -> int:
     parser.add_argument("--input", default="/root/matrixark_benchmarks/data/longmemeval_s_tiny_2.json")
     parser.add_argument("--reader-base-url", default="http://127.0.0.1:18087/v1")
     parser.add_argument("--reader-model", default="Qwen/Qwen2.5-0.5B-Instruct")
+    parser.add_argument("--embedding-model", default="matrixark-local-hash-embedding")
+    parser.add_argument("--provider-name", default="openviking-style-direct-source")
     parser.add_argument("--reader-timeout-seconds", type=float, default=180.0)
     parser.add_argument("--reader-max-tokens", type=int, default=96)
     parser.add_argument("--top-k", type=int, default=16)
@@ -51,10 +53,14 @@ def main() -> int:
         "baseline": "openviking_style_direct_source_retrieval",
         "claim_status": "diagnostic_not_paper_comparable",
         "reader_base_url": args.reader_base_url,
+        "reader_provider_name": args.provider_name,
         "reader_model": args.reader_model,
+        "embedding_model": args.embedding_model,
         "input": args.input,
         "top_k": args.top_k,
+        "max_events": args.top_k,
         "max_context_chars": args.max_context_chars,
+        "reader_max_context_chars": args.max_context_chars,
         "blockers": [],
         "warnings": [
             "OpenViking LongMemEval import completed only after setting a user API key, but official eval retrieved zero memories locally.",
@@ -159,6 +165,7 @@ def main() -> int:
             "matrixark_reference": load_matrixark_reference(args.matrixark_report),
         }
     )
+    report["benchmark_model_contract"] = benchmark_model_contract(args, report.get("matrixark_reference") or {})
     return finish(report, args.report, started, 0)
 
 
@@ -306,7 +313,54 @@ def load_matrixark_reference(path: str) -> dict[str, Any]:
         "benchmark_retrieval_p95_ms": data.get("benchmark_retrieval_p95_ms"),
         "benchmark_reader_p95_ms": data.get("benchmark_reader_p95_ms"),
         "python_only_diagnostic": data.get("python_only_diagnostic"),
+        "benchmark_model_contract": data.get("benchmark_model_contract") or {},
     }
+
+
+def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict[str, Any]) -> dict[str, Any]:
+    reference_contract = matrixark_reference.get("benchmark_model_contract") if isinstance(matrixark_reference, dict) else {}
+    if not isinstance(reference_contract, dict):
+        reference_contract = {}
+    matrixark_reader = str(reference_contract.get("matrixark_reader_model") or args.reader_model).strip()
+    matrixark_embedding = str(reference_contract.get("matrixark_embedding_model") or args.embedding_model).strip()
+    matrixark_max_events = int(reference_contract.get("matrixark_max_events") or args.top_k)
+    matrixark_reader_budget = int(reference_contract.get("matrixark_reader_max_context_chars") or args.max_context_chars)
+    baseline_reader = str(args.reader_model).strip()
+    baseline_embedding = str(args.embedding_model).strip()
+    baseline_max_events = int(args.top_k)
+    baseline_reader_budget = int(args.max_context_chars)
+    return {
+        "matrixark_provider_name": str(reference_contract.get("matrixark_provider_name") or "matrixark").strip(),
+        "matrixark_reader_model": matrixark_reader,
+        "matrixark_embedding_model": matrixark_embedding,
+        "matrixark_max_events": matrixark_max_events,
+        "matrixark_reader_max_context_chars": matrixark_reader_budget,
+        "baseline_provider_name": str(args.provider_name).strip(),
+        "baseline_reader_model": baseline_reader,
+        "baseline_embedding_model": baseline_embedding,
+        "baseline_max_events": baseline_max_events,
+        "baseline_reader_max_context_chars": baseline_reader_budget,
+        "provider_identity_declared": bool(args.provider_name),
+        "reader_model_match": normalized_model_name(matrixark_reader) == normalized_model_name(baseline_reader),
+        "embedding_model_match": normalized_model_name(matrixark_embedding) == normalized_model_name(baseline_embedding),
+        "max_events_match": matrixark_max_events == baseline_max_events,
+        "reader_context_budget_match": matrixark_reader_budget == baseline_reader_budget,
+        "shared_oss_model_contract_required": True,
+        "shared_oss_model_contract_passed": (
+            normalized_model_name(matrixark_reader) == normalized_model_name(baseline_reader)
+            and normalized_model_name(matrixark_embedding) == normalized_model_name(baseline_embedding)
+            and matrixark_max_events == baseline_max_events
+            and matrixark_reader_budget == baseline_reader_budget
+        ),
+        "comparison_rule": (
+            "MatrixArk and OpenViking/VikingMem rows must use the same OSS reader model, "
+            "embedding/encoding model, retrieval block budget, and reader context budget."
+        ),
+    }
+
+
+def normalized_model_name(value: Any) -> str:
+    return re.sub(r"[^a-z0-9._:-]+", "", str(value or "").strip().lower())
 
 
 def finish(report: dict[str, Any], path: str, started: float, code: int) -> int:
