@@ -561,6 +561,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         layer_budget = pack["recall_policy"]["memory_layer_budget"]
         self.assertEqual(1, layer_budget["by_memory_scope"]["user_profile"]["refs"])
         self.assertEqual(1, layer_budget["by_session_continuity"]["cross_session"]["refs"])
+        self.assertEqual(1, layer_budget["by_ref_type"]["entity"]["refs"])
         self.assertEqual(1, layer_budget["by_entity_type"]["tool_evidence"]["refs"])
         self.assertEqual(1, layer_budget["by_source_role"]["tool"]["refs"])
         self.assertEqual(1, layer_budget["by_hook_type"]["hook_boundary"]["refs"])

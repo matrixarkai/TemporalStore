@@ -669,6 +669,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             "provisional": {"refs": 1, "tokens": 12},
                             "final": {"refs": 2, "tokens": 30},
                         },
+                        "by_ref_type": {
+                            "entity": {"refs": 1, "tokens": 18},
+                            "summary": {"refs": 1, "tokens": 12},
+                        },
                         "final_session_boundary_ref_count": 2,
                     }
                 },
@@ -744,6 +748,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("scope[session=1/12t, user_profile=2/30t]", additional)
         self.assertIn("continuity[cross_session=2/30t, same_session=1/12t]", additional)
         self.assertIn("phase[final=2/30t, provisional=1/12t]", additional)
+        self.assertIn("ref_type[entity=1/18t, summary=1/12t]", additional)
         self.assertIn("final_boundary_refs=2", additional)
         self.assertIn("Memory hierarchy:", additional)
         self.assertIn("user_profile/cross_session refs are long-term state", additional)

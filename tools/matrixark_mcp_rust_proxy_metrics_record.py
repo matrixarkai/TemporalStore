@@ -88,6 +88,7 @@ def merge_memory_layer_budget(target: Any, response: Json) -> None:
         "by_memory_scope",
         "by_session_continuity",
         "by_extraction_phase",
+        "by_ref_type",
         "by_entity_type",
         "by_source_role",
         "by_hook_type",
