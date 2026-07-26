@@ -446,6 +446,22 @@ def main() -> int:
                     "reader_ms": reader_ms,
                 }
             )
+            if total == 1 or total % int(os.environ.get("MATRIXARK_BENCHMARK_PROGRESS_EVERY", "25")) == 0:
+                write_locomo_reader_progress(
+                    progress_path=Path(args.output).with_suffix(Path(args.output).suffix + ".progress.json"),
+                    phase="running_reader",
+                    completed_queries=total,
+                    hit_count=hit_count,
+                    reader_hit_count=reader_hit_count,
+                    reader_error_count=reader.error_count,
+                    reader_fallback_count=reader.fallback_count,
+                    open_source_calls=reader.open_source_calls,
+                    total_source_tokens=total_source_tokens,
+                    total_retrieved_tokens=total_retrieved_tokens,
+                    retrieval_latencies_ms=retrieval_latencies_ms,
+                    reader_latencies_ms=reader_latencies_ms,
+                    last_query_id=query_id,
+                )
 
     hit_rate = hit_count / total if total else 0.0
     reader_hit_rate = reader_hit_count / total if total else 0.0
@@ -629,6 +645,21 @@ def main() -> int:
     report["paper_comparable_claim_ready"] = paper_comparable_claim_ready(report, thresholds)
 
     Path(args.output).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_locomo_reader_progress(
+        progress_path=Path(args.output).with_suffix(Path(args.output).suffix + ".progress.json"),
+        phase="complete",
+        completed_queries=total,
+        hit_count=hit_count,
+        reader_hit_count=reader_hit_count,
+        reader_error_count=reader.error_count,
+        reader_fallback_count=reader.fallback_count,
+        open_source_calls=reader.open_source_calls,
+        total_source_tokens=total_source_tokens,
+        total_retrieved_tokens=total_retrieved_tokens,
+        retrieval_latencies_ms=retrieval_latencies_ms,
+        reader_latencies_ms=reader_latencies_ms,
+        last_query_id=per_query[-1]["query_id"] if per_query else "",
+    )
     with Path(args.misses).open("w", encoding="utf-8") as handle:
         for miss in misses:
             handle.write(json.dumps(miss, ensure_ascii=False) + "\n")
@@ -906,6 +937,39 @@ def load_reusable_rust_temporalstore_report(args: argparse.Namespace) -> dict[st
     report["reused_existing_report"] = True
     report["reused_report_path"] = str(report_path)
     return report
+
+
+def write_locomo_reader_progress(
+    *,
+    progress_path: Path,
+    phase: str,
+    completed_queries: int,
+    hit_count: int,
+    reader_hit_count: int,
+    reader_error_count: int,
+    reader_fallback_count: int,
+    open_source_calls: int,
+    total_source_tokens: int,
+    total_retrieved_tokens: int,
+    retrieval_latencies_ms: list[float],
+    reader_latencies_ms: list[float],
+    last_query_id: str,
+) -> None:
+    progress = {
+        "schema": "matrixark_locomo_reader_progress_v1",
+        "phase": phase,
+        "completed_queries": completed_queries,
+        "retrieval_hit_at_k": hit_count / completed_queries if completed_queries else 0.0,
+        "reader_hit_rate": reader_hit_count / completed_queries if completed_queries else 0.0,
+        "reader_error_count": reader_error_count,
+        "reader_fallback_count": reader_fallback_count,
+        "reader_open_source_calls": open_source_calls,
+        "token_reduction_percent": token_reduction_percent(total_source_tokens, total_retrieved_tokens),
+        "retrieval_p95_ms": percentile(retrieval_latencies_ms, 95),
+        "reader_p95_ms": percentile(reader_latencies_ms, 95),
+        "last_query_id": last_query_id,
+    }
+    progress_path.write_text(json.dumps(progress, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def run_rust_temporalstore_harness(
