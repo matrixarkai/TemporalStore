@@ -2027,6 +2027,65 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         updated_at_ms=now,
     )
     enqueue_raw = getattr(adapter, "enqueue_raw_ingestion_records", None)
+    session_commit_result: Json = {}
+    pre_ingest_idle_commit_result: Json = {}
+    session_commit = getattr(adapter, "session_commit", None)
+    threshold = int(getattr(args, "session_commit_threshold", 20) or 20)
+    idle_timeout_ms = int(getattr(args, "idle_commit_timeout_ms", 0) or 0)
+    pending_session_events = getattr(adapter, "pending_session_events", None)
+    pending_before_ingest: list[Json] = []
+    idle_elapsed_before_ingest_ms = 0
+    if callable(pending_session_events):
+        try:
+            pending_before_ingest = list(pending_session_events(scope))
+        except Exception:
+            pending_before_ingest = []
+    if pending_before_ingest and idle_timeout_ms > 0:
+        latest_event_time = max(
+            int(record.get("envelope", {}).get("ingestion_time_ms") or record.get("updated_at_ms") or 0)
+            for record in pending_before_ingest
+        )
+        if latest_event_time > 0:
+            idle_elapsed_before_ingest_ms = max(0, now - latest_event_time)
+    should_pre_ingest_idle_commit = (
+        args.event == "UserPromptSubmit"
+        and HOOK_AUTO_BATCH_EXTRACT
+        and callable(session_commit)
+        and bool(pending_before_ingest)
+        and idle_timeout_ms > 0
+        and idle_elapsed_before_ingest_ms >= idle_timeout_ms
+    )
+    if should_pre_ingest_idle_commit:
+        pre_idle_hook = codex_agent_hook(
+            hook_type="session_commit",
+            hook_id=f"fast_async_pre_ingest_idle_commit:{args.event}:{now}",
+            idempotency_key=f"fast-async-pre-ingest-idle:{session_id}:{event_id_hash}",
+            trigger="idle_timeout_before_prompt",
+            session_id_source=str((hook or {}).get("session_id_source") or ""),
+            identity=hook,
+        )
+        pre_idle_args: Json = {
+            "scope": scope,
+            "threshold_messages": threshold,
+            "force": False,
+            "commit_reason": "idle_timeout",
+            "idle_timeout_ms": idle_timeout_ms,
+            "understanding_provider": getattr(args, "understanding_provider", None),
+            "segment_provider": getattr(args, "segment_provider", None),
+            "storage_options": storage_options,
+            "agent_hook": pre_idle_hook,
+        }
+        try:
+            pre_ingest_idle_commit_result = session_commit(pre_idle_args, hook=pre_idle_hook)
+        except TypeError:
+            pre_ingest_idle_commit_result = session_commit(pre_idle_args)
+        except Exception as exc:
+            pre_ingest_idle_commit_result = {
+                "status": "error",
+                "reason": "fast_async_pre_ingest_idle_commit_failed",
+                "error": str(exc),
+            }
+
     if callable(enqueue_raw):
         enqueue_raw([raw_record])
     else:
@@ -2044,16 +2103,11 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
             hook=hook,
         )
     pending_event_count = 0
-    pending_session_events = getattr(adapter, "pending_session_events", None)
     if callable(pending_session_events):
         try:
             pending_event_count = len(pending_session_events(scope))
         except Exception:
             pending_event_count = 0
-    session_commit_result: Json = {}
-    session_commit = getattr(adapter, "session_commit", None)
-    threshold = int(getattr(args, "session_commit_threshold", 20) or 20)
-    idle_timeout_ms = int(getattr(args, "idle_commit_timeout_ms", 0) or 0)
     should_threshold_commit = (
         args.event == "UserPromptSubmit"
         and HOOK_AUTO_BATCH_EXTRACT
@@ -2113,9 +2167,12 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
             "threshold_ready": should_threshold_commit,
             "idle_commit_timeout_ms": idle_timeout_ms,
             "idle_ready": should_idle_commit,
+            "pre_ingest_idle_ready": should_pre_ingest_idle_commit,
+            "pre_ingest_idle_elapsed_ms": idle_elapsed_before_ingest_ms,
             "auto_batch_extract": HOOK_AUTO_BATCH_EXTRACT,
             "boundary_commit_requested": should_boundary_commit,
         },
+        "idle_commit_result": pre_ingest_idle_commit_result,
         "auto_batch_extract_result": session_commit_result if should_threshold_commit else {},
         "session_commit": session_commit_result if should_boundary_commit else {},
         "storage_options": storage_options,

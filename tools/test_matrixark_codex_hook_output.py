@@ -1120,6 +1120,109 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(2, commit_args["max_messages"])
         self.assertEqual("session_commit", commit_hook["hook_type"])
 
+    def test_fast_async_hook_ingest_preflushes_idle_tail_before_next_prompt(self) -> None:
+        original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT
+        hook.HOOK_AUTO_BATCH_EXTRACT = True
+
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.serving_records = []
+                self.session_buffer_records = []
+                self.commit_calls = []
+                self.pending = [
+                    {
+                        "event_id_hash": 77,
+                        "envelope": {"ingestion_time_ms": 1},
+                    }
+                ]
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.serving_records.extend(records)
+
+            def append_session_buffer_event(self, **kwargs):
+                self.session_buffer_records.append(kwargs)
+                self.pending.append(
+                    {
+                        "event_id_hash": kwargs["event_id_hash"],
+                        "envelope": kwargs["envelope"],
+                    }
+                )
+
+            def pending_session_events(self, scope):
+                return list(self.pending)
+
+            def session_commit(self, args, *, hook=None):
+                self.commit_calls.append((args, hook))
+                committed = list(self.pending)
+                self.pending.clear()
+                return {
+                    "status": "committed",
+                    "trigger_policy": "idle_timeout",
+                    "extraction_phase": "provisional",
+                    "final_session_boundary": False,
+                    "committed_event_count": len(committed),
+                    "source_event_ids": [record["event_id_hash"] for record in committed],
+                    "trigger_evidence": {
+                        "pending_event_count": len(committed),
+                        "idle_ready": True,
+                    },
+                }
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        try:
+            args = Namespace(
+                event="UserPromptSubmit",
+                account_id="acct_local",
+                tenant_id="tenant_codex",
+                user_id="deeproute",
+                session_id="codex-session-idle-next-prompt",
+                team="codex",
+                project="temporalstore",
+                session_commit_threshold=20,
+                idle_commit_timeout_ms=1,
+                understanding_provider="rules",
+                segment_provider="deterministic",
+            )
+            server = Server()
+            result = hook.fast_async_hook_ingest(
+                server,
+                args=args,
+                text="new prompt should not be mixed into the prior idle batch",
+                role="user",
+                agent_context={"workspace_root": "/repo"},
+                hook={
+                    "session_id_source": "payload_field",
+                    "thread_id": "thread-idle-preflush",
+                    "turn_id": "turn-new-prompt",
+                },
+            )
+        finally:
+            hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+
+        self.assertEqual("committed", result["idle_commit_result"]["status"])
+        self.assertEqual("idle_timeout", result["idle_commit_result"]["trigger_policy"])
+        self.assertTrue(result["session_buffer"]["pre_ingest_idle_ready"])
+        self.assertGreaterEqual(result["session_buffer"]["pre_ingest_idle_elapsed_ms"], 1)
+        self.assertEqual({}, result["auto_batch_extract_result"])
+        self.assertEqual(1, len(server.adapter.commit_calls))
+        commit_args, commit_hook = server.adapter.commit_calls[0]
+        self.assertEqual("idle_timeout", commit_args["commit_reason"])
+        self.assertFalse(commit_args["force"])
+        self.assertEqual(1, commit_args["idle_timeout_ms"])
+        self.assertEqual("idle_timeout_before_prompt", commit_hook["trigger"])
+        self.assertEqual("thread-idle-preflush", commit_hook["thread_id"])
+        self.assertEqual("turn-new-prompt", commit_hook["turn_id"])
+        self.assertEqual(1, len(server.adapter.session_buffer_records))
+        self.assertEqual("new prompt should not be mixed into the prior idle batch", server.adapter.session_buffer_records[0]["envelope"]["messages"][0]["content"])
+        self.assertEqual(1, result["session_buffer"]["pending_event_count"])
+
     def test_fast_async_hook_ingest_commits_assistant_stop_boundary(self) -> None:
         class Adapter:
             def __init__(self) -> None:
