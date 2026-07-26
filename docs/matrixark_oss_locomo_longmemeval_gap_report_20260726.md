@@ -22,6 +22,7 @@ This report is intentionally conservative: it records what ran locally, what imp
 - Propagated the same temporal/fact-safe OSS reader prompt into the MatrixArk benchmark runner and the OpenViking direct diagnostic baselines so the comparison no longer mixes reader instructions.
 - Added `tools/check_oss_model_readiness.py` so future benchmark continuations can record whether a target OSS reader is actually installed/callable before running quality gates.
 - Added `tools/run_oss_memory_benchmarks_when_ready.sh`, a fail-closed driver that runs model readiness, reader capability, MatrixArk LoCoMo/LongMemEval, and OpenViking direct diagnostic baselines only after the target OSS reader is installed and passes the reader gate.
+- Added `tools/summarize_oss_memory_benchmark_artifacts.py` to render MatrixArk/OpenViking JSON artifacts into one token-savings and reader-quality table without upgrading diagnostic runs into paper-comparable claims.
 - Attempted `qwen2.5:7b` through the configured WSL network proxy; the blocking pull reached only about 475 MB / 4.7 GB after the 15 minute command cap. A background pull is still running and had reached about 1.0 GB / 4.7 GB, with roughly two hours still estimated at the observed throughput.
 - Kept benchmark scoring fail-closed: paper-comparable claims remain disabled until full datasets and external baselines run under the same budget/model config.
 
@@ -167,3 +168,5 @@ The practical gap is now precise: retrieval can find the tiny evidence on both M
 - `/tmp/ollama_pull_qwen25_7b_20260726.log`
 - `/tmp/ollama_pull_qwen25_7b_bg_20260726.log`
 - `/tmp/oss_model_readiness_qwen25_7b_20260726.json`
+- `/tmp/oss_memory_benchmark_summary_20260726.json`
+- `/tmp/oss_memory_benchmark_summary_20260726.md`
