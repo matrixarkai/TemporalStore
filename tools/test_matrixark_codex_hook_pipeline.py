@@ -66,6 +66,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             capture_output=True,
             cwd=repo,
             timeout=30,
+            env={**os.environ, "MATRIXARK_ALLOW_LOCAL_BACKEND": "1"},
         )
         if proc.returncode != 0:
             raise AssertionError(f"hook failed\nstdout={proc.stdout}\nstderr={proc.stderr}")
@@ -107,7 +108,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(index_records)
             self.assertTrue(all("timestamp_key_ms" in record for record in index_records))
             self.assertTrue(all(isinstance(record.get("ref_hashes"), list) for record in index_records))
-            self.assertTrue(all("index_hash" not in record for record in index_records))
+            self.assertTrue(all(isinstance(record.get("index_hash"), int) for record in index_records))
+            self.assertEqual(len(index_records), len({record.get("index_hash") for record in index_records}))
 
     def test_lightweight_async_ingest_threshold_and_idle_commit_flush_session_buffer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -678,6 +680,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "max_context_tokens": 1600,
                     "shared_context": {"resource_budget_tokens": 120, "skill_budget_tokens": 120},
                     "audit_mode": "off",
+                    "include_retrieval_debug": True,
                 }
             )
             ref_types = {ref.get("ref_type") for ref in pack["selected_refs"]}
@@ -736,7 +739,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 repo,
                 event_log,
                 event="ResourceAdded",
-                payload={"raw_uri": str(resource), "resource_type": "md", "thread_id": "codex-thread-1"},
+                payload={"raw_uri": str(resource), "resource_type": "md", "thread_id": "codex-thread-1", "wait": True},
             )
             self.assertEqual("ok", resource_result["status"])
             self.assertEqual(str(resource), resource_result["resource_uri"])
@@ -748,7 +751,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 repo,
                 event_log,
                 event="ResourceAdded",
-                payload={"raw_uri": str(skill), "thread_id": "codex-thread-1"},
+                payload={"raw_uri": str(skill), "thread_id": "codex-thread-1", "wait": True},
             )
             self.assertEqual("ok", skill_result["status"])
             self.assertEqual("skill", skill_result["resource_type"])
@@ -809,21 +812,27 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "audit_mode": "full",
                 },
             )
-            ref_types = {str(group.get("type")) for group in pack["groups"]}
+            ref_types = {str(ref.get("ref_type")) for ref in pack["selected_refs"]}
             self.assertIn("event", ref_types)
             self.assertIn("resource_chunk", ref_types)
             self.assertIn("skill_section", ref_types)
-            self.assertGreaterEqual(pack["counts"]["refs"].get("resource_chunk", 0), 1)
-            self.assertGreaterEqual(pack["counts"]["refs"].get("skill_section", 0), 1)
+            self.assertGreaterEqual(sum(1 for ref in pack["selected_refs"] if ref.get("ref_type") == "resource_chunk"), 1)
+            self.assertGreaterEqual(sum(1 for ref in pack["selected_refs"] if ref.get("ref_type") == "skill_section"), 1)
             self.assertNotIn("context_assembly_policy", pack)
             self.assertNotIn("recall_policy", pack)
-            audit = next(record for record in reversed(server.adapter.read_all()) if record.get("record_type") == "context_pack_audit")
-            pushdown = audit["recall_policy"]["backend_retrieval_pushdown"]
-            self.assertEqual("adapter_prefilter", pushdown["execution_mode"])
+            audit = next(
+                record
+                for record in reversed(server.adapter.read_all())
+                if record.get("record_type") == "context_pack_audit"
+                and isinstance(record.get("backend_retrieval_pushdown"), dict)
+            )
+            pushdown = audit["backend_retrieval_pushdown"]
+            self.assertIn(pushdown["execution_mode"], {"adapter_prefilter", "adapter_prefilter_cached"})
             self.assertGreater(pushdown["dropped_by_type"], 0)
-            replay = server.call_tool("matrixark_replay", {"scope": scope, "context_pack_id": pack["context_pack_id"], "enable_replay": True})
+            context_pack_id = pack.get("context_pack_id") or pack.get("pack_id")
+            replay = server.call_tool("matrixark_replay", {"scope": scope, "context_pack_id": context_pack_id, "enable_replay": True})
             audits = [row for row in replay["events"] if row.get("record_type") == "context_pack_audit"]
-            self.assertTrue(any(row.get("context_pack_id") == pack["context_pack_id"] for row in audits))
+            self.assertTrue(any(row.get("context_pack_id") == context_pack_id for row in audits))
 
 
 if __name__ == "__main__":

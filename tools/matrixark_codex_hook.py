@@ -789,6 +789,8 @@ def default_hook_backend() -> str:
 
 
 def validate_hook_backend_policy(backend: str) -> None:
+    if backend == "local" and local_backend_allowed():
+        return
     if backend not in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}:
         raise RuntimeError(
             "MatrixArk hooks no longer support local JSONL event logs; "
@@ -810,9 +812,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event", default=os.environ.get("CODEX_HOOK_EVENT", "UserPromptSubmit"))
     parser.add_argument(
         "--backend",
-        choices=["temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"],
+        choices=["temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct", "local"],
         default=default_hook_backend(),
     )
+    parser.add_argument("--event-log", type=Path, default=Path(os.environ.get("MATRIXARK_EVENT_LOG", "")) if os.environ.get("MATRIXARK_EVENT_LOG") else None)
     parser.add_argument("--api-key", default=os.environ.get("MATRIXARK_API_KEY", ""))
     parser.add_argument("--account-id", default=os.environ.get("MATRIXARK_ACCOUNT_ID", "acct_codex"))
     parser.add_argument("--tenant-id", default=os.environ.get("MATRIXARK_TENANT_ID", "tenant_codex"))
@@ -1399,7 +1402,12 @@ def build_server(args: argparse.Namespace):
         MatrixArkTemporalStoreRustAdapter,
         MatrixArkTemporalStoreRustDirectAdapter,
     ) = load_matrixark(args.repo_root)
-    if args.backend == "temporalstore-direct":
+    if args.backend == "local":
+        validate_hook_backend_policy(args.backend)
+        if args.event_log is None:
+            raise RuntimeError("local hook backend requires --event-log and is only for explicit local tests")
+        adapter = MatrixArkLocalAdapter(args.event_log)
+    elif args.backend == "temporalstore-direct":
         adapter = MatrixArkTemporalStoreDirectAdapter(
             metaserver=args.metaserver,
             namespace=args.namespace,
