@@ -209,6 +209,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
 
     entity_hashes = []
     profile_entity_hashes = []
+    profile_dirty_hashes: list[int] = []
     for entity in extraction["entities"]:
         entity_hash = stable_hash(
             f"{node_hash}:{entity['entity_type']}:{entity['entity_name']}"
@@ -400,6 +401,18 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 profile_index["access_scope"] = profile_scope
                 profile_index.pop("index_hash", None)
                 records_to_append.append(profile_index)
+            new_profile_dirty_hashes, profile_dirty_records = self.node_summary_dirty_records(
+                node_path=profile_node_path,
+                scope=profile_scope,
+                updated_at_ms=envelope["ingestion_time_ms"],
+                source_ref_type="entity",
+                source_hash_field="source_entity_hash",
+                source_hash=profile_entity_hash,
+                dirty_reason="profile_entity_promoted",
+                propagate_depth=0,
+            )
+            profile_dirty_hashes.extend(int(item) for item in new_profile_dirty_hashes)
+            records_to_append.extend(profile_dirty_records)
 
     segment_hashes = []
     for segment in extraction["segments"]:
@@ -535,11 +548,14 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         source_hash=batch_id_hash,
         dirty_reason="new_event",
     )
+    all_dirty_hashes = ordered_unique_any(list(dirty_hashes) + profile_dirty_hashes)
     records_to_append.extend(dirty_records)
     self.append_many(records_to_append)
     summary_refresh = {
         "status": "dirty_marked",
-        "dirty_hashes": dirty_hashes,
+        "dirty_hashes": all_dirty_hashes,
+        "session_dirty_hashes": dirty_hashes,
+        "profile_dirty_hashes": profile_dirty_hashes,
         "refresh_result": None,
         "async_required": True,
         "write_path": "coalesced_with_batch_extract",
