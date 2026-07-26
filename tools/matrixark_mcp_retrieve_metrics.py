@@ -21,6 +21,7 @@ def attach_python_retrieval_metrics(
     placement = retrieval_scan_stats.get("native_selected_node_locations", {}) if isinstance(retrieval_scan_stats, dict) else {}
     recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
     memory_layer_budget = recall_policy.get("memory_layer_budget") if isinstance(recall_policy.get("memory_layer_budget"), dict) else {}
+    dropped_memory_layer_budget = recall_policy.get("dropped_memory_layer_budget") if isinstance(recall_policy.get("dropped_memory_layer_budget"), dict) else {}
     candidate_cache_hit = bool(
         isinstance(retrieval_scan_stats, dict)
         and (
@@ -62,6 +63,7 @@ def attach_python_retrieval_metrics(
         "python_pack_fallback": True,
         "raw_candidate_tables_returned": False,
         "memory_layer_budget": memory_layer_budget,
+        "dropped_memory_layer_budget": dropped_memory_layer_budget,
         "source": "python_reference_pack",
     }
     if bool(args.get("include_retrieval_metrics")):
