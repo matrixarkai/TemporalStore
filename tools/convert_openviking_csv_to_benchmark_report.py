@@ -48,6 +48,7 @@ def main() -> int:
     prompt_tokens = sum_token_usage(rows, "prompt_tokens")
     completion_tokens = sum_token_usage(rows, "completion_tokens")
     total_tokens = sum_token_usage(rows, "total_tokens")
+    retrieved_uri_counts = [retrieved_uri_count(row) for row in rows]
     blockers = []
     if case_count == 0:
         blockers.append("empty_openviking_csv")
@@ -55,6 +56,8 @@ def main() -> int:
         blockers.append("openviking_judge_results_missing")
     if total_tokens <= 0:
         blockers.append("openviking_token_usage_missing")
+    if case_count and max(retrieved_uri_counts, default=0) <= 0:
+        blockers.append("openviking_retrieved_uris_empty")
     if args.paper_min_cases and case_count < args.paper_min_cases:
         blockers.append(f"case_count_below_paper_min_{args.paper_min_cases}")
 
@@ -76,6 +79,8 @@ def main() -> int:
         "openviking_prompt_tokens": prompt_tokens,
         "openviking_completion_tokens": completion_tokens,
         "openviking_total_tokens": total_tokens,
+        "openviking_retrieved_uri_count_avg": safe_div(sum(retrieved_uri_counts), case_count),
+        "openviking_retrieved_uri_count_max": max(retrieved_uri_counts, default=0),
         "benchmark_model_contract": model_contract(args),
         "paper_comparable_claim_ready": False,
         "diagnostic_only": True,
@@ -138,6 +143,32 @@ def sum_token_usage(rows: list[dict[str, str]], key: str) -> int:
         except (TypeError, ValueError):
             continue
     return total
+
+
+def retrieved_uri_count(row: dict[str, str]) -> int:
+    raw = row.get("retrieved_uris_by_iteration") or row.get("retrieved_uris") or ""
+    if not raw:
+        return 0
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return 0
+    return count_uris(parsed)
+
+
+def count_uris(value: Any) -> int:
+    if isinstance(value, str):
+        return 1 if value.startswith("viking://") else 0
+    if isinstance(value, list):
+        return sum(count_uris(item) for item in value)
+    if isinstance(value, dict):
+        total = 0
+        for key in ("retrieved_uris", "context_uris"):
+            items = value.get(key)
+            if isinstance(items, list):
+                total += sum(count_uris(item) for item in items)
+        return total
+    return 0
 
 
 def model_contract(args: argparse.Namespace) -> dict[str, Any]:
