@@ -35,7 +35,7 @@ def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
             record.get("index_name"),
             scope_key,
             record.get("node_hash") or record.get("node_id"),
-            record.get("capability") or record.get("ref_type"),
+            record.get("data_model") or record.get("capability") or record.get("ref_type"),
             record.get("timestamp_key_ms") or record.get("updated_at_ms"),
         )
     if record_type == "context_entity":
