@@ -1787,8 +1787,7 @@ class BenchmarkReader:
         endpoint = self.config.base_url.rstrip("/")
         if not endpoint.endswith("/chat/completions"):
             endpoint = f"{endpoint}/chat/completions"
-        context = evidence_bundle([block.get("body", "") for block in blocks])
-        context = context[: max(512, self.config.max_context_chars)]
+        context = reader_evidence_bundle(question, blocks, max(512, self.config.max_context_chars))
         max_tokens = int(os.environ.get("MATRIXARK_READER_MAX_TOKENS", "160"))
         payload = {
             "model": self.config.model,
@@ -1869,8 +1868,7 @@ class BenchmarkReader:
             self._transformers_tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=True)
             self._transformers_model = AutoModelForCausalLM.from_pretrained(model_id, local_files_only=True)
             self._transformers_model.eval()
-        context = evidence_bundle([block.get("body", "") for block in blocks])
-        context = context[: max(512, self.config.max_context_chars)]
+        context = reader_evidence_bundle(question, blocks, max(512, self.config.max_context_chars))
         max_tokens = int(os.environ.get("MATRIXARK_READER_MAX_TOKENS", "64"))
         messages = [
             {"role": "system", "content": OSS_READER_SYSTEM_PROMPT},
@@ -5473,6 +5471,35 @@ def evidence_bundle(texts: list[str]) -> str:
             seen.add(compact)
         if sum(len(item) for item in selected) > 12000:
             break
+    return "\n".join(selected)
+
+
+def reader_evidence_bundle(question: str, blocks: list[dict[str, str]], max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    selected: list[str] = []
+    seen: set[str] = set()
+    soft_block_limit = max(96, min(420, max_chars // max(4, min(24, len(blocks) or 1))))
+    for index, block in enumerate(blocks, 1):
+        title = re.sub(r"\s+", " ", str(block.get("title") or block.get("id") or f"source {index}")).strip()
+        body = re.sub(r"\s+", " ", str(block.get("body") or "")).strip()
+        if not body:
+            continue
+        compacted = compact_retrieval_source(question, {"body": body}).get("body", body)
+        snippet = str(compacted).strip()
+        if len(snippet) > soft_block_limit:
+            snippet = snippet[:soft_block_limit].rsplit(" ", 1)[0].strip()
+        line = f"[{index}] {title}: {snippet}" if title else f"[{index}] {snippet}"
+        key = normalize_text(line)
+        if not key or key in seen:
+            continue
+        candidate = "\n".join([*selected, line])
+        if len(candidate) > max_chars:
+            if selected:
+                break
+            line = line[:max_chars].rsplit(" ", 1)[0].strip()
+        selected.append(line)
+        seen.add(key)
     return "\n".join(selected)
 
 
