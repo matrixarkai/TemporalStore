@@ -18,6 +18,8 @@ This report is intentionally conservative: it records what ran locally, what imp
 - Ran a 5-question LoCoMo OSS-reader sample with Qwen 0.5B over the full Rust TemporalStore replay: retrieval hit remained 1.0 and token reduction was 94.11%, but reader hit was 0.0, so the current gap is reader/model quality and compact evidence packing rather than TemporalStore retrieval.
 - Added reader-aware evidence packing that labels selected sources and fills the reader context from compact per-source snippets instead of slicing one body-only string. On the same 5-question LoCoMo sample, Qwen 0.5B reader hit improved from 0.0 to 0.2 while preserving 94.11% token reduction.
 - Ran a 5-record LongMemEval_s OSS-reader sample with Qwen 0.5B: retrieval hit was 1.0, token reduction was 98.01%, and reader hit was 0.2. Reader-aware packing kept the same hit rate but changed which fact the small model answered correctly, confirming the remaining gap is model/ranking quality.
+- Updated the artifact summarizer to understand nested Rust full-replay reports and to fail closed on tiny samples. A run is no longer marked paper-comparable unless it reaches the dataset-scale minimum: 1,542 LoCoMo cases or 500 LongMemEval_s records.
+- Tried cached Transformers Qwen 1.5B as a stronger in-process reader, but the local Hugging Face cache is incomplete, so it cannot be used offline yet.
 - Added OpenAI-compatible `/v1/embeddings` support to `tools/openai_compatible_hf_reader.py` using deterministic local hash embeddings.
 - Added causal language model support for Qwen-style OSS readers through the same OpenAI-compatible local server.
 - Added answer normalization and temporal fallback handling for common date formats and "not enough context" responses.
@@ -44,6 +46,7 @@ This report is intentionally conservative: it records what ran locally, what imp
 | Ollama/qwen2.5:1.5b | `127.0.0.1:11434/v1` | Working, gate-passed | Installed locally and passes the four-case OSS reader capability gate after extractive prompt tightening. Still smaller than the intended final Qwen 7B/14B reader. |
 | Ollama/qwen2.5:7b | n/a | Download in progress | Readiness check shows the model is not installed yet; pull through proxy reached about 1.0 GB / 4.7 GB and remains active. |
 | Transformers/Qwen2.5-0.5B | in-process `transformers://Qwen/Qwen2.5-0.5B-Instruct` | Working, CPU smoke only | Loads from local Hugging Face cache without a model server; useful for bounded OSS smoke runs, but not competitive quality. |
+| Transformers/Qwen2.5-1.5B | in-process `transformers://Qwen/Qwen2.5-1.5B-Instruct` | Cache incomplete | The local cache exists but is missing required files; the reader reports that it cannot load offline. |
 | vLLM | n/a | Installed/importable, no CUDA device | `vllm` imports locally, but WSL reports `torch.cuda.is_available() == false`, so it was not used as the stable local full-benchmark reader path. |
 
 ## OSS Reader Capability Gate
@@ -177,6 +180,22 @@ So the current gap-closure target is not raw TemporalStore retrieval. It is:
 3. full LongMemEval Rust replay readiness under the same runner shape;
 4. OpenViking official memory extraction producing non-empty searchable memories rather than only archive/source diagnostic retrieval.
 
+## Current Comparison Summary
+
+The current summary artifact is:
+
+- JSON: `/tmp/matrixark_oss_goal_runs/oss_memory_current_comparison_summary.json`
+- Markdown: `/tmp/matrixark_oss_goal_runs/oss_memory_current_comparison_summary.md`
+
+It intentionally marks all rows non-paper-comparable today:
+
+- full MatrixArk LoCoMo Rust replay is retrieval-ready but has no OSS reader pass attached yet;
+- Qwen 0.5B samples are too small and reader quality is weak;
+- OpenViking rows are direct archive/source diagnostics, not official memory-recall baselines;
+- OpenViking official memory extraction still produces empty searchable memories in this local setup.
+
+The summary now fails closed on tiny samples, so a relaxed local smoke threshold cannot accidentally become a published benchmark claim.
+
 ## Evidence Files
 
 - `/tmp/matrixark_hfqa_locomo_3conv_e16_w2_afterfix.json`
@@ -224,3 +243,5 @@ So the current gap-closure target is not raw TemporalStore retrieval. It is:
 - `/tmp/matrixark_oss_goal_runs/qwen05_transformers_longmem5_ctx2k_report.json`
 - `/tmp/matrixark_oss_goal_runs/qwen05_transformers_longmem5_ctx2k_readerpack_report.json`
 - `/tmp/matrixark_oss_goal_runs/qwen05_transformers_oneq_ctx2k_report.json`
+- `/tmp/matrixark_oss_goal_runs/oss_memory_current_comparison_summary.json`
+- `/tmp/matrixark_oss_goal_runs/oss_memory_current_comparison_summary.md`
