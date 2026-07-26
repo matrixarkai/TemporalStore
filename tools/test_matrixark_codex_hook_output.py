@@ -297,8 +297,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     "final_session_boundary": False,
                     "committed_event_count": 1,
                     "extraction_context_event_count": 2,
+                    "segments_written": 1,
                     "entities_written": 3,
                     "profile_entities_written": 1,
+                    "indexes_written": 5,
+                    "summary_refresh": {"status": "dirty_marked", "dirty_hashes": [7, 8]},
                     "trigger_evidence": {
                         "pending_event_count": 1,
                         "threshold_messages": 20,
@@ -342,10 +345,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertFalse(commit_summary["final_session_boundary"])
         self.assertEqual(1, commit_summary["source_event_count"])
         self.assertEqual(2, commit_summary["extraction_context_event_count"])
+        self.assertEqual(2, commit_summary["memory_layers_written"]["context_events"])
+        self.assertEqual(1, commit_summary["memory_layers_written"]["segments"])
         self.assertEqual(2, commit_summary["memory_layers_written"]["session_entities"])
         self.assertEqual(1, commit_summary["memory_layers_written"]["profile_entities"])
         self.assertEqual(2, commit_summary["memory_layers_written"]["same_session_entities"])
         self.assertEqual(1, commit_summary["memory_layers_written"]["cross_session_entities"])
+        self.assertEqual(5, commit_summary["memory_layers_written"]["secondary_indexes"])
+        self.assertEqual(2, commit_summary["memory_layers_written"]["summary_dirty_nodes"])
+        self.assertEqual("dirty_marked", commit_summary["memory_layers_written"]["summary_refresh_status"])
         self.assertEqual("provisional", commit_summary["memory_layers_written"]["extraction_phase"])
         self.assertFalse(commit_summary["memory_layers_written"]["final_session_boundary"])
         self.assertTrue(commit_summary["trigger_evidence"]["idle_ready"])
@@ -535,6 +543,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "index_total_cap": 64,
                         "index_emitted_count": 6,
                         "index_dropped_by_total_cap_count": 0,
+                        "summary_refresh": {"status": "dirty_marked", "dirty_hashes": [101]},
                         "trigger_evidence": {
                             "pending_event_count": 2,
                             "threshold_messages": 2,
@@ -564,10 +573,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(4, auto_batch["entities_written"])
         self.assertEqual(3, auto_batch["session_entities_written"])
         self.assertEqual(1, auto_batch["profile_entities_written"])
+        self.assertEqual(1, auto_batch["memory_layers_written"]["context_events"])
+        self.assertEqual(1, auto_batch["memory_layers_written"]["segments"])
         self.assertEqual(3, auto_batch["memory_layers_written"]["session_entities"])
         self.assertEqual(1, auto_batch["memory_layers_written"]["profile_entities"])
         self.assertEqual(3, auto_batch["memory_layers_written"]["same_session_entities"])
         self.assertEqual(1, auto_batch["memory_layers_written"]["cross_session_entities"])
+        self.assertEqual(6, auto_batch["memory_layers_written"]["secondary_indexes"])
+        self.assertEqual(1, auto_batch["memory_layers_written"]["summary_dirty_nodes"])
+        self.assertEqual("dirty_marked", auto_batch["memory_layers_written"]["summary_refresh_status"])
         self.assertEqual("provisional", auto_batch["memory_layers_written"]["extraction_phase"])
         self.assertFalse(auto_batch["memory_layers_written"]["final_session_boundary"])
         self.assertEqual(6, auto_batch["indexes_written"])

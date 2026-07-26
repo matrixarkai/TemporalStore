@@ -335,11 +335,18 @@ def session_commit_memory_layers_written(commit: Json | None) -> Json:
     entities_written = _int_field(commit, "entities_written")
     profile_entities_written = _int_field(commit, "profile_entities_written")
     session_entities_written = max(0, entities_written - profile_entities_written)
+    summary_refresh = commit.get("summary_refresh") if isinstance(commit.get("summary_refresh"), dict) else {}
+    summary_dirty_hashes = summary_refresh.get("dirty_hashes") if isinstance(summary_refresh.get("dirty_hashes"), list) else []
     memory_layers_written: Json = {
+        "context_events": _int_field(commit, "extraction_context_event_count"),
+        "segments": _int_field(commit, "segments_written"),
         "session_entities": session_entities_written,
         "profile_entities": profile_entities_written,
         "same_session_entities": session_entities_written,
         "cross_session_entities": profile_entities_written,
+        "secondary_indexes": _int_field(commit, "indexes_written"),
+        "summary_dirty_nodes": len(summary_dirty_hashes),
+        "summary_refresh_status": summary_refresh.get("status"),
         "extraction_phase": commit.get("extraction_phase"),
         "final_session_boundary": commit.get("final_session_boundary"),
     }
