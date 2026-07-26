@@ -253,7 +253,25 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     "rendered_context_chars": 37,
                 },
                 "ingest": {"status": "accepted"},
-                "session_commit": {"status": "deferred"},
+                "session_commit": {
+                    "status": "committed",
+                    "commit_id_hash": 42,
+                    "commit_reason": "idle_timeout",
+                    "trigger_policy": "idle_timeout",
+                    "extraction_phase": "provisional",
+                    "final_session_boundary": False,
+                    "committed_event_count": 1,
+                    "extraction_context_event_count": 2,
+                    "trigger_evidence": {
+                        "pending_event_count": 1,
+                        "threshold_messages": 20,
+                        "threshold_ready": False,
+                        "idle_timeout_ms": 0,
+                        "idle_ready": True,
+                        "force": False,
+                        "commit_reason": "idle_timeout",
+                    },
+                },
             },
         )
 
@@ -276,6 +294,14 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         )
         self.assertEqual(37, record["output_summary"]["rendered_context_chars"])
         self.assertTrue(record["output_summary"]["strict_additional_context_emitted"])
+        commit_summary = record["output_summary"]["session_commit"]
+        self.assertEqual("idle_timeout", commit_summary["trigger_policy"])
+        self.assertEqual("provisional", commit_summary["extraction_phase"])
+        self.assertFalse(commit_summary["final_session_boundary"])
+        self.assertEqual(1, commit_summary["source_event_count"])
+        self.assertEqual(2, commit_summary["extraction_context_event_count"])
+        self.assertTrue(commit_summary["trigger_evidence"]["idle_ready"])
+        self.assertFalse(commit_summary["trigger_evidence"]["threshold_ready"])
 
     def test_retrieve_tool_call_trace_records_budget_and_layers(self) -> None:
         class Server:
@@ -354,6 +380,41 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             item["result"]["retrieval_layers"]["memory_layer_budget"]["by_memory_scope"]["user_profile"]["refs"],
         )
         self.assertEqual(len("user: rendered profile decision"), item["result"]["rendered_context_chars"])
+
+    def test_session_commit_tool_call_trace_records_trigger_evidence(self) -> None:
+        class Server:
+            def handle(self, request):
+                self.request = request
+                result = {
+                    "status": "committed",
+                    "commit_id_hash": 77,
+                    "commit_reason": "hook_boundary",
+                    "trigger_policy": "force",
+                    "extraction_phase": "final",
+                    "final_session_boundary": True,
+                    "committed_event_count": 3,
+                    "extraction_context_event_count": 0,
+                    "trigger_evidence": {
+                        "pending_event_count": 3,
+                        "threshold_messages": 20,
+                        "threshold_ready": False,
+                        "force": True,
+                        "commit_reason": "hook_boundary",
+                    },
+                }
+                return {"result": {"content": [{"text": json.dumps(result)}]}}
+
+        trace = {"tool_calls": []}
+        result = hook.trace_tool_call(Server(), "matrixark_session_commit", {"force": True}, trace)
+
+        self.assertEqual("committed", result["status"])
+        item = trace["tool_calls"][0]
+        self.assertEqual("ok", item["status"])
+        self.assertEqual("force", item["result"]["trigger_policy"])
+        self.assertEqual("final", item["result"]["extraction_phase"])
+        self.assertTrue(item["result"]["final_session_boundary"])
+        self.assertEqual(3, item["result"]["source_event_count"])
+        self.assertTrue(item["result"]["trigger_evidence"]["force"])
 
     def test_user_prompt_emit_codex_additional_context_from_selected_refs(self) -> None:
         args = Namespace(session_id="codex-session-1")
@@ -979,6 +1040,16 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     "trigger_policy": "idle_timeout",
                     "extraction_phase": "provisional",
                     "final_session_boundary": False,
+                    "committed_event_count": 1,
+                    "extraction_context_event_count": 2,
+                    "trigger_evidence": {
+                        "pending_event_count": 1,
+                        "threshold_messages": 20,
+                        "threshold_ready": False,
+                        "idle_timeout_ms": 0,
+                        "idle_ready": True,
+                        "force": False,
+                    },
                 }
 
         class Server:
@@ -1009,6 +1080,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         )
 
         self.assertEqual("committed", result["session_commit"]["status"])
+        self.assertEqual("idle_timeout", result["session_commit"]["trigger_policy"])
+        self.assertEqual("provisional", result["session_commit"]["extraction_phase"])
+        self.assertFalse(result["session_commit"]["final_session_boundary"])
+        self.assertEqual(2, result["session_commit"]["extraction_context_event_count"])
+        self.assertTrue(result["session_commit"]["trigger_evidence"]["idle_ready"])
         self.assertEqual(1, len(server.adapter.commit_calls))
         commit_args, _commit_hook = server.adapter.commit_calls[0]
         self.assertEqual("idle_timeout", commit_args["commit_reason"])
