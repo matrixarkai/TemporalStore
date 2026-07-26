@@ -1175,8 +1175,31 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "context_pack_id": "pack-full",
                 "selected_refs": [{"ref_type": "event"}],
                 "dropped_refs": {"refs": []},
+                "recall_policy": {
+                    "memory_layer_budget": {
+                        "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 12}},
+                        "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 12}},
+                        "by_extraction_phase": {"final": {"refs": 1, "tokens": 12}},
+                        "final_session_boundary_ref_count": 1,
+                        "total_selected_refs": 1,
+                        "total_selected_tokens": 12,
+                    }
+                },
             },
-            audit_record={"record_type": "context_pack_audit"},
+            audit_record={
+                "record_type": "context_pack_audit",
+                "context_pack_id": "pack-full",
+                "recall_policy": {
+                    "memory_layer_budget": {
+                        "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 12}},
+                        "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 12}},
+                        "by_extraction_phase": {"final": {"refs": 1, "tokens": 12}},
+                        "final_session_boundary_ref_count": 1,
+                        "total_selected_refs": 1,
+                        "total_selected_tokens": 12,
+                    }
+                },
+            },
             query="what changed?",
             scope={},
             audit_mode="full",
@@ -1188,6 +1211,12 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(decision["rich_replay_audit"])
         self.assertEqual(adapter.appended, [])
         self.assertEqual([record["record_type"] for record in adapter.audit_appended], ["context_pack_telemetry", "context_pack_audit"])
+        telemetry_budget = adapter.audit_appended[0]["memory_layer_budget"]
+        self.assertEqual(telemetry_budget["by_memory_scope"]["user_profile"], {"refs": 1, "tokens": 12})
+        self.assertEqual(telemetry_budget["by_session_continuity"]["cross_session"], {"refs": 1, "tokens": 12})
+        audit_budget = adapter.audit_appended[1]["memory_layer_budget"]
+        self.assertEqual(audit_budget["by_extraction_phase"]["final"], {"refs": 1, "tokens": 12})
+        self.assertEqual(audit_budget["final_session_boundary_ref_count"], 1)
 
     def test_scale_report_counts_compact_context_pack_groups(self) -> None:
         self.assertEqual(

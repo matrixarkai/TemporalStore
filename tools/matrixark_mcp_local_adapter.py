@@ -372,6 +372,14 @@ class MatrixArkLocalAdapter:
 
     def telemetry_record_for_context_pack(self, pack: Json, *, query: str, scope: Json, audit_mode: str) -> Json:
         recall_policy = pack.get("recall_policy", {}) if isinstance(pack.get("recall_policy"), dict) else {}
+        retrieval_metrics = pack.get("retrieval_metrics", {}) if isinstance(pack.get("retrieval_metrics"), dict) else {}
+        memory_layer_budget = (
+            retrieval_metrics.get("memory_layer_budget")
+            if isinstance(retrieval_metrics.get("memory_layer_budget"), dict)
+            else recall_policy.get("memory_layer_budget")
+            if isinstance(recall_policy.get("memory_layer_budget"), dict)
+            else {}
+        )
         stage_budgets = recall_policy.get("stage_latency_budgets", {}) if isinstance(recall_policy.get("stage_latency_budgets"), dict) else {}
         tree = recall_policy.get("tree_traversal", {}) if isinstance(recall_policy.get("tree_traversal"), dict) else {}
         secondary = recall_policy.get("secondary_index_filter", {}) if isinstance(recall_policy.get("secondary_index_filter"), dict) else {}
@@ -400,6 +408,7 @@ class MatrixArkLocalAdapter:
             "total_prompt_context_tokens": pack.get("total_prompt_context_tokens", 0),
             "remote_context_budget_tokens": pack.get("remote_context_budget_tokens", 0),
             "requested_max_context_tokens": pack.get("requested_max_context_tokens", 0),
+            "memory_layer_budget": memory_layer_budget,
             "partial_context_pack": bool(pack.get("partial_context_pack", False)),
             "insufficient_context": bool(pack.get("insufficient_context", False)),
             "quality_warning_count": len(pack.get("quality_warnings", []) or []),
@@ -460,6 +469,8 @@ class MatrixArkLocalAdapter:
             self.append_audit(telemetry)
         if rich_audit_sampled:
             audit_record["operational_visibility_policy"] = visibility_decision
+            if isinstance(telemetry.get("memory_layer_budget"), dict) and "memory_layer_budget" not in audit_record:
+                audit_record["memory_layer_budget"] = telemetry["memory_layer_budget"]
             if audit_mode == "full":
                 self.append_audit(audit_record)
             else:
