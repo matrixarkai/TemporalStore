@@ -4599,6 +4599,9 @@ class MatrixArkLocalAdapter:
         def annotate_session_continuity(candidate: Json, record: Json) -> Json:
             record_scope = candidate_access_scope(record)
             status = session_continuity_status(record_scope, retrieval_scope)
+            explicit_status = str(record.get("session_continuity") or candidate.get("session_continuity") or "")
+            if status in {"", "unscoped"} and explicit_status in {"same_session", "cross_session"}:
+                status = explicit_status
             boost = session_continuity_boost({**candidate, "session_continuity": status}, question_type)
             reason = (
                 "same-session continuity"
@@ -4612,6 +4615,9 @@ class MatrixArkLocalAdapter:
                 "session_continuity": status,
                 "continuity_boost": round(boost, 6),
                 "continuity_reason": reason,
+                "memory_scope": candidate.get("memory_scope") or record.get("memory_scope", ""),
+                "extraction_phase": candidate.get("extraction_phase") or record.get("extraction_phase", ""),
+                "final_session_boundary": bool(candidate.get("final_session_boundary", record.get("final_session_boundary", False))),
                 "question_type": question_type,
             }
 
@@ -5669,6 +5675,40 @@ class MatrixArkLocalAdapter:
             "recent_selected_ref_count": sum(1 for age_ms in selected_age_ms if age_ms <= freshness_tolerance_ms),
             "older_selected_ref_count": sum(1 for age_ms in selected_age_ms if age_ms > freshness_tolerance_ms),
         }
+        def selected_ref_layer_budget(refs: list[Json]) -> Json:
+            breakdown: Json = {
+                "by_memory_scope": {},
+                "by_session_continuity": {},
+                "by_extraction_phase": {},
+                "final_session_boundary_ref_count": 0,
+                "provisional_ref_count": 0,
+                "final_ref_count": 0,
+                "total_selected_refs": len(refs),
+                "total_selected_tokens": 0,
+            }
+            for ref in refs:
+                try:
+                    token_estimate = max(0, int(ref.get("token_estimate") or 0))
+                except (TypeError, ValueError):
+                    token_estimate = 0
+                breakdown["total_selected_tokens"] += token_estimate
+                for field, bucket_name, default_value in [
+                    ("memory_scope", "by_memory_scope", "unscoped"),
+                    ("session_continuity", "by_session_continuity", "neutral"),
+                    ("extraction_phase", "by_extraction_phase", "unknown"),
+                ]:
+                    value = str(ref.get(field) or default_value)
+                    bucket = breakdown[bucket_name].setdefault(value, {"refs": 0, "tokens": 0})
+                    bucket["refs"] += 1
+                    bucket["tokens"] += token_estimate
+                if bool(ref.get("final_session_boundary")):
+                    breakdown["final_session_boundary_ref_count"] += 1
+                if str(ref.get("extraction_phase") or "") == "provisional":
+                    breakdown["provisional_ref_count"] += 1
+                if str(ref.get("extraction_phase") or "") == "final":
+                    breakdown["final_ref_count"] += 1
+            return breakdown
+        memory_layer_budget = selected_ref_layer_budget(selected)
         pack = {
             "context_pack_id": str(context_pack_id),
             "context_sources_order": ["local_context", "matrixark_remote_context"],
@@ -5697,6 +5737,7 @@ class MatrixArkLocalAdapter:
                     "cross_session_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "cross_session"),
                     "entity_bridge_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "cross_session" and item.get("ref_type") == "entity"),
                 },
+                "memory_layer_budget": memory_layer_budget,
                 "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
                 "shared_context": dropped_over_budget.get("shared_context_policy", shared_context_policy),
                 "backend_retrieval_pushdown": retrieval_scan_stats,
@@ -5831,6 +5872,7 @@ class MatrixArkLocalAdapter:
             "stage_latency_budgets": pack["recall_policy"]["stage_latency_budgets"],
             "storage_options": storage_options,
             "local_context_policy": pack["local_context_policy"],
+            "memory_layer_budget": memory_layer_budget,
             "used_local_context_tokens": pack["used_local_context_tokens"],
             "used_remote_context_tokens": pack["used_remote_context_tokens"],
             "total_prompt_context_tokens": pack["total_prompt_context_tokens"],
@@ -5908,6 +5950,7 @@ class MatrixArkLocalAdapter:
             "local_context_safety_margin_tokens": safety_margin_tokens,
             "local_context_count": len(local_budget["items"]),
             "remote_is_additive_only_within_remaining_budget": True,
+            "memory_layer_budget": memory_layer_budget,
             "scanned_records": int(retrieval_scan_stats.get("loaded_records") or retrieval_scan_stats.get("scanned_records") or len(records)) if isinstance(retrieval_scan_stats, dict) else len(records),
             "candidate_cache_hit": candidate_cache_hit,
             "cache_hit": candidate_cache_hit,

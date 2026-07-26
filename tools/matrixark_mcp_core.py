@@ -5435,7 +5435,10 @@ def compact_context_pack_ref(ref: Json) -> Json:
         "entity_name",
         "summary_type",
         "operator",
+        "memory_scope",
         "session_continuity",
+        "extraction_phase",
+        "final_session_boundary",
         "source_roles",
         "source_hook_types",
         "source_codex_events",
@@ -6361,7 +6364,9 @@ def cross_session_rerank_adjustment(candidate: Json, question_type: str) -> floa
     context_class = str(candidate.get("context_class") or ref_type)
     has_citation = bool(candidate.get("source_ref") or candidate.get("citation") or candidate.get("source_chunk_hash"))
     if ref_type == "entity":
-        return 0.10 if question_type in {"current_state", "latest", "multi_hop"} else 0.06
+        profile_boost = 0.04 if str(candidate.get("memory_scope") or "") == "user_profile" else 0.0
+        base_boost = 0.10 if question_type in {"current_state", "latest", "multi_hop"} else 0.06
+        return base_boost + profile_boost
     if context_class in {"resource_fact", "resource_entity_fact"}:
         return 0.06 if has_citation else 0.04
     if ref_type == "resource_chunk" and has_citation:
