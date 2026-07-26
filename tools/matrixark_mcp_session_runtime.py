@@ -61,6 +61,27 @@ def append_session_buffer_event(
     )
 
 
+def session_commit_memory_layers_written(batch_result: Json, *, extraction_phase: str, final_session_boundary: bool) -> Json:
+    entities_written = int(batch_result.get("entities_written") or 0)
+    profile_entities_written = int(batch_result.get("profile_entities_written") or 0)
+    summary_refresh = batch_result.get("summary_refresh") if isinstance(batch_result.get("summary_refresh"), dict) else {}
+    summary_dirty_hashes = summary_refresh.get("dirty_hashes") if isinstance(summary_refresh.get("dirty_hashes"), list) else []
+    layers: Json = {
+        "context_events": int(batch_result.get("extraction_context_event_count") or 0),
+        "segments": int(batch_result.get("segments_written") or 0),
+        "session_entities": entities_written,
+        "profile_entities": profile_entities_written,
+        "same_session_entities": entities_written,
+        "cross_session_entities": profile_entities_written,
+        "secondary_indexes": int(batch_result.get("indexes_written") or 0),
+        "summary_dirty_nodes": len(summary_dirty_hashes),
+        "summary_refresh_status": summary_refresh.get("status"),
+        "extraction_phase": extraction_phase,
+        "final_session_boundary": final_session_boundary,
+    }
+    return {key: value for key, value in layers.items() if value not in (None, "", [], {})}
+
+
 def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> Json:
     scope = optional_object(args, "scope")
     threshold = args.get("threshold_messages", 20)
@@ -234,6 +255,11 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "created_at_ms": now_ms(),
         }
     )
+    memory_layers_written = session_commit_memory_layers_written(
+        batch_result,
+        extraction_phase=extraction_phase,
+        final_session_boundary=final_session_boundary,
+    )
     return {
         **batch_result,
         "status": "committed",
@@ -252,5 +278,6 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         "idle_timeout_ms": idle_timeout_ms,
         "idle_elapsed_ms": idle_elapsed_ms,
         "trigger_evidence": trigger_evidence,
+        "memory_layers_written": memory_layers_written,
         "raw_events_duplicated": False,
     }

@@ -974,6 +974,24 @@ class MatrixArkLocalAdapter:
                 "created_at_ms": now_ms(),
             }
         )
+        memory_layers_written = {
+            "context_events": int(batch_result.get("extraction_context_event_count") or 0),
+            "segments": int(batch_result.get("segments_written") or 0),
+            "session_entities": int(batch_result.get("entities_written") or 0),
+            "profile_entities": int(batch_result.get("profile_entities_written") or 0),
+            "same_session_entities": int(batch_result.get("entities_written") or 0),
+            "cross_session_entities": int(batch_result.get("profile_entities_written") or 0),
+            "secondary_indexes": int(batch_result.get("indexes_written") or 0),
+            "summary_dirty_nodes": len(batch_result.get("summary_refresh", {}).get("dirty_hashes", [])) if isinstance(batch_result.get("summary_refresh"), dict) else 0,
+            "summary_refresh_status": batch_result.get("summary_refresh", {}).get("status") if isinstance(batch_result.get("summary_refresh"), dict) else None,
+            "extraction_phase": extraction_phase,
+            "final_session_boundary": final_session_boundary,
+        }
+        memory_layers_written = {
+            key: value
+            for key, value in memory_layers_written.items()
+            if value not in (None, "", [], {})
+        }
         return {
             **batch_result,
             "status": "committed",
@@ -992,6 +1010,7 @@ class MatrixArkLocalAdapter:
             "idle_timeout_ms": idle_timeout_ms,
             "idle_elapsed_ms": idle_elapsed_ms,
             "trigger_evidence": trigger_evidence,
+            "memory_layers_written": memory_layers_written,
             "raw_events_duplicated": False,
         }
 

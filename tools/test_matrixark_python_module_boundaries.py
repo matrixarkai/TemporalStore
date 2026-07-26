@@ -156,6 +156,11 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                     "node_hash": 8,
                     "node_path": args["metadata"]["node_path"],
                     "extraction_context_event_count": len(args.get("extraction_context_event_ids", [])),
+                    "segments_written": 1,
+                    "entities_written": 3,
+                    "profile_entities_written": 1,
+                    "indexes_written": 5,
+                    "summary_refresh": {"status": "dirty_marked", "dirty_hashes": [10, 11]},
                 }
 
             def append(self, record):
@@ -196,6 +201,14 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(committed["trigger_evidence"]["threshold_ready"])
         self.assertFalse(committed["trigger_evidence"]["idle_ready"])
         self.assertEqual("threshold", committed["trigger_policy"])
+        self.assertEqual(0, committed["memory_layers_written"]["context_events"])
+        self.assertEqual(1, committed["memory_layers_written"]["segments"])
+        self.assertEqual(3, committed["memory_layers_written"]["session_entities"])
+        self.assertEqual(1, committed["memory_layers_written"]["profile_entities"])
+        self.assertEqual(5, committed["memory_layers_written"]["secondary_indexes"])
+        self.assertEqual(2, committed["memory_layers_written"]["summary_dirty_nodes"])
+        self.assertEqual("dirty_marked", committed["memory_layers_written"]["summary_refresh_status"])
+        self.assertEqual("provisional", committed["memory_layers_written"]["extraction_phase"])
         self.assertEqual(committed["trigger_evidence"], adapter.appended[0]["trigger_evidence"])
 
 

@@ -304,6 +304,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("provisional", second["auto_batch_extract_result"]["extraction_phase"])
             self.assertFalse(second["auto_batch_extract_result"]["final_session_boundary"])
             self.assertEqual(2, second["auto_batch_extract_result"]["committed_event_count"])
+            threshold_layers = second["auto_batch_extract_result"]["memory_layers_written"]
+            self.assertEqual(0, threshold_layers["context_events"])
+            self.assertGreaterEqual(threshold_layers["segments"], 1)
+            self.assertGreaterEqual(threshold_layers["session_entities"], 1)
+            self.assertGreaterEqual(threshold_layers["profile_entities"], 1)
+            self.assertGreaterEqual(threshold_layers["secondary_indexes"], 1)
+            self.assertGreaterEqual(threshold_layers["summary_dirty_nodes"], 1)
+            self.assertEqual("dirty_marked", threshold_layers["summary_refresh_status"])
             self.assertTrue(second["session_buffer"]["threshold_ready"])
             self.assertFalse(second["session_buffer"]["idle_ready"])
             threshold_evidence = second["auto_batch_extract_result"]["trigger_evidence"]
@@ -338,6 +346,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertFalse(idle["final_session_boundary"])
             self.assertEqual(1, idle["committed_event_count"])
             self.assertEqual(2, idle["extraction_context_event_count"])
+            idle_layers = idle["memory_layers_written"]
+            self.assertEqual(2, idle_layers["context_events"])
+            self.assertGreaterEqual(idle_layers["segments"], 1)
+            self.assertGreaterEqual(idle_layers["session_entities"], 1)
+            self.assertGreaterEqual(idle_layers["profile_entities"], 1)
+            self.assertGreaterEqual(idle_layers["secondary_indexes"], 1)
+            self.assertGreaterEqual(idle_layers["summary_dirty_nodes"], 1)
+            self.assertEqual("dirty_marked", idle_layers["summary_refresh_status"])
             self.assertEqual(
                 [int(event_id) for event_id in second["auto_batch_extract_result"]["source_event_ids"]],
                 [int(event_id) for event_id in idle["extraction_context_event_ids"]],
