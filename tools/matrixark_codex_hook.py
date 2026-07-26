@@ -620,12 +620,15 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 ),
             }
         elif name == "matrixark_retrieve":
+            emitted_refs = [
+                ref for ref in _selected_refs_from_retrieve(result) if not _ref_is_codex_hook_heartbeat(ref)
+            ]
             item["result"] = {
                 "context_pack_id": result.get("context_pack_id") or result.get("pack_id"),
-                "selected_ref_count": selected_ref_count_from_retrieve(result),
+                "selected_ref_count": len(emitted_refs),
                 "used_context_tokens": used_context_tokens_from_retrieve(result),
                 "retrieval_budget": retrieval_budget_summary_from_retrieve(result),
-                "retrieval_layers": retrieval_layer_summary_from_retrieve(result),
+                "retrieval_layers": retrieval_layer_summary_from_retrieve(result, emitted_refs),
             }
         elif name == "matrixark_session_commit":
             item["result"] = {
