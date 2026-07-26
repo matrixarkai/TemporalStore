@@ -1837,8 +1837,161 @@ fn pack_ref_from_record(
         "cross_session_rerank_boost": (cross_session_rerank_boost_value * 1000000.0).round() / 1000000.0,
         "continuity_reason": continuity_reason,
         "selection_reason": reason,
+        "memory_scope": record.get("memory_scope").and_then(Value::as_str).unwrap_or(""),
+        "extraction_phase": record.get("extraction_phase").and_then(Value::as_str).unwrap_or(""),
+        "final_session_boundary": record.get("final_session_boundary").and_then(Value::as_bool).unwrap_or(false),
+        "entity_type": record.get("entity_type").and_then(Value::as_str).unwrap_or(""),
+        "entity_name": record.get("entity_name").and_then(Value::as_str).unwrap_or(""),
+        "source_roles": record.get("source_roles").cloned().unwrap_or_else(|| json!([])),
+        "source_hook_types": record.get("source_hook_types").cloned().unwrap_or_else(|| json!([])),
+        "source_codex_events": record.get("source_codex_events").cloned().unwrap_or_else(|| json!([])),
+        "source_session_ids": record.get("source_session_ids").cloned().unwrap_or_else(|| json!([])),
         "source_ref": record.get("source_ref").cloned().unwrap_or(Value::Null),
     })
+}
+
+fn increment_layer_bucket(breakdown: &mut Value, bucket_name: &str, key: &str, tokens: u64) {
+    let Some(bucket_map) = breakdown
+        .get_mut(bucket_name)
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    let bucket = bucket_map
+        .entry(key.to_string())
+        .or_insert_with(|| json!({"refs": 0, "tokens": 0}));
+    if let Some(bucket_object) = bucket.as_object_mut() {
+        let refs = bucket_object
+            .get("refs")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            + 1;
+        let total_tokens = bucket_object
+            .get("tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            + tokens;
+        bucket_object.insert("refs".to_string(), json!(refs));
+        bucket_object.insert("tokens".to_string(), json!(total_tokens));
+    }
+}
+
+fn selected_ref_layer_budget(refs: &[Value]) -> Value {
+    let mut breakdown = json!({
+        "by_memory_scope": {},
+        "by_session_continuity": {},
+        "by_extraction_phase": {},
+        "by_entity_type": {},
+        "by_source_role": {},
+        "by_hook_type": {},
+        "final_session_boundary_ref_count": 0,
+        "provisional_ref_count": 0,
+        "final_ref_count": 0,
+        "total_selected_refs": refs.len(),
+        "total_selected_tokens": 0
+    });
+    for item in refs {
+        let tokens = item
+            .get("token_estimate")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let total_tokens = breakdown
+            .get("total_selected_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            + tokens;
+        if let Some(object) = breakdown.as_object_mut() {
+            object.insert("total_selected_tokens".to_string(), json!(total_tokens));
+        }
+        let memory_scope = item
+            .get("memory_scope")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unscoped");
+        increment_layer_bucket(&mut breakdown, "by_memory_scope", memory_scope, tokens);
+        let session_continuity = item
+            .get("session_continuity")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("neutral");
+        increment_layer_bucket(
+            &mut breakdown,
+            "by_session_continuity",
+            session_continuity,
+            tokens,
+        );
+        let extraction_phase = item
+            .get("extraction_phase")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unknown");
+        increment_layer_bucket(
+            &mut breakdown,
+            "by_extraction_phase",
+            extraction_phase,
+            tokens,
+        );
+        if let Some(entity_type) = item
+            .get("entity_type")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            increment_layer_bucket(&mut breakdown, "by_entity_type", entity_type, tokens);
+        }
+        if let Some(roles) = item.get("source_roles").and_then(Value::as_array) {
+            for role in roles
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                increment_layer_bucket(&mut breakdown, "by_source_role", role, tokens);
+            }
+        }
+        if let Some(hook_types) = item.get("source_hook_types").and_then(Value::as_array) {
+            for hook_type in hook_types
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                increment_layer_bucket(&mut breakdown, "by_hook_type", hook_type, tokens);
+            }
+        }
+        if item
+            .get("final_session_boundary")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            let count = breakdown
+                .get("final_session_boundary_ref_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                + 1;
+            if let Some(object) = breakdown.as_object_mut() {
+                object.insert("final_session_boundary_ref_count".to_string(), json!(count));
+            }
+        }
+        if extraction_phase == "provisional" {
+            let count = breakdown
+                .get("provisional_ref_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                + 1;
+            if let Some(object) = breakdown.as_object_mut() {
+                object.insert("provisional_ref_count".to_string(), json!(count));
+            }
+        }
+        if extraction_phase == "final" {
+            let count = breakdown
+                .get("final_ref_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                + 1;
+            if let Some(object) = breakdown.as_object_mut() {
+                object.insert("final_ref_count".to_string(), json!(count));
+            }
+        }
+    }
+    breakdown
 }
 
 fn retrieve_context_pack_native(
@@ -2209,6 +2362,7 @@ fn retrieve_context_pack_native(
         "cross_low_score_dropped": cross_low_score_dropped_class_counts,
         "cross_cap_dropped": cross_cap_dropped_class_counts
     });
+    let memory_layer_budget = selected_ref_layer_budget(&selected);
     let pack = json!({
         "context_pack_id": context_pack_id,
         "query": query,
@@ -2275,6 +2429,7 @@ fn retrieve_context_pack_native(
                 "cross_session_selected_ref_count": cross_selected_refs,
                 "entity_bridge_selected_ref_count": entity_bridge_selected_refs
             },
+            "memory_layer_budget": memory_layer_budget,
             "cross_session": {
                 "enabled": cross_policy.enabled,
                 "mode": if cross_policy.enabled { "prefer" } else { "disabled" },
@@ -2389,6 +2544,7 @@ fn retrieve_context_pack_native(
             "native_pack_assembly": true,
             "python_pack_fallback": false,
             "raw_candidate_tables_returned": false,
+            "memory_layer_budget": memory_layer_budget,
             "broad_scan_used": false,
             "broad_scan_blocked": false,
             "fallback_flags": [],
@@ -3391,6 +3547,7 @@ fn retrieve_context_pack_output(
         .take(max_selected_refs)
         .collect();
     let selected_count = selected_refs.len();
+    let memory_layer_budget = selected_ref_layer_budget(&selected_refs);
     let elapsed_ms = started.elapsed().as_millis() as u64;
     let correctness = selected_count > 0;
     let pack = json!({
@@ -3401,6 +3558,9 @@ fn retrieve_context_pack_output(
         "dropped_refs": {
             "refs": [],
             "native_summary": true,
+        },
+        "recall_policy": {
+            "memory_layer_budget": memory_layer_budget,
         },
         "retrieval_metrics": {
             "query_plan_ms": 0.0,
@@ -3422,6 +3582,7 @@ fn retrieve_context_pack_output(
             "native_pack_assembly": true,
             "python_pack_fallback": false,
             "raw_candidate_tables_returned": false,
+            "memory_layer_budget": memory_layer_budget,
             "broad_scan_used": false,
             "broad_scan_blocked": false,
             "fallback_flags": [],
@@ -3538,6 +3699,17 @@ fn selected_ref_from_record(record: &Value, text: &str) -> Value {
         "ref_type": public_ref_type,
         "ref_hash": ref_hash,
         "text": text,
+        "token_estimate": token_estimate(text),
+        "memory_scope": record.get("memory_scope").and_then(Value::as_str).unwrap_or(""),
+        "session_continuity": record.get("session_continuity").and_then(Value::as_str).unwrap_or(""),
+        "extraction_phase": record.get("extraction_phase").and_then(Value::as_str).unwrap_or(""),
+        "final_session_boundary": record.get("final_session_boundary").and_then(Value::as_bool).unwrap_or(false),
+        "entity_type": record.get("entity_type").and_then(Value::as_str).unwrap_or(""),
+        "entity_name": record.get("entity_name").and_then(Value::as_str).unwrap_or(""),
+        "source_roles": record.get("source_roles").cloned().unwrap_or_else(|| json!([])),
+        "source_hook_types": record.get("source_hook_types").cloned().unwrap_or_else(|| json!([])),
+        "source_codex_events": record.get("source_codex_events").cloned().unwrap_or_else(|| json!([])),
+        "source_session_ids": record.get("source_session_ids").cloned().unwrap_or_else(|| json!([])),
     })
 }
 
@@ -4208,7 +4380,7 @@ mod tests {
         append.entries_compact = vec![CompactHashEntry(
             format!("{storage_prefix}:records:000000"),
             "00000000000000000000".to_string(),
-            r#"{"record_bundle":[{"record_type":"context_event","event_id_hash":7,"text":"Alice approved GPU budget and Bob owns procurement"},{"record_type":"context_entity","entity_hash":8,"state":"Project Aurora GPU procurement owner is Bob"}]}"#.to_string(),
+            r#"{"record_bundle":[{"record_type":"context_event","event_id_hash":7,"text":"Alice approved GPU budget and Bob owns procurement","memory_scope":"session","extraction_phase":"provisional","source_roles":["user"],"source_hook_types":["UserPromptSubmit"]},{"record_type":"context_entity","entity_hash":8,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Project Aurora GPU procurement owner is Bob","memory_scope":"user_profile","session_continuity":"cross_session","extraction_phase":"final","final_session_boundary":true,"source_roles":["assistant","tool"],"source_hook_types":["hook_boundary"],"source_session_ids":["codex:prior-session"]}]}"#.to_string(),
         )];
 
         let root = record_log_root(&append);
@@ -4247,6 +4419,40 @@ mod tests {
             pack.pointer("/retrieval_metrics/candidate_cache_hit")
                 .and_then(Value::as_bool),
             Some(false)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_budget/by_memory_scope/user_profile/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_budget/by_session_continuity/cross_session/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_budget/by_entity_type/decision/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_budget/by_source_role/tool/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_budget/by_hook_type/hook_boundary/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_budget/final_session_boundary_ref_count")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/retrieval_metrics/memory_layer_budget"),
+            pack.pointer("/recall_policy/memory_layer_budget")
         );
 
         let cached_output = execute_record_log_request(&engine, retrieve.clone(), root.clone())
