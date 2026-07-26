@@ -1735,7 +1735,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
                 "session_id_source": (hook or {}).get("session_id_source", ""),
             },
         }
-        if commit_reason == "idle_timeout" and idle_timeout_ms > 0:
+        if commit_reason == "idle_timeout":
             commit_args["idle_timeout_ms"] = idle_timeout_ms
         if should_threshold_commit:
             commit_args["max_messages"] = threshold
