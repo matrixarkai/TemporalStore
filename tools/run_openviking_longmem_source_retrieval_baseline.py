@@ -52,6 +52,7 @@ def main() -> int:
         "benchmark_family": "longmemeval_s",
         "baseline": "openviking_style_direct_source_retrieval",
         "claim_status": "diagnostic_not_paper_comparable",
+        "diagnostic_only": True,
         "reader_base_url": args.reader_base_url,
         "reader_provider_name": args.provider_name,
         "reader_model": args.reader_model,
@@ -85,6 +86,7 @@ def main() -> int:
     per_query: list[dict[str, Any]] = []
     retrieval_hits = 0
     reader_hits = 0
+    reader_error_count = 0
     total_retrieved_tokens = 0
     total_source_tokens = 0
     retrieval_latencies: list[float] = []
@@ -123,6 +125,8 @@ def main() -> int:
         )
         reader_ms = (time.perf_counter() - reader_started) * 1000.0
         reader_latencies.append(reader_ms)
+        if answer.startswith("reader_error:"):
+            reader_error_count += 1
         answer_ok = answer_matches(expected_answer, answer)
         reader_hits += int(answer_ok)
 
@@ -152,6 +156,10 @@ def main() -> int:
             "case_count": len(per_query),
             "benchmark_hit_at_k": retrieval_hits / n,
             "benchmark_reader_hit_rate": reader_hits / n,
+            "reader_hit_rate": reader_hits / n,
+            "reader_fallback_count": 0,
+            "reader_error_count": reader_error_count,
+            "reader_open_source_calls": len(per_query),
             "benchmark_avg_retrieved_tokens_per_query": total_retrieved_tokens / n,
             "benchmark_avg_source_tokens_per_query": total_source_tokens / n,
             "benchmark_total_retrieved_tokens": total_retrieved_tokens,
