@@ -1110,6 +1110,13 @@ fn record_scope_string(record: &Value, field: &str) -> Option<String> {
 }
 
 fn session_continuity_status(record: &Value, query_scope: Option<&Value>) -> String {
+    if let Some(explicit) = record
+        .get("session_continuity")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        return explicit.to_string();
+    }
     let Some(query) = query_scope else {
         return "unscoped".to_string();
     };
@@ -1803,7 +1810,7 @@ fn context_class_name(record: &Value) -> String {
 }
 
 fn is_serving_selected_ref_class(context_class: &str) -> bool {
-    matches!(context_class, "event" | "summary")
+    matches!(context_class, "entity" | "event" | "summary")
 }
 
 fn increment_class_count(counts: &mut HashMap<String, u64>, class_name: &str) {
@@ -2026,10 +2033,125 @@ fn ref_type_budget_from_counts(
     Value::Object(buckets)
 }
 
+fn string_field<'a>(value: &'a Value, field: &str) -> &'a str {
+    value.get(field).and_then(Value::as_str).unwrap_or("")
+}
+
+fn entity_current_state_key(record: &Value) -> Option<String> {
+    if string_field(record, "record_type") != "context_entity" {
+        return None;
+    }
+    let entity_type = string_field(record, "entity_type").trim().to_ascii_lowercase();
+    let entity_name = string_field(record, "entity_name").trim().to_ascii_lowercase();
+    if entity_type.is_empty() || entity_name.is_empty() {
+        return None;
+    }
+    Some(format!("{entity_type}::{entity_name}"))
+}
+
+fn profile_shadow_maps(scored: &[NativeScoredCandidate]) -> (HashMap<String, (u64, String)>, HashMap<String, (u64, String)>) {
+    let mut by_entity: HashMap<String, (u64, String)> = HashMap::new();
+    let mut by_source_entity_hash: HashMap<String, (u64, String)> = HashMap::new();
+    for candidate in scored {
+        let record = &candidate.record;
+        if string_field(record, "memory_scope") != "user_profile"
+            || string_field(record, "session_continuity") != "cross_session"
+        {
+            continue;
+        }
+        let Some(profile_hash) = record_ref_hash(record) else {
+            continue;
+        };
+        let updated_at_ms = record.get("updated_at_ms").and_then(Value::as_u64).unwrap_or(0);
+        if let Some(key) = entity_current_state_key(record) {
+            let replace = by_entity
+                .get(&key)
+                .map(|(existing_updated_at, _)| updated_at_ms >= *existing_updated_at)
+                .unwrap_or(true);
+            if replace {
+                by_entity.insert(key, (updated_at_ms, profile_hash.clone()));
+            }
+        }
+        if let Some(source_hashes) = record.get("source_entity_hashes").and_then(Value::as_array) {
+            for source_hash in source_hashes {
+                let source_key = source_hash
+                    .as_u64()
+                    .map(|value| value.to_string())
+                    .or_else(|| source_hash.as_str().map(str::to_string));
+                let Some(source_key) = source_key else {
+                    continue;
+                };
+                let replace = by_source_entity_hash
+                    .get(&source_key)
+                    .map(|(existing_updated_at, _)| updated_at_ms >= *existing_updated_at)
+                    .unwrap_or(true);
+                if replace {
+                    by_source_entity_hash.insert(source_key, (updated_at_ms, profile_hash.clone()));
+                }
+            }
+        }
+    }
+    (by_entity, by_source_entity_hash)
+}
+
+fn profile_shadow_for_candidate(
+    candidate: &NativeScoredCandidate,
+    by_entity: &HashMap<String, (u64, String)>,
+    by_source_entity_hash: &HashMap<String, (u64, String)>,
+) -> Option<(String, &'static str)> {
+    if candidate.context_class != "entity" || string_field(&candidate.record, "memory_scope") != "session" {
+        return None;
+    }
+    if let Some(ref_hash) = record_ref_hash(&candidate.record) {
+        if let Some((_, profile_hash)) = by_source_entity_hash.get(&ref_hash) {
+            return Some((profile_hash.clone(), "source_entity_lineage"));
+        }
+    }
+    let key = entity_current_state_key(&candidate.record)?;
+    by_entity
+        .get(&key)
+        .map(|(_, profile_hash)| (profile_hash.clone(), "same_entity_identity"))
+}
+
+fn native_dropped_ref_detail(
+    record: &Value,
+    text: &str,
+    context_class: &str,
+    reason: &str,
+    tokens: u64,
+    profile_shadow: Option<(String, &str)>,
+) -> Value {
+    let mut detail = json!({
+        "ref_type": context_class,
+        "ref_hash": record_ref_hash(record).unwrap_or_default(),
+        "context_class": context_class,
+        "drop_reason": reason,
+        "reason": reason,
+        "token_estimate": tokens,
+        "token_cost": tokens,
+        "node_hash": record_node_hash(record),
+        "node_path": record.get("node_path").cloned().unwrap_or_else(|| json!([])),
+        "memory_scope": string_field(record, "memory_scope"),
+        "session_continuity": string_field(record, "session_continuity"),
+        "entity_type": string_field(record, "entity_type"),
+        "entity_name": string_field(record, "entity_name"),
+        "stale_or_superseded": reason == "stale",
+        "text_preview": text.chars().take(160).collect::<String>(),
+    });
+    if let Some((profile_hash, shadow_reason)) = profile_shadow {
+        if let Some(object) = detail.as_object_mut() {
+            object.insert("profile_shadowed_by_ref_hash".to_string(), json!(profile_hash));
+            object.insert("profile_shadowed_reason".to_string(), json!(shadow_reason));
+        }
+    }
+    detail
+}
+
 fn dropped_ref_layer_budget_from_native_counts(
     reason_counts: &[(&str, u64, u64)],
     ref_type_counts: &HashMap<String, u64>,
     ref_type_token_counts: &HashMap<String, u64>,
+    dropped_ref_details: &[Value],
 ) -> Value {
     let mut by_drop_reason = serde_json::Map::new();
     let mut total_refs = 0_u64;
@@ -2048,21 +2170,108 @@ fn dropped_ref_layer_budget_from_native_counts(
             }),
         );
     }
-    json!({
-        "by_drop_reason": Value::Object(by_drop_reason),
+    let mut detail_budget = json!({
         "by_memory_scope": {},
         "by_session_continuity": {},
-        "by_ref_type": ref_type_budget_from_counts(ref_type_counts, ref_type_token_counts),
         "by_entity_type": {},
         "by_profile_shadowed_reason": {},
-        "total_dropped_refs_with_detail": 0,
         "total_dropped_tokens_with_detail": 0,
-        "total_dropped_refs_from_native_counts": total_refs,
-        "total_dropped_tokens_from_native_counts": total_tokens,
         "stale_ref_count": 0,
         "stale_token_estimate": 0,
         "profile_shadowed_ref_count": 0,
         "profile_shadowed_token_estimate": 0,
+    });
+    for detail in dropped_ref_details {
+        let tokens = detail
+            .get("token_estimate")
+            .or_else(|| detail.get("token_cost"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let total_detail_tokens = detail_budget
+            .get("total_dropped_tokens_with_detail")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            + tokens;
+        if let Some(object) = detail_budget.as_object_mut() {
+            object.insert("total_dropped_tokens_with_detail".to_string(), json!(total_detail_tokens));
+        }
+        let memory_scope = detail
+            .get("memory_scope")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unscoped");
+        increment_layer_bucket(&mut detail_budget, "by_memory_scope", memory_scope, tokens);
+        let session_continuity = detail
+            .get("session_continuity")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("neutral");
+        increment_layer_bucket(&mut detail_budget, "by_session_continuity", session_continuity, tokens);
+        if let Some(entity_type) = detail
+            .get("entity_type")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            increment_layer_bucket(&mut detail_budget, "by_entity_type", entity_type, tokens);
+        }
+        if detail
+            .get("stale_or_superseded")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            let stale_count = detail_budget
+                .get("stale_ref_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                + 1;
+            let stale_tokens = detail_budget
+                .get("stale_token_estimate")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                + tokens;
+            if let Some(object) = detail_budget.as_object_mut() {
+                object.insert("stale_ref_count".to_string(), json!(stale_count));
+                object.insert("stale_token_estimate".to_string(), json!(stale_tokens));
+            }
+        }
+        if detail.get("profile_shadowed_by_ref_hash").is_some() {
+            let shadow_count = detail_budget
+                .get("profile_shadowed_ref_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                + 1;
+            let shadow_tokens = detail_budget
+                .get("profile_shadowed_token_estimate")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                + tokens;
+            if let Some(object) = detail_budget.as_object_mut() {
+                object.insert("profile_shadowed_ref_count".to_string(), json!(shadow_count));
+                object.insert("profile_shadowed_token_estimate".to_string(), json!(shadow_tokens));
+            }
+            let shadow_reason = detail
+                .get("profile_shadowed_reason")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("unknown");
+            increment_layer_bucket(&mut detail_budget, "by_profile_shadowed_reason", shadow_reason, tokens);
+        }
+    }
+    json!({
+        "by_drop_reason": Value::Object(by_drop_reason),
+        "by_memory_scope": detail_budget["by_memory_scope"].clone(),
+        "by_session_continuity": detail_budget["by_session_continuity"].clone(),
+        "by_ref_type": ref_type_budget_from_counts(ref_type_counts, ref_type_token_counts),
+        "by_entity_type": detail_budget["by_entity_type"].clone(),
+        "by_profile_shadowed_reason": detail_budget["by_profile_shadowed_reason"].clone(),
+        "total_dropped_refs_with_detail": dropped_ref_details.len() as u64,
+        "total_dropped_tokens_with_detail": detail_budget["total_dropped_tokens_with_detail"].clone(),
+        "total_dropped_refs_from_native_counts": total_refs,
+        "total_dropped_tokens_from_native_counts": total_tokens,
+        "stale_ref_count": detail_budget["stale_ref_count"].clone(),
+        "stale_token_estimate": detail_budget["stale_token_estimate"].clone(),
+        "profile_shadowed_ref_count": detail_budget["profile_shadowed_ref_count"].clone(),
+        "profile_shadowed_token_estimate": detail_budget["profile_shadowed_token_estimate"].clone(),
     })
 }
 
@@ -2266,6 +2475,7 @@ fn retrieve_context_pack_native(
     let mut dropped_low_score = 0_u64;
     let mut dropped_duplicate_ref = 0_u64;
     let mut dropped_policy_ref = 0_u64;
+    let mut dropped_stale_ref = 0_u64;
     let mut budget_dropped_class_counts: HashMap<String, u64> = HashMap::new();
     let mut policy_dropped_class_counts: HashMap<String, u64> = HashMap::new();
     let mut duplicate_dropped_class_counts: HashMap<String, u64> = HashMap::new();
@@ -2282,6 +2492,8 @@ fn retrieve_context_pack_native(
     let mut dropped_low_score_tokens = 0_u64;
     let mut dropped_duplicate_ref_tokens = 0_u64;
     let mut dropped_policy_ref_tokens = 0_u64;
+    let mut dropped_stale_ref_tokens = 0_u64;
+    let mut dropped_ref_details: Vec<Value> = Vec::new();
     let mut cross_used_tokens = 0_u64;
     let mut cross_selected_refs = 0_u64;
     let mut entity_bridge_selected_refs = 0_u64;
@@ -2292,6 +2504,12 @@ fn retrieve_context_pack_native(
         question_type.as_str(),
         "broad" | "broad_exploration" | "exploration"
     );
+    let current_state_query = matches!(question_type.as_str(), "current_state" | "latest");
+    let (profile_by_entity, profile_by_source_entity_hash) = if current_state_query {
+        profile_shadow_maps(&scored)
+    } else {
+        (HashMap::new(), HashMap::new())
+    };
     for candidate in scored {
         if selected.len() as u64 >= max_refs {
             break;
@@ -2306,6 +2524,37 @@ fn retrieve_context_pack_native(
             continuity_boost_value,
             cross_session_rerank_boost_value,
         } = candidate;
+        let candidate_for_shadow = NativeScoredCandidate {
+            score,
+            record: record.clone(),
+            text: text.clone(),
+            tokens,
+            context_class: context_class.clone(),
+            session_continuity: session_continuity.clone(),
+            continuity_boost_value,
+            cross_session_rerank_boost_value,
+        };
+        if current_state_query {
+            if let Some(profile_shadow) = profile_shadow_for_candidate(
+                &candidate_for_shadow,
+                &profile_by_entity,
+                &profile_by_source_entity_hash,
+            ) {
+                dropped_stale_ref += 1;
+                dropped_stale_ref_tokens += tokens;
+                increment_class_count(&mut dropped_ref_type_counts, &context_class);
+                increment_class_tokens(&mut dropped_ref_type_token_counts, &context_class, tokens);
+                dropped_ref_details.push(native_dropped_ref_detail(
+                    &record,
+                    &text,
+                    &context_class,
+                    "stale",
+                    tokens,
+                    Some(profile_shadow),
+                ));
+                continue;
+            }
+        }
         if used_tokens + tokens > remote_budget {
             dropped_over_budget += 1;
             dropped_over_budget_tokens += tokens;
@@ -2491,9 +2740,11 @@ fn retrieve_context_pack_native(
             ("low_score", dropped_low_score, dropped_low_score_tokens),
             ("duplicate_ref", dropped_duplicate_ref, dropped_duplicate_ref_tokens),
             ("policy_ref", dropped_policy_ref, dropped_policy_ref_tokens),
+            ("stale", dropped_stale_ref, dropped_stale_ref_tokens),
         ],
         &dropped_ref_type_counts,
         &dropped_ref_type_token_counts,
+        &dropped_ref_details,
     );
     let pack = json!({
         "context_pack_id": context_pack_id,
@@ -2517,8 +2768,10 @@ fn retrieve_context_pack_native(
                 "cross_session_candidate_cap": dropped_cross_candidate_cap,
                 "low_score": dropped_low_score,
                 "duplicate_ref": dropped_duplicate_ref,
-                "policy_ref": dropped_policy_ref
-            }
+                "policy_ref": dropped_policy_ref,
+                "stale": dropped_stale_ref
+            },
+            "refs": dropped_ref_details
         },
         "used_context_tokens": used_tokens,
         "used_remote_context_tokens": used_tokens,
@@ -2702,6 +2955,13 @@ fn retrieve_context_pack_native(
             "candidate_class_counts".to_string(),
             candidate_class_counts.clone(),
         );
+    }
+    let retrieval_metrics_for_pack = output.get("retrieval_metrics").cloned();
+    if let (Some(metrics), Some(pack)) = (
+        retrieval_metrics_for_pack,
+        output.get_mut("context_pack").and_then(Value::as_object_mut),
+    ) {
+        pack.insert("retrieval_metrics".to_string(), metrics);
     }
     Ok(output)
 }
@@ -3687,6 +3947,7 @@ fn retrieve_context_pack_output(
         &[],
         &empty_dropped_counts,
         &empty_dropped_counts,
+        &[],
     );
     let elapsed_ms = started.elapsed().as_millis() as u64;
     let correctness = selected_count > 0;
@@ -4634,6 +4895,91 @@ mod tests {
             .expect("default selected refs");
         assert_eq!(default_refs.len(), 2);
 
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+    }
+
+    #[test]
+    fn matrixark_native_full_scan_drops_profile_shadowed_session_entity() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        env::set_var("MATRIXARK_RUST_PROXY_FULL_RETRIEVE_SCAN", "1");
+
+        let storage_prefix = "matrixark:test:native-profile-shadow";
+        let mut append = request("matrixark_batch_append_records");
+        append.key = format!("{storage_prefix}:record_count");
+        append.value = "1".to_string();
+        append.entries_compact = vec![CompactHashEntry(
+            format!("{storage_prefix}:records:000000"),
+            "00000000000000000000".to_string(),
+            r#"{"record_bundle":[{"record_type":"context_event","event_id_hash":7,"text":"GPU procurement owner current state was reviewed","memory_scope":"session","extraction_phase":"provisional","source_roles":["user"],"source_hook_types":["UserPromptSubmit"]},{"record_type":"context_entity","entity_hash":11,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Old session-local GPU procurement owner is Alice","memory_scope":"session","session_continuity":"same_session","extraction_phase":"provisional","updated_at_ms":100},{"record_type":"context_entity","entity_hash":22,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Current cross-session GPU procurement owner is Bob","memory_scope":"user_profile","session_continuity":"cross_session","source_entity_hashes":[11],"source_session_ids":["codex:old","codex:new"],"extraction_phase":"final","updated_at_ms":200,"final_session_boundary":true}]}"#.to_string(),
+        )];
+
+        let root = record_log_root(&append);
+        let engine = open_engine(&append).expect("engine");
+        execute_record_log_request(&engine, append, root.clone()).expect("append compact bundle");
+
+        let mut retrieve = request("matrixark_retrieve_context_pack");
+        retrieve.storage_prefix = storage_prefix.to_string();
+        retrieve.count_key = Some(format!("{storage_prefix}:record_count"));
+        retrieve.record_hash_key = Some(format!("{storage_prefix}:records"));
+        retrieve.record = Some(json!({
+            "query": "Who is the current GPU procurement owner?",
+            "question_type": "current_state",
+            "max_context_tokens": 500,
+            "ranking": {"max_selected_refs": 4},
+            "scope": {
+                "account_id": "acct_shadow",
+                "tenant_id": "tenant_shadow",
+                "user_id": "user_shadow",
+                "session_id": "codex:new"
+            }
+        }));
+        let output = execute_record_log_request(&engine, retrieve, root.clone())
+            .expect("native full scan retrieve through proxy op");
+        let pack = output
+            .extra
+            .get("context_pack")
+            .expect("wrapped context pack from proxy op");
+        let selected_hashes: BTreeSet<_> = pack
+            .get("selected_refs")
+            .and_then(Value::as_array)
+            .expect("selected refs")
+            .iter()
+            .filter_map(|value| value.get("ref_hash").and_then(Value::as_str))
+            .collect();
+        assert!(selected_hashes.contains("22"));
+        assert!(!selected_hashes.contains("11"));
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/stale_ref_count")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/profile_shadowed_ref_count")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_profile_shadowed_reason/source_entity_lineage/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/retrieval_metrics/dropped_memory_layer_budget"),
+            pack.pointer("/recall_policy/dropped_memory_layer_budget")
+        );
+        let dropped_refs = pack
+            .pointer("/dropped_refs/refs")
+            .and_then(Value::as_array)
+            .expect("native stale dropped ref detail");
+        assert_eq!(dropped_refs.len(), 1);
+        assert_eq!(
+            dropped_refs[0].get("profile_shadowed_by_ref_hash").and_then(Value::as_str),
+            Some("22")
+        );
+
+        env::remove_var("MATRIXARK_RUST_PROXY_FULL_RETRIEVE_SCAN");
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
     }
 
