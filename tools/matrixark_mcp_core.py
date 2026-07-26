@@ -2483,6 +2483,36 @@ def oss_encoder_memory_segments(messages: list[Json]) -> list[Json]:
     return segments[:12]
 
 
+def assistant_decision_memory_text(text: str) -> str:
+    """Keep durable assistant memory focused on decisions, results, and next actions."""
+    compact = " ".join(str(text or "").split())
+    if not compact:
+        return ""
+    selected: list[str] = []
+    decision_line_pattern = re.compile(
+        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|blocked|next|follow[- ]?up|will|use|keep|remove)\b",
+        re.IGNORECASE,
+    )
+    for raw_line in str(text).splitlines():
+        line = " ".join(raw_line.split()).strip(" -*")
+        if not line:
+            continue
+        if decision_line_pattern.search(line):
+            selected.append(line)
+        if len(selected) >= 4:
+            break
+    if not selected:
+        selected = [
+            match.group(0).strip()
+            for match in re.finditer(
+                r"[^.!?\n]*(?:decision|decided|done|implemented|fixed|committed|pushed|blocked|next|will)[^.!?\n]*[.!?]?",
+                str(text),
+                flags=re.IGNORECASE,
+            )
+        ][:4]
+    return summarize_text(" ".join(selected) if selected else compact, limit=260)
+
+
 def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     entities: list[Json] = []
     text = text_from_messages(messages)
@@ -2520,7 +2550,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         assistant_text,
         re.IGNORECASE,
     ):
-        decision_state = summarize_text(assistant_text, limit=220)
+        decision_state = summarize_text(assistant_decision_memory_text(assistant_text), limit=220)
         entities.append(
             {
                 "entity_type": "assistant_decision",
@@ -2529,7 +2559,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "confidence": 0.82,
                 "source_refs": source_refs,
                 "operator": normalize_entity_operator(None, "assistant_decision"),
-                "field_patches": [entity_patch("", summarize_text(assistant_text, limit=180))],
+                "field_patches": [entity_patch("", summarize_text(decision_state, limit=180))],
             }
         )
     patterns = [

@@ -1550,8 +1550,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(cap + 2, indexes[0].get("posting_count"))
 
     def test_secondary_index_budget_caps_total_operation_terms(self) -> None:
-        budget = mcp.new_secondary_index_budget(3)
-        first = mcp.take_secondary_index_terms(
+        budget = mcp_core.new_secondary_index_budget(3)
+        first = mcp_core.take_secondary_index_terms(
             [
                 "source_type:resource",
                 "resource_type:pdf",
@@ -1560,7 +1560,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             ],
             budget,
         )
-        second = mcp.take_secondary_index_terms(
+        second = mcp_core.take_secondary_index_terms(
             [
                 "event_type:approval",
                 "entity_type:owner",
@@ -1571,7 +1571,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(first, ["source_type:resource", "resource_type:pdf", "keyword:gpu"])
         self.assertEqual(second, [])
         self.assertEqual(
-            mcp.secondary_index_budget_summary(budget),
+            mcp_core.secondary_index_budget_summary(budget),
             {
                 "index_total_cap": 3,
                 "index_emitted_count": 3,
@@ -1581,24 +1581,49 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
 
     def test_approval_state_entity_name_uses_stable_subject_not_full_state(self) -> None:
         self.assertEqual(
-            mcp.canonical_entity_name("approval_state", "Project Aurora GPU procurement after Q3 budget review"),
+            mcp_core.canonical_entity_name("approval_state", "Project Aurora GPU procurement after Q3 budget review"),
             "Project Aurora GPU procurement",
         )
         self.assertEqual(
-            mcp.canonical_entity_name("approval_state", "the Project Aurora GPU procurement after finance review"),
+            mcp_core.canonical_entity_name("approval_state", "the Project Aurora GPU procurement after finance review"),
             "Project Aurora GPU procurement",
         )
         self.assertEqual(
-            mcp.canonical_entity_name("approval_state", "attachment is required before vendor selection"),
+            mcp_core.canonical_entity_name("approval_state", "attachment is required before vendor selection"),
             "attachment",
         )
         self.assertEqual(
-            mcp.canonical_entity_name("approval_state", "attachment as a blocker before vendor selection"),
+            mcp_core.canonical_entity_name("approval_state", "attachment as a blocker before vendor selection"),
             "attachment",
         )
 
+    def test_assistant_decision_extraction_keeps_decision_lines_not_full_response(self) -> None:
+        result = mcp_core.extract_batch_entities(
+            [
+                {
+                    "role": "assistant",
+                    "content": (
+                        "Here is a long implementation explanation that should stay out of durable profile memory.\n"
+                        "It describes file layouts, helper functions, and examples in detail.\n"
+                        "Decision: use Stop plus threshold/idle provisional extraction for live Codex memory.\n"
+                        "More verbose explanation that should not become the assistant_decision state.\n"
+                        "Next: retrieve same-session memory first, then profile entities under budget."
+                    ),
+                }
+            ],
+            {"source_event_ids": [101], "metadata": {}},
+        )
+
+        decision = next(entity for entity in result if entity["entity_type"] == "assistant_decision")
+        self.assertIn("Decision: use Stop plus threshold/idle provisional extraction", decision["state"])
+        self.assertIn("Next: retrieve same-session memory first", decision["state"])
+        self.assertNotIn("long implementation explanation", decision["state"])
+        self.assertNotIn("file layouts", decision["state"])
+        self.assertLessEqual(len(decision["state"]), 260)
+        self.assertEqual(["101"], decision["source_refs"])
+
     def test_openai_compatible_batch_extraction_uses_model_entities(self) -> None:
-        extraction_globals = mcp.one_pass_memory_extraction.__globals__
+        extraction_globals = mcp_core.one_pass_memory_extraction.__globals__
         old_call = extraction_globals["openai_compatible_json_call"]
         self.addCleanup(lambda: extraction_globals.__setitem__("openai_compatible_json_call", old_call))
 
@@ -1635,7 +1660,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             }
 
         extraction_globals["openai_compatible_json_call"] = fake_json_call
-        result = mcp.one_pass_memory_extraction(
+        result = mcp_core.one_pass_memory_extraction(
             {
                 "kind": "message",
                 "messages": [
@@ -1660,7 +1685,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertNotEqual(result["entities"][0]["entity_name"], result["entities"][0]["state"])
 
     def test_openai_compatible_resource_fact_extraction_uses_model_facts(self) -> None:
-        extraction_globals = mcp.extract_resource_facts.__globals__
+        extraction_globals = mcp_core.extract_resource_facts.__globals__
         old_call = extraction_globals["openai_compatible_json_call"]
         self.addCleanup(lambda: extraction_globals.__setitem__("openai_compatible_json_call", old_call))
 
@@ -1684,7 +1709,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             chunk_hash="chunk-123",
             source_ref="gpu.pdf#page=1",
         )
-        facts = mcp.extract_resource_facts(
+        facts = mcp_core.extract_resource_facts(
             chunk,
             chunk_metadata={"heading": "Approval Packet"},
             envelope={"extraction_provider": "openai-compatible", "understanding_provider": "openai-compatible"},
@@ -1700,7 +1725,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertNotEqual(facts[0]["entity_name"], facts[0]["value"])
 
     def test_deterministic_entities_do_not_advertise_llm_merge(self) -> None:
-        result = mcp.one_pass_memory_extraction(
+        result = mcp_core.one_pass_memory_extraction(
             {
                 "kind": "message",
                 "messages": [{"role": "user", "content": "Alice approved Project Aurora GPU procurement."}],
