@@ -313,6 +313,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(2, item["result"]["selected_ref_count"])
         self.assertEqual(90, item["result"]["retrieval_budget"]["remote_context_budget_tokens"])
         self.assertEqual(57, item["result"]["retrieval_budget"]["remote_budget_remaining_tokens"])
+        self.assertEqual(
+            "local_first_remote_fill_remaining",
+            item["result"]["retrieval_budget"]["budget_contract"]["mode"],
+        )
+        self.assertTrue(item["result"]["retrieval_budget"]["budget_contract"]["contract_holds"])
         self.assertEqual({"event": 1, "entity": 1}, item["result"]["retrieval_layers"]["selected_ref_counts"])
         self.assertEqual(1, item["result"]["retrieval_layers"]["same_session_refs"])
         self.assertEqual(1, item["result"]["retrieval_layers"]["cross_session_refs"])
@@ -366,6 +371,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(100, output["retrieve"]["budget"]["remote_context_budget_tokens"])
         self.assertEqual(58, output["retrieve"]["budget"]["remote_budget_remaining_tokens"])
         self.assertFalse(output["retrieve"]["budget"]["remote_budget_overrun"])
+        self.assertEqual(
+            "local_first_remote_fill_remaining",
+            output["retrieve"]["budget"]["budget_contract"]["mode"],
+        )
+        self.assertEqual(
+            "requested_max_context_tokens-used_local_context_tokens-local_context_safety_margin_tokens",
+            output["retrieve"]["budget"]["budget_contract"]["remote_budget_formula"],
+        )
+        self.assertTrue(output["retrieve"]["budget"]["budget_contract"]["contract_holds"])
         hook_output = output["hookSpecificOutput"]
         self.assertEqual("UserPromptSubmit", hook_output["hookEventName"])
         additional = hook_output["additionalContext"]
@@ -378,6 +392,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("remote_budget=100", additional)
         self.assertIn("remote_remaining=58", additional)
         self.assertIn("budget_source=agent_provided_max_context_tokens", additional)
+        self.assertIn("contract=local_first_remote_fill_remaining", additional)
+        self.assertIn("contract_holds=true", additional)
         self.assertIn("Layer summary:", additional)
         self.assertIn("event=1", additional)
         self.assertIn("entity=1", additional)

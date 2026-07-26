@@ -164,6 +164,24 @@ def retrieval_budget_summary_from_retrieve(pack: Json | None) -> Json:
     if requested_max_context_tokens:
         budget["total_prompt_budget_remaining_tokens"] = max(0, requested_max_context_tokens - total_prompt_tokens)
         budget["total_prompt_budget_overrun"] = total_prompt_tokens > requested_max_context_tokens
+    if requested_max_context_tokens or remote_budget_tokens or used_local_tokens or safety_margin_tokens:
+        budget["budget_contract"] = {
+            "mode": "local_first_remote_fill_remaining",
+            "local_context_first": True,
+            "remote_fills_remaining_budget": True,
+            "remote_is_additive_only_within_remaining_budget": True,
+            "remote_budget_formula": "requested_max_context_tokens-used_local_context_tokens-local_context_safety_margin_tokens",
+            "computed_remote_context_budget_tokens": max(
+                0,
+                requested_max_context_tokens - used_local_tokens - safety_margin_tokens,
+            )
+            if requested_max_context_tokens
+            else remote_budget_tokens,
+            "contract_holds": (
+                (not remote_budget_tokens or used_remote_tokens <= remote_budget_tokens)
+                and (not requested_max_context_tokens or total_prompt_tokens <= requested_max_context_tokens)
+            ),
+        }
     return budget
 
 
@@ -379,6 +397,10 @@ def additional_context_from_retrieve(
         budget_bits.append(f"requested_max={budget.get('requested_max_context_tokens')}")
     if budget.get("budget_source"):
         budget_bits.append(f"budget_source={budget.get('budget_source')}")
+    contract = budget.get("budget_contract") if isinstance(budget.get("budget_contract"), dict) else {}
+    if contract.get("mode"):
+        budget_bits.append(f"contract={contract.get('mode')}")
+        budget_bits.append(f"contract_holds={str(bool(contract.get('contract_holds'))).lower()}")
     lines = [
         "MatrixArk/TemporalStore retrieved context for Codex.",
         f"Query: {_compact_one_line(query, max_chars=360)}",
