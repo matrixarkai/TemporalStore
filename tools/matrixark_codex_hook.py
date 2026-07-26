@@ -1618,6 +1618,21 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "updated_at_ms": now,
         **retention,
     }
+    pipeline_task: Json = {
+        "record_type": "matrixark_async_pipeline_task",
+        "task_hash": stable_int_hash(f"async_pipeline:{event_id_hash}"),
+        "event_id_hash": event_id_hash,
+        "node_hash": node_hash,
+        "node_path": node_path,
+        "scope": scope,
+        "status": "pending",
+        "stages": ["extraction", "summary", "compression", "embedding"],
+        "reason": "codex_hook_fast_async_direct_queue",
+        "agent_hook": hook,
+        "storage_options": storage_options,
+        "created_at_ms": now,
+        "updated_at_ms": now,
+    }
     enqueue_raw = getattr(adapter, "enqueue_raw_ingestion_records", None)
     if callable(enqueue_raw):
         enqueue_raw([raw_record])
@@ -1625,7 +1640,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         append_raw = getattr(adapter, "_append_raw_ingestion_records", None)
         if callable(append_raw):
             append_raw([raw_record])
-    enqueue([record])
+    enqueue([record, pipeline_task])
     append_session_buffer = getattr(adapter, "append_session_buffer_event", None)
     if callable(append_session_buffer):
         append_session_buffer(
@@ -1693,6 +1708,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "raw_ingestion_status": "accepted" if callable(enqueue_raw) else "unavailable",
         "async_processing": True,
         "async_pipeline_status": "pending",
+        "async_pipeline_task_hash": pipeline_task["task_hash"],
         "event_id_hash": event_id_hash,
         "node_hash": node_hash,
         "session_buffer": {

@@ -661,9 +661,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("accepted", result["status"])
         self.assertEqual("accepted", result["raw_ingestion_status"])
         self.assertEqual(1, len(server.adapter.raw_records))
-        self.assertEqual(1, len(server.adapter.serving_records))
+        self.assertEqual(2, len(server.adapter.serving_records))
         raw = server.adapter.raw_records[0]
         serving = server.adapter.serving_records[0]
+        task = server.adapter.serving_records[1]
         self.assertEqual("agent_message", raw["record_type"])
         self.assertEqual("real hooked Codex message", raw["messages"][0]["content"])
         self.assertEqual("codex-cpp-session-1", raw["scope"]["session_id"])
@@ -677,6 +678,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("async_pending", serving["internal_extraction"]["mode"])
         self.assertIn("real hooked Codex message", serving["summary_text"])
         self.assertIn("real hooked Codex message", serving["text"])
+        self.assertEqual("matrixark_async_pipeline_task", task["record_type"])
+        self.assertEqual(serving["event_id_hash"], task["event_id_hash"])
+        self.assertEqual("pending", task["status"])
+        self.assertEqual(["extraction", "summary", "compression", "embedding"], task["stages"])
+        self.assertEqual(task["task_hash"], result["async_pipeline_task_hash"])
         self.assertEqual(1, len(server.adapter.session_buffer_records))
         self.assertTrue(result["session_buffer"]["registered"])
 
