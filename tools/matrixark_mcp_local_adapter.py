@@ -871,6 +871,9 @@ class MatrixArkLocalAdapter:
                 "pending_event_count": pending_event_count,
                 "threshold_messages": threshold,
                 "commit_reason": commit_reason,
+                "idle_timeout_ms": idle_timeout_ms,
+                "idle_elapsed_ms": idle_elapsed_ms,
+                "trigger_evidence": trigger_evidence,
             }
         try:
             overlap_limit = int(args.get("extraction_context_overlap_messages", 2))

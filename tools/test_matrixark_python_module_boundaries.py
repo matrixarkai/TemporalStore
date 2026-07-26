@@ -133,6 +133,71 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("committed", second["auto_batch_extract_result"]["status"])
         self.assertEqual(1, len(target.commit_calls))
 
+    def test_modular_session_runtime_reports_trigger_evidence(self) -> None:
+        runtime_mod = importlib.import_module("tools.matrixark_mcp_session_runtime")
+
+        class Adapter:
+            def __init__(self) -> None:
+                self.pending = []
+                self.appended = []
+
+            def pending_session_events(self, _scope):
+                return list(self.pending)
+
+            def default_session_node_path(self, scope):
+                return ["tenant:t", "user:u", f"session:{scope['session_id']}"]
+
+            def read_all(self):
+                return []
+
+            def batch_extract(self, args, *, hook=None):
+                return {
+                    "batch_id_hash": 7,
+                    "node_hash": 8,
+                    "node_path": args["metadata"]["node_path"],
+                    "extraction_context_event_count": len(args.get("extraction_context_event_ids", [])),
+                }
+
+            def append(self, record):
+                self.appended.append(record)
+
+        scope = {
+            "account_id": "acct",
+            "tenant_id": "tenant",
+            "user_id": "user",
+            "session_id": "session",
+        }
+        adapter = Adapter()
+        adapter.pending = [
+            {
+                "event_id_hash": 1,
+                "updated_at_ms": 100,
+                "envelope": {
+                    "messages": [{"role": "user", "content": "first pending message"}],
+                    "ingestion_time_ms": 100,
+                },
+            }
+        ]
+
+        deferred = runtime_mod.session_commit(
+            adapter,
+            {"scope": scope, "threshold_messages": 2, "force": False, "commit_reason": "threshold"},
+        )
+        self.assertEqual("deferred", deferred["status"])
+        self.assertFalse(deferred["trigger_evidence"]["threshold_ready"])
+        self.assertFalse(deferred["trigger_evidence"]["idle_ready"])
+        self.assertEqual(1, deferred["trigger_evidence"]["pending_event_count"])
+
+        committed = runtime_mod.session_commit(
+            adapter,
+            {"scope": scope, "threshold_messages": 1, "force": False, "commit_reason": "threshold"},
+        )
+        self.assertEqual("committed", committed["status"])
+        self.assertTrue(committed["trigger_evidence"]["threshold_ready"])
+        self.assertFalse(committed["trigger_evidence"]["idle_ready"])
+        self.assertEqual("threshold", committed["trigger_policy"])
+        self.assertEqual(committed["trigger_evidence"], adapter.appended[0]["trigger_evidence"])
+
 
     def test_mcp_entrypoint_reexports_split_modules(self) -> None:
         server_mod = importlib.import_module("tools.matrixark_mcp_server")

@@ -485,6 +485,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 }
             )
             self.assertEqual("empty", second_stop["status"])
+            self.assertTrue(second_stop["trigger_evidence"]["force"])
+            self.assertFalse(second_stop["trigger_evidence"]["threshold_ready"])
+            self.assertEqual(0, second_stop["trigger_evidence"]["pending_event_count"])
 
             records = adapter.read_all()
             commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
