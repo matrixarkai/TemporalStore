@@ -5115,6 +5115,61 @@ def diversify_for_question_type(candidates: list[Json], question_type: str, *, t
     return selected[:total_limit]
 
 
+def entity_current_state_key(candidate: Json) -> tuple[str, str] | None:
+    if str(candidate.get("ref_type") or "") != "entity":
+        return None
+    metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
+    entity_type = str(candidate.get("entity_type") or metadata.get("entity_type") or "").strip().lower()
+    entity_name = str(candidate.get("entity_name") or metadata.get("entity_name") or "").strip().lower()
+    if not entity_type or not entity_name:
+        return None
+    return entity_type, entity_name
+
+
+def prefer_profile_entities_for_current_state(candidates: list[Json], question_type: str) -> list[Json]:
+    if question_type not in {"current_state", "latest"}:
+        return candidates
+    latest_profile_by_entity: dict[tuple[str, str], Json] = {}
+    for candidate in candidates:
+        key = entity_current_state_key(candidate)
+        if key is None:
+            continue
+        if str(candidate.get("memory_scope") or "") != "user_profile":
+            continue
+        if str(candidate.get("session_continuity") or "") != "cross_session":
+            continue
+        existing = latest_profile_by_entity.get(key)
+        if existing is None or int(candidate.get("updated_at_ms") or 0) >= int(existing.get("updated_at_ms") or 0):
+            latest_profile_by_entity[key] = candidate
+    if not latest_profile_by_entity:
+        return candidates
+    adjusted: list[Json] = []
+    for candidate in candidates:
+        key = entity_current_state_key(candidate)
+        if key is None or key not in latest_profile_by_entity:
+            adjusted.append(candidate)
+            continue
+        profile = latest_profile_by_entity[key]
+        if candidate is profile or candidate.get("ref_hash") == profile.get("ref_hash"):
+            adjusted.append({
+                **candidate,
+                "score": clamp01(float(candidate.get("score", 0.0)) + 0.18),
+                "profile_current_state_boost": 0.18,
+                "selection_reason": candidate.get("selection_reason") or "current profile entity preferred over session-local historical state",
+            })
+            continue
+        if str(candidate.get("memory_scope") or "") == "session":
+            adjusted.append({
+                **candidate,
+                "stale_or_superseded": True,
+                "profile_shadowed_by_ref_hash": profile.get("ref_hash"),
+                "selection_reason": candidate.get("selection_reason") or "session-local entity kept as historical evidence behind current profile state",
+            })
+            continue
+        adjusted.append(candidate)
+    return adjusted
+
+
 def select_token_budgeted_refs(
     primary: list[Json],
     auxiliary: list[Json],
@@ -5148,6 +5203,7 @@ def select_token_budgeted_refs(
         total_limit=candidate_pool_limit,
         auxiliary_quota=auxiliary_quota,
     )
+    candidates = prefer_profile_entities_for_current_state(candidates, question_type)
     candidates.sort(key=lambda item: packing_sort_key(item, question_type), reverse=True)
     candidates = diversify_for_question_type(candidates, question_type, total_limit=candidate_pool_limit)
     selected: list[Json] = []
