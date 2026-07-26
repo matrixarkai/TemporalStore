@@ -7,6 +7,12 @@
   "properties": {
     "agent": { "type": "string" },
     "event": { "type": "string" },
+    "hook_type": { "type": "string" },
+    "lifecycle_stage": { "type": "string" },
+    "should_retrieve": { "type": "boolean" },
+    "should_commit": { "type": "boolean" },
+    "extraction_phase": { "type": "string", "enum": ["provisional", "final"] },
+    "final_session_boundary": { "type": "boolean" },
     "conversation_id": { "type": "string" },
     "session_id": { "type": "string" },
     "session_id_source": { "type": "string" },

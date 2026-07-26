@@ -103,6 +103,12 @@ class MatrixArkCodexPluginSessionResolverTest(unittest.TestCase):
         self.assertEqual("assistant", normalized["role"])
         self.assertEqual("Decision: keep profile entities cross-session.", normalized["text"])
         self.assertEqual("codex:codex-thread-llm", normalized["session_id"])
+        self.assertEqual("after_llm", normalized["hook_type"])
+        self.assertEqual("after_llm_ingest", normalized["lifecycle_stage"])
+        self.assertFalse(normalized["should_retrieve"])
+        self.assertFalse(normalized["should_commit"])
+        self.assertEqual("provisional", normalized["extraction_phase"])
+        self.assertFalse(normalized["final_session_boundary"])
 
     def test_normalizer_preserves_tool_output_text_and_role(self) -> None:
         normalized = self.run_normalizer(
@@ -117,6 +123,38 @@ class MatrixArkCodexPluginSessionResolverTest(unittest.TestCase):
         self.assertEqual("tool", normalized["role"])
         self.assertIn("Ran 3 tests", normalized["text"])
         self.assertEqual("codex:codex-thread-tool", normalized["session_id"])
+        self.assertEqual("tool_result", normalized["hook_type"])
+        self.assertEqual("tool_evidence_ingest", normalized["lifecycle_stage"])
+        self.assertFalse(normalized["should_retrieve"])
+        self.assertFalse(normalized["should_commit"])
+        self.assertEqual("provisional", normalized["extraction_phase"])
+        self.assertFalse(normalized["final_session_boundary"])
+
+    def test_normalizer_marks_prompt_retrieval_and_stop_final_boundary(self) -> None:
+        prompt = self.run_normalizer(
+            event="UserPromptSubmit",
+            payload={"conversation_id": "codex-thread-lifecycle", "prompt": "What should I do next?"},
+        )
+        stop = self.run_normalizer(
+            event="Stop",
+            payload={
+                "conversation_id": "codex-thread-lifecycle",
+                "last_agent_message": "Summary: commit final session memory.",
+            },
+        )
+
+        self.assertEqual("before_llm", prompt["hook_type"])
+        self.assertEqual("before_llm_retrieve", prompt["lifecycle_stage"])
+        self.assertTrue(prompt["should_retrieve"])
+        self.assertFalse(prompt["should_commit"])
+        self.assertEqual("provisional", prompt["extraction_phase"])
+        self.assertFalse(prompt["final_session_boundary"])
+        self.assertEqual("session_commit", stop["hook_type"])
+        self.assertEqual("session_boundary_commit", stop["lifecycle_stage"])
+        self.assertFalse(stop["should_retrieve"])
+        self.assertTrue(stop["should_commit"])
+        self.assertEqual("final", stop["extraction_phase"])
+        self.assertTrue(stop["final_session_boundary"])
 
 
 if __name__ == "__main__":
