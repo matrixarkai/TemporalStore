@@ -18,6 +18,7 @@ def main() -> int:
     parser.add_argument("--config", default="/tmp/openviking_matrixark_oss/ov_qwen_memory_fresh.conf")
     parser.add_argument("--import-success", default="/tmp/openviking_matrixark_oss/results_qwen_memory/import_success.csv")
     parser.add_argument("--server-log", default="/tmp/openviking_matrixark_oss/server_qwen_memory.log")
+    parser.add_argument("--workspace", default="/tmp/openviking_matrixark_oss/qwen_memory_data")
     parser.add_argument("--report", default="/tmp/openviking_memory_extraction_diagnosis.json")
     args = parser.parse_args()
 
@@ -35,11 +36,13 @@ def main() -> int:
     vlm_endpoint_probe = probe_openai_models(vlm_api_base)
     vlm_chat_probe = probe_chat_completion(vlm_api_base, vlm_model)
     embedding_endpoint_probe = probe_openai_models(embedding_api_base)
+    task_evidence = collect_task_evidence(Path(args.workspace))
     report: dict[str, Any] = {
         "schema": "matrixark_openviking_memory_extraction_diagnosis_v1",
         "config": args.config,
         "import_success": args.import_success,
         "server_log": args.server_log,
+        "workspace": args.workspace,
         "session_rows": len(rows),
         "memory_extraction_enabled": extraction_enabled,
         "embedding_tokens": embedding_tokens,
@@ -55,6 +58,7 @@ def main() -> int:
         "embedding_model": (((config.get("embedding") or {}).get("dense") or {}).get("model")),
         "embedding_api_base": embedding_api_base,
         "embedding_endpoint_probe": embedding_endpoint_probe,
+        "task_evidence": task_evidence,
         "baseline_ready": extraction_enabled and sum(extracted_counts) > 0,
         "direct_source_fallback_required": not (extraction_enabled and sum(extracted_counts) > 0),
         "likely_gap": infer_gap(
@@ -118,6 +122,88 @@ def infer_gap(
     if not extracted_counts:
         return "no_memory_extraction_completion_log_found"
     return "unknown"
+
+
+def collect_task_evidence(workspace: Path) -> dict[str, Any]:
+    task_root = workspace / "viking" / "default" / "_system" / "tasks"
+    user_root = workspace / "viking" / "default" / "user"
+    task_files = sorted(task_root.glob("*/*.json")) if task_root.exists() else []
+    memory_diff_files = (
+        sorted(user_root.glob("*/sessions/*/history/archive_001/memory_diff.json"))
+        if user_root.exists()
+        else []
+    )
+
+    task_rows = []
+    llm_total_tokens = 0
+    embedding_total_tokens = 0
+    extracted_total = 0
+    for path in task_files:
+        data = read_json(path)
+        result = data.get("result") if isinstance(data.get("result"), dict) else {}
+        token_usage = result.get("token_usage") if isinstance(result.get("token_usage"), dict) else {}
+        llm_usage = token_usage.get("llm") if isinstance(token_usage.get("llm"), dict) else {}
+        embedding_usage = (
+            token_usage.get("embedding") if isinstance(token_usage.get("embedding"), dict) else {}
+        )
+        memories = result.get("memories_extracted")
+        extracted_count = (
+            sum(int(value) for value in memories.values())
+            if isinstance(memories, dict)
+            else 0
+        )
+        extracted_total += extracted_count
+        llm_total_tokens += int(float(llm_usage.get("total_tokens") or 0))
+        embedding_total_tokens += int(float(embedding_usage.get("total_tokens") or 0))
+        task_rows.append(
+            {
+                "task_id": data.get("task_id"),
+                "status": data.get("status"),
+                "session_id": result.get("session_id") or data.get("resource_id"),
+                "archive_uri": result.get("archive_uri"),
+                "memories_extracted": memories if isinstance(memories, dict) else {},
+                "llm_total_tokens": int(float(llm_usage.get("total_tokens") or 0)),
+                "embedding_total_tokens": int(float(embedding_usage.get("total_tokens") or 0)),
+                "memory_diff_uri": result.get("memory_diff_uri"),
+                "error": data.get("error"),
+            }
+        )
+
+    diff_rows = []
+    diff_adds = 0
+    diff_updates = 0
+    diff_deletes = 0
+    for path in memory_diff_files:
+        data = read_json(path)
+        summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+        adds = int(float(summary.get("total_adds") or 0))
+        updates = int(float(summary.get("total_updates") or 0))
+        deletes = int(float(summary.get("total_deletes") or 0))
+        diff_adds += adds
+        diff_updates += updates
+        diff_deletes += deletes
+        diff_rows.append(
+            {
+                "path": str(path),
+                "archive_uri": data.get("archive_uri"),
+                "total_adds": adds,
+                "total_updates": updates,
+                "total_deletes": deletes,
+            }
+        )
+
+    return {
+        "task_count": len(task_rows),
+        "task_rows": task_rows,
+        "task_llm_total_tokens": llm_total_tokens,
+        "task_embedding_total_tokens": embedding_total_tokens,
+        "task_memories_extracted_total": extracted_total,
+        "memory_diff_count": len(diff_rows),
+        "memory_diff_rows": diff_rows,
+        "memory_diff_total_adds": diff_adds,
+        "memory_diff_total_updates": diff_updates,
+        "memory_diff_total_deletes": diff_deletes,
+    }
 
 
 def probe_openai_models(api_base: str | None) -> dict[str, Any]:
