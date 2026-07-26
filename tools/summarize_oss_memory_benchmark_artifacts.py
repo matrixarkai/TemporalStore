@@ -70,6 +70,9 @@ def summarize_report(path: Path, label: str, paper_min_cases: dict[str, int] | N
     paper_min_cases = paper_min_cases or PAPER_COMPARABLE_MIN_CASES
     data = json.loads(path.read_text(encoding="utf-8"))
     metrics_source = data.get("harness") if isinstance(data.get("harness"), dict) else data
+    batch_metrics = extract_batch_replay_metrics(data)
+    if batch_metrics and not number(metrics_source, "case_count", "benchmark_per_query_count", "external_benchmark_case_count"):
+        metrics_source = batch_metrics
     quality_gate = data.get("quality_gate") if isinstance(data.get("quality_gate"), dict) else {}
     if data is not metrics_source and not quality_gate:
         quality_gate = metrics_source.get("quality_gate") if isinstance(metrics_source.get("quality_gate"), dict) else {}
@@ -81,6 +84,14 @@ def summarize_report(path: Path, label: str, paper_min_cases: dict[str, int] | N
         or metrics_source.get("paper_comparable_claim_ready")
         or metrics_source.get("external_benchmark_ready")
         or quality_gate.get("paper_comparable_claim_ready")
+    )
+    retrieval_ready_reader_not_run = bool(
+        batch_metrics
+        and data.get("batch_replay_used")
+        and data.get("returncode") == 0
+        and batch_metrics.get("external_benchmark_case_count")
+        and batch_metrics.get("external_benchmark_hit_at_k", 0.0) >= 0.90
+        and not number(metrics_source, "benchmark_reader_hit_rate", "reader_hit_rate")
     )
     min_cases = paper_min_cases.get(str(dataset), 1)
     scale_ready = isinstance(case_count, (int, float)) and case_count >= min_cases
@@ -98,7 +109,7 @@ def summarize_report(path: Path, label: str, paper_min_cases: dict[str, int] | N
     if source_claim_ready and not scale_ready:
         row["blocker"] = ";".join(filter(None, [row["blocker"], f"case_count_below_paper_min_{min_cases}"]))
     raw_claim = data.get("claim_status") or data.get("claim_level") or ""
-    if not raw_claim and data.get("rust_temporalstore_full_replay_ready") and not number(metrics_source, "benchmark_reader_hit_rate", "reader_hit_rate"):
+    if not raw_claim and (data.get("rust_temporalstore_full_replay_ready") or retrieval_ready_reader_not_run) and not number(metrics_source, "benchmark_reader_hit_rate", "reader_hit_rate"):
         raw_claim = "retrieval_ready_reader_not_run"
     row["diagnostic_only"] = bool(
         data.get("diagnostic_only")
@@ -111,6 +122,47 @@ def summarize_report(path: Path, label: str, paper_min_cases: dict[str, int] | N
     row["ready"] = bool(data.get("ready") or data.get("benchmark_quality_ready") or quality_gate.get("quality_ready"))
     return row
 
+
+
+def extract_batch_replay_metrics(data: dict[str, Any]) -> dict[str, Any]:
+    batch_reports = data.get("batch_reports")
+    if not isinstance(batch_reports, list) or not batch_reports:
+        return {}
+    case_count = 0
+    hit_count = 0
+    elapsed_ms: list[float] = []
+    failed_batches = 0
+    for row in batch_reports:
+        if not isinstance(row, dict):
+            continue
+        count = int(row.get("case_count") or 0)
+        hit_rate = float(row.get("hit_at_k") or 0.0)
+        case_count += count
+        hit_count += round(hit_rate * count)
+        if row.get("returncode") not in (0, None):
+            failed_batches += 1
+        value = row.get("elapsed_ms")
+        if isinstance(value, (int, float)):
+            elapsed_ms.append(float(value))
+    hit_at_k = hit_count / case_count if case_count else 0.0
+    return {
+        "case_count": case_count,
+        "external_benchmark_case_count": case_count,
+        "external_benchmark_hit_at_k": hit_at_k,
+        "benchmark_hit_at_k": hit_at_k,
+        "retrieval_p95_ms": percentile(elapsed_ms, 95),
+        "benchmark_retrieval_p95_ms": percentile(elapsed_ms, 95),
+        "failed_batch_count": failed_batches,
+        "external_benchmark_ready": bool(case_count and failed_batches == 0 and hit_count == case_count),
+    }
+
+
+def percentile(values: list[float], pct: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = int((len(ordered) - 1) * pct / 100.0)
+    return round(ordered[index], 4)
 
 def extract_metrics(data: dict[str, Any]) -> dict[str, Any]:
     return {
