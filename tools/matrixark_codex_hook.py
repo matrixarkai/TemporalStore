@@ -643,6 +643,7 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 "used_context_tokens": used_context_tokens_from_retrieve(result),
                 "retrieval_budget": retrieval_budget_summary_from_retrieve(result),
                 "retrieval_layers": retrieval_layer_summary_from_retrieve(result, emitted_refs),
+                "rendered_context_chars": len(sanitized_rendered_context_from_retrieve(result)),
             }
         elif name == "matrixark_session_commit":
             item["result"] = {
@@ -730,6 +731,7 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             "selected_ref_count": retrieve.get("selected_ref_count"),
             "retrieval_budget": retrieve.get("budget"),
             "retrieval_layers": retrieve.get("layers"),
+            "rendered_context_chars": retrieve.get("rendered_context_chars"),
             "ingest_status": ingest.get("status"),
             "commit_status": commit.get("status"),
         }
