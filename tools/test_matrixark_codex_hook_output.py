@@ -827,11 +827,78 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
 
         self.assertEqual("accepted", result["session_commit"]["status"])
         self.assertEqual(1, len(server.adapter.raw_records))
-        self.assertEqual("assistant", server.adapter.raw_records[0]["messages"][0]["role"])
+        raw_record = server.adapter.raw_records[0]
+        self.assertEqual("assistant", raw_record["messages"][0]["role"])
+        self.assertEqual("assistant", raw_record["source_role"])
+        self.assertEqual("after_llm", raw_record["hook_type"])
+        self.assertEqual("Stop", raw_record["codex_event"])
+        serving_event = next(record for record in server.adapter.serving_records if record["record_type"] == "context_event")
+        self.assertEqual("assistant", serving_event["source_role"])
+        self.assertEqual("after_llm", serving_event["hook_type"])
+        self.assertEqual("Stop", serving_event["codex_event"])
+        self.assertEqual("assistant", serving_event["envelope"]["source_role"])
+        self.assertEqual("after_llm", serving_event["envelope"]["hook_type"])
         self.assertEqual(1, len(server.adapter.commit_calls))
         commit_args, _commit_hook = server.adapter.commit_calls[0]
         self.assertEqual("hook_boundary", commit_args["commit_reason"])
         self.assertTrue(commit_args["force"])
+
+    def test_fast_async_hook_ingest_marks_tool_evidence_lifecycle(self) -> None:
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.serving_records = []
+                self.session_buffer_records = []
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.serving_records.extend(records)
+
+            def append_session_buffer_event(self, **kwargs):
+                self.session_buffer_records.append(kwargs)
+
+            def pending_session_events(self, scope):
+                return [{"event_id_hash": 1}]
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        args = Namespace(
+            event="PostToolUse",
+            account_id="acct_local",
+            tenant_id="tenant_codex",
+            user_id="deeproute",
+            session_id="codex-session-tool",
+            team="codex",
+            project="temporalstore",
+            session_commit_threshold=20,
+            idle_commit_timeout_ms=0,
+            understanding_provider="rules",
+            segment_provider="deterministic",
+        )
+        server = Server()
+        hook.fast_async_hook_ingest(
+            server,
+            args=args,
+            text="Exit code: 0\nRan 77 tests in 2.4s\nOK",
+            role="tool",
+            agent_context={"workspace_root": "/repo"},
+            hook={"session_id_source": "payload_field"},
+        )
+
+        raw_record = server.adapter.raw_records[0]
+        self.assertEqual("tool", raw_record["source_role"])
+        self.assertEqual("tool_result", raw_record["hook_type"])
+        self.assertEqual("PostToolUse", raw_record["codex_event"])
+        serving_event = next(record for record in server.adapter.serving_records if record["record_type"] == "context_event")
+        self.assertEqual("tool", serving_event["source_role"])
+        self.assertEqual("tool_result", serving_event["hook_type"])
+        self.assertEqual("PostToolUse", serving_event["codex_event"])
+        self.assertEqual("tool", serving_event["envelope"]["source_role"])
+        self.assertEqual("tool_result", serving_event["envelope"]["hook_type"])
 
     def test_fast_async_hook_ingest_commits_idle_timeout_with_zero_timeout(self) -> None:
         class Adapter:
