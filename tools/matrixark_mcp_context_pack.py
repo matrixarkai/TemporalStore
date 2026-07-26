@@ -217,6 +217,9 @@ def compact_recall_policy_for_audit(recall_policy: Json) -> Json:
             for field in ["mode", "same_session_selected_ref_count", "cross_session_selected_ref_count", "entity_bridge_selected_ref_count"]
             if session.get(field) not in (None, "", [], {})
         }
+    memory_layer_budget = recall_policy.get("memory_layer_budget")
+    if isinstance(memory_layer_budget, dict):
+        compact["memory_layer_budget"] = memory_layer_budget
     if storage_options:
         compact["storage_route"] = {
             field: storage_options.get(field)
@@ -267,6 +270,12 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
     recall_summary = compact_recall_policy_for_audit(record.get("recall_policy", {}))
     if recall_summary:
         compact["recall_policy_summary"] = recall_summary
+    memory_layer_budget = record.get("memory_layer_budget")
+    if not isinstance(memory_layer_budget, dict):
+        recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
+        memory_layer_budget = recall_policy.get("memory_layer_budget")
+    if isinstance(memory_layer_budget, dict):
+        compact["memory_layer_budget"] = memory_layer_budget
     local_policy = record.get("local_context_policy")
     if isinstance(local_policy, dict):
         compact["local_context_policy"] = {
