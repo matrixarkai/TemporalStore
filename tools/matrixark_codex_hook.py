@@ -1537,6 +1537,39 @@ def hook_retention_fields(*, text: str, role: str, now_ms: int) -> Json:
     }
 
 
+def fast_hook_summary_dirty_records(
+    *,
+    node_path: list[str],
+    scope: Json,
+    event_id_hash: int,
+    updated_at_ms: int,
+) -> list[Json]:
+    records: list[Json] = []
+    for depth in range(1, len(node_path) + 1):
+        prefix = node_path[:depth]
+        prefix_hash = stable_int_hash("/".join(prefix))
+        dirty_hash = stable_int_hash(f"summary_dirty:{prefix_hash}:new_event:event:{event_id_hash}:{updated_at_ms}")
+        records.append(
+            {
+                "record_type": "context_summary_dirty",
+                "dirty_hash": dirty_hash,
+                "node_hash": prefix_hash,
+                "node_path": prefix,
+                "depth": depth,
+                "dirty_reason": "new_event",
+                "source_ref_type": "event",
+                "source_event_hash": event_id_hash,
+                "changed_ref_count": 1,
+                "propagate_depth": len(node_path),
+                "scope": scope,
+                "status": "pending",
+                "created_at_ms": updated_at_ms,
+                "updated_at_ms": updated_at_ms,
+            }
+        )
+    return records
+
+
 def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, role: str, agent_context: Json, hook: Json | None) -> Json:
     adapter = getattr(server, "adapter", None)
     enqueue = getattr(adapter, "_enqueue_direct_write", None)
@@ -1633,6 +1666,12 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "created_at_ms": now,
         "updated_at_ms": now,
     }
+    summary_dirty_records = fast_hook_summary_dirty_records(
+        node_path=node_path,
+        scope=scope,
+        event_id_hash=event_id_hash,
+        updated_at_ms=now,
+    )
     enqueue_raw = getattr(adapter, "enqueue_raw_ingestion_records", None)
     if callable(enqueue_raw):
         enqueue_raw([raw_record])
@@ -1640,7 +1679,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         append_raw = getattr(adapter, "_append_raw_ingestion_records", None)
         if callable(append_raw):
             append_raw([raw_record])
-    enqueue([record, pipeline_task])
+    enqueue([record, pipeline_task, *summary_dirty_records])
     append_session_buffer = getattr(adapter, "append_session_buffer_event", None)
     if callable(append_session_buffer):
         append_session_buffer(
@@ -1709,6 +1748,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "async_processing": True,
         "async_pipeline_status": "pending",
         "async_pipeline_task_hash": pipeline_task["task_hash"],
+        "summary_dirty_count": len(summary_dirty_records),
         "event_id_hash": event_id_hash,
         "node_hash": node_hash,
         "session_buffer": {

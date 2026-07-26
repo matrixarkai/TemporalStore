@@ -661,10 +661,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("accepted", result["status"])
         self.assertEqual("accepted", result["raw_ingestion_status"])
         self.assertEqual(1, len(server.adapter.raw_records))
-        self.assertEqual(2, len(server.adapter.serving_records))
+        self.assertEqual(6, len(server.adapter.serving_records))
         raw = server.adapter.raw_records[0]
         serving = server.adapter.serving_records[0]
         task = server.adapter.serving_records[1]
+        dirty_records = server.adapter.serving_records[2:]
         self.assertEqual("agent_message", raw["record_type"])
         self.assertEqual("real hooked Codex message", raw["messages"][0]["content"])
         self.assertEqual("codex-cpp-session-1", raw["scope"]["session_id"])
@@ -683,6 +684,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("pending", task["status"])
         self.assertEqual(["extraction", "summary", "compression", "embedding"], task["stages"])
         self.assertEqual(task["task_hash"], result["async_pipeline_task_hash"])
+        self.assertEqual(4, result["summary_dirty_count"])
+        self.assertEqual(4, len(dirty_records))
+        self.assertTrue(all(record["record_type"] == "context_summary_dirty" for record in dirty_records))
+        self.assertTrue(all(record["source_event_hash"] == serving["event_id_hash"] for record in dirty_records))
+        self.assertEqual([1, 2, 3, 4], [record["depth"] for record in dirty_records])
         self.assertEqual(1, len(server.adapter.session_buffer_records))
         self.assertTrue(result["session_buffer"]["registered"])
 
