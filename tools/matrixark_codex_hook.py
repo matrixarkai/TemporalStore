@@ -767,6 +767,29 @@ def first_string_at(payload: Json, paths: list[list[str]]) -> str:
     return ""
 
 
+def text_from_content_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = [text_from_content_value(item) for item in value]
+        return "\n".join(part for part in parts if part).strip()
+    if not isinstance(value, dict):
+        return ""
+
+    direct_parts = [
+        text_from_content_value(value.get(key))
+        for key in ["text", "output_text", "message", "summary"]
+    ]
+    direct = "\n".join(part for part in direct_parts if part).strip()
+    if direct:
+        return direct
+    nested_parts = [
+        text_from_content_value(value.get(key))
+        for key in ["content", "output", "response"]
+    ]
+    return "\n".join(part for part in nested_parts if part).strip()
+
+
 def stable_short_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
@@ -906,11 +929,7 @@ def _extract_assistant_text_from_rollout(path: Path) -> str:
             if inner.get("type") == "task_complete" and isinstance(inner.get("last_agent_message"), str) and inner["last_agent_message"].strip():
                 return inner["last_agent_message"].strip()
         if payload.get("type") == "message" and payload.get("role") == "assistant":
-            parts: list[str] = []
-            for item in payload.get("content", []) if isinstance(payload.get("content"), list) else []:
-                if isinstance(item, dict) and isinstance(item.get("text"), str):
-                    parts.append(item["text"])
-            text = "\n".join(part for part in parts if part.strip()).strip()
+            text = text_from_content_value(payload.get("content"))
             if text:
                 return text
     return ""
@@ -1042,6 +1061,10 @@ def payload_text(payload: Json) -> str:
     )
     if direct:
         return direct
+    for key in ["content", "output", "response"]:
+        text = text_from_content_value(payload.get(key))
+        if text:
+            return text
     for key in ["messages", "items", "input"]:
         value = payload.get(key)
         if isinstance(value, list):
@@ -1050,7 +1073,7 @@ def payload_text(payload: Json) -> str:
                 if isinstance(item, str):
                     parts.append(item)
                 elif isinstance(item, dict):
-                    text = first_string_at(item, [["content"], ["text"], ["message"]])
+                    text = text_from_content_value(item.get("content")) or first_string_at(item, [["text"], ["message"]])
                     if text:
                         parts.append(text)
             if parts:

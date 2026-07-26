@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
@@ -47,6 +48,49 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("codex:019efad7-2f87-77e1-b082-c294fcb5e731", identity["session_id"])
         self.assertEqual("019efad7-2f87-77e1-b082-c294fcb5e731", identity["thread_id"])
         self.assertEqual("019f-turn", identity["turn_id"])
+
+    def test_payload_text_flattens_structured_assistant_content_parts(self) -> None:
+        payload = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "Decision: ingest assistant responses."},
+                        {"type": "text", "text": "Next: extract profile entities on idle timeout."},
+                    ],
+                }
+            ]
+        }
+
+        self.assertEqual(
+            "Decision: ingest assistant responses.\nNext: extract profile entities on idle timeout.",
+            hook.payload_text(payload),
+        )
+
+    def test_rollout_assistant_extraction_flattens_structured_content_parts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            rollout = Path(tmp_dir) / "rollout-test.jsonl"
+            rollout.write_text(
+                json.dumps(
+                    {
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {"type": "output_text", "text": "Committed hook batching fix."},
+                                {"type": "text", "text": "Tests passed and origin/main was pushed."},
+                            ],
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                "Committed hook batching fix.\nTests passed and origin/main was pushed.",
+                hook._extract_assistant_text_from_rollout(rollout),
+            )
 
     def test_user_prompt_payload_preserves_explicit_thread_identity(self) -> None:
         payload = decode_payload(
