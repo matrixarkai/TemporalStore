@@ -15,6 +15,7 @@ This report is intentionally conservative: it records what ran locally, what imp
 - Added answer normalization and temporal fallback handling for common date formats and "not enough context" responses.
 - Fixed LoCoMo evidence-window source expansion so `speaker:line` evidence refs match the actual dialogue text candidates instead of silently missing.
 - Unblocked local OpenViking enough to run tiny LoCoMo baselines: built `ragfs_python`, rebuilt the native vector engine without the local tcmalloc crash, started OpenViking on `127.0.0.1:1934`, imported LoCoMo sessions, executed MiniLM and Qwen VikingBot evals, and probed direct OpenViking search/recall APIs.
+- Added direct diagnostic baselines for OpenViking archived LoCoMo messages and LongMemEval source sessions so retrieval, token savings, and reader quality can be measured even while OpenViking memory extraction returns empty memory records.
 - Kept benchmark scoring fail-closed: paper-comparable claims remain disabled until full datasets and external baselines run under the same budget/model config.
 
 ## Local OSS Readers
@@ -61,15 +62,20 @@ OpenViking tiny eval results:
 | OpenViking direct recall after Qwen memory-enabled import | 1 session imported | 0.000 | n/a | n/a | n/a | 24.69 s import | Extraction produced empty memory diff |
 | OpenViking direct archive retrieval + Qwen LoCoMo tiny | 2 | 1.000 | 0.000 | 52.50% | 0.26 ms | 9.31 s | Retrieval works, Qwen 0.5B answer quality fails |
 | OpenViking direct archive retrieval + MiniLM LoCoMo tiny | 2 | 1.000 | 0.500 | 52.50% | 0.49 ms | 227.30 ms | Retrieval works, weak reader misses one temporal answer |
+| OpenViking official LongMemEval import/eval smoke | 1 | 0.000 | 0.000 | n/a | n/a | 30.12 s | Import with correct user key completed, but eval retrieved zero memories/context |
+| OpenViking-style direct source retrieval + Qwen LongMemEval_s tiny | 2 | 1.000 | 1.000 | 96.87% | 47.16 ms | 26.42 s | Fallback source retrieval works; not OpenViking memory recall |
+| OpenViking-style direct source retrieval + MiniLM LongMemEval_s tiny | 2 | 1.000 | 1.000 | 96.87% | 89.42 ms | 5.33 s | Fallback source retrieval works; not OpenViking memory recall |
 
 The MiniLM VikingBot run answered both questions as `2026` for expected answers `7 May 2023` and `2022`. The Qwen VikingBot run reached the local Qwen endpoint, but answered with a fragment of VikingBot tool instructions instead of using tools/retrieval. Direct OpenViking recall is now technically callable, but the memory-enabled Qwen import produced `memories_extracted: {}` and `memory_diff.json` contained no adds, updates, or deletes.
 
-To separate retrieval from the broken tool-loop/extraction path, this pass added a direct OpenViking archive retrieval diagnostic. It reads the committed OpenViking `messages.jsonl` archive, ranks archived messages for each LoCoMo question, and feeds the same retrieved context into the local OSS reader. That path retrieved both gold evidence refs (`D1:3` and `D1:12`) and reduced context from 360 estimated source tokens to about 171 retrieved tokens per query. However, Qwen 0.5B answered `2023` for both questions and MiniLM only answered the first question (`yesterday`) correctly. So the OpenViking setup gap is now clearer: storage/archive retrieval can surface evidence, but OSS reader quality and OpenViking memory extraction are not yet competitive.
+To separate retrieval from the broken tool-loop/extraction path, this pass added a direct OpenViking archive retrieval diagnostic. It reads the committed OpenViking `messages.jsonl` archive, ranks archived messages for each LoCoMo question, and feeds the same retrieved context into the local OSS reader. That path retrieved both gold evidence refs (`D1:3` and `D1:12`) and reduced context from 360 estimated source tokens to about 171 retrieved tokens per query. However, Qwen 0.5B answered `2023` for both questions and MiniLM only answered the first question (`yesterday`) correctly.
+
+For LongMemEval, the official OpenViking importer initially failed every session with `Missing API Key`; setting `OPENVIKING_API_KEY` and creating a key for `lm_user_208c35a6ff43` fixed the import path for the last four sessions, including the answer session. The official eval still retrieved no memory context: `retrieved_uris` and `context_uris` were empty, token usage was zero, and the generated prompt contained `(No relevant memories found)`. A direct-source fallback over the same LongMemEval tiny file retrieved both answer sessions and answered both questions with Qwen 0.5B and MiniLM, but that is explicitly not OpenViking memory recall evidence. So the OpenViking setup gap is now sharper: raw/session text can support the answers, but local OpenViking memory extraction/indexing is not producing searchable memories.
 
 ## Current Gaps
 
 1. **External baseline quality gap:** OpenViking now runs locally, but the tiny VikingBot MiniLM/Qwen baselines answered 0/2 questions correctly.
-2. **OpenViking extraction gap:** With memory extraction enabled and Qwen configured, session commit completed but extracted 0 memories, leaving direct recall empty.
+2. **OpenViking extraction/indexing gap:** With memory extraction enabled and Qwen configured, LoCoMo session commit extracted 0 memories. LongMemEval import completed only after using the correct user API key, but official eval still retrieved zero memories/context.
 3. **Token accounting gap:** OpenViking returned zero LLM token counters in VikingBot runs; the direct archive baseline therefore uses the same external whitespace-token estimate as the MatrixArk diagnostics.
 4. **Reader/tool-loop gap:** Qwen 0.5B works as a direct OpenAI-compatible chat endpoint, but it does not follow VikingBot's tool loop and gives low-quality direct answers on temporal questions. Full comparison should use Qwen 7B/14B or another stronger OSS reader through Ollama or vLLM.
 5. **Backend readiness gap:** Qwen LongMemEval tiny exposed a Rust backend readiness failure in the LongMemEval harness; this needs a real fix, not a Python-only workaround.
@@ -80,7 +86,7 @@ To separate retrieval from the broken tool-loop/extraction path, this pass added
 
 1. Fix OpenViking's OSS memory extraction so a tiny committed LoCoMo session creates recallable event/entity memories; direct archive retrieval is only a diagnostic fallback.
 2. Replace Qwen 0.5B with a stronger local OSS reader, preferably Qwen 7B/14B through Ollama or vLLM, and rerun MatrixArk plus OpenViking direct retrieval under the same prompt and token budget.
-3. Keep direct OpenViking retrieval as a retrieval-only baseline until VikingBot memory extraction is non-empty; compare it against MatrixArk using the same external token estimator.
+3. Keep direct OpenViking/archive/source retrieval as a retrieval-only diagnostic baseline until VikingBot memory extraction is non-empty; compare it against MatrixArk using the same external token estimator and mark it non-paper-comparable.
 4. Fix OpenViking/VikingBot token accounting for local OSS endpoints, or collect prompt/completion token estimates externally with the same tokenizer used for MatrixArk.
 5. Fix the Rust LongMemEval harness readiness issue for tiny Qwen runs.
 6. Run OpenViking and MatrixArk on the same LoCoMo and LongMemEval subsets with the same reader, same token budget, and same threshold profile.
@@ -100,3 +106,7 @@ To separate retrieval from the broken tool-loop/extraction path, this pass added
 - `/tmp/openviking_matrixark_oss/ov_qwen_memory_fresh.conf`
 - `/tmp/openviking_direct_retrieval_locomo_tiny_20260726.json`
 - `/tmp/openviking_direct_retrieval_locomo_tiny_minilm_20260726.json`
+- `/tmp/openviking_matrixark_oss/results_longmem/import_success_last4.csv`
+- `/tmp/openviking_matrixark_oss/results_longmem/longmem_eval_last4_userkey_config.csv`
+- `/tmp/openviking_direct_source_longmem_tiny_qwen_20260726.json`
+- `/tmp/openviking_direct_source_longmem_tiny_minilm_20260726.json`
