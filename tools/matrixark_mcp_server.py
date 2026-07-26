@@ -37,6 +37,7 @@ try:
         Json,
         MatrixArkError,
         _mcp_debug_log,
+        canonical_entity_name,
         compact_context_pack_for_serving,
         infer_query_type,
         is_retryable_temporalstore_error,
@@ -45,6 +46,7 @@ try:
         now_ms,
         optional_object,
         require_string,
+        scope_key_from_hashes,
         stable_hash,
     )
     from tools.matrixark_access import MatrixArkAccessManager
@@ -76,6 +78,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         Json,
         MatrixArkError,
         _mcp_debug_log,
+        canonical_entity_name,
         compact_context_pack_for_serving,
         infer_query_type,
         is_retryable_temporalstore_error,
@@ -84,6 +87,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         now_ms,
         optional_object,
         require_string,
+        scope_key_from_hashes,
         stable_hash,
     )
     from matrixark_access import MatrixArkAccessManager
@@ -113,9 +117,11 @@ __all__ = [
     "MatrixArkTemporalStoreDirectAdapter",
     "MatrixArkTemporalStoreRustAdapter",
     "backend_ready_required",
+    "canonical_entity_name",
     "default_mcp_backend",
     "main",
     "production_profile_enabled",
+    "scope_key_from_hashes",
     "validate_mcp_backend_policy",
 ]
 
