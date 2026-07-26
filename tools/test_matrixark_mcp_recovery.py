@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,7 +27,7 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                 "event_id_hash": 101,
                 "node_hash": 10,
                 "node_path": ["tenant:t", "user:u", "session:codex:session-a", "conversation:codex_hook"],
-                "scope": {"tenant_id": "t", "user_id": "u", "session_id": "codex:session-a"},
+                "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "codex:session-a"},
                 "text": "user: Use Ubuntu shared repos.",
                 "updated_at_ms": 100,
             },
@@ -34,6 +36,8 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                 "entity_hash": 201,
                 "node_hash": 10,
                 "node_path": ["tenant:t", "user:u", "session:codex:session-a"],
+                "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "codex:session-a"},
+                "access_scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "codex:session-a"},
                 "entity_type": "preference",
                 "entity_name": "repo location",
                 "state": "Use Ubuntu shared repos.",
@@ -46,6 +50,8 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                 "entity_hash": 301,
                 "node_hash": 30,
                 "node_path": ["tenant:t", "user:u", "profile:long_term_memory"],
+                "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u"},
+                "access_scope": {"account_id": "a", "tenant_id": "t", "user_id": "u"},
                 "entity_type": "preference",
                 "entity_name": "repo location",
                 "state": "Use /root/src/github-services in Ubuntu.",
@@ -60,7 +66,10 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
             {"record_type": "context_summary", "summary_type": "batch_l0", "summary_hash": 501, "summary_text": "Repo location preference."},
         ]
 
-        report = matrixark_local_recovery_report(records)
+        report = matrixark_local_recovery_report(
+            records,
+            scope={"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "codex:session-c"},
+        )
 
         self.assertEqual("ok", report["status"])
         self.assertTrue(report["hot_memory_persisted"])
@@ -71,6 +80,9 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertEqual(["codex:session-a", "codex:session-b"], report["memory_hierarchy"]["source_session_ids"])
         self.assertEqual(1, report["derived_views"]["index_posting_count"])
         self.assertEqual(1, report["derived_views"]["dirty_summary_count"])
+        self.assertEqual("ok", report["retrieval_smoke"]["status"])
+        self.assertEqual(1, report["retrieval_smoke"]["profile_entity_count"])
+        self.assertTrue(report["retrieval_smoke"]["profile_entity_bridge_rebuildable"])
         self.assertEqual([], report["blockers"])
 
     def test_recovery_report_detects_corrupt_jsonl_tail(self) -> None:
@@ -90,6 +102,39 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
             self.assertTrue(errors[0]["corrupt_tail"])
             self.assertEqual("repair_required", report["status"])
             self.assertIn("recovery:corrupt_tail_detected", report["blockers"])
+
+    def test_recovery_cli_accepts_scope_json_for_retrieval_smoke(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            event_log = Path(tmp_dir) / "matrixark.jsonl"
+            event_log.write_text(
+                json.dumps(
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": 1,
+                        "scope": {"account_id": "a"},
+                        "text": "user: recover this event",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            output = subprocess.check_output(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve().parent / "matrixark_mcp_recovery.py"),
+                    "--event-log",
+                    str(event_log),
+                    "--scope-json",
+                    json.dumps({"account_id": "a"}),
+                ]
+            )
+            report = json.loads(output)
+
+            self.assertEqual("ok", report["status"])
+            self.assertTrue(report["retrieval_smoke"]["enabled"])
+            self.assertEqual("ok", report["retrieval_smoke"]["status"])
+            self.assertEqual(1, report["retrieval_smoke"]["context_event_count"])
 
     def test_context_index_latest_value_key_preserves_data_model(self) -> None:
         compacted = compact_latest_value_records(
