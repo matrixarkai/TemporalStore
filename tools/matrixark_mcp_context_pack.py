@@ -429,6 +429,7 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
     if bool(ref.get("final_session_boundary") or metadata.get("final_session_boundary")):
         item["final_session_boundary"] = True
     for field in [
+        "source_session_ids",
         "source_roles",
         "source_hook_types",
         "source_codex_events",
@@ -439,6 +440,9 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
         value = ref.get(field, metadata.get(field))
         if isinstance(value, list) and value:
             item[field] = value[:8]
+    value = ref.get("source_entity_hashes", metadata.get("source_entity_hashes"))
+    if isinstance(value, list) and value:
+        item["source_entity_count"] = len(value)
     return item
 
 
