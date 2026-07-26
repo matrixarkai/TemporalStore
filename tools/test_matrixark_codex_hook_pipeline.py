@@ -850,7 +850,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
 
     def test_profile_entity_updates_preserve_cross_session_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-entity-update.jsonl")
+            event_log = Path(tmp_dir) / "matrixark-profile-entity-update.jsonl"
+            adapter = MatrixArkLocalAdapter(event_log)
             base_scope = {
                 "account_id": "acct_profile_update",
                 "tenant_id": "tenant_profile_update",
@@ -926,6 +927,33 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     for ref in pack["selected_refs"]
                 )
             )
+            reopened = MatrixArkLocalAdapter(event_log)
+            recovered_pack = reopened.retrieve(
+                {
+                    "scope": {**base_scope, "session_id": "session_profile_update_3"},
+                    "session_scope": "prefer",
+                    "query": "aaa111 bbb222 assistant",
+                    "max_context_tokens": 500,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 10},
+                }
+            )
+            recovered_profile_refs = [
+                ref
+                for ref in recovered_pack["selected_refs"]
+                if ref.get("ref_type") == "entity"
+                and ref.get("memory_scope") == "user_profile"
+                and ref.get("session_continuity") == "cross_session"
+                and ref.get("entity_type") == "assistant_decision"
+            ]
+            self.assertTrue(recovered_profile_refs, recovered_pack["selected_refs"])
+            recovered_decision = recovered_profile_refs[0]
+            self.assertIn("session_profile_update_1", recovered_decision["source_session_ids"])
+            self.assertIn("session_profile_update_2", recovered_decision["source_session_ids"])
+            self.assertIn("bbb222", recovered_decision["text"])
+            recovered_budget = recovered_pack["memory_layer_budget"]
+            self.assertGreaterEqual(recovered_budget["by_memory_scope"]["user_profile"]["refs"], 1)
+            self.assertGreaterEqual(recovered_budget["by_session_continuity"]["cross_session"]["refs"], 1)
 
     def test_async_resource_import_uses_bounded_worker_queue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, mock.patch.dict(
