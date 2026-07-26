@@ -314,6 +314,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("dirty_marked", threshold_layers["summary_refresh_status"])
             self.assertEqual(["assistant", "user"], threshold_layers["source_roles"])
             self.assertEqual(["assistant", "user"], second["auto_batch_extract_result"]["source_roles"])
+            threshold_promotions = second["auto_batch_extract_result"]["profile_promotion_summary"]
+            self.assertGreaterEqual(len(threshold_promotions), 1)
+            self.assertTrue(all(item.get("source_session_ids") == ["session_async"] for item in threshold_promotions))
+            self.assertTrue(all(item.get("source_entity_count", 0) >= 1 for item in threshold_promotions))
             self.assertTrue(second["session_buffer"]["threshold_ready"])
             self.assertFalse(second["session_buffer"]["idle_ready"])
             threshold_evidence = second["auto_batch_extract_result"]["trigger_evidence"]
@@ -363,6 +367,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(["tool"], idle["source_roles"])
             self.assertEqual(["hook_boundary"], idle["source_hook_types"])
             self.assertEqual(["PostToolUse"], idle["source_codex_events"])
+            idle_promotions = idle["profile_promotion_summary"]
+            self.assertGreaterEqual(len(idle_promotions), 1)
+            self.assertTrue(all(item.get("source_session_ids") == ["session_async"] for item in idle_promotions))
+            self.assertTrue(any("tool" in item.get("source_roles", []) for item in idle_promotions))
             self.assertEqual(
                 [int(event_id) for event_id in second["auto_batch_extract_result"]["source_event_ids"]],
                 [int(event_id) for event_id in idle["extraction_context_event_ids"]],
@@ -379,6 +387,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(commit.get("extraction_phase") == "provisional" for commit in commits))
             self.assertTrue(all(commit.get("final_session_boundary") is False for commit in commits))
             self.assertTrue(all(isinstance(commit.get("trigger_evidence"), dict) for commit in commits))
+            self.assertTrue(all(commit.get("profile_promotion_summary") for commit in commits))
             committed_ids = {
                 int(event_id)
                 for commit in commits
@@ -713,6 +722,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
 
             self.assertGreaterEqual(result.get("entities_written", 0), 1)
             self.assertEqual(result.get("entities_written"), result.get("profile_entities_written"))
+            promotion_summary = result["profile_promotion_summary"]
+            self.assertEqual(result.get("profile_entities_written"), len(promotion_summary))
+            self.assertTrue(all(item.get("source_session_ids") == ["session_codex_1"] for item in promotion_summary))
+            self.assertTrue(all(item.get("profile_entity_hash") for item in promotion_summary))
+            self.assertTrue(all(item.get("session_entity_hash") for item in promotion_summary))
             records = adapter.read_all()
             session_entities = [
                 record
