@@ -243,6 +243,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "cross_session_refs": 1,
                         "entity_bridge_refs": 1,
                         "profile_memory_refs": 1,
+                        "memory_layer_budget": {
+                            "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 9}},
+                            "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 9}},
+                            "by_extraction_phase": {"final": {"refs": 1, "tokens": 9}},
+                            "final_session_boundary_ref_count": 1,
+                        },
                     },
                     "rendered_context_chars": 37,
                 },
@@ -264,6 +270,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual({"event": 1, "entity": 1}, record["output_summary"]["retrieval_layers"]["selected_ref_counts"])
         self.assertEqual(1, record["output_summary"]["retrieval_layers"]["cross_session_refs"])
         self.assertEqual(1, record["output_summary"]["retrieval_layers"]["profile_memory_refs"])
+        self.assertEqual(
+            1,
+            record["output_summary"]["retrieval_layers"]["memory_layer_budget"]["final_session_boundary_ref_count"],
+        )
         self.assertEqual(37, record["output_summary"]["rendered_context_chars"])
         self.assertTrue(record["output_summary"]["strict_additional_context_emitted"])
 
@@ -277,6 +287,23 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     "remote_context_budget_tokens": 90,
                     "context": "user: rendered profile decision",
                     "selected_ref_counts": {"event": 2, "entity": 1},
+                    "retrieval_metrics": {
+                        "memory_layer_budget": {
+                            "by_memory_scope": {
+                                "session": {"refs": 1, "tokens": 4},
+                                "user_profile": {"refs": 1, "tokens": 3},
+                            },
+                            "by_session_continuity": {
+                                "same_session": {"refs": 1, "tokens": 4},
+                                "cross_session": {"refs": 1, "tokens": 3},
+                            },
+                            "by_extraction_phase": {
+                                "provisional": {"refs": 1, "tokens": 4},
+                                "final": {"refs": 1, "tokens": 3},
+                            },
+                            "final_session_boundary_ref_count": 1,
+                        }
+                    },
                     "selected_refs": [
                         {
                             "ref_type": "event",
@@ -322,6 +349,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(1, item["result"]["retrieval_layers"]["same_session_refs"])
         self.assertEqual(1, item["result"]["retrieval_layers"]["cross_session_refs"])
         self.assertEqual(1, item["result"]["retrieval_layers"]["profile_memory_refs"])
+        self.assertEqual(
+            1,
+            item["result"]["retrieval_layers"]["memory_layer_budget"]["by_memory_scope"]["user_profile"]["refs"],
+        )
         self.assertEqual(len("user: rendered profile decision"), item["result"]["rendered_context_chars"])
 
     def test_user_prompt_emit_codex_additional_context_from_selected_refs(self) -> None:
@@ -352,6 +383,23 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     }
                 },
                 "local_context_policy": {"local_context_count": 1},
+                "retrieval_metrics": {
+                    "memory_layer_budget": {
+                        "by_memory_scope": {
+                            "session": {"refs": 1, "tokens": 12},
+                            "user_profile": {"refs": 2, "tokens": 30},
+                        },
+                        "by_session_continuity": {
+                            "same_session": {"refs": 1, "tokens": 12},
+                            "cross_session": {"refs": 2, "tokens": 30},
+                        },
+                        "by_extraction_phase": {
+                            "provisional": {"refs": 1, "tokens": 12},
+                            "final": {"refs": 2, "tokens": 30},
+                        },
+                        "final_session_boundary_ref_count": 2,
+                    }
+                },
                 "selected_refs": [
                     {
                         "ref_type": "context_event",
@@ -402,6 +450,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("cross_session_refs=2", additional)
         self.assertIn("entity_bridge_refs=1", additional)
         self.assertIn("local_context_refs=1", additional)
+        self.assertIn("memory_layer_budget:", additional)
+        self.assertIn("scope[session=1/12t, user_profile=2/30t]", additional)
+        self.assertIn("phase[final=2/30t, provisional=1/12t]", additional)
+        self.assertIn("final_boundary_refs=2", additional)
 
     def test_additional_context_layer_summary_falls_back_to_serving_refs(self) -> None:
         args = Namespace(session_id="codex-session-1")

@@ -190,6 +190,13 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
         return {}
     all_refs = _selected_refs_from_retrieve(pack)
     refs = refs if refs is not None else all_refs
+    retrieval_metrics = pack.get("retrieval_metrics") if isinstance(pack.get("retrieval_metrics"), dict) else {}
+    recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
+    memory_layer_budget = retrieval_metrics.get("memory_layer_budget")
+    if not isinstance(memory_layer_budget, dict):
+        memory_layer_budget = recall_policy.get("memory_layer_budget")
+    if not isinstance(memory_layer_budget, dict):
+        memory_layer_budget = {}
     raw_counts = pack.get("selected_ref_counts")
     selected_ref_counts: Json = {}
     use_pack_counts = refs is all_refs or len(refs) == len(all_refs)
@@ -205,7 +212,6 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
         for ref in refs:
             ref_class = str(ref.get("context_class") or ref.get("ref_type") or ref.get("type") or "ref")
             selected_ref_counts[ref_class] = int(selected_ref_counts.get(ref_class, 0)) + 1
-    recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
     continuity = recall_policy.get("session_continuity") if isinstance(recall_policy.get("session_continuity"), dict) else {}
     local_policy = pack.get("local_context_policy") if isinstance(pack.get("local_context_policy"), dict) else {}
     layer_summary: Json = {"selected_ref_counts": selected_ref_counts}
@@ -233,6 +239,8 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
         layer_summary["local_context_refs"] = int(local_policy.get("local_context_count") or 0)
     except (TypeError, ValueError):
         layer_summary["local_context_refs"] = 0
+    if memory_layer_budget:
+        layer_summary["memory_layer_budget"] = memory_layer_budget
     return layer_summary
 
 
@@ -264,13 +272,45 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
             continue
         if value > 0:
             continuity_bits.append(f"{key}={value}")
-    if not count_bits and not continuity_bits:
+    memory_layer_budget = layer_summary.get("memory_layer_budget") if isinstance(layer_summary.get("memory_layer_budget"), dict) else {}
+    budget_bits = []
+    for label, bucket_name in [
+        ("scope", "by_memory_scope"),
+        ("continuity", "by_session_continuity"),
+        ("phase", "by_extraction_phase"),
+    ]:
+        buckets = memory_layer_budget.get(bucket_name)
+        if not isinstance(buckets, dict):
+            continue
+        bucket_bits = []
+        for bucket_key in sorted(buckets):
+            bucket = buckets.get(bucket_key)
+            if not isinstance(bucket, dict):
+                continue
+            try:
+                ref_count = int(bucket.get("refs") or 0)
+                token_count_estimate = int(bucket.get("tokens") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ref_count > 0:
+                bucket_bits.append(f"{bucket_key}={ref_count}/{token_count_estimate}t")
+        if bucket_bits:
+            budget_bits.append(f"{label}[" + ", ".join(bucket_bits) + "]")
+    try:
+        final_boundary_refs = int(memory_layer_budget.get("final_session_boundary_ref_count") or 0)
+    except (TypeError, ValueError):
+        final_boundary_refs = 0
+    if final_boundary_refs > 0:
+        budget_bits.append(f"final_boundary_refs={final_boundary_refs}")
+    if not count_bits and not continuity_bits and not budget_bits:
         return ""
     details = []
     if count_bits:
         details.append(", ".join(count_bits))
     if continuity_bits:
         details.append(", ".join(continuity_bits))
+    if budget_bits:
+        details.append("memory_layer_budget: " + "; ".join(budget_bits))
     return "Layer summary: " + "; ".join(details) + "."
 
 
