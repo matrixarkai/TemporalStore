@@ -1,5 +1,12 @@
 {
   "archive_required_fields_ready": false,
+  "benchmark_quality_ready": false,
+  "benchmark_readiness_blocker": "diagnostic_only_missing_rust_temporalstore_pipeline_evidence",
+  "benchmark_threshold_passed": false,
+  "benchmark_threshold_violation_count": 1,
+  "benchmark_threshold_violations": [
+    "diagnostic_only_missing_rust_temporalstore_pipeline_evidence"
+  ],
   "category_breakdown": {
     "knowledge_update": {
       "answer_term_coverage": 0.7596153846153846,
@@ -68,7 +75,7 @@
       "zero_hit_queries": 0
     }
   },
-  "claim_level": "live_tiny_oss_reader_diagnostic",
+  "claim_level": "diagnostic_only",
   "created_at_unix": 1783157546,
   "dataset": {
     "bytes": 15388478,
@@ -82,6 +89,7 @@
     "sha256": "821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c",
     "source_count": 10960
   },
+  "diagnostic_only": true,
   "metrics": {
     "answer_term_coverage": 0.6386449184441656,
     "avg_retrieved_blocks_per_query": 12.846,
@@ -115,12 +123,16 @@
     "user_template": "Question: {question}\n\nContext:\n{context}\n\nAnswer:"
   },
   "quality_gate": {
+    "benchmark_readiness_blocker": "diagnostic_only_missing_rust_temporalstore_pipeline_evidence",
+    "diagnostic_only": true,
     "gold_evidence_window_used": false,
     "paper_comparable_claim_ready": false,
-    "passed": true,
-    "quality_ready": true,
-    "violation_count": 0,
-    "violations": []
+    "passed": false,
+    "quality_ready": false,
+    "violation_count": 1,
+    "violations": [
+      "diagnostic_only_missing_rust_temporalstore_pipeline_evidence"
+    ]
   },
   "report_contract_format": "matrixark_vikingmem_context_benchmark_report_v1",
   "report_path": "docs\\benchmark_archives\\oss_reader_validation_20260704_tiny_longmemeval_benchmark.json",
