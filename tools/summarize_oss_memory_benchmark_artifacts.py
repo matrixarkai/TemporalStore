@@ -112,6 +112,9 @@ def summarize_report(path: Path, label: str, paper_min_cases: dict[str, int] | N
         or quality_gate.get("benchmark_readiness_blocker")
         or ";".join(data.get("blockers") or []),
     }
+    threshold_violations = extract_threshold_violations(data, metrics_source, quality_gate)
+    if threshold_violations:
+        row["blocker"] = ";".join(filter(None, [row["blocker"], *threshold_violations]))
     if source_claim_ready and not scale_ready:
         row["blocker"] = ";".join(filter(None, [row["blocker"], f"case_count_below_paper_min_{min_cases}"]))
     if shared_contract_required and not shared_contract_passed:
@@ -131,6 +134,18 @@ def summarize_report(path: Path, label: str, paper_min_cases: dict[str, int] | N
     row["benchmark_family"] = benchmark_family
     row["ready"] = bool(data.get("ready") or data.get("benchmark_quality_ready") or quality_gate.get("quality_ready"))
     return row
+
+
+def extract_threshold_violations(
+    data: dict[str, Any],
+    metrics_source: dict[str, Any],
+    quality_gate: dict[str, Any],
+) -> list[str]:
+    for source in (data, metrics_source, quality_gate):
+        violations = source.get("benchmark_threshold_violations") if isinstance(source, dict) else None
+        if isinstance(violations, list):
+            return [str(item) for item in violations if str(item)]
+    return []
 
 
 def extract_model_contract(
