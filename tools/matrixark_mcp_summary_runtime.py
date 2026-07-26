@@ -231,6 +231,13 @@ def build_node_summary_refresh_records(
         for record in entity_states
         if record.get("entity_hash") is not None
     ]
+    source_entity_types = sorted(
+        {
+            str(record.get("entity_type"))
+            for record in entity_states
+            if str(record.get("entity_type") or "").strip()
+        }
+    )
     source_operator_hashes = [
         int(record.get("compression_id_hash") or record.get("ref_hash"))
         for record in operator_states
@@ -282,6 +289,7 @@ def build_node_summary_refresh_records(
                 "source_event_ids": source_event_ids,
                 "source_summary_hashes": source_summary_hashes,
                 "source_entity_hashes": source_entity_hashes,
+                "source_entity_types": source_entity_types,
                 "source_operator_hashes": source_operator_hashes,
                 "summary_generation_policy": summary_policy,
                 "dirty_hash": dirty_hash,
@@ -469,6 +477,7 @@ def refresh_dirty_node_summaries(
                 "source_event_count": len(source_event_ids),
                 "source_summary_count": len(source_summary_hashes),
                 "source_entity_count": len(source_entity_hashes),
+                "source_entity_types": source_entity_types,
                 "source_operator_count": len(source_operator_hashes),
                 "generated_summary_types": generated_summary_types,
                 "summary_generation_policy": l1_policy,

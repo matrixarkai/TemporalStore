@@ -1514,6 +1514,13 @@ class MatrixArkLocalAdapter:
                 for record in entity_states
                 if record.get("entity_hash") is not None
             ]
+            source_entity_types = sorted(
+                {
+                    str(record.get("entity_type"))
+                    for record in entity_states
+                    if str(record.get("entity_type") or "").strip()
+                }
+            )
             source_operator_hashes = [
                 int(record.get("compression_id_hash") or record.get("ref_hash"))
                 for record in operator_states
@@ -1562,6 +1569,7 @@ class MatrixArkLocalAdapter:
                         "source_event_ids": source_event_ids,
                         "source_summary_hashes": source_summary_hashes,
                         "source_entity_hashes": source_entity_hashes,
+                        "source_entity_types": source_entity_types,
                         "source_operator_hashes": source_operator_hashes,
                         "summary_generation_policy": summary_policy,
                         "dirty_hash": dirty.get("dirty_hash"),
@@ -1649,6 +1657,7 @@ class MatrixArkLocalAdapter:
                     "source_event_count": len(source_event_ids),
                     "source_summary_count": len(source_summary_hashes),
                     "source_entity_count": len(source_entity_hashes),
+                    "source_entity_types": source_entity_types,
                     "source_operator_count": len(source_operator_hashes),
                     "generated_summary_types": [spec[0] for spec in summary_specs],
                     "summary_generation_policy": l1_policy,
@@ -4902,7 +4911,7 @@ class MatrixArkLocalAdapter:
                 keyword_score = len(query_terms.intersection(tokens(text)))
                 embedding_score = cosine(query_embedding, embedding_for_text(" ".join(record.get("node_path", []) + [summary_type, text])))
                 node_score = node_scores.get(record.get("node_hash"), {}).get("score", 0.0)
-                origin_score = min(1.0, 0.06 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
+                origin_score = min(1.0, 0.18 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
                 if origin_score <= 0:
                     continue
                 primary_matches.append(
