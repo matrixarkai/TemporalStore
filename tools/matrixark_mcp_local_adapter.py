@@ -820,6 +820,9 @@ class MatrixArkLocalAdapter:
                 "idle_elapsed_ms": idle_elapsed_ms,
                 "reason": "session buffer below extraction threshold and idle timeout not reached",
             }
+        trigger_policy = "force" if force else "idle_timeout" if idle_ready else "threshold"
+        extraction_phase = "final" if force else "provisional"
+        final_session_boundary = extraction_phase == "final"
         if max_messages is not None:
             commit_limit = max_messages
         elif force or idle_ready:
@@ -856,6 +859,8 @@ class MatrixArkLocalAdapter:
                 "force": True,
                 "derive_from_existing_events": True,
                 "source_event_ids": source_event_ids,
+                "extraction_phase": extraction_phase,
+                "final_session_boundary": final_session_boundary,
                 "understanding_provider": args.get("understanding_provider"),
                 "extraction_provider": args.get("extraction_provider"),
                 "segment_provider": args.get("segment_provider"),
@@ -880,7 +885,9 @@ class MatrixArkLocalAdapter:
                 "message_count": len(messages),
                 "threshold_messages": threshold,
                 "commit_reason": commit_reason,
-                "trigger_policy": "force" if force else "idle_timeout" if idle_ready else "threshold",
+                "trigger_policy": trigger_policy,
+                "extraction_phase": extraction_phase,
+                "final_session_boundary": final_session_boundary,
                 "pending_event_count_before_commit": pending_event_count,
                 "committed_event_count": len(source_event_ids),
                 "idle_timeout_ms": idle_timeout_ms,
@@ -901,7 +908,9 @@ class MatrixArkLocalAdapter:
             "committed_event_count": len(source_event_ids),
             "source_event_ids": source_event_ids,
             "commit_reason": commit_reason,
-            "trigger_policy": "force" if force else "idle_timeout" if idle_ready else "threshold",
+            "trigger_policy": trigger_policy,
+            "extraction_phase": extraction_phase,
+            "final_session_boundary": final_session_boundary,
             "idle_timeout_ms": idle_timeout_ms,
             "idle_elapsed_ms": idle_elapsed_ms,
             "raw_events_duplicated": False,
@@ -3465,6 +3474,10 @@ class MatrixArkLocalAdapter:
         force = bool(args.get("force", False))
         derive_from_existing_events = bool(args.get("derive_from_existing_events", False))
         source_event_ids = [int(ref) for ref in args.get("source_event_ids", [])] if isinstance(args.get("source_event_ids", []), list) else []
+        extraction_phase = str(args.get("extraction_phase") or "").strip().lower()
+        if extraction_phase not in {"provisional", "final", "standalone"}:
+            extraction_phase = "final" if force else "provisional"
+        final_session_boundary = bool(args.get("final_session_boundary", extraction_phase == "final"))
         if not isinstance(threshold, int) or threshold <= 0:
             raise MatrixArkError("threshold_messages must be a positive integer")
         if len(envelope["messages"]) < threshold and not force:
@@ -3551,6 +3564,8 @@ class MatrixArkLocalAdapter:
                         "agent_hook": hook,
                         "storage_options": envelope.get("storage_options", {}),
                         "updated_at_ms": envelope["ingestion_time_ms"],
+                        "extraction_phase": extraction_phase,
+                        "final_session_boundary": final_session_boundary,
                     }
                 )
                 records_to_append.append(
@@ -3619,6 +3634,8 @@ class MatrixArkLocalAdapter:
                     "update_mode": updated_entity.get("update_mode", ""),
                     "memory_scope": "session",
                     "session_continuity": "same_session",
+                    "extraction_phase": extraction_phase,
+                    "final_session_boundary": final_session_boundary,
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
@@ -3694,6 +3711,8 @@ class MatrixArkLocalAdapter:
                         "memory_scope": "user_profile",
                         "session_continuity": "cross_session",
                         "promoted_from_memory_scope": "session",
+                        "extraction_phase": extraction_phase,
+                        "final_session_boundary": final_session_boundary,
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
@@ -3764,6 +3783,8 @@ class MatrixArkLocalAdapter:
                     "summary_text": segment["summary_text"],
                     "text": segment["text"],
                     "non_contiguous": segment["non_contiguous"],
+                    "extraction_phase": extraction_phase,
+                    "final_session_boundary": final_session_boundary,
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
@@ -3799,6 +3820,8 @@ class MatrixArkLocalAdapter:
                 "source_segment_hashes": segment_hashes,
                 "source_event_ids": event_hashes,
                 "scope": envelope["scope"],
+                "extraction_phase": extraction_phase,
+                "final_session_boundary": final_session_boundary,
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
         )
@@ -3854,6 +3877,8 @@ class MatrixArkLocalAdapter:
                 "mode": extraction["mode"],
                 "derive_from_existing_events": derive_from_existing_events,
                 "source_event_ids": event_hashes,
+                "extraction_phase": extraction_phase,
+                "final_session_boundary": final_session_boundary,
                 "agent_hook": hook,
                 "created_at_ms": now_ms(),
             }
@@ -3903,6 +3928,8 @@ class MatrixArkLocalAdapter:
             **secondary_index_budget_summary(secondary_index_budget),
             "one_pass": True,
             "threshold_messages": threshold,
+            "extraction_phase": extraction_phase,
+            "final_session_boundary": final_session_boundary,
         }
 
     def write_time_compression(
