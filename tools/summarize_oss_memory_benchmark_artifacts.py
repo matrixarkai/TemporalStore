@@ -25,6 +25,11 @@ SUMMARY_FIELDS = (
     "avg_retrieved_tokens",
 )
 
+PAPER_COMPARABLE_MIN_CASES = {
+    "locomo": 1542,
+    "longmemeval_s": 500,
+}
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -57,22 +62,37 @@ def main() -> int:
 
 def summarize_report(path: Path, label: str) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
+    metrics_source = data.get("harness") if isinstance(data.get("harness"), dict) else data
     quality_gate = data.get("quality_gate") if isinstance(data.get("quality_gate"), dict) else {}
+    if data is not metrics_source and not quality_gate:
+        quality_gate = metrics_source.get("quality_gate") if isinstance(metrics_source.get("quality_gate"), dict) else {}
+    dataset = data.get("dataset") or data.get("benchmark_dataset") or infer_dataset(path)
+    dataset = dataset or metrics_source.get("dataset") or metrics_source.get("external_benchmark_dataset")
+    case_count = number(metrics_source, "case_count", "benchmark_per_query_count", "external_benchmark_case_count")
+    source_claim_ready = bool(
+        data.get("paper_comparable_claim_ready")
+        or metrics_source.get("paper_comparable_claim_ready")
+        or metrics_source.get("external_benchmark_ready")
+        or quality_gate.get("paper_comparable_claim_ready")
+    )
+    min_cases = PAPER_COMPARABLE_MIN_CASES.get(str(dataset), 1)
+    scale_ready = isinstance(case_count, (int, float)) and case_count >= min_cases
     row = {
         "label": label,
         "path": str(path),
-        "dataset": data.get("dataset") or data.get("benchmark_dataset") or infer_dataset(path),
+        "dataset": dataset,
         "reader_model": data.get("reader_model") or data.get("model") or "",
         "reader_provider": data.get("reader_provider_name") or data.get("reader_base_url") or "",
-        "paper_comparable_ready": bool(
-            data.get("paper_comparable_claim_ready")
-            or quality_gate.get("paper_comparable_claim_ready")
-        ),
+        "paper_comparable_ready": bool(source_claim_ready and scale_ready),
         "blocker": data.get("benchmark_readiness_blocker")
         or quality_gate.get("benchmark_readiness_blocker")
         or ";".join(data.get("blockers") or []),
     }
+    if source_claim_ready and not scale_ready:
+        row["blocker"] = ";".join(filter(None, [row["blocker"], f"case_count_below_paper_min_{min_cases}"]))
     raw_claim = data.get("claim_status") or data.get("claim_level") or ""
+    if not raw_claim and data.get("rust_temporalstore_full_replay_ready") and not number(metrics_source, "benchmark_reader_hit_rate", "reader_hit_rate"):
+        raw_claim = "retrieval_ready_reader_not_run"
     row["diagnostic_only"] = bool(
         data.get("diagnostic_only")
         or data.get("python_only_diagnostic")
@@ -80,18 +100,18 @@ def summarize_report(path: Path, label: str) -> dict[str, Any]:
         or not row["paper_comparable_ready"]
     )
     row["claim_status"] = raw_claim or ("paper_comparable" if row["paper_comparable_ready"] else "not_paper_comparable")
-    row.update({field: value for field, value in extract_metrics(data).items() if field in SUMMARY_FIELDS})
+    row.update({field: value for field, value in extract_metrics(metrics_source).items() if field in SUMMARY_FIELDS})
     row["ready"] = bool(data.get("ready") or data.get("benchmark_quality_ready") or quality_gate.get("quality_ready"))
     return row
 
 
 def extract_metrics(data: dict[str, Any]) -> dict[str, Any]:
     return {
-        "case_count": number(data, "case_count", "benchmark_per_query_count"),
-        "retrieval_hit_at_k": number(data, "benchmark_hit_at_k", "hit_rate", "benchmark_recall_at_k"),
+        "case_count": number(data, "case_count", "benchmark_per_query_count", "external_benchmark_case_count"),
+        "retrieval_hit_at_k": number(data, "benchmark_hit_at_k", "hit_rate", "benchmark_recall_at_k", "external_benchmark_hit_at_k"),
         "reader_hit_rate": number(data, "benchmark_reader_hit_rate", "reader_hit_rate", "deterministic_reader_hit_rate"),
         "token_reduction_percent": number(data, "benchmark_token_reduction_percent"),
-        "retrieval_p95_ms": number(data, "benchmark_retrieval_p95_ms"),
+        "retrieval_p95_ms": number(data, "benchmark_retrieval_p95_ms", "retrieval_p95_ms"),
         "reader_p95_ms": number(data, "benchmark_reader_p95_ms"),
         "avg_source_tokens": number(data, "benchmark_avg_source_tokens_per_query"),
         "avg_retrieved_tokens": number(data, "benchmark_avg_retrieved_tokens_per_query"),
