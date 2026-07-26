@@ -12,6 +12,13 @@ OPENVIKING_ARCHIVE="${OPENVIKING_LOCOMO_ARCHIVE:-/tmp/openviking_matrixark_oss/d
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 ARCHIVE_DIR="${REPORT_DIR}/oss_memory_ready_${TIMESTAMP}"
 
+if [[ ! -f "${LOC_INPUT}" && -f /root/matrixark_benchmarks/data/locomo10.json ]]; then
+  LOC_INPUT=/root/matrixark_benchmarks/data/locomo10.json
+fi
+if [[ ! -f "${LONGMEM_INPUT}" && -f /root/matrixark_benchmarks/data/longmemeval_s_cleaned_official_hf.json ]]; then
+  LONGMEM_INPUT=/root/matrixark_benchmarks/data/longmemeval_s_cleaned_official_hf.json
+fi
+
 mkdir -p "${ARCHIVE_DIR}"
 
 write_manifest() {
