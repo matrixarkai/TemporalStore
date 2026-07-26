@@ -348,6 +348,9 @@ def session_commit_memory_layers_written(commit: Json | None) -> Json:
         "summary_refresh_status": summary_refresh.get("status"),
         "extraction_phase": commit.get("extraction_phase"),
         "final_session_boundary": commit.get("final_session_boundary"),
+        "source_roles": commit.get("source_roles"),
+        "source_hook_types": commit.get("source_hook_types"),
+        "source_codex_events": commit.get("source_codex_events"),
     }
     return {
         key: value

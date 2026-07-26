@@ -62,7 +62,15 @@ def append_session_buffer_event(
     )
 
 
-def session_commit_memory_layers_written(batch_result: Json, *, extraction_phase: str, final_session_boundary: bool) -> Json:
+def session_commit_memory_layers_written(
+    batch_result: Json,
+    *,
+    extraction_phase: str,
+    final_session_boundary: bool,
+    source_roles: list[str] | None = None,
+    source_hook_types: list[str] | None = None,
+    source_codex_events: list[str] | None = None,
+) -> Json:
     entities_written = int(batch_result.get("entities_written") or 0)
     profile_entities_written = int(batch_result.get("profile_entities_written") or 0)
     summary_refresh = batch_result.get("summary_refresh") if isinstance(batch_result.get("summary_refresh"), dict) else {}
@@ -79,6 +87,9 @@ def session_commit_memory_layers_written(batch_result: Json, *, extraction_phase
         "summary_refresh_status": summary_refresh.get("status"),
         "extraction_phase": extraction_phase,
         "final_session_boundary": final_session_boundary,
+        "source_roles": source_roles,
+        "source_hook_types": source_hook_types,
+        "source_codex_events": source_codex_events,
     }
     return {key: value for key, value in layers.items() if value not in (None, "", [], {})}
 
@@ -141,6 +152,7 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
     pending = pending_all[:commit_limit] if commit_limit is not None else pending_all
     messages = []
     source_event_ids = []
+    pending_source_roles: set[str] = set()
     pending_source_hook_types: set[str] = set()
     pending_source_codex_events: set[str] = set()
     for record in pending:
@@ -162,6 +174,12 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         message = message_from_event_record(record)
         if not message:
             continue
+        role = str(message.get("role") or "").strip()
+        if role:
+            pending_source_roles.add(role)
+        for values in [event_metadata.get("source_roles")]:
+            if isinstance(values, list):
+                pending_source_roles.update(str(value).strip() for value in values if str(value or "").strip())
         messages.append(message)
         source_event_ids.append(record["event_id_hash"])
     if not messages:
@@ -216,12 +234,17 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         if record.get("event_id_hash") is not None
     ]
     metadata = optional_object(args, "metadata")
+    source_roles = sorted(pending_source_roles)
+    source_hook_types = sorted(pending_source_hook_types)
+    source_codex_events = sorted(pending_source_codex_events)
+    if source_roles:
+        metadata = {**metadata, "source_roles": source_roles}
     if pending_source_hook_types:
-        metadata = {**metadata, "source_hook_types": sorted(pending_source_hook_types)}
+        metadata = {**metadata, "source_hook_types": source_hook_types}
         if "hook_type" not in metadata and len(pending_source_hook_types) == 1:
             metadata["hook_type"] = next(iter(pending_source_hook_types))
     if pending_source_codex_events:
-        metadata = {**metadata, "source_codex_events": sorted(pending_source_codex_events)}
+        metadata = {**metadata, "source_codex_events": source_codex_events}
         if "codex_event" not in metadata and len(pending_source_codex_events) == 1:
             metadata["codex_event"] = next(iter(pending_source_codex_events))
     storage_options = normalize_storage_options(args, metadata)
@@ -272,6 +295,9 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "committed_event_count": len(source_event_ids),
             "extraction_context_event_ids": extraction_context_event_ids,
             "extraction_context_event_count": len(extraction_context_event_ids),
+            "source_roles": source_roles,
+            "source_hook_types": source_hook_types,
+            "source_codex_events": source_codex_events,
             "idle_timeout_ms": idle_timeout_ms,
             "idle_elapsed_ms": idle_elapsed_ms,
             "trigger_evidence": trigger_evidence,
@@ -285,6 +311,9 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         batch_result,
         extraction_phase=extraction_phase,
         final_session_boundary=final_session_boundary,
+        source_roles=source_roles,
+        source_hook_types=source_hook_types,
+        source_codex_events=source_codex_events,
     )
     return {
         **batch_result,
@@ -297,6 +326,9 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         "source_event_ids": source_event_ids,
         "extraction_context_event_ids": extraction_context_event_ids,
         "extraction_context_event_count": len(extraction_context_event_ids),
+        "source_roles": source_roles,
+        "source_hook_types": source_hook_types,
+        "source_codex_events": source_codex_events,
         "commit_reason": commit_reason,
         "trigger_policy": trigger_policy,
         "extraction_phase": extraction_phase,
