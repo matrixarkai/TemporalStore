@@ -58,6 +58,8 @@ def compact_context_pack_ref(ref: Json) -> Json:
         "entity_type",
         "entity_name",
         "extraction_phase",
+        "profile_current_state_representative",
+        "current_state_policy",
         "source_memory_scopes",
         "source_session_continuities",
         "source_extraction_phases",
@@ -80,6 +82,10 @@ def compact_context_pack_ref(ref: Json) -> Json:
     value = ref.get("source_entity_hashes")
     if isinstance(value, list) and value:
         item["source_entity_count"] = len(value)
+    for field in ["current_state_source_session_count", "current_state_source_entity_count"]:
+        value = ref.get(field)
+        if isinstance(value, int) and value > 0:
+            item[field] = value
     context_class = ref.get("context_class")
     if context_class and context_class != item.get("ref_type"):
         item["context_class"] = context_class
@@ -443,6 +449,10 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
     value = ref.get("source_entity_hashes", metadata.get("source_entity_hashes"))
     if isinstance(value, list) and value:
         item["source_entity_count"] = len(value)
+    for field in ["current_state_source_session_count", "current_state_source_entity_count"]:
+        value = ref.get(field, metadata.get(field))
+        if isinstance(value, int) and value > 0:
+            item[field] = value
     return item
 
 
