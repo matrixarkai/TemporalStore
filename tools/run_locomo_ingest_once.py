@@ -16,6 +16,7 @@ import hashlib
 import json
 import math
 import re
+import shutil
 import signal
 import sys
 import os
@@ -1804,6 +1805,33 @@ class BenchmarkReader:
             headers=self.reader_headers(),
             method="POST",
         )
+        if shutil.which("curl"):
+            completed = subprocess.run(
+                [
+                    "curl",
+                    "-sS",
+                    "--max-time",
+                    str(max(1.0, float(self.config.timeout_seconds))),
+                    "-X",
+                    "POST",
+                    "-H",
+                    "Content-Type: application/json",
+                    *self.curl_auth_header_args(),
+                    "--data-binary",
+                    "@-",
+                    endpoint,
+                ],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=max(2.0, float(self.config.timeout_seconds) + 2.0),
+            )
+            if completed.returncode != 0:
+                raise TimeoutError((completed.stderr or completed.stdout or "reader curl call failed")[:300])
+            body = json.loads(completed.stdout)
+            self.open_source_calls += 1
+            return parse_openai_compatible_answer(body)
         try:
             with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
                 body = json.loads(response.read().decode("utf-8"))
@@ -1819,6 +1847,12 @@ class BenchmarkReader:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         return headers
+
+    def curl_auth_header_args(self) -> list[str]:
+        api_key = os.environ.get(self.config.api_key_env, "")
+        if not api_key:
+            return []
+        return ["-H", f"Authorization: Bearer {api_key}"]
 
 
 def parse_openai_compatible_answer(body: dict[str, Any]) -> str:
