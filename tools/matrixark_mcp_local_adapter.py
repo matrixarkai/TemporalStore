@@ -2316,6 +2316,32 @@ class MatrixArkLocalAdapter:
                     }
                 )
             pending_event_count = len(self.pending_session_events(envelope["scope"]))
+            auto_batch_result: Json | None = None
+            auto_batch_extract = bool(args.get("auto_batch_extract", False))
+            session_buffer_threshold = args.get("session_buffer_threshold", 20)
+            if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
+                raise MatrixArkError("session_buffer_threshold must be a positive integer")
+            if auto_batch_extract and pending_event_count >= session_buffer_threshold:
+                auto_batch_result = self.session_commit(
+                    {
+                        "scope": envelope["scope"],
+                        "metadata": envelope["metadata"],
+                        "threshold_messages": session_buffer_threshold,
+                        "force": False,
+                        "max_messages": session_buffer_threshold,
+                        "commit_reason": "threshold",
+                        "understanding_provider": args.get("understanding_provider"),
+                        "extraction_provider": args.get("extraction_provider"),
+                        "segment_provider": args.get("segment_provider"),
+                        "segment_model": args.get("segment_model"),
+                        "segment_model_path": args.get("segment_model_path"),
+                        "segment_max_new_tokens": args.get("segment_max_new_tokens"),
+                        "segment_provider_fallback": args.get("segment_provider_fallback"),
+                        "skip_prior_context": bool(args.get("skip_prior_context", False)),
+                        "storage_options": envelope.get("storage_options", {}),
+                    },
+                    hook=hook,
+                )
             return {
                 "status": "accepted",
                 "sync_write_mode": "lightweight_event",
@@ -2336,10 +2362,11 @@ class MatrixArkLocalAdapter:
                 "session_buffer": {
                     "buffer_key": list(session_buffer_key(envelope)),
                     "pending_event_count": pending_event_count,
-                    "threshold_messages": args.get("session_buffer_threshold", 20),
-                    "auto_batch_extract": bool(args.get("auto_batch_extract", False)),
+                    "threshold_messages": session_buffer_threshold,
+                    "auto_batch_extract": auto_batch_extract,
                 },
                 "idle_commit_result": idle_commit_result,
+                "auto_batch_extract_result": auto_batch_result,
                 "quality_warnings": ["async_processing_pending:extraction,summary,compression,embedding"],
             }
         prior_records = [] if args.get("skip_prior_context") else self.read_all()
