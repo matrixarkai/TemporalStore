@@ -179,14 +179,40 @@ def dashboard_rows_for_table(records: list[Json], table: str, scope: Json) -> li
             )
         elif table == "context_packs" and record_type in {"context_pack_audit", "context_pack_telemetry"}:
             dropped_refs = record.get("dropped_refs", {})
+            dropped_ref_bucket_counts = (
+                record.get("dropped_ref_bucket_counts")
+                if isinstance(record.get("dropped_ref_bucket_counts"), dict)
+                else {
+                    key: value
+                    for key, value in dropped_refs.items()
+                    if isinstance(dropped_refs, dict)
+                    and isinstance(value, int)
+                    and key != "deadline_exceeded"
+                    and value > 0
+                }
+            )
+            dropped_ref_count = (
+                len(dropped_refs.get("refs", []))
+                if record_type == "context_pack_audit" and isinstance(dropped_refs, dict) and isinstance(dropped_refs.get("refs"), list)
+                else record.get("dropped_ref_count", 0)
+            )
+            if not dropped_ref_count:
+                dropped_ref_count = sum(int(value) for value in dropped_ref_bucket_counts.values() if isinstance(value, int))
             rows.append(
                 {
                     "row_type": record_type,
                     "context_pack_id": record.get("context_pack_id", ""),
                     "query": record.get("query", "") if record_type == "context_pack_audit" else f"hash:{record.get('query_hash', '')}",
                     "used_context_tokens": record.get("used_context_tokens", record.get("used_remote_context_tokens", 0)),
+                    "used_local_context_tokens": record.get("used_local_context_tokens", 0),
+                    "used_remote_context_tokens": record.get("used_remote_context_tokens", 0),
+                    "remote_context_budget_tokens": record.get("remote_context_budget_tokens", 0),
+                    "requested_max_context_tokens": record.get("requested_max_context_tokens", 0),
                     "selected_ref_count": len(record.get("selected_refs", [])) if record_type == "context_pack_audit" else record.get("selected_ref_count", 0),
-                    "dropped_ref_count": len(dropped_refs.get("refs", [])) if record_type == "context_pack_audit" and isinstance(dropped_refs, dict) else record.get("dropped_ref_count", 0),
+                    "dropped_ref_count": dropped_ref_count,
+                    "dropped_ref_bucket_counts": dropped_ref_bucket_counts,
+                    "stale_dropped_refs": int(record.get("stale_dropped_refs") or dropped_ref_bucket_counts.get("stale", 0)),
+                    "memory_layer_budget": record.get("memory_layer_budget", {}),
                     "quality_warnings": record.get("quality_warnings", []) if record_type == "context_pack_audit" else {"count": record.get("quality_warning_count", 0)},
                     "scope": candidate_access_scope(record),
                     "created_at_ms": record.get("created_at_ms", 0),
