@@ -68,7 +68,14 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
             },
             {"record_type": "context_embedding", "embedding_type": "entity_state", "ref_type": "entity", "ref_hash": 301},
             {"record_type": "context_index", "index_name": "memory_scope:user_profile", "data_model": "context_profile_entity", "ref_hashes": [301]},
-            {"record_type": "context_summary_dirty", "dirty_hash": 401, "status": "dirty", "updated_at_ms": 200},
+            {
+                "record_type": "context_summary_dirty",
+                "dirty_hash": 401,
+                "status": "dirty",
+                "dirty_reason": "profile_entity_promoted",
+                "node_path": ["tenant:t", "user:u", "profile:long_term_memory"],
+                "updated_at_ms": 200,
+            },
             {"record_type": "context_embedding", "embedding_type": "event_text", "ref_type": "event", "ref_hash": 101},
             {"record_type": "context_embedding", "embedding_type": "entity_state", "ref_type": "entity", "ref_hash": 201},
             {"record_type": "context_embedding", "embedding_type": "summary_text", "ref_type": "summary", "ref_hash": 501},
@@ -101,6 +108,8 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertTrue(report["cache_rebuild"]["retrieval_cache_rebuildable_from_hot_records"])
         self.assertEqual(1, report["memory_hierarchy"]["session_entity_count"])
         self.assertEqual(1, report["memory_hierarchy"]["profile_entity_count"])
+        self.assertEqual(0, report["memory_hierarchy"]["session_dirty_summary_count"])
+        self.assertEqual(1, report["memory_hierarchy"]["profile_dirty_summary_count"])
         self.assertEqual(["codex:session-a", "codex:session-b"], report["memory_hierarchy"]["source_session_ids"])
         self.assertEqual(2, report["memory_hierarchy"]["memory_scope_counts"]["user_profile"])
         self.assertEqual(2, report["memory_hierarchy"]["session_continuity_counts"]["cross_session"])
@@ -112,6 +121,8 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertIn("Stop", report["memory_hierarchy"]["source_codex_events"])
         self.assertEqual(1, report["derived_views"]["index_posting_count"])
         self.assertEqual(1, report["derived_views"]["dirty_summary_count"])
+        self.assertEqual(0, report["derived_views"]["session_dirty_summary_count"])
+        self.assertEqual(1, report["derived_views"]["profile_dirty_summary_count"])
         self.assertEqual("rebuild_required", report["derived_views"]["readiness"]["status"])
         self.assertEqual(["derived:summaries_dirty"], report["warnings"])
         self.assertIn("run matrixark_refresh_summaries for dirty context nodes", report["recovery_actions"])
