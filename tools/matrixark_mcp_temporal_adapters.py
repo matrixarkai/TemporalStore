@@ -3115,6 +3115,45 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "append_engine_ms": round(_float_metric_or_default(native_telemetry, "append_engine_ms", self._append_engine_ms_avg()), 3),
                 "selected_refs": selected_count,
                 "dropped_refs": int(native_telemetry.get("dropped_refs") or native_telemetry.get("dropped_ref_count") or 0) + compact_dropped_refs,
+                "requested_max_context_tokens": int(
+                    pack.get("requested_max_context_tokens")
+                    or native_telemetry.get("requested_max_context_tokens")
+                    or request.get("max_context_tokens")
+                    or 0
+                ),
+                "used_local_context_tokens": int(
+                    pack.get("used_local_context_tokens")
+                    or native_telemetry.get("used_local_context_tokens")
+                    or request.get("local_context_tokens")
+                    or 0
+                ),
+                "used_remote_context_tokens": int(
+                    pack.get("used_remote_context_tokens")
+                    or native_telemetry.get("used_remote_context_tokens")
+                    or pack.get("used_context_tokens")
+                    or 0
+                ),
+                "total_prompt_context_tokens": int(
+                    pack.get("total_prompt_context_tokens")
+                    or native_telemetry.get("total_prompt_context_tokens")
+                    or (
+                        int(pack.get("used_remote_context_tokens") or pack.get("used_context_tokens") or 0)
+                        + int(pack.get("used_local_context_tokens") or request.get("local_context_tokens") or 0)
+                    )
+                ),
+                "remote_context_budget_tokens": int(
+                    pack.get("remote_context_budget_tokens")
+                    or native_telemetry.get("remote_context_budget_tokens")
+                    or 0
+                ),
+                "local_context_safety_margin_tokens": int(
+                    pack.get("local_context_safety_margin_tokens")
+                    or native_telemetry.get("local_context_safety_margin_tokens")
+                    or request.get("local_context_safety_margin_tokens")
+                    or 0
+                ),
+                "local_context_count": int(native_telemetry.get("local_context_count") or 0),
+                "remote_is_additive_only_within_remaining_budget": True,
                 "scanned_records": int(native_telemetry.get("scanned_records") or 0),
                 "candidate_cache_hit": candidate_cache_hit,
                 "cache_hit": candidate_cache_hit,

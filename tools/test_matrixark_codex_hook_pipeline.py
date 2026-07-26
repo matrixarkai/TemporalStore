@@ -143,6 +143,50 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertLessEqual(pack["used_context_tokens"], 100)
             self.assertTrue(any(ref.get("ref_type") == "summary" for ref in pack["selected_refs"]))
 
+    def test_retrieval_metrics_expose_shared_local_remote_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-retrieval-budget.jsonl")
+            scope = {
+                "account_id": "acct_budget",
+                "tenant_id": "tenant_budget",
+                "user_id": "user_budget",
+                "session_id": "session_budget",
+            }
+            adapter.ingest(
+                {
+                    "scope": scope,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Budget fact: Alice approved the GPU checklist after Bob confirmed the owner.",
+                        }
+                    ],
+                }
+            )
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "Who approved the GPU checklist?",
+                    "max_context_tokens": 100,
+                    "local_context": [{"ref": "open-file:notes.md", "text": "Visible local context already mentions Bob."}],
+                    "local_context_tokens": 30,
+                    "local_context_safety_margin_tokens": 10,
+                    "include_retrieval_metrics": True,
+                    "audit_mode": "off",
+                }
+            )
+            metrics = pack["retrieval_metrics"]
+            self.assertEqual(100, metrics["requested_max_context_tokens"])
+            self.assertEqual(30, metrics["used_local_context_tokens"])
+            self.assertEqual(10, metrics["local_context_safety_margin_tokens"])
+            self.assertEqual(60, metrics["remote_context_budget_tokens"])
+            self.assertLessEqual(metrics["used_remote_context_tokens"], metrics["remote_context_budget_tokens"])
+            self.assertEqual(
+                metrics["used_local_context_tokens"] + metrics["used_remote_context_tokens"],
+                metrics["total_prompt_context_tokens"],
+            )
+            self.assertTrue(metrics["remote_is_additive_only_within_remaining_budget"])
+
     def run_hook(self, repo: Path, event_log: Path, *, event: str, payload: dict, query: str = "") -> dict:
         cmd = [
             sys.executable,

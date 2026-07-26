@@ -243,12 +243,17 @@ class _NativeContextPackClient:
         self.batch_hget_calls += 1
         raise AssertionError("native context pack path should not materialize records in Python")
 
-    def matrixark_retrieve_context_pack(self, request) -> dict:
+    def matrixark_retrieve_context_pack(self, request=None, **kwargs) -> dict:
+        if request is None and kwargs:
+            request = kwargs.get("request", {})
         if isinstance(request, str):
             request = json.loads(request)
+        if request is None:
+            request = {}
         self.requests.append(dict(request))
-        return {
+        context_pack = {
             "context_pack_id": "native-pack-1",
+            "context_pack_assembly": "native_cpp_direct",
             "selected_refs": [
                 {
                     "ref_type": "event",
@@ -303,6 +308,12 @@ class _NativeContextPackClient:
                 },
             },
             "quality_warnings": [],
+        }
+        return {
+            "native_pack_assembly": True,
+            "raw_records_returned": False,
+            "python_hot_path_records": 0,
+            "context_pack": context_pack,
         }
 
 
@@ -465,7 +476,7 @@ class _FailingNativeCandidateScanClient:
         raise RuntimeError("native scan unavailable")
 
 
-class _NativeContextPackClient:
+class _NativeEnvelopeContextPackClient:
     def __init__(self) -> None:
         self.calls = []
 
@@ -3009,6 +3020,12 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         adapter._index_key = f"{adapter._storage_prefix}:record_index"
         adapter._count_key = f"{adapter._storage_prefix}:record_count"
         adapter._entry_count_cache = None
+        adapter._shard_size = 128
+        adapter.append_context_pack_visibility = lambda **kwargs: {
+            "audit_mode": "off",
+            "telemetry_record": False,
+            "rich_replay_audit": False,
+        }
 
         result = adapter.retrieve(
             {
@@ -3155,6 +3172,12 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         adapter._index_key = f"{adapter._storage_prefix}:record_index"
         adapter._count_key = f"{adapter._storage_prefix}:record_count"
         adapter._entry_count_cache = None
+        adapter._shard_size = 128
+        adapter.append_context_pack_visibility = lambda **kwargs: {
+            "audit_mode": "off",
+            "telemetry_record": False,
+            "rich_replay_audit": False,
+        }
         scope = {
             "account_id": "acct_scale",
             "tenant_id": "tenant_scale",
@@ -3193,19 +3216,37 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         adapter._index_key = f"{adapter._storage_prefix}:record_index"
         adapter._count_key = f"{adapter._storage_prefix}:record_count"
         adapter._entry_count_cache = None
+        adapter._shard_size = 128
+        adapter.append_context_pack_visibility = lambda **kwargs: {
+            "audit_mode": "off",
+            "telemetry_record": False,
+            "rich_replay_audit": False,
+        }
 
         result = adapter.retrieve(
             {
                 "query": "Who approved the GPU budget?",
                 "scope": {"tenant_hash": 11, "user_hash": 22, "session_hash": 33},
+                "max_context_tokens": 1200,
+                "local_context": [{"ref": "open-file:budget.md", "text": "Visible local prompt context."}],
+                "local_context_tokens": 40,
+                "local_context_safety_margin_tokens": 20,
                 "include_retrieval_metrics": True,
             }
         )
 
-        self.assertIn("groups", result)
-        self.assertNotIn("selected_refs", result)
+        self.assertIn("selected_refs", result)
+        self.assertEqual(1, len(result["selected_refs"]))
+        self.assertNotIn("score", result["selected_refs"][0])
         self.assertEqual(result["retrieval_metrics"]["score_ms"], 5.5)
         self.assertEqual(result["retrieval_metrics"]["scanned_records"], 7)
+        self.assertEqual(result["retrieval_metrics"]["requested_max_context_tokens"], 1200)
+        self.assertEqual(result["retrieval_metrics"]["used_local_context_tokens"], 40)
+        self.assertEqual(result["retrieval_metrics"]["used_remote_context_tokens"], 6)
+        self.assertEqual(result["retrieval_metrics"]["total_prompt_context_tokens"], 46)
+        self.assertEqual(result["retrieval_metrics"]["remote_context_budget_tokens"], 1024)
+        self.assertEqual(result["retrieval_metrics"]["local_context_safety_margin_tokens"], 20)
+        self.assertTrue(result["retrieval_metrics"]["remote_is_additive_only_within_remaining_budget"])
 
     def test_native_retrieve_failure_blocks_python_broad_scan_by_default(self) -> None:
         client = _FailingNativeContextPackClient("raise")
@@ -3623,7 +3664,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
     def test_production_retrieve_dispatches_native_pack_before_query_embedding(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"
         mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""
-        client = _NativeContextPackClient()
+        client = _NativeEnvelopeContextPackClient()
         adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
         adapter._client = client
         adapter._count_key = "matrixark:test:record_count"
@@ -3663,7 +3704,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
     def test_direct_native_context_pack_accepts_explicit_cross_session_budget(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"
         mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""
-        client = _NativeContextPackClient()
+        client = _NativeEnvelopeContextPackClient()
         adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
         adapter._client = client
         adapter._count_key = "matrixark:test:record_count"
@@ -3841,7 +3882,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(dropped["shared_context_policy"]["skill_selected_ref_count"], 1)
 
     def test_direct_native_context_pack_dispatches_single_backend_request(self) -> None:
-        client = _NativeContextPackClient()
+        client = _NativeEnvelopeContextPackClient()
         adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
         adapter._client = client
         adapter._count_key = "matrixark:test:record_count"
@@ -3892,7 +3933,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
         adapter._client = _NativeCandidateScanClient()
         self.assertTrue(adapter.supports_native_candidate_prefilter())
-        adapter._client = _NativeContextPackClient()
+        adapter._client = _NativeEnvelopeContextPackClient()
         self.assertFalse(adapter.supports_native_candidate_prefilter())
 
     def test_raw_ingestion_visibility_only_required_for_dedicated_proxy_clients(self) -> None:
