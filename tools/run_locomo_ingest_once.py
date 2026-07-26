@@ -1828,6 +1828,7 @@ class BenchmarkReader:
                 timeout=max(2.0, float(self.config.timeout_seconds) + 2.0),
             )
             if completed.returncode != 0:
+                self.stop_local_ollama_model_after_timeout()
                 raise TimeoutError((completed.stderr or completed.stdout or "reader curl call failed")[:300])
             body = json.loads(completed.stdout)
             self.open_source_calls += 1
@@ -1853,6 +1854,21 @@ class BenchmarkReader:
         if not api_key:
             return []
         return ["-H", f"Authorization: Bearer {api_key}"]
+
+    def stop_local_ollama_model_after_timeout(self) -> None:
+        provider = self.config.provider_name.lower()
+        base_url = self.config.base_url.lower()
+        if "ollama" not in provider and "127.0.0.1:11434" not in base_url and "localhost:11434" not in base_url:
+            return
+        if not shutil.which("ollama"):
+            return
+        subprocess.run(
+            ["ollama", "stop", self.config.model],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
 
 
 def parse_openai_compatible_answer(body: dict[str, Any]) -> str:
