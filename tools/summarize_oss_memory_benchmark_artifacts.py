@@ -17,6 +17,7 @@ from typing import Any
 SUMMARY_FIELDS = (
     "case_count",
     "retrieval_hit_at_k",
+    "context_answer_coverage",
     "reader_hit_rate",
     "token_reduction_percent",
     "retrieval_p95_ms",
@@ -258,6 +259,7 @@ def extract_metrics(data: dict[str, Any]) -> dict[str, Any]:
     return {
         "case_count": number(data, "case_count", "benchmark_per_query_count", "external_benchmark_case_count"),
         "retrieval_hit_at_k": number(data, "benchmark_hit_at_k", "hit_rate", "benchmark_recall_at_k", "external_benchmark_hit_at_k"),
+        "context_answer_coverage": number(data, "benchmark_context_answer_coverage"),
         "reader_hit_rate": number(data, "benchmark_reader_hit_rate", "reader_hit_rate", "deterministic_reader_hit_rate"),
         "token_reduction_percent": number(data, "benchmark_token_reduction_percent"),
         "retrieval_p95_ms": number(data, "benchmark_retrieval_p95_ms", "retrieval_p95_ms"),
@@ -292,14 +294,14 @@ def render_markdown(result: dict[str, Any]) -> str:
         f"Paper-comparable ready: {result['paper_comparable_ready_count']}",
         f"Non-paper-comparable: {result['non_paper_comparable_count']}",
         "",
-        "| Label | Dataset | Cases | Retrieval Hit@K | Reader Hit | Token Reduction | Reader | Baseline Reader | Embedding | Budget | Shared OSS Contract | Claim | Blocker |",
-        "|---|---:|---:|---:|---:|---:|---|---|---|---|---:|---|---|",
+        "| Label | Dataset | Cases | Retrieval Hit@K | Context Answer Coverage | Reader Hit | Token Reduction | Reader | Baseline Reader | Embedding | Budget | Shared OSS Contract | Claim | Blocker |",
+        "|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---:|---|---|",
     ]
     for row in result["rows"]:
         budget = format_budget(row)
         embedding = format_pair(row.get("matrixark_embedding_model"), row.get("baseline_embedding_model"))
         lines.append(
-            "| {label} | {dataset} | {case_count} | {retrieval_hit_at_k} | {reader_hit_rate} | "
+            "| {label} | {dataset} | {case_count} | {retrieval_hit_at_k} | {context_answer_coverage} | {reader_hit_rate} | "
             "{token_reduction_percent} | {matrixark_reader_model} | {baseline_reader_model} | "
             "{embedding} | {budget} | {shared_oss_model_contract_passed} | {claim_status} | {blocker} |".format(
                 **{key: md(row.get(key)) for key in (
@@ -307,6 +309,7 @@ def render_markdown(result: dict[str, Any]) -> str:
                     "dataset",
                     "case_count",
                     "retrieval_hit_at_k",
+                    "context_answer_coverage",
                     "reader_hit_rate",
                     "token_reduction_percent",
                     "matrixark_reader_model",
