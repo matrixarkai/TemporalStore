@@ -37,11 +37,17 @@ def main() -> int:
     parser.add_argument("--matrixark-max-events", type=int, required=True)
     parser.add_argument("--matrixark-reader-max-context-chars", type=int, required=True)
     parser.add_argument("--paper-min-cases", type=int, default=0)
+    parser.add_argument(
+        "--source-json",
+        default="",
+        help="Optional source benchmark JSON used to compute full-source token denominators.",
+    )
     args = parser.parse_args()
 
     started = time.time()
     rows = read_rows(Path(args.csv))
     case_count = len(rows)
+    source_tokens_by_sample = load_source_tokens_by_sample(Path(args.source_json), args.dataset) if args.source_json else {}
     reader_hits = [reader_hit(row) for row in rows]
     judged_rows = sum(1 for row in rows if str(row.get("result") or "").strip())
     elapsed_ms = [float(row.get("time_cost") or 0.0) * 1000.0 for row in rows if row.get("time_cost")]
@@ -51,6 +57,7 @@ def main() -> int:
     memory_prompt_tokens = sum_numeric_column(rows, "memory_prompt_tokens")
     memory_chars = sum_numeric_column(rows, "memory_chars")
     retrieved_uri_counts = [retrieved_uri_count(row) for row in rows]
+    source_tokens = sum(source_tokens_for_row(row, source_tokens_by_sample) for row in rows)
     archive_fallback_used = any("session_archive_fallback" in str(row.get("tools_used_names") or "") for row in rows)
     blockers = []
     if case_count == 0:
@@ -84,6 +91,7 @@ def main() -> int:
         "openviking_prompt_tokens": prompt_tokens,
         "openviking_completion_tokens": completion_tokens,
         "openviking_total_tokens": total_tokens,
+        "openviking_source_tokens": source_tokens,
         "openviking_memory_prompt_tokens": memory_prompt_tokens,
         "openviking_memory_chars": memory_chars,
         "openviking_retrieved_uri_count_avg": safe_div(sum(retrieved_uri_counts), case_count),
@@ -101,6 +109,12 @@ def main() -> int:
         report["benchmark_avg_retrieved_tokens_per_query"] = safe_div(memory_prompt_tokens, case_count)
     elif total_tokens > 0:
         report["benchmark_avg_retrieved_tokens_per_query"] = safe_div(prompt_tokens, case_count)
+    if source_tokens > 0:
+        report["benchmark_avg_source_tokens_per_query"] = safe_div(source_tokens, case_count)
+        report["benchmark_token_reduction_percent"] = token_reduction_percent(
+            source_tokens,
+            memory_prompt_tokens or prompt_tokens,
+        )
     Path(args.output).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(args.output)
     return 0 if case_count else 1
@@ -109,6 +123,62 @@ def main() -> int:
 def read_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
+
+
+def load_source_tokens_by_sample(path: Path, dataset: str) -> dict[str, int]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    records = data if isinstance(data, list) else data.get("data", data.get("records", []))
+    if not isinstance(records, list):
+        return {}
+    result: dict[str, int] = {}
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            continue
+        sample_keys = {f"sample_{index}"}
+        raw_id = record.get("sample_id") or record.get("conversation_id") or record.get("id")
+        if raw_id:
+            sample_keys.add(str(raw_id))
+        tokens = source_token_count(record, dataset)
+        for sample_key in sample_keys:
+            result[sample_key] = tokens
+    return result
+
+
+def source_token_count(record: dict[str, Any], dataset: str) -> int:
+    if dataset == "locomo":
+        return sum(estimated_tokens(text) for text in locomo_conversation_texts(record))
+    return estimated_tokens(json.dumps(record, ensure_ascii=False))
+
+
+def locomo_conversation_texts(record: dict[str, Any]) -> list[str]:
+    conversation = record.get("conversation")
+    if not isinstance(conversation, dict):
+        return []
+    texts: list[str] = []
+    for key in sorted(conversation, key=locomo_sort_key):
+        if not key.startswith("session_") or key.endswith("_date_time"):
+            continue
+        turns = conversation.get(key)
+        if not isinstance(turns, list):
+            continue
+        for turn in turns:
+            if not isinstance(turn, dict):
+                continue
+            speaker = str(turn.get("speaker") or "").strip()
+            text = str(turn.get("text") or "").strip()
+            if text:
+                texts.append(f"{speaker}: {text}" if speaker else text)
+    return texts
+
+
+def locomo_sort_key(key: str) -> tuple[int, str]:
+    match = re.match(r"session_(\d+)$", key)
+    return (int(match.group(1)) if match else 1_000_000, key)
+
+
+def source_tokens_for_row(row: dict[str, str], source_tokens_by_sample: dict[str, int]) -> int:
+    sample_id = str(row.get("sample_id") or "").strip()
+    return int(source_tokens_by_sample.get(sample_id) or 0)
 
 
 def reader_hit(row: dict[str, str]) -> bool:
@@ -231,6 +301,16 @@ def model_contract(args: argparse.Namespace) -> dict[str, Any]:
 
 def normalized_model_name(value: str) -> str:
     return re.sub(r"[^a-z0-9._:-]+", "", str(value).strip().lower())
+
+
+def estimated_tokens(text: str) -> int:
+    return max(1, int((len(str(text).split()) * 1.15) + 0.999999)) if str(text).strip() else 0
+
+
+def token_reduction_percent(source_tokens: int, retrieved_tokens: int) -> float:
+    if source_tokens <= 0:
+        return 0.0
+    return round(max(0.0, (source_tokens - retrieved_tokens) * 100.0 / source_tokens), 6)
 
 
 def summarize_row(row: dict[str, str], index: int) -> dict[str, Any]:
