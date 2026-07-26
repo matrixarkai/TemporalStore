@@ -1733,6 +1733,8 @@ class BenchmarkReader:
         self.fallback_count = 0
         self.error_count = 0
         self.last_error = ""
+        self._transformers_tokenizer: Any = None
+        self._transformers_model: Any = None
 
     def answer(self, question: str, blocks: list[dict[str, str]]) -> str:
         if self.config.mode == "deterministic":
@@ -1780,6 +1782,8 @@ class BenchmarkReader:
     def open_source_answer(self, question: str, blocks: list[dict[str, str]]) -> str:
         if not self.config.base_url:
             raise ValueError("open-source reader requires --reader-base-url or TEMPORALSTORE_READER_BASE_URL")
+        if self.config.base_url.startswith("transformers://"):
+            return self.transformers_answer(question, blocks)
         endpoint = self.config.base_url.rstrip("/")
         if not endpoint.endswith("/chat/completions"):
             endpoint = f"{endpoint}/chat/completions"
@@ -1856,6 +1860,32 @@ class BenchmarkReader:
         if not api_key:
             return []
         return ["-H", f"Authorization: Bearer {api_key}"]
+
+    def transformers_answer(self, question: str, blocks: list[dict[str, str]]) -> str:
+        model_id = self.config.base_url.removeprefix("transformers://") or self.config.model
+        if self._transformers_tokenizer is None or self._transformers_model is None:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+
+            self._transformers_tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=True)
+            self._transformers_model = AutoModelForCausalLM.from_pretrained(model_id, local_files_only=True)
+            self._transformers_model.eval()
+        context = evidence_bundle([block.get("body", "") for block in blocks])
+        context = context[: max(512, self.config.max_context_chars)]
+        max_tokens = int(os.environ.get("MATRIXARK_READER_MAX_TOKENS", "64"))
+        messages = [
+            {"role": "system", "content": OSS_READER_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": OSS_READER_USER_PROMPT_TEMPLATE.format(question=question, context=context),
+            },
+        ]
+        tokenizer = self._transformers_tokenizer
+        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = tokenizer([prompt], return_tensors="pt")
+        output = self._transformers_model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
+        answer = tokenizer.decode(output[0][inputs.input_ids.shape[-1] :], skip_special_tokens=True).strip()
+        self.open_source_calls += 1
+        return answer
 
     def stop_local_ollama_model_after_timeout(self) -> None:
         provider = self.config.provider_name.lower()
