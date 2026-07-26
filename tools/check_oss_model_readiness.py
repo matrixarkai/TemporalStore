@@ -12,6 +12,7 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -24,6 +25,16 @@ def main() -> int:
     parser.add_argument("--target-model", default="qwen2.5:7b")
     parser.add_argument("--pull-log", default="/tmp/ollama_pull_qwen25_7b_bg_20260726.log")
     parser.add_argument("--report", default="/tmp/oss_model_readiness_status.json")
+    parser.add_argument(
+        "--run-reader-gate",
+        action="store_true",
+        help="When the target model is installed and the endpoint is reachable, run the OSS reader capability gate.",
+    )
+    parser.add_argument(
+        "--reader-gate-report",
+        default="/tmp/oss_reader_capability_after_readiness.json",
+        help="Output path for the optional reader capability gate.",
+    )
     args = parser.parse_args()
 
     started = time.time()
@@ -46,9 +57,21 @@ def main() -> int:
         report["blockers"].append("target_model_not_installed")
     if not report["reader_endpoint_reachable"]:
         report["blockers"].append("reader_endpoint_unreachable")
+    if args.run_reader_gate:
+        report["reader_gate_requested"] = True
+        if report["ready_for_reader_gate"]:
+            report["reader_gate"] = run_reader_gate(args)
+        else:
+            report["reader_gate"] = {
+                "status": "skipped",
+                "reason": "target_model_not_ready",
+                "report": args.reader_gate_report,
+            }
     report["duration_seconds"] = round(time.time() - started, 3)
     Path(args.report).write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     print(args.report)
+    if args.run_reader_gate and report.get("reader_gate", {}).get("status") == "failed":
+        return 2
     return 0 if report["ready_for_reader_gate"] else 1
 
 
@@ -113,6 +136,37 @@ def parse_pull_progress(path: Path) -> dict[str, Any]:
         "percent": int(pct),
         "downloaded": f"{done} {done_unit.upper()}",
         "total": f"{total} {total_unit.upper()}",
+    }
+
+
+def run_reader_gate(args: argparse.Namespace) -> dict[str, Any]:
+    script = Path(__file__).resolve().with_name("probe_oss_reader_memory_capability.py")
+    command = [
+        sys.executable,
+        str(script),
+        "--reader-base-url",
+        args.reader_base_url,
+        "--reader-model",
+        args.target_model,
+        "--report",
+        args.reader_gate_report,
+    ]
+    started = time.time()
+    proc = subprocess.run(
+        command,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=600,
+    )
+    return {
+        "status": "passed" if proc.returncode == 0 else "failed",
+        "returncode": proc.returncode,
+        "duration_seconds": round(time.time() - started, 3),
+        "report": args.reader_gate_report,
+        "stdout": proc.stdout.strip()[-1000:],
+        "stderr": proc.stderr.strip()[-1000:],
     }
 
 
