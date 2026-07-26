@@ -1049,6 +1049,91 @@ def hook_idempotency_key(payload: Json, *, event: str, session_id: str | None, f
     return hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:32]
 
 
+def hook_lineage_fields(hook: Json | None) -> Json:
+    if not isinstance(hook, dict):
+        return {}
+    lineage: Json = {}
+    for field in ("thread_id", "turn_id", "conversation_id"):
+        value = hook.get(field)
+        if value not in (None, ""):
+            lineage[field] = str(value)
+    return lineage
+
+
+def codex_agent_hook(
+    *,
+    hook_type: str,
+    hook_id: str,
+    idempotency_key: str,
+    trigger: str,
+    session_id_source: str,
+    identity: Json | None = None,
+    observed_at_ms: int | None = None,
+) -> Json:
+    return {
+        "source": "codex",
+        "hook_type": hook_type,
+        "hook_id": hook_id,
+        "observed_at_ms": observed_at_ms if observed_at_ms is not None else int(time.time() * 1000),
+        "idempotency_key": idempotency_key,
+        "trigger": trigger,
+        "auto_captured": True,
+        "session_id_source": session_id_source,
+        **hook_lineage_fields(identity),
+    }
+
+
+def codex_hook_lineage_from_payload(payload: Json, args: argparse.Namespace, *, session_id_source: str) -> Json:
+    thread_id = first_string_at(
+        payload,
+        [
+            ["thread_id"],
+            ["threadId"],
+            ["conversation_id"],
+            ["conversationId"],
+            ["transcript_id"],
+            ["transcriptId"],
+            ["run", "thread_id"],
+            ["params", "thread_id"],
+            ["turn", "thread_id"],
+            ["metadata", "thread_id"],
+        ],
+    )
+    turn_id = first_string_at(
+        payload,
+        [
+            ["turn_id"],
+            ["turnId"],
+            ["id"],
+            ["message_id"],
+            ["request_id"],
+            ["run", "turn_id"],
+            ["params", "turn_id"],
+            ["turn", "id"],
+            ["turn", "turn_id"],
+            ["metadata", "turn_id"],
+        ],
+    )
+    conversation_id = first_string_at(
+        payload,
+        [
+            ["conversation_id"],
+            ["conversationId"],
+            ["session_id"],
+            ["sessionId"],
+            ["codex_session_id"],
+            ["metadata", "conversation_id"],
+        ],
+    )
+    return {
+        "session_id": args.session_id,
+        "session_id_source": session_id_source,
+        **({"thread_id": thread_id} if thread_id else {}),
+        **({"turn_id": turn_id} if turn_id else {}),
+        **({"conversation_id": conversation_id} if conversation_id else {}),
+    }
+
+
 def parse_args() -> argparse.Namespace:
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description="Ingest Codex hook payloads into MatrixArk.")
@@ -1842,12 +1927,14 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
     storage_options = hook_storage_options()
     messages = [{"role": role, "content": text}]
     hook_type = hook_type_for_event(args.event)
+    lineage = hook_lineage_fields(hook)
     metadata: Json = {
         "source": "codex_hook_fast_async",
         "codex_event": args.event,
         "hook_type": hook_type,
         "source_role": role,
         "agent_context": agent_context,
+        **lineage,
     }
     retention = hook_retention_fields(text=text, role=role, now_ms=now)
     raw_record: Json = {
@@ -1861,6 +1948,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "tenant_id": tenant_id,
         "user_id": user_id,
         "session_id": session_id,
+        **lineage,
         "metadata": metadata,
         "agent_hook": hook,
         "ingestion_time_ms": now,
@@ -1888,6 +1976,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "tenant_id": tenant_id,
         "user_id": user_id,
         "session_id": session_id,
+        **lineage,
         "metadata": metadata,
         "envelope": {
             "kind": "message",
@@ -1899,6 +1988,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
             "metadata": metadata,
             "ingestion_time_ms": now,
             "storage_options": storage_options,
+            **lineage,
         },
         "internal_extraction": {
             "mode": "async_pending",
@@ -1921,6 +2011,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "node_hash": node_hash,
         "node_path": node_path,
         "scope": scope,
+        **lineage,
         "status": "pending",
         "stages": ["extraction", "summary", "compression", "embedding"],
         "reason": "codex_hook_fast_async_direct_queue",
@@ -1981,14 +2072,14 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
             "segment_provider": getattr(args, "segment_provider", None),
             "storage_options": storage_options,
             "agent_hook": {
-                "source": "codex",
-                "hook_type": "session_commit",
-                "hook_id": f"fast_async_session_commit:{args.event}:{int(time.time() * 1000)}",
-                "observed_at_ms": int(time.time() * 1000),
-                "idempotency_key": f"fast-async-session-commit:{args.event}:{session_id}:{event_id_hash}",
-                "trigger": args.event,
-                "auto_captured": True,
-                "session_id_source": (hook or {}).get("session_id_source", ""),
+                **codex_agent_hook(
+                    hook_type="session_commit",
+                    hook_id=f"fast_async_session_commit:{args.event}:{int(time.time() * 1000)}",
+                    idempotency_key=f"fast-async-session-commit:{args.event}:{session_id}:{event_id_hash}",
+                    trigger=args.event,
+                    session_id_source=str((hook or {}).get("session_id_source") or ""),
+                    identity=hook,
+                ),
             },
         }
         if commit_reason == "idle_timeout":
@@ -2068,6 +2159,7 @@ def run_rollout_backfill_only(args: argparse.Namespace, payload: Json, session_i
     role, text, codex_event, idempotency_prefix = rollout_role_and_text(args.event, payload)
     if not role or not text:
         return 0
+    codex_identity = codex_hook_lineage_from_payload(payload, args, session_id_source=session_id_source)
     agent_context = agent_context_from_payload(payload, event=args.event, session_id_source=session_id_source, args=args)
     server = build_server(args)
     try:
@@ -2093,14 +2185,14 @@ def run_rollout_backfill_only(args: argparse.Namespace, payload: Json, session_i
                     "codex_session_id_source": session_id_source,
                 },
                 "agent_hook": {
-                    "source": "codex",
-                    "hook_type": "tool_result" if role == "tool" else "after_llm",
-                    "hook_id": f"Async{codex_event}:{stable_short_hash(text)}",
-                    "observed_at_ms": int(time.time() * 1000),
-                    "idempotency_key": f"{idempotency_prefix}:{stable_short_hash(text)}",
-                    "trigger": f"{args.event}:async_rollout_backfill",
-                    "auto_captured": True,
-                    "session_id_source": session_id_source,
+                    **codex_agent_hook(
+                        hook_type="tool_result" if role == "tool" else "after_llm",
+                        hook_id=f"Async{codex_event}:{stable_short_hash(text)}",
+                        idempotency_key=f"{idempotency_prefix}:{stable_short_hash(text)}",
+                        trigger=f"{args.event}:async_rollout_backfill",
+                        session_id_source=session_id_source,
+                        identity=codex_identity,
+                    ),
                 },
             },
         )
@@ -2117,14 +2209,14 @@ def run_rollout_backfill_only(args: argparse.Namespace, payload: Json, session_i
                     "segment_provider": args.segment_provider,
                     "storage_options": hook_storage_options(),
                     "agent_hook": {
-                        "source": "codex",
-                        "hook_type": "session_commit",
-                        "hook_id": f"async_rollout_session_commit:{args.event}:{stable_short_hash(text)}",
-                        "observed_at_ms": int(time.time() * 1000),
-                        "idempotency_key": f"async-rollout-session-commit:{args.event}:{stable_short_hash(text)}",
-                        "trigger": f"{args.event}:async_rollout_backfill",
-                        "auto_captured": True,
-                        "session_id_source": session_id_source,
+                        **codex_agent_hook(
+                            hook_type="session_commit",
+                            hook_id=f"async_rollout_session_commit:{args.event}:{stable_short_hash(text)}",
+                            idempotency_key=f"async-rollout-session-commit:{args.event}:{stable_short_hash(text)}",
+                            trigger=f"{args.event}:async_rollout_backfill",
+                            session_id_source=session_id_source,
+                            identity=codex_identity,
+                        ),
                     },
                 },
             )
@@ -2139,6 +2231,7 @@ def main() -> int:
     payload = read_stdin_payload()
     resolved_session_id, session_id_source = resolve_session_id(payload, args)
     args.session_id = resolved_session_id
+    codex_identity = codex_hook_lineage_from_payload(payload, args, session_id_source=session_id_source)
     if args.rollout_backfill_only:
         return run_rollout_backfill_only(args, payload, session_id_source)
     text = payload_text(payload) or args.query
@@ -2290,14 +2383,14 @@ def main() -> int:
                 "segment_provider": args.segment_provider,
                 "storage_options": hook_storage_options(),
                 "agent_hook": {
-                    "source": "codex",
-                    "hook_type": "resource_added",
-                    "hook_id": f"{args.event}:{raw_uri}:{int(time.time() * 1000)}",
-                    "observed_at_ms": int(time.time() * 1000),
-                    "idempotency_key": hook_idempotency_key(payload, event=args.event, session_id=args.session_id, fallback=raw_uri),
-                    "trigger": args.event,
-                    "auto_captured": True,
-                    "session_id_source": session_id_source,
+                    **codex_agent_hook(
+                        hook_type="resource_added",
+                        hook_id=f"{args.event}:{raw_uri}:{int(time.time() * 1000)}",
+                        idempotency_key=hook_idempotency_key(payload, event=args.event, session_id=args.session_id, fallback=raw_uri),
+                        trigger=args.event,
+                        session_id_source=session_id_source,
+                        identity=codex_identity,
+                    ),
                 },
                 "wait": bool(payload.get("wait", False)),
             }
@@ -2305,16 +2398,14 @@ def main() -> int:
                 ingest = trace_tool_call(server, "matrixark_ingest", ingest_args, trace)
                 hook_warning = timeout_warning(ingest)
         elif text and not hook_warning:
-            main_hook = {
-                "source": "codex",
-                "hook_type": hook_type_for_event(args.event),
-                "hook_id": f"{args.event}:{int(time.time() * 1000)}",
-                "observed_at_ms": int(time.time() * 1000),
-                "idempotency_key": hook_idempotency_key(payload, event=args.event, session_id=args.session_id),
-                "trigger": args.event,
-                "auto_captured": True,
-                "session_id_source": session_id_source,
-            }
+            main_hook = codex_agent_hook(
+                hook_type=hook_type_for_event(args.event),
+                hook_id=f"{args.event}:{int(time.time() * 1000)}",
+                idempotency_key=hook_idempotency_key(payload, event=args.event, session_id=args.session_id),
+                trigger=args.event,
+                session_id_source=session_id_source,
+                identity=codex_identity,
+            )
             if HOOK_FAST_ASYNC_INGEST:
                 ingest = fast_async_hook_ingest(
                     server,
@@ -2371,14 +2462,14 @@ def main() -> int:
                     "storage_options": hook_storage_options(),
                     **({"idle_timeout_ms": args.idle_commit_timeout_ms} if commit_reason == "idle_timeout" else {}),
                     "agent_hook": {
-                        "source": "codex",
-                        "hook_type": "session_commit",
-                        "hook_id": f"session_commit:{args.event}:{int(time.time() * 1000)}",
-                        "observed_at_ms": int(time.time() * 1000),
-                        "idempotency_key": hook_idempotency_key(payload, event=f"session_commit:{args.event}", session_id=args.session_id),
-                        "trigger": args.event,
-                        "auto_captured": True,
-                        "session_id_source": session_id_source,
+                        **codex_agent_hook(
+                            hook_type="session_commit",
+                            hook_id=f"session_commit:{args.event}:{int(time.time() * 1000)}",
+                            idempotency_key=hook_idempotency_key(payload, event=f"session_commit:{args.event}", session_id=args.session_id),
+                            trigger=args.event,
+                            session_id_source=session_id_source,
+                            identity=codex_identity,
+                        ),
                     },
                 },
                 trace,
