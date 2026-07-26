@@ -37,14 +37,20 @@ def main() -> int:
     parser.add_argument("--label", action="append", default=[], help="Optional label for the matching --report.")
     parser.add_argument("--output-json", default="/tmp/oss_memory_benchmark_summary.json")
     parser.add_argument("--output-md", default="/tmp/oss_memory_benchmark_summary.md")
+    parser.add_argument("--locomo-paper-min-cases", type=int, default=PAPER_COMPARABLE_MIN_CASES["locomo"])
+    parser.add_argument("--longmemeval-paper-min-cases", type=int, default=PAPER_COMPARABLE_MIN_CASES["longmemeval_s"])
     args = parser.parse_args()
 
+    paper_min_cases = {
+        "locomo": args.locomo_paper_min_cases,
+        "longmemeval_s": args.longmemeval_paper_min_cases,
+    }
     labels = list(args.label)
     rows = []
     for index, report_path in enumerate(args.report):
         path = Path(report_path)
         label = labels[index] if index < len(labels) else path.stem
-        rows.append(summarize_report(path, label))
+        rows.append(summarize_report(path, label, paper_min_cases))
 
     result = {
         "schema": "matrixark_oss_memory_benchmark_artifact_summary_v1",
@@ -60,7 +66,8 @@ def main() -> int:
     return 0
 
 
-def summarize_report(path: Path, label: str) -> dict[str, Any]:
+def summarize_report(path: Path, label: str, paper_min_cases: dict[str, int] | None = None) -> dict[str, Any]:
+    paper_min_cases = paper_min_cases or PAPER_COMPARABLE_MIN_CASES
     data = json.loads(path.read_text(encoding="utf-8"))
     metrics_source = data.get("harness") if isinstance(data.get("harness"), dict) else data
     quality_gate = data.get("quality_gate") if isinstance(data.get("quality_gate"), dict) else {}
@@ -75,7 +82,7 @@ def summarize_report(path: Path, label: str) -> dict[str, Any]:
         or metrics_source.get("external_benchmark_ready")
         or quality_gate.get("paper_comparable_claim_ready")
     )
-    min_cases = PAPER_COMPARABLE_MIN_CASES.get(str(dataset), 1)
+    min_cases = paper_min_cases.get(str(dataset), 1)
     scale_ready = isinstance(case_count, (int, float)) and case_count >= min_cases
     row = {
         "label": label,
