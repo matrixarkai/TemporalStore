@@ -4011,6 +4011,7 @@ class MatrixArkLocalAdapter:
         entity_hashes = []
         profile_entity_hashes = []
         profile_promotion_summary: list[Json] = []
+        profile_dirty_hashes: list[int] = []
         for entity in extraction["entities"]:
             entity_hash = stable_hash(
                 f"{node_hash}:{entity['entity_type']}:{entity['entity_name']}"
@@ -4228,6 +4229,7 @@ class MatrixArkLocalAdapter:
                     dirty_reason="profile_entity_promoted",
                     propagate_depth=0,
                 )
+                profile_dirty_hashes.extend(_profile_dirty_hashes)
                 records_to_append.extend(profile_dirty_records)
 
         segment_hashes = []
@@ -4367,7 +4369,10 @@ class MatrixArkLocalAdapter:
         self.append_many(records_to_append)
         summary_refresh = {
             "status": "dirty_marked",
-            "dirty_hashes": dirty_hashes,
+            "dirty_hashes": ordered_unique_any(dirty_hashes + profile_dirty_hashes),
+            "session_dirty_hashes": dirty_hashes,
+            "profile_dirty_hashes": profile_dirty_hashes,
+            "profile_summary_refresh_required": bool(profile_dirty_hashes),
             "refresh_result": None,
             "async_required": True,
             "write_path": "coalesced_with_batch_extract",

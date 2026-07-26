@@ -314,6 +314,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("dirty_marked", threshold_layers["summary_refresh_status"])
             self.assertEqual(["assistant", "user"], threshold_layers["source_roles"])
             self.assertEqual(["assistant", "user"], second["auto_batch_extract_result"]["source_roles"])
+            threshold_refresh = second["auto_batch_extract_result"]["summary_refresh"]
+            self.assertTrue(threshold_refresh["session_dirty_hashes"])
+            self.assertTrue(threshold_refresh["profile_dirty_hashes"])
+            self.assertTrue(threshold_refresh["profile_summary_refresh_required"])
             threshold_promotions = second["auto_batch_extract_result"]["profile_promotion_summary"]
             self.assertGreaterEqual(len(threshold_promotions), 1)
             self.assertTrue(all(item.get("source_session_ids") == ["session_async"] for item in threshold_promotions))
@@ -364,6 +368,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(["tool"], idle_layers["source_roles"])
             self.assertEqual(["hook_boundary"], idle_layers["source_hook_types"])
             self.assertEqual(["PostToolUse"], idle_layers["source_codex_events"])
+            idle_refresh = idle["summary_refresh"]
+            self.assertTrue(idle_refresh["session_dirty_hashes"])
+            self.assertTrue(idle_refresh["profile_dirty_hashes"])
+            self.assertTrue(idle_refresh["profile_summary_refresh_required"])
             self.assertEqual(["tool"], idle["source_roles"])
             self.assertEqual(["hook_boundary"], idle["source_hook_types"])
             self.assertEqual(["PostToolUse"], idle["source_codex_events"])
@@ -727,6 +735,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(item.get("source_session_ids") == ["session_codex_1"] for item in promotion_summary))
             self.assertTrue(all(item.get("profile_entity_hash") for item in promotion_summary))
             self.assertTrue(all(item.get("session_entity_hash") for item in promotion_summary))
+            self.assertTrue(result["summary_refresh"]["session_dirty_hashes"])
+            self.assertTrue(result["summary_refresh"]["profile_dirty_hashes"])
+            self.assertTrue(result["summary_refresh"]["profile_summary_refresh_required"])
             records = adapter.read_all()
             session_entities = [
                 record
