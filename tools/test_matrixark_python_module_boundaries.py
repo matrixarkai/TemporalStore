@@ -295,6 +295,48 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("cross_session", summary_group["items"][0]["session_continuity"])
         self.assertEqual(3, event_group["items"][0]["tokens"])
 
+    def test_serving_pack_preserves_summary_cross_session_lineage(self) -> None:
+        core_mod = importlib.import_module("tools.matrixark_mcp_core")
+        pack = core_mod.compact_context_pack_for_serving(
+            {
+                "context_pack_id": "pack-2",
+                "selected_refs": [
+                    {
+                        "ref_type": "event",
+                        "text": "same-session working note.",
+                        "token_estimate": 3,
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                    },
+                    {
+                        "ref_type": "summary",
+                        "text": "profile summary: user prefers Ubuntu shared repo folders.",
+                        "token_estimate": 9,
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "extraction_phase": "final",
+                        "source_session_ids": ["session-a", "session-b"],
+                        "source_entity_hashes": [101, 202, 303],
+                        "source_roles": ["user", "assistant"],
+                        "source_hook_types": ["hook_boundary"],
+                        "source_codex_events": ["UserPromptSubmit", "Stop"],
+                    }
+                ],
+                "used_context_tokens": 9,
+            }
+        )
+
+        summary_group = next(group for group in pack["groups"] if group["type"] == "summary")
+        item = summary_group["items"][0]
+        self.assertEqual("user_profile", item["memory_scope"])
+        self.assertEqual("cross_session", item["session_continuity"])
+        self.assertEqual(["session-a", "session-b"], item["source_session_ids"])
+        self.assertEqual(3, item["source_entity_count"])
+        self.assertEqual(["user", "assistant"], item["source_roles"])
+        self.assertEqual(["hook_boundary"], item["source_hook_types"])
+        self.assertEqual(["UserPromptSubmit", "Stop"], item["source_codex_events"])
+        self.assertNotIn("source_entity_hashes", item)
+
     def test_shared_pack_builder_exposes_memory_layer_budget(self) -> None:
         builder_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pack_builder")
         metrics_mod = importlib.import_module("tools.matrixark_mcp_retrieve_metrics")
