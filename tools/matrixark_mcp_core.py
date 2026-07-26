@@ -5524,6 +5524,7 @@ def compact_context_pack_ref(ref: Json) -> Json:
         "citation",
         "source_ref",
         "resource_type",
+        "sharing_scope",
         "entity_type",
         "entity_name",
         "summary_type",
@@ -5870,6 +5871,25 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
             for field in ["audit_mode", "audit_sample_rate", "rich_replay_audit", "telemetry_record"]
             if visibility.get(field) not in (None, "", [], {})
         }
+    recall_policy = record.get("recall_policy", {})
+    if isinstance(recall_policy, dict):
+        pushdown = recall_policy.get("backend_retrieval_pushdown", {})
+        if isinstance(pushdown, dict):
+            compact_pushdown = {
+                field: pushdown.get(field)
+                for field in [
+                    "execution_mode",
+                    "loaded_records",
+                    "scanned_records",
+                    "dropped_by_type",
+                    "index_postings_read",
+                    "placement_partitions_touched",
+                    "source",
+                ]
+                if pushdown.get(field) not in (None, "", [], {})
+            }
+            if compact_pushdown:
+                compact["backend_retrieval_pushdown"] = compact_pushdown
     return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
 
 
@@ -5902,6 +5922,7 @@ def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> lis
         "source_chunk_hash",
         "access_decision",
         "access_scope",
+        "sharing_scope",
         "deployment_scope",
         "version_state",
         "stale_or_superseded",

@@ -5275,6 +5275,7 @@ class MatrixArkLocalAdapter:
                 text = f"resource {source_locator}: {record.get('text', '')}"
                 embedding_score = cosine(query_embedding, resource_embedding_vectors.get(ref_hash, embedding_for_text(text)))
                 business_type = str(record.get("resource_type") or "resource")
+            sharing_scope = sharing_scope_from_candidate(record)
             sparse_score = sparse_lexical_score(query_terms, text)
             keyword_score = len(query_terms.intersection(tokens(text)))
             node_score = node_scores.get(record.get("node_hash"), {}).get("score", 0.0)
@@ -5310,6 +5311,7 @@ class MatrixArkLocalAdapter:
                         "stale_or_superseded": is_superseded_version,
                         "access_decision": "allowed_by_registry_scope_before_scoring",
                         "access_scope": candidate_access_scope(record),
+                        "sharing_scope": sharing_scope,
                         "deployment_scope": record.get("deployment_scope", "local"),
                         "citation": citation,
                         "metadata": metadata,
