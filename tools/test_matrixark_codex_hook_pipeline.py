@@ -160,6 +160,15 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                             "role": "assistant",
                             "content": "Done. Commit d0152479 pushed; the Rust hook daemon log is /dev/null.",
                         },
+                        {
+                            "role": "tool",
+                            "content": (
+                                "Exit code: 0\n"
+                                "Ran 32 tests in 0.508s\n"
+                                "OK\n"
+                                "002fbd45034c69ce4487a64ab40d90135a55ae1a refs/heads/main"
+                            ),
+                        },
                     ],
                     "force": True,
                 }
@@ -201,6 +210,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("memory_scope:user_profile", index_names)
             self.assertIn("session_continuity:cross_session", index_names)
             self.assertTrue(any(str(name).startswith("entity_type:") for name in index_names))
+            self.assertIn("entity_type:tool_evidence", index_names)
+            self.assertTrue(
+                any(
+                    record.get("entity_type") == "tool_evidence"
+                    and "Exit code: 0" in str(record.get("state") or "")
+                    for record in profile_entities
+                )
+            )
             retrieved = adapter.retrieval_records(
                 scope={
                     "account_id": "acct_profile",
@@ -218,6 +235,33 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 and record.get("session_continuity") == "cross_session"
             ]
             self.assertTrue(retrieved_profile_entities)
+            pack = adapter.retrieve(
+                {
+                    "scope": {
+                        "account_id": "acct_profile",
+                        "tenant_id": "tenant_profile",
+                        "user_id": "user_profile",
+                        "session_id": "later_session",
+                    },
+                    "session_scope": "prefer",
+                    "query": "What tool evidence proves the hook extraction fix was pushed?",
+                    "max_context_tokens": 120,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 2},
+                }
+            )
+            selected = pack["selected_refs"]
+            self.assertLessEqual(pack["used_context_tokens"], 120)
+            self.assertLessEqual(len(selected), 2)
+            self.assertEqual(len(selected), pack["retrieval_metrics"]["selected_refs"])
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "entity"
+                    and ref.get("session_continuity") == "cross_session"
+                    and "Exit code: 0" in str(ref.get("text") or ref.get("summary_text") or "")
+                    for ref in selected
+                )
+            )
             self.assertTrue(
                 any(
                     record.get("record_type") == "context_summary_dirty"

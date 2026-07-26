@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -922,6 +923,42 @@ def latest_codex_tool_output_from_rollout(payload: Json) -> str:
     return ""
 
 
+TOOL_EVIDENCE_LINE_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"\bexit code:\s*-?\d+",
+        r"\bran\s+\d+\s+tests?\b",
+        r"\b(?:error|failed|failure|fatal|panic|exception|traceback)\b",
+        r"\b(?:passed|ok|success|succeeded|validated|verified)\b",
+        r"\b(?:commit|pushed|push|rebase|rebased|branch|origin/main|refs/heads/main)\b",
+        r"\b(?:test|tests|unittest|pytest|cargo test|cargo check|bash -n|py_compile)\b",
+        r"\b(?:warning|blocked|missing|skipped)\b",
+    ]
+]
+
+
+def selected_tool_evidence_text(text: str, *, max_chars: int = 4096, max_lines: int = 80) -> str:
+    """Keep memory-worthy tool evidence without storing huge stdout verbatim."""
+    compact = str(text or "").strip()
+    if not compact:
+        return ""
+    lines = [" ".join(line.split()) for line in compact.splitlines()]
+    selected: list[str] = []
+    for line in lines:
+        if not line:
+            continue
+        if any(pattern.search(line) for pattern in TOOL_EVIDENCE_LINE_PATTERNS):
+            selected.append(line[:360])
+        if len(selected) >= max_lines:
+            break
+    if not selected:
+        selected = [line[:360] for line in lines[: min(len(lines), 12)] if line]
+    evidence = "\n".join(selected).strip()
+    if len(evidence) > max_chars:
+        evidence = evidence[:max_chars].rstrip() + "\n[tool evidence truncated]"
+    return evidence
+
+
 
 def latest_codex_assistant_message_from_rollout(payload: Json) -> str:
     for path in _latest_rollout_files(payload):
@@ -1470,7 +1507,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
 
 def rollout_role_and_text(event: str, payload: Json) -> tuple[str, str, str, str]:
     if event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
-        text = latest_codex_tool_output_from_rollout(payload)
+        text = selected_tool_evidence_text(latest_codex_tool_output_from_rollout(payload))
         return "tool", text, "PreviousToolOutputBackfill", "previous-tool-output"
     if event in {"Stop", "PostCompact", "SubagentStop"}:
         text = latest_codex_assistant_message_from_rollout(payload)
@@ -1581,7 +1618,7 @@ def main() -> int:
         fallback_text = text
         text = ""
         for _attempt in range(12):
-            rollout_text = latest_codex_tool_output_from_rollout(payload)
+            rollout_text = selected_tool_evidence_text(latest_codex_tool_output_from_rollout(payload))
             if rollout_text:
                 text = rollout_text
                 break
@@ -1635,7 +1672,7 @@ def main() -> int:
 
         ingest = {}
         if args.event == "UserPromptSubmit" and not HOOK_FAST_ASYNC_INGEST:
-            previous_tool_output = latest_codex_tool_output_from_rollout(payload)
+            previous_tool_output = selected_tool_evidence_text(latest_codex_tool_output_from_rollout(payload))
             if previous_tool_output and previous_tool_output != text and not hook_warning:
                 backfill_result = trace_tool_call(
                     server,

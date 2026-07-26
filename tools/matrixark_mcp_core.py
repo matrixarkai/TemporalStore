@@ -579,6 +579,8 @@ def scope_key_matches_query(record_scope_key: str, query_scope: Json, explicit_k
             return False
     session_hash = int(query_scope.get("session_hash") or 0)
     if "session_id" in explicit_keys or "session_hash" in explicit_keys or session_hash:
+        if session_scope_mode(query_scope) == "prefer":
+            return True
         if session_hash and record_parts.get("s") != session_hash:
             return False
     return True
@@ -2337,6 +2339,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "entity_type:correction": "correction wrong changed updated instead",
     "classification:correction": "correction wrong changed update",
     "segment_topic:correction": "correction updated stale changed",
+    "entity_type:tool_evidence": "tool evidence tests passed failed exit code commit push rebase validation benchmark blocker",
     "source_type:message": "raw message dialogue evidence",
     "source_type:feedback": "feedback accepted rejected final answer",
     "source_type:resource": "resource document file pdf markdown text csv table runbook policy docs",
@@ -2534,6 +2537,25 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     lower = text.lower()
     source_event_ids = envelope.get("source_event_ids", [])
     source_refs = [str(ref) for ref in source_event_ids] if isinstance(source_event_ids, list) and source_event_ids else [str(index) for index, _ in enumerate(messages)]
+    tool_messages = [
+        item
+        for item in messages
+        if str(item.get("role") or "").lower() in {"tool", "tool_result"}
+        and str(item.get("content") or "").strip()
+    ]
+    tool_text = text_from_messages(tool_messages) if tool_messages else ""
+    if tool_text:
+        entities.append(
+            {
+                "entity_type": "tool_evidence",
+                "entity_name": "tool_evidence",
+                "state": summarize_text(tool_text, limit=220),
+                "confidence": 0.86,
+                "source_refs": source_refs,
+                "operator": normalize_entity_operator(None, "tool_evidence"),
+                "field_patches": [entity_patch("", summarize_text(tool_text, limit=180))],
+            }
+        )
     patterns = [
         ("preference", r"\b(?:prefer|prefers|favorite|likes?|loves?)\s+([^.;!?]{2,120})"),
         ("relationship", r"\b(?:friend|partner|mother|father|sister|brother|wife|husband|manager|teammate)\s+([^.;!?]{0,120})"),
@@ -2544,6 +2566,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         ("correction", r"\b(?:correction|correct|wrong|instead|updated|changed)\s+([^.;!?]{2,140})"),
         ("approval_state", r"\b(?:approved|approval)\s+([^.;!?]{2,140})"),
         ("confirmation", r"\b(?:yes|confirmed|approved|correct|looks good)\b([^.;!?]{0,120})"),
+        ("tool_evidence", r"\b(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|pushed|commit\s+[0-9a-f]{7,40}|error|failed|fatal)\b([^.;!?]{0,180})"),
     ]
     for entity_type, pattern in patterns:
         for match in re.finditer(pattern, text, re.IGNORECASE):
@@ -2615,6 +2638,7 @@ def infer_entity_field_patches(entity_type: str, value: str, text: str) -> list[
         "approval_state",
         "correction",
         "confirmation",
+        "tool_evidence",
     }
     if entity_type in evolving_entity_types and not patches and value:
         patches.append(entity_patch("", summarize_text(value, limit=180)))
@@ -2635,6 +2659,7 @@ def canonical_entity_name(entity_type: str, value: str) -> str:
         "family_profile",
         "correction",
         "confirmation",
+        "tool_evidence",
     }:
         return entity_type
     if entity_type == "approval_state":
@@ -2664,6 +2689,8 @@ def dedupe_entities(entities: list[Json]) -> list[Json]:
     for entity in entities:
         key = (entity.get("entity_type"), str(entity.get("entity_name", "")).lower())
         if key in seen:
+            if entity.get("entity_type") == "tool_evidence" and out[positions[key]].get("state"):
+                continue
             if entity.get("entity_name") == entity.get("entity_type"):
                 out[positions[key]] = entity
             continue
@@ -4120,6 +4147,8 @@ def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[
             context_index_name("classification", "correction"),
             context_index_name("segment_topic", "correction"),
         )
+    if re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
+        add_group(context_index_name("entity_type", "tool_evidence"))
     if re.search(r"\b(resource|document|doc|file|pdf|markdown|readme|csv|spreadsheet|excel|html|word|slides?|deck)\b", lower):
         add_group(context_index_name("source_type", "resource"), context_index_name("source_type", "resource_fact"))
     for alias, resource_type in RESOURCE_TYPE_QUERY_ALIASES.items():
@@ -4748,6 +4777,8 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
             return 0.10
         return 0.0
     if question_type == "evidence":
+        if ref_type == "entity" and event_type == "tool_evidence":
+            return 0.36
         if ref_type == "resource_chunk" and has_citation:
             return 0.30
         if ref_type == "event":

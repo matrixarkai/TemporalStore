@@ -309,6 +309,25 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertFalse(output["retrieve"]["additional_context_emitted"])
         self.assertTrue(output["lifecycle_stage"]["after_llm_ingest_only"])
 
+    def test_selected_tool_evidence_filters_large_stdout(self) -> None:
+        raw = "\n".join(
+            [f"noise line {index}" for index in range(40)]
+            + [
+                "Exit code: 0",
+                "Ran 32 tests in 0.508s",
+                "OK",
+                "To https://github.com/bjmeetsfo/TemporalStore.git",
+                "002fbd45034c69ce4487a64ab40d90135a55ae1a refs/heads/main",
+                "another verbose blob " * 200,
+            ]
+        )
+        evidence = hook.selected_tool_evidence_text(raw, max_chars=1000)
+        self.assertIn("Exit code: 0", evidence)
+        self.assertIn("Ran 32 tests", evidence)
+        self.assertIn("refs/heads/main", evidence)
+        self.assertNotIn("noise line 0", evidence)
+        self.assertLess(len(evidence), 1000)
+
     def test_strict_codex_stdout_removes_rich_audit_fields(self) -> None:
         prompt_output = {
             "status": "ok",
