@@ -1139,6 +1139,57 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(current_row["memory_layer_budget"]["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertLessEqual(current_row["used_remote_context_tokens"], current_row["remote_context_budget_tokens"])
 
+    def test_retrieval_flags_state_file_session_identity_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            event_log = Path(tmp_dir) / "matrixark-session-identity-warning.jsonl"
+            adapter = MatrixArkLocalAdapter(event_log)
+            scope = {
+                "account_id": "acct_session_identity",
+                "tenant_id": "tenant_session_identity",
+                "user_id": "user_session_identity",
+                "session_id": "codex:local:fallback",
+            }
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "session_scope": "prefer",
+                    "query": "What should retrieval report when Codex session identity is workspace fallback?",
+                    "max_context_tokens": 120,
+                    "audit_mode": "telemetry_only",
+                    "include_retrieval_debug": True,
+                    "metadata": {
+                        "retrieval_source": "codex_hook_retrieve",
+                        "codex_event": "UserPromptSubmit",
+                        "lifecycle_stage": "before_llm_retrieve",
+                        "session_id_source": "state_file_created",
+                    },
+                }
+            )
+
+            self.assertIn("session_identity_fallback:state_file_created", pack["quality_warnings"])
+            identity_policy = pack["recall_policy"]["session_identity"]
+            self.assertEqual("state_file_created", identity_policy["session_id_source"])
+            self.assertTrue(identity_policy["fallback_session_identity"])
+            self.assertFalse(identity_policy["strong_session_identity"])
+            self.assertEqual("workspace_fallback_may_merge_multiple_codex_tasks", identity_policy["risk"])
+
+            telemetry_rows = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") == "context_pack_telemetry"
+                and record.get("context_pack_id") == pack["context_pack_id"]
+            ]
+            self.assertTrue(telemetry_rows)
+            telemetry = telemetry_rows[-1]
+            self.assertEqual(1, telemetry["quality_warning_count"])
+            self.assertIn("session_identity_fallback:state_file_created", telemetry["quality_warnings"])
+            self.assertEqual("state_file_created", telemetry["retrieval_request_metadata"]["session_id_source"])
+
+            dashboard = adapter.ingestion_dashboard({"scope": scope, "table": "context_packs", "page_size": 5})
+            rows = [row for row in dashboard["rows"] if row.get("context_pack_id") == pack["context_pack_id"]]
+            self.assertTrue(rows)
+            self.assertIn("session_identity_fallback:state_file_created", rows[-1]["quality_warnings"])
+
     def test_async_resource_import_uses_bounded_worker_queue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, mock.patch.dict(
             os.environ,
