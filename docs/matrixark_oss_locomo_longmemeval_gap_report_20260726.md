@@ -43,6 +43,7 @@ This report is intentionally conservative: it records what ran locally, what imp
 - Added fail-closed unsupported-case labeling for LoCoMo rows whose answer terms are absent from the converted source text and which have no evidence refs. The current local LoCoMo conversion flags three such rows: `conv_26-q31`, `conv_26-q47`, and `conv_50-q40`.
 - Fixed Rust all-source replay for empty-query external benchmark mode so source-order replay no longer prunes event-expanded nodes before scoring. Normal query retrieval keeps the query-aware event limit.
 - Ran bounded 20-question LoCoMo and 20-record LongMemEval_s OSS-reader passes through Rust TemporalStore full replay with local Ollama Qwen. Retrieval stayed perfect in both runs; Qwen 1.5B reader quality remains the active gap.
+- Ran the same bounded 20-question LoCoMo pass with Ollama Qwen 7B. Retrieval stayed perfect and reader hit moved only from 0.35 to 0.40, while p95 reader latency rose to about 90.21 seconds with two reader timeouts. This confirms that the current local CPU/Ollama Qwen path is not yet a competitive full-benchmark reader, even when the retrieval layer finds the evidence.
 - Kept benchmark scoring fail-closed: paper-comparable claims remain disabled until full datasets and external baselines run under the same budget/model config.
 
 ## Local OSS Readers
@@ -83,6 +84,7 @@ The local full input files are `/root/matrixark_benchmarks/data/locomo10.json` a
 | Qwen 7B Ollama LoCoMo 5-question reader-packed strict-date sample | 5 | 1.000 | 0.200 | 94.20% | 111.56 ms | 5.22 s | Reused full Rust TemporalStore replay | Gate-passed reader, but strict benchmark quality still weak; date hallucination no longer overcounted |
 | Qwen 7B Ollama LongMemEval_s 5-record reader-packed sample | 5 | 1.000 | 0.200 | 98.01% | 133.43 ms | 55.22 s | Rust TemporalStore ready | Retrieval/token savings good, reader latency and answer quality still not competitive |
 | Qwen 1.5B Ollama LoCoMo 20-question compact bounded sample | 20 | 1.000 | 0.350 | 78.96% | 110.67 ms | 17.77 s | Rust TemporalStore full replay ready | Bounded local OSS run: no reader timeouts, retrieval perfect, reader quality weak |
+| Qwen 7B Ollama LoCoMo 20-question compact bounded sample | 20 | 1.000 | 0.400 | 78.96% | 90.79 ms | 90.21 s | Rust TemporalStore full replay ready | Stronger local model gave only a small quality gain and had two reader timeouts on CPU/Ollama |
 | Qwen 1.5B Ollama LongMemEval_s 20-record compact bounded sample | 20 | 1.000 | 0.500 | 98.85% | 252.35 ms | 1.40 s | Rust TemporalStore full replay ready | Bounded local OSS run: retrieval perfect, token savings very high, reader quality below competitive threshold |
 | MiniLM LoCoMo 3 conversations | 387 | 1.000 | 0.388 | 33.54% | 1.47 ms | 228.04 ms | Rust TemporalStore ready | Diagnostic |
 | MiniLM LongMemEval_s 50 | 50 | 0.980 | 0.560 | 98.59% | 250.06 ms | 305.90 ms | Rust TemporalStore ready | Diagnostic |
@@ -224,17 +226,19 @@ Results:
 | Dataset | Cases | Backend | Reader | Retrieval Hit@K | Reader Hit | Token Reduction | Reader Errors | Notes |
 |---|---:|---|---|---:|---:|---:|---:|---|
 | LoCoMo subset | 20 | Rust TemporalStore full replay | Ollama `qwen2.5:1.5b` | 1.000 | 0.350 | 78.96% | 0 | Retrieval is green; reader misses strict temporal/person facts. |
+| LoCoMo subset | 20 | Rust TemporalStore full replay | Ollama `qwen2.5:7b` | 1.000 | 0.400 | 78.96% | 2 | Retrieval is green; larger local model barely improves strict quality and is too slow on CPU/Ollama. |
 | LongMemEval_s subset | 20 | Rust TemporalStore full replay | Ollama `qwen2.5:1.5b` | 1.000 | 0.500 | 98.85% | 0 | Retrieval and token savings are green; reader quality is below the final threshold. |
 
 Evidence files:
 
 - `/tmp/matrixark_oss_goal_runs/qwen_subset_20260726/locomo_qwen15b_20_oss_reader_compact_report.json`
+- `/tmp/matrixark_oss_goal_runs/qwen_subset_20260726/locomo_qwen7b_20_oss_reader_compact_report.json`
 - `/tmp/matrixark_oss_goal_runs/qwen_subset_20260726/longmem_qwen15b_20_oss_reader_compact_bounded_report.json`
 - `/tmp/matrixark_oss_goal_runs/qwen_subset_20260726/locomo_qwen20_backend_fullreplay_rerun.json`
 
 The earlier Qwen 7B bounded run failed because the reader call had a 20-second curl limit, while the local CPU/Ollama path can take more than that once context is included. The fixed bounded run uses a compact 4,000-character reader context and a 90-second timeout. That makes the result a model-quality signal instead of a transport-timeout signal.
 
-The next quality gap is not "find the evidence." The evidence is retrieved. The next gap is to make the reader see and copy the exact answer span reliably, preferably using a stronger local Qwen 7B/14B or vLLM-backed reader with the same token budget and no deterministic fallback.
+The next quality gap is not "find the evidence." The evidence is retrieved. The next gap is to make the reader see and copy the exact answer span reliably. On this machine, merely switching from Qwen 1.5B to Qwen 7B did not solve that and made latency much worse, so the next credible path is either GPU/vLLM serving with a stronger model, or a better extractive/reader-pack stage that is validated against the same no-fallback OSS reader policy.
 
 ## Evidence Files
 
