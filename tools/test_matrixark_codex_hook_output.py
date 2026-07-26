@@ -461,6 +461,48 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(1, auto_batch["extraction_context_event_count"])
         self.assertTrue(auto_batch["trigger_evidence"]["threshold_ready"])
         self.assertFalse(auto_batch["trigger_evidence"]["idle_ready"])
+        decision = item["result"]["auto_batch_extract_decision"]
+        self.assertEqual("committed", decision["decision"])
+        self.assertEqual("committed", decision["auto_batch_extract_status"])
+
+    def test_ingest_tool_call_trace_records_auto_batch_deferred_decision(self) -> None:
+        class Server:
+            def handle(self, request):
+                self.request = request
+                result = {
+                    "status": "accepted",
+                    "event_id_hash": 11,
+                    "node_hash": 22,
+                    "hook_captured": True,
+                    "session_buffer": {
+                        "registered": True,
+                        "pending_event_count": 1,
+                        "threshold_messages": 2,
+                        "threshold_ready": False,
+                        "idle_commit_timeout_ms": 300000,
+                        "idle_ready": False,
+                        "auto_batch_extract": True,
+                        "boundary_commit_requested": False,
+                    },
+                    "auto_batch_extract_result": {},
+                }
+                return {"result": {"content": [{"text": json.dumps(result)}]}}
+
+        trace = {"tool_calls": []}
+        result = hook.trace_tool_call(Server(), "matrixark_ingest", {"messages": []}, trace)
+
+        self.assertEqual("accepted", result["status"])
+        item = trace["tool_calls"][0]
+        self.assertEqual("ok", item["status"])
+        decision = item["result"]["auto_batch_extract_decision"]
+        self.assertEqual("deferred", decision["decision"])
+        self.assertEqual("threshold_not_reached", decision["reason"])
+        self.assertEqual(1, decision["pending_event_count"])
+        self.assertEqual(2, decision["threshold_messages"])
+        self.assertFalse(decision["threshold_ready"])
+        self.assertFalse(decision["idle_ready"])
+        self.assertTrue(decision["auto_batch_extract"])
+        self.assertNotIn("batch me into entities", json.dumps(decision))
 
     def test_user_prompt_emit_codex_additional_context_from_selected_refs(self) -> None:
         args = Namespace(session_id="codex-session-1")
