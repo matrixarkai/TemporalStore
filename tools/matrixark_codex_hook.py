@@ -167,6 +167,75 @@ def retrieval_budget_summary_from_retrieve(pack: Json | None) -> Json:
     return budget
 
 
+def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | None = None) -> Json:
+    if not isinstance(pack, dict):
+        return {}
+    refs = refs if refs is not None else _selected_refs_from_retrieve(pack)
+    raw_counts = pack.get("selected_ref_counts")
+    selected_ref_counts: Json = {}
+    if isinstance(raw_counts, dict):
+        for key, value in raw_counts.items():
+            try:
+                count = int(value)
+            except (TypeError, ValueError):
+                continue
+            if count > 0:
+                selected_ref_counts[str(key)] = count
+    if not selected_ref_counts:
+        for ref in refs:
+            ref_class = str(ref.get("context_class") or ref.get("ref_type") or ref.get("type") or "ref")
+            selected_ref_counts[ref_class] = int(selected_ref_counts.get(ref_class, 0)) + 1
+    recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
+    continuity = recall_policy.get("session_continuity") if isinstance(recall_policy.get("session_continuity"), dict) else {}
+    local_policy = pack.get("local_context_policy") if isinstance(pack.get("local_context_policy"), dict) else {}
+    layer_summary: Json = {"selected_ref_counts": selected_ref_counts}
+    for source_key, output_key in [
+        ("same_session_selected_ref_count", "same_session_refs"),
+        ("cross_session_selected_ref_count", "cross_session_refs"),
+        ("entity_bridge_selected_ref_count", "entity_bridge_refs"),
+    ]:
+        try:
+            layer_summary[output_key] = int(continuity.get(source_key) or 0)
+        except (TypeError, ValueError):
+            layer_summary[output_key] = 0
+    try:
+        layer_summary["local_context_refs"] = int(local_policy.get("local_context_count") or 0)
+    except (TypeError, ValueError):
+        layer_summary["local_context_refs"] = 0
+    return layer_summary
+
+
+def _format_retrieval_layer_summary(layer_summary: Json) -> str:
+    if not isinstance(layer_summary, dict) or not layer_summary:
+        return ""
+    counts = layer_summary.get("selected_ref_counts")
+    count_bits = []
+    if isinstance(counts, dict):
+        for key in sorted(counts):
+            try:
+                value = int(counts[key])
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                count_bits.append(f"{key}={value}")
+    continuity_bits = []
+    for key in ["same_session_refs", "cross_session_refs", "entity_bridge_refs", "local_context_refs"]:
+        try:
+            value = int(layer_summary.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            continuity_bits.append(f"{key}={value}")
+    if not count_bits and not continuity_bits:
+        return ""
+    details = []
+    if count_bits:
+        details.append(", ".join(count_bits))
+    if continuity_bits:
+        details.append(", ".join(continuity_bits))
+    return "Layer summary: " + "; ".join(details) + "."
+
+
 def normalized_event_name(event: str) -> str:
     return "".join(ch for ch in event.lower() if ch.isalnum() or ch == "_")
 
@@ -267,6 +336,7 @@ def additional_context_from_retrieve(
     quality_warnings = pack.get("quality_warnings")
     retrieval_metrics = pack.get("retrieval_metrics")
     budget = retrieval_budget_summary_from_retrieve(pack)
+    layer_summary = retrieval_layer_summary_from_retrieve(pack, refs)
     budget_bits = [
         f"used_remote_tokens={budget.get('used_remote_context_tokens', 0)}",
     ]
@@ -293,6 +363,9 @@ def additional_context_from_retrieve(
         ),
         "Budget summary: " + ", ".join(budget_bits) + ".",
     ]
+    formatted_layer_summary = _format_retrieval_layer_summary(layer_summary)
+    if formatted_layer_summary:
+        lines.append(formatted_layer_summary)
     if isinstance(quality_warnings, list) and quality_warnings:
         warnings = []
         for warning in quality_warnings[:4]:
