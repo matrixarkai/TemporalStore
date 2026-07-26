@@ -62,6 +62,12 @@ def entity_candidate(
     node_score: float,
     text: str,
 ) -> Json:
+    source_entity_hashes = record.get("source_entity_hashes", [])
+    source_session_ids = record.get("source_session_ids", [])
+    is_profile_entity_bridge = (
+        str(record.get("memory_scope") or "") == "user_profile"
+        and str(record.get("session_continuity") or "") == "cross_session"
+    )
     return {
         "ref_type": "entity",
         "ref_hash": record["entity_hash"],
@@ -90,8 +96,16 @@ def entity_candidate(
         "source_roles": record.get("source_roles", []),
         "source_hook_types": record.get("source_hook_types", []),
         "source_codex_events": record.get("source_codex_events", []),
-        "source_session_ids": record.get("source_session_ids", []),
-        "source_entity_hashes": record.get("source_entity_hashes", []),
+        "source_session_ids": source_session_ids,
+        "source_entity_hashes": source_entity_hashes,
+        "profile_current_state_representative": is_profile_entity_bridge,
+        "current_state_source_session_count": len(source_session_ids) if isinstance(source_session_ids, list) else 0,
+        "current_state_source_entity_count": len(source_entity_hashes) if isinstance(source_entity_hashes, list) else 0,
+        "current_state_policy": (
+            "profile_entity_bridge_preferred_over_session_local_history"
+            if is_profile_entity_bridge
+            else ""
+        ),
         "memory_scope": record.get("memory_scope", ""),
         "session_continuity": record.get("session_continuity", ""),
         "metadata": record.get("metadata", {}),

@@ -1130,6 +1130,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("user_profile", current_ref["memory_scope"])
             self.assertEqual("cross_session", current_ref["session_continuity"])
             self.assertEqual(["session_profile_update_1", "session_profile_update_2"], current_ref["source_session_ids"])
+            self.assertTrue(current_ref["profile_current_state_representative"])
+            self.assertEqual(
+                "profile_entity_bridge_preferred_over_session_local_history",
+                current_ref["current_state_policy"],
+            )
+            self.assertEqual(2, current_ref["current_state_source_session_count"])
+            self.assertGreaterEqual(current_ref["current_state_source_entity_count"], 2)
+            self.assertGreaterEqual(current_ref["source_entity_count"], 2)
             self.assertIn("bbb222", current_ref["text"])
             current_metrics = current_pack["retrieval_metrics"]
             self.assertGreaterEqual(current_metrics["stale_dropped_refs"], 1)

@@ -5617,6 +5617,8 @@ class MatrixArkLocalAdapter:
             if not admit_candidate_for_node(record):
                 continue
             text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
+            source_entity_hashes = record.get("source_entity_hashes", [])
+            source_session_ids = record.get("source_session_ids", [])
             sparse_score = sparse_lexical_score(query_terms, text)
             keyword_score = len(query_terms.intersection(tokens(text)))
             embedding_score = cosine(query_embedding, entity_embedding_vectors.get(record["entity_hash"], []))
@@ -5649,8 +5651,16 @@ class MatrixArkLocalAdapter:
                 "source_roles": record.get("source_roles", []),
                 "source_hook_types": record.get("source_hook_types", []),
                 "source_codex_events": record.get("source_codex_events", []),
-                "source_session_ids": record.get("source_session_ids", []),
-                "source_entity_hashes": record.get("source_entity_hashes", []),
+                "source_session_ids": source_session_ids,
+                "source_entity_hashes": source_entity_hashes,
+                "profile_current_state_representative": is_profile_entity_bridge,
+                "current_state_source_session_count": len(source_session_ids) if isinstance(source_session_ids, list) else 0,
+                "current_state_source_entity_count": len(source_entity_hashes) if isinstance(source_entity_hashes, list) else 0,
+                "current_state_policy": (
+                    "profile_entity_bridge_preferred_over_session_local_history"
+                    if is_profile_entity_bridge
+                    else ""
+                ),
                 "metadata": record.get("metadata", {}),
                 "scope": candidate_access_scope(record),
                 "updated_at_ms": record.get("updated_at_ms", now_ms()),

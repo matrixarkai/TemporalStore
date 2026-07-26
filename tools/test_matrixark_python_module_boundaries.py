@@ -818,6 +818,12 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "session_continuity": "cross_session",
                 "entity_type": "decision",
                 "extraction_phase": "final",
+                "source_session_ids": ["session-a", "session-b"],
+                "source_entity_hashes": [11, 12],
+                "profile_current_state_representative": True,
+                "current_state_policy": "profile_entity_bridge_preferred_over_session_local_history",
+                "current_state_source_session_count": 2,
+                "current_state_source_entity_count": 2,
             }
         ]
         dropped = {
@@ -846,6 +852,14 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             dropped_over_budget=dropped,
             debug_refs=False,
         )
+        self.assertTrue(serving_selected[0]["profile_current_state_representative"])
+        self.assertEqual(
+            "profile_entity_bridge_preferred_over_session_local_history",
+            serving_selected[0]["current_state_policy"],
+        )
+        self.assertEqual(2, serving_selected[0]["current_state_source_session_count"])
+        self.assertEqual(2, serving_selected[0]["current_state_source_entity_count"])
+        self.assertEqual(2, serving_selected[0]["source_entity_count"])
         pack = builder_mod.build_context_pack(
             context_pack_id=124,
             selected=selected,
