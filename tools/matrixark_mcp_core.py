@@ -6285,6 +6285,16 @@ def access_scope_matches_before_scoring(record: Json, query_scope: Json) -> bool
             if query_value and record_value and query_value != record_value:
                 return False
         return True
+    if (
+        str(record.get("memory_scope") or "") == "user_profile"
+        and str(record.get("session_continuity") or "") == "cross_session"
+    ):
+        for field in ["account_id", "account_hash", "tenant_id", "tenant_hash", "user_id", "user_hash"]:
+            query_value = query_scope.get(field)
+            record_value = record_scope.get(field)
+            if query_value and record_value and query_value != record_value:
+                return False
+        return True
     return scope_matches(record_scope, query_scope)
 
 

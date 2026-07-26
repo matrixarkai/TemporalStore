@@ -3482,11 +3482,15 @@ class MatrixArkLocalAdapter:
                 event_rows.append((index, message, event_text, event_id_hash))
             event_vectors = embeddings_for_texts([event_text for _index, _message, event_text, _event_id_hash in event_rows])
             for (_index, message, event_text, event_id_hash), event_vector in zip(event_rows, event_vectors):
+                event_time_ms = int(envelope["ingestion_time_ms"])
                 records_to_append.append(
                     {
                         "record_type": "context_event",
                         "event_id_hash": event_id_hash,
+                        "event_time_ms": event_time_ms,
+                        "event_time_key": f"{event_time_ms:020d}:{event_id_hash}",
                         "batch_id_hash": batch_id_hash,
+                        "segment_hash": segment_hash_by_position.get(_index),
                         "parent_segment_hash": segment_hash_by_position.get(_index),
                         "parent_segment_hashes": segment_hashes_by_position.get(_index, []),
                         "node_hash": node_hash,
@@ -3529,7 +3533,23 @@ class MatrixArkLocalAdapter:
                     }
                 )
 
+        profile_scope = {key: value for key, value in envelope["scope"].items() if key != "session_id"}
+        profile_node_path: list[str] = []
+        if profile_scope.get("tenant_id") and profile_scope.get("user_id"):
+            profile_node_path = [
+                f"tenant:{profile_scope.get('tenant_id')}",
+                f"user:{profile_scope.get('user_id')}",
+                "profile:long_term_memory",
+            ]
+            self.ensure_context_node_path(
+                node_path=profile_node_path,
+                scope=profile_scope,
+                updated_at_ms=envelope["ingestion_time_ms"],
+            )
+        profile_node_hash = stable_hash("/".join(profile_node_path)) if profile_node_path else 0
+        source_session_id = str(envelope["scope"].get("session_id") or "")
         entity_hashes = []
+        profile_entity_hashes = []
         for entity in extraction["entities"]:
             entity_hash = stable_hash(
                 f"{node_hash}:{entity['entity_type']}:{entity['entity_name']}"
@@ -3549,6 +3569,7 @@ class MatrixArkLocalAdapter:
                     "node_hash": node_hash,
                     "node_path": node_path,
                     "scope": envelope["scope"],
+                    "access_scope": envelope["scope"],
                     "entity_type": updated_entity["entity_type"],
                     "entity_name": updated_entity["entity_name"],
                     "state": updated_entity["state"],
@@ -3560,6 +3581,8 @@ class MatrixArkLocalAdapter:
                     "field_patches": updated_entity.get("field_patches", []),
                     "patch_results": updated_entity.get("patch_results", []),
                     "update_mode": updated_entity.get("update_mode", ""),
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
@@ -3598,6 +3621,92 @@ class MatrixArkLocalAdapter:
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
+            if profile_node_hash:
+                profile_entity_hash = stable_hash(
+                    f"{profile_node_hash}:{updated_entity['entity_type']}:{updated_entity['entity_name']}"
+                )
+                previous_profile_entity = self.find_latest_entity(
+                    node_hash=profile_node_hash,
+                    entity_type=updated_entity["entity_type"],
+                    entity_name=updated_entity["entity_name"],
+                )
+                promoted_entity = apply_entity_patches(previous_profile_entity, updated_entity)
+                profile_entity_hashes.append(profile_entity_hash)
+                records_to_append.append(
+                    {
+                        "record_type": "context_entity",
+                        "entity_hash": profile_entity_hash,
+                        "batch_id_hash": batch_id_hash,
+                        "node_hash": profile_node_hash,
+                        "node_path": profile_node_path,
+                        "scope": profile_scope,
+                        "access_scope": profile_scope,
+                        "entity_type": promoted_entity["entity_type"],
+                        "entity_name": promoted_entity["entity_name"],
+                        "state": promoted_entity["state"],
+                        "previous_state": promoted_entity.get("previous_state", ""),
+                        "confidence": promoted_entity["confidence"],
+                        "operator": promoted_entity["operator"],
+                        "source_refs": promoted_entity["source_refs"],
+                        "source_event_ids": source_event_ids,
+                        "source_session_ids": [source_session_id] if source_session_id else [],
+                        "source_entity_hashes": [entity_hash],
+                        "source_batch_id_hash": batch_id_hash,
+                        "field_patches": promoted_entity.get("field_patches", []),
+                        "patch_results": promoted_entity.get("patch_results", []),
+                        "update_mode": promoted_entity.get("update_mode", ""),
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "promoted_from_memory_scope": "session",
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
+                profile_entity_embedding_text = promoted_entity["entity_type"] + " " + promoted_entity["state"]
+                profile_entity_vector = embedding_for_text(profile_entity_embedding_text)
+                records_to_append.append(
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "entity_state",
+                        "ref_type": "entity",
+                        "ref_hash": profile_entity_hash,
+                        "node_hash": profile_node_hash,
+                        "node_path": profile_node_path,
+                        "dim": len(profile_entity_vector),
+                        "model": embedding_model_name(),
+                        "vector": profile_entity_vector,
+                        "scope": profile_scope,
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
+                for index_name in (
+                    f"entity_type:{promoted_entity['entity_type']}",
+                    "memory_scope:user_profile",
+                    "session_continuity:cross_session",
+                ):
+                    profile_index = context_index_posting_record(
+                        index_name=index_name,
+                        data_model="context_profile_entity",
+                        ref_type="entity",
+                        ref_hashes=[profile_entity_hash],
+                        batch_id_hash=batch_id_hash,
+                        node_hash=profile_node_hash,
+                        scope=profile_scope,
+                        updated_at_ms=envelope["ingestion_time_ms"],
+                    )
+                    profile_index["access_scope"] = profile_scope
+                    profile_index.pop("index_hash", None)
+                    records_to_append.append(profile_index)
+                _profile_dirty_hashes, profile_dirty_records = self.node_summary_dirty_records(
+                    node_path=profile_node_path,
+                    scope=profile_scope,
+                    updated_at_ms=envelope["ingestion_time_ms"],
+                    source_ref_type="entity",
+                    source_hash_field="source_entity_hash",
+                    source_hash=profile_entity_hash,
+                    dirty_reason="profile_entity_promoted",
+                    propagate_depth=0,
+                )
+                records_to_append.extend(profile_dirty_records)
 
         segment_hashes = []
         for segment in extraction["segments"]:
@@ -3700,6 +3809,7 @@ class MatrixArkLocalAdapter:
                     "events": 0 if derive_from_existing_events else len(envelope["messages"]),
                     "source_events": len(event_hashes),
                     "entities": len(entity_hashes),
+                    "profile_entities": len(profile_entity_hashes),
                     "segments": len(segment_hashes),
                     "summaries": 1,
                     "indexes": len(batch_index_terms),
@@ -3748,6 +3858,7 @@ class MatrixArkLocalAdapter:
             "source_event_count": len(event_hashes),
             "raw_events_duplicated": not derive_from_existing_events,
             "entities_written": len(entity_hashes),
+            "profile_entities_written": len(profile_entity_hashes),
             "segments_written": len(segment_hashes),
             "summary_hash": summary_hash,
             "summary_refresh": summary_refresh,
