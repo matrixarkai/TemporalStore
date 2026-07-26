@@ -63,6 +63,9 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
             {"record_type": "context_embedding", "embedding_type": "entity_state", "ref_type": "entity", "ref_hash": 301},
             {"record_type": "context_index", "index_name": "memory_scope:user_profile", "data_model": "context_profile_entity", "ref_hashes": [301]},
             {"record_type": "context_summary_dirty", "dirty_hash": 401, "status": "dirty", "updated_at_ms": 200},
+            {"record_type": "context_embedding", "embedding_type": "event_text", "ref_type": "event", "ref_hash": 101},
+            {"record_type": "context_embedding", "embedding_type": "entity_state", "ref_type": "entity", "ref_hash": 201},
+            {"record_type": "context_embedding", "embedding_type": "summary_text", "ref_type": "summary", "ref_hash": 501},
             {"record_type": "context_summary", "summary_type": "batch_l0", "summary_hash": 501, "summary_text": "Repo location preference."},
         ]
 
@@ -71,7 +74,7 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
             scope={"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "codex:session-c"},
         )
 
-        self.assertEqual("ok", report["status"])
+        self.assertEqual("rebuild_required", report["status"])
         self.assertTrue(report["hot_memory_persisted"])
         self.assertTrue(report["cache_rebuild"]["read_cache_rebuildable_from_durable_log"])
         self.assertTrue(report["cache_rebuild"]["retrieval_cache_rebuildable_from_hot_records"])
@@ -80,6 +83,9 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertEqual(["codex:session-a", "codex:session-b"], report["memory_hierarchy"]["source_session_ids"])
         self.assertEqual(1, report["derived_views"]["index_posting_count"])
         self.assertEqual(1, report["derived_views"]["dirty_summary_count"])
+        self.assertEqual("rebuild_required", report["derived_views"]["readiness"]["status"])
+        self.assertEqual(["derived:summaries_dirty"], report["warnings"])
+        self.assertIn("run matrixark_refresh_summaries for dirty context nodes", report["recovery_actions"])
         self.assertEqual("ok", report["retrieval_smoke"]["status"])
         self.assertEqual(1, report["retrieval_smoke"]["profile_entity_count"])
         self.assertTrue(report["retrieval_smoke"]["profile_entity_bridge_rebuildable"])
@@ -103,17 +109,44 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
             self.assertEqual("repair_required", report["status"])
             self.assertIn("recovery:corrupt_tail_detected", report["blockers"])
 
+    def test_recovery_report_flags_missing_derived_views_without_log_blocker(self) -> None:
+        report = matrixark_local_recovery_report(
+            [
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 1,
+                    "scope": {"account_id": "a"},
+                    "text": "user: remember this",
+                }
+            ],
+            scope={"account_id": "a"},
+        )
+
+        self.assertEqual("rebuild_required", report["status"])
+        self.assertEqual([], report["blockers"])
+        self.assertIn("derived:embeddings_missing_or_stale", report["warnings"])
+        self.assertIn("derived:indexes_missing", report["warnings"])
+        self.assertIn("derived:summaries_missing", report["warnings"])
+        self.assertGreaterEqual(len(report["recovery_actions"]), 3)
+
     def test_recovery_cli_accepts_scope_json_for_retrieval_smoke(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             event_log = Path(tmp_dir) / "matrixark.jsonl"
             event_log.write_text(
-                json.dumps(
-                    {
-                        "record_type": "context_event",
-                        "event_id_hash": 1,
-                        "scope": {"account_id": "a"},
-                        "text": "user: recover this event",
-                    }
+                "\n".join(
+                    json.dumps(record)
+                    for record in [
+                        {
+                            "record_type": "context_event",
+                            "event_id_hash": 1,
+                            "scope": {"account_id": "a"},
+                            "text": "user: recover this event",
+                        },
+                        {"record_type": "context_embedding", "embedding_type": "event_text", "ref_type": "event", "ref_hash": 1},
+                        {"record_type": "context_index", "index_name": "event", "data_model": "context_event", "ref_hashes": [1]},
+                        {"record_type": "context_summary", "summary_type": "batch_l0", "summary_hash": 2, "summary_text": "recover this event"},
+                        {"record_type": "context_embedding", "embedding_type": "summary_text", "ref_type": "summary", "ref_hash": 2},
+                    ]
                 )
                 + "\n",
                 encoding="utf-8",
@@ -131,7 +164,7 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
             )
             report = json.loads(output)
 
-            self.assertEqual("ok", report["status"])
+            self.assertEqual("ready", report["status"])
             self.assertTrue(report["retrieval_smoke"]["enabled"])
             self.assertEqual("ok", report["retrieval_smoke"]["status"])
             self.assertEqual(1, report["retrieval_smoke"]["context_event_count"])
