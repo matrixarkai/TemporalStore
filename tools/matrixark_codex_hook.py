@@ -1620,15 +1620,21 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
     event_id_hash = stable_int_hash(f"{now}:{role}:{session_id}:{text}:{uuid.uuid4().hex}")
     storage_options = hook_storage_options()
     messages = [{"role": role, "content": text}]
+    hook_type = hook_type_for_event(args.event)
     metadata: Json = {
         "source": "codex_hook_fast_async",
         "codex_event": args.event,
+        "hook_type": hook_type,
+        "source_role": role,
         "agent_context": agent_context,
     }
     retention = hook_retention_fields(text=text, role=role, now_ms=now)
     raw_record: Json = {
         "record_type": "agent_message",
         "source_kind": "message",
+        "source_role": role,
+        "hook_type": hook_type,
+        "codex_event": args.event,
         "messages": messages,
         "scope": scope,
         "tenant_id": tenant_id,
@@ -1654,6 +1660,9 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "event_type": "pending_async",
         "status": "pending",
         "source_kind": "message",
+        "source_role": role,
+        "hook_type": hook_type,
+        "codex_event": args.event,
         "scope": scope,
         "tenant_id": tenant_id,
         "user_id": user_id,
@@ -1661,6 +1670,9 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "metadata": metadata,
         "envelope": {
             "kind": "message",
+            "source_role": role,
+            "hook_type": hook_type,
+            "codex_event": args.event,
             "messages": messages,
             "scope": scope,
             "metadata": metadata,
