@@ -382,7 +382,15 @@ class MatrixArkLocalAdapter:
     def append_audit(self, record: Json) -> None:
         self.append(record)
 
-    def telemetry_record_for_context_pack(self, pack: Json, *, query: str, scope: Json, audit_mode: str) -> Json:
+    def telemetry_record_for_context_pack(
+        self,
+        pack: Json,
+        *,
+        query: str,
+        scope: Json,
+        audit_mode: str,
+        request_metadata: Json | None = None,
+    ) -> Json:
         recall_policy = pack.get("recall_policy", {}) if isinstance(pack.get("recall_policy"), dict) else {}
         retrieval_metrics = pack.get("retrieval_metrics", {}) if isinstance(pack.get("retrieval_metrics"), dict) else {}
         memory_layer_budget = (
@@ -403,7 +411,7 @@ class MatrixArkLocalAdapter:
             dropped_ref_count = len(dropped_refs.get("refs") or [])
         if not dropped_ref_count:
             dropped_ref_count = sum(value for key, value in dropped_refs.items() if isinstance(value, int) and key not in {"deadline_exceeded"})
-        return {
+        record = {
             "record_type": "context_pack_telemetry",
             "context_pack_id": pack.get("context_pack_id", ""),
             "query_hash": stable_hash(query),
@@ -436,6 +444,21 @@ class MatrixArkLocalAdapter:
             "stage_latency_budgets": stage_budgets,
             "created_at_ms": now_ms(),
         }
+        if request_metadata:
+            record["retrieval_request_metadata"] = {
+                key: request_metadata.get(key)
+                for key in [
+                    "source",
+                    "retrieval_source",
+                    "codex_event",
+                    "hook_type",
+                    "codex_session_id_source",
+                    "session_id_source",
+                    "lifecycle_stage",
+                ]
+                if request_metadata.get(key) not in (None, "", [], {})
+            }
+        return record
 
     def append_context_pack_visibility(
         self,
@@ -445,6 +468,7 @@ class MatrixArkLocalAdapter:
         query: str,
         scope: Json,
         audit_mode: str,
+        request_metadata: Json | None = None,
         audit_sample_rate: float = 1.0,
     ) -> Json:
         telemetry_write_mode = CONTEXT_TELEMETRY_WRITE_MODE
@@ -473,7 +497,13 @@ class MatrixArkLocalAdapter:
             "serving_blocked_on_full_audit": False,
             "full_replay_audit_requires_full_mode": True,
         }
-        telemetry = self.telemetry_record_for_context_pack(pack, query=query, scope=scope, audit_mode=audit_mode)
+        telemetry = self.telemetry_record_for_context_pack(
+            pack,
+            query=query,
+            scope=scope,
+            audit_mode=audit_mode,
+            request_metadata=request_metadata,
+        )
         telemetry["visibility_decision"] = visibility_decision
         if telemetry_enabled and telemetry_write_mode in {"inline", "sync"}:
             self.append(telemetry)
@@ -6154,6 +6184,7 @@ class MatrixArkLocalAdapter:
             query=query,
             scope=scope,
             audit_mode=audit_mode,
+            request_metadata=optional_object(args, "metadata"),
             audit_sample_rate=audit_sample_rate,
         )
         pack["operational_visibility_policy"] = visibility_decision

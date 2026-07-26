@@ -1268,6 +1268,27 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("ok", msg["status"])
             self.assertTrue(msg["ingest"].get("event_id_hash"))
             self.assertTrue(msg["retrieve"]["context_pack_id"])
+            records_after_prompt = [
+                json.loads(line)
+                for line in event_log.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            prompt_telemetry = [
+                record
+                for record in records_after_prompt
+                if record.get("record_type") == "context_pack_telemetry"
+                and record.get("context_pack_id") == msg["retrieve"]["context_pack_id"]
+            ]
+            self.assertTrue(prompt_telemetry, records_after_prompt)
+            telemetry = prompt_telemetry[-1]
+            self.assertEqual("telemetry_only", telemetry["audit_mode"])
+            self.assertEqual("codex_hook_retrieve", telemetry["retrieval_request_metadata"]["retrieval_source"])
+            self.assertEqual("UserPromptSubmit", telemetry["retrieval_request_metadata"]["codex_event"])
+            self.assertEqual("before_llm_retrieve", telemetry["retrieval_request_metadata"]["lifecycle_stage"])
+            self.assertEqual("explicit", telemetry["retrieval_request_metadata"]["session_id_source"])
+            self.assertGreater(telemetry["remote_context_budget_tokens"], 0)
+            self.assertEqual(0, telemetry["used_remote_context_tokens"])
+            self.assertIn("memory_layer_budget", telemetry)
 
             resource_result = self.run_hook(
                 repo,
