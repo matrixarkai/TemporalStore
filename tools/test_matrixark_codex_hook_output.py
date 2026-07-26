@@ -297,6 +297,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     "final_session_boundary": False,
                     "committed_event_count": 1,
                     "extraction_context_event_count": 2,
+                    "entities_written": 3,
+                    "profile_entities_written": 1,
                     "trigger_evidence": {
                         "pending_event_count": 1,
                         "threshold_messages": 20,
@@ -340,6 +342,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertFalse(commit_summary["final_session_boundary"])
         self.assertEqual(1, commit_summary["source_event_count"])
         self.assertEqual(2, commit_summary["extraction_context_event_count"])
+        self.assertEqual(2, commit_summary["memory_layers_written"]["session_entities"])
+        self.assertEqual(1, commit_summary["memory_layers_written"]["profile_entities"])
+        self.assertEqual(2, commit_summary["memory_layers_written"]["same_session_entities"])
+        self.assertEqual(1, commit_summary["memory_layers_written"]["cross_session_entities"])
+        self.assertEqual("provisional", commit_summary["memory_layers_written"]["extraction_phase"])
+        self.assertFalse(commit_summary["memory_layers_written"]["final_session_boundary"])
         self.assertTrue(commit_summary["trigger_evidence"]["idle_ready"])
         self.assertFalse(commit_summary["trigger_evidence"]["threshold_ready"])
 
@@ -556,6 +564,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(4, auto_batch["entities_written"])
         self.assertEqual(3, auto_batch["session_entities_written"])
         self.assertEqual(1, auto_batch["profile_entities_written"])
+        self.assertEqual(3, auto_batch["memory_layers_written"]["session_entities"])
+        self.assertEqual(1, auto_batch["memory_layers_written"]["profile_entities"])
+        self.assertEqual(3, auto_batch["memory_layers_written"]["same_session_entities"])
+        self.assertEqual(1, auto_batch["memory_layers_written"]["cross_session_entities"])
+        self.assertEqual("provisional", auto_batch["memory_layers_written"]["extraction_phase"])
+        self.assertFalse(auto_batch["memory_layers_written"]["final_session_boundary"])
         self.assertEqual(6, auto_batch["indexes_written"])
         self.assertEqual(64, auto_batch["index_total_cap"])
         self.assertEqual(0, auto_batch["index_dropped_by_total_cap_count"])
@@ -1384,6 +1398,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     "final_session_boundary": False,
                     "committed_event_count": 1,
                     "extraction_context_event_count": 2,
+                    "entities_written": 3,
+                    "profile_entities_written": 1,
                     "trigger_evidence": {
                         "pending_event_count": 1,
                         "threshold_messages": 20,
@@ -1426,6 +1442,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("provisional", result["session_commit"]["extraction_phase"])
         self.assertFalse(result["session_commit"]["final_session_boundary"])
         self.assertEqual(2, result["session_commit"]["extraction_context_event_count"])
+        self.assertEqual(2, result["session_commit"]["memory_layers_written"]["session_entities"])
+        self.assertEqual(1, result["session_commit"]["memory_layers_written"]["profile_entities"])
+        self.assertEqual("provisional", result["session_commit"]["memory_layers_written"]["extraction_phase"])
         self.assertTrue(result["session_commit"]["trigger_evidence"]["idle_ready"])
         self.assertEqual(1, len(server.adapter.commit_calls))
         commit_args, _commit_hook = server.adapter.commit_calls[0]
