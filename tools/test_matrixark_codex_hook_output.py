@@ -297,6 +297,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     "final_session_boundary": False,
                     "committed_event_count": 1,
                     "extraction_context_event_count": 2,
+                    "source_roles": ["tool"],
+                    "source_hook_types": ["hook_boundary"],
+                    "source_codex_events": ["PostToolUse"],
                     "segments_written": 1,
                     "entities_written": 3,
                     "profile_entities_written": 1,
@@ -345,6 +348,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertFalse(commit_summary["final_session_boundary"])
         self.assertEqual(1, commit_summary["source_event_count"])
         self.assertEqual(2, commit_summary["extraction_context_event_count"])
+        self.assertEqual(["tool"], commit_summary["source_roles"])
+        self.assertEqual(["hook_boundary"], commit_summary["source_hook_types"])
+        self.assertEqual(["PostToolUse"], commit_summary["source_codex_events"])
         self.assertEqual(2, commit_summary["memory_layers_written"]["context_events"])
         self.assertEqual(1, commit_summary["memory_layers_written"]["segments"])
         self.assertEqual(3, commit_summary["memory_layers_written"]["session_entities"])
@@ -536,6 +542,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "final_session_boundary": False,
                         "committed_event_count": 2,
                         "extraction_context_event_count": 1,
+                        "source_roles": ["assistant", "user"],
+                        "source_hook_types": ["before_llm", "after_llm"],
+                        "source_codex_events": ["Stop", "UserPromptSubmit"],
                         "segments_written": 1,
                         "entities_written": 4,
                         "profile_entities_written": 1,
@@ -569,6 +578,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertFalse(auto_batch["final_session_boundary"])
         self.assertEqual(2, auto_batch["source_event_count"])
         self.assertEqual(1, auto_batch["extraction_context_event_count"])
+        self.assertEqual(["assistant", "user"], auto_batch["source_roles"])
+        self.assertEqual(["before_llm", "after_llm"], auto_batch["source_hook_types"])
+        self.assertEqual(["Stop", "UserPromptSubmit"], auto_batch["source_codex_events"])
         self.assertEqual(1, auto_batch["segments_written"])
         self.assertEqual(4, auto_batch["entities_written"])
         self.assertEqual(4, auto_batch["session_entities_written"])
@@ -592,6 +604,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         decision = item["result"]["auto_batch_extract_decision"]
         self.assertEqual("committed", decision["decision"])
         self.assertEqual("committed", decision["auto_batch_extract_status"])
+        self.assertEqual(["assistant", "user"], decision["source_roles"])
+        self.assertEqual(["before_llm", "after_llm"], decision["source_hook_types"])
+        self.assertEqual(["Stop", "UserPromptSubmit"], decision["source_codex_events"])
 
     def test_ingest_tool_call_trace_records_auto_batch_deferred_decision(self) -> None:
         class Server:
