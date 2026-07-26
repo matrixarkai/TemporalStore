@@ -43,6 +43,7 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                 "state": "Use Ubuntu shared repos.",
                 "memory_scope": "session",
                 "session_continuity": "same_session",
+                "extraction_phase": "provisional",
                 "updated_at_ms": 100,
             },
             {
@@ -57,7 +58,12 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                 "state": "Use /root/src/github-services in Ubuntu.",
                 "memory_scope": "user_profile",
                 "session_continuity": "cross_session",
+                "extraction_phase": "final",
+                "final_session_boundary": True,
                 "source_session_ids": ["codex:session-a", "codex:session-b"],
+                "source_roles": ["user", "assistant"],
+                "source_hook_types": ["hook_boundary"],
+                "source_codex_events": ["Stop"],
                 "updated_at_ms": 200,
             },
             {"record_type": "context_embedding", "embedding_type": "entity_state", "ref_type": "entity", "ref_hash": 301},
@@ -66,7 +72,22 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
             {"record_type": "context_embedding", "embedding_type": "event_text", "ref_type": "event", "ref_hash": 101},
             {"record_type": "context_embedding", "embedding_type": "entity_state", "ref_type": "entity", "ref_hash": 201},
             {"record_type": "context_embedding", "embedding_type": "summary_text", "ref_type": "summary", "ref_hash": 501},
-            {"record_type": "context_summary", "summary_type": "batch_l0", "summary_hash": 501, "summary_text": "Repo location preference."},
+            {
+                "record_type": "context_summary",
+                "summary_type": "batch_l0",
+                "summary_hash": 501,
+                "summary_text": "Repo location preference.",
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "extraction_phase": "final",
+                "final_session_boundary": True,
+                "source_memory_scopes": ["user_profile"],
+                "source_session_continuities": ["cross_session"],
+                "source_extraction_phases": ["final"],
+                "source_roles": ["assistant"],
+                "source_hook_types": ["hook_boundary"],
+                "source_codex_events": ["Stop"],
+            },
         ]
 
         report = matrixark_local_recovery_report(
@@ -81,6 +102,14 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertEqual(1, report["memory_hierarchy"]["session_entity_count"])
         self.assertEqual(1, report["memory_hierarchy"]["profile_entity_count"])
         self.assertEqual(["codex:session-a", "codex:session-b"], report["memory_hierarchy"]["source_session_ids"])
+        self.assertEqual(2, report["memory_hierarchy"]["memory_scope_counts"]["user_profile"])
+        self.assertEqual(2, report["memory_hierarchy"]["session_continuity_counts"]["cross_session"])
+        self.assertEqual(2, report["memory_hierarchy"]["extraction_phase_counts"]["final"])
+        self.assertGreaterEqual(report["memory_hierarchy"]["final_session_boundary_ref_count"], 2)
+        self.assertTrue(report["memory_hierarchy"]["profile_cross_session_bridge_rebuildable"])
+        self.assertIn("assistant", report["memory_hierarchy"]["source_roles"])
+        self.assertIn("hook_boundary", report["memory_hierarchy"]["source_hook_types"])
+        self.assertIn("Stop", report["memory_hierarchy"]["source_codex_events"])
         self.assertEqual(1, report["derived_views"]["index_posting_count"])
         self.assertEqual(1, report["derived_views"]["dirty_summary_count"])
         self.assertEqual("rebuild_required", report["derived_views"]["readiness"]["status"])
@@ -89,6 +118,11 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertEqual("ok", report["retrieval_smoke"]["status"])
         self.assertEqual(1, report["retrieval_smoke"]["profile_entity_count"])
         self.assertTrue(report["retrieval_smoke"]["profile_entity_bridge_rebuildable"])
+        self.assertTrue(report["retrieval_smoke"]["profile_cross_session_bridge_rebuildable"])
+        self.assertGreaterEqual(report["retrieval_smoke"]["memory_scope_counts"]["user_profile"], 1)
+        self.assertGreaterEqual(report["retrieval_smoke"]["session_continuity_counts"]["cross_session"], 1)
+        self.assertGreaterEqual(report["retrieval_smoke"]["extraction_phase_counts"]["final"], 1)
+        self.assertGreaterEqual(report["retrieval_smoke"]["final_session_boundary_ref_count"], 1)
         self.assertEqual([], report["blockers"])
 
     def test_recovery_report_detects_corrupt_jsonl_tail(self) -> None:

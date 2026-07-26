@@ -119,6 +119,21 @@ def _retrieval_smoke_from_compacted_records(compacted: list[Json], scope: Json |
         record for record in filtered
         if record.get("record_type") == "context_entity" and record.get("memory_scope") == "user_profile"
     ]
+    memory_scopes = Counter(
+        str(record.get("memory_scope") or "unscoped")
+        for record in filtered
+        if record.get("record_type") in {"context_entity", "context_summary"}
+    )
+    session_continuities = Counter(
+        str(record.get("session_continuity") or "neutral")
+        for record in filtered
+        if record.get("record_type") in {"context_entity", "context_summary"}
+    )
+    extraction_phases = Counter(
+        str(record.get("extraction_phase") or "unknown")
+        for record in filtered
+        if record.get("record_type") in {"context_entity", "context_summary", "context_event"}
+    )
     return {
         "enabled": True,
         "status": "ok" if filtered else "no_records",
@@ -128,6 +143,16 @@ def _retrieval_smoke_from_compacted_records(compacted: list[Json], scope: Json |
         "session_entity_count": len(session_entities),
         "profile_entity_count": len(profile_entities),
         "profile_entity_bridge_rebuildable": bool(profile_entities),
+        "profile_cross_session_bridge_rebuildable": any(
+            str(record.get("session_continuity") or "") == "cross_session"
+            for record in profile_entities
+        ),
+        "memory_scope_counts": dict(sorted(memory_scopes.items())),
+        "session_continuity_counts": dict(sorted(session_continuities.items())),
+        "extraction_phase_counts": dict(sorted(extraction_phases.items())),
+        "final_session_boundary_ref_count": sum(
+            1 for record in filtered if bool(record.get("final_session_boundary"))
+        ),
         "context_event_count": int(counts.get("context_event", 0)),
         "context_index_count": int(counts.get("context_index", 0)),
         "context_summary_count": int(counts.get("context_summary", 0)),
@@ -205,6 +230,43 @@ def matrixark_local_recovery_report(
         record for record in compacted
         if record.get("record_type") == "context_entity" and record.get("memory_scope") == "user_profile"
     ]
+    memory_hierarchy_records = [
+        record for record in compacted
+        if record.get("record_type") in {"context_entity", "context_summary"}
+    ]
+    memory_scope_counts = Counter(str(record.get("memory_scope") or "unscoped") for record in memory_hierarchy_records)
+    session_continuity_counts = Counter(
+        str(record.get("session_continuity") or "neutral") for record in memory_hierarchy_records
+    )
+    extraction_phase_counts = Counter(
+        str(record.get("extraction_phase") or "unknown")
+        for record in compacted
+        if record.get("record_type") in {"context_entity", "context_summary", "context_event"}
+    )
+    source_roles = sorted(
+        {
+            str(role)
+            for record in memory_hierarchy_records
+            for role in (record.get("source_roles") if isinstance(record.get("source_roles"), list) else [])
+            if str(role or "")
+        }
+    )
+    source_hook_types = sorted(
+        {
+            str(hook_type)
+            for record in memory_hierarchy_records
+            for hook_type in (record.get("source_hook_types") if isinstance(record.get("source_hook_types"), list) else [])
+            if str(hook_type or "")
+        }
+    )
+    source_codex_events = sorted(
+        {
+            str(codex_event)
+            for record in memory_hierarchy_records
+            for codex_event in (record.get("source_codex_events") if isinstance(record.get("source_codex_events"), list) else [])
+            if str(codex_event or "")
+        }
+    )
     dirty_summaries = [
         record for record in compacted
         if record.get("record_type") == "context_summary_dirty" and str(record.get("status") or "dirty") != "completed"
@@ -256,6 +318,19 @@ def matrixark_local_recovery_report(
             "profile_entity_count": len(profile_entities),
             "profile_node_paths": sorted({"/".join(str(part) for part in record.get("node_path", [])) for record in profile_entities}),
             "source_session_ids": sorted({str(session_id) for record in profile_entities for session_id in record.get("source_session_ids", []) if str(session_id)}),
+            "memory_scope_counts": dict(sorted(memory_scope_counts.items())),
+            "session_continuity_counts": dict(sorted(session_continuity_counts.items())),
+            "extraction_phase_counts": dict(sorted(extraction_phase_counts.items())),
+            "final_session_boundary_ref_count": sum(
+                1 for record in compacted if bool(record.get("final_session_boundary"))
+            ),
+            "source_roles": source_roles,
+            "source_hook_types": source_hook_types,
+            "source_codex_events": source_codex_events,
+            "profile_cross_session_bridge_rebuildable": any(
+                str(record.get("session_continuity") or "") == "cross_session"
+                for record in profile_entities
+            ),
         },
         "derived_views": {
             "index_posting_count": int(record_counts.get("context_index", 0)),
