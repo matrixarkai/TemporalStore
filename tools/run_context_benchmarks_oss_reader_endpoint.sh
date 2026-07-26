@@ -5,6 +5,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 READER_BASE_URL="${TEMPORALSTORE_READER_BASE_URL:-}"
 READER_MODEL="${TEMPORALSTORE_READER_MODEL:-gpt-4o-mini}"
 READER_PROVIDER_NAME="${TEMPORALSTORE_READER_PROVIDER_NAME:-vikingmem-gpt-4o-mini-reader}"
+EMBEDDING_MODEL="${TEMPORALSTORE_EMBEDDING_MODEL:-matrixark-local-hash-embedding}"
+BASELINE_PROVIDER_NAME="${TEMPORALSTORE_BASELINE_PROVIDER_NAME:-openviking-vikingmem-oss-baseline}"
+BASELINE_READER_MODEL="${TEMPORALSTORE_BASELINE_READER_MODEL:-${READER_MODEL}}"
+BASELINE_EMBEDDING_MODEL="${TEMPORALSTORE_BASELINE_EMBEDDING_MODEL:-${EMBEDDING_MODEL}}"
+BASELINE_MAX_EVENTS="${TEMPORALSTORE_BASELINE_MAX_EVENTS:-}"
+BASELINE_READER_MAX_CONTEXT_CHARS="${TEMPORALSTORE_BASELINE_READER_MAX_CONTEXT_CHARS:-}"
 REPORT_DIR="${TEMPORALSTORE_BENCHMARK_REPORT_DIR:-${ROOT}/benchmark_reports}"
 LOC_INPUT="${TEMPORALSTORE_LOCOMO_INPUT:-/tmp/locomo10.json}"
 LONGMEM_INPUT="${TEMPORALSTORE_LONGMEMEVAL_INPUT:-/tmp/longmemeval_s.json}"
@@ -31,6 +37,13 @@ write_manifest() {
   "reader_base_url": "${READER_BASE_URL}",
   "reader_provider_name": "${READER_PROVIDER_NAME}",
   "reader_model": "${READER_MODEL}",
+  "embedding_model": "${EMBEDDING_MODEL}",
+  "baseline_provider_name": "${BASELINE_PROVIDER_NAME}",
+  "baseline_reader_model": "${BASELINE_READER_MODEL}",
+  "baseline_embedding_model": "${BASELINE_EMBEDDING_MODEL}",
+  "baseline_max_events": "${BASELINE_MAX_EVENTS}",
+  "baseline_reader_max_context_chars": "${BASELINE_READER_MAX_CONTEXT_CHARS}",
+  "require_shared_oss_models": "1",
   "require_rust_temporalstore": "1",
   "allow_python_only_diagnostic": "0",
   "rust_temporalstore_max_cases": "${RUST_TEMPORALSTORE_MAX_CASES}",
@@ -76,6 +89,13 @@ RUST_BACKEND_ARGS=(
   --rust-temporalstore-batch-size "${RUST_TEMPORALSTORE_BATCH_SIZE}"
   --rust-temporalstore-score-tolerance "${RUST_TEMPORALSTORE_SCORE_TOLERANCE}"
 )
+SHARED_OSS_ARGS=(
+  --embedding-model "${EMBEDDING_MODEL}"
+  --baseline-provider-name "${BASELINE_PROVIDER_NAME}"
+  --baseline-reader-model "${BASELINE_READER_MODEL}"
+  --baseline-embedding-model "${BASELINE_EMBEDDING_MODEL}"
+  --require-shared-oss-models
+)
 if [[ "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "1" || "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "true" || "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "TRUE" ]]; then
   RUST_BACKEND_ARGS+=(--require-full-rust-temporalstore-replay)
 fi
@@ -84,6 +104,8 @@ if [[ "${RUST_TEMPORALSTORE_RELEASE}" == "1" || "${RUST_TEMPORALSTORE_RELEASE}" 
 fi
 
 if [[ -f "${LOC_INPUT}" ]]; then
+  locomo_baseline_max_events="${BASELINE_MAX_EVENTS:-128}"
+  locomo_baseline_context_chars="${BASELINE_READER_MAX_CONTEXT_CHARS:-12000}"
   python3 "${ROOT}/tools/run_locomo_90_hit_rate.py" \
     --threshold-profile oss_reader_full \
     --input "${LOC_INPUT}" \
@@ -92,6 +114,9 @@ if [[ -f "${LOC_INPUT}" ]]; then
     --reader-provider-name "${READER_PROVIDER_NAME}" \
     --reader-model "${READER_MODEL}" \
     --reader-no-fallback \
+    --baseline-max-events "${locomo_baseline_max_events}" \
+    --baseline-reader-max-context-chars "${locomo_baseline_context_chars}" \
+    "${SHARED_OSS_ARGS[@]}" \
     "${RUST_BACKEND_ARGS[@]}" \
     --report "${ARCHIVE_DIR}/locomo_report.json" \
     --misses "${ARCHIVE_DIR}/locomo_misses.jsonl"
@@ -104,6 +129,8 @@ if [[ -f "${LOC_INPUT}" ]]; then
 fi
 
 if [[ -f "${LONGMEM_INPUT}" ]]; then
+  longmem_baseline_max_events="${BASELINE_MAX_EVENTS:-14}"
+  longmem_baseline_context_chars="${BASELINE_READER_MAX_CONTEXT_CHARS:-12000}"
   python3 "${ROOT}/tools/run_longmemeval_s_full_path.py" \
     --threshold-profile longmemeval_full \
     --input "${LONGMEM_INPUT}" \
@@ -112,6 +139,9 @@ if [[ -f "${LONGMEM_INPUT}" ]]; then
     --reader-provider-name "${READER_PROVIDER_NAME}" \
     --reader-model "${READER_MODEL}" \
     --reader-no-fallback \
+    --baseline-max-events "${longmem_baseline_max_events}" \
+    --baseline-reader-max-context-chars "${longmem_baseline_context_chars}" \
+    "${SHARED_OSS_ARGS[@]}" \
     --require-open-source-reader \
     "${RUST_BACKEND_ARGS[@]}" \
     --report "${ARCHIVE_DIR}/longmemeval_s_report.json" \
