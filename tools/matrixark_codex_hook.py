@@ -244,6 +244,41 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
     return layer_summary
 
 
+def session_commit_summary(commit: Json | None) -> Json:
+    if not isinstance(commit, dict) or not commit:
+        return {}
+    trigger_evidence = commit.get("trigger_evidence") if isinstance(commit.get("trigger_evidence"), dict) else {}
+    summary: Json = {
+        "status": commit.get("status"),
+        "commit_id_hash": commit.get("commit_id_hash"),
+        "commit_reason": commit.get("commit_reason"),
+        "trigger_policy": commit.get("trigger_policy"),
+        "extraction_phase": commit.get("extraction_phase"),
+        "final_session_boundary": commit.get("final_session_boundary"),
+        "source_event_count": commit.get("committed_event_count", len(commit.get("source_event_ids", []))),
+        "extraction_context_event_count": commit.get("extraction_context_event_count", 0),
+        "segments_written": commit.get("segments_written", 0),
+        "entities_written": commit.get("entities_written", 0),
+        "raw_events_duplicated": commit.get("raw_events_duplicated"),
+    }
+    if trigger_evidence:
+        summary["trigger_evidence"] = {
+            key: trigger_evidence.get(key)
+            for key in [
+                "pending_event_count",
+                "threshold_messages",
+                "threshold_ready",
+                "idle_timeout_ms",
+                "idle_elapsed_ms",
+                "idle_ready",
+                "force",
+                "commit_reason",
+            ]
+            if trigger_evidence.get(key) not in (None, "", [], {})
+        }
+    return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
+
+
 def _format_retrieval_layer_summary(layer_summary: Json) -> str:
     if not isinstance(layer_summary, dict) or not layer_summary:
         return ""
@@ -554,16 +589,7 @@ def codex_hook_output(
             "rendered_context_chars": len(rendered_context),
             "additional_context_emitted": False,
         },
-        "session_commit": {
-            "status": commit.get("status"),
-            "commit_id_hash": commit.get("commit_id_hash"),
-            "commit_reason": commit.get("commit_reason"),
-            "trigger_policy": commit.get("trigger_policy"),
-            "source_event_count": commit.get("committed_event_count", len(commit.get("source_event_ids", []))),
-            "segments_written": commit.get("segments_written", 0),
-            "entities_written": commit.get("entities_written", 0),
-            "raw_events_duplicated": commit.get("raw_events_duplicated"),
-        } if commit else {},
+        "session_commit": session_commit_summary(commit),
     }
     if error:
         output["error"] = error
@@ -705,12 +731,7 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 "rendered_context_chars": len(sanitized_rendered_context_from_retrieve(result)),
             }
         elif name == "matrixark_session_commit":
-            item["result"] = {
-                "status": result.get("status"),
-                "commit_id_hash": result.get("commit_id_hash"),
-                "commit_reason": result.get("commit_reason"),
-                "committed_event_count": result.get("committed_event_count"),
-            }
+            item["result"] = session_commit_summary(result)
         return result
     except Exception as exc:
         item["status"] = "error"
@@ -793,6 +814,7 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             "rendered_context_chars": retrieve.get("rendered_context_chars"),
             "ingest_status": ingest.get("status"),
             "commit_status": commit.get("status"),
+            "session_commit": session_commit_summary(commit),
         }
     adapter = getattr(server, "adapter", None)
     append = getattr(adapter, "append", None)
