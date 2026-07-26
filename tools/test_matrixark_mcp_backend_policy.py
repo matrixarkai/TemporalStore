@@ -1622,6 +1622,35 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertLessEqual(len(decision["state"]), 260)
         self.assertEqual(["101"], decision["source_refs"])
 
+    def test_tool_evidence_extraction_keeps_result_lines_not_full_output(self) -> None:
+        result = mcp_core.extract_batch_entities(
+            [
+                {
+                    "role": "tool",
+                    "content": (
+                        "Compiling crate alpha with hundreds of verbose warnings that should not be durable.\n"
+                        "warning: unused import in unrelated generated file\n"
+                        "Exit code: 0\n"
+                        "Ran 86 tests in 1.59s\n"
+                        "OK\n"
+                        "To https://github.com/bjmeetsfo/TemporalStore.git\n"
+                        "abbf5f23 HEAD -> main\n"
+                        "More streaming logs that do not carry final evidence."
+                    ),
+                }
+            ],
+            {"source_event_ids": [202], "metadata": {}},
+        )
+
+        evidence = next(entity for entity in result if entity["entity_type"] == "tool_evidence")
+        self.assertIn("Exit code: 0", evidence["state"])
+        self.assertIn("Ran 86 tests", evidence["state"])
+        self.assertIn("OK", evidence["state"])
+        self.assertNotIn("hundreds of verbose warnings", evidence["state"])
+        self.assertNotIn("unused import", evidence["state"])
+        self.assertLessEqual(len(evidence["state"]), 260)
+        self.assertEqual(["202"], evidence["source_refs"])
+
     def test_openai_compatible_batch_extraction_uses_model_entities(self) -> None:
         extraction_globals = mcp_core.one_pass_memory_extraction.__globals__
         old_call = extraction_globals["openai_compatible_json_call"]

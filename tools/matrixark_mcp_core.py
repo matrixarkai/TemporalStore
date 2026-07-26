@@ -2513,6 +2513,36 @@ def assistant_decision_memory_text(text: str) -> str:
     return summarize_text(" ".join(selected) if selected else compact, limit=260)
 
 
+def tool_evidence_memory_text(text: str) -> str:
+    """Keep durable tool memory to result evidence, not complete stdout/stderr blobs."""
+    compact = " ".join(str(text or "").split())
+    if not compact:
+        return ""
+    selected: list[str] = []
+    evidence_line_pattern = re.compile(
+        r"\b(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|pushed|rebase|benchmark|validation)\b",
+        re.IGNORECASE,
+    )
+    for raw_line in str(text).splitlines():
+        line = " ".join(raw_line.split()).strip()
+        if not line:
+            continue
+        if evidence_line_pattern.search(line):
+            selected.append(line)
+        if len(selected) >= 6:
+            break
+    if not selected:
+        selected = [
+            match.group(0).strip()
+            for match in re.finditer(
+                r"[^.!?\n]*(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|pushed|rebase|benchmark|validation)[^.!?\n]*[.!?]?",
+                str(text),
+                flags=re.IGNORECASE,
+            )
+        ][:6]
+    return summarize_text(" ".join(selected) if selected else compact, limit=260)
+
+
 def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     entities: list[Json] = []
     text = text_from_messages(messages)
@@ -2527,15 +2557,16 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     ]
     tool_text = text_from_messages(tool_messages) if tool_messages else ""
     if tool_text:
+        evidence_state = summarize_text(tool_evidence_memory_text(tool_text), limit=220)
         entities.append(
             {
                 "entity_type": "tool_evidence",
                 "entity_name": "tool_evidence",
-                "state": summarize_text(tool_text, limit=220),
+                "state": evidence_state,
                 "confidence": 0.86,
                 "source_refs": source_refs,
                 "operator": normalize_entity_operator(None, "tool_evidence"),
-                "field_patches": [entity_patch("", summarize_text(tool_text, limit=180))],
+                "field_patches": [entity_patch("", summarize_text(evidence_state, limit=180))],
             }
         )
     assistant_messages = [
