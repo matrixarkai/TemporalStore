@@ -334,15 +334,14 @@ def session_commit_memory_layers_written(commit: Json | None) -> Json:
         return {}
     entities_written = _int_field(commit, "entities_written")
     profile_entities_written = _int_field(commit, "profile_entities_written")
-    session_entities_written = max(0, entities_written - profile_entities_written)
     summary_refresh = commit.get("summary_refresh") if isinstance(commit.get("summary_refresh"), dict) else {}
     summary_dirty_hashes = summary_refresh.get("dirty_hashes") if isinstance(summary_refresh.get("dirty_hashes"), list) else []
     memory_layers_written: Json = {
         "context_events": _int_field(commit, "extraction_context_event_count"),
         "segments": _int_field(commit, "segments_written"),
-        "session_entities": session_entities_written,
+        "session_entities": entities_written,
         "profile_entities": profile_entities_written,
-        "same_session_entities": session_entities_written,
+        "same_session_entities": entities_written,
         "cross_session_entities": profile_entities_written,
         "secondary_indexes": _int_field(commit, "indexes_written"),
         "summary_dirty_nodes": len(summary_dirty_hashes),
@@ -363,7 +362,6 @@ def session_commit_summary(commit: Json | None) -> Json:
     trigger_evidence = commit.get("trigger_evidence") if isinstance(commit.get("trigger_evidence"), dict) else {}
     entities_written = _int_field(commit, "entities_written")
     profile_entities_written = _int_field(commit, "profile_entities_written")
-    session_entities_written = max(0, entities_written - profile_entities_written)
     summary: Json = {
         "status": commit.get("status"),
         "commit_id_hash": commit.get("commit_id_hash"),
@@ -375,7 +373,7 @@ def session_commit_summary(commit: Json | None) -> Json:
         "extraction_context_event_count": commit.get("extraction_context_event_count", 0),
         "segments_written": commit.get("segments_written", 0),
         "entities_written": entities_written,
-        "session_entities_written": session_entities_written,
+        "session_entities_written": entities_written,
         "profile_entities_written": profile_entities_written,
         "memory_layers_written": session_commit_memory_layers_written(commit),
         "indexes_written": commit.get("indexes_written", 0),
