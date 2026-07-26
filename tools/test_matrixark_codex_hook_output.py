@@ -1396,6 +1396,84 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("tool", serving_event["envelope"]["source_role"])
         self.assertEqual("tool_result", serving_event["envelope"]["hook_type"])
 
+    def test_fast_async_hook_ingest_threshold_commits_tool_evidence(self) -> None:
+        original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT
+        hook.HOOK_AUTO_BATCH_EXTRACT = True
+
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.serving_records = []
+                self.session_buffer_records = []
+                self.commit_calls = []
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.serving_records.extend(records)
+
+            def append_session_buffer_event(self, **kwargs):
+                self.session_buffer_records.append(kwargs)
+
+            def pending_session_events(self, scope):
+                return [{"event_id_hash": 1}, {"event_id_hash": 2}]
+
+            def session_commit(self, args, *, hook=None):
+                self.commit_calls.append((args, hook))
+                return {
+                    "status": "committed",
+                    "trigger_policy": "threshold",
+                    "extraction_phase": "provisional",
+                    "final_session_boundary": False,
+                    "committed_event_count": 2,
+                    "entities_written": 1,
+                    "profile_entities_written": 1,
+                    "indexes_written": 2,
+                }
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        try:
+            args = Namespace(
+                event="PostToolUse",
+                account_id="acct_local",
+                tenant_id="tenant_codex",
+                user_id="deeproute",
+                session_id="codex-session-tool-threshold",
+                team="codex",
+                project="temporalstore",
+                session_commit_threshold=2,
+                idle_commit_timeout_ms=0,
+                understanding_provider="rules",
+                segment_provider="deterministic",
+            )
+            server = Server()
+            result = hook.fast_async_hook_ingest(
+                server,
+                args=args,
+                text="Exit code: 0\nRan 81 tests in 1.2s\nOK",
+                role="tool",
+                agent_context={"workspace_root": "/repo"},
+                hook={"session_id_source": "payload_field", "thread_id": "thread-tool-threshold"},
+            )
+        finally:
+            hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+
+        self.assertEqual("committed", result["auto_batch_extract_result"]["status"])
+        self.assertEqual("threshold", result["auto_batch_extract_result"]["trigger_policy"])
+        self.assertEqual(1, len(server.adapter.commit_calls))
+        commit_args, commit_hook = server.adapter.commit_calls[0]
+        self.assertEqual("threshold", commit_args["commit_reason"])
+        self.assertFalse(commit_args["force"])
+        self.assertEqual(2, commit_args["max_messages"])
+        self.assertEqual("session_commit", commit_hook["hook_type"])
+        self.assertEqual("thread-tool-threshold", commit_hook["thread_id"])
+        self.assertEqual(1, len(server.adapter.session_buffer_records))
+        self.assertEqual("tool", server.adapter.session_buffer_records[0]["envelope"]["messages"][0]["role"])
+
     def test_fast_async_hook_ingest_commits_idle_timeout_with_zero_timeout(self) -> None:
         class Adapter:
             def __init__(self) -> None:
