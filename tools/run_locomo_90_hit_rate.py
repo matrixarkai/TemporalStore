@@ -45,6 +45,11 @@ def main() -> int:
     parser.add_argument("--reader-api-key-env", default="OPENAI_API_KEY")
     parser.add_argument("--reader-timeout-seconds", type=float, default=20.0)
     parser.add_argument("--reader-max-context-chars", type=int, default=12000)
+    parser.add_argument(
+        "--reader-include-extractive-hint",
+        action="store_true",
+        help="Forward the scorer's retrieved-context-derived answer hint into the OSS reader prompt.",
+    )
     parser.add_argument("--reader-no-fallback", action="store_true")
     parser.add_argument(
         "--require-rust-temporalstore",
@@ -159,6 +164,8 @@ def main() -> int:
         command.append("--require-shared-oss-models")
     if args.reader_base_url:
         command.extend(["--reader-base-url", args.reader_base_url])
+    if args.reader_include_extractive_hint:
+        command.append("--reader-include-extractive-hint")
     if args.reader_no_fallback:
         command.append("--reader-no-fallback")
     if args.require_rust_temporalstore:
