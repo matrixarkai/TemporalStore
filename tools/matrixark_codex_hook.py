@@ -374,6 +374,9 @@ def session_commit_summary(commit: Json | None) -> Json:
         "final_session_boundary": commit.get("final_session_boundary"),
         "source_event_count": commit.get("committed_event_count", len(commit.get("source_event_ids", []))),
         "extraction_context_event_count": commit.get("extraction_context_event_count", 0),
+        "source_roles": commit.get("source_roles"),
+        "source_hook_types": commit.get("source_hook_types"),
+        "source_codex_events": commit.get("source_codex_events"),
         "segments_written": commit.get("segments_written", 0),
         "entities_written": entities_written,
         "session_entities_written": entities_written,
@@ -426,9 +429,15 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         summary["auto_batch_extract_status"] = auto_batch.get("status")
         summary["decision"] = "committed" if auto_batch.get("status") in {"accepted", "committed"} else "attempted"
         summary["reason"] = auto_batch.get("reason") or auto_batch.get("commit_reason")
+        summary["source_roles"] = auto_batch.get("source_roles")
+        summary["source_hook_types"] = auto_batch.get("source_hook_types")
+        summary["source_codex_events"] = auto_batch.get("source_codex_events")
     elif session_commit:
         summary["decision"] = "boundary_commit"
         summary["reason"] = session_commit.get("reason") or session_commit.get("commit_reason")
+        summary["source_roles"] = session_commit.get("source_roles")
+        summary["source_hook_types"] = session_commit.get("source_hook_types")
+        summary["source_codex_events"] = session_commit.get("source_codex_events")
     elif session_buffer:
         summary["decision"] = "deferred"
         if session_buffer.get("auto_batch_extract") is False:
