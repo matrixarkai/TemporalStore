@@ -10,6 +10,12 @@ This report is intentionally conservative: it records what ran locally, what imp
 
 ## What Changed In This Pass
 
+- Completed a full LoCoMo Rust TemporalStore replay using the local canonical dataset: 1,542 evaluated questions, 1,541 retrieval hits, `hit_at_k=0.9993514915693904`, with `rust_temporalstore_full_replay_ready=true`.
+- Added progress artifacts for long OSS reader runs so hung reader/model calls are visible before the final JSON report is written.
+- Added curl-based wall-time limits for OpenAI-compatible OSS reader calls and best-effort Ollama model unload on local timeout, after `SIGALRM` proved insufficient for stuck Ollama requests.
+- Added an in-process `transformers://...` OSS reader backend for cached Hugging Face models, avoiding the flaky local Ollama HTTP path when CPU-only OSS smoke data is needed.
+- Verified cached `Qwen/Qwen2.5-0.5B-Instruct` loads locally on CPU and can answer a simple prompt through Transformers.
+- Ran a 5-question LoCoMo OSS-reader sample with Qwen 0.5B over the full Rust TemporalStore replay: retrieval hit remained 1.0 and token reduction was 94.11%, but reader hit was 0.0, so the current gap is reader/model quality and compact evidence packing rather than TemporalStore retrieval.
 - Added OpenAI-compatible `/v1/embeddings` support to `tools/openai_compatible_hf_reader.py` using deterministic local hash embeddings.
 - Added causal language model support for Qwen-style OSS readers through the same OpenAI-compatible local server.
 - Added answer normalization and temporal fallback handling for common date formats and "not enough context" responses.
@@ -35,7 +41,8 @@ This report is intentionally conservative: it records what ran locally, what imp
 | Qwen/Qwen2.5-0.5B-Instruct | `127.0.0.1:18087` | Working | Local causal-LM reader; slower but exercises OSS generation path. |
 | Ollama/qwen2.5:1.5b | `127.0.0.1:11434/v1` | Working, gate-passed | Installed locally and passes the four-case OSS reader capability gate after extractive prompt tightening. Still smaller than the intended final Qwen 7B/14B reader. |
 | Ollama/qwen2.5:7b | n/a | Download in progress | Readiness check shows the model is not installed yet; pull through proxy reached about 1.0 GB / 4.7 GB and remains active. |
-| vLLM | n/a | Installed/importable, no live service | `vllm` imports locally, but no stable OpenAI-compatible vLLM server was used for these evidence runs. |
+| Transformers/Qwen2.5-0.5B | in-process `transformers://Qwen/Qwen2.5-0.5B-Instruct` | Working, CPU smoke only | Loads from local Hugging Face cache without a model server; useful for bounded OSS smoke runs, but not competitive quality. |
+| vLLM | n/a | Installed/importable, no CUDA device | `vllm` imports locally, but WSL reports `torch.cuda.is_available() == false`, so it was not used as the stable local full-benchmark reader path. |
 
 ## OSS Reader Capability Gate
 
@@ -53,6 +60,8 @@ The local full input files are `/root/matrixark_benchmarks/data/locomo10.json` a
 
 | Run | Cases | Retrieval Hit@K | Reader Hit | Token Reduction | Retrieval p95 | Reader p95 | Backend Evidence | Claim Status |
 |---|---:|---:|---:|---:|---:|---:|---|---|
+| Rust TemporalStore full LoCoMo replay | 1,542 | 0.99935 | n/a | n/a | n/a | n/a | Rust TemporalStore full replay ready | Retrieval-ready, reader not included |
+| Qwen 0.5B Transformers LoCoMo 5-question compact sample | 5 | 1.000 | 0.000 | 94.11% | 85.47 ms | 19.39 s | Reused full Rust TemporalStore replay | Gap evidence: retrieval/token savings good, reader quality poor |
 | MiniLM LoCoMo 3 conversations | 387 | 1.000 | 0.388 | 33.54% | 1.47 ms | 228.04 ms | Rust TemporalStore ready | Diagnostic |
 | MiniLM LongMemEval_s 50 | 50 | 0.980 | 0.560 | 98.59% | 250.06 ms | 305.90 ms | Rust TemporalStore ready | Diagnostic |
 | Qwen LoCoMo tiny | 2 | 1.000 | 1.000 | 0.00% | 4.40 ms | 11.97 s | Rust TemporalStore ready | Smoke only |
@@ -138,6 +147,29 @@ The local Ollama Qwen 1.5B path is now installed and callable, so the OSS model 
 
 The practical gap is now precise: retrieval can find the tiny evidence on both MatrixArk and direct OpenViking diagnostics, but the local generative reader needs either a faster/stronger serving stack or a larger model before we can run full LoCoMo 1,542-question and LongMemEval_s 500-record comparisons with defensible LLM quality. The active benchmark goal should remain open until a stronger OSS reader passes the capability gate and the full LoCoMo / LongMemEval runs complete against MatrixArk, OpenViking/VikingMem, and the retrieval-only diagnostic baselines under one shared token budget.
 
+## Latest Full-Replay / OSS Reader Progress
+
+The most useful current MatrixArk result is the full Rust TemporalStore LoCoMo replay:
+
+- Report: `/tmp/matrixark_oss_goal_runs/oss_memory_ready_20260726T035752Z/oss_reader_endpoint_20260726T035802Z/locomo_report.rust_temporalstore.json`
+- Questions evaluated: 1,542
+- Retrieval hits: 1,541
+- Retrieval Hit@K: 0.9993514915693904
+- Backend flags: `rust_temporalstore_backend_ready=true`, `rust_temporalstore_full_replay_ready=true`
+
+The OSS reader gap remains open:
+
+- Ollama `qwen2.5:1.5b` passes the tiny four-case capability gate, but full-reader runs stall on CPU because abandoned HTTP generations keep the local llama-server busy even after client-side timeout. Curl wall-time limits and Ollama unload cleanup were added, but the Ollama path is still not the preferred full benchmark route on this machine.
+- Local vLLM is installed, but this WSL environment has no CUDA device, so vLLM was not used for full LoCoMo/LongMemEval evidence.
+- In-process Transformers with cached Qwen 0.5B is stable enough for smoke runs. On a 5-question LoCoMo compact-context sample, it achieved 94.11% token reduction and 1.0 retrieval hit, but 0.0 reader hit. The model returned answers like `not enough context`, `transgender`, `research`, and `2023` where the strict LoCoMo expected terms did not match.
+
+So the current gap-closure target is not raw TemporalStore retrieval. It is:
+
+1. stronger OSS reader availability, preferably Qwen 7B/14B through a stable serving stack;
+2. compact evidence packing that keeps the exact answer span inside the reader's first context window;
+3. full LongMemEval Rust replay readiness under the same runner shape;
+4. OpenViking official memory extraction producing non-empty searchable memories rather than only archive/source diagnostic retrieval.
+
 ## Evidence Files
 
 - `/tmp/matrixark_hfqa_locomo_3conv_e16_w2_afterfix.json`
@@ -179,3 +211,6 @@ The practical gap is now precise: retrieval can find the tiny evidence on both M
 - `/tmp/openviking_memory_extraction_diagnosis_probe_20260726.json`
 - `/tmp/openviking_memory_extraction_diagnosis_chat_probe_20260726.json`
 - `/tmp/openviking_memory_extraction_diagnosis_task_evidence_20260726.json`
+- `/tmp/matrixark_oss_goal_runs/oss_memory_ready_20260726T035752Z/oss_reader_endpoint_20260726T035802Z/locomo_report.rust_temporalstore.json`
+- `/tmp/matrixark_oss_goal_runs/qwen05_transformers_locomo5_ctx2k_report.json`
+- `/tmp/matrixark_oss_goal_runs/qwen05_transformers_oneq_ctx2k_report.json`
