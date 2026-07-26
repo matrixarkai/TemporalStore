@@ -22,6 +22,16 @@ function shortHash(value) {
   return crypto.createHash("sha256").update(String(value)).digest("hex").slice(0, 16);
 }
 
+function firstStringEnv(env, keys) {
+  for (const key of keys) {
+    const value = env[key];
+    if (typeof value === "string" && value.trim()) {
+      return { value: value.trim(), source: key };
+    }
+  }
+  return { value: "", source: "" };
+}
+
 export function resolveSessionId(payload = {}, env = process.env) {
   const direct = firstStringAt(payload, [
     ["session_id"],
@@ -66,6 +76,24 @@ export function resolveSessionId(payload = {}, env = process.env) {
       sessionId: `${env.TEMPORALSTORE_AGENT_NAME || "codex"}:${value}`,
       conversationId: value,
       source: `payload.${pathValue.source}`
+    };
+  }
+
+  const envValue = firstStringEnv(env, [
+    "CODEX_SESSION_ID",
+    "CODEX_THREAD_ID",
+    "CODEX_CONVERSATION_ID",
+    "CODEX_TRANSCRIPT_ID",
+    "MATRIXARK_CODEX_SESSION_ID",
+    "MATRIXARK_CODEX_THREAD_ID",
+    "TEMPORALSTORE_CODEX_SESSION_ID",
+    "TEMPORALSTORE_AGENT_SESSION_ID"
+  ]);
+  if (envValue.value) {
+    return {
+      sessionId: `${env.TEMPORALSTORE_AGENT_NAME || "codex"}:${envValue.value}`,
+      conversationId: envValue.value,
+      source: `env.${envValue.source}`
     };
   }
 
