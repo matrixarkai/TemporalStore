@@ -114,6 +114,8 @@ OSS_READER_SYSTEM_PROMPT = (
     "return the explicit date or year: yesterday means one calendar day before the context timestamp, "
     "and last year means the calendar year before the timestamp. If the question asks for a fact such as a degree, "
     "owner, place, or duration, copy the exact answer span from the context. "
+    "If the context includes a preferred retrieved candidate answer span, use that span as the answer unless "
+    "it clearly does not answer the question. "
     "For `degree in X`, return X, not the credential level. Do not substitute an unrelated date. "
     "If the context is insufficient, say not enough context."
 )
@@ -148,6 +150,30 @@ def main() -> int:
     )
     parser.add_argument("--reader-provider-name", default="vikingmem-gpt-4o-mini-reader")
     parser.add_argument("--reader-model", default="gpt-4o-mini")
+    parser.add_argument(
+        "--embedding-model",
+        default=os.environ.get("MATRIXARK_BENCHMARK_EMBEDDING_MODEL", "matrixark-local-hash-embedding"),
+        help="Embedding/encoding model used by the MatrixArk/TemporalStore retrieval path.",
+    )
+    parser.add_argument(
+        "--baseline-reader-model",
+        default=os.environ.get("MATRIXARK_BENCHMARK_BASELINE_READER_MODEL", ""),
+        help="Reader model used by the VikingMem/OpenViking or other baseline run.",
+    )
+    parser.add_argument(
+        "--baseline-embedding-model",
+        default=os.environ.get("MATRIXARK_BENCHMARK_BASELINE_EMBEDDING_MODEL", ""),
+        help="Embedding/encoding model used by the VikingMem/OpenViking or other baseline run.",
+    )
+    parser.add_argument(
+        "--require-shared-oss-models",
+        action="store_true",
+        default=bool(os.environ.get("MATRIXARK_REQUIRE_SHARED_OSS_MODELS")),
+        help=(
+            "Fail comparable benchmark claims unless MatrixArk and the baseline declare the same "
+            "OSS reader model and embedding/encoding model."
+        ),
+    )
     parser.add_argument(
         "--reader-base-url",
         default=os.environ.get("TEMPORALSTORE_READER_BASE_URL", ""),
@@ -552,6 +578,7 @@ def main() -> int:
         "max_retrieval_p95_ms": args.max_retrieval_p95_ms,
         "max_reader_p95_ms": args.max_reader_p95_ms,
         "require_open_source_reader": args.require_open_source_reader,
+        "require_shared_oss_models": args.require_shared_oss_models,
     }
     threshold_violations = benchmark_threshold_violations(
         case_count=total,
@@ -561,6 +588,7 @@ def main() -> int:
         retrieval_p95=percentile(retrieval_latencies_ms, 95),
         reader_p95=percentile(reader_latencies_ms, 95),
         open_source_calls=reader.open_source_calls,
+        model_contract=benchmark_model_contract(args, reader),
         thresholds=thresholds,
     )
     if args.require_full_rust_temporalstore_replay and not (
@@ -673,6 +701,8 @@ def main() -> int:
         "reader_mode_effective": reader.effective_mode(),
         "reader_provider_name": reader.config.provider_name,
         "reader_model": reader.config.model,
+        "embedding_model": args.embedding_model,
+        "benchmark_model_contract": benchmark_model_contract(args, reader),
         "reader_prompt_system": OSS_READER_SYSTEM_PROMPT,
         "reader_prompt_user_template": OSS_READER_USER_PROMPT_TEMPLATE,
         "reader_max_context_chars": reader.config.max_context_chars,
@@ -1762,6 +1792,7 @@ def benchmark_threshold_violations(
     retrieval_p95: float,
     reader_p95: float,
     open_source_calls: int,
+    model_contract: dict[str, Any],
     thresholds: dict[str, float],
 ) -> list[str]:
     violations = []
@@ -1779,7 +1810,38 @@ def benchmark_threshold_violations(
         violations.append("reader_p95_above_max")
     if thresholds["require_open_source_reader"] and open_source_calls <= 0:
         violations.append("open_source_reader_not_used")
+    if thresholds.get("require_shared_oss_models") and not model_contract.get("shared_oss_model_contract_passed"):
+        violations.append("shared_oss_model_contract_not_satisfied")
     return violations
+
+
+def benchmark_model_contract(args: argparse.Namespace, reader: "BenchmarkReader") -> dict[str, Any]:
+    matrixark_reader = str(reader.config.model or "").strip()
+    matrixark_embedding = str(args.embedding_model or "").strip()
+    baseline_reader = str(args.baseline_reader_model or "").strip()
+    baseline_embedding = str(args.baseline_embedding_model or "").strip()
+    reader_matches = bool(baseline_reader) and normalized_model_name(matrixark_reader) == normalized_model_name(baseline_reader)
+    embedding_matches = bool(baseline_embedding) and normalized_model_name(matrixark_embedding) == normalized_model_name(
+        baseline_embedding
+    )
+    return {
+        "matrixark_reader_model": matrixark_reader,
+        "matrixark_embedding_model": matrixark_embedding,
+        "baseline_reader_model": baseline_reader,
+        "baseline_embedding_model": baseline_embedding,
+        "reader_model_match": reader_matches,
+        "embedding_model_match": embedding_matches,
+        "shared_oss_model_contract_required": bool(args.require_shared_oss_models),
+        "shared_oss_model_contract_passed": reader_matches and embedding_matches,
+        "comparison_rule": (
+            "Paper/comparable claims require MatrixArk, VikingMem/OpenViking, and other baselines "
+            "to use the same OSS reader model and the same embedding/encoding model."
+        ),
+    }
+
+
+def normalized_model_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9._:-]+", "", str(value).strip().lower())
 
 
 def weak_category_reasons(row: dict[str, Any], thresholds: dict[str, float]) -> list[str]:
@@ -1811,6 +1873,9 @@ def paper_comparable_claim_ready(report: dict[str, Any], thresholds: dict[str, A
     if not report.get("rust_temporalstore_full_replay_ready"):
         return False
     if int(report.get("reader_open_source_calls") or 0) <= 0:
+        return False
+    contract = report.get("benchmark_model_contract") or {}
+    if not contract.get("shared_oss_model_contract_passed"):
         return False
     return True
 
@@ -5742,7 +5807,10 @@ def reader_evidence_bundle(
     if include_extractive_hint:
         hint = extractive_reader_hint(question, blocks)
         if hint:
-            selected.append(f"Candidate answer span from retrieved context: {hint}")
+            selected.append(
+                "Preferred retrieved candidate answer span "
+                f"(derived only from the retrieved context): {hint}"
+            )
             seen.add(normalize_text(selected[-1]))
     soft_block_limit = max(96, min(420, max_chars // max(4, min(24, len(blocks) or 1))))
     for index, block in enumerate(blocks, 1):
