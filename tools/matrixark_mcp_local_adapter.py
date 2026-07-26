@@ -18,6 +18,11 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_metrics import MatrixArkServiceMetrics
 
+try:
+    from tools.matrixark_mcp_session_policy import auto_batch_extract_enabled
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_session_policy import auto_batch_extract_enabled
+
 RETRIEVAL_HOT_RECORD_TYPES = {
     "context_compression_event",
     "context_embedding",
@@ -2523,7 +2528,7 @@ class MatrixArkLocalAdapter:
                 )
             pending_event_count = len(self.pending_session_events(envelope["scope"]))
             auto_batch_result: Json | None = None
-            auto_batch_extract = bool(args.get("auto_batch_extract", False))
+            auto_batch_extract = auto_batch_extract_enabled(args, kind=envelope["kind"])
             session_buffer_threshold = args.get("session_buffer_threshold", 20)
             if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
                 raise MatrixArkError("session_buffer_threshold must be a positive integer")
@@ -3561,7 +3566,7 @@ class MatrixArkLocalAdapter:
             )
         pending_event_count = len(self.pending_session_events(envelope["scope"]))
         auto_batch_result: Json | None = None
-        auto_batch_extract = bool(args.get("auto_batch_extract", False))
+        auto_batch_extract = auto_batch_extract_enabled(args, kind=envelope["kind"])
         session_buffer_threshold = args.get("session_buffer_threshold", 20)
         if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
             raise MatrixArkError("session_buffer_threshold must be a positive integer")

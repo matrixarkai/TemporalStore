@@ -431,6 +431,50 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(budget["by_session_continuity"]["cross_session"]["refs"], 1)
             self.assertGreaterEqual(budget["by_extraction_phase"]["provisional"]["refs"], 1)
 
+    def test_lightweight_async_ingest_threshold_defaults_to_auto_batch_for_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-async-default-threshold.jsonl")
+            scope = {
+                "account_id": "acct_async_default",
+                "tenant_id": "tenant_async_default",
+                "user_id": "user_async_default",
+                "session_id": "session_async_default",
+            }
+            base_args = {
+                "scope": scope,
+                "async_processing": True,
+                "session_buffer_threshold": 2,
+                "skip_prior_context": True,
+            }
+            first = adapter.ingest(
+                {
+                    **base_args,
+                    "messages": [{"role": "user", "content": "First live hook prompt defaults into session buffer."}],
+                }
+            )
+            self.assertTrue(first["session_buffer"]["auto_batch_extract"])
+            self.assertFalse(first["session_buffer"]["threshold_ready"])
+            self.assertIsNone(first["auto_batch_extract_result"])
+
+            second = adapter.ingest(
+                {
+                    **base_args,
+                    "messages": [{"role": "assistant", "content": "Decision: default auto-batch should threshold commit."}],
+                }
+            )
+            self.assertTrue(second["session_buffer"]["auto_batch_extract"])
+            self.assertTrue(second["session_buffer"]["threshold_ready"])
+            self.assertEqual("committed", second["auto_batch_extract_result"]["status"])
+            self.assertEqual("threshold", second["auto_batch_extract_result"]["trigger_policy"])
+            self.assertEqual(2, second["auto_batch_extract_result"]["committed_event_count"])
+            self.assertFalse(adapter.pending_session_events(scope))
+
+            records = adapter.read_all()
+            commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
+            self.assertEqual(1, len(commits))
+            self.assertEqual("threshold", commits[0]["trigger_policy"])
+            self.assertEqual("provisional", commits[0]["extraction_phase"])
+
     def test_stop_boundary_force_commits_full_live_conversation_tail_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-stop-boundary.jsonl")
