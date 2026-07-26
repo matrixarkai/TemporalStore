@@ -5436,6 +5436,9 @@ def compact_context_pack_ref(ref: Json) -> Json:
         "summary_type",
         "operator",
         "session_continuity",
+        "source_roles",
+        "source_hook_types",
+        "source_codex_events",
     ]:
         value = ref.get(field)
         if value not in (None, "", [], {}):
