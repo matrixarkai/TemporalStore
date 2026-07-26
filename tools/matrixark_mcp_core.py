@@ -5134,7 +5134,7 @@ def is_resource_or_skill_candidate(candidate: Json) -> bool:
 
 def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate: int) -> Json:
     metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
-    return {
+    audit_ref = {
         "ref_type": candidate.get("ref_type", ""),
         "ref_hash": candidate.get("ref_hash"),
         "context_class": candidate.get("context_class") or candidate.get("ref_type", ""),
@@ -5158,6 +5158,18 @@ def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate:
         "node_hash": candidate.get("node_hash"),
         "node_path": candidate.get("node_path", []),
     }
+    for field in [
+        "memory_scope",
+        "session_continuity",
+        "entity_type",
+        "entity_name",
+        "profile_shadowed_by_ref_hash",
+        "profile_shadowed_reason",
+    ]:
+        value = candidate.get(field)
+        if value not in (None, "", [], {}):
+            audit_ref[field] = value
+    return audit_ref
 
 
 def record_dropped_candidate(dropped: Json, candidate: Json, *, reason: str, token_estimate: int) -> None:
@@ -5209,6 +5221,7 @@ def prefer_profile_entities_for_current_state(candidates: list[Json], question_t
     if question_type not in {"current_state", "latest"}:
         return candidates
     latest_profile_by_entity: dict[tuple[str, str], Json] = {}
+    latest_profile_by_source_entity_hash: dict[Any, Json] = {}
     for candidate in candidates:
         key = entity_current_state_key(candidate)
         if key is None:
@@ -5220,15 +5233,21 @@ def prefer_profile_entities_for_current_state(candidates: list[Json], question_t
         existing = latest_profile_by_entity.get(key)
         if existing is None or int(candidate.get("updated_at_ms") or 0) >= int(existing.get("updated_at_ms") or 0):
             latest_profile_by_entity[key] = candidate
+        for source_entity_hash in candidate.get("source_entity_hashes", []):
+            existing_by_source = latest_profile_by_source_entity_hash.get(source_entity_hash)
+            if existing_by_source is None or int(candidate.get("updated_at_ms") or 0) >= int(existing_by_source.get("updated_at_ms") or 0):
+                latest_profile_by_source_entity_hash[source_entity_hash] = candidate
     if not latest_profile_by_entity:
         return candidates
     adjusted: list[Json] = []
     for candidate in candidates:
         key = entity_current_state_key(candidate)
-        if key is None or key not in latest_profile_by_entity:
+        profile = latest_profile_by_source_entity_hash.get(candidate.get("ref_hash"))
+        if profile is None and key is not None:
+            profile = latest_profile_by_entity.get(key)
+        if profile is None:
             adjusted.append(candidate)
             continue
-        profile = latest_profile_by_entity[key]
         if candidate is profile or candidate.get("ref_hash") == profile.get("ref_hash"):
             adjusted.append({
                 **candidate,
@@ -5242,6 +5261,11 @@ def prefer_profile_entities_for_current_state(candidates: list[Json], question_t
                 **candidate,
                 "stale_or_superseded": True,
                 "profile_shadowed_by_ref_hash": profile.get("ref_hash"),
+                "profile_shadowed_reason": (
+                    "source_entity_lineage"
+                    if candidate.get("ref_hash") in set(profile.get("source_entity_hashes", []))
+                    else "same_entity_identity"
+                ),
                 "selection_reason": candidate.get("selection_reason") or "session-local entity kept as historical evidence behind current profile state",
             })
             continue
