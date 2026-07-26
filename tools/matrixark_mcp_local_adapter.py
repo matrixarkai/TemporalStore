@@ -5397,6 +5397,7 @@ class MatrixArkLocalAdapter:
                 "source_hook_types": record.get("source_hook_types", []),
                 "source_codex_events": record.get("source_codex_events", []),
                 "source_session_ids": record.get("source_session_ids", []),
+                "source_entity_hashes": record.get("source_entity_hashes", []),
                 "metadata": record.get("metadata", {}),
                 "scope": candidate_access_scope(record),
                 "updated_at_ms": record.get("updated_at_ms", now_ms()),

@@ -5579,6 +5579,12 @@ def compact_context_pack_ref(ref: Json) -> Json:
         value = ref.get(field)
         if value not in (None, "", [], {}):
             item[field] = value
+    value = ref.get("source_session_ids")
+    if isinstance(value, list) and value:
+        item["source_session_ids"] = value[:8]
+    value = ref.get("source_entity_hashes")
+    if isinstance(value, list) and value:
+        item["source_entity_count"] = len(value)
     context_class = ref.get("context_class")
     if context_class and context_class != item.get("ref_type"):
         item["context_class"] = context_class
