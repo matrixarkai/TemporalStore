@@ -76,8 +76,10 @@ def summarize_report(path: Path, label: str, paper_min_cases: dict[str, int] | N
     quality_gate = data.get("quality_gate") if isinstance(data.get("quality_gate"), dict) else {}
     if data is not metrics_source and not quality_gate:
         quality_gate = metrics_source.get("quality_gate") if isinstance(metrics_source.get("quality_gate"), dict) else {}
+    model_contract = extract_model_contract(data, metrics_source, quality_gate)
     dataset = data.get("dataset") or data.get("benchmark_dataset") or infer_dataset(path)
     dataset = dataset or metrics_source.get("dataset") or metrics_source.get("external_benchmark_dataset")
+    benchmark_family = data.get("benchmark_family") or metrics_source.get("benchmark_family") or ""
     case_count = number(metrics_source, "case_count", "benchmark_per_query_count", "external_benchmark_case_count")
     source_claim_ready = bool(
         data.get("paper_comparable_claim_ready")
@@ -85,6 +87,10 @@ def summarize_report(path: Path, label: str, paper_min_cases: dict[str, int] | N
         or metrics_source.get("external_benchmark_ready")
         or quality_gate.get("paper_comparable_claim_ready")
     )
+    shared_contract_required = requires_shared_oss_model_contract(data, metrics_source, quality_gate)
+    shared_contract_passed = bool(model_contract.get("shared_oss_model_contract_passed"))
+    if shared_contract_required and not shared_contract_passed:
+        source_claim_ready = False
     retrieval_ready_reader_not_run = bool(
         batch_metrics
         and data.get("batch_replay_used")
@@ -108,6 +114,8 @@ def summarize_report(path: Path, label: str, paper_min_cases: dict[str, int] | N
     }
     if source_claim_ready and not scale_ready:
         row["blocker"] = ";".join(filter(None, [row["blocker"], f"case_count_below_paper_min_{min_cases}"]))
+    if shared_contract_required and not shared_contract_passed:
+        row["blocker"] = ";".join(filter(None, [row["blocker"], "shared_oss_model_contract_not_satisfied"]))
     raw_claim = data.get("claim_status") or data.get("claim_level") or ""
     if not raw_claim and (data.get("rust_temporalstore_full_replay_ready") or retrieval_ready_reader_not_run) and not number(metrics_source, "benchmark_reader_hit_rate", "reader_hit_rate"):
         raw_claim = "retrieval_ready_reader_not_run"
@@ -119,8 +127,75 @@ def summarize_report(path: Path, label: str, paper_min_cases: dict[str, int] | N
     )
     row["claim_status"] = raw_claim or ("paper_comparable" if row["paper_comparable_ready"] else "not_paper_comparable")
     row.update({field: value for field, value in extract_metrics(metrics_source).items() if field in SUMMARY_FIELDS})
+    row.update(extract_model_contract_summary(model_contract, data, metrics_source))
+    row["benchmark_family"] = benchmark_family
     row["ready"] = bool(data.get("ready") or data.get("benchmark_quality_ready") or quality_gate.get("quality_ready"))
     return row
+
+
+def extract_model_contract(
+    data: dict[str, Any],
+    metrics_source: dict[str, Any],
+    quality_gate: dict[str, Any],
+) -> dict[str, Any]:
+    for source in (data, metrics_source, quality_gate):
+        contract = source.get("benchmark_model_contract") if isinstance(source, dict) else None
+        if isinstance(contract, dict):
+            return contract
+    return {}
+
+
+def requires_shared_oss_model_contract(
+    data: dict[str, Any],
+    metrics_source: dict[str, Any],
+    quality_gate: dict[str, Any],
+) -> bool:
+    contract = extract_model_contract(data, metrics_source, quality_gate)
+    if contract.get("shared_oss_model_contract_required"):
+        return True
+    family = str(data.get("benchmark_family") or metrics_source.get("benchmark_family") or "").lower()
+    schema = str(data.get("schema") or metrics_source.get("schema") or "").lower()
+    claim = str(data.get("claim_status") or data.get("claim_level") or "").lower()
+    return bool(
+        "vikingmem" in family
+        or "openviking" in family
+        or "vikingmem" in schema
+        or "openviking" in schema
+        or "paper_comparable" in claim
+        or quality_gate.get("paper_comparable_claim_ready")
+        or data.get("paper_comparable_claim_ready")
+        or metrics_source.get("paper_comparable_claim_ready")
+    )
+
+
+def extract_model_contract_summary(
+    contract: dict[str, Any],
+    data: dict[str, Any],
+    metrics_source: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "shared_oss_model_contract_passed": bool(contract.get("shared_oss_model_contract_passed")),
+        "shared_oss_model_contract_required": bool(contract.get("shared_oss_model_contract_required")),
+        "matrixark_reader_model": (
+            contract.get("matrixark_reader_model")
+            or data.get("reader_model")
+            or metrics_source.get("reader_model")
+            or data.get("model")
+            or ""
+        ),
+        "matrixark_embedding_model": contract.get("matrixark_embedding_model") or data.get("embedding_model") or "",
+        "matrixark_max_events": contract.get("matrixark_max_events"),
+        "matrixark_reader_max_context_chars": contract.get("matrixark_reader_max_context_chars"),
+        "baseline_provider_name": contract.get("baseline_provider_name") or "",
+        "baseline_reader_model": contract.get("baseline_reader_model") or "",
+        "baseline_embedding_model": contract.get("baseline_embedding_model") or "",
+        "baseline_max_events": contract.get("baseline_max_events"),
+        "baseline_reader_max_context_chars": contract.get("baseline_reader_max_context_chars"),
+        "reader_model_match": bool(contract.get("reader_model_match")),
+        "embedding_model_match": bool(contract.get("embedding_model_match")),
+        "max_events_match": bool(contract.get("max_events_match")),
+        "reader_context_budget_match": bool(contract.get("reader_context_budget_match")),
+    }
 
 
 
@@ -202,13 +277,16 @@ def render_markdown(result: dict[str, Any]) -> str:
         f"Paper-comparable ready: {result['paper_comparable_ready_count']}",
         f"Non-paper-comparable: {result['non_paper_comparable_count']}",
         "",
-        "| Label | Dataset | Cases | Retrieval Hit@K | Reader Hit | Token Reduction | Retrieval p95 | Reader p95 | Claim | Blocker |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
+        "| Label | Dataset | Cases | Retrieval Hit@K | Reader Hit | Token Reduction | Reader | Baseline Reader | Embedding | Budget | Shared OSS Contract | Claim | Blocker |",
+        "|---|---:|---:|---:|---:|---:|---|---|---|---|---:|---|---|",
     ]
     for row in result["rows"]:
+        budget = format_budget(row)
+        embedding = format_pair(row.get("matrixark_embedding_model"), row.get("baseline_embedding_model"))
         lines.append(
             "| {label} | {dataset} | {case_count} | {retrieval_hit_at_k} | {reader_hit_rate} | "
-            "{token_reduction_percent} | {retrieval_p95_ms} | {reader_p95_ms} | {claim_status} | {blocker} |".format(
+            "{token_reduction_percent} | {matrixark_reader_model} | {baseline_reader_model} | "
+            "{embedding} | {budget} | {shared_oss_model_contract_passed} | {claim_status} | {blocker} |".format(
                 **{key: md(row.get(key)) for key in (
                     "label",
                     "dataset",
@@ -216,16 +294,44 @@ def render_markdown(result: dict[str, Any]) -> str:
                     "retrieval_hit_at_k",
                     "reader_hit_rate",
                     "token_reduction_percent",
-                    "retrieval_p95_ms",
-                    "reader_p95_ms",
+                    "matrixark_reader_model",
+                    "baseline_reader_model",
+                    "shared_oss_model_contract_passed",
                     "claim_status",
                     "blocker",
-                )}
+                )},
+                embedding=md(embedding),
+                budget=md(budget),
             )
         )
     lines.append("")
-    lines.append("All values are copied from source artifacts; this summary does not upgrade diagnostic runs into paper-comparable evidence.")
+    lines.append(
+        "All values are copied from source artifacts; this summary does not upgrade diagnostic runs "
+        "into paper-comparable evidence. VikingMem/OpenViking comparisons require the shared OSS "
+        "model contract to pass: same reader, embedding/encoding model, retrieval budget, and reader budget."
+    )
     return "\n".join(lines) + "\n"
+
+
+def format_pair(left: Any, right: Any) -> str:
+    left_text = "" if left is None else str(left)
+    right_text = "" if right is None else str(right)
+    if not left_text and not right_text:
+        return ""
+    if left_text == right_text or not right_text:
+        return left_text
+    return f"{left_text} / {right_text}"
+
+
+def format_budget(row: dict[str, Any]) -> str:
+    events = format_pair(row.get("matrixark_max_events"), row.get("baseline_max_events"))
+    chars = format_pair(row.get("matrixark_reader_max_context_chars"), row.get("baseline_reader_max_context_chars"))
+    parts = []
+    if events:
+        parts.append(f"events={events}")
+    if chars:
+        parts.append(f"chars={chars}")
+    return ", ".join(parts)
 
 
 def md(value: Any) -> str:
