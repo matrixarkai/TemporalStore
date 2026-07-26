@@ -111,7 +111,8 @@ OSS_READER_SYSTEM_PROMPT = (
     "You are an extractive long-memory benchmark reader. Answer only from the supplied context. "
     "Return a short direct answer to the question. If the question asks for a date, year, "
     "or when something happened, resolve relative phrases against the context timestamp and "
-    "return the explicit date or year. If the question asks for a fact such as a degree, "
+    "return the explicit date or year: yesterday means one calendar day before the context timestamp, "
+    "and last year means the calendar year before the timestamp. If the question asks for a fact such as a degree, "
     "owner, place, or duration, copy the exact answer span from the context. "
     "For `degree in X`, return X, not the credential level. Do not substitute an unrelated date. "
     "If the context is insufficient, say not enough context."
@@ -5050,7 +5051,7 @@ def format_date(value: datetime) -> str:
 
 def date_regex() -> re.Pattern[str]:
     return re.compile(
-        r"\b(?:\d{1,2}\s+[A-Z][a-z]+\s+\d{4}|[A-Z][a-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|"
+        r"\b(?:\d{1,2}\s+[A-Z][a-z]+,?\s+\d{4}|[A-Z][a-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|"
         r"[A-Z][a-z]+\s+\d{1,2}(?:st|nd|rd|th)?|\d{4}[/-]\d{2}[/-]\d{2})\b"
     )
 
@@ -5603,6 +5604,8 @@ def normalize_ref(value: str) -> str:
 
 
 def text_matches(text: str, term: str) -> bool:
+    if conflicting_concrete_dates(text, term):
+        return False
     lower = text.lower()
     if term.lower() in lower:
         return True
@@ -5619,6 +5622,8 @@ def text_matches(text: str, term: str) -> bool:
 
 
 def answer_equivalent(text: str, term: str) -> bool:
+    if conflicting_concrete_dates(text, term):
+        return False
     if text_matches(text, term):
         return True
     if preference_answer_equivalent(text, term):
@@ -5670,6 +5675,21 @@ def answer_equivalent(text: str, term: str) -> bool:
         ):
             return True
     return False
+
+
+def conflicting_concrete_dates(text: str, term: str) -> bool:
+    expected = concrete_date_values(term)
+    actual = concrete_date_values(text)
+    return bool(expected and actual and expected.isdisjoint(actual))
+
+
+def concrete_date_values(value: str) -> set[str]:
+    values: set[str] = set()
+    for match in date_regex().finditer(str(value)):
+        parsed = parse_date(match.group(0))
+        if parsed:
+            values.add(parsed.strftime("%Y-%m-%d"))
+    return values
 
 
 def numeric_answer_equivalent(text: str, term: str) -> bool:

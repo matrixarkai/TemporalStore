@@ -131,7 +131,8 @@ def call_reader(base_url: str, model: str, question: str, context: str, *, timeo
                 "content": (
                     "Answer using only the context. Return a short direct answer to the question. "
                     "If the question asks for a date, year, or when something happened, "
-                    "resolve relative phrases against the context timestamp and return the explicit date or year. "
+                    "resolve relative phrases against the context timestamp and return the explicit date or year: "
+                    "yesterday means one calendar day before the context timestamp, and last year means the calendar year before the timestamp. "
                     "If the question asks for a fact such as a degree, owner, place, or duration, "
                     "copy the exact answer span from the context. For `degree in X`, return X, "
                     "not the credential level. Do not substitute an unrelated date."
