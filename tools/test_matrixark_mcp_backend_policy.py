@@ -2561,6 +2561,36 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 self.assertEqual(["hook_boundary", "live_ingest"], summary["source_hook_types"])
                 self.assertEqual(["PostToolUse", "UserPromptSubmit"], summary["source_codex_events"])
 
+    def test_context_summary_secondary_terms_include_hook_provenance(self) -> None:
+        terms = mcp_core.candidate_index_terms(
+            {
+                "record_type": "context_summary",
+                "summary_type": "node_l0",
+                "source_entity_types": ["assistant_decision", "tool_evidence"],
+                "source_roles": ["assistant", "tool"],
+                "source_hook_types": ["hook_boundary"],
+                "source_codex_events": ["Stop", "PostToolUse"],
+                "source_memory_scopes": ["user_profile"],
+                "source_session_continuities": ["cross_session"],
+                "source_extraction_phases": ["final"],
+            },
+            {},
+            {},
+            {},
+        )
+
+        self.assertIn("summary_type:node_l0", terms)
+        self.assertIn("entity_type:assistant_decision", terms)
+        self.assertIn("entity_type:tool_evidence", terms)
+        self.assertIn("source_role:assistant", terms)
+        self.assertIn("source_role:tool", terms)
+        self.assertIn("hook_type:hook_boundary", terms)
+        self.assertIn("codex_event:stop", terms)
+        self.assertIn("codex_event:posttooluse", terms)
+        self.assertIn("memory_scope:user_profile", terms)
+        self.assertIn("session_continuity:cross_session", terms)
+        self.assertIn("extraction_phase:final", terms)
+
     def test_production_profile_rejects_local_storage(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"
         mcp.MATRIXARK_ALLOW_LOCAL_BACKEND = False

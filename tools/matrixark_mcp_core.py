@@ -4339,6 +4339,18 @@ def candidate_index_terms(
         terms.add(context_index_name("summary_type", record.get("summary_type")))
         for entity_type in record.get("source_entity_types", [])[:16]:
             terms.add(context_index_name("entity_type", entity_type))
+        for role in record.get("source_roles", [])[:16]:
+            terms.add(context_index_name("source_role", role))
+        for hook_type in record.get("source_hook_types", [])[:16]:
+            terms.add(context_index_name("hook_type", hook_type))
+        for codex_event in record.get("source_codex_events", [])[:16]:
+            terms.add(context_index_name("codex_event", codex_event))
+        for memory_scope in record.get("source_memory_scopes", [])[:16]:
+            terms.add(context_index_name("memory_scope", memory_scope))
+        for continuity in record.get("source_session_continuities", [])[:16]:
+            terms.add(context_index_name("session_continuity", continuity))
+        for phase in record.get("source_extraction_phases", [])[:16]:
+            terms.add(context_index_name("extraction_phase", phase))
     elif record_type == "context_segment":
         terms.add(context_index_name("segment_topic", record.get("topic")))
     elif record_type == "resource_chunk":
