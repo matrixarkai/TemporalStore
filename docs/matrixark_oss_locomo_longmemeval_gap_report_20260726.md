@@ -38,7 +38,8 @@ This report is intentionally conservative: it records what ran locally, what imp
 - Tightened strict benchmark scoring so conflicting concrete dates no longer count as correct via loose token overlap. For example, 8 May, 2023 is no longer accepted for expected 7 May 2023.
 - Reran the Qwen 7B capability gate after the prompt/scoring fix: 4/4 correct, hit rate 1.0, p95 10.98 seconds, competitive_reader_ready=true.
 - Ran bounded Qwen 7B MatrixArk samples. Retrieval and token savings were strong, but reader quality was still weak after strict scoring: LoCoMo 5 hit 0.2 with 94.20% token reduction, and LongMemEval_s 5 hit 0.2 with 98.01% token reduction.
-- Reran full LongMemEval_s Rust TemporalStore replay in release mode with 32 batches of 16 records. The run completed all 500 records with retrieval Hit@K 0.99, but strict Rust-vs-Python parity still failed because 5 query IDs were zero-hit in Rust while Python reference hit all 500.
+- Fixed the Rust LongMemEval_s full-replay zero-hit gap by splitting oversized packed external benchmark sources before writing native `ContextEvent.text`. The five previously missing query IDs were caused by packed bodies above the 64 KiB context-event text limit.
+- Reran full LongMemEval_s Rust TemporalStore replay in release mode with 32 batches of 16 records. The run completed all 500 records with retrieval Hit@K 1.0, `zero_hit_queries=0`, `ingested_source_sets=500`, and `retrieved_source_sets=500`.
 - Kept benchmark scoring fail-closed: paper-comparable claims remain disabled until full datasets and external baselines run under the same budget/model config.
 
 ## Local OSS Readers
@@ -71,7 +72,7 @@ The local full input files are `/root/matrixark_benchmarks/data/locomo10.json` a
 | Run | Cases | Retrieval Hit@K | Reader Hit | Token Reduction | Retrieval p95 | Reader p95 | Backend Evidence | Claim Status |
 |---|---:|---:|---:|---:|---:|---:|---|---|
 | Rust TemporalStore full LoCoMo replay | 1,542 | 0.99935 | n/a | n/a | n/a | n/a | Rust TemporalStore full replay ready | Retrieval-ready, reader not included |
-| Rust TemporalStore full LongMemEval_s release replay | 500 | 0.99000 | n/a | n/a | batch p95 16.95 s | n/a | Batched Rust TemporalStore release replay completed | Retrieval-ready, but strict parity blocker: 5 Rust zero-hit queries vs 0 Python zero-hit queries |
+| Rust TemporalStore full LongMemEval_s release replay, split-fixed | 500 | 1.00000 | n/a | n/a | batch p95 16.95 s | n/a | Batched Rust TemporalStore release replay completed with 500/500 source sets ingested and retrieved | Retrieval-ready, reader not included |
 | Qwen 0.5B Transformers LoCoMo 5-question compact sample | 5 | 1.000 | 0.000 | 94.11% | 85.47 ms | 19.39 s | Reused full Rust TemporalStore replay | Gap evidence: retrieval/token savings good, reader quality poor |
 | Qwen 0.5B Transformers LoCoMo 5-question reader-packed sample | 5 | 1.000 | 0.200 | 94.11% | 101.01 ms | 26.53 s | Reused full Rust TemporalStore replay | Small packing win; still reader/model limited |
 | Qwen 0.5B Transformers LongMemEval_s 5-record compact sample | 5 | 1.000 | 0.200 | 98.01% | 205.85 ms | 21.14 s | Rust TemporalStore ready | Gap evidence: retrieval/token savings good, reader quality poor |
@@ -135,7 +136,7 @@ For LongMemEval, the official OpenViking importer initially failed every session
 2. **OpenViking extraction/indexing gap:** With memory extraction enabled and Qwen configured, LoCoMo session commit extracted 0 memories. LongMemEval import completed only after using the correct user API key, but official eval still retrieved zero memories/context.
 3. **Token accounting gap:** OpenViking returned zero LLM token counters in VikingBot runs; the direct archive baseline therefore uses the same external whitespace-token estimate as the MatrixArk diagnostics.
 4. **Reader/tool-loop gap:** Qwen 7B now passes the tiny capability gate, but bounded LoCoMo and LongMemEval_s strict samples still hit only 0.2 reader quality. MiniLM passes the tiny gate but is extractive and diagnostic; full comparison should use Qwen 7B/14B or another stronger OSS reader through a stable Ollama/vLLM path and stricter evidence packing.
-5. **Backend readiness gap:** Full LongMemEval_s release replay is no longer blocked by timeout: it completed 500 records at 0.99 Hit@K. The remaining strict backend gap is five Rust zero-hit query IDs: b86304ba-q1, 2e6d26dc-q1, gpt4_1e4a8aeb-q1, 852ce960-q1, and 3ba21379-q1. Python reference hits all 500.
+5. **Backend readiness gap:** Full LongMemEval_s Rust retrieval replay is now strict-green after oversized packed source splitting: 500 records, 500 ingested source sets, 500 retrieved source sets, Hit@K 1.0, and zero zero-hit queries. The remaining backend retrieval gap is LoCoMo's single miss at 1,541/1,542.
 6. **Token-savings methodology gap:** Savings must be computed against the same source universe and token budget. Gold evidence windows are not valid savings evidence.
 7. **Paper-comparable scale gap:** Full LoCoMo 1,542 questions and LongMemEval_s 500 records have not run end-to-end with the same reader, token budget, and baseline.
 
@@ -185,19 +186,20 @@ So the current gap-closure target is not raw TemporalStore retrieval. It is:
 
 1. stronger OSS reader/evidence quality, now starting from installed Qwen 7B and preferably moving to Qwen 14B or a faster vLLM-backed stack when hardware allows;
 2. compact evidence packing that keeps the exact answer span inside the reader's first context window;
-3. close the remaining LongMemEval Rust retrieval parity gap: release batched replay completed at 0.99 Hit@K, but five zero-hit queries still need source-set/index/packing parity work;
+3. attach a full OSS reader pass to the now-green LongMemEval retrieval replay, rather than relying on 5-record Qwen samples;
 4. OpenViking official memory extraction producing non-empty searchable memories rather than only archive/source diagnostic retrieval.
 
 ## Current Comparison Summary
 
 The current summary artifact is:
 
-- JSON: `/tmp/matrixark_oss_goal_runs/oss_memory_current_comparison_summary.json`
-- Markdown: `/tmp/matrixark_oss_goal_runs/oss_memory_current_comparison_summary.md`
+- JSON: `/tmp/matrixark_oss_goal_runs/oss_memory_current_comparison_summary_qwen7_longmem_splitfix.json`
+- Markdown: `/tmp/matrixark_oss_goal_runs/oss_memory_current_comparison_summary_qwen7_longmem_splitfix.md`
 
-It intentionally marks all rows non-paper-comparable today:
+It now marks the LongMemEval_s full Rust retrieval row as paper-comparable retrieval evidence, while keeping end-to-end LLM-quality claims conservative:
 
 - full MatrixArk LoCoMo Rust replay is retrieval-ready but has no OSS reader pass attached yet;
+- full MatrixArk LongMemEval_s Rust replay is strict retrieval-ready at 500/500, but has no full OSS reader pass attached yet;
 - Qwen 0.5B samples are too small and reader quality is weak;
 - OpenViking rows are direct archive/source diagnostics, not official memory-recall baselines;
 - OpenViking official memory extraction still produces empty searchable memories in this local setup.
@@ -246,10 +248,11 @@ The summary now fails closed on tiny samples, so a relaxed local smoke threshold
 - `/tmp/openviking_memory_extraction_diagnosis_chat_probe_20260726.json`
 - `/tmp/openviking_memory_extraction_diagnosis_task_evidence_20260726.json`
 - `/tmp/matrixark_oss_goal_runs/oss_memory_ready_20260726T035752Z/oss_reader_endpoint_20260726T035802Z/locomo_report.rust_temporalstore.json`
+- `/tmp/matrixark_oss_goal_runs/longmem_full_rust_retrieval_release_splitfix_report.rust_temporalstore.json`
 - `/tmp/matrixark_oss_goal_runs/qwen05_transformers_locomo5_ctx2k_report.json`
 - `/tmp/matrixark_oss_goal_runs/qwen05_transformers_locomo5_ctx2k_readerpack_report.json`
 - `/tmp/matrixark_oss_goal_runs/qwen05_transformers_longmem5_ctx2k_report.json`
 - `/tmp/matrixark_oss_goal_runs/qwen05_transformers_longmem5_ctx2k_readerpack_report.json`
 - `/tmp/matrixark_oss_goal_runs/qwen05_transformers_oneq_ctx2k_report.json`
-- `/tmp/matrixark_oss_goal_runs/oss_memory_current_comparison_summary.json`
-- `/tmp/matrixark_oss_goal_runs/oss_memory_current_comparison_summary.md`
+- `/tmp/matrixark_oss_goal_runs/oss_memory_current_comparison_summary_qwen7_longmem_splitfix.json`
+- `/tmp/matrixark_oss_goal_runs/oss_memory_current_comparison_summary_qwen7_longmem_splitfix.md`
