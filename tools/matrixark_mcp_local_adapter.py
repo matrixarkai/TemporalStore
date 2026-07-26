@@ -2168,14 +2168,33 @@ class MatrixArkLocalAdapter:
                 )
             elif table == "context_packs" and record_type in {"context_pack_audit", "context_pack_telemetry"}:
                 dropped_refs = record.get("dropped_refs", {})
+                memory_layer_budget = record.get("memory_layer_budget")
+                if not isinstance(memory_layer_budget, dict):
+                    recall_policy = record.get("recall_policy", {}) if isinstance(record.get("recall_policy"), dict) else {}
+                    memory_layer_budget = recall_policy.get("memory_layer_budget", {}) if isinstance(recall_policy.get("memory_layer_budget"), dict) else {}
+                retrieval_request_metadata = (
+                    record.get("retrieval_request_metadata")
+                    if isinstance(record.get("retrieval_request_metadata"), dict)
+                    else {}
+                )
                 rows.append(
                     {
                         "row_type": record_type,
                         "context_pack_id": record.get("context_pack_id", ""),
                         "query": record.get("query", "") if record_type == "context_pack_audit" else f"hash:{record.get('query_hash', '')}",
                         "used_context_tokens": record.get("used_context_tokens", record.get("used_remote_context_tokens", 0)),
+                        "used_local_context_tokens": record.get("used_local_context_tokens", 0),
+                        "used_remote_context_tokens": record.get("used_remote_context_tokens", 0),
+                        "remote_context_budget_tokens": record.get("remote_context_budget_tokens", 0),
+                        "requested_max_context_tokens": record.get("requested_max_context_tokens", 0),
                         "selected_ref_count": len(record.get("selected_refs", [])) if record_type == "context_pack_audit" else record.get("selected_ref_count", 0),
                         "dropped_ref_count": len(dropped_refs.get("refs", [])) if record_type == "context_pack_audit" and isinstance(dropped_refs, dict) else record.get("dropped_ref_count", 0),
+                        "memory_layer_budget": memory_layer_budget,
+                        "retrieval_request_metadata": retrieval_request_metadata,
+                        "retrieval_source": retrieval_request_metadata.get("retrieval_source", retrieval_request_metadata.get("source", "")),
+                        "codex_event": retrieval_request_metadata.get("codex_event", ""),
+                        "hook_type": retrieval_request_metadata.get("hook_type", ""),
+                        "lifecycle_stage": retrieval_request_metadata.get("lifecycle_stage", ""),
                         "quality_warnings": record.get("quality_warnings", []) if record_type == "context_pack_audit" else {"count": record.get("quality_warning_count", 0)},
                         "scope": candidate_access_scope(record),
                         "created_at_ms": record.get("created_at_ms", 0),
