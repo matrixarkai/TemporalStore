@@ -21,7 +21,8 @@ This report is intentionally conservative: it records what ran locally, what imp
 - Tightened the OSS reader capability prompt so temporal questions require explicit date/year normalization without forcing unrelated date answers for personal-fact questions.
 - Propagated the same temporal/fact-safe OSS reader prompt into the MatrixArk benchmark runner and the OpenViking direct diagnostic baselines so the comparison no longer mixes reader instructions.
 - Added `tools/check_oss_model_readiness.py` so future benchmark continuations can record whether a target OSS reader is actually installed/callable before running quality gates.
-- Attempted `qwen2.5:7b` through the configured WSL network proxy; the blocking pull reached only about 475 MB / 4.7 GB after the 15 minute command cap. A background pull is still running and had reached about 763 MB / 4.7 GB, with roughly two hours still estimated at the observed throughput.
+- Added `tools/run_oss_memory_benchmarks_when_ready.sh`, a fail-closed driver that runs model readiness, reader capability, MatrixArk LoCoMo/LongMemEval, and OpenViking direct diagnostic baselines only after the target OSS reader is installed and passes the reader gate.
+- Attempted `qwen2.5:7b` through the configured WSL network proxy; the blocking pull reached only about 475 MB / 4.7 GB after the 15 minute command cap. A background pull is still running and had reached about 1.0 GB / 4.7 GB, with roughly two hours still estimated at the observed throughput.
 - Kept benchmark scoring fail-closed: paper-comparable claims remain disabled until full datasets and external baselines run under the same budget/model config.
 
 ## Local OSS Readers
@@ -31,7 +32,7 @@ This report is intentionally conservative: it records what ran locally, what imp
 | deepset/minilm-uncased-squad2 | `127.0.0.1:18086` | Working | Fast extractive QA diagnostic reader. |
 | Qwen/Qwen2.5-0.5B-Instruct | `127.0.0.1:18087` | Working | Local causal-LM reader; slower but exercises OSS generation path. |
 | Ollama/qwen2.5:1.5b | `127.0.0.1:11434/v1` | Working, smoke-only | Installed locally and benchmarked. Better than 0.5B on some tiny slices, but fails the reader capability quality gate and is too slow for final quality claims. |
-| Ollama/qwen2.5:7b | n/a | Download in progress | Readiness check shows the model is not installed yet; pull through proxy reached about 763 MB / 4.7 GB and remains active. |
+| Ollama/qwen2.5:7b | n/a | Download in progress | Readiness check shows the model is not installed yet; pull through proxy reached about 1.0 GB / 4.7 GB and remains active. |
 | vLLM | n/a | Installed/importable, no live service | `vllm` imports locally, but no stable OpenAI-compatible vLLM server was used for these evidence runs. |
 
 ## OSS Reader Capability Gate
