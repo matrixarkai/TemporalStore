@@ -49,6 +49,26 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("019efad7-2f87-77e1-b082-c294fcb5e731", identity["thread_id"])
         self.assertEqual("019f-turn", identity["turn_id"])
 
+    def test_codex_agent_hook_preserves_thread_and_turn_lineage(self) -> None:
+        payload = {"thread_id": "thread-main-1", "turn_id": "turn-main-1", "conversation_id": "conversation-main-1"}
+        args = Namespace(session_id="codex:thread-main-1")
+
+        identity = hook.codex_hook_lineage_from_payload(payload, args, session_id_source="payload_field")
+        agent_hook = hook.codex_agent_hook(
+            hook_type="before_llm",
+            hook_id="UserPromptSubmit:1",
+            idempotency_key="turn-main-1",
+            trigger="UserPromptSubmit",
+            session_id_source="payload_field",
+            identity=identity,
+            observed_at_ms=123,
+        )
+
+        self.assertEqual("codex:thread-main-1", identity["session_id"])
+        self.assertEqual("thread-main-1", agent_hook["thread_id"])
+        self.assertEqual("turn-main-1", agent_hook["turn_id"])
+        self.assertEqual("conversation-main-1", agent_hook["conversation_id"])
+
     def test_payload_text_flattens_structured_assistant_content_parts(self) -> None:
         payload = {
             "messages": [
@@ -983,7 +1003,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             text="real hooked Codex message",
             role="user",
             agent_context={"workspace_root": "/repo"},
-            hook={"session_id_source": "payload_field"},
+            hook={
+                "session_id_source": "payload_field",
+                "thread_id": "thread-fast-1",
+                "turn_id": "turn-fast-1",
+                "conversation_id": "conversation-fast-1",
+            },
         )
 
         self.assertEqual("accepted", result["status"])
@@ -997,9 +1022,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("agent_message", raw["record_type"])
         self.assertEqual("real hooked Codex message", raw["messages"][0]["content"])
         self.assertEqual("codex-cpp-session-1", raw["scope"]["session_id"])
+        self.assertEqual("thread-fast-1", raw["thread_id"])
+        self.assertEqual("turn-fast-1", raw["turn_id"])
         self.assertEqual("context_event", serving["record_type"])
         self.assertEqual("codex-cpp-session-1", serving["session_id"])
         self.assertEqual("codex-cpp-session-1", serving["scope"]["session_id"])
+        self.assertEqual("thread-fast-1", serving["thread_id"])
+        self.assertEqual("turn-fast-1", serving["turn_id"])
+        self.assertEqual("conversation-fast-1", serving["metadata"]["conversation_id"])
+        self.assertEqual("turn-fast-1", serving["envelope"]["turn_id"])
         self.assertEqual("UserPromptSubmit", serving["metadata"]["codex_event"])
         self.assertEqual("PENDING_ASYNC_EXTRACTION", serving["classification"])
         self.assertEqual("pending_async", serving["event_type"])
@@ -1009,6 +1040,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("real hooked Codex message", serving["text"])
         self.assertEqual("matrixark_async_pipeline_task", task["record_type"])
         self.assertEqual(serving["event_id_hash"], task["event_id_hash"])
+        self.assertEqual("thread-fast-1", task["thread_id"])
+        self.assertEqual("turn-fast-1", task["turn_id"])
         self.assertEqual("pending", task["status"])
         self.assertEqual(["extraction", "summary", "compression", "embedding"], task["stages"])
         self.assertEqual(task["task_hash"], result["async_pipeline_task_hash"])
@@ -1018,6 +1051,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertTrue(all(record["source_event_hash"] == serving["event_id_hash"] for record in dirty_records))
         self.assertEqual([1, 2, 3, 4], [record["depth"] for record in dirty_records])
         self.assertEqual(1, len(server.adapter.session_buffer_records))
+        self.assertEqual("turn-fast-1", server.adapter.session_buffer_records[0]["hook"]["turn_id"])
         self.assertTrue(result["session_buffer"]["registered"])
 
     def test_fast_async_hook_ingest_runs_threshold_batch_commit(self) -> None:
@@ -1134,13 +1168,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             text="Done. Commit d0152479 pushed and tests passed.",
             role="assistant",
             agent_context={"workspace_root": "/repo"},
-            hook={"session_id_source": "payload_field"},
+            hook={"session_id_source": "payload_field", "thread_id": "thread-stop-1", "turn_id": "turn-stop-1"},
         )
 
         self.assertEqual("accepted", result["session_commit"]["status"])
         self.assertEqual(1, len(server.adapter.raw_records))
         raw_record = server.adapter.raw_records[0]
         self.assertEqual("assistant", raw_record["messages"][0]["role"])
+        self.assertEqual("thread-stop-1", raw_record["thread_id"])
+        self.assertEqual("turn-stop-1", raw_record["turn_id"])
         self.assertEqual("assistant", raw_record["source_role"])
         self.assertEqual("after_llm", raw_record["hook_type"])
         self.assertEqual("Stop", raw_record["codex_event"])
@@ -1150,10 +1186,14 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("Stop", serving_event["codex_event"])
         self.assertEqual("assistant", serving_event["envelope"]["source_role"])
         self.assertEqual("after_llm", serving_event["envelope"]["hook_type"])
+        self.assertEqual("thread-stop-1", serving_event["thread_id"])
+        self.assertEqual("turn-stop-1", serving_event["turn_id"])
         self.assertEqual(1, len(server.adapter.commit_calls))
-        commit_args, _commit_hook = server.adapter.commit_calls[0]
+        commit_args, commit_hook = server.adapter.commit_calls[0]
         self.assertEqual("hook_boundary", commit_args["commit_reason"])
         self.assertTrue(commit_args["force"])
+        self.assertEqual("thread-stop-1", commit_hook["thread_id"])
+        self.assertEqual("turn-stop-1", commit_hook["turn_id"])
 
     def test_fast_async_hook_ingest_marks_tool_evidence_lifecycle(self) -> None:
         class Adapter:
