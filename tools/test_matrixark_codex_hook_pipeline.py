@@ -651,6 +651,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(layer_budget["by_session_continuity"]["cross_session"]["refs"], 1)
             self.assertGreaterEqual(layer_budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(layer_budget["by_extraction_phase"]["final"]["refs"], 1)
+            self.assertGreaterEqual(layer_budget["by_entity_type"]["tool_evidence"]["refs"], 1)
+            self.assertGreaterEqual(layer_budget["by_source_role"]["tool"]["refs"], 1)
+            self.assertGreaterEqual(layer_budget["by_hook_type"]["hook_boundary"]["refs"], 1)
             self.assertGreaterEqual(layer_budget["final_session_boundary_ref_count"], 1)
             self.assertTrue(
                 any(
@@ -770,6 +773,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(summary_layer_budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(summary_layer_budget["by_session_continuity"]["cross_session"]["refs"], 1)
             self.assertGreaterEqual(summary_layer_budget["by_extraction_phase"]["final"]["refs"], 1)
+            self.assertGreaterEqual(summary_layer_budget["by_entity_type"]["assistant_decision"]["refs"], 1)
+            self.assertGreaterEqual(summary_layer_budget["by_source_role"]["assistant"]["refs"], 1)
+            self.assertGreaterEqual(summary_layer_budget["by_hook_type"]["hook_boundary"]["refs"], 1)
             self.assertGreaterEqual(summary_layer_budget["final_session_boundary_ref_count"], 1)
 
     def test_profile_entity_updates_preserve_cross_session_lineage(self) -> None:

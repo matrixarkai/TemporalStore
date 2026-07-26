@@ -5382,6 +5382,10 @@ class MatrixArkLocalAdapter:
                 "context_class": "resource_entity_fact" if record.get("source_chunk_hash") else "entity",
                 "source_chunk_hash": record.get("source_chunk_hash"),
                 "source_ref": record.get("source_ref", ""),
+                "source_roles": record.get("source_roles", []),
+                "source_hook_types": record.get("source_hook_types", []),
+                "source_codex_events": record.get("source_codex_events", []),
+                "source_session_ids": record.get("source_session_ids", []),
                 "metadata": record.get("metadata", {}),
                 "scope": candidate_access_scope(record),
                 "updated_at_ms": record.get("updated_at_ms", now_ms()),
@@ -5768,6 +5772,9 @@ class MatrixArkLocalAdapter:
                 "by_memory_scope": {},
                 "by_session_continuity": {},
                 "by_extraction_phase": {},
+                "by_entity_type": {},
+                "by_source_role": {},
+                "by_hook_type": {},
                 "final_session_boundary_ref_count": 0,
                 "provisional_ref_count": 0,
                 "final_ref_count": 0,
@@ -5787,6 +5794,27 @@ class MatrixArkLocalAdapter:
                 ]:
                     value = str(ref.get(field) or default_value)
                     bucket = breakdown[bucket_name].setdefault(value, {"refs": 0, "tokens": 0})
+                    bucket["refs"] += 1
+                    bucket["tokens"] += token_estimate
+                entity_type = str(ref.get("entity_type") or "")
+                if entity_type:
+                    bucket = breakdown["by_entity_type"].setdefault(entity_type, {"refs": 0, "tokens": 0})
+                    bucket["refs"] += 1
+                    bucket["tokens"] += token_estimate
+                source_roles = ref.get("source_roles") if isinstance(ref.get("source_roles"), list) else []
+                for role in source_roles:
+                    role_name = str(role or "").strip()
+                    if not role_name:
+                        continue
+                    bucket = breakdown["by_source_role"].setdefault(role_name, {"refs": 0, "tokens": 0})
+                    bucket["refs"] += 1
+                    bucket["tokens"] += token_estimate
+                source_hook_types = ref.get("source_hook_types") if isinstance(ref.get("source_hook_types"), list) else []
+                for hook_type in source_hook_types:
+                    hook_name = str(hook_type or "").strip()
+                    if not hook_name:
+                        continue
+                    bucket = breakdown["by_hook_type"].setdefault(hook_name, {"refs": 0, "tokens": 0})
                     bucket["refs"] += 1
                     bucket["tokens"] += token_estimate
                 if bool(ref.get("final_session_boundary")):
