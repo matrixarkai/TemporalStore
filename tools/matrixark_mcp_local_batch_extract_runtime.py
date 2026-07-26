@@ -54,6 +54,29 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
     envelope = batch_start["envelope"]
+    extraction_context_messages = args.get("extraction_context_messages", [])
+    if not isinstance(extraction_context_messages, list):
+        extraction_context_messages = []
+    extraction_context_event_ids = (
+        [int(ref) for ref in args.get("extraction_context_event_ids", [])]
+        if isinstance(args.get("extraction_context_event_ids", []), list)
+        else []
+    )
+    extraction_envelope = envelope
+    if extraction_context_messages:
+        extraction_envelope = {
+            **envelope,
+            "messages": [
+                *envelope["messages"],
+                *[
+                    dict(message)
+                    for message in extraction_context_messages
+                    if isinstance(message, dict)
+                    and isinstance(message.get("role"), str)
+                    and isinstance(message.get("content"), str)
+                ],
+            ],
+        }
     hook = batch_start["hook"]
     threshold = batch_start["threshold"]
     derive_from_existing_events = bool(batch_start["derive_from_existing_events"])
@@ -72,7 +95,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         else collect_prior_context(envelope, prior_records)
     )
     extraction_started_perf = time.perf_counter()
-    extraction = one_pass_memory_extraction(envelope, prior_context=prior_context)
+    extraction = one_pass_memory_extraction(extraction_envelope, prior_context=prior_context)
     self._observe_model_latency("batch_extraction", (time.perf_counter() - extraction_started_perf) * 1000.0)
     batch_text = text_from_messages(envelope["messages"])
     batch_id_hash = stable_hash(
@@ -138,6 +161,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "storage_options": envelope.get("storage_options", {}),
                     "extraction_phase": extraction_phase,
                     "final_session_boundary": final_session_boundary,
+                    "extraction_context_event_ids": extraction_context_event_ids,
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
@@ -190,6 +214,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "update_mode": updated_entity.get("update_mode", ""),
                 "extraction_phase": extraction_phase,
                 "final_session_boundary": final_session_boundary,
+                "extraction_context_event_ids": extraction_context_event_ids,
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
         )
@@ -251,6 +276,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "non_contiguous": segment["non_contiguous"],
                 "extraction_phase": extraction_phase,
                 "final_session_boundary": final_session_boundary,
+                "extraction_context_event_ids": extraction_context_event_ids,
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
         )
@@ -288,6 +314,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             "scope": envelope["scope"],
             "extraction_phase": extraction_phase,
             "final_session_boundary": final_session_boundary,
+            "extraction_context_event_ids": extraction_context_event_ids,
             "updated_at_ms": envelope["ingestion_time_ms"],
         }
     )
@@ -342,6 +369,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             "mode": extraction["mode"],
             "derive_from_existing_events": derive_from_existing_events,
             "source_event_ids": event_hashes,
+            "extraction_context_event_ids": extraction_context_event_ids,
             "extraction_phase": extraction_phase,
             "final_session_boundary": final_session_boundary,
             "agent_hook": hook,
@@ -382,6 +410,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         "token_count_estimate": extraction["token_count_estimate"],
         "events_written": 0 if derive_from_existing_events else len(envelope["messages"]),
         "source_event_count": len(event_hashes),
+        "extraction_context_event_count": len(extraction_context_event_ids),
         "raw_events_duplicated": not derive_from_existing_events,
         "entities_written": len(entity_hashes),
         "segments_written": len(segment_hashes),

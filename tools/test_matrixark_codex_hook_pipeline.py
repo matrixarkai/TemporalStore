@@ -330,6 +330,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("provisional", idle["extraction_phase"])
             self.assertFalse(idle["final_session_boundary"])
             self.assertEqual(1, idle["committed_event_count"])
+            self.assertEqual(2, idle["extraction_context_event_count"])
+            self.assertEqual(
+                [int(event_id) for event_id in second["auto_batch_extract_result"]["source_event_ids"]],
+                [int(event_id) for event_id in idle["extraction_context_event_ids"]],
+            )
             idle_evidence = idle["trigger_evidence"]
             self.assertFalse(idle_evidence["threshold_ready"])
             self.assertTrue(idle_evidence["idle_ready"])
@@ -354,6 +359,19 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             }
             self.assertEqual(pending_ids, committed_ids)
             self.assertFalse(adapter.pending_session_events(scope))
+            idle_commit = next(commit for commit in commits if commit.get("trigger_policy") == "idle_timeout")
+            self.assertEqual(2, idle_commit["extraction_context_event_count"])
+            extraction_audits = [
+                record
+                for record in records
+                if record.get("record_type") == "context_extraction_audit"
+                and record.get("batch_id_hash") == idle["batch_id_hash"]
+            ]
+            self.assertEqual(1, len(extraction_audits))
+            self.assertEqual(
+                [int(event_id) for event_id in idle["extraction_context_event_ids"]],
+                [int(event_id) for event_id in extraction_audits[0]["extraction_context_event_ids"]],
+            )
             profile_tool_entities = [
                 record
                 for record in records
