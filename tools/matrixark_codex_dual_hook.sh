@@ -678,18 +678,6 @@ for count_key, records_prefix, record in (
     except Exception as exc:
         print(f"publish {records_prefix} failed: {exc}", file=__import__("sys").stderr)
 
-if published_raw:
-    for extracted_record in rust_live_extraction_records():
-        try:
-            append_record(
-                f"{prefix}:raw_ingestion:record_count",
-                f"{prefix}:raw_ingestion:records",
-                extracted_record,
-                f"{prefix}:raw_ingestion:hot_record_count",
-            )
-        except Exception as exc:
-            print(f"publish rust live extraction failed: {exc}", file=__import__("sys").stderr)
-
 if event_name == "UserPromptSubmit" and published_raw:
     try:
         user_prompt_marker.mkdir()
@@ -1194,18 +1182,6 @@ for count_key, records_prefix, record in (
             published_raw = True
     except Exception as exc:
         print(f"publish {records_prefix} failed: {exc}", file=sys.stderr)
-
-if published_raw:
-    for extracted_record in cpp_live_extraction_records():
-        try:
-            append_record(
-                f"{prefix}:raw_ingestion:record_count",
-                f"{prefix}:raw_ingestion:records",
-                extracted_record,
-                f"{prefix}:raw_ingestion:hot_record_count",
-            )
-        except Exception as exc:
-            print(f"publish cpp live extraction failed: {exc}", file=sys.stderr)
 
 if event_name == "UserPromptSubmit" and published_raw:
     try:
