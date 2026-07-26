@@ -30,6 +30,7 @@ use temporalstore_snapshot::object_store::FileObjectStore;
 const EXTERNAL_CONTEXT_MAX_CANONICAL_NAME_BYTES: usize = 512;
 const EXTERNAL_CONTEXT_MAX_REF_BYTES: usize = 4096;
 const EXTERNAL_CONTEXT_MAX_COMPACT_ATTRS_BYTES: usize = 8 * 1024;
+const EXTERNAL_CONTEXT_BENCHMARK_MAX_EVENT_TEXT_BYTES: usize = 60 * 1024;
 
 #[derive(Debug, Serialize)]
 struct ContextWorkflowHarnessSummary {
@@ -1240,13 +1241,13 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                         .sources
                         .iter()
                         .enumerate()
-                        .map(|(source_index, source)| {
+                        .flat_map(|(source_index, source)| {
                             let source_id = if source.title.trim().is_empty() {
                                 format!("{}-{source_digest}-{source_index}", case.dataset)
                             } else {
                                 source.title.clone()
                             };
-                            ContextExtractRequest {
+                            let request = ContextExtractRequest {
                                 shard_id: 1,
                                 tenant_hash,
                                 source_kind: source.kind,
@@ -1256,7 +1257,8 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                                 timestamp_ms: 1_000
                                     + source_count.saturating_sub(source_index as u64),
                                 provider: ContextModelProviderConfig::default(),
-                            }
+                            };
+                            split_external_context_benchmark_source(request).into_iter()
                         })
                         .collect::<Vec<_>>();
                     let mut node_hashes = Vec::new();
@@ -1880,6 +1882,47 @@ fn external_source_kind_code(kind: ContextSourceKind) -> u32 {
         ContextSourceKind::Incident => 5,
         ContextSourceKind::UserEvent => 6,
     }
+}
+
+fn split_external_context_benchmark_source(
+    source: ContextExtractRequest,
+) -> Vec<ContextExtractRequest> {
+    if source.body.len() <= EXTERNAL_CONTEXT_BENCHMARK_MAX_EVENT_TEXT_BYTES {
+        return vec![source];
+    }
+    let prefix = if source.title.trim().is_empty() {
+        String::new()
+    } else {
+        format!("{} :: ", source.title.trim())
+    };
+    let chunk_limit = EXTERNAL_CONTEXT_BENCHMARK_MAX_EVENT_TEXT_BYTES
+        .saturating_sub(prefix.len())
+        .max(1024);
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    while start < source.body.len() {
+        let mut end = (start + chunk_limit).min(source.body.len());
+        while end > start && !source.body.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == start {
+            end = source.body[start..]
+                .char_indices()
+                .nth(1)
+                .map(|(offset, _)| start + offset)
+                .unwrap_or(source.body.len());
+        }
+        let chunk_index = chunks.len() + 1;
+        let chunk_body = format!("{}{}", prefix, &source.body[start..end]);
+        let mut chunk = source.clone();
+        chunk.source_id = format!("{}#chunk={chunk_index}", source.source_id);
+        chunk.title = format!("{} [chunk {chunk_index}]", source.title);
+        chunk.body = chunk_body;
+        chunk.timestamp_ms = source.timestamp_ms.saturating_add(chunk_index as u64);
+        chunks.push(chunk);
+        start = end;
+    }
+    chunks
 }
 
 fn compact_external_context_value(value: &str, max_bytes: usize) -> String {
