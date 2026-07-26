@@ -32,6 +32,27 @@ class MatrixArkCodexPluginSessionResolverTest(unittest.TestCase):
             raise AssertionError(f"resolver failed\nstdout={proc.stdout}\nstderr={proc.stderr}")
         return json.loads(proc.stdout)
 
+    def run_normalizer(self, *, event: str, payload: dict, env: dict | None = None) -> dict:
+        repo = Path(__file__).resolve().parents[1]
+        script = textwrap.dedent(
+            f"""
+            import {{ normalizePayload }} from "./integrations/agent-hooks/codex/plugin/scripts/payload_normalizer.mjs";
+            const payload = {json.dumps(payload, sort_keys=True)};
+            const env = {json.dumps(env or {"TEMPORALSTORE_AGENT_NAME": "codex"}, sort_keys=True)};
+            console.log(JSON.stringify(normalizePayload({{event: {json.dumps(event)}, payload, env}})));
+            """
+        )
+        proc = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=repo,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        if proc.returncode != 0:
+            raise AssertionError(f"normalizer failed\nstdout={proc.stdout}\nstderr={proc.stderr}")
+        return json.loads(proc.stdout)
+
     def test_payload_session_id_wins_over_environment_and_workspace(self) -> None:
         resolved = self.run_resolver(
             payload={"conversation_id": "payload-thread-7", "workspace_root": "/repo/shared"},
@@ -68,6 +89,34 @@ class MatrixArkCodexPluginSessionResolverTest(unittest.TestCase):
         self.assertTrue(resolved["sessionId"].startswith("codex:local:"))
         self.assertTrue(resolved["conversationId"].startswith("local:"))
         self.assertEqual("workspace_hash", resolved["source"])
+
+    def test_normalizer_preserves_assistant_response_text_and_role(self) -> None:
+        normalized = self.run_normalizer(
+            event="AssistantResponse",
+            payload={
+                "conversation_id": "codex-thread-llm",
+                "assistant_message": "Decision: keep profile entities cross-session.",
+                "workspace_root": "/repo/shared",
+            },
+        )
+
+        self.assertEqual("assistant", normalized["role"])
+        self.assertEqual("Decision: keep profile entities cross-session.", normalized["text"])
+        self.assertEqual("codex:codex-thread-llm", normalized["session_id"])
+
+    def test_normalizer_preserves_tool_output_text_and_role(self) -> None:
+        normalized = self.run_normalizer(
+            event="PostToolUse",
+            payload={
+                "conversation_id": "codex-thread-tool",
+                "tool": {"name": "cargo", "output": "Exit code: 0\nRan 3 tests in 0.30s\nOK"},
+                "workspace_root": "/repo/shared",
+            },
+        )
+
+        self.assertEqual("tool", normalized["role"])
+        self.assertIn("Ran 3 tests", normalized["text"])
+        self.assertEqual("codex:codex-thread-tool", normalized["session_id"])
 
 
 if __name__ == "__main__":
