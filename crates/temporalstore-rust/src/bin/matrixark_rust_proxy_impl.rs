@@ -1898,6 +1898,7 @@ fn selected_ref_layer_budget(refs: &[Value]) -> Value {
         "by_entity_type": {},
         "by_source_role": {},
         "by_hook_type": {},
+        "by_codex_event": {},
         "final_session_boundary_ref_count": 0,
         "provisional_ref_count": 0,
         "final_ref_count": 0,
@@ -1974,6 +1975,15 @@ fn selected_ref_layer_budget(refs: &[Value]) -> Value {
                 .filter(|value| !value.is_empty())
             {
                 increment_layer_bucket(&mut breakdown, "by_hook_type", hook_type, tokens);
+            }
+        }
+        if let Some(codex_events) = item.get("source_codex_events").and_then(Value::as_array) {
+            for codex_event in codex_events
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                increment_layer_bucket(&mut breakdown, "by_codex_event", codex_event, tokens);
             }
         }
         if item
@@ -2208,6 +2218,9 @@ fn native_dropped_ref_detail(
         "session_continuity": string_field(record, "session_continuity"),
         "entity_type": string_field(record, "entity_type"),
         "entity_name": string_field(record, "entity_name"),
+        "source_roles": record.get("source_roles").cloned().unwrap_or_else(|| json!([])),
+        "source_hook_types": record.get("source_hook_types").cloned().unwrap_or_else(|| json!([])),
+        "source_codex_events": record.get("source_codex_events").cloned().unwrap_or_else(|| json!([])),
         "stale_or_superseded": reason == "stale",
         "text_preview": text.chars().take(160).collect::<String>(),
     });
@@ -2247,6 +2260,9 @@ fn dropped_ref_layer_budget_from_native_counts(
         "by_memory_scope": {},
         "by_session_continuity": {},
         "by_entity_type": {},
+        "by_source_role": {},
+        "by_hook_type": {},
+        "by_codex_event": {},
         "by_profile_shadowed_reason": {},
         "total_dropped_tokens_with_detail": 0,
         "stale_ref_count": 0,
@@ -2286,6 +2302,33 @@ fn dropped_ref_layer_budget_from_native_counts(
             .filter(|value| !value.is_empty())
         {
             increment_layer_bucket(&mut detail_budget, "by_entity_type", entity_type, tokens);
+        }
+        if let Some(roles) = detail.get("source_roles").and_then(Value::as_array) {
+            for role in roles
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                increment_layer_bucket(&mut detail_budget, "by_source_role", role, tokens);
+            }
+        }
+        if let Some(hook_types) = detail.get("source_hook_types").and_then(Value::as_array) {
+            for hook_type in hook_types
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                increment_layer_bucket(&mut detail_budget, "by_hook_type", hook_type, tokens);
+            }
+        }
+        if let Some(codex_events) = detail.get("source_codex_events").and_then(Value::as_array) {
+            for codex_event in codex_events
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                increment_layer_bucket(&mut detail_budget, "by_codex_event", codex_event, tokens);
+            }
         }
         if detail
             .get("stale_or_superseded")
@@ -2336,6 +2379,9 @@ fn dropped_ref_layer_budget_from_native_counts(
         "by_session_continuity": detail_budget["by_session_continuity"].clone(),
         "by_ref_type": ref_type_budget_from_counts(ref_type_counts, ref_type_token_counts),
         "by_entity_type": detail_budget["by_entity_type"].clone(),
+        "by_source_role": detail_budget["by_source_role"].clone(),
+        "by_hook_type": detail_budget["by_hook_type"].clone(),
+        "by_codex_event": detail_budget["by_codex_event"].clone(),
         "by_profile_shadowed_reason": detail_budget["by_profile_shadowed_reason"].clone(),
         "total_dropped_refs_with_detail": dropped_ref_details.len() as u64,
         "total_dropped_tokens_with_detail": detail_budget["total_dropped_tokens_with_detail"].clone(),
@@ -5035,7 +5081,7 @@ mod tests {
         append.entries_compact = vec![CompactHashEntry(
             format!("{storage_prefix}:records:000000"),
             "00000000000000000000".to_string(),
-            r#"{"record_bundle":[{"record_type":"context_event","event_id_hash":7,"text":"GPU procurement owner current state was reviewed","memory_scope":"session","extraction_phase":"provisional","source_roles":["user"],"source_hook_types":["UserPromptSubmit"]},{"record_type":"context_entity","entity_hash":11,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Old session-local GPU procurement owner is Alice","memory_scope":"session","session_continuity":"same_session","extraction_phase":"provisional","updated_at_ms":100},{"record_type":"context_entity","entity_hash":22,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Current cross-session GPU procurement owner is Bob","memory_scope":"user_profile","session_continuity":"cross_session","source_entity_hashes":[11],"source_session_ids":["codex:old","codex:new"],"extraction_phase":"final","updated_at_ms":200,"final_session_boundary":true}]}"#.to_string(),
+            r#"{"record_bundle":[{"record_type":"context_event","event_id_hash":7,"text":"GPU procurement owner current state was reviewed","memory_scope":"session","extraction_phase":"provisional","source_roles":["user"],"source_hook_types":["UserPromptSubmit"]},{"record_type":"context_entity","entity_hash":11,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Old session-local GPU procurement owner is Alice","memory_scope":"session","session_continuity":"same_session","source_roles":["tool"],"source_hook_types":["tool_result"],"source_codex_events":["PostToolUse"],"extraction_phase":"provisional","updated_at_ms":100},{"record_type":"context_entity","entity_hash":22,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Current cross-session GPU procurement owner is Bob","memory_scope":"user_profile","session_continuity":"cross_session","source_entity_hashes":[11],"source_session_ids":["codex:old","codex:new"],"extraction_phase":"final","updated_at_ms":200,"final_session_boundary":true}]}"#.to_string(),
         )];
 
         let root = record_log_root(&append);
@@ -5083,6 +5129,21 @@ mod tests {
             Some(1)
         );
         assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_source_role/tool/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_hook_type/tool_result/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_codex_event/PostToolUse/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
             pack.pointer("/retrieval_metrics/dropped_memory_layer_budget"),
             pack.pointer("/recall_policy/dropped_memory_layer_budget")
         );
@@ -5119,7 +5180,7 @@ mod tests {
         append.entries_compact = vec![CompactHashEntry(
             format!("{storage_prefix}:records:000000"),
             "00000000000000000000".to_string(),
-            r#"{"record_bundle":[{"record_type":"context_event","event_id_hash":7,"text":"GPU procurement owner current state was reviewed","memory_scope":"session","extraction_phase":"provisional","source_roles":["user"],"source_hook_types":["UserPromptSubmit"]},{"record_type":"context_entity","entity_hash":11,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Old session-local GPU procurement owner is Alice","memory_scope":"session","session_continuity":"same_session","extraction_phase":"provisional","updated_at_ms":100},{"record_type":"context_entity","entity_hash":22,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Current cross-session GPU procurement owner is Bob","memory_scope":"user_profile","session_continuity":"cross_session","source_entity_hashes":[11],"source_session_ids":["codex:old","codex:new"],"extraction_phase":"final","updated_at_ms":200,"final_session_boundary":true}]}"#.to_string(),
+            r#"{"record_bundle":[{"record_type":"context_event","event_id_hash":7,"text":"GPU procurement owner current state was reviewed","memory_scope":"session","extraction_phase":"provisional","source_roles":["user"],"source_hook_types":["UserPromptSubmit"]},{"record_type":"context_entity","entity_hash":11,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Old session-local GPU procurement owner is Alice","memory_scope":"session","session_continuity":"same_session","source_roles":["tool"],"source_hook_types":["tool_result"],"source_codex_events":["PostToolUse"],"extraction_phase":"provisional","updated_at_ms":100},{"record_type":"context_entity","entity_hash":22,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Current cross-session GPU procurement owner is Bob","memory_scope":"user_profile","session_continuity":"cross_session","source_entity_hashes":[11],"source_session_ids":["codex:old","codex:new"],"extraction_phase":"final","updated_at_ms":200,"final_session_boundary":true}]}"#.to_string(),
         )];
 
         let root = record_log_root(&append);
@@ -5169,6 +5230,21 @@ mod tests {
         );
         assert_eq!(
             pack.pointer("/recall_policy/dropped_memory_layer_budget/by_profile_shadowed_reason/source_entity_lineage/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_source_role/tool/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_hook_type/tool_result/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_codex_event/PostToolUse/refs")
                 .and_then(Value::as_u64),
             Some(1)
         );
