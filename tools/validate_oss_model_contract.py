@@ -48,9 +48,12 @@ def main() -> int:
         help="Allow reader fallback/error rows. By default, fair OSS reader comparisons must use the configured OSS reader.",
     )
     parser.add_argument(
-        "--require-reader-policy-match",
+        "--allow-reader-policy-drift",
         action="store_true",
-        help="Also require prompt-shaping policy flags, such as candidate-only and extractive hints, to match.",
+        help=(
+            "Allow prompt-shaping policy drift. By default, apples-to-apples reader-quality comparisons "
+            "must use the same candidate-only, candidate-first, focus-evidence, and extractive-hint policy."
+        ),
     )
     parser.add_argument("--output-json", default="", help="Optional normalized validation summary path.")
     args = parser.parse_args()
@@ -86,7 +89,7 @@ def main() -> int:
                     errors.append(f"{row['label']}: reader_errors count={row.get('reader_error_count')}")
                 if row.get("reader_open_source_calls") is not None and row.get("reader_open_source_calls", 0) <= 0:
                     errors.append(f"{row['label']}: no_oss_reader_calls")
-            if args.require_reader_policy_match:
+            if not args.allow_reader_policy_drift:
                 for key in READER_POLICY_KEYS:
                     if row.get(key) != rows[0].get(key):
                         errors.append(
@@ -104,12 +107,14 @@ def main() -> int:
             "MatrixArk, OpenViking, VikingMem, and peer rows must use the same OSS "
             "reader model, embedding/encoding model, retrieved event budget, and "
             "reader context budget before token-savings or reader-quality claims are comparable. "
-            "Reader fallback and reader errors fail by default; use --require-reader-policy-match "
-            "when prompt shaping must also be identical."
+            "Reader fallback, reader errors, diagnostic-only rows, and reader prompt-policy drift fail "
+            "by default so MatrixArk and VikingMem/OpenViking use the same OSS encoder and reader setup."
         ),
     }
     if args.output_json:
-        Path(args.output_json).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        output_path = Path(args.output_json)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if errors:
         for error in errors:
             print(error, file=sys.stderr)

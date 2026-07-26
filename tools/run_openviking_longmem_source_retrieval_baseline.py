@@ -43,6 +43,10 @@ def main() -> int:
     parser.add_argument("--reader-max-tokens", type=int, default=96)
     parser.add_argument("--top-k", type=int, default=16)
     parser.add_argument("--max-context-chars", type=int, default=12000)
+    parser.add_argument("--reader-include-extractive-hint", action="store_true")
+    parser.add_argument("--reader-candidate-only", action="store_true")
+    parser.add_argument("--reader-candidate-first", action="store_true")
+    parser.add_argument("--reader-focus-evidence", action="store_true")
     parser.add_argument("--report", default="/tmp/openviking_direct_source_longmem_tiny_20260726.json")
     parser.add_argument("--matrixark-report", default="/tmp/matrixark_qwen_longmem_tiny_pythononly_20260726.json")
     args = parser.parse_args()
@@ -57,6 +61,10 @@ def main() -> int:
         "reader_provider_name": args.provider_name,
         "reader_model": args.reader_model,
         "embedding_model": args.embedding_model,
+        "reader_include_extractive_hint": bool(args.reader_include_extractive_hint),
+        "reader_candidate_only": bool(args.reader_candidate_only),
+        "reader_candidate_first": bool(args.reader_candidate_first),
+        "reader_focus_evidence": bool(args.reader_focus_evidence),
         "input": args.input,
         "top_k": args.top_k,
         "max_events": args.top_k,
@@ -111,9 +119,10 @@ def main() -> int:
         retrieved_tokens = sum(token_count(session["text"]) for session in selected)
         total_retrieved_tokens += retrieved_tokens
 
-        context = "\n\n".join(
+        raw_context = "\n\n".join(
             f"[{session['session_id']}] {session['date']}\n{session['text']}" for session in selected
         )
+        context = reader_policy_context(question, raw_context, args)
         reader_started = time.perf_counter()
         answer = call_reader(
             args.reader_base_url,
@@ -225,6 +234,35 @@ def trim_context(sessions: list[dict[str, Any]], max_chars: int) -> list[dict[st
         selected.append(session)
         used += cost
     return selected
+
+
+def reader_policy_context(question: str, context: str, args: argparse.Namespace) -> str:
+    candidate = extract_candidate_hint(question, context)
+    if args.reader_candidate_only and candidate:
+        return f"Answer candidate from retrieved context: {candidate}\n\nRetrieved evidence:\n{candidate}"
+    if args.reader_include_extractive_hint and candidate:
+        prefix = f"Extractive answer hint from retrieved context: {candidate}\n\n"
+        return (prefix + context)[: max(1, args.max_context_chars)]
+    if args.reader_candidate_first and candidate:
+        prefix = f"Likely answer span: {candidate}\n\n"
+        return (prefix + context)[: max(1, args.max_context_chars)]
+    return context
+
+
+def extract_candidate_hint(question: str, context: str) -> str:
+    q_terms = terms(question)
+    best_score = -1.0
+    best_sentence = ""
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", context):
+        clean = re.sub(r"\s+", " ", sentence).strip()
+        if not clean:
+            continue
+        s_terms = terms(clean)
+        score = len(q_terms & s_terms) + sum(1 for term in q_terms if len(term) > 4 and term in clean.lower()) * 0.25
+        if score > best_score:
+            best_score = score
+            best_sentence = clean
+    return best_sentence[:500]
 
 
 def call_reader(base_url: str, model: str, question: str, context: str, *, timeout: float, max_tokens: int) -> str:
