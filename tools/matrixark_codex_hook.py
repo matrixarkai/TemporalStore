@@ -279,6 +279,45 @@ def session_commit_summary(commit: Json | None) -> Json:
     return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
 
 
+def auto_batch_decision_summary(result: Json | None) -> Json:
+    if not isinstance(result, dict) or not result:
+        return {}
+    session_buffer = result.get("session_buffer") if isinstance(result.get("session_buffer"), dict) else {}
+    auto_batch = (
+        result.get("auto_batch_extract_result")
+        if isinstance(result.get("auto_batch_extract_result"), dict)
+        else {}
+    )
+    session_commit = result.get("session_commit") if isinstance(result.get("session_commit"), dict) else {}
+    summary: Json = {
+        "pending_event_count": session_buffer.get("pending_event_count"),
+        "threshold_messages": session_buffer.get("threshold_messages"),
+        "threshold_ready": session_buffer.get("threshold_ready"),
+        "idle_timeout_ms": session_buffer.get("idle_commit_timeout_ms"),
+        "idle_ready": session_buffer.get("idle_ready"),
+        "auto_batch_extract": session_buffer.get("auto_batch_extract"),
+        "boundary_commit_requested": session_buffer.get("boundary_commit_requested"),
+    }
+    if auto_batch:
+        summary["auto_batch_extract_status"] = auto_batch.get("status")
+        summary["decision"] = "committed" if auto_batch.get("status") in {"accepted", "committed"} else "attempted"
+        summary["reason"] = auto_batch.get("reason") or auto_batch.get("commit_reason")
+    elif session_commit:
+        summary["decision"] = "boundary_commit"
+        summary["reason"] = session_commit.get("reason") or session_commit.get("commit_reason")
+    elif session_buffer:
+        summary["decision"] = "deferred"
+        if session_buffer.get("auto_batch_extract") is False:
+            summary["reason"] = "auto_batch_extract_disabled"
+        elif session_buffer.get("threshold_ready") is False:
+            summary["reason"] = "threshold_not_reached"
+        elif session_buffer.get("idle_ready") is False:
+            summary["reason"] = "idle_timeout_not_reached"
+        else:
+            summary["reason"] = "no_auto_batch_commit_result"
+    return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
+
+
 def _format_retrieval_layer_summary(layer_summary: Json) -> str:
     if not isinstance(layer_summary, dict) or not layer_summary:
         return ""
@@ -719,6 +758,7 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 "hook_captured": result.get("hook_captured"),
                 "auto_batch_extract_status": auto_batch_extract_result.get("status"),
                 "auto_batch_extract": session_commit_summary(auto_batch_extract_result),
+                "auto_batch_extract_decision": auto_batch_decision_summary(result),
             }
         elif name == "matrixark_retrieve":
             emitted_refs = [
@@ -1812,6 +1852,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         and pending_event_count >= threshold
     )
     should_boundary_commit = should_commit_session(args.event)
+    should_idle_commit = should_boundary_commit and commit_reason_for_event(args.event) == "idle_timeout"
     if callable(session_commit) and (should_threshold_commit or should_boundary_commit):
         commit_reason = commit_reason_for_event(args.event) if should_boundary_commit else "threshold"
         commit_args: Json = {
@@ -1861,7 +1902,11 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
             "registered": callable(append_session_buffer),
             "pending_event_count": pending_event_count,
             "threshold_messages": threshold,
+            "threshold_ready": should_threshold_commit,
+            "idle_commit_timeout_ms": idle_timeout_ms,
+            "idle_ready": should_idle_commit,
             "auto_batch_extract": HOOK_AUTO_BATCH_EXTRACT,
+            "boundary_commit_requested": should_boundary_commit,
         },
         "auto_batch_extract_result": session_commit_result if should_threshold_commit else {},
         "session_commit": session_commit_result if should_boundary_commit else {},
