@@ -161,6 +161,14 @@ def main() -> int:
     parser.add_argument("--reader-timeout-seconds", type=float, default=20.0)
     parser.add_argument("--reader-max-context-chars", type=int, default=12000)
     parser.add_argument(
+        "--reader-include-extractive-hint",
+        action="store_true",
+        help=(
+            "Prepend a retrieved-context-derived candidate answer span to the OSS reader prompt. "
+            "The hint does not use benchmark gold answers."
+        ),
+    )
+    parser.add_argument(
         "--reader-no-fallback",
         action="store_true",
         help="Fail explicit open-source reader calls instead of falling back to deterministic extraction.",
@@ -290,6 +298,7 @@ def main() -> int:
             timeout_seconds=args.reader_timeout_seconds,
             max_context_chars=args.reader_max_context_chars,
             allow_fallback=not args.reader_no_fallback,
+            include_extractive_hint=args.reader_include_extractive_hint,
         )
     )
 
@@ -625,6 +634,7 @@ def main() -> int:
         "reader_prompt_system": OSS_READER_SYSTEM_PROMPT,
         "reader_prompt_user_template": OSS_READER_USER_PROMPT_TEMPLATE,
         "reader_max_context_chars": reader.config.max_context_chars,
+        "reader_include_extractive_hint": reader.config.include_extractive_hint,
         "reader_open_source_calls": reader.open_source_calls,
         "reader_fallback_count": reader.fallback_count,
         "reader_error_count": reader.error_count,
@@ -1769,6 +1779,7 @@ class ReaderConfig:
     timeout_seconds: float
     max_context_chars: int
     allow_fallback: bool
+    include_extractive_hint: bool
 
 
 class BenchmarkReader:
@@ -1832,7 +1843,12 @@ class BenchmarkReader:
         endpoint = self.config.base_url.rstrip("/")
         if not endpoint.endswith("/chat/completions"):
             endpoint = f"{endpoint}/chat/completions"
-        context = reader_evidence_bundle(question, blocks, max(512, self.config.max_context_chars))
+        context = reader_evidence_bundle(
+            question,
+            blocks,
+            max(512, self.config.max_context_chars),
+            include_extractive_hint=self.config.include_extractive_hint,
+        )
         max_tokens = int(os.environ.get("MATRIXARK_READER_MAX_TOKENS", "160"))
         payload = {
             "model": self.config.model,
@@ -1913,7 +1929,12 @@ class BenchmarkReader:
             self._transformers_tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=True)
             self._transformers_model = AutoModelForCausalLM.from_pretrained(model_id, local_files_only=True)
             self._transformers_model.eval()
-        context = reader_evidence_bundle(question, blocks, max(512, self.config.max_context_chars))
+        context = reader_evidence_bundle(
+            question,
+            blocks,
+            max(512, self.config.max_context_chars),
+            include_extractive_hint=self.config.include_extractive_hint,
+        )
         max_tokens = int(os.environ.get("MATRIXARK_READER_MAX_TOKENS", "64"))
         messages = [
             {"role": "system", "content": OSS_READER_SYSTEM_PROMPT},
@@ -5519,11 +5540,22 @@ def evidence_bundle(texts: list[str]) -> str:
     return "\n".join(selected)
 
 
-def reader_evidence_bundle(question: str, blocks: list[dict[str, str]], max_chars: int) -> str:
+def reader_evidence_bundle(
+    question: str,
+    blocks: list[dict[str, str]],
+    max_chars: int,
+    *,
+    include_extractive_hint: bool = False,
+) -> str:
     if max_chars <= 0:
         return ""
     selected: list[str] = []
     seen: set[str] = set()
+    if include_extractive_hint:
+        hint = extractive_reader_hint(question, blocks)
+        if hint:
+            selected.append(f"Candidate answer span from retrieved context: {hint}")
+            seen.add(normalize_text(selected[-1]))
     soft_block_limit = max(96, min(420, max_chars // max(4, min(24, len(blocks) or 1))))
     for index, block in enumerate(blocks, 1):
         title = re.sub(r"\s+", " ", str(block.get("title") or block.get("id") or f"source {index}")).strip()
@@ -5546,6 +5578,17 @@ def reader_evidence_bundle(question: str, blocks: list[dict[str, str]], max_char
         selected.append(line)
         seen.add(key)
     return "\n".join(selected)
+
+
+def extractive_reader_hint(question: str, blocks: list[dict[str, str]]) -> str:
+    answer = extractive_reader_answer(question, blocks).strip()
+    if not answer or normalize_text(answer).startswith("not enough context"):
+        return ""
+    answer = re.split(r"\bEvidence\s*:", answer, maxsplit=1, flags=re.I)[0].strip()
+    answer = re.sub(r"\s+", " ", answer).strip(" .")
+    if not answer or normalize_text(answer).startswith("not enough context"):
+        return ""
+    return answer[:220]
 
 
 def direct_relevance_score(question: str, text: str) -> int:
