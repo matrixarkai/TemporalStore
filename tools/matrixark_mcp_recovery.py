@@ -271,6 +271,15 @@ def matrixark_local_recovery_report(
         record for record in compacted
         if record.get("record_type") == "context_summary_dirty" and str(record.get("status") or "dirty") != "completed"
     ]
+    profile_dirty_summaries = [
+        record for record in dirty_summaries
+        if str(record.get("dirty_reason") or "") == "profile_entity_promoted"
+        or "profile:long_term_memory" in {str(part) for part in record.get("node_path", [])}
+    ]
+    session_dirty_summaries = [
+        record for record in dirty_summaries
+        if record not in profile_dirty_summaries
+    ]
     corrupt_tail_count = sum(1 for item in parse_errors if item.get("corrupt_tail"))
     middle_parse_error_count = len(parse_errors) - corrupt_tail_count
     blockers: list[str] = []
@@ -316,6 +325,8 @@ def matrixark_local_recovery_report(
         "memory_hierarchy": {
             "session_entity_count": len(session_entities),
             "profile_entity_count": len(profile_entities),
+            "session_dirty_summary_count": len(session_dirty_summaries),
+            "profile_dirty_summary_count": len(profile_dirty_summaries),
             "profile_node_paths": sorted({"/".join(str(part) for part in record.get("node_path", [])) for record in profile_entities}),
             "source_session_ids": sorted({str(session_id) for record in profile_entities for session_id in record.get("source_session_ids", []) if str(session_id)}),
             "memory_scope_counts": dict(sorted(memory_scope_counts.items())),
@@ -339,6 +350,8 @@ def matrixark_local_recovery_report(
             "embedding_source_ref_count": len(source_refs),
             "missing_embedding_source_ref_count": len(source_refs - embedding_refs),
             "dirty_summary_count": len(dirty_summaries),
+            "session_dirty_summary_count": len(session_dirty_summaries),
+            "profile_dirty_summary_count": len(profile_dirty_summaries),
             "summary_count": int(record_counts.get("context_summary", 0)),
             "readiness": derived_readiness,
         },
