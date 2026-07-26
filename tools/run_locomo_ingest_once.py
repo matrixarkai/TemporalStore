@@ -407,6 +407,7 @@ def main() -> int:
     reciprocal_rank_sum = 0.0
     total_answer_terms = 0
     matched_answer_terms = 0
+    matched_context_answer_terms = 0
     total_refs = 0
     matched_refs = 0
     reader_hit_count = 0
@@ -472,6 +473,7 @@ def main() -> int:
             reader_ms = elapsed_ms(reader_started)
             rank = first_hit_rank(blocks, answers, scored_refs)
             matched_terms = count_matched_terms(blocks, answers)
+            matched_context_terms = count_reader_context_terms(question, blocks, answers, reader.config)
             matched_ref_count = count_matched_refs(blocks, scored_refs)
             reader_hit = any(answer_equivalent(reader_answer, answer) for answer in answers)
             reader_matched_terms = sum(1 for answer in answers if answer_equivalent(reader_answer, answer))
@@ -516,13 +518,14 @@ def main() -> int:
             reader_latencies_ms.append(reader_ms)
             total_answer_terms += len(answers)
             matched_answer_terms += matched_terms
+            matched_context_answer_terms += matched_context_terms
             total_refs += len(scored_refs)
             matched_refs += matched_ref_count
             reader_answer_coverage_count += reader_matched_terms
             row = category[case_category]
             row["case_count"] += 1
             row["terms"] += len(answers)
-            row["matched_terms"] += matched_terms
+            row["matched_terms"] += matched_context_terms
             reader_row = category_reader[case_category]
             reader_row["case_count"] += 1
             reader_row["terms"] += len(answers)
@@ -565,6 +568,7 @@ def main() -> int:
                     "answer_terms": len(answers),
                     "expected_answer_terms": answers,
                     "matched_retrieval_answer_terms": matched_terms,
+                    "matched_context_answer_terms": matched_context_terms,
                     "expected_source_refs": len(scored_refs),
                     "expected_source_ref_ids": scored_refs,
                     "original_expected_source_ref_ids": refs,
@@ -602,7 +606,8 @@ def main() -> int:
 
     hit_rate = hit_count / total if total else 0.0
     reader_hit_rate = reader_hit_count / total if total else 0.0
-    answer_coverage = matched_answer_terms / total_answer_terms if total_answer_terms else 0.0
+    retrieval_answer_coverage = matched_answer_terms / total_answer_terms if total_answer_terms else 0.0
+    answer_coverage = matched_context_answer_terms / total_answer_terms if total_answer_terms else 0.0
     reader_answer_coverage = reader_answer_coverage_count / total_answer_terms if total_answer_terms else 0.0
     evidence_coverage = matched_refs / total_refs if total_refs else 0.0
     total_token_reduction = token_reduction_percent(total_source_tokens, total_retrieved_tokens)
@@ -730,7 +735,9 @@ def main() -> int:
         "benchmark_mean_reciprocal_rank": reciprocal_rank_sum / total if total else 0.0,
         "answer_term_coverage": answer_coverage,
         "benchmark_context_answer_coverage": answer_coverage,
-        "context_missing_expected_answer_count": total_answer_terms - matched_answer_terms,
+        "retrieval_answer_term_coverage": retrieval_answer_coverage,
+        "benchmark_retrieval_answer_coverage": retrieval_answer_coverage,
+        "context_missing_expected_answer_count": total_answer_terms - matched_context_answer_terms,
         "evidence_ref_coverage": evidence_coverage,
         "reader_hit_rate": reader_hit_rate,
         "reader_answer_coverage": reader_answer_coverage,
@@ -754,7 +761,8 @@ def main() -> int:
         "reader_last_error": reader.last_error,
         "zero_hit_queries": total - hit_count,
         "reader_zero_hit_queries": total - reader_hit_count,
-        "missing_expected_terms": total_answer_terms - matched_answer_terms,
+        "missing_expected_terms": total_answer_terms - matched_context_answer_terms,
+        "retrieval_missing_expected_terms": total_answer_terms - matched_answer_terms,
         "missing_expected_refs": total_refs - matched_refs,
         "min_hit_rate": args.min_hit_rate,
         "passed": hit_rate >= args.min_hit_rate and not threshold_violations,
@@ -6188,6 +6196,20 @@ def first_hit_rank(blocks: list[dict[str, str]], answers: list[str], refs: list[
 
 def count_matched_terms(blocks: list[dict[str, str]], answers: list[str]) -> int:
     return sum(1 for answer in answers if any(answer_equivalent(block.get("body", ""), answer) for block in blocks))
+
+
+def count_reader_context_terms(
+    question: str,
+    blocks: list[dict[str, str]],
+    answers: list[str],
+    config: ReaderConfig,
+) -> int:
+    texts = [block.get("body", "") for block in blocks]
+    if config.include_extractive_hint:
+        hint = extractive_reader_hint(question, blocks)
+        if hint:
+            texts.insert(0, hint)
+    return sum(1 for answer in answers if any(answer_equivalent(text, answer) for text in texts))
 
 
 def count_matched_refs(blocks: list[dict[str, str]], refs: list[str]) -> int:
