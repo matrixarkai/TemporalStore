@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
@@ -1809,6 +1810,10 @@ fn increment_class_count(counts: &mut HashMap<String, u64>, class_name: &str) {
     *counts.entry(class_name.to_string()).or_default() += 1;
 }
 
+fn increment_class_tokens(tokens_by_class: &mut HashMap<String, u64>, class_name: &str, tokens: u64) {
+    *tokens_by_class.entry(class_name.to_string()).or_default() += tokens;
+}
+
 fn pack_ref_from_record(
     record: &Value,
     text: &str,
@@ -1881,6 +1886,7 @@ fn selected_ref_layer_budget(refs: &[Value]) -> Value {
         "by_memory_scope": {},
         "by_session_continuity": {},
         "by_extraction_phase": {},
+        "by_ref_type": {},
         "by_entity_type": {},
         "by_source_role": {},
         "by_hook_type": {},
@@ -1931,6 +1937,12 @@ fn selected_ref_layer_budget(refs: &[Value]) -> Value {
             extraction_phase,
             tokens,
         );
+        let ref_type = item
+            .get("ref_type")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unknown");
+        increment_layer_bucket(&mut breakdown, "by_ref_type", ref_type, tokens);
         if let Some(entity_type) = item
             .get("entity_type")
             .and_then(Value::as_str)
@@ -1992,6 +2004,66 @@ fn selected_ref_layer_budget(refs: &[Value]) -> Value {
         }
     }
     breakdown
+}
+
+fn ref_type_budget_from_counts(
+    counts: &HashMap<String, u64>,
+    token_counts: &HashMap<String, u64>,
+) -> Value {
+    let mut buckets = serde_json::Map::new();
+    for (class_name, refs) in counts {
+        if *refs == 0 {
+            continue;
+        }
+        buckets.insert(
+            class_name.clone(),
+            json!({
+                "refs": refs,
+                "tokens": token_counts.get(class_name).copied().unwrap_or(0),
+            }),
+        );
+    }
+    Value::Object(buckets)
+}
+
+fn dropped_ref_layer_budget_from_native_counts(
+    reason_counts: &[(&str, u64, u64)],
+    ref_type_counts: &HashMap<String, u64>,
+    ref_type_token_counts: &HashMap<String, u64>,
+) -> Value {
+    let mut by_drop_reason = serde_json::Map::new();
+    let mut total_refs = 0_u64;
+    let mut total_tokens = 0_u64;
+    for (reason, refs, tokens) in reason_counts {
+        if *refs == 0 && *tokens == 0 {
+            continue;
+        }
+        total_refs += *refs;
+        total_tokens += *tokens;
+        by_drop_reason.insert(
+            (*reason).to_string(),
+            json!({
+                "refs": refs,
+                "tokens": tokens,
+            }),
+        );
+    }
+    json!({
+        "by_drop_reason": Value::Object(by_drop_reason),
+        "by_memory_scope": {},
+        "by_session_continuity": {},
+        "by_ref_type": ref_type_budget_from_counts(ref_type_counts, ref_type_token_counts),
+        "by_entity_type": {},
+        "by_profile_shadowed_reason": {},
+        "total_dropped_refs_with_detail": 0,
+        "total_dropped_tokens_with_detail": 0,
+        "total_dropped_refs_from_native_counts": total_refs,
+        "total_dropped_tokens_from_native_counts": total_tokens,
+        "stale_ref_count": 0,
+        "stale_token_estimate": 0,
+        "profile_shadowed_ref_count": 0,
+        "profile_shadowed_token_estimate": 0,
+    })
 }
 
 fn retrieve_context_pack_native(
@@ -2201,6 +2273,15 @@ fn retrieve_context_pack_native(
     let mut cross_low_score_dropped_class_counts: HashMap<String, u64> = HashMap::new();
     let mut cross_cap_dropped_class_counts: HashMap<String, u64> = HashMap::new();
     let mut selected_class_counts: HashMap<String, u64> = HashMap::new();
+    let mut dropped_ref_type_counts: HashMap<String, u64> = HashMap::new();
+    let mut dropped_ref_type_token_counts: HashMap<String, u64> = HashMap::new();
+    let mut dropped_over_budget_tokens = 0_u64;
+    let mut dropped_cross_budget_tokens = 0_u64;
+    let mut dropped_cross_session_cap_tokens = 0_u64;
+    let mut dropped_cross_candidate_cap_tokens = 0_u64;
+    let mut dropped_low_score_tokens = 0_u64;
+    let mut dropped_duplicate_ref_tokens = 0_u64;
+    let mut dropped_policy_ref_tokens = 0_u64;
     let mut cross_used_tokens = 0_u64;
     let mut cross_selected_refs = 0_u64;
     let mut entity_bridge_selected_refs = 0_u64;
@@ -2227,17 +2308,26 @@ fn retrieve_context_pack_native(
         } = candidate;
         if used_tokens + tokens > remote_budget {
             dropped_over_budget += 1;
+            dropped_over_budget_tokens += tokens;
             increment_class_count(&mut budget_dropped_class_counts, &context_class);
+            increment_class_count(&mut dropped_ref_type_counts, &context_class);
+            increment_class_tokens(&mut dropped_ref_type_token_counts, &context_class, tokens);
             continue;
         }
         if !is_serving_selected_ref_class(&context_class) {
             dropped_policy_ref += 1;
+            dropped_policy_ref_tokens += tokens;
             increment_class_count(&mut policy_dropped_class_counts, &context_class);
+            increment_class_count(&mut dropped_ref_type_counts, &context_class);
+            increment_class_tokens(&mut dropped_ref_type_token_counts, &context_class, tokens);
             continue;
         }
         if context_class == "summary" && has_scored_event_candidate && !summary_allowed_for_question {
             dropped_policy_ref += 1;
+            dropped_policy_ref_tokens += tokens;
             increment_class_count(&mut policy_dropped_class_counts, &context_class);
+            increment_class_count(&mut dropped_ref_type_counts, &context_class);
+            increment_class_tokens(&mut dropped_ref_type_token_counts, &context_class, tokens);
             continue;
         }
         let is_cross_session = session_continuity == "cross_session";
@@ -2255,12 +2345,18 @@ fn retrieve_context_pack_native(
         };
         if is_cross_session && !cross_policy.enabled {
             dropped_cross_budget += 1;
+            dropped_cross_budget_tokens += tokens;
             increment_class_count(&mut cross_policy_dropped_class_counts, &context_class);
+            increment_class_count(&mut dropped_ref_type_counts, &context_class);
+            increment_class_tokens(&mut dropped_ref_type_token_counts, &context_class, tokens);
             continue;
         }
         if is_cross_session && cross_policy.min_score > 0.0 && score < cross_policy.min_score {
             dropped_low_score += 1;
+            dropped_low_score_tokens += tokens;
             increment_class_count(&mut cross_low_score_dropped_class_counts, &context_class);
+            increment_class_count(&mut dropped_ref_type_counts, &context_class);
+            increment_class_tokens(&mut dropped_ref_type_token_counts, &context_class, tokens);
             continue;
         }
         if is_cross_session_raw_evidence
@@ -2268,7 +2364,10 @@ fn retrieve_context_pack_native(
             && score < cross_policy.raw_evidence_min_score
         {
             dropped_low_score += 1;
+            dropped_low_score_tokens += tokens;
             increment_class_count(&mut cross_low_score_dropped_class_counts, &context_class);
+            increment_class_count(&mut dropped_ref_type_counts, &context_class);
+            increment_class_tokens(&mut dropped_ref_type_token_counts, &context_class, tokens);
             continue;
         }
         if is_cross_session
@@ -2276,7 +2375,10 @@ fn retrieve_context_pack_native(
             && cross_selected_refs >= cross_policy.max_candidates
         {
             dropped_cross_candidate_cap += 1;
+            dropped_cross_candidate_cap_tokens += tokens;
             increment_class_count(&mut cross_cap_dropped_class_counts, &context_class);
+            increment_class_count(&mut dropped_ref_type_counts, &context_class);
+            increment_class_tokens(&mut dropped_ref_type_token_counts, &context_class, tokens);
             continue;
         }
         if is_cross_session
@@ -2285,7 +2387,10 @@ fn retrieve_context_pack_native(
             && selected_cross_sessions.len() as u64 >= cross_policy.max_sessions
         {
             dropped_cross_session_cap += 1;
+            dropped_cross_session_cap_tokens += tokens;
             increment_class_count(&mut cross_cap_dropped_class_counts, &context_class);
+            increment_class_count(&mut dropped_ref_type_counts, &context_class);
+            increment_class_tokens(&mut dropped_ref_type_token_counts, &context_class, tokens);
             continue;
         }
         if is_cross_session
@@ -2295,7 +2400,10 @@ fn retrieve_context_pack_native(
                 && entity_bridge_selected_refs < cross_policy.min_entity_bridge_refs)
         {
             dropped_cross_budget += 1;
+            dropped_cross_budget_tokens += tokens;
             increment_class_count(&mut cross_cap_dropped_class_counts, &context_class);
+            increment_class_count(&mut dropped_ref_type_counts, &context_class);
+            increment_class_tokens(&mut dropped_ref_type_token_counts, &context_class, tokens);
             continue;
         }
         let ref_signature = format!(
@@ -2311,7 +2419,10 @@ fn retrieve_context_pack_native(
         );
         if !selected_signatures.insert(ref_signature) {
             dropped_duplicate_ref += 1;
+            dropped_duplicate_ref_tokens += tokens;
             increment_class_count(&mut duplicate_dropped_class_counts, &context_class);
+            increment_class_count(&mut dropped_ref_type_counts, &context_class);
+            increment_class_tokens(&mut dropped_ref_type_token_counts, &context_class, tokens);
             continue;
         }
         used_tokens += tokens;
@@ -2363,6 +2474,27 @@ fn retrieve_context_pack_native(
         "cross_cap_dropped": cross_cap_dropped_class_counts
     });
     let memory_layer_budget = selected_ref_layer_budget(&selected);
+    let dropped_memory_layer_budget = dropped_ref_layer_budget_from_native_counts(
+        &[
+            ("over_budget", dropped_over_budget, dropped_over_budget_tokens),
+            ("cross_session_budget", dropped_cross_budget, dropped_cross_budget_tokens),
+            (
+                "cross_session_session_cap",
+                dropped_cross_session_cap,
+                dropped_cross_session_cap_tokens,
+            ),
+            (
+                "cross_session_candidate_cap",
+                dropped_cross_candidate_cap,
+                dropped_cross_candidate_cap_tokens,
+            ),
+            ("low_score", dropped_low_score, dropped_low_score_tokens),
+            ("duplicate_ref", dropped_duplicate_ref, dropped_duplicate_ref_tokens),
+            ("policy_ref", dropped_policy_ref, dropped_policy_ref_tokens),
+        ],
+        &dropped_ref_type_counts,
+        &dropped_ref_type_token_counts,
+    );
     let pack = json!({
         "context_pack_id": context_pack_id,
         "query": query,
@@ -2430,6 +2562,7 @@ fn retrieve_context_pack_native(
                 "entity_bridge_selected_ref_count": entity_bridge_selected_refs
             },
             "memory_layer_budget": memory_layer_budget,
+            "dropped_memory_layer_budget": dropped_memory_layer_budget,
             "cross_session": {
                 "enabled": cross_policy.enabled,
                 "mode": if cross_policy.enabled { "prefer" } else { "disabled" },
@@ -2545,6 +2678,7 @@ fn retrieve_context_pack_native(
             "python_pack_fallback": false,
             "raw_candidate_tables_returned": false,
             "memory_layer_budget": memory_layer_budget,
+            "dropped_memory_layer_budget": dropped_memory_layer_budget,
             "broad_scan_used": false,
             "broad_scan_blocked": false,
             "fallback_flags": [],
@@ -3548,6 +3682,12 @@ fn retrieve_context_pack_output(
         .collect();
     let selected_count = selected_refs.len();
     let memory_layer_budget = selected_ref_layer_budget(&selected_refs);
+    let empty_dropped_counts: HashMap<String, u64> = HashMap::new();
+    let dropped_memory_layer_budget = dropped_ref_layer_budget_from_native_counts(
+        &[],
+        &empty_dropped_counts,
+        &empty_dropped_counts,
+    );
     let elapsed_ms = started.elapsed().as_millis() as u64;
     let correctness = selected_count > 0;
     let pack = json!({
@@ -3561,6 +3701,7 @@ fn retrieve_context_pack_output(
         },
         "recall_policy": {
             "memory_layer_budget": memory_layer_budget,
+            "dropped_memory_layer_budget": dropped_memory_layer_budget,
         },
         "retrieval_metrics": {
             "query_plan_ms": 0.0,
@@ -3583,6 +3724,7 @@ fn retrieve_context_pack_output(
             "python_pack_fallback": false,
             "raw_candidate_tables_returned": false,
             "memory_layer_budget": memory_layer_budget,
+            "dropped_memory_layer_budget": dropped_memory_layer_budget,
             "broad_scan_used": false,
             "broad_scan_blocked": false,
             "fallback_flags": [],
@@ -4453,6 +4595,20 @@ mod tests {
         assert_eq!(
             pack.pointer("/retrieval_metrics/memory_layer_budget"),
             pack.pointer("/recall_policy/memory_layer_budget")
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_budget/by_ref_type/entity/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/retrieval_metrics/dropped_memory_layer_budget"),
+            pack.pointer("/recall_policy/dropped_memory_layer_budget")
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/stale_ref_count")
+                .and_then(Value::as_u64),
+            Some(0)
         );
 
         let cached_output = execute_record_log_request(&engine, retrieve.clone(), root.clone())
