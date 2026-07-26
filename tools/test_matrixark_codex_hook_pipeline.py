@@ -381,6 +381,32 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             ]
             self.assertTrue(profile_tool_entities)
             self.assertTrue(any("Exit code: 0" in str(record.get("state") or "") for record in profile_tool_entities))
+            pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "later_async_session"},
+                    "session_scope": "prefer",
+                    "query": "What tool evidence proved the async threshold and idle extraction path?",
+                    "max_context_tokens": 240,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 4},
+                }
+            )
+            selected_refs = pack["selected_refs"]
+            selected_tool_refs = [
+                ref
+                for ref in selected_refs
+                if ref.get("ref_type") == "entity"
+                and ref.get("memory_scope") == "user_profile"
+                and ref.get("session_continuity") == "cross_session"
+                and ref.get("entity_type") == "tool_evidence"
+            ]
+            self.assertTrue(selected_tool_refs, selected_refs)
+            self.assertTrue(any("Exit code: 0" in str(ref.get("text") or "") for ref in selected_tool_refs))
+            self.assertTrue(any(scope["session_id"] in ref.get("source_session_ids", []) for ref in selected_tool_refs))
+            budget = pack["memory_layer_budget"]
+            self.assertGreaterEqual(budget["by_memory_scope"]["user_profile"]["refs"], 1)
+            self.assertGreaterEqual(budget["by_session_continuity"]["cross_session"]["refs"], 1)
+            self.assertGreaterEqual(budget["by_extraction_phase"]["provisional"]["refs"], 1)
 
     def test_stop_boundary_force_commits_full_live_conversation_tail_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

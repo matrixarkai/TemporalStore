@@ -555,4 +555,15 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         compact["include_retrieval_metrics"] = True
     if isinstance(pack.get("retrieval_metrics"), dict):
         compact["retrieval_metrics"] = pack["retrieval_metrics"]
+    retrieval_metrics = pack.get("retrieval_metrics") if isinstance(pack.get("retrieval_metrics"), dict) else {}
+    recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
+    memory_layer_budget = (
+        retrieval_metrics.get("memory_layer_budget")
+        if isinstance(retrieval_metrics.get("memory_layer_budget"), dict)
+        else recall_policy.get("memory_layer_budget")
+        if isinstance(recall_policy.get("memory_layer_budget"), dict)
+        else {}
+    )
+    if isinstance(memory_layer_budget, dict) and memory_layer_budget:
+        compact["memory_layer_budget"] = memory_layer_budget
     return compact
