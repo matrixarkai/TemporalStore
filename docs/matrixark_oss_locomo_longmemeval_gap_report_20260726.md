@@ -23,6 +23,7 @@ This report is intentionally conservative: it records what ran locally, what imp
 - Added `tools/check_oss_model_readiness.py` so future benchmark continuations can record whether a target OSS reader is actually installed/callable before running quality gates.
 - Added `tools/run_oss_memory_benchmarks_when_ready.sh`, a fail-closed driver that runs model readiness, reader capability, MatrixArk LoCoMo/LongMemEval, and OpenViking direct diagnostic baselines only after the target OSS reader is installed and passes the reader gate.
 - Added `tools/summarize_oss_memory_benchmark_artifacts.py` to render MatrixArk/OpenViking JSON artifacts into one token-savings and reader-quality table without upgrading diagnostic runs into paper-comparable claims.
+- Added `tools/diagnose_openviking_memory_extraction.py` to turn OpenViking memory-extraction logs/config/import CSVs into a fail-closed baseline readiness report.
 - Attempted `qwen2.5:7b` through the configured WSL network proxy; the blocking pull reached only about 475 MB / 4.7 GB after the 15 minute command cap. A background pull is still running and had reached about 1.0 GB / 4.7 GB, with roughly two hours still estimated at the observed throughput.
 - Kept benchmark scoring fail-closed: paper-comparable claims remain disabled until full datasets and external baselines run under the same budget/model config.
 
@@ -94,6 +95,8 @@ OpenViking tiny eval results:
 | OpenViking-style direct source retrieval + Ollama Qwen 1.5B LongMemEval_s tiny, shared prompt | 2 | 1.000 | 0.500 | 96.87% | 63.12 ms | 59.01 s | Prompt-aligned source retrieval works; reader quality/latency still not final-claim ready |
 
 The MiniLM VikingBot run answered both questions as `2026` for expected answers `7 May 2023` and `2022`. The Qwen VikingBot run reached the local Qwen endpoint, but answered with a fragment of VikingBot tool instructions instead of using tools/retrieval. Direct OpenViking recall is now technically callable, but the memory-enabled Qwen import produced `memories_extracted: {}` and `memory_diff.json` contained no adds, updates, or deletes.
+
+The OpenViking memory-extraction diagnosis is now machine-readable. For the local Qwen memory-enabled import, `memory.extraction_enabled` was true, one session row imported successfully, and 363 embedding tokens were recorded. However, `vlm_tokens=0`, `llm_output_tokens=0`, and the server log contained repeated `Extracted 0 memories` entries. The current diagnosis is `messages_archived_and_embedded_but_no_chat_completion_tokens_recorded_for_memory_extraction`, so OpenViking official memory recall remains not baseline-ready; direct source/archive retrieval is still only a diagnostic fallback.
 
 To separate retrieval from the broken tool-loop/extraction path, this pass added a direct OpenViking archive retrieval diagnostic. It reads the committed OpenViking `messages.jsonl` archive, ranks archived messages for each LoCoMo question, and feeds the same retrieved context into the local OSS reader. That path retrieved both gold evidence refs (`D1:3` and `D1:12`) and reduced context from 360 estimated source tokens to about 171 retrieved tokens per query. However, Qwen 0.5B answered `2023` for both questions and MiniLM only answered the first question (`yesterday`) correctly.
 
@@ -170,3 +173,4 @@ The practical gap is now precise: retrieval can find the tiny evidence on both M
 - `/tmp/oss_model_readiness_qwen25_7b_20260726.json`
 - `/tmp/oss_memory_benchmark_summary_20260726.json`
 - `/tmp/oss_memory_benchmark_summary_20260726.md`
+- `/tmp/openviking_memory_extraction_diagnosis_20260726.json`
