@@ -8,6 +8,7 @@ import importlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -211,6 +212,125 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("provisional", committed["memory_layers_written"]["extraction_phase"])
         self.assertEqual(committed["trigger_evidence"], adapter.appended[0]["trigger_evidence"])
 
+    def test_modular_batch_extract_promotes_profile_entities(self) -> None:
+        batch_mod = importlib.import_module("tools.matrixark_mcp_local_batch_extract_runtime")
+
+        class Adapter:
+            def __init__(self) -> None:
+                self.records = []
+                self.nodes = []
+
+            def read_all(self):
+                return []
+
+            def _observe_model_latency(self, *_args):
+                return None
+
+            def default_session_node_path(self, scope):
+                return ["tenant:tenant_mod", "user:user_mod", f"session:{scope['session_id']}"]
+
+            def ensure_context_node_path(self, **kwargs):
+                self.nodes.append(kwargs)
+                return {"created": True, "node_path": kwargs["node_path"]}
+
+            def find_latest_entity(self, **_kwargs):
+                return None
+
+            def append_many(self, records):
+                self.records.extend(records)
+
+            def node_summary_dirty_records(self, **_kwargs):
+                return [44], []
+
+        adapter = Adapter()
+        envelope = {
+            "kind": "message",
+            "scope": {
+                "account_id": "acct_mod",
+                "tenant_id": "tenant_mod",
+                "user_id": "user_mod",
+                "session_id": "session_mod",
+            },
+            "metadata": {},
+            "messages": [{"role": "assistant", "content": "Commit abc123 was pushed."}],
+            "ingestion_time_ms": 123,
+            "storage_options": {},
+            "storage_route": {},
+        }
+        extraction = {
+            "mode": "one_pass",
+            "segment_provider": {"name": "deterministic"},
+            "classification": "NEW_EVENT",
+            "event_type": "memory_update",
+            "schema": "matrixark.memory.v1",
+            "message_count": 1,
+            "token_count_estimate": 6,
+            "batch_summary": "Commit abc123 was pushed.",
+            "events": [],
+            "entities": [
+                {
+                    "entity_type": "assistant_decision",
+                    "entity_name": "commit",
+                    "state": "Commit abc123 was pushed.",
+                    "confidence": 0.9,
+                    "operator": "UPSERT",
+                    "source_refs": ["assistant:0"],
+                    "field_patches": [],
+                }
+            ],
+            "segments": [],
+            "indexes": ["entity_type:assistant_decision"],
+        }
+
+        with mock.patch.object(batch_mod, "one_pass_memory_extraction", return_value=extraction):
+            result = batch_mod.batch_extract_after_start(
+                adapter,
+                {"skip_prior_context": True},
+                {
+                    "envelope": envelope,
+                    "hook": {"hook_type": "hook_boundary", "codex_event": "Stop"},
+                    "threshold": 1,
+                    "derive_from_existing_events": True,
+                    "source_event_ids": [101],
+                    "extraction_phase": "final",
+                    "final_session_boundary": True,
+                    "force": True,
+                    "deferred_result": None,
+                },
+            )
+
+        self.assertEqual(1, result["entities_written"])
+        self.assertEqual(1, result["profile_entities_written"])
+        session_entities = [
+            record
+            for record in adapter.records
+            if record.get("record_type") == "context_entity"
+            and record.get("memory_scope") == "session"
+            and record.get("session_continuity") == "same_session"
+        ]
+        profile_entities = [
+            record
+            for record in adapter.records
+            if record.get("record_type") == "context_entity"
+            and record.get("memory_scope") == "user_profile"
+            and record.get("session_continuity") == "cross_session"
+        ]
+        self.assertEqual(1, len(session_entities))
+        self.assertEqual(1, len(profile_entities))
+        self.assertEqual(["session_mod"], profile_entities[0]["source_session_ids"])
+        self.assertEqual([session_entities[0]["entity_hash"]], profile_entities[0]["source_entity_hashes"])
+        self.assertEqual(
+            ["tenant:tenant_mod", "user:user_mod", "profile:long_term_memory"],
+            profile_entities[0]["node_path"],
+        )
+        profile_indexes = [
+            record
+            for record in adapter.records
+            if record.get("record_type") == "context_index"
+            and record.get("data_model") == "context_profile_entity"
+        ]
+        self.assertTrue(any(record.get("index_name") == "memory_scope:user_profile" for record in profile_indexes))
+        self.assertTrue(any(record.get("index_name") == "session_continuity:cross_session" for record in profile_indexes))
 
     def test_mcp_entrypoint_reexports_split_modules(self) -> None:
         server_mod = importlib.import_module("tools.matrixark_mcp_server")

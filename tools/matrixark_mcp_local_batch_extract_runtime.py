@@ -22,6 +22,7 @@ try:
         normalized_node_path,
         now_ms,
         one_pass_memory_extraction,
+        ordered_unique_any,
         secondary_index_budget_summary,
         stable_hash,
         summarize_text,
@@ -44,6 +45,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         normalized_node_path,
         now_ms,
         one_pass_memory_extraction,
+        ordered_unique_any,
         secondary_index_budget_summary,
         stable_hash,
         summarize_text,
@@ -109,6 +111,30 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         scope=envelope["scope"],
         updated_at_ms=envelope["ingestion_time_ms"],
     )
+    profile_scope = {key: value for key, value in envelope["scope"].items() if key != "session_id"}
+    profile_node_path: list[str] = []
+    if profile_scope.get("tenant_id") and profile_scope.get("user_id"):
+        profile_node_path = [
+            f"tenant:{profile_scope.get('tenant_id')}",
+            f"user:{profile_scope.get('user_id')}",
+            "profile:long_term_memory",
+        ]
+        self.ensure_context_node_path(
+            node_path=profile_node_path,
+            scope=profile_scope,
+            updated_at_ms=envelope["ingestion_time_ms"],
+        )
+    profile_node_hash = stable_hash("/".join(profile_node_path)) if profile_node_path else 0
+    source_session_id = str(envelope["scope"].get("session_id") or "")
+    source_roles = sorted(
+        {
+            str(message.get("role") or "")
+            for message in extraction_envelope.get("messages", [])
+            if isinstance(message, dict) and str(message.get("role") or "")
+        }
+    )
+    source_hook_types = sorted({str(hook.get("hook_type") or "")}) if isinstance(hook, dict) and hook.get("hook_type") else []
+    source_codex_events = sorted({str(hook.get("codex_event") or "")}) if isinstance(hook, dict) and hook.get("codex_event") else []
     batch_summary = extraction["batch_summary"]
 
     event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
@@ -182,6 +208,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             )
 
     entity_hashes = []
+    profile_entity_hashes = []
     for entity in extraction["entities"]:
         entity_hash = stable_hash(
             f"{node_hash}:{entity['entity_type']}:{entity['entity_name']}"
@@ -209,9 +236,14 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "operator": updated_entity["operator"],
                 "source_refs": updated_entity["source_refs"],
                 "source_event_ids": source_event_ids,
+                "source_roles": source_roles,
+                "source_hook_types": source_hook_types,
+                "source_codex_events": source_codex_events,
                 "field_patches": updated_entity.get("field_patches", []),
                 "patch_results": updated_entity.get("patch_results", []),
                 "update_mode": updated_entity.get("update_mode", ""),
+                "memory_scope": "session",
+                "session_continuity": "same_session",
                 "extraction_phase": extraction_phase,
                 "final_session_boundary": final_session_boundary,
                 "extraction_context_event_ids": extraction_context_event_ids,
@@ -253,6 +285,121 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
         )
+        if profile_node_hash:
+            profile_entity_hash = stable_hash(
+                f"{profile_node_hash}:{updated_entity['entity_type']}:{updated_entity['entity_name']}"
+            )
+            previous_profile_entity = self.find_latest_entity(
+                node_hash=profile_node_hash,
+                entity_type=updated_entity["entity_type"],
+                entity_name=updated_entity["entity_name"],
+            )
+            promoted_entity = apply_entity_patches(previous_profile_entity, updated_entity)
+            previous_profile = previous_profile_entity or {}
+            previous_profile_state = str(previous_profile.get("state") or "")
+            promoted_state = str(promoted_entity.get("state") or "")
+            if previous_profile_state and previous_profile_state.lower() not in promoted_state.lower():
+                promoted_entity = {
+                    **promoted_entity,
+                    "state": summarize_text(previous_profile_state + " " + promoted_state, limit=320),
+                    "previous_state": previous_profile_state,
+                }
+            profile_source_session_ids = ordered_unique_any(
+                list(previous_profile.get("source_session_ids", []))
+                + ([source_session_id] if source_session_id else [])
+            )
+            profile_source_entity_hashes = ordered_unique_any(
+                list(previous_profile.get("source_entity_hashes", [])) + [entity_hash]
+            )
+            profile_source_refs = ordered_unique_any(
+                list(previous_profile.get("source_refs", [])) + list(promoted_entity.get("source_refs", []))
+            )
+            profile_source_event_ids = ordered_unique_any(
+                list(previous_profile.get("source_event_ids", [])) + event_hashes
+            )
+            profile_source_roles = ordered_unique_any(
+                list(previous_profile.get("source_roles", [])) + source_roles
+            )
+            profile_source_hook_types = ordered_unique_any(
+                list(previous_profile.get("source_hook_types", [])) + source_hook_types
+            )
+            profile_source_codex_events = ordered_unique_any(
+                list(previous_profile.get("source_codex_events", [])) + source_codex_events
+            )
+            profile_entity_hashes.append(profile_entity_hash)
+            records_to_append.append(
+                {
+                    "record_type": "context_entity",
+                    "entity_hash": profile_entity_hash,
+                    "batch_id_hash": batch_id_hash,
+                    "node_hash": profile_node_hash,
+                    "node_path": profile_node_path,
+                    "scope": profile_scope,
+                    "access_scope": profile_scope,
+                    "entity_type": promoted_entity["entity_type"],
+                    "entity_name": promoted_entity["entity_name"],
+                    "state": promoted_entity["state"],
+                    "previous_state": promoted_entity.get("previous_state", ""),
+                    "confidence": promoted_entity["confidence"],
+                    "operator": promoted_entity["operator"],
+                    "source_refs": profile_source_refs,
+                    "source_event_ids": profile_source_event_ids,
+                    "source_session_ids": profile_source_session_ids,
+                    "source_entity_hashes": profile_source_entity_hashes,
+                    "source_roles": profile_source_roles,
+                    "source_hook_types": profile_source_hook_types,
+                    "source_codex_events": profile_source_codex_events,
+                    "source_batch_id_hash": batch_id_hash,
+                    "extraction_context_event_ids": extraction_context_event_ids,
+                    "field_patches": promoted_entity.get("field_patches", []),
+                    "patch_results": promoted_entity.get("patch_results", []),
+                    "update_mode": promoted_entity.get("update_mode", ""),
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "promoted_from_memory_scope": "session",
+                    "extraction_phase": extraction_phase,
+                    "final_session_boundary": final_session_boundary,
+                    "updated_at_ms": envelope["ingestion_time_ms"],
+                }
+            )
+            profile_entity_embedding_text = promoted_entity["entity_type"] + " " + promoted_entity["state"]
+            profile_entity_vector = embedding_for_text(profile_entity_embedding_text)
+            records_to_append.append(
+                {
+                    "record_type": "context_embedding",
+                    "embedding_type": "entity_state",
+                    "ref_type": "entity",
+                    "ref_hash": profile_entity_hash,
+                    "node_hash": profile_node_hash,
+                    "node_path": profile_node_path,
+                    "dim": len(profile_entity_vector),
+                    "model": embedding_model_name(),
+                    "vector": profile_entity_vector,
+                    "scope": profile_scope,
+                    "updated_at_ms": envelope["ingestion_time_ms"],
+                }
+            )
+            for index_name in (
+                f"entity_type:{promoted_entity['entity_type']}",
+                "memory_scope:user_profile",
+                "session_continuity:cross_session",
+                *[f"source_role:{role}" for role in source_roles],
+                *[f"hook_type:{hook_type}" for hook_type in source_hook_types],
+                *[f"codex_event:{codex_event}" for codex_event in source_codex_events],
+            ):
+                profile_index = context_index_posting_record(
+                    index_name=index_name,
+                    data_model="context_profile_entity",
+                    ref_type="entity",
+                    ref_hashes=[profile_entity_hash],
+                    batch_id_hash=batch_id_hash,
+                    node_hash=profile_node_hash,
+                    scope=profile_scope,
+                    updated_at_ms=envelope["ingestion_time_ms"],
+                )
+                profile_index["access_scope"] = profile_scope
+                profile_index.pop("index_hash", None)
+                records_to_append.append(profile_index)
 
     segment_hashes = []
     for segment in extraction["segments"]:
@@ -341,7 +488,9 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         records_to_append.append(
             context_index_posting_record(
                 index_name=index_name,
-                capability="context_batch_commit",
+                data_model="context_batch_commit",
+                ref_type="batch",
+                ref_hashes=[batch_id_hash],
                 batch_id_hash=batch_id_hash,
                 node_hash=node_hash,
                 scope=envelope["scope"],
@@ -361,6 +510,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "events": 0 if derive_from_existing_events else len(envelope["messages"]),
                 "source_events": len(event_hashes),
                 "entities": len(entity_hashes),
+                "profile_entities": len(profile_entity_hashes),
                 "segments": len(segment_hashes),
                 "summaries": 1,
                 "indexes": len(batch_index_terms),
@@ -413,6 +563,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         "extraction_context_event_count": len(extraction_context_event_ids),
         "raw_events_duplicated": not derive_from_existing_events,
         "entities_written": len(entity_hashes),
+        "profile_entities_written": len(profile_entity_hashes),
         "segments_written": len(segment_hashes),
         "summary_hash": summary_hash,
         "summary_refresh": summary_refresh,
