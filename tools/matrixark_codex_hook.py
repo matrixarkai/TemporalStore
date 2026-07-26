@@ -1224,6 +1224,12 @@ def should_commit_session(event: str) -> bool:
     return event in {"Stop", "PostCompact", "SubagentStop", "IdleTimeout", "SessionIdle"}
 
 
+def should_run_session_commit_after_ingest(event: str, hook_warning: str) -> bool:
+    if hook_warning or not should_commit_session(event):
+        return False
+    return True
+
+
 def commit_reason_for_event(event: str) -> str:
     if event in {"IdleTimeout", "SessionIdle"}:
         return "idle_timeout"
@@ -1876,7 +1882,7 @@ def main() -> int:
                 hook_warning = timeout_warning(ingest)
 
         commit = {}
-        if should_commit_session(args.event) and not hook_warning and not HOOK_COMPACT_HOT_PREFIX_ONLY:
+        if should_run_session_commit_after_ingest(args.event, hook_warning):
             commit_reason = commit_reason_for_event(args.event)
             commit = trace_tool_call(
                 server,

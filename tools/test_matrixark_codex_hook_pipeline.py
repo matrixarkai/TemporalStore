@@ -12,6 +12,7 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
+import matrixark_codex_hook
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 
 
@@ -190,6 +191,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             ]
             self.assertTrue(profile_tool_entities)
             self.assertTrue(any("Exit code: 0" in str(record.get("state") or "") for record in profile_tool_entities))
+
+    def test_compact_hot_prefix_preserves_boundary_session_commits(self) -> None:
+        with mock.patch.object(matrixark_codex_hook, "HOOK_COMPACT_HOT_PREFIX_ONLY", True):
+            self.assertTrue(matrixark_codex_hook.should_run_session_commit_after_ingest("IdleTimeout", ""))
+            self.assertTrue(matrixark_codex_hook.should_run_session_commit_after_ingest("SessionIdle", ""))
+            self.assertTrue(matrixark_codex_hook.should_run_session_commit_after_ingest("Stop", ""))
+            self.assertFalse(matrixark_codex_hook.should_run_session_commit_after_ingest("UserPromptSubmit", ""))
+            self.assertFalse(matrixark_codex_hook.should_run_session_commit_after_ingest("IdleTimeout", "timeout"))
 
     def test_batch_extract_events_are_timestamp_keyed_under_segment_parent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
