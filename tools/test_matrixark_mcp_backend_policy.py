@@ -3819,6 +3819,55 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             )
         )
 
+    def test_current_state_prefers_profile_entity_over_stale_session_entity(self) -> None:
+        selected, used_tokens, dropped = mcp.select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 11,
+                    "entity_type": "preference",
+                    "entity_name": "storage location",
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "score": 0.58,
+                    "updated_at_ms": 100,
+                    "text": "preference: storage location = old Windows folder path.",
+                },
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 22,
+                    "entity_type": "preference",
+                    "entity_name": "storage location",
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "score": 0.46,
+                    "updated_at_ms": 200,
+                    "text": "preference: storage location = use /root/src/github-services in Ubuntu.",
+                },
+            ],
+            [],
+            max_context_tokens=1000,
+            auxiliary_quota=0,
+            question_type="current_state",
+            max_selected_refs=1,
+            min_score=0.2,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 400,
+                "max_sessions": 3,
+                "max_candidates": 8,
+                "min_score": 0.2,
+                "raw_evidence_min_score": 0.45,
+                "min_entity_bridge_refs": 1,
+            },
+        )
+
+        self.assertEqual([item["ref_hash"] for item in selected], [22])
+        self.assertEqual(selected[0]["memory_scope"], "user_profile")
+        self.assertEqual(selected[0]["profile_current_state_boost"], 0.18)
+        self.assertGreater(used_tokens, 0)
+        self.assertEqual(dropped["cross_session_policy"]["entity_bridge_selected_ref_count"], 1)
+
     def test_shared_context_budget_caps_shared_resources_and_skills(self) -> None:
         capped_policy = mcp_core.build_shared_context_policy(
             {
