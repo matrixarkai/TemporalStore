@@ -134,9 +134,45 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         self.assertEqual(envelope["lifecycle_tools"]["before_llm"], "matrixark_retrieve")
         self.assertEqual(envelope["lifecycle_tools"]["after_answer"], "matrixark_ingest")
         self.assertEqual(envelope["lifecycle_tools"]["session_boundary"], "matrixark_session_commit")
+        memory_policy = envelope["memory_extraction_policy"]
+        self.assertEqual("raw", memory_policy["live_ingest"]["phase"])
+        self.assertEqual("provisional", memory_policy["threshold_checkpoint"]["extraction_phase"])
+        self.assertFalse(memory_policy["threshold_checkpoint"]["final_session_boundary"])
+        self.assertEqual("provisional", memory_policy["idle_checkpoint"]["extraction_phase"])
+        self.assertFalse(memory_policy["idle_checkpoint"]["final_session_boundary"])
+        self.assertEqual("final", memory_policy["final_boundary"]["extraction_phase"])
+        self.assertTrue(memory_policy["final_boundary"]["final_session_boundary"])
+        self.assertIn("Stop", memory_policy["final_boundary"]["events"])
+        self.assertIn("SubagentStop", memory_policy["final_boundary"]["events"])
+        self.assertIn("PostCompact", memory_policy["final_boundary"]["events"])
+        retrieval_policy = envelope["retrieval_budget_policy"]
+        self.assertTrue(retrieval_policy["local_context_first"])
+        self.assertTrue(retrieval_policy["remote_fills_remaining_budget"])
+        self.assertEqual("lower_than_final", retrieval_policy["provisional_memory_confidence"])
+        self.assertEqual("off", retrieval_policy["debug_default"])
+        self.assertIn("include_retrieval_metrics", retrieval_policy["debug_fields"])
         self.assertIn("ContextEvent", envelope["agent_internal_model_hidden"])
         self.assertIn("ContextSummary", envelope["agent_internal_model_hidden"])
         self.assertIn("hidden prompt", envelope["do_not_send"])
+
+    def test_agent_policy_text_documents_provisional_and_final_extraction(self) -> None:
+        policy = matrixark_agent_config.agent_policy_text()
+        required = [
+            "do not wait only for Stop",
+            "thresholds and idle timeouts call matrixark_session_commit as provisional",
+            "checkpoints with extraction_phase=provisional",
+            "extraction_phase=provisional",
+            "final_session_boundary=false",
+            "Stop, SubagentStop, and PostCompact call matrixark_session_commit as the final",
+            "session boundary with extraction_phase=final",
+            "extraction_phase=final",
+            "final_session_boundary=true",
+            "Retrieval keeps visible",
+            "local context plus a safety margin first",
+            "Retrieval metrics and debug ContextPacks are opt-in audit fields",
+        ]
+        for snippet in required:
+            self.assertIn(snippet, policy)
 
     def test_hook_examples_only_emit_codex_commands(self) -> None:
         examples = matrixark_agent_config.hook_examples_text(".")

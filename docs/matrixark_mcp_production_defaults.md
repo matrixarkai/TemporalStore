@@ -43,6 +43,23 @@ Lifecycle policy:
 - feedback: `matrixark_feedback` with accepted/rejected refs;
 - session boundary: `matrixark_session_commit` for commit/batch extraction.
 
+Live memory policy:
+
+- PromptSubmit, assistant responses, and selected tool evidence are ingested
+  immediately as raw TemporalStore-backed events.
+- Message/token thresholds trigger `matrixark_session_commit` as a provisional
+  checkpoint with `extraction_phase=provisional` and
+  `final_session_boundary=false`.
+- Idle timeout triggers the same provisional checkpoint, so long-running
+  sessions become retrievable before Stop.
+- Stop, SubagentStop, and PostCompact trigger the final session boundary with
+  `extraction_phase=final` and `final_session_boundary=true`.
+- Retrieval may use provisional memories during active sessions, but final
+  memories and summaries are the higher-confidence durable layer.
+- Retrieval keeps visible local context and a safety margin first, then lets
+  MatrixArk fill the remaining remote budget. Retrieval metrics and debug
+  ContextPacks are opt-in audit fields, not default hot-path payload.
+
 ## Observability And Portal
 
 Metrics include backend identity and storage mode. Prometheus-compatible output

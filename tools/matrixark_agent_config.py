@@ -47,6 +47,38 @@ LIFECYCLE_ACTIONS = {
     "feedback": "record_accepted_rejected_refs",
     "session_boundary": "commit_batch_extract",
 }
+MEMORY_EXTRACTION_POLICY = {
+    "live_ingest": {
+        "events": ["UserPromptSubmit", "AssistantResponse", "PostToolUse"],
+        "action": "append_visible_message_or_tool_evidence",
+        "phase": "raw",
+    },
+    "threshold_checkpoint": {
+        "trigger": "message_count_or_token_threshold",
+        "tool": "matrixark_session_commit",
+        "extraction_phase": "provisional",
+        "final_session_boundary": False,
+    },
+    "idle_checkpoint": {
+        "trigger": "idle_timeout",
+        "tool": "matrixark_session_commit",
+        "extraction_phase": "provisional",
+        "final_session_boundary": False,
+    },
+    "final_boundary": {
+        "events": ["Stop", "SubagentStop", "PostCompact"],
+        "tool": "matrixark_session_commit",
+        "extraction_phase": "final",
+        "final_session_boundary": True,
+    },
+}
+RETRIEVAL_BUDGET_POLICY = {
+    "local_context_first": True,
+    "remote_fills_remaining_budget": True,
+    "provisional_memory_confidence": "lower_than_final",
+    "debug_fields": ["include_retrieval_metrics", "include_retrieval_debug", "debug_context_pack"],
+    "debug_default": "off",
+}
 
 
 def agent_envelope_schema() -> dict[str, object]:
@@ -92,6 +124,8 @@ def agent_envelope_schema() -> dict[str, object]:
         "do_not_send": ["hidden prompt", "system prompt", "private model chain-of-thought"],
         "lifecycle_tools": dict(LIFECYCLE_TOOLS),
         "lifecycle_actions": dict(LIFECYCLE_ACTIONS),
+        "memory_extraction_policy": dict(MEMORY_EXTRACTION_POLICY),
+        "retrieval_budget_policy": dict(RETRIEVAL_BUDGET_POLICY),
         "agent_internal_model_hidden": [
             "ContextEvent",
             "ContextEntity",
@@ -256,12 +290,22 @@ explicit feedback signals.
 At task/session boundaries, call matrixark_session_commit so MatrixArk can run
 one-pass batch extraction over the same-session buffer.
 
+For live Codex memory, do not wait only for Stop. PromptSubmit, assistant
+responses, and selected tool evidence are ingested immediately. Message/token
+thresholds and idle timeouts call matrixark_session_commit as provisional
+checkpoints with extraction_phase=provisional and final_session_boundary=false.
+Stop, SubagentStop, and PostCompact call matrixark_session_commit as the final
+session boundary with extraction_phase=final and final_session_boundary=true.
+Retrieval may use provisional memories during long sessions, but agents should
+treat final memories and summaries as higher-confidence durable memory.
+
 MatrixArk decides the route from the payload:
 - before_llm/query -> matrixark_retrieve
 - after_llm/tool_result -> matrixark_ingest durable answer/tool evidence
 - ResourceAdded/SkillAdded/raw_uri -> resource or skill import task through matrixark_ingest
 - Feedback/accepted_refs/rejected_refs -> matrixark_feedback
-- Stop/PostCompact/idle -> matrixark_session_commit and batch extraction
+- threshold/idle -> matrixark_session_commit provisional batch extraction
+- Stop/SubagentStop/PostCompact -> matrixark_session_commit final batch extraction
 
 Lifecycle actions:
 - before_llm: retrieve
@@ -272,8 +316,11 @@ Lifecycle actions:
 
 Agents do not need to understand ContextEvent, ContextEntity, ContextSummary,
 ContextEmbedding, ContextIndex, ResourceChunk, or SkillSection internals. They
-send the envelope below; MatrixArk resolves scope, routing, retrieval, resource
-import, feedback, and session commit policy.
+send the envelope below; MatrixArk resolves scope, routing, retrieval budget,
+resource import, feedback, and session commit policy. Retrieval keeps visible
+local context plus a safety margin first, then fills only the remaining remote
+budget. Retrieval metrics and debug ContextPacks are opt-in audit fields, not
+default hot-path payload.
 
 ```json
 {envelope}
