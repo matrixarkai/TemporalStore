@@ -106,9 +106,12 @@ SYNONYMS = {
 }
 
 OSS_READER_SYSTEM_PROMPT = (
-    "You are an extractive long-memory benchmark reader. Answer only from the supplied "
-    "context. Prefer short spans, names, dates, yes/no, or comma-separated lists. If the "
-    "context is insufficient, say not enough context."
+    "You are an extractive long-memory benchmark reader. Answer only from the supplied context. "
+    "Return a short direct answer to the question. If the question asks for a date, year, "
+    "or when something happened, resolve relative phrases against the context timestamp and "
+    "return the explicit date or year. If the question asks for a fact such as a degree, "
+    "owner, place, or duration, return that fact directly and do not substitute an unrelated date. "
+    "If the context is insufficient, say not enough context."
 )
 OSS_READER_USER_PROMPT_TEMPLATE = "Question: {question}\n\nContext:\n{context}\n\nAnswer:"
 

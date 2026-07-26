@@ -21,6 +21,16 @@ from typing import Any
 WORD_RE = re.compile(r"[A-Za-z0-9]+")
 
 
+OSS_READER_SYSTEM_PROMPT = (
+    "You are an extractive long-memory benchmark reader. Answer only from the supplied context. "
+    "Return a short direct answer to the question. If the question asks for a date, year, "
+    "or when something happened, resolve relative phrases against the context timestamp and "
+    "return the explicit date or year. If the question asks for a fact such as a degree, "
+    "owner, place, or duration, return that fact directly and do not substitute an unrelated date. "
+    "If the context is insufficient, say not enough context."
+)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", default="/root/matrixark_benchmarks/data/longmemeval_s_tiny_2.json")
@@ -205,7 +215,7 @@ def call_reader(base_url: str, model: str, question: str, context: str, *, timeo
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "Answer the question from the context. Return only the direct answer."},
+            {"role": "system", "content": OSS_READER_SYSTEM_PROMPT},
             {"role": "user", "content": f"Question: {question}\nContext:\n{context}\nAnswer:"},
         ],
         "temperature": 0,
