@@ -47,6 +47,16 @@ def main() -> int:
         action="store_true",
         help="Forward the scorer's retrieved-context-derived answer hint into the OSS reader prompt.",
     )
+    parser.add_argument(
+        "--reader-focus-evidence",
+        action="store_true",
+        help="Forward only the most question-relevant sentence/span from each retrieved block.",
+    )
+    parser.add_argument(
+        "--reader-candidate-first",
+        action="store_true",
+        help="Put the retrieved-context-derived answer candidate first in the OSS reader context.",
+    )
     parser.add_argument("--reader-no-fallback", action="store_true")
     parser.add_argument(
         "--require-rust-temporalstore",
@@ -151,6 +161,10 @@ def main() -> int:
         command.extend(["--reader-base-url", args.reader_base_url])
     if args.reader_include_extractive_hint:
         command.append("--reader-include-extractive-hint")
+    if args.reader_focus_evidence:
+        command.append("--reader-focus-evidence")
+    if args.reader_candidate_first:
+        command.append("--reader-candidate-first")
     if args.reader_no_fallback:
         command.append("--reader-no-fallback")
     if args.require_rust_temporalstore:
