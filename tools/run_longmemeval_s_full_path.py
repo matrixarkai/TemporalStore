@@ -57,6 +57,11 @@ def main() -> int:
         action="store_true",
         help="Put the retrieved-context-derived answer candidate first in the OSS reader context.",
     )
+    parser.add_argument(
+        "--reader-candidate-only",
+        action="store_true",
+        help="Use only the retrieved-context-derived answer candidate as OSS reader context when available.",
+    )
     parser.add_argument("--reader-no-fallback", action="store_true")
     parser.add_argument(
         "--require-rust-temporalstore",
@@ -165,6 +170,8 @@ def main() -> int:
         command.append("--reader-focus-evidence")
     if args.reader_candidate_first:
         command.append("--reader-candidate-first")
+    if args.reader_candidate_only:
+        command.append("--reader-candidate-only")
     if args.reader_no_fallback:
         command.append("--reader-no-fallback")
     if args.require_rust_temporalstore:

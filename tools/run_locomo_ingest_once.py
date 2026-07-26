@@ -259,6 +259,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--reader-candidate-only",
+        action="store_true",
+        help=(
+            "When a retrieved-context-derived candidate answer exists, send only that candidate plus "
+            "minimal instruction to the OSS reader. This does not use benchmark gold answers."
+        ),
+    )
+    parser.add_argument(
         "--reader-no-fallback",
         action="store_true",
         help="Fail explicit open-source reader calls instead of falling back to deterministic extraction.",
@@ -398,6 +406,7 @@ def main() -> int:
             include_extractive_hint=args.reader_include_extractive_hint,
             focus_evidence=args.reader_focus_evidence,
             candidate_first=args.reader_candidate_first,
+            candidate_only=args.reader_candidate_only,
         )
     )
 
@@ -755,6 +764,7 @@ def main() -> int:
         "reader_include_extractive_hint": reader.config.include_extractive_hint,
         "reader_focus_evidence": reader.config.focus_evidence,
         "reader_candidate_first": reader.config.candidate_first,
+        "reader_candidate_only": reader.config.candidate_only,
         "reader_open_source_calls": reader.open_source_calls,
         "reader_fallback_count": reader.fallback_count,
         "reader_error_count": reader.error_count,
@@ -1986,6 +1996,7 @@ class ReaderConfig:
     include_extractive_hint: bool
     focus_evidence: bool
     candidate_first: bool
+    candidate_only: bool
 
 
 @dataclass(frozen=True)
@@ -2074,6 +2085,7 @@ class BenchmarkReader:
             include_extractive_hint=self.config.include_extractive_hint,
             focus_evidence=self.config.focus_evidence,
             candidate_first=self.config.candidate_first,
+            candidate_only=self.config.candidate_only,
         )
         max_tokens = int(os.environ.get("MATRIXARK_READER_MAX_TOKENS", "160"))
         payload = {
@@ -2162,6 +2174,7 @@ class BenchmarkReader:
             include_extractive_hint=self.config.include_extractive_hint,
             focus_evidence=self.config.focus_evidence,
             candidate_first=self.config.candidate_first,
+            candidate_only=self.config.candidate_only,
         )
         max_tokens = int(os.environ.get("MATRIXARK_READER_MAX_TOKENS", "64"))
         messages = [
@@ -6009,6 +6022,7 @@ def reader_evidence_bundle(
     include_extractive_hint: bool = False,
     focus_evidence: bool = False,
     candidate_first: bool = False,
+    candidate_only: bool = False,
 ) -> str:
     if max_chars <= 0:
         return ""
@@ -6017,6 +6031,11 @@ def reader_evidence_bundle(
     if include_extractive_hint:
         hint = extractive_reader_hint(question, blocks)
         if hint:
+            if candidate_only:
+                return (
+                    f"Answer candidate from retrieved context: {hint}\n"
+                    f"Return exactly this answer if it answers the question: {hint}"
+                )
             if candidate_first:
                 selected.append(f"Answer candidate from retrieved context: {hint}")
                 selected.append(
