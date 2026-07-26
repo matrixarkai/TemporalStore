@@ -259,6 +259,13 @@ def record_dropped_candidate(dropped: Json, candidate: Json, *, reason: str, tok
 
 
 def diversify_for_question_type(candidates: list[Json], question_type: str, *, total_limit: int) -> list[Json]:
+    if question_type == "broad_exploration":
+        summary = next((candidate for candidate in candidates if candidate.get("ref_type") == "summary"), None)
+        if summary is None:
+            return candidates[:total_limit]
+        selected = [summary]
+        selected.extend(candidate for candidate in candidates if candidate is not summary)
+        return selected[:total_limit]
     if question_type != "multi_hop":
         return candidates[:total_limit]
     selected: list[Json] = []

@@ -400,6 +400,60 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     for record in records
                 )
             )
+            refresh = adapter.refresh_summaries(
+                {
+                    "scope": {"account_id": "acct_profile", "tenant_id": "tenant_profile", "user_id": "user_profile"},
+                    "limit": 16,
+                    "refreshed_at_ms": 1234567890,
+                }
+            )
+            self.assertGreaterEqual(refresh.get("refreshed_count", 0), 1)
+            records = adapter.read_all()
+            profile_summaries = [
+                record
+                for record in records
+                if record.get("record_type") == "context_summary"
+                and record.get("node_path") == ["tenant:tenant_profile", "user:user_profile", "profile:long_term_memory"]
+            ]
+            self.assertTrue(profile_summaries)
+            self.assertTrue(any(record.get("summary_type") == "node_l0" for record in profile_summaries))
+            profile_entity_hashes_by_type = {
+                record.get("entity_type"): record.get("entity_hash")
+                for record in profile_entities
+                if record.get("entity_hash") is not None
+            }
+            self.assertTrue(
+                any(
+                    profile_entity_hashes_by_type.get("assistant_decision") in record.get("source_entity_hashes", [])
+                    and profile_entity_hashes_by_type.get("tool_evidence") in record.get("source_entity_hashes", [])
+                    and "assistant_decision" in record.get("source_entity_types", [])
+                    and "tool_evidence" in record.get("source_entity_types", [])
+                    for record in profile_summaries
+                )
+            )
+            summary_pack = adapter.retrieve(
+                {
+                    "scope": {
+                        "account_id": "acct_profile",
+                        "tenant_id": "tenant_profile",
+                        "user_id": "user_profile",
+                        "session_id": "later_session",
+                    },
+                    "session_scope": "prefer",
+                    "query": "Summarize long term memory about assistant decisions and tool evidence.",
+                    "max_context_tokens": 90,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 3},
+                }
+            )
+            self.assertLessEqual(summary_pack["used_context_tokens"], 90)
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "summary"
+                    and "profile:long_term_memory" in str(ref.get("text") or "")
+                    for ref in summary_pack["selected_refs"]
+                )
+            )
 
     def test_async_resource_import_uses_bounded_worker_queue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, mock.patch.dict(

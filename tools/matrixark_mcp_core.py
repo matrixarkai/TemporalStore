@@ -4041,10 +4041,10 @@ def infer_query_type(query: str) -> str:
         return "current_state"
     if re.search(r"\b(why|reason|because|feel|felt|emotion|happy|sad|angry|worried|excited)\b", lower):
         return "why_emotion"
-    if re.search(r"\b(evidence|quote|exactly|what did .* say|conversation|dialogue|message)\b", lower):
-        return "evidence"
     if re.search(r"\b(overview|summarize|summary|explore|broad|what is in|what do we know|topics|map|inventory)\b", lower):
         return "broad_exploration"
+    if re.search(r"\b(evidence|quote|exactly|what did .* say|conversation|dialogue|message)\b", lower):
+        return "evidence"
     if re.search(r"\b(procedure|steps?|how to|troubleshoot|debug|rollback|runbook|playbook|checklist|fix|remediate|mitigate)\b", lower):
         return "procedure"
     if re.search(r"\b(both|together|across|between|compare|combine|sessions|multi-hop|multi session|multi-session)\b", lower):
@@ -4323,6 +4323,10 @@ def candidate_index_terms(
         terms.add(context_index_name("source_type", record.get("source_type") or "message"))
     elif record_type == "context_entity":
         terms.add(context_index_name("entity_type", record.get("entity_type")))
+    elif record_type == "context_summary":
+        terms.add(context_index_name("summary_type", record.get("summary_type")))
+        for entity_type in record.get("source_entity_types", [])[:16]:
+            terms.add(context_index_name("entity_type", entity_type))
     elif record_type == "context_segment":
         terms.add(context_index_name("segment_topic", record.get("topic")))
     elif record_type == "resource_chunk":
@@ -5180,6 +5184,13 @@ def record_dropped_candidate(dropped: Json, candidate: Json, *, reason: str, tok
 
 
 def diversify_for_question_type(candidates: list[Json], question_type: str, *, total_limit: int) -> list[Json]:
+    if question_type == "broad_exploration":
+        summary = next((candidate for candidate in candidates if candidate.get("ref_type") == "summary"), None)
+        if summary is None:
+            return candidates[:total_limit]
+        selected = [summary]
+        selected.extend(candidate for candidate in candidates if candidate is not summary)
+        return selected[:total_limit]
     if question_type != "multi_hop":
         return candidates[:total_limit]
     selected: list[Json] = []
