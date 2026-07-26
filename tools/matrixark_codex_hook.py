@@ -469,6 +469,7 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
         ("continuity", "by_session_continuity"),
         ("phase", "by_extraction_phase"),
         ("ref_type", "by_ref_type"),
+        ("codex_event", "by_codex_event"),
     ]:
         buckets = memory_layer_budget.get(bucket_name)
         if not isinstance(buckets, dict):
