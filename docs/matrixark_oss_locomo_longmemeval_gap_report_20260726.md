@@ -40,6 +40,9 @@ This report is intentionally conservative: it records what ran locally, what imp
 - Ran bounded Qwen 7B MatrixArk samples. Retrieval and token savings were strong, but reader quality was still weak after strict scoring: LoCoMo 5 hit 0.2 with 94.20% token reduction, and LongMemEval_s 5 hit 0.2 with 98.01% token reduction.
 - Fixed the Rust LongMemEval_s full-replay zero-hit gap by splitting oversized packed external benchmark sources before writing native `ContextEvent.text`. The five previously missing query IDs were caused by packed bodies above the 64 KiB context-event text limit.
 - Reran full LongMemEval_s Rust TemporalStore replay in release mode with 32 batches of 16 records. The run completed all 500 records with retrieval Hit@K 1.0, `zero_hit_queries=0`, `ingested_source_sets=500`, and `retrieved_source_sets=500`.
+- Added fail-closed unsupported-case labeling for LoCoMo rows whose answer terms are absent from the converted source text and which have no evidence refs. The current local LoCoMo conversion flags three such rows: `conv_26-q31`, `conv_26-q47`, and `conv_50-q40`.
+- Fixed Rust all-source replay for empty-query external benchmark mode so source-order replay no longer prunes event-expanded nodes before scoring. Normal query retrieval keeps the query-aware event limit.
+- Ran bounded 20-question LoCoMo and 20-record LongMemEval_s OSS-reader passes through Rust TemporalStore full replay with local Ollama Qwen. Retrieval stayed perfect in both runs; Qwen 1.5B reader quality remains the active gap.
 - Kept benchmark scoring fail-closed: paper-comparable claims remain disabled until full datasets and external baselines run under the same budget/model config.
 
 ## Local OSS Readers
@@ -79,6 +82,8 @@ The local full input files are `/root/matrixark_benchmarks/data/locomo10.json` a
 | Qwen 0.5B Transformers LongMemEval_s 5-record reader-packed sample | 5 | 1.000 | 0.200 | 98.01% | 209.08 ms | 30.59 s | Rust TemporalStore ready | Packing changed correct fact, not aggregate quality |
 | Qwen 7B Ollama LoCoMo 5-question reader-packed strict-date sample | 5 | 1.000 | 0.200 | 94.20% | 111.56 ms | 5.22 s | Reused full Rust TemporalStore replay | Gate-passed reader, but strict benchmark quality still weak; date hallucination no longer overcounted |
 | Qwen 7B Ollama LongMemEval_s 5-record reader-packed sample | 5 | 1.000 | 0.200 | 98.01% | 133.43 ms | 55.22 s | Rust TemporalStore ready | Retrieval/token savings good, reader latency and answer quality still not competitive |
+| Qwen 1.5B Ollama LoCoMo 20-question compact bounded sample | 20 | 1.000 | 0.350 | 78.96% | 110.67 ms | 17.77 s | Rust TemporalStore full replay ready | Bounded local OSS run: no reader timeouts, retrieval perfect, reader quality weak |
+| Qwen 1.5B Ollama LongMemEval_s 20-record compact bounded sample | 20 | 1.000 | 0.500 | 98.85% | 252.35 ms | 1.40 s | Rust TemporalStore full replay ready | Bounded local OSS run: retrieval perfect, token savings very high, reader quality below competitive threshold |
 | MiniLM LoCoMo 3 conversations | 387 | 1.000 | 0.388 | 33.54% | 1.47 ms | 228.04 ms | Rust TemporalStore ready | Diagnostic |
 | MiniLM LongMemEval_s 50 | 50 | 0.980 | 0.560 | 98.59% | 250.06 ms | 305.90 ms | Rust TemporalStore ready | Diagnostic |
 | Qwen LoCoMo tiny | 2 | 1.000 | 1.000 | 0.00% | 4.40 ms | 11.97 s | Rust TemporalStore ready | Smoke only |
@@ -135,8 +140,8 @@ For LongMemEval, the official OpenViking importer initially failed every session
 1. **External baseline quality gap:** OpenViking now runs locally, but the tiny VikingBot MiniLM/Qwen baselines answered 0/2 questions correctly.
 2. **OpenViking extraction/indexing gap:** With memory extraction enabled and Qwen configured, LoCoMo session commit extracted 0 memories. LongMemEval import completed only after using the correct user API key, but official eval still retrieved zero memories/context.
 3. **Token accounting gap:** OpenViking returned zero LLM token counters in VikingBot runs; the direct archive baseline therefore uses the same external whitespace-token estimate as the MatrixArk diagnostics.
-4. **Reader/tool-loop gap:** Qwen 7B now passes the tiny capability gate, but bounded LoCoMo and LongMemEval_s strict samples still hit only 0.2 reader quality. MiniLM passes the tiny gate but is extractive and diagnostic; full comparison should use Qwen 7B/14B or another stronger OSS reader through a stable Ollama/vLLM path and stricter evidence packing.
-5. **Backend readiness gap:** Full LongMemEval_s Rust retrieval replay is now strict-green after oversized packed source splitting: 500 records, 500 ingested source sets, 500 retrieved source sets, Hit@K 1.0, and zero zero-hit queries. The remaining backend retrieval gap is LoCoMo's single miss at 1,541/1,542.
+4. **Reader/tool-loop gap:** Qwen 7B now passes the tiny capability gate, and Qwen 1.5B no longer times out on bounded compact runs, but bounded LoCoMo and LongMemEval_s strict samples still show weak reader quality. MiniLM passes the tiny gate but is extractive and diagnostic; full comparison should use Qwen 7B/14B or another stronger OSS reader through a stable Ollama/vLLM path and stricter evidence packing.
+5. **Backend readiness gap:** Full LongMemEval_s Rust retrieval replay is now strict-green after oversized packed source splitting: 500 records, 500 ingested source sets, 500 retrieved source sets, Hit@K 1.0, and zero zero-hit queries. The previous LoCoMo single miss is now understood as unsupported benchmark data after fail-closed unsupported-case filtering, not a Rust retrieval miss.
 6. **Token-savings methodology gap:** Savings must be computed against the same source universe and token budget. Gold evidence windows are not valid savings evidence.
 7. **Paper-comparable scale gap:** Full LoCoMo 1,542 questions and LongMemEval_s 500 records have not run end-to-end with the same reader, token budget, and baseline.
 
@@ -205,6 +210,31 @@ It now marks the LongMemEval_s full Rust retrieval row as paper-comparable retri
 - OpenViking official memory extraction still produces empty searchable memories in this local setup.
 
 The summary now fails closed on tiny samples, so a relaxed local smoke threshold cannot accidentally become a published benchmark claim.
+
+## Latest Bounded Qwen / Rust TemporalStore Evidence
+
+The newest bounded local OSS-reader evidence separates three layers:
+
+1. Rust TemporalStore retrieval quality.
+2. Token savings from compact context retrieval versus full source replay.
+3. Local OSS reader answer quality.
+
+Results:
+
+| Dataset | Cases | Backend | Reader | Retrieval Hit@K | Reader Hit | Token Reduction | Reader Errors | Notes |
+|---|---:|---|---|---:|---:|---:|---:|---|
+| LoCoMo subset | 20 | Rust TemporalStore full replay | Ollama `qwen2.5:1.5b` | 1.000 | 0.350 | 78.96% | 0 | Retrieval is green; reader misses strict temporal/person facts. |
+| LongMemEval_s subset | 20 | Rust TemporalStore full replay | Ollama `qwen2.5:1.5b` | 1.000 | 0.500 | 98.85% | 0 | Retrieval and token savings are green; reader quality is below the final threshold. |
+
+Evidence files:
+
+- `/tmp/matrixark_oss_goal_runs/qwen_subset_20260726/locomo_qwen15b_20_oss_reader_compact_report.json`
+- `/tmp/matrixark_oss_goal_runs/qwen_subset_20260726/longmem_qwen15b_20_oss_reader_compact_bounded_report.json`
+- `/tmp/matrixark_oss_goal_runs/qwen_subset_20260726/locomo_qwen20_backend_fullreplay_rerun.json`
+
+The earlier Qwen 7B bounded run failed because the reader call had a 20-second curl limit, while the local CPU/Ollama path can take more than that once context is included. The fixed bounded run uses a compact 4,000-character reader context and a 90-second timeout. That makes the result a model-quality signal instead of a transport-timeout signal.
+
+The next quality gap is not "find the evidence." The evidence is retrieved. The next gap is to make the reader see and copy the exact answer span reliably, preferably using a stronger local Qwen 7B/14B or vLLM-backed reader with the same token budget and no deterministic fallback.
 
 ## Evidence Files
 
