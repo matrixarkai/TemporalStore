@@ -681,6 +681,15 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 }
             )
             self.assertGreaterEqual(refresh.get("refreshed_count", 0), 1)
+            refreshed_profile = next(
+                item
+                for item in refresh["refreshed"]
+                if item.get("node_path") == ["tenant:tenant_profile", "user:user_profile", "profile:long_term_memory"]
+            )
+            self.assertIn("assistant", refreshed_profile["source_roles"])
+            self.assertIn("tool", refreshed_profile["source_roles"])
+            self.assertIn("hook_boundary", refreshed_profile["source_hook_types"])
+            self.assertIn("Stop", refreshed_profile["source_codex_events"])
             records = adapter.read_all()
             profile_summaries = [
                 record
@@ -690,6 +699,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             ]
             self.assertTrue(profile_summaries)
             self.assertTrue(any(record.get("summary_type") == "node_l0" for record in profile_summaries))
+            self.assertTrue(any("assistant" in record.get("source_roles", []) for record in profile_summaries))
+            self.assertTrue(any("tool" in record.get("source_roles", []) for record in profile_summaries))
+            self.assertTrue(any("hook_boundary" in record.get("source_hook_types", []) for record in profile_summaries))
+            self.assertTrue(any("Stop" in record.get("source_codex_events", []) for record in profile_summaries))
             profile_entity_hashes_by_type = {
                 record.get("entity_type"): record.get("entity_hash")
                 for record in profile_entities
