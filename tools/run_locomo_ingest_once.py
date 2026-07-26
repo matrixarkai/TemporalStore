@@ -161,6 +161,36 @@ def main() -> int:
     parser.add_argument("--reader-timeout-seconds", type=float, default=20.0)
     parser.add_argument("--reader-max-context-chars", type=int, default=12000)
     parser.add_argument(
+        "--retrieval-same-session-percent",
+        type=float,
+        default=0.70,
+        help="Soft cap for the dominant session/source group share in each retrieved pack.",
+    )
+    parser.add_argument(
+        "--retrieval-cross-session-percent",
+        type=float,
+        default=0.45,
+        help="Soft reserved share for non-dominant session/source groups in each retrieved pack.",
+    )
+    parser.add_argument(
+        "--retrieval-summary-percent",
+        type=float,
+        default=0.25,
+        help="Soft cap for summary-layer blocks in each retrieved pack.",
+    )
+    parser.add_argument(
+        "--retrieval-entity-percent",
+        type=float,
+        default=0.35,
+        help="Soft cap for entity/observation-layer blocks in each retrieved pack.",
+    )
+    parser.add_argument(
+        "--retrieval-event-percent",
+        type=float,
+        default=0.80,
+        help="Soft cap for raw event/turn-layer blocks in each retrieved pack.",
+    )
+    parser.add_argument(
         "--reader-include-extractive-hint",
         action="store_true",
         help=(
@@ -285,6 +315,13 @@ def main() -> int:
         args.rust_temporalstore_source_limit = 0
         if args.rust_temporalstore_batch_size <= 0:
             args.rust_temporalstore_batch_size = 64
+    retrieval_budget = RetrievalBudgetConfig(
+        same_session_percent=args.retrieval_same_session_percent,
+        cross_session_percent=args.retrieval_cross_session_percent,
+        summary_percent=args.retrieval_summary_percent,
+        entity_percent=args.retrieval_entity_percent,
+        event_percent=args.retrieval_event_percent,
+    )
     rust_backend_report = load_reusable_rust_temporalstore_report(args)
     if rust_backend_report is None and args.require_rust_temporalstore:
         rust_backend_report = run_rust_temporalstore_backend(args)
@@ -323,6 +360,7 @@ def main() -> int:
     max_retrieved_tokens = 0
     total_retrieved_blocks = 0
     total_retrieved_source_groups = 0
+    retrieval_budget_totals: defaultdict[str, int] = defaultdict(int)
     multi_source_group_queries = 0
     conversations_loaded = 0
     source_count = 0
@@ -365,7 +403,7 @@ def main() -> int:
             )
             source_tokens = sum(estimated_tokens(source.get("body", "")) for source in query_sources)
             retrieval_started = time.perf_counter()
-            blocks = rank_sources(question, query_sources, args.max_events)
+            blocks = rank_sources(question, query_sources, args.max_events, retrieval_budget)
             retrieval_ms = elapsed_ms(retrieval_started)
             reader_started = time.perf_counter()
             reader_answer = reader.answer(question, blocks)
@@ -380,6 +418,7 @@ def main() -> int:
             )
             retrieved_tokens = sum(estimated_tokens(block.get("body", "")) for block in blocks)
             retrieved_source_groups = distinct_source_group_count(blocks)
+            budget_counts = retrieval_budget_counts(blocks)
             query_id = f"{conversation_id}-q{question_index + 1}"
             unsupported_reason = unsupported_benchmark_reason(
                 answers,
@@ -407,6 +446,8 @@ def main() -> int:
             max_retrieved_tokens = max(max_retrieved_tokens, retrieved_tokens)
             total_retrieved_blocks += len(blocks)
             total_retrieved_source_groups += retrieved_source_groups
+            for key, value in budget_counts.items():
+                retrieval_budget_totals[key] += value
             if retrieved_source_groups >= 2:
                 multi_source_group_queries += 1
             retrieval_latencies_ms.append(retrieval_ms)
@@ -474,6 +515,7 @@ def main() -> int:
                     "retrieved_source_group_ids": [source_group_identity(block) for block in blocks[: args.max_events]],
                     "source_tokens": source_tokens,
                     "retrieved_tokens": retrieved_tokens,
+                    "retrieval_budget_counts": budget_counts,
                     "token_reduction_percent": token_reduction_percent(source_tokens, retrieved_tokens),
                     "retrieval_ms": retrieval_ms,
                     "reader_ms": reader_ms,
@@ -666,6 +708,10 @@ def main() -> int:
         "benchmark_total_source_tokens": total_source_tokens,
         "benchmark_total_retrieved_tokens": total_retrieved_tokens,
         "max_events": args.max_events,
+        "retrieval_budget_config": retrieval_budget.to_report(),
+        "retrieval_budget_avg_counts_per_query": {
+            key: value / total if total else 0.0 for key, value in sorted(retrieval_budget_totals.items())
+        },
         "evidence_window": args.evidence_window,
         "gold_evidence_window_used": args.evidence_window is not None,
         "misses": args.misses,
@@ -1782,6 +1828,24 @@ class ReaderConfig:
     include_extractive_hint: bool
 
 
+@dataclass(frozen=True)
+class RetrievalBudgetConfig:
+    same_session_percent: float
+    cross_session_percent: float
+    summary_percent: float
+    entity_percent: float
+    event_percent: float
+
+    def to_report(self) -> dict[str, float]:
+        return {
+            "same_session_percent": clamp_percent(self.same_session_percent),
+            "cross_session_percent": clamp_percent(self.cross_session_percent),
+            "summary_percent": clamp_percent(self.summary_percent),
+            "entity_percent": clamp_percent(self.entity_percent),
+            "event_percent": clamp_percent(self.event_percent),
+        }
+
+
 class BenchmarkReader:
     def __init__(self, config: ReaderConfig) -> None:
         self.config = config
@@ -2000,7 +2064,12 @@ def dominant_dataset_name(dataset_counts: dict[str, int]) -> str:
     return sorted(dataset_counts.items(), key=lambda row: (-row[1], row[0]))[0][0]
 
 
-def rank_sources(question: str, sources: list[dict[str, str]], max_events: int) -> list[dict[str, str]]:
+def rank_sources(
+    question: str,
+    sources: list[dict[str, str]],
+    max_events: int,
+    budget: RetrievalBudgetConfig | None = None,
+) -> list[dict[str, str]]:
     ranked = []
     for index, source in enumerate(sources):
         body = source.get("body", "")
@@ -2013,7 +2082,126 @@ def rank_sources(question: str, sources: list[dict[str, str]], max_events: int) 
     selected = add_temporal_reference_sources(question, selected, sources, max_events)
     selected = add_domain_reference_sources(question, selected, sources, max_events)
     selected = refill_cross_session_sources(question, selected, ranked, max_events)
+    if budget is not None:
+        selected = apply_retrieval_budget(selected, ranked, max_events, budget)
     return [compact_retrieval_source(question, source) for source in selected]
+
+
+def apply_retrieval_budget(
+    selected: list[dict[str, str]],
+    ranked: list[tuple[int, int, dict[str, str]]],
+    max_events: int,
+    budget: RetrievalBudgetConfig,
+) -> list[dict[str, str]]:
+    limit = max(1, max_events)
+    candidates = ordered_sources([*selected, *(source for _score, _index, source in ranked)])
+    if not candidates:
+        return []
+    primary_group = source_group_identity(candidates[0])
+    caps = {
+        "same_session": percent_cap(limit, budget.same_session_percent),
+        "cross_session": percent_cap(limit, budget.cross_session_percent),
+        "summary": percent_cap(limit, budget.summary_percent),
+        "entity": percent_cap(limit, budget.entity_percent),
+        "event": percent_cap(limit, budget.event_percent),
+    }
+    out: list[dict[str, str]] = []
+    counts: defaultdict[str, int] = defaultdict(int)
+    used: set[str] = set()
+    for source in candidates:
+        if len(out) >= limit:
+            break
+        key = source_identity(source)
+        if key in used:
+            continue
+        groups = retrieval_budget_groups(source, primary_group)
+        if any(counts[group] >= caps[group] for group in groups if group in caps):
+            continue
+        out.append(source)
+        used.add(key)
+        for group in groups:
+            counts[group] += 1
+    for source in candidates:
+        if len(out) >= limit:
+            break
+        key = source_identity(source)
+        if key in used:
+            continue
+        session_group = retrieval_session_group(source, primary_group)
+        if counts[session_group] >= caps[session_group]:
+            continue
+        out.append(source)
+        used.add(key)
+        counts[session_group] += 1
+    return out[:limit]
+
+
+def ordered_sources(sources: list[dict[str, str]]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for source in sources:
+        key = source_identity(source)
+        if key in seen:
+            continue
+        out.append(source)
+        seen.add(key)
+    return out
+
+
+def retrieval_budget_groups(source: dict[str, str], primary_group: str) -> list[str]:
+    groups = [retrieval_session_group(source, primary_group)]
+    groups.append(source_layer_identity(source))
+    return groups
+
+
+def retrieval_session_group(source: dict[str, str], primary_group: str) -> str:
+    return "same_session" if source_group_identity(source) == primary_group else "cross_session"
+
+
+def retrieval_budget_counts(blocks: list[dict[str, str]]) -> dict[str, int]:
+    if not blocks:
+        return {
+            "same_session": 0,
+            "cross_session": 0,
+            "summary": 0,
+            "entity": 0,
+            "event": 0,
+            "other": 0,
+        }
+    primary_group = source_group_identity(blocks[0])
+    counts: defaultdict[str, int] = defaultdict(int)
+    for block in blocks:
+        for group in retrieval_budget_groups(block, primary_group):
+            counts[group] += 1
+    for key in ("same_session", "cross_session", "summary", "entity", "event", "other"):
+        counts.setdefault(key, 0)
+    return dict(sorted(counts.items()))
+
+
+def source_layer_identity(source: dict[str, str]) -> str:
+    title = normalize_text(str(source.get("title") or ""))
+    body = normalize_text(str(source.get("body") or "")[:260])
+    text = f"{title} {body}"
+    if re.search(r"\b(summary|contextsummary|session_l[01]|node_l[01])\b", text):
+        return "summary"
+    if re.search(r"\b(entity|observation|contextentity|fact)\b", text):
+        return "entity"
+    if re.search(r"\b(event|turn|message|contextevent)\b", text):
+        return "event"
+    return "other"
+
+
+def percent_cap(limit: int, value: float) -> int:
+    percent = clamp_percent(value)
+    if percent <= 0:
+        return 0
+    return max(1, min(limit, int(math.ceil(limit * percent))))
+
+
+def clamp_percent(value: float) -> float:
+    if not math.isfinite(value):
+        return 0.0
+    return max(0.0, min(1.0, float(value)))
 
 
 def should_use_cross_session_diversity(question: str) -> bool:
