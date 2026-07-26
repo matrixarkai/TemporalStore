@@ -486,7 +486,7 @@ def query_codex_hook_messages(args: Json) -> Json:
             readers.append(("rust", _RustServiceHookStoreReader(args)))
         except Exception as exc:
             errors.append({"backend": "rust-service", "error": str(exc)})
-    if backend in {"both", "rust", "rust-local"}:
+    if backend in {"rust-local"}:
         try:
             readers.append(("rust", _RustLocalHookStoreReader(args)))
         except Exception as exc:

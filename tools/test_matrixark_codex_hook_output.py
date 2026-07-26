@@ -537,6 +537,20 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(1, len(rows))
         self.assertEqual("raw_ingestion", rows[0]["projection"])
 
+    def test_dual_hook_has_no_persistent_hook_logs(self) -> None:
+        script = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_dual_hook.sh").read_text()
+
+        self.assertIn('CPP_HOOK_STDOUT="/dev/null"', script)
+        self.assertIn('RUST_PUBLISH_STDERR="/dev/null"', script)
+        self.assertIn('CPP_PUBLISH_STDERR="/dev/null"', script)
+        self.assertIn('export MATRIXARK_CODEX_HOOK_DIAG_LOG=""', script)
+        self.assertNotIn('MATRIXARK_CODEX_HOOK_LOG_DIR', script)
+        self.assertNotIn('dispatch-diagnostics.jsonl', script)
+        self.assertNotIn('with open(os.environ.get("MATRIXARK_CODEX_HOOK_DIAG_LOG"', script)
+        self.assertNotIn('cpp-$EVENT.out', script)
+        self.assertNotIn('rust-service-publish.err', script)
+        self.assertNotIn('cpp-direct-publish.err', script)
+
     def test_dual_hook_keeps_derived_context_out_of_raw_ingestion(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_dual_hook.sh").read_text()
 
@@ -544,6 +558,37 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertNotIn('for extracted_record in rust_live_extraction_records()', script)
         self.assertNotIn('for extracted_record in cpp_live_extraction_records()', script)
 
+
+    def test_codex_hook_messages_both_skips_local_proxy_debug_reader(self) -> None:
+        original_cpp = matrixark_http._CppHookStoreReader
+        original_service = matrixark_http._RustServiceHookStoreReader
+        original_local = matrixark_http._RustLocalHookStoreReader
+        calls = []
+
+        class EmptyReader:
+            name = "empty"
+
+            def get_string(self, key):
+                return "0"
+
+            def hget(self, key, field):
+                return None
+
+        try:
+            matrixark_http._CppHookStoreReader = lambda args: calls.append("c++") or EmptyReader()
+            matrixark_http._RustServiceHookStoreReader = lambda args: calls.append("rust-service") or EmptyReader()
+
+            def fail_local(args):
+                raise AssertionError("rust-local proxy should be explicit-only")
+
+            matrixark_http._RustLocalHookStoreReader = fail_local
+            matrixark_http.query_codex_hook_messages({"backend": "both", "top_k": 1})
+        finally:
+            matrixark_http._CppHookStoreReader = original_cpp
+            matrixark_http._RustServiceHookStoreReader = original_service
+            matrixark_http._RustLocalHookStoreReader = original_local
+
+        self.assertEqual(["c++", "rust-service"], calls)
 
     def test_query_effective_synthetic_status_uses_text_classifier(self) -> None:
         self.assertTrue(matrixark_http._hook_text_is_synthetic("matrixark plain string prompt hook proof 1784770203"))

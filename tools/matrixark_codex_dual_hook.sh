@@ -14,18 +14,17 @@ cp "$TMP_PAYLOAD" "$DIRECT_PAYLOAD"
 MATRIXARK_CODEX_DIRECT_PAYLOAD_B64="$(base64 -w 0 "$TMP_PAYLOAD" 2>/dev/null || base64 "$TMP_PAYLOAD" | tr -d '\n')"
 export MATRIXARK_CODEX_DIRECT_PAYLOAD_B64
 
-LOG_DIR="${MATRIXARK_CODEX_HOOK_LOG_DIR:-$ROOT/.local/runtime/matrixark-codex-dual-hook/logs}"
-mkdir -p "$LOG_DIR"
 IDEMPOTENCY_DIR="${MATRIXARK_CODEX_HOOK_IDEMPOTENCY_DIR:-$ROOT/.local/runtime/matrixark-codex-dual-hook/idempotency}"
 mkdir -p "$IDEMPOTENCY_DIR"
 find "$IDEMPOTENCY_DIR" -type d -mmin +10 -name 'hook-*' -exec rm -rf {} + 2>/dev/null || true
 find "$IDEMPOTENCY_DIR" -type d -mmin +1440 -name 'record-*' -exec rm -rf {} + 2>/dev/null || true
 PAYLOAD_HASH="$(sha256sum "$TMP_PAYLOAD" | awk '{print $1}')"
 PAYLOAD_BYTES="$(wc -c <"$TMP_PAYLOAD" | tr -d '[:space:]')"
-DIAG_LOG="$LOG_DIR/dispatch-diagnostics.jsonl"
-export MATRIXARK_CODEX_HOOK_DIAG_LOG="$DIAG_LOG"
-printf '{"ts_ms":%s,"event":"%s","payload_bytes":%s,"payload_hash":"%s"}\n' \
-  "$(date +%s%3N)" "$EVENT" "${PAYLOAD_BYTES:-0}" "$PAYLOAD_HASH" >>"$DIAG_LOG" 2>/dev/null || true
+CPP_HOOK_STDOUT="/dev/null"
+CPP_HOOK_STDERR="/dev/null"
+RUST_PUBLISH_STDERR="/dev/null"
+CPP_PUBLISH_STDERR="/dev/null"
+export MATRIXARK_CODEX_HOOK_DIAG_LOG=""
 LOCK_KEY="$(printf '%s:%s' "$EVENT" "$PAYLOAD_HASH" | sha256sum | awk '{print $1}')"
 if ! mkdir "$IDEMPOTENCY_DIR/hook-$LOCK_KEY" 2>/dev/null; then
   exit 0
@@ -118,7 +117,7 @@ publish_rust_service_records() {
   MATRIXARK_RUST_TEMPORALSTORE_PREFIX="${MATRIXARK_RUST_TEMPORALSTORE_PREFIX:-matrixark:codex-hook:rust-live-v2}" \
   MATRIXARK_RUST_SERVICE_PROXY_ADDR="${MATRIXARK_RUST_SERVICE_PROXY_ADDR:-127.0.0.1:17100}" \
   MATRIXARK_RUST_SERVICE_META_ADDR="${MATRIXARK_RUST_SERVICE_META_ADDR:-127.0.0.1:17101}" \
-  python3 - "$DIRECT_PAYLOAD" 2>>"$LOG_DIR/rust-service-publish.err" <<'PY'
+  python3 - "$DIRECT_PAYLOAD" 2>>"$RUST_PUBLISH_STDERR" <<'PY'
 import base64
 import json
 import hashlib
@@ -134,17 +133,7 @@ try:
     payload_b64 = os.environ.get("MATRIXARK_CODEX_DIRECT_PAYLOAD_B64", "")
     raw_payload_bytes = base64.b64decode(payload_b64) if payload_b64 else Path(payload_path).read_bytes()
     payload = decode_payload(raw_payload_bytes)
-except Exception as exc:
-    try:
-        with open(os.environ.get("MATRIXARK_CODEX_HOOK_DIAG_LOG", ""), "a", encoding="utf-8") as diag:
-            diag.write(json.dumps({
-                "ts_ms": int(time.time() * 1000),
-                "event": os.environ.get("EVENT", "UserPromptSubmit"),
-                "payload_parse_error": str(exc),
-                "payload_path": payload_path,
-            }, separators=(",", ":")) + "\n")
-    except Exception:
-        pass
+except Exception:
     fallback_text = raw_payload_bytes.decode("utf-8-sig", "replace").strip() if "raw_payload_bytes" in locals() else ""
     payload = fallback_text if fallback_text else {}
 
@@ -360,22 +349,6 @@ if not prompt:
     prompt = stop_fallback_prompt(payload)
 if not isinstance(prompt, str) or not prompt.strip():
     keys = sorted(payload.keys()) if isinstance(payload, dict) else []
-    env_lengths = {
-        key: len(value)
-        for key, value in os.environ.items()
-        if key.startswith(("CODEX", "MATRIXARK", "OPENAI"))
-    }
-    try:
-        with open(os.environ.get("MATRIXARK_CODEX_HOOK_DIAG_LOG", ""), "a", encoding="utf-8") as diag:
-            diag.write(json.dumps({
-                "ts_ms": int(time.time() * 1000),
-                "event": os.environ.get("EVENT", "UserPromptSubmit"),
-                "empty_prompt": True,
-                "payload_keys": keys,
-                "env_value_lengths": env_lengths,
-            }, separators=(",", ":")) + "\n")
-    except Exception:
-        pass
     print(f"skip empty prompt event={os.environ.get('EVENT', 'UserPromptSubmit')} keys={keys}", file=__import__("sys").stderr)
     raise SystemExit(0)
 prompt = prompt.strip()
@@ -692,7 +665,7 @@ publish_cpp_direct_records() {
   MATRIXARK_CPP_TEMPORALSTORE_PREFIX="${MATRIXARK_CPP_TEMPORALSTORE_PREFIX:-matrixark:codex-hook:cpp-live-v2}" \
   MATRIXARK_CPP_TEMPORALSTORE_METASERVER="${MATRIXARK_CPP_TEMPORALSTORE_METASERVER:-127.0.0.1:18000}" \
   TEMPORALSTORE_LIB="${TEMPORALSTORE_LIB:-$ROOT/output-ubuntu22/release/sdk/lib/libbcache2.so}" \
-  python3 - "$DIRECT_PAYLOAD" 2>>"$LOG_DIR/cpp-direct-publish.err" <<'PY'
+  python3 - "$DIRECT_PAYLOAD" 2>>"$CPP_PUBLISH_STDERR" <<'PY'
 import base64
 import json
 import hashlib
@@ -716,17 +689,7 @@ try:
     payload_b64 = os.environ.get("MATRIXARK_CODEX_DIRECT_PAYLOAD_B64", "")
     raw_payload_bytes = base64.b64decode(payload_b64) if payload_b64 else Path(payload_path).read_bytes()
     payload = decode_payload(raw_payload_bytes)
-except Exception as exc:
-    try:
-        with open(os.environ.get("MATRIXARK_CODEX_HOOK_DIAG_LOG", ""), "a", encoding="utf-8") as diag:
-            diag.write(json.dumps({
-                "ts_ms": int(time.time() * 1000),
-                "event": os.environ.get("EVENT", "UserPromptSubmit"),
-                "payload_parse_error": str(exc),
-                "payload_path": payload_path,
-            }, separators=(",", ":")) + "\n")
-    except Exception:
-        pass
+except Exception:
     fallback_text = raw_payload_bytes.decode("utf-8-sig", "replace").strip() if "raw_payload_bytes" in locals() else ""
     payload = fallback_text if fallback_text else {}
 
@@ -940,22 +903,6 @@ if not prompt:
     prompt = stop_fallback_prompt(payload)
 if not prompt:
     keys = sorted(payload.keys()) if isinstance(payload, dict) else []
-    env_lengths = {
-        key: len(value)
-        for key, value in os.environ.items()
-        if key.startswith(("CODEX", "MATRIXARK", "OPENAI"))
-    }
-    try:
-        with open(os.environ.get("MATRIXARK_CODEX_HOOK_DIAG_LOG", ""), "a", encoding="utf-8") as diag:
-            diag.write(json.dumps({
-                "ts_ms": int(time.time() * 1000),
-                "event": os.environ.get("EVENT", "UserPromptSubmit"),
-                "empty_prompt": True,
-                "payload_keys": keys,
-                "env_value_lengths": env_lengths,
-            }, separators=(",", ":")) + "\n")
-    except Exception:
-        pass
     print(f"skip empty prompt event={os.environ.get('EVENT', 'UserPromptSubmit')} keys={keys}", file=sys.stderr)
     raise SystemExit(0)
 prompt = prompt.strip()
@@ -1194,7 +1141,7 @@ PY
 publish_rust_service_records || true
 publish_cpp_direct_records || true
 
-run_cpp_hook >"$LOG_DIR/cpp-$EVENT.out" 2>"$LOG_DIR/cpp-$EVENT.err" &
+run_cpp_hook >"$CPP_HOOK_STDOUT" 2>"$CPP_HOOK_STDERR" &
 CPP_PID=$!
 
 status=0
