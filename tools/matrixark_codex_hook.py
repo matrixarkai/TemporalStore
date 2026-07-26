@@ -198,6 +198,17 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
             layer_summary[output_key] = int(continuity.get(source_key) or 0)
         except (TypeError, ValueError):
             layer_summary[output_key] = 0
+    if not any(int(layer_summary.get(key) or 0) for key in ["same_session_refs", "cross_session_refs", "entity_bridge_refs"]):
+        layer_summary["same_session_refs"] = sum(1 for ref in refs if ref.get("session_continuity") == "same_session")
+        layer_summary["cross_session_refs"] = sum(1 for ref in refs if ref.get("session_continuity") == "cross_session")
+        layer_summary["entity_bridge_refs"] = sum(
+            1
+            for ref in refs
+            if ref.get("session_continuity") == "cross_session"
+            and str(ref.get("ref_type") or ref.get("context_class") or "") == "entity"
+        )
+    layer_summary["session_memory_refs"] = sum(1 for ref in refs if ref.get("memory_scope") == "session")
+    layer_summary["profile_memory_refs"] = sum(1 for ref in refs if ref.get("memory_scope") == "user_profile")
     try:
         layer_summary["local_context_refs"] = int(local_policy.get("local_context_count") or 0)
     except (TypeError, ValueError):
@@ -219,7 +230,14 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
             if value > 0:
                 count_bits.append(f"{key}={value}")
     continuity_bits = []
-    for key in ["same_session_refs", "cross_session_refs", "entity_bridge_refs", "local_context_refs"]:
+    for key in [
+        "same_session_refs",
+        "cross_session_refs",
+        "entity_bridge_refs",
+        "session_memory_refs",
+        "profile_memory_refs",
+        "local_context_refs",
+    ]:
         try:
             value = int(layer_summary.get(key) or 0)
         except (TypeError, ValueError):

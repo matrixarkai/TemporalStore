@@ -334,8 +334,18 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             retrieve={
                 "pack_id": "pack-layer-fallback",
                 "selected_refs": [
-                    {"ref_type": "event", "session_continuity": "same_session", "text": "current session prompt"},
-                    {"ref_type": "entity", "memory_scope": "user_profile", "text": "profile decision"},
+                    {
+                        "ref_type": "event",
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "text": "current session prompt",
+                    },
+                    {
+                        "ref_type": "entity",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "text": "profile decision",
+                    },
                     {"context_class": "summary", "text": "compressed profile summary"},
                 ],
             },
@@ -347,6 +357,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("event=1", additional)
         self.assertIn("entity=1", additional)
         self.assertIn("summary=1", additional)
+        self.assertIn("same_session_refs=1", additional)
+        self.assertIn("cross_session_refs=1", additional)
+        self.assertIn("entity_bridge_refs=1", additional)
+        self.assertIn("session_memory_refs=1", additional)
+        self.assertIn("profile_memory_refs=1", additional)
 
     def test_grouped_refs_count_and_format_as_additional_context(self) -> None:
         args = Namespace(session_id="codex-session-1")
