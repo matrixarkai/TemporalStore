@@ -312,6 +312,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(threshold_layers["secondary_indexes"], 1)
             self.assertGreaterEqual(threshold_layers["summary_dirty_nodes"], 1)
             self.assertEqual("dirty_marked", threshold_layers["summary_refresh_status"])
+            self.assertEqual(["assistant", "user"], threshold_layers["source_roles"])
+            self.assertEqual(["assistant", "user"], second["auto_batch_extract_result"]["source_roles"])
             self.assertTrue(second["session_buffer"]["threshold_ready"])
             self.assertFalse(second["session_buffer"]["idle_ready"])
             threshold_evidence = second["auto_batch_extract_result"]["trigger_evidence"]
@@ -355,6 +357,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(idle_layers["secondary_indexes"], 1)
             self.assertGreaterEqual(idle_layers["summary_dirty_nodes"], 1)
             self.assertEqual("dirty_marked", idle_layers["summary_refresh_status"])
+            self.assertEqual(["tool"], idle_layers["source_roles"])
+            self.assertEqual(["hook_boundary"], idle_layers["source_hook_types"])
+            self.assertEqual(["PostToolUse"], idle_layers["source_codex_events"])
+            self.assertEqual(["tool"], idle["source_roles"])
+            self.assertEqual(["hook_boundary"], idle["source_hook_types"])
+            self.assertEqual(["PostToolUse"], idle["source_codex_events"])
             self.assertEqual(
                 [int(event_id) for event_id in second["auto_batch_extract_result"]["source_event_ids"]],
                 [int(event_id) for event_id in idle["extraction_context_event_ids"]],
@@ -385,6 +393,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertFalse(adapter.pending_session_events(scope))
             idle_commit = next(commit for commit in commits if commit.get("trigger_policy") == "idle_timeout")
             self.assertEqual(2, idle_commit["extraction_context_event_count"])
+            self.assertEqual(["tool"], idle_commit["source_roles"])
+            self.assertEqual(["hook_boundary"], idle_commit["source_hook_types"])
+            self.assertEqual(["PostToolUse"], idle_commit["source_codex_events"])
             extraction_audits = [
                 record
                 for record in records
