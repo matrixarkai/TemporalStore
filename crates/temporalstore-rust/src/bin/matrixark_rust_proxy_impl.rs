@@ -4951,7 +4951,7 @@ mod tests {
         append.entries_compact = vec![CompactHashEntry(
             format!("{storage_prefix}:records:000000"),
             "00000000000000000000".to_string(),
-            r#"{"record_bundle":[{"record_type":"context_event","event_id_hash":7,"text":"Alice approved GPU budget and Bob owns procurement","memory_scope":"session","extraction_phase":"provisional","source_roles":["user"],"source_hook_types":["UserPromptSubmit"]},{"record_type":"context_entity","entity_hash":8,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Project Aurora GPU procurement owner is Bob","memory_scope":"user_profile","session_continuity":"cross_session","extraction_phase":"final","final_session_boundary":true,"source_roles":["assistant","tool"],"source_hook_types":["hook_boundary"],"source_session_ids":["codex:prior-session"]}]}"#.to_string(),
+            r#"{"record_bundle":[{"record_type":"context_event","event_id_hash":7,"text":"Alice approved GPU budget and Bob owns procurement","memory_scope":"session","extraction_phase":"provisional","source_roles":["user"],"source_hook_types":["UserPromptSubmit"]},{"record_type":"context_entity","entity_hash":8,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Project Aurora GPU procurement owner is Bob","memory_scope":"user_profile","session_continuity":"cross_session","extraction_phase":"final","final_session_boundary":true,"source_roles":["assistant","tool"],"source_hook_types":["hook_boundary"],"source_codex_events":["Stop"],"source_session_ids":["codex:prior-session"]}]}"#.to_string(),
         )];
 
         let root = record_log_root(&append);
@@ -5013,6 +5013,11 @@ mod tests {
         );
         assert_eq!(
             pack.pointer("/recall_policy/memory_layer_budget/by_hook_type/hook_boundary/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_budget/by_codex_event/Stop/refs")
                 .and_then(Value::as_u64),
             Some(1)
         );
