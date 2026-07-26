@@ -968,7 +968,13 @@ def materialize_serving_records(record: Json) -> list[Json]:
         serving["timestamp_key_ms"] = timestamp_ms
         serving.setdefault("updated_at_ms", timestamp_ms)
         if event_id_hash is not None:
-            serving["context_event_key"] = context_event_time_key(timestamp_ms, event_id_hash)
+            event_time_key = context_event_time_key(timestamp_ms, event_id_hash)
+            serving["event_time_key"] = f"{timestamp_ms:020d}:{event_id_hash}"
+            serving["context_event_key"] = (
+                f"context_event:{serving.get('context_event_parent_type', 'context_node')}:"
+                f"{serving.get('context_event_parent_hash', serving.get('node_hash') or 0)}:"
+                f"{event_time_key:020d}:{event_id_hash}"
+            )
         debug_payload = {field: record[field] for field in EVENT_DEBUG_FIELDS if field in record and record[field] not in (None, "", [], {})}
         debug_type = "event_extraction_detail"
         for field in EVENT_DEBUG_FIELDS:
@@ -1060,61 +1066,6 @@ def context_index_ref_hashes(record: Json) -> list[int]:
             seen.add(ref_hash)
             refs.append(ref_hash)
     return refs
-
-
-def compact_context_index_postings(records: list[Json]) -> list[Json]:
-    postings: dict[tuple[str, str, Any, str, int], Json] = {}
-    posting_positions: dict[tuple[str, str, Any, str, int], int] = {}
-    output: list[Json] = []
-    for record in records:
-        if record.get("record_type") != "context_index":
-            output.append(record)
-            continue
-        index_name = str(record.get("index_name") or "").strip()
-        if not index_name:
-            continue
-        timestamp_key_ms = context_index_posting_bucket(context_index_timestamp_key(record))
-        scope_key = str(record.get("scope_key") or "")
-        if not scope_key:
-            scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
-            scope_key = canonical_scope_key(scope) if scope else ""
-        node_hash = record.get("node_hash") or record.get("node_id") or 0
-        data_model = context_index_data_model(record)
-        key = (index_name, scope_key, node_hash, data_model, timestamp_key_ms)
-        ref_hashes = context_index_ref_hashes(record)
-        if key not in postings:
-            posting: Json = {
-                "record_type": "context_index",
-                "data_model": data_model,
-                "index_name": index_name,
-                "timestamp_key_ms": timestamp_key_ms,
-                "node_hash": node_hash,
-                "node_id": node_hash,
-                "scope_key": scope_key,
-                "ref_hashes": ref_hashes,
-                "posting_count": len(ref_hashes),
-                "updated_at_ms": context_index_timestamp_key(record),
-            }
-            posting = attach_context_placement(posting, scope_key=scope_key, node_hash=node_hash)
-            postings[key] = posting
-            posting_positions[key] = len(output)
-            output.append(posting)
-            continue
-        posting = postings[key]
-        existing_refs = context_index_ref_hashes(posting)
-        seen = set(existing_refs)
-        for ref_hash in ref_hashes:
-            if ref_hash not in seen:
-                existing_refs.append(ref_hash)
-                seen.add(ref_hash)
-        posting["ref_hashes"] = existing_refs
-        posting["posting_count"] = len(existing_refs)
-        posting["updated_at_ms"] = max(
-            int(posting.get("updated_at_ms") or 0),
-            context_index_timestamp_key(record),
-        )
-        output[posting_positions[key]] = posting
-    return output
 
 
 def materialize_serving_record_batch(records: list[Json]) -> list[Json]:
@@ -5098,68 +5049,6 @@ def selected_ref_count_from_pack(pack: Json) -> int:
     return 0
 
 
-def compact_context_pack_for_serving(pack: Json) -> Json:
-    """Strip planner/audit/debug fields from the default returned ContextPack.
-
-    Full retrieval policy, score details, dropped refs, storage mode, model
-    fallback flags, and operational visibility live in ContextPackAudit or
-    telemetry records when enabled. The serving pack should spend tokens on
-    evidence and citations.
-    """
-    compact: Json = {"context_pack_id": pack.get("context_pack_id", "")}
-    selected_refs = pack.get("selected_refs", [])
-    if isinstance(selected_refs, list) and (selected_refs or not isinstance(pack.get("groups"), list)):
-        default_session_continuity = default_session_continuity_for_pack(selected_refs)
-        compact["groups"] = serving_ref_groups_for_pack(selected_refs, default_session_continuity=default_session_continuity)
-        if pack.get("selected_ref_counts"):
-            compact.setdefault("counts", {})["refs"] = pack.get("selected_ref_counts", {})
-        continuity_counts = session_continuity_counts(selected_refs)
-        if continuity_counts:
-            compact.setdefault("defaults", {})["session_continuity"] = default_session_continuity
-            compact.setdefault("counts", {})["session_continuity"] = continuity_counts
-    elif isinstance(pack.get("groups"), list):
-        # Some adapters already return the serving shape. Preserve it so a
-        # second compaction pass in the MCP entrypoint does not erase refs.
-        compact["groups"] = pack.get("groups", [])
-        if isinstance(pack.get("counts"), dict):
-            compact["counts"] = pack.get("counts", {})
-        if isinstance(pack.get("defaults"), dict):
-            compact["defaults"] = pack.get("defaults", {})
-    local_refs = pack.get("local_context_refs", [])
-    if isinstance(local_refs, list):
-        local = [
-            {
-                ("tokens" if key == "token_estimate" else key): value
-                for key, value in ref.items()
-                if key in {"source", "token_estimate", "text"} and value not in (None, "", [], {})
-            }
-            for ref in local_refs
-            if isinstance(ref, dict)
-        ]
-        if local:
-            compact["local"] = local
-    tokens_summary = {
-        "remote": pack.get("used_remote_context_tokens", pack.get("used_context_tokens", 0)),
-        "local": pack.get("used_local_context_tokens", 0),
-        "total": pack.get("total_prompt_context_tokens", 0),
-        "remote_budget": pack.get("remote_context_budget_tokens", 0),
-    }
-    compact["tokens"] = {key: value for key, value in tokens_summary.items() if value not in (None, "", 0)}
-    if not compact["tokens"] and isinstance(pack.get("tokens"), dict):
-        compact["tokens"] = pack.get("tokens", {})
-    if pack.get("quality_warnings"):
-        compact["warnings"] = pack.get("quality_warnings", [])
-    if pack.get("partial_context_pack"):
-        compact["partial"] = True
-    if pack.get("insufficient_context"):
-        compact["insufficient_context"] = True
-    if pack.get("include_retrieval_metrics"):
-        compact["include_retrieval_metrics"] = True
-    if isinstance(pack.get("retrieval_metrics"), dict):
-        compact["retrieval_metrics"] = pack["retrieval_metrics"]
-    return compact
-
-
 def is_resource_or_skill_candidate(candidate: Json) -> bool:
     ref_type = str(candidate.get("ref_type") or "")
     context_class = str(candidate.get("context_class") or "")
@@ -5641,6 +5530,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         "dropped_ref_count",
         "backend",
         "storage_mode",
+        "question_type",
     ]:
         compact.pop(field, None)
     if compact.get("used_remote_context_tokens") == compact.get("used_context_tokens"):

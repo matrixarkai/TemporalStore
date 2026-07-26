@@ -458,7 +458,10 @@ class MatrixArkLocalAdapter:
             self.append_audit(telemetry)
         if rich_audit_sampled:
             audit_record["operational_visibility_policy"] = visibility_decision
-            self.append_audit(compact_context_pack_audit_record(audit_record))
+            if audit_mode == "full":
+                self.append_audit(audit_record)
+            else:
+                self.append_audit(compact_context_pack_audit_record(audit_record))
         return visibility_decision
 
     def flush_audits(self) -> None:
@@ -4277,7 +4280,7 @@ class MatrixArkLocalAdapter:
         scope = optional_object(args, "scope")
         storage_options = normalize_storage_options(args)
         ranking = optional_object(args, "ranking")
-        audit_mode = str(args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", "telemetry_only")).strip().lower()
+        audit_mode = str(args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", "off")).strip().lower()
         if audit_mode not in {"full", "telemetry_only", "off"}:
             raise MatrixArkError("audit_mode must be full, telemetry_only, or off")
         if "audit_sample_rate" in args:
@@ -5652,6 +5655,7 @@ class MatrixArkLocalAdapter:
             "packing_policy": pack["packing_policy"],
             "rerank_policy": rerank_policy,
             "recall_policy": pack["recall_policy"],
+            "backend_retrieval_pushdown": pack["recall_policy"].get("backend_retrieval_pushdown", {}),
             "stage_latency_budgets": pack["recall_policy"]["stage_latency_budgets"],
             "storage_options": storage_options,
             "local_context_policy": pack["local_context_policy"],
