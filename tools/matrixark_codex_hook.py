@@ -288,6 +288,12 @@ def _ref_is_codex_hook_heartbeat(ref: Json) -> bool:
     return is_codex_hook_heartbeat_text(_ref_text(ref)) or is_codex_hook_heartbeat_text(str(ref))
 
 
+def strip_codex_hook_heartbeat_lines(value: str) -> str:
+    lines = str(value or "").splitlines()
+    kept = [line for line in lines if not is_codex_hook_heartbeat_text(line)]
+    return "\n".join(kept).strip()
+
+
 def _selected_refs_from_retrieve(pack: Json | None) -> list[Json]:
     if not isinstance(pack, dict):
         return []
@@ -351,8 +357,7 @@ def additional_context_from_retrieve(
         return ""
     refs = [ref for ref in _selected_refs_from_retrieve(pack) if not _ref_is_codex_hook_heartbeat(ref)]
     context_text = _first_string_value(pack, ["context", "text", "compiled_context", "rendered_context"])
-    if is_codex_hook_heartbeat_text(context_text):
-        context_text = ""
+    context_text = strip_codex_hook_heartbeat_lines(context_text)
     quality_warnings = pack.get("quality_warnings")
     retrieval_metrics = pack.get("retrieval_metrics")
     budget = retrieval_budget_summary_from_retrieve(pack)
