@@ -1077,6 +1077,7 @@ class MatrixArkLocalAdapter:
                 "source_roles": source_roles,
                 "source_hook_types": source_hook_types,
                 "source_codex_events": source_codex_events,
+                "profile_promotion_summary": batch_result.get("profile_promotion_summary", []),
                 "idle_timeout_ms": idle_timeout_ms,
                 "idle_elapsed_ms": idle_elapsed_ms,
                 "trigger_evidence": trigger_evidence,
@@ -1121,6 +1122,7 @@ class MatrixArkLocalAdapter:
             "source_roles": source_roles,
             "source_hook_types": source_hook_types,
             "source_codex_events": source_codex_events,
+            "profile_promotion_summary": batch_result.get("profile_promotion_summary", []),
             "commit_reason": commit_reason,
             "trigger_policy": trigger_policy,
             "extraction_phase": extraction_phase,
@@ -4008,6 +4010,7 @@ class MatrixArkLocalAdapter:
         source_codex_events = sorted({str(value).strip() for value in source_codex_event_values if str(value or "").strip()})
         entity_hashes = []
         profile_entity_hashes = []
+        profile_promotion_summary: list[Json] = []
         for entity in extraction["entities"]:
             entity_hash = stable_hash(
                 f"{node_hash}:{entity['entity_type']}:{entity['entity_name']}"
@@ -4127,6 +4130,21 @@ class MatrixArkLocalAdapter:
                     list(previous_profile.get("source_codex_events", [])) + source_codex_events
                 )
                 profile_entity_hashes.append(profile_entity_hash)
+                profile_promotion_summary.append(
+                    {
+                        "profile_entity_hash": profile_entity_hash,
+                        "session_entity_hash": entity_hash,
+                        "entity_type": promoted_entity["entity_type"],
+                        "entity_name": promoted_entity["entity_name"],
+                        "source_session_ids": profile_source_session_ids,
+                        "source_entity_count": len(profile_source_entity_hashes),
+                        "source_ref_count": len(profile_source_refs),
+                        "source_event_count": len(profile_source_event_ids),
+                        "source_roles": profile_source_roles,
+                        "source_hook_types": profile_source_hook_types,
+                        "source_codex_events": profile_source_codex_events,
+                    }
+                )
                 records_to_append.append(
                     {
                         "record_type": "context_entity",
@@ -4320,6 +4338,7 @@ class MatrixArkLocalAdapter:
                     "source_events": len(event_hashes),
                     "entities": len(entity_hashes),
                     "profile_entities": len(profile_entity_hashes),
+                    "profile_promotion_summary": profile_promotion_summary[:16],
                     "segments": len(segment_hashes),
                     "summaries": 1,
                     "indexes": len(batch_index_terms),
@@ -4373,6 +4392,7 @@ class MatrixArkLocalAdapter:
             "raw_events_duplicated": not derive_from_existing_events,
             "entities_written": len(entity_hashes),
             "profile_entities_written": len(profile_entity_hashes),
+            "profile_promotion_summary": profile_promotion_summary[:16],
             "segments_written": len(segment_hashes),
             "summary_hash": summary_hash,
             "summary_refresh": summary_refresh,

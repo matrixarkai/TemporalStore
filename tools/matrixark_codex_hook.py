@@ -377,6 +377,7 @@ def session_commit_summary(commit: Json | None) -> Json:
         "source_roles": commit.get("source_roles"),
         "source_hook_types": commit.get("source_hook_types"),
         "source_codex_events": commit.get("source_codex_events"),
+        "profile_promotion_summary": commit.get("profile_promotion_summary"),
         "segments_written": commit.get("segments_written", 0),
         "entities_written": entities_written,
         "session_entities_written": entities_written,
@@ -432,12 +433,14 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         summary["source_roles"] = auto_batch.get("source_roles")
         summary["source_hook_types"] = auto_batch.get("source_hook_types")
         summary["source_codex_events"] = auto_batch.get("source_codex_events")
+        summary["profile_promotion_summary"] = auto_batch.get("profile_promotion_summary")
     elif session_commit:
         summary["decision"] = "boundary_commit"
         summary["reason"] = session_commit.get("reason") or session_commit.get("commit_reason")
         summary["source_roles"] = session_commit.get("source_roles")
         summary["source_hook_types"] = session_commit.get("source_hook_types")
         summary["source_codex_events"] = session_commit.get("source_codex_events")
+        summary["profile_promotion_summary"] = session_commit.get("profile_promotion_summary")
     elif session_buffer:
         summary["decision"] = "deferred"
         if session_buffer.get("auto_batch_extract") is False:

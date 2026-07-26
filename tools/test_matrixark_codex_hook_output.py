@@ -300,6 +300,19 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     "source_roles": ["tool"],
                     "source_hook_types": ["hook_boundary"],
                     "source_codex_events": ["PostToolUse"],
+                    "profile_promotion_summary": [
+                        {
+                            "profile_entity_hash": 701,
+                            "session_entity_hash": 601,
+                            "entity_type": "tool_evidence",
+                            "entity_name": "pytest",
+                            "source_session_ids": ["codex-session-1"],
+                            "source_entity_count": 1,
+                            "source_roles": ["tool"],
+                            "source_hook_types": ["hook_boundary"],
+                            "source_codex_events": ["PostToolUse"],
+                        }
+                    ],
                     "segments_written": 1,
                     "entities_written": 3,
                     "profile_entities_written": 1,
@@ -351,6 +364,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(["tool"], commit_summary["source_roles"])
         self.assertEqual(["hook_boundary"], commit_summary["source_hook_types"])
         self.assertEqual(["PostToolUse"], commit_summary["source_codex_events"])
+        self.assertEqual(701, commit_summary["profile_promotion_summary"][0]["profile_entity_hash"])
+        self.assertEqual(["codex-session-1"], commit_summary["profile_promotion_summary"][0]["source_session_ids"])
         self.assertEqual(2, commit_summary["memory_layers_written"]["context_events"])
         self.assertEqual(1, commit_summary["memory_layers_written"]["segments"])
         self.assertEqual(3, commit_summary["memory_layers_written"]["session_entities"])
@@ -545,6 +560,19 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "source_roles": ["assistant", "user"],
                         "source_hook_types": ["before_llm", "after_llm"],
                         "source_codex_events": ["Stop", "UserPromptSubmit"],
+                        "profile_promotion_summary": [
+                            {
+                                "profile_entity_hash": 801,
+                                "session_entity_hash": 701,
+                                "entity_type": "assistant_decision",
+                                "entity_name": "threshold_commit",
+                                "source_session_ids": ["codex-session-threshold"],
+                                "source_entity_count": 1,
+                                "source_roles": ["assistant", "user"],
+                                "source_hook_types": ["before_llm", "after_llm"],
+                                "source_codex_events": ["Stop", "UserPromptSubmit"],
+                            }
+                        ],
                         "segments_written": 1,
                         "entities_written": 4,
                         "profile_entities_written": 1,
@@ -581,6 +609,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(["assistant", "user"], auto_batch["source_roles"])
         self.assertEqual(["before_llm", "after_llm"], auto_batch["source_hook_types"])
         self.assertEqual(["Stop", "UserPromptSubmit"], auto_batch["source_codex_events"])
+        self.assertEqual(801, auto_batch["profile_promotion_summary"][0]["profile_entity_hash"])
+        self.assertEqual(["codex-session-threshold"], auto_batch["profile_promotion_summary"][0]["source_session_ids"])
         self.assertEqual(1, auto_batch["segments_written"])
         self.assertEqual(4, auto_batch["entities_written"])
         self.assertEqual(4, auto_batch["session_entities_written"])
@@ -607,6 +637,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(["assistant", "user"], decision["source_roles"])
         self.assertEqual(["before_llm", "after_llm"], decision["source_hook_types"])
         self.assertEqual(["Stop", "UserPromptSubmit"], decision["source_codex_events"])
+        self.assertEqual(801, decision["profile_promotion_summary"][0]["profile_entity_hash"])
 
     def test_ingest_tool_call_trace_records_auto_batch_deferred_decision(self) -> None:
         class Server:
