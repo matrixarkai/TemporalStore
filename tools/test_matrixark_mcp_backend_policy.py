@@ -4381,6 +4381,21 @@ class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
                 "cache_hit": True,
                 "selected_ref_count": 3,
                 "dropped_ref_count": 5,
+                "retrieval_metrics": {
+                    "memory_layer_budget": {
+                        "by_memory_scope": {"user_profile": {"refs": 2, "tokens": 34}},
+                        "by_session_continuity": {"cross_session": {"refs": 2, "tokens": 34}},
+                        "by_extraction_phase": {"final": {"refs": 1, "tokens": 20}},
+                        "by_entity_type": {"decision": {"refs": 1, "tokens": 20}},
+                        "by_source_role": {"assistant": {"refs": 1, "tokens": 20}},
+                        "by_hook_type": {"hook_boundary": {"refs": 1, "tokens": 20}},
+                        "final_session_boundary_ref_count": 1,
+                        "provisional_ref_count": 1,
+                        "final_ref_count": 1,
+                        "total_selected_refs": 3,
+                        "total_selected_tokens": 44,
+                    }
+                },
             },
             12.0,
             failed=False,
@@ -4396,6 +4411,17 @@ class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
         self.assertEqual(metrics["selected_refs_total"], 3)
         self.assertEqual(metrics["dropped_refs_total"], 5)
         self.assertEqual(metrics["lane_metrics"]["retrieve"]["queue_wait_ms_total"], 4)
+        layer_totals = metrics["memory_layer_budget_totals"]
+        self.assertEqual(layer_totals["by_memory_scope"]["user_profile"], {"refs": 2, "tokens": 34})
+        self.assertEqual(layer_totals["by_session_continuity"]["cross_session"], {"refs": 2, "tokens": 34})
+        self.assertEqual(layer_totals["by_entity_type"]["decision"], {"refs": 1, "tokens": 20})
+        self.assertEqual(layer_totals["by_source_role"]["assistant"], {"refs": 1, "tokens": 20})
+        self.assertEqual(layer_totals["by_hook_type"]["hook_boundary"], {"refs": 1, "tokens": 20})
+        self.assertEqual(layer_totals["final_session_boundary_ref_count"], 1)
+        self.assertEqual(layer_totals["provisional_ref_count"], 1)
+        self.assertEqual(layer_totals["final_ref_count"], 1)
+        self.assertEqual(layer_totals["total_selected_refs"], 3)
+        self.assertEqual(layer_totals["total_selected_tokens"], 44)
 
     def test_rust_server_exposes_rust_proxy_argument(self) -> None:
         repo = Path(__file__).resolve().parents[1]

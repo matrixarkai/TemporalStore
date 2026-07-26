@@ -4058,6 +4058,19 @@ class MatrixArkRustProxyClient:
         self._cache_misses_total = 0
         self._selected_refs_total = 0
         self._dropped_refs_total = 0
+        self._memory_layer_budget_totals: dict[str, Any] = {
+            "by_memory_scope": {},
+            "by_session_continuity": {},
+            "by_extraction_phase": {},
+            "by_entity_type": {},
+            "by_source_role": {},
+            "by_hook_type": {},
+            "final_session_boundary_ref_count": 0,
+            "provisional_ref_count": 0,
+            "final_ref_count": 0,
+            "total_selected_refs": 0,
+            "total_selected_tokens": 0,
+        }
         self._context_record_counts: dict[str, int] = {}
         self._publish_visibility_calls_total = 0
         self._publish_visibility_keys_total = 0
@@ -4315,6 +4328,7 @@ class MatrixArkRustProxyClient:
                 self._serialization_ms_max = max(self._serialization_ms_max, serialization_ms)
                 self._rust_engine_ms_total += engine_ms
                 self._rust_engine_ms_max = max(self._rust_engine_ms_max, engine_ms)
+                self._merge_memory_layer_budget(response)
                 scan_count = int(
                     self._nested_float(
                         response,
@@ -4427,6 +4441,58 @@ class MatrixArkRustProxyClient:
                 continue
         return 0.0
 
+    @staticmethod
+    def _nested_dict(payload: Json, *paths: str) -> Json:
+        for path in paths:
+            current: Any = payload
+            for part in path.split("."):
+                if not isinstance(current, dict) or part not in current:
+                    current = None
+                    break
+                current = current[part]
+            if isinstance(current, dict):
+                return current
+        return {}
+
+    @staticmethod
+    def _add_bucket_totals(target_bucket: Json, source_bucket: Any) -> None:
+        if not isinstance(source_bucket, dict):
+            return
+        for key, value in source_bucket.items():
+            if not isinstance(value, dict):
+                continue
+            bucket = target_bucket.setdefault(str(key), {"refs": 0, "tokens": 0})
+            bucket["refs"] = int(bucket.get("refs") or 0) + int(value.get("refs") or 0)
+            bucket["tokens"] = int(bucket.get("tokens") or 0) + int(value.get("tokens") or 0)
+
+    def _merge_memory_layer_budget(self, response: Json) -> None:
+        budget = self._nested_dict(
+            response,
+            "retrieval_metrics.memory_layer_budget",
+            "context_pack.retrieval_metrics.memory_layer_budget",
+            "context_pack.recall_policy.memory_layer_budget",
+        )
+        if not budget:
+            return
+        totals = self._memory_layer_budget_totals
+        for bucket_name in [
+            "by_memory_scope",
+            "by_session_continuity",
+            "by_extraction_phase",
+            "by_entity_type",
+            "by_source_role",
+            "by_hook_type",
+        ]:
+            self._add_bucket_totals(totals.setdefault(bucket_name, {}), budget.get(bucket_name))
+        for counter_name in [
+            "final_session_boundary_ref_count",
+            "provisional_ref_count",
+            "final_ref_count",
+            "total_selected_refs",
+            "total_selected_tokens",
+        ]:
+            totals[counter_name] = int(totals.get(counter_name) or 0) + int(budget.get(counter_name) or 0)
+
     def _count_context_record(self, value: Any) -> None:
         if not isinstance(value, str) or not value.startswith("{"):
             return
@@ -4484,6 +4550,10 @@ class MatrixArkRustProxyClient:
             elapsed_s = max(0.001, time.time() - self._started_at)
             samples = list(self._latency_samples_ms)
             context_counts = dict(sorted(self._context_record_counts.items()))
+            memory_layer_budget_totals = {
+                key: (dict(value) if isinstance(value, dict) else value)
+                for key, value in self._memory_layer_budget_totals.items()
+            }
             lane_samples = {lane: list(values) for lane, values in self._lane_latency_samples_ms.items()}
             lane_metrics = {
                 lane: {
@@ -4522,6 +4592,8 @@ class MatrixArkRustProxyClient:
                     "control": self._lane_worker_counts.get("control", 0),
                 },
                 "lanes": lane_metrics,
+                "lane_metrics": lane_metrics,
+                "lane_worker_counts": dict(self._lane_worker_counts),
                 "write_pool_size": self._lane_worker_counts.get("write", 0),
                 "read_pool_size": self._lane_worker_counts.get("read", 0),
                 "pack_pool_size": self._lane_worker_counts.get("pack", 0),
@@ -4548,6 +4620,7 @@ class MatrixArkRustProxyClient:
                 "cache_misses_total": self._cache_misses_total,
                 "selected_refs_total": self._selected_refs_total,
                 "dropped_refs_total": self._dropped_refs_total,
+                "memory_layer_budget_totals": memory_layer_budget_totals,
                 "publish_visibility": {
                     "calls_total": self._publish_visibility_calls_total,
                     "keys_total": self._publish_visibility_keys_total,
