@@ -145918,15 +145918,18 @@
     }
   ],
   "benchmark_per_query_count": 1542,
-  "benchmark_quality_ready": true,
+  "benchmark_quality_ready": false,
   "benchmark_reader_p50_ms": 6.301749963313341,
   "benchmark_reader_p95_ms": 27.322335122153163,
+  "benchmark_readiness_blocker": "diagnostic_only_missing_rust_temporalstore_pipeline_evidence",
   "benchmark_recall_at_k": 0.8540856031128404,
   "benchmark_retrieval_p50_ms": 18.1148499250412,
   "benchmark_retrieval_p95_ms": 31.98148511582986,
-  "benchmark_threshold_passed": true,
-  "benchmark_threshold_violation_count": 0,
-  "benchmark_threshold_violations": [],
+  "benchmark_threshold_passed": false,
+  "benchmark_threshold_violation_count": 1,
+  "benchmark_threshold_violations": [
+    "diagnostic_only_missing_rust_temporalstore_pipeline_evidence"
+  ],
   "benchmark_thresholds": {
     "max_reader_p95_ms": 30000.0,
     "max_retrieval_p95_ms": 1000.0,
@@ -145997,6 +146000,7 @@
       "zero_hit_queries": 0
     }
   },
+  "claim_level": "live_tiny_oss_reader_diagnostic",
   "conversation_count": 10,
   "dataset": "locomo",
   "dataset_record_counts": {
@@ -146004,6 +146008,7 @@
   },
   "deterministic_reader_answer_coverage": 0.8251333728512151,
   "deterministic_reader_hit_rate": 0.8294422827496758,
+  "diagnostic_only": true,
   "evidence_ref_coverage": 0.5418427726120034,
   "evidence_window": null,
   "gold_evidence_window_used": false,
