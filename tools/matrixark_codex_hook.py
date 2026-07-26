@@ -133,6 +133,40 @@ def used_context_tokens_from_retrieve(pack: Json | None) -> int:
         return 0
 
 
+def _int_field(payload: Json, field: str) -> int:
+    try:
+        return int(payload.get(field) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def retrieval_budget_summary_from_retrieve(pack: Json | None) -> Json:
+    if not isinstance(pack, dict):
+        return {}
+    used_remote_tokens = used_context_tokens_from_retrieve(pack)
+    remote_budget_tokens = _int_field(pack, "remote_context_budget_tokens")
+    requested_max_context_tokens = _int_field(pack, "requested_max_context_tokens")
+    used_local_tokens = _int_field(pack, "used_local_context_tokens")
+    total_prompt_tokens = _int_field(pack, "total_prompt_context_tokens") or used_remote_tokens + used_local_tokens
+    safety_margin_tokens = _int_field(pack, "local_context_safety_margin_tokens")
+    budget: Json = {
+        "used_remote_context_tokens": used_remote_tokens,
+        "remote_context_budget_tokens": remote_budget_tokens,
+        "requested_max_context_tokens": requested_max_context_tokens,
+        "used_local_context_tokens": used_local_tokens,
+        "total_prompt_context_tokens": total_prompt_tokens,
+        "local_context_safety_margin_tokens": safety_margin_tokens,
+        "budget_source": str(pack.get("budget_source") or ""),
+    }
+    if remote_budget_tokens:
+        budget["remote_budget_remaining_tokens"] = max(0, remote_budget_tokens - used_remote_tokens)
+        budget["remote_budget_overrun"] = used_remote_tokens > remote_budget_tokens
+    if requested_max_context_tokens:
+        budget["total_prompt_budget_remaining_tokens"] = max(0, requested_max_context_tokens - total_prompt_tokens)
+        budget["total_prompt_budget_overrun"] = total_prompt_tokens > requested_max_context_tokens
+    return budget
+
+
 def normalized_event_name(event: str) -> str:
     return "".join(ch for ch in event.lower() if ch.isalnum() or ch == "_")
 
@@ -232,6 +266,17 @@ def additional_context_from_retrieve(
         context_text = ""
     quality_warnings = pack.get("quality_warnings")
     retrieval_metrics = pack.get("retrieval_metrics")
+    budget = retrieval_budget_summary_from_retrieve(pack)
+    budget_bits = [
+        f"used_remote_tokens={budget.get('used_remote_context_tokens', 0)}",
+    ]
+    if budget.get("remote_context_budget_tokens"):
+        budget_bits.append(f"remote_budget={budget.get('remote_context_budget_tokens')}")
+        budget_bits.append(f"remote_remaining={budget.get('remote_budget_remaining_tokens', 0)}")
+    if budget.get("requested_max_context_tokens"):
+        budget_bits.append(f"requested_max={budget.get('requested_max_context_tokens')}")
+    if budget.get("budget_source"):
+        budget_bits.append(f"budget_source={budget.get('budget_source')}")
     lines = [
         "MatrixArk/TemporalStore retrieved context for Codex.",
         f"Query: {_compact_one_line(query, max_chars=360)}",
@@ -246,6 +291,7 @@ def additional_context_from_retrieve(
             f"used_context_tokens={used_context_tokens_from_retrieve(pack)}, "
             f"local_context_refs_seen={local_context_count}."
         ),
+        "Budget summary: " + ", ".join(budget_bits) + ".",
     ]
     if isinstance(quality_warnings, list) and quality_warnings:
         warnings = []
@@ -332,6 +378,7 @@ def codex_hook_output(
             "context_pack_id": retrieve.get("context_pack_id") or retrieve.get("pack_id"),
             "selected_ref_count": selected_ref_count_from_retrieve(retrieve),
             "used_context_tokens": used_context_tokens_from_retrieve(retrieve),
+            "budget": retrieval_budget_summary_from_retrieve(retrieve),
             "additional_context_emitted": False,
         },
         "session_commit": {
@@ -565,6 +612,7 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             "additional_context_chars": len(str(hook_specific.get("additionalContext") or "")),
             "context_pack_id": retrieve.get("context_pack_id"),
             "selected_ref_count": retrieve.get("selected_ref_count"),
+            "retrieval_budget": retrieve.get("budget"),
             "ingest_status": ingest.get("status"),
             "commit_status": commit.get("status"),
         }

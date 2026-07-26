@@ -189,7 +189,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             trace,
             output={
                 "hookSpecificOutput": {"additionalContext": "remote memory"},
-                "retrieve": {"context_pack_id": "pack-1", "selected_ref_count": 2},
+                "retrieve": {
+                    "context_pack_id": "pack-1",
+                    "selected_ref_count": 2,
+                    "budget": {"remote_context_budget_tokens": 100, "used_remote_context_tokens": 12},
+                },
                 "ingest": {"status": "accepted"},
                 "session_commit": {"status": "deferred"},
             },
@@ -204,6 +208,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(["prompt", "session_id"], record["payload_keys"])
         self.assertEqual("ok", record["status"])
         self.assertEqual("pack-1", record["output_summary"]["context_pack_id"])
+        self.assertEqual(100, record["output_summary"]["retrieval_budget"]["remote_context_budget_tokens"])
         self.assertTrue(record["output_summary"]["strict_additional_context_emitted"])
 
     def test_user_prompt_emit_codex_additional_context_from_selected_refs(self) -> None:
@@ -218,6 +223,13 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             retrieve={
                 "context_pack_id": "pack-1",
                 "used_context_tokens": 42,
+                "used_remote_context_tokens": 42,
+                "used_local_context_tokens": 8,
+                "total_prompt_context_tokens": 50,
+                "remote_context_budget_tokens": 100,
+                "requested_max_context_tokens": 160,
+                "local_context_safety_margin_tokens": 4,
+                "budget_source": "agent_provided_max_context_tokens",
                 "selected_refs": [
                     {
                         "ref_type": "context_event",
@@ -234,6 +246,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("ok", output["status"])
         self.assertTrue(output["retrieve"]["additional_context_emitted"])
         self.assertEqual(1, output["retrieve"]["selected_ref_count"])
+        self.assertEqual(100, output["retrieve"]["budget"]["remote_context_budget_tokens"])
+        self.assertEqual(58, output["retrieve"]["budget"]["remote_budget_remaining_tokens"])
+        self.assertFalse(output["retrieve"]["budget"]["remote_budget_overrun"])
         hook_output = output["hookSpecificOutput"]
         self.assertEqual("UserPromptSubmit", hook_output["hookEventName"])
         additional = hook_output["additionalContext"]
@@ -242,6 +257,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("session:abc#turn=2", additional)
         self.assertIn("Alice asked Codex", additional)
         self.assertIn("local_context_refs_seen=1", additional)
+        self.assertIn("Budget summary:", additional)
+        self.assertIn("remote_budget=100", additional)
+        self.assertIn("remote_remaining=58", additional)
+        self.assertIn("budget_source=agent_provided_max_context_tokens", additional)
 
     def test_grouped_refs_count_and_format_as_additional_context(self) -> None:
         args = Namespace(session_id="codex-session-1")
