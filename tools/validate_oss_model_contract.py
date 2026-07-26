@@ -25,6 +25,13 @@ CONTRACT_KEYS = (
     "reader_max_context_chars",
 )
 
+READER_POLICY_KEYS = (
+    "reader_include_extractive_hint",
+    "reader_candidate_only",
+    "reader_candidate_first",
+    "reader_focus_evidence",
+)
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -34,6 +41,16 @@ def main() -> int:
         "--allow-diagnostic",
         action="store_true",
         help="Allow diagnostic-only reports as long as their model contract matches.",
+    )
+    parser.add_argument(
+        "--allow-reader-fallback",
+        action="store_true",
+        help="Allow reader fallback/error rows. By default, fair OSS reader comparisons must use the configured OSS reader.",
+    )
+    parser.add_argument(
+        "--require-reader-policy-match",
+        action="store_true",
+        help="Also require prompt-shaping policy flags, such as candidate-only and extractive hints, to match.",
     )
     parser.add_argument("--output-json", default="", help="Optional normalized validation summary path.")
     args = parser.parse_args()
@@ -62,6 +79,19 @@ def main() -> int:
                 errors.append(f"{row['label']}: provider_identity_missing")
             if row.get("diagnostic_only") and not args.allow_diagnostic:
                 errors.append(f"{row['label']}: diagnostic_only_report")
+            if not args.allow_reader_fallback:
+                if row.get("reader_fallback_count", 0) > 0:
+                    errors.append(f"{row['label']}: reader_fallback_used count={row.get('reader_fallback_count')}")
+                if row.get("reader_error_count", 0) > 0:
+                    errors.append(f"{row['label']}: reader_errors count={row.get('reader_error_count')}")
+                if row.get("reader_open_source_calls") is not None and row.get("reader_open_source_calls", 0) <= 0:
+                    errors.append(f"{row['label']}: no_oss_reader_calls")
+            if args.require_reader_policy_match:
+                for key in READER_POLICY_KEYS:
+                    if row.get(key) != rows[0].get(key):
+                        errors.append(
+                            f"{row['label']}: {key}_mismatch expected={rows[0].get(key)!r} actual={row.get(key)!r}"
+                        )
 
     result = {
         "schema": "matrixark_shared_oss_model_contract_validation_v1",
@@ -73,7 +103,9 @@ def main() -> int:
         "rule": (
             "MatrixArk, OpenViking, VikingMem, and peer rows must use the same OSS "
             "reader model, embedding/encoding model, retrieved event budget, and "
-            "reader context budget before token-savings or reader-quality claims are comparable."
+            "reader context budget before token-savings or reader-quality claims are comparable. "
+            "Reader fallback and reader errors fail by default; use --require-reader-policy-match "
+            "when prompt shaping must also be identical."
         ),
     }
     if args.output_json:
@@ -111,6 +143,13 @@ def normalize_report(path: Path, label: str, errors: list[str]) -> dict[str, Any
         "reader_max_context_chars": to_int(
             contract.get(f"{prefix}_reader_max_context_chars") or data.get("reader_max_context_chars")
         ),
+        "reader_include_extractive_hint": bool(data.get("reader_include_extractive_hint")),
+        "reader_candidate_only": bool(data.get("reader_candidate_only")),
+        "reader_candidate_first": bool(data.get("reader_candidate_first")),
+        "reader_focus_evidence": bool(data.get("reader_focus_evidence")),
+        "reader_fallback_count": to_int(data.get("reader_fallback_count")) or 0,
+        "reader_error_count": to_int(data.get("reader_error_count")) or 0,
+        "reader_open_source_calls": to_int(data.get("reader_open_source_calls")),
         "shared_oss_model_contract_required": bool(contract.get("shared_oss_model_contract_required")),
         "shared_oss_model_contract_passed": bool(contract.get("shared_oss_model_contract_passed")),
         "diagnostic_only": bool(data.get("diagnostic_only") or data.get("python_only_diagnostic")),
