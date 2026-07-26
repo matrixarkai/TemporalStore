@@ -273,8 +273,17 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     "context_pack_id": "pack-tool",
                     "used_context_tokens": 33,
                     "remote_context_budget_tokens": 90,
-                    "selected_ref_counts": {"event": 1, "entity": 1},
+                    "selected_ref_counts": {"event": 2, "entity": 1},
                     "selected_refs": [
+                        {
+                            "ref_type": "event",
+                            "memory_scope": "session",
+                            "session_continuity": "same_session",
+                            "text": (
+                                "user: Codex hook heartbeat 2026-07-15T13:32:00Z: "
+                                "C++ TemporalStore is live and accepting MatrixArk hook writes."
+                            ),
+                        },
                         {
                             "ref_type": "event",
                             "memory_scope": "session",
@@ -298,6 +307,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(1, len(trace["tool_calls"]))
         item = trace["tool_calls"][0]
         self.assertEqual("ok", item["status"])
+        self.assertEqual(2, item["result"]["selected_ref_count"])
         self.assertEqual(90, item["result"]["retrieval_budget"]["remote_context_budget_tokens"])
         self.assertEqual(57, item["result"]["retrieval_budget"]["remote_budget_remaining_tokens"])
         self.assertEqual({"event": 1, "entity": 1}, item["result"]["retrieval_layers"]["selected_ref_counts"])
