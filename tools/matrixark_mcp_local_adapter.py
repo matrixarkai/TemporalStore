@@ -2493,7 +2493,13 @@ class MatrixArkLocalAdapter:
             session_buffer_threshold = args.get("session_buffer_threshold", 20)
             if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
                 raise MatrixArkError("session_buffer_threshold must be a positive integer")
-            if auto_batch_extract and pending_event_count >= session_buffer_threshold:
+            threshold_ready = pending_event_count >= session_buffer_threshold
+            idle_ready = bool(
+                isinstance(idle_commit_result, dict)
+                and idle_commit_result.get("status") in {"accepted", "committed"}
+                and idle_commit_result.get("trigger_policy") == "idle_timeout"
+            )
+            if auto_batch_extract and threshold_ready:
                 auto_batch_result = self.session_commit(
                     {
                         "scope": envelope["scope"],
@@ -2535,6 +2541,8 @@ class MatrixArkLocalAdapter:
                     "buffer_key": list(session_buffer_key(envelope)),
                     "pending_event_count": pending_event_count,
                     "threshold_messages": session_buffer_threshold,
+                    "threshold_ready": threshold_ready,
+                    "idle_ready": idle_ready,
                     "auto_batch_extract": auto_batch_extract,
                 },
                 "idle_commit_result": idle_commit_result,
