@@ -551,6 +551,22 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertNotIn('rust-service-publish.err', script)
         self.assertNotIn('cpp-direct-publish.err', script)
 
+    def test_cpp_and_rust_hooks_do_not_persist_external_logs(self) -> None:
+        tools_dir = Path(__file__).resolve().parents[1] / "tools"
+        cpp_script = (tools_dir / "matrixark_codex_cpp_hook.sh").read_text()
+        rust_script = (tools_dir / "matrixark_codex_rust_hook.sh").read_text()
+        dual_script = (tools_dir / "matrixark_codex_dual_hook.sh").read_text()
+        combined = "\n".join([cpp_script, rust_script, dual_script])
+
+        self.assertIn('export MATRIXARK_RUST_PROXY_DAEMON_LOG="/dev/null"', rust_script)
+        self.assertNotIn("daemon.log", rust_script)
+        self.assertNotIn('mkdir -p "$(dirname "$MATRIXARK_RUST_PROXY_DAEMON_LOG")"', rust_script)
+        self.assertNotIn("MATRIXARK_CODEX_HOOK_LOG_DIR", combined)
+        self.assertNotIn("dispatch-diagnostics.jsonl", combined)
+        self.assertNotIn("cpp-$EVENT.out", combined)
+        self.assertNotIn("rust-service-publish.err", combined)
+        self.assertNotIn("cpp-direct-publish.err", combined)
+
     def test_dual_hook_keeps_derived_context_out_of_raw_ingestion(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_dual_hook.sh").read_text()
 

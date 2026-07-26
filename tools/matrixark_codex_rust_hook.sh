@@ -37,7 +37,7 @@ export MATRIXARK_RUST_PROXY_ASYNC_VISIBILITY_PUBLISH_AFTER_FLUSH="${MATRIXARK_RU
 export MATRIXARK_HOOK_STORAGE_ROUTE="${MATRIXARK_HOOK_STORAGE_ROUTE:-shared_store_async}"
 export MATRIXARK_RUST_PROXY_DAEMON_AUTOSTART="${MATRIXARK_RUST_PROXY_DAEMON_AUTOSTART:-1}"
 export MATRIXARK_RUST_PROXY_SOCKET="${MATRIXARK_RUST_PROXY_SOCKET:-/tmp/matrixark-rust-proxy-codex-live.sock}"
-export MATRIXARK_RUST_PROXY_DAEMON_LOG="${MATRIXARK_RUST_PROXY_DAEMON_LOG:-$ROOT/.local/runtime/matrixark-rust-proxy-codex-live/daemon.log}"
+export MATRIXARK_RUST_PROXY_DAEMON_LOG="/dev/null"
 
 if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_CLI:-}" ]]; then
 	  for candidate in \
@@ -123,7 +123,6 @@ _matrixark_start_rust_proxy_daemon() {
       --ping >/dev/null 2>&1; then
     return
   fi
-  mkdir -p "$(dirname "$MATRIXARK_RUST_PROXY_DAEMON_LOG")"
   nohup python3 "$ROOT/tools/matrixark_rust_proxy_daemon.py" \
     --proxy "$MATRIXARK_TEMPORALSTORE_RUST_CLI" \
     --socket "$MATRIXARK_RUST_PROXY_SOCKET" \
