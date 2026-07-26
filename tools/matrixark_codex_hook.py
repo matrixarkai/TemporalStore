@@ -509,12 +509,7 @@ def codex_hook_output(
         retrieve_has_context = bool(
             isinstance(retrieve, dict)
             and not retrieve.get("_hook_tool_timeout")
-            and (
-                retrieve.get("context_pack_id")
-                or retrieve.get("pack_id")
-                or selected_ref_count_from_retrieve(retrieve) > 0
-                or _first_string_value(retrieve, ["context", "text", "compiled_context", "rendered_context"])
-            )
+            and (bool(emitted_refs) or bool(rendered_context))
         )
         if error and not retrieve_has_context:
             additional_context = (
@@ -522,12 +517,14 @@ def codex_hook_output(
                 "Use visible local Codex context as authoritative for this turn. "
                 f"Failure: {_compact_one_line(error, max_chars=700)}"
             )
-        else:
+        elif retrieve_has_context:
             additional_context = additional_context_from_retrieve(
                 retrieve,
                 query=query,
                 local_context_count=len(agent_context.get("local_context", [])),
             )
+        else:
+            additional_context = ""
         if additional_context:
             output["hookSpecificOutput"] = {
                 "hookEventName": "UserPromptSubmit",
