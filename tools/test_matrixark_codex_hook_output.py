@@ -537,6 +537,14 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(1, len(rows))
         self.assertEqual("raw_ingestion", rows[0]["projection"])
 
+    def test_dual_hook_keeps_derived_context_out_of_raw_ingestion(self) -> None:
+        script = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_dual_hook.sh").read_text()
+
+        self.assertIn('f"{prefix}:raw_ingestion:records", raw_record', script)
+        self.assertNotIn('for extracted_record in rust_live_extraction_records()', script)
+        self.assertNotIn('for extracted_record in cpp_live_extraction_records()', script)
+
+
     def test_query_effective_synthetic_status_uses_text_classifier(self) -> None:
         self.assertTrue(matrixark_http._hook_text_is_synthetic("matrixark plain string prompt hook proof 1784770203"))
         self.assertFalse(
