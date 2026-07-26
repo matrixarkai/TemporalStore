@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""Local MatrixArk serving-model recovery checks."""
+
+from __future__ import annotations
+
+import argparse
+from collections import Counter
+import json
+from pathlib import Path
+from typing import Any
+
+try:
+    from tools.matrixark_mcp_core import Json
+    from tools.matrixark_mcp_latest_values import compact_latest_value_records
+    from tools.matrixark_mcp_retrieval_records import RETRIEVAL_HOT_RECORD_TYPES
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import Json
+    from matrixark_mcp_latest_values import compact_latest_value_records
+    from matrixark_mcp_retrieval_records import RETRIEVAL_HOT_RECORD_TYPES
+
+
+PRIMARY_RECOVERY_RECORD_TYPES = {
+    "agent_message",
+    "context_batch_commit",
+    "context_entity",
+    "context_event",
+    "context_segment",
+    "resource_chunk",
+    "resource_manifest",
+    "skill_registry_update",
+    "skill_section",
+}
+DERIVED_RECOVERY_RECORD_TYPES = {
+    "context_compression_event",
+    "context_embedding",
+    "context_index",
+    "context_summary",
+    "context_summary_dirty",
+}
+EMBEDDING_SOURCE_TYPES = {"context_entity", "context_event", "context_segment", "context_summary"}
+
+
+def _record_identity(record: Json) -> tuple[str, Any] | None:
+    record_type = str(record.get("record_type") or "")
+    for field in (
+        "event_id_hash",
+        "entity_hash",
+        "segment_hash",
+        "summary_hash",
+        "resource_hash",
+        "chunk_hash",
+        "skill_hash",
+        "node_hash",
+    ):
+        value = record.get(field)
+        if value not in (None, ""):
+            return record_type, value
+    return None
+
+
+def _index_ref_hashes(record: Json) -> list[Any]:
+    refs = record.get("ref_hashes")
+    if isinstance(refs, list):
+        return [ref for ref in refs if ref not in (None, "")]
+    ref = record.get("ref_hash")
+    return [] if ref in (None, "") else [ref]
+
+
+def load_jsonl_records_for_recovery(path: Path) -> tuple[list[Json], list[Json]]:
+    records: list[Json] = []
+    errors: list[Json] = []
+    lines = path.read_text(encoding="utf-8").splitlines()
+    last_non_empty_line = 0
+    for line_number, line in enumerate(lines, start=1):
+        if line.strip():
+            last_non_empty_line = line_number
+    for line_number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            value = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            errors.append(
+                {
+                    "line": line_number,
+                    "message": str(exc),
+                    "corrupt_tail": line_number == last_non_empty_line,
+                }
+            )
+            continue
+        if isinstance(value, dict):
+            records.append(value)
+        else:
+            errors.append(
+                {
+                    "line": line_number,
+                    "message": "JSONL record must be an object",
+                    "corrupt_tail": line_number == last_non_empty_line,
+                }
+            )
+    return records, errors
+
+
+def matrixark_local_recovery_report(records: list[Json], *, parse_errors: list[Json] | None = None) -> Json:
+    parse_errors = parse_errors or []
+    compacted = compact_latest_value_records(records)
+    record_counts = Counter(str(record.get("record_type") or "unknown") for record in records)
+    compacted_counts = Counter(str(record.get("record_type") or "unknown") for record in compacted)
+    hot_counts = {record_type: int(record_counts.get(record_type, 0)) for record_type in sorted(RETRIEVAL_HOT_RECORD_TYPES)}
+    compacted_hot_counts = {record_type: int(compacted_counts.get(record_type, 0)) for record_type in sorted(RETRIEVAL_HOT_RECORD_TYPES)}
+
+    source_refs: set[tuple[str, Any]] = set()
+    embedding_refs: set[tuple[str, Any]] = set()
+    indexed_ref_hashes: set[Any] = set()
+    for record in compacted:
+        record_type = str(record.get("record_type") or "")
+        identity = _record_identity(record)
+        if identity is not None and record_type in EMBEDDING_SOURCE_TYPES:
+            source_refs.add(identity)
+        if record_type == "context_embedding":
+            ref_type = str(record.get("ref_type") or "")
+            ref_hash = record.get("ref_hash")
+            if ref_type and ref_hash not in (None, ""):
+                embedding_refs.add((f"context_{ref_type}" if not ref_type.startswith("context_") else ref_type, ref_hash))
+        if record_type == "context_index":
+            indexed_ref_hashes.update(_index_ref_hashes(record))
+
+    session_entities = [
+        record for record in compacted
+        if record.get("record_type") == "context_entity" and record.get("memory_scope") == "session"
+    ]
+    profile_entities = [
+        record for record in compacted
+        if record.get("record_type") == "context_entity" and record.get("memory_scope") == "user_profile"
+    ]
+    dirty_summaries = [
+        record for record in compacted
+        if record.get("record_type") == "context_summary_dirty" and str(record.get("status") or "dirty") != "completed"
+    ]
+    corrupt_tail_count = sum(1 for item in parse_errors if item.get("corrupt_tail"))
+    middle_parse_error_count = len(parse_errors) - corrupt_tail_count
+    blockers: list[str] = []
+    if middle_parse_error_count:
+        blockers.append("recovery:middle_parse_errors")
+    if corrupt_tail_count:
+        blockers.append("recovery:corrupt_tail_detected")
+    if records and not any(record_type in RETRIEVAL_HOT_RECORD_TYPES for record_type in record_counts):
+        blockers.append("recovery:no_hot_serving_records")
+
+    return {
+        "status": "empty" if not records else ("repair_required" if blockers else "ok"),
+        "record_count": len(records),
+        "compacted_record_count": len(compacted),
+        "record_counts": dict(sorted(record_counts.items())),
+        "compacted_record_counts": dict(sorted(compacted_counts.items())),
+        "hot_memory_persisted": any(count > 0 for count in hot_counts.values()),
+        "hot_record_counts": hot_counts,
+        "compacted_hot_record_counts": compacted_hot_counts,
+        "primary_record_counts": {
+            record_type: int(record_counts.get(record_type, 0))
+            for record_type in sorted(PRIMARY_RECOVERY_RECORD_TYPES)
+        },
+        "derived_record_counts": {
+            record_type: int(record_counts.get(record_type, 0))
+            for record_type in sorted(DERIVED_RECOVERY_RECORD_TYPES)
+        },
+        "cache_rebuild": {
+            "read_cache_rebuildable_from_durable_log": bool(records) and not blockers,
+            "retrieval_cache_rebuildable_from_hot_records": any(count > 0 for count in compacted_hot_counts.values()) and not blockers,
+            "latest_value_compaction_rebuilt_records": len(compacted),
+            "hot_record_types": sorted(RETRIEVAL_HOT_RECORD_TYPES),
+        },
+        "memory_hierarchy": {
+            "session_entity_count": len(session_entities),
+            "profile_entity_count": len(profile_entities),
+            "profile_node_paths": sorted({"/".join(str(part) for part in record.get("node_path", [])) for record in profile_entities}),
+            "source_session_ids": sorted({str(session_id) for record in profile_entities for session_id in record.get("source_session_ids", []) if str(session_id)}),
+        },
+        "derived_views": {
+            "index_posting_count": int(record_counts.get("context_index", 0)),
+            "indexed_ref_count": len(indexed_ref_hashes),
+            "embedding_count": int(record_counts.get("context_embedding", 0)),
+            "embedding_source_ref_count": len(source_refs),
+            "missing_embedding_source_ref_count": len(source_refs - embedding_refs),
+            "dirty_summary_count": len(dirty_summaries),
+            "summary_count": int(record_counts.get("context_summary", 0)),
+        },
+        "parse_errors": parse_errors,
+        "blockers": blockers,
+        "rebuild_plan": [
+            "scan durable MatrixArk records",
+            "truncate or quarantine corrupt tail if reported",
+            "compact latest-value serving records",
+            "rebuild read/retrieval/entity hot caches from compacted records",
+            "rebuild context_index and context_embedding views when stale or missing",
+            "run refresh_summaries for context_summary_dirty records",
+        ],
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--event-log", type=Path, required=True, help="Path to the local MatrixArk JSONL event log.")
+    parser.add_argument("--out", type=Path, help="Optional JSON report output path.")
+    args = parser.parse_args()
+    records, errors = load_jsonl_records_for_recovery(args.event_log)
+    report = matrixark_local_recovery_report(records, parse_errors=errors)
+    payload = json.dumps(report, indent=2, sort_keys=True)
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(payload + "\n", encoding="utf-8")
+    else:
+        print(payload)
+    return 0 if report["status"] in {"ok", "empty"} else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

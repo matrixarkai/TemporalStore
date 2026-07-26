@@ -103,6 +103,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn('matrixark-http-portal = "tools.matrixark_admin:http_portal_main"', pyproject_text)
         self.assertIn('matrixark-agent-hook = "tools.matrixark_agent_hook:main"', pyproject_text)
         self.assertIn('matrixark-admin = "tools.matrixark_admin:main"', pyproject_text)
+        self.assertIn('matrixark-local-recovery = "tools.matrixark_mcp_recovery:main"', pyproject_text)
 
     def test_production_defaults_doc_records_control_plane_boundary(self) -> None:
         defaults_doc = (REPO_ROOT / "docs" / "matrixark_mcp_production_defaults.md").read_text(encoding="utf-8")
