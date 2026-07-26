@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from argparse import Namespace
 import json
 import os
 import subprocess
@@ -34,6 +35,14 @@ class CountingLocalAdapter(MatrixArkLocalAdapter):
         return super().retrieval_records(**kwargs)
 
 
+class FastHookLocalAdapter(MatrixArkLocalAdapter):
+    def enqueue_raw_ingestion_records(self, records: list[dict]) -> None:
+        self.append_many(records)
+
+    def _enqueue_direct_write(self, records: list[dict]) -> None:
+        self.append_many(records)
+
+
 class MatrixArkCodexHookPipelineTest(unittest.TestCase):
     def test_pending_async_events_are_demoted_for_budget_packing(self) -> None:
         pending_event = {
@@ -61,6 +70,78 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
 
         self.assertGreater(packing_sort_key(ordinary_event, "fact"), packing_sort_key(pending_event, "fact"))
         self.assertGreater(packing_sort_key(extracted_entity, "fact"), packing_sort_key(pending_event, "fact"))
+
+    def test_fast_hook_dirty_markers_refresh_into_retrievable_summaries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-summary.jsonl")
+
+            class Server:
+                def __init__(self) -> None:
+                    self.adapter = adapter
+
+            args = Namespace(
+                event="UserPromptSubmit",
+                account_id="acct_fast",
+                tenant_id="tenant_fast",
+                user_id="user_fast",
+                session_id="session_fast_summary",
+                team="codex",
+                project="temporalstore",
+                session_commit_threshold=20,
+                idle_commit_timeout_ms=0,
+                understanding_provider="rules",
+                segment_provider="deterministic",
+            )
+            result = matrixark_codex_hook.fast_async_hook_ingest(
+                Server(),
+                args=args,
+                text="Remember that the fast hook summary refresh path must turn dirty markers into retrievable summaries.",
+                role="user",
+                agent_context={"workspace_root": "/repo"},
+                hook={"session_id_source": "payload_field"},
+            )
+            self.assertEqual("accepted", result["status"])
+            self.assertGreaterEqual(result["summary_dirty_count"], 1)
+
+            refresh = adapter.refresh_summaries(
+                {
+                    "scope": {
+                        "account_id": "acct_fast",
+                        "tenant_id": "tenant_fast",
+                        "user_id": "user_fast",
+                        "session_id": "session_fast_summary",
+                    },
+                    "limit": 16,
+                    "refreshed_at_ms": int(time.time() * 1000) + 1000,
+                }
+            )
+            self.assertGreaterEqual(refresh.get("refreshed_count", 0), 1)
+            records = adapter.read_all()
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_summary_dirty"
+                    and record.get("status") == "completed"
+                    for record in records
+                )
+            )
+            self.assertTrue(any(record.get("record_type") == "context_summary" for record in records))
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {
+                        "account_id": "acct_fast",
+                        "tenant_id": "tenant_fast",
+                        "user_id": "user_fast",
+                        "session_id": "session_fast_summary",
+                    },
+                    "query": "Summarize the fast hook summary refresh path.",
+                    "max_context_tokens": 100,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 2},
+                }
+            )
+            self.assertLessEqual(pack["used_context_tokens"], 100)
+            self.assertTrue(any(ref.get("ref_type") == "summary" for ref in pack["selected_refs"]))
 
     def run_hook(self, repo: Path, event_log: Path, *, event: str, payload: dict, query: str = "") -> dict:
         cmd = [

@@ -1624,6 +1624,7 @@ class MatrixArkLocalAdapter:
                 "node_path": node_path,
                 "scope": dirty.get("scope", scope),
                 "status": "completed",
+                "created_at_ms": refreshed_at_ms,
                 "updated_at_ms": refreshed_at_ms,
                 "completed_at_ms": refreshed_at_ms,
             }

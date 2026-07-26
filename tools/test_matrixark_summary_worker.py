@@ -73,7 +73,7 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
         self.addCleanup(lambda: os.environ.__setitem__("MATRIXARK_SUMMARY_PROVIDER", old_provider) if old_provider is not None else os.environ.pop("MATRIXARK_SUMMARY_PROVIDER", None))
         self.addCleanup(lambda: os.environ.__setitem__("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", old_require) if old_require is not None else os.environ.pop("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", None))
 
-        summary_globals = mcp.synthesize_context_node_summary.__globals__
+        summary_globals = mcp.MatrixArkLocalAdapter.refresh_summaries.__globals__["synthesize_context_node_summary"].__globals__
         old_call = summary_globals["openai_compatible_json_call"]
         self.addCleanup(lambda: summary_globals.__setitem__("openai_compatible_json_call", old_call))
 
@@ -115,7 +115,7 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
             self.assertTrue(l1)
             self.assertTrue(any(str(record.get("summary_text", "")).startswith("OSS node_l1 synthesis") for record in l1))
             for record in l1:
-                provider = record.get("summary_generation_policy", {}).get("summary_provider", {})
+                provider = record.get("summary_generation_policy", {})
                 self.assertEqual("openai_compatible", provider.get("provider"))
                 self.assertEqual("llm_json", provider.get("execution_mode"))
                 self.assertFalse(provider.get("fallback_used"))
