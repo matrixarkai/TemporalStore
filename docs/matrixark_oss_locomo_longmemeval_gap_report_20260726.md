@@ -17,6 +17,9 @@ This report is intentionally conservative: it records what ran locally, what imp
 - Unblocked local OpenViking enough to run tiny LoCoMo baselines: built `ragfs_python`, rebuilt the native vector engine without the local tcmalloc crash, started OpenViking on `127.0.0.1:1934`, imported LoCoMo sessions, executed MiniLM and Qwen VikingBot evals, and probed direct OpenViking search/recall APIs.
 - Added direct diagnostic baselines for OpenViking archived LoCoMo messages and LongMemEval source sessions so retrieval, token savings, and reader quality can be measured even while OpenViking memory extraction returns empty memory records.
 - Added an OSS reader memory-capability probe so weak/smoke readers are not accidentally used for competitive MatrixArk vs OpenViking/VikingMem claims.
+- Installed local Ollama and pulled `qwen2.5:1.5b`; verified Ollama OpenAI-compatible `/v1` serving on `127.0.0.1:11434`.
+- Tightened the OSS reader capability prompt so temporal questions require explicit date/year normalization without forcing unrelated date answers for personal-fact questions.
+- Attempted `qwen2.5:7b` through the configured WSL network proxy; the pull reached only about 475 MB / 4.7 GB after the 15 minute command cap, so 7B remains a network/download blocker for this pass.
 - Kept benchmark scoring fail-closed: paper-comparable claims remain disabled until full datasets and external baselines run under the same budget/model config.
 
 ## Local OSS Readers
@@ -25,8 +28,9 @@ This report is intentionally conservative: it records what ran locally, what imp
 |---|---:|---|---|
 | deepset/minilm-uncased-squad2 | `127.0.0.1:18086` | Working | Fast extractive QA diagnostic reader. |
 | Qwen/Qwen2.5-0.5B-Instruct | `127.0.0.1:18087` | Working | Local causal-LM reader; slower but exercises OSS generation path. |
-| vLLM | n/a | Blocked | Python package/import state is inconsistent locally; no reliable vLLM service yet. |
-| Ollama/Qwen larger models | n/a | Not used in final evidence | Use next for stronger full-run reader quality once model serving is stable. |
+| Ollama/qwen2.5:1.5b | `127.0.0.1:11434/v1` | Working, smoke-only | Installed locally and benchmarked. Better than 0.5B on some tiny slices, but fails the reader capability quality gate and is too slow for final quality claims. |
+| Ollama/qwen2.5:7b | n/a | Download blocked | Pull through proxy reached about 475 MB / 4.7 GB before the 15 minute cap; estimated remaining time was over two hours at the observed rate. |
+| vLLM | n/a | Installed/importable, no live service | `vllm` imports locally, but no stable OpenAI-compatible vLLM server was used for these evidence runs. |
 
 ## OSS Reader Capability Gate
 
@@ -34,6 +38,7 @@ This report is intentionally conservative: it records what ran locally, what imp
 |---|---:|---:|---:|---|---|
 | deepset/minilm-uncased-squad2 | 4 | 1.000 | 742.57 ms | competitive_reader_ready | Passes the tiny temporal/personal-fact probe, but remains an extractive diagnostic reader rather than final paper-quality LLM. |
 | Qwen/Qwen2.5-0.5B-Instruct | 4 | 0.750 | 5.41 s | reader_smoke_only | Misses the relative-date LoCoMo probe by answering the conversation timestamp instead of `7 May 2023`; keep as smoke-only until a stronger Qwen/Ollama/vLLM reader is live. |
+| Ollama/qwen2.5:1.5b | 4 | 0.750 | 1.81 s | reader_smoke_only | With the tightened temporal prompt it answers the two temporal probes and one duration probe, but answers `Bachelor's degree` instead of `Business Administration`; quality remains below the 0.90 gate. |
 
 The gate uses four compact memory QA probes: two LoCoMo temporal questions and two LongMemEval-style personal facts. Default readiness requires at least 0.90 hit rate and p95 under 30 seconds. This does not replace full benchmark scoring; it prevents weak local readers from being mistaken for competitive evidence.
 
@@ -45,6 +50,8 @@ The gate uses four compact memory QA probes: two LoCoMo temporal questions and t
 | MiniLM LongMemEval_s 50 | 50 | 0.980 | 0.560 | 98.59% | 250.06 ms | 305.90 ms | Rust TemporalStore ready | Diagnostic |
 | Qwen LoCoMo tiny | 2 | 1.000 | 1.000 | 0.00% | 4.40 ms | 11.97 s | Rust TemporalStore ready | Smoke only |
 | Qwen LongMemEval_s tiny | 2 | 1.000 | 1.000 | 93.03% | 233.81 ms | 25.58 s | Python-only diagnostic | Smoke only |
+| Ollama Qwen 1.5B LoCoMo tiny | 2 | 1.000 | 0.500 | 0.00% | 4.92 ms | 58.35 s | Python-only diagnostic | Gate failed: reader p95 and one temporal answer miss |
+| Ollama Qwen 1.5B LongMemEval_s tiny | 2 | 1.000 | 1.000 | 93.03% | 402.84 ms | 58.43 s | Python-only diagnostic | Gate failed only on reader p95 |
 
 Notes:
 
@@ -75,6 +82,8 @@ OpenViking tiny eval results:
 | OpenViking official LongMemEval import/eval smoke | 1 | 0.000 | 0.000 | n/a | n/a | 30.12 s | Import with correct user key completed, but eval retrieved zero memories/context |
 | OpenViking-style direct source retrieval + Qwen LongMemEval_s tiny | 2 | 1.000 | 1.000 | 96.87% | 47.16 ms | 26.42 s | Fallback source retrieval works; not OpenViking memory recall |
 | OpenViking-style direct source retrieval + MiniLM LongMemEval_s tiny | 2 | 1.000 | 1.000 | 96.87% | 89.42 ms | 5.33 s | Fallback source retrieval works; not OpenViking memory recall |
+| OpenViking direct archive retrieval + Ollama Qwen 1.5B LoCoMo tiny | 2 | 1.000 | n/a | 52.50% | 0.54 ms | 63.61 s | Retrieval works; reader latency too high for final claims |
+| OpenViking-style direct source retrieval + Ollama Qwen 1.5B LongMemEval_s tiny | 2 | 1.000 | n/a | 96.87% | 76.77 ms | 71.01 s | Source retrieval works; reader latency too high and still not official memory recall |
 
 The MiniLM VikingBot run answered both questions as `2026` for expected answers `7 May 2023` and `2022`. The Qwen VikingBot run reached the local Qwen endpoint, but answered with a fragment of VikingBot tool instructions instead of using tools/retrieval. Direct OpenViking recall is now technically callable, but the memory-enabled Qwen import produced `memories_extracted: {}` and `memory_diff.json` contained no adds, updates, or deletes.
 
@@ -95,13 +104,25 @@ For LongMemEval, the official OpenViking importer initially failed every session
 ## Next Gap-Closure Steps
 
 1. Fix OpenViking's OSS memory extraction so a tiny committed LoCoMo session creates recallable event/entity memories; direct archive retrieval is only a diagnostic fallback.
-2. Replace Qwen 0.5B with a stronger local OSS reader, preferably Qwen 7B/14B through Ollama or vLLM, and rerun MatrixArk plus OpenViking direct retrieval under the same prompt and token budget.
+2. Replace Qwen 0.5B/1.5B with a stronger local OSS reader, preferably Qwen 7B/14B through Ollama or vLLM. The `qwen2.5:7b` pull is currently blocked by proxy/download throughput, not by benchmark code.
 3. Keep direct OpenViking/archive/source retrieval as a retrieval-only diagnostic baseline until VikingBot memory extraction is non-empty; compare it against MatrixArk using the same external token estimator and mark it non-paper-comparable.
 4. Fix OpenViking/VikingBot token accounting for local OSS endpoints, or collect prompt/completion token estimates externally with the same tokenizer used for MatrixArk.
 5. Fix the Rust LongMemEval harness readiness issue for tiny Qwen runs.
 6. Run OpenViking and MatrixArk on the same LoCoMo and LongMemEval subsets with the same reader, same token budget, and same threshold profile.
 7. Scale only after tiny runs show nonzero retrieval, defensible token accounting, and nontrivial answer quality.
 8. Only then publish MatrixArk vs OpenViking/VikingMem quality and token-savings numbers.
+
+## Latest Qwen 1.5B/Ollama Findings
+
+The local Ollama Qwen 1.5B path is now installed and callable, so the OSS model path itself is no longer blocked. It is still not strong enough for competitive LoCoMo/LongMemEval claims:
+
+- Reader gate: 3/4 correct, p95 1.81 s, failed quality because it answered `Bachelor's degree` instead of the requested `Business Administration` fact.
+- MatrixArk LoCoMo tiny: retrieval hit 1.0, reader hit 0.5, p95 retrieval 4.92 ms, p95 reader 58.35 s, gate failed.
+- MatrixArk LongMemEval tiny: retrieval hit 1.0, reader hit 1.0, token reduction 93.03%, p95 retrieval 402.84 ms, p95 reader 58.43 s, gate failed only on reader latency.
+- OpenViking direct LoCoMo archive: retrieval hit 1.0, token reduction 52.50%, p95 retrieval 0.54 ms, p95 reader 63.61 s.
+- OpenViking direct LongMemEval source: retrieval hit 1.0, token reduction 96.87%, p95 retrieval 76.77 ms, p95 reader 71.01 s.
+
+The practical gap is now precise: retrieval can find the tiny evidence on both MatrixArk and direct OpenViking diagnostics, but the local generative reader needs either a faster/stronger serving stack or a larger model before we can run full LoCoMo 1,542-question and LongMemEval_s 500-record comparisons with defensible LLM quality.
 
 ## Evidence Files
 
@@ -122,3 +143,11 @@ For LongMemEval, the official OpenViking importer initially failed every session
 - `/tmp/openviking_direct_source_longmem_tiny_minilm_20260726.json`
 - `/tmp/oss_reader_capability_minilm_20260726.json`
 - `/tmp/oss_reader_capability_qwen05_20260726.json`
+- `/tmp/oss_reader_capability_qwen25_15b_ollama_promptfix2_20260726.json`
+- `/tmp/openviking_direct_retrieval_locomo_tiny_qwen25_15b_ollama_20260726.json`
+- `/tmp/openviking_direct_source_longmem_tiny_qwen25_15b_ollama_20260726.json`
+- `/tmp/matrixark_qwen25_15b_locomo_tiny_validation_20260726.json`
+- `/tmp/matrixark_qwen25_15b_locomo_tiny_benchmark_20260726.json`
+- `/tmp/matrixark_qwen25_15b_longmem_tiny_validation_20260726.json`
+- `/tmp/matrixark_qwen25_15b_longmem_tiny_benchmark_20260726.json`
+- `/tmp/ollama_pull_qwen25_7b_20260726.log`
