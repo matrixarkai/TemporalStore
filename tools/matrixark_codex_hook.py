@@ -294,6 +294,14 @@ def strip_codex_hook_heartbeat_lines(value: str) -> str:
     return "\n".join(kept).strip()
 
 
+def sanitized_rendered_context_from_retrieve(pack: Json | None) -> str:
+    if not isinstance(pack, dict):
+        return ""
+    return strip_codex_hook_heartbeat_lines(
+        _first_string_value(pack, ["context", "text", "compiled_context", "rendered_context"])
+    )
+
+
 def _selected_refs_from_retrieve(pack: Json | None) -> list[Json]:
     if not isinstance(pack, dict):
         return []
@@ -356,8 +364,7 @@ def additional_context_from_retrieve(
     if not isinstance(pack, dict):
         return ""
     refs = [ref for ref in _selected_refs_from_retrieve(pack) if not _ref_is_codex_hook_heartbeat(ref)]
-    context_text = _first_string_value(pack, ["context", "text", "compiled_context", "rendered_context"])
-    context_text = strip_codex_hook_heartbeat_lines(context_text)
+    context_text = sanitized_rendered_context_from_retrieve(pack)
     quality_warnings = pack.get("quality_warnings")
     retrieval_metrics = pack.get("retrieval_metrics")
     budget = retrieval_budget_summary_from_retrieve(pack)
@@ -458,6 +465,7 @@ def codex_hook_output(
     emitted_refs = [
         ref for ref in _selected_refs_from_retrieve(retrieve) if not _ref_is_codex_hook_heartbeat(ref)
     ]
+    rendered_context = sanitized_rendered_context_from_retrieve(retrieve)
     output: Json = {
         "status": status,
         "event": event,
@@ -481,6 +489,7 @@ def codex_hook_output(
             "used_context_tokens": used_context_tokens_from_retrieve(retrieve),
             "budget": retrieval_budget_summary_from_retrieve(retrieve),
             "layers": retrieval_layer_summary_from_retrieve(retrieve, emitted_refs),
+            "rendered_context_chars": len(rendered_context),
             "additional_context_emitted": False,
         },
         "session_commit": {

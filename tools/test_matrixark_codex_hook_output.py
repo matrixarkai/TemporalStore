@@ -496,6 +496,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         additional = output["hookSpecificOutput"]["additionalContext"]
         self.assertNotIn("Codex hook heartbeat", additional)
         self.assertIn("real rendered TemporalStore memory", additional)
+        self.assertEqual(
+            len("user: real rendered TemporalStore memory"),
+            output["retrieve"]["rendered_context_chars"],
+        )
 
     def test_non_prompt_event_keeps_audit_json_without_additional_context(self) -> None:
         args = Namespace(session_id="codex-session-1")
