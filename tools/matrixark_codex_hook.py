@@ -651,6 +651,19 @@ def additional_context_from_retrieve(
     formatted_layer_summary = _format_retrieval_layer_summary(layer_summary)
     if formatted_layer_summary:
         lines.append(formatted_layer_summary)
+    try:
+        has_profile_memory = int(layer_summary.get("profile_memory_refs") or 0) > 0
+    except (TypeError, ValueError):
+        has_profile_memory = False
+    try:
+        has_cross_session_memory = int(layer_summary.get("cross_session_refs") or 0) > 0
+    except (TypeError, ValueError):
+        has_cross_session_memory = False
+    if has_profile_memory or has_cross_session_memory:
+        lines.append(
+            "Memory hierarchy: session refs are turn/session-local; "
+            "user_profile/cross_session refs are long-term state and may supersede older session-local entity copies."
+        )
     if budget_pressure.get("budget_pressure"):
         dropped_by_reason = budget_pressure.get("dropped_by_reason")
         pressure_bits = []
