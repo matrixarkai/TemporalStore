@@ -250,6 +250,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             "final_session_boundary_ref_count": 1,
                         },
                     },
+                    "budget_pressure": {
+                        "budget_pressure": True,
+                        "dropped_by_reason": {"over_budget": 2},
+                        "estimated_tokens_by_reason": {"over_budget": 120},
+                    },
                     "rendered_context_chars": 37,
                 },
                 "ingest": {"status": "accepted"},
@@ -285,6 +290,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("ok", record["status"])
         self.assertEqual("pack-1", record["output_summary"]["context_pack_id"])
         self.assertEqual(100, record["output_summary"]["retrieval_budget"]["remote_context_budget_tokens"])
+        self.assertEqual({"over_budget": 2}, record["output_summary"]["retrieval_budget_pressure"]["dropped_by_reason"])
         self.assertEqual({"event": 1, "entity": 1}, record["output_summary"]["retrieval_layers"]["selected_ref_counts"])
         self.assertEqual(1, record["output_summary"]["retrieval_layers"]["cross_session_refs"])
         self.assertEqual(1, record["output_summary"]["retrieval_layers"]["profile_memory_refs"])
@@ -329,6 +335,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             },
                             "final_session_boundary_ref_count": 1,
                         }
+                    },
+                    "dropped_refs": {
+                        "over_budget": 2,
+                        "cross_session_budget": 1,
+                        "estimated_tokens": {"over_budget": 44, "cross_session_budget": 12},
+                        "budget_fill_policy": "quality_first",
                     },
                     "selected_refs": [
                         {
@@ -379,6 +391,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             1,
             item["result"]["retrieval_layers"]["memory_layer_budget"]["by_memory_scope"]["user_profile"]["refs"],
         )
+        pressure = item["result"]["retrieval_budget_pressure"]
+        self.assertTrue(pressure["budget_pressure"])
+        self.assertEqual({"over_budget": 2, "cross_session_budget": 1}, pressure["dropped_by_reason"])
+        self.assertEqual({"over_budget": 44, "cross_session_budget": 12}, pressure["estimated_tokens_by_reason"])
+        self.assertEqual(3, pressure["budget_pressure_reason_count"])
         self.assertEqual(len("user: rendered profile decision"), item["result"]["rendered_context_chars"])
 
     def test_session_commit_tool_call_trace_records_trigger_evidence(self) -> None:
@@ -549,6 +566,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "final_session_boundary_ref_count": 2,
                     }
                 },
+                "dropped_refs": {
+                    "cross_session_budget": 2,
+                    "max_selected_refs": 3,
+                    "estimated_tokens": {"cross_session_budget": 21, "max_selected_refs": 55},
+                    "budget_fill_policy": "quality_first",
+                },
                 "selected_refs": [
                     {
                         "ref_type": "context_event",
@@ -566,6 +589,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertTrue(output["retrieve"]["additional_context_emitted"])
         self.assertEqual(1, output["retrieve"]["selected_ref_count"])
         self.assertEqual(100, output["retrieve"]["budget"]["remote_context_budget_tokens"])
+        self.assertTrue(output["retrieve"]["budget_pressure"]["budget_pressure"])
+        self.assertEqual(
+            {"cross_session_budget": 2, "max_selected_refs": 3},
+            output["retrieve"]["budget_pressure"]["dropped_by_reason"],
+        )
+        self.assertEqual(5, output["retrieve"]["budget_pressure"]["budget_pressure_reason_count"])
         self.assertEqual(58, output["retrieve"]["budget"]["remote_budget_remaining_tokens"])
         self.assertFalse(output["retrieve"]["budget"]["remote_budget_overrun"])
         self.assertEqual(
@@ -603,6 +632,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("scope[session=1/12t, user_profile=2/30t]", additional)
         self.assertIn("phase[final=2/30t, provisional=1/12t]", additional)
         self.assertIn("final_boundary_refs=2", additional)
+        self.assertIn("Budget pressure:", additional)
+        self.assertIn("cross_session_budget=2", additional)
+        self.assertIn("max_selected_refs=3", additional)
+        self.assertIn("budget_fill_policy=quality_first", additional)
 
     def test_additional_context_layer_summary_falls_back_to_serving_refs(self) -> None:
         args = Namespace(session_id="codex-session-1")

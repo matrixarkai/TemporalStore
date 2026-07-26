@@ -185,6 +185,45 @@ def retrieval_budget_summary_from_retrieve(pack: Json | None) -> Json:
     return budget
 
 
+def retrieval_budget_pressure_from_retrieve(pack: Json | None) -> Json:
+    if not isinstance(pack, dict):
+        return {}
+    dropped = pack.get("dropped_refs") if isinstance(pack.get("dropped_refs"), dict) else {}
+    if not dropped:
+        return {}
+    budget_reasons = [
+        "over_budget",
+        "cross_session_budget",
+        "cross_session_session_cap",
+        "cross_session_candidate_cap",
+        "shared_resource_budget",
+        "shared_skill_budget",
+        "max_selected_refs",
+        "deadline",
+    ]
+    dropped_by_reason: Json = {}
+    estimated_tokens: Json = {}
+    raw_estimated = dropped.get("estimated_tokens") if isinstance(dropped.get("estimated_tokens"), dict) else {}
+    for reason in budget_reasons:
+        count = _int_field(dropped, reason)
+        if count > 0:
+            dropped_by_reason[reason] = count
+        token_count = _int_field(raw_estimated, reason)
+        if token_count > 0:
+            estimated_tokens[reason] = token_count
+    summary: Json = {
+        "budget_pressure": bool(dropped_by_reason or dropped.get("deadline_exceeded")),
+        "dropped_by_reason": dropped_by_reason,
+        "estimated_tokens_by_reason": estimated_tokens,
+        "deadline_exceeded": bool(dropped.get("deadline_exceeded")),
+        "deadline_reason": dropped.get("deadline_reason"),
+        "budget_fill_policy": dropped.get("budget_fill_policy"),
+    }
+    if dropped_by_reason:
+        summary["budget_pressure_reason_count"] = sum(int(value) for value in dropped_by_reason.values())
+    return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
+
+
 def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | None = None) -> Json:
     if not isinstance(pack, dict):
         return {}
@@ -500,6 +539,7 @@ def additional_context_from_retrieve(
     quality_warnings = pack.get("quality_warnings")
     retrieval_metrics = pack.get("retrieval_metrics")
     budget = retrieval_budget_summary_from_retrieve(pack)
+    budget_pressure = retrieval_budget_pressure_from_retrieve(pack)
     layer_summary = retrieval_layer_summary_from_retrieve(pack, refs)
     budget_bits = [
         f"used_remote_tokens={budget.get('used_remote_context_tokens', 0)}",
@@ -534,6 +574,23 @@ def additional_context_from_retrieve(
     formatted_layer_summary = _format_retrieval_layer_summary(layer_summary)
     if formatted_layer_summary:
         lines.append(formatted_layer_summary)
+    if budget_pressure.get("budget_pressure"):
+        dropped_by_reason = budget_pressure.get("dropped_by_reason")
+        pressure_bits = []
+        if isinstance(dropped_by_reason, dict):
+            for reason in sorted(dropped_by_reason):
+                try:
+                    count = int(dropped_by_reason[reason])
+                except (TypeError, ValueError):
+                    continue
+                if count > 0:
+                    pressure_bits.append(f"{reason}={count}")
+        if budget_pressure.get("deadline_exceeded"):
+            pressure_bits.append("deadline_exceeded=true")
+        if budget_pressure.get("budget_fill_policy"):
+            pressure_bits.append(f"budget_fill_policy={budget_pressure.get('budget_fill_policy')}")
+        if pressure_bits:
+            lines.append("Budget pressure: " + ", ".join(pressure_bits) + ".")
     if isinstance(quality_warnings, list) and quality_warnings:
         warnings = []
         for warning in quality_warnings[:4]:
@@ -624,6 +681,7 @@ def codex_hook_output(
             "selected_ref_count": len(emitted_refs),
             "used_context_tokens": used_context_tokens_from_retrieve(retrieve),
             "budget": retrieval_budget_summary_from_retrieve(retrieve),
+            "budget_pressure": retrieval_budget_pressure_from_retrieve(retrieve),
             "layers": retrieval_layer_summary_from_retrieve(retrieve, emitted_refs),
             "rendered_context_chars": len(rendered_context),
             "additional_context_emitted": False,
@@ -769,6 +827,7 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 "selected_ref_count": len(emitted_refs),
                 "used_context_tokens": used_context_tokens_from_retrieve(result),
                 "retrieval_budget": retrieval_budget_summary_from_retrieve(result),
+                "retrieval_budget_pressure": retrieval_budget_pressure_from_retrieve(result),
                 "retrieval_layers": retrieval_layer_summary_from_retrieve(result, emitted_refs),
                 "rendered_context_chars": len(sanitized_rendered_context_from_retrieve(result)),
             }
@@ -852,6 +911,7 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             "context_pack_id": retrieve.get("context_pack_id"),
             "selected_ref_count": retrieve.get("selected_ref_count"),
             "retrieval_budget": retrieve.get("budget"),
+            "retrieval_budget_pressure": retrieve.get("budget_pressure"),
             "retrieval_layers": retrieve.get("layers"),
             "rendered_context_chars": retrieve.get("rendered_context_chars"),
             "ingest_status": ingest.get("status"),
