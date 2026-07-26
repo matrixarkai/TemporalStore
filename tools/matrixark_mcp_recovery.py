@@ -12,11 +12,11 @@ from typing import Any
 try:
     from tools.matrixark_mcp_core import Json
     from tools.matrixark_mcp_latest_values import compact_latest_value_records
-    from tools.matrixark_mcp_retrieval_records import RETRIEVAL_HOT_RECORD_TYPES
+    from tools.matrixark_mcp_retrieval_records import RETRIEVAL_HOT_RECORD_TYPES, filter_retrieval_records
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import Json
     from matrixark_mcp_latest_values import compact_latest_value_records
-    from matrixark_mcp_retrieval_records import RETRIEVAL_HOT_RECORD_TYPES
+    from matrixark_mcp_retrieval_records import RETRIEVAL_HOT_RECORD_TYPES, filter_retrieval_records
 
 
 PRIMARY_RECOVERY_RECORD_TYPES = {
@@ -102,7 +102,44 @@ def load_jsonl_records_for_recovery(path: Path) -> tuple[list[Json], list[Json]]
     return records, errors
 
 
-def matrixark_local_recovery_report(records: list[Json], *, parse_errors: list[Json] | None = None) -> Json:
+def _retrieval_smoke_from_compacted_records(compacted: list[Json], scope: Json | None) -> Json:
+    if not scope:
+        return {"enabled": False, "reason": "scope_not_supplied"}
+    filtered, stats = filter_retrieval_records(
+        compacted,
+        scope=scope,
+        allowed_types=RETRIEVAL_HOT_RECORD_TYPES,
+    )
+    counts = Counter(str(record.get("record_type") or "unknown") for record in filtered)
+    session_entities = [
+        record for record in filtered
+        if record.get("record_type") == "context_entity" and record.get("memory_scope") == "session"
+    ]
+    profile_entities = [
+        record for record in filtered
+        if record.get("record_type") == "context_entity" and record.get("memory_scope") == "user_profile"
+    ]
+    return {
+        "enabled": True,
+        "status": "ok" if filtered else "no_records",
+        "scope": scope,
+        "scan_stats": stats,
+        "returned_record_counts": dict(sorted(counts.items())),
+        "session_entity_count": len(session_entities),
+        "profile_entity_count": len(profile_entities),
+        "profile_entity_bridge_rebuildable": bool(profile_entities),
+        "context_event_count": int(counts.get("context_event", 0)),
+        "context_index_count": int(counts.get("context_index", 0)),
+        "context_summary_count": int(counts.get("context_summary", 0)),
+    }
+
+
+def matrixark_local_recovery_report(
+    records: list[Json],
+    *,
+    parse_errors: list[Json] | None = None,
+    scope: Json | None = None,
+) -> Json:
     parse_errors = parse_errors or []
     compacted = compact_latest_value_records(records)
     record_counts = Counter(str(record.get("record_type") or "unknown") for record in records)
@@ -148,6 +185,7 @@ def matrixark_local_recovery_report(records: list[Json], *, parse_errors: list[J
     if records and not any(record_type in RETRIEVAL_HOT_RECORD_TYPES for record_type in record_counts):
         blockers.append("recovery:no_hot_serving_records")
 
+    retrieval_smoke = _retrieval_smoke_from_compacted_records(compacted, scope)
     return {
         "status": "empty" if not records else ("repair_required" if blockers else "ok"),
         "record_count": len(records),
@@ -186,6 +224,7 @@ def matrixark_local_recovery_report(records: list[Json], *, parse_errors: list[J
             "dirty_summary_count": len(dirty_summaries),
             "summary_count": int(record_counts.get("context_summary", 0)),
         },
+        "retrieval_smoke": retrieval_smoke,
         "parse_errors": parse_errors,
         "blockers": blockers,
         "rebuild_plan": [
@@ -203,9 +242,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--event-log", type=Path, required=True, help="Path to the local MatrixArk JSONL event log.")
     parser.add_argument("--out", type=Path, help="Optional JSON report output path.")
+    parser.add_argument("--scope-json", help="Optional retrieval scope JSON for a rebuild smoke check.")
     args = parser.parse_args()
+    scope: Json | None = None
+    if args.scope_json:
+        loaded_scope = json.loads(args.scope_json)
+        if not isinstance(loaded_scope, dict):
+            raise SystemExit("--scope-json must decode to an object")
+        scope = loaded_scope
     records, errors = load_jsonl_records_for_recovery(args.event_log)
-    report = matrixark_local_recovery_report(records, parse_errors=errors)
+    report = matrixark_local_recovery_report(records, parse_errors=errors, scope=scope)
     payload = json.dumps(report, indent=2, sort_keys=True)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
