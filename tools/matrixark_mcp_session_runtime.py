@@ -86,6 +86,16 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         idle_elapsed_ms = max(0, now_ms() - latest_event_time)
         idle_ready = idle_elapsed_ms >= idle_timeout_ms
     threshold_ready = pending_event_count >= threshold
+    trigger_evidence: Json = {
+        "pending_event_count": pending_event_count,
+        "threshold_messages": threshold,
+        "threshold_ready": threshold_ready,
+        "idle_timeout_ms": idle_timeout_ms,
+        "idle_elapsed_ms": idle_elapsed_ms,
+        "idle_ready": idle_ready,
+        "force": force,
+        "commit_reason": commit_reason,
+    }
     if not force and not threshold_ready and not idle_ready:
         return {
             "status": "deferred",
@@ -94,6 +104,7 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "commit_reason": commit_reason,
             "idle_timeout_ms": idle_timeout_ms,
             "idle_elapsed_ms": idle_elapsed_ms,
+            "trigger_evidence": trigger_evidence,
             "reason": "session buffer below extraction threshold and idle timeout not reached",
         }
     trigger_policy = "force" if force else "idle_timeout" if idle_ready else "threshold"
@@ -120,6 +131,9 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "pending_event_count": pending_event_count,
             "threshold_messages": threshold,
             "commit_reason": commit_reason,
+            "idle_timeout_ms": idle_timeout_ms,
+            "idle_elapsed_ms": idle_elapsed_ms,
+            "trigger_evidence": trigger_evidence,
         }
     try:
         overlap_limit = int(args.get("extraction_context_overlap_messages", 2))
@@ -213,6 +227,7 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "extraction_context_event_count": len(extraction_context_event_ids),
             "idle_timeout_ms": idle_timeout_ms,
             "idle_elapsed_ms": idle_elapsed_ms,
+            "trigger_evidence": trigger_evidence,
             "agent_hook": hook,
             "storage_options": storage_options,
             "storage_route": canonical_storage_route(storage_options),
@@ -236,5 +251,6 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         "final_session_boundary": final_session_boundary,
         "idle_timeout_ms": idle_timeout_ms,
         "idle_elapsed_ms": idle_elapsed_ms,
+        "trigger_evidence": trigger_evidence,
         "raw_events_duplicated": False,
     }
