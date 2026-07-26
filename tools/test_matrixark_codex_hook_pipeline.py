@@ -645,6 +645,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertLessEqual(pack["used_context_tokens"], 120)
             self.assertLessEqual(len(selected), 2)
             self.assertEqual(len(selected), pack["retrieval_metrics"]["selected_refs"])
+            layer_budget = pack["retrieval_metrics"]["memory_layer_budget"]
+            self.assertEqual(len(selected), layer_budget["total_selected_refs"])
+            self.assertLessEqual(layer_budget["total_selected_tokens"], pack["retrieval_metrics"]["remote_context_budget_tokens"])
+            self.assertGreaterEqual(layer_budget["by_session_continuity"]["cross_session"]["refs"], 1)
+            self.assertGreaterEqual(layer_budget["by_memory_scope"]["user_profile"]["refs"], 1)
+            self.assertGreaterEqual(layer_budget["by_extraction_phase"]["final"]["refs"], 1)
+            self.assertGreaterEqual(layer_budget["final_session_boundary_ref_count"], 1)
             self.assertTrue(
                 any(
                     ref.get("ref_type") == "entity"
