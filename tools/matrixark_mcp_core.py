@@ -5084,7 +5084,9 @@ def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate:
 
 
 def record_dropped_candidate(dropped: Json, candidate: Json, *, reason: str, token_estimate: int) -> None:
-    if not is_resource_or_skill_candidate(candidate):
+    if not is_resource_or_skill_candidate(candidate) and not (
+        reason == "stale" and str(candidate.get("ref_type") or "") == "entity"
+    ):
         return
     dropped.setdefault("refs", []).append(dropped_candidate_audit_ref(candidate, reason=reason, token_estimate=token_estimate))
 
@@ -5292,11 +5294,16 @@ def select_token_budgeted_refs(
     for index, candidate in enumerate(candidates):
         if len(selected) >= selected_ref_cap:
             remaining_candidates = candidates[index:]
-            dropped["max_selected_refs"] += len(remaining_candidates)
             for skipped in remaining_candidates:
                 skipped_tokens = max(1, token_count(str(skipped.get("text", ""))))
-                dropped["estimated_tokens"]["max_selected_refs"] += skipped_tokens
-                record_dropped_candidate(dropped, skipped, reason="max_selected_refs", token_estimate=skipped_tokens)
+                if question_type in {"current_state", "latest"} and bool(skipped.get("stale_or_superseded")):
+                    dropped["stale"] += 1
+                    dropped["estimated_tokens"]["stale"] += skipped_tokens
+                    record_dropped_candidate(dropped, skipped, reason="stale", token_estimate=skipped_tokens)
+                else:
+                    dropped["max_selected_refs"] += 1
+                    dropped["estimated_tokens"]["max_selected_refs"] += skipped_tokens
+                    record_dropped_candidate(dropped, skipped, reason="max_selected_refs", token_estimate=skipped_tokens)
             break
         if deadline_exceeded is not None and deadline_exceeded():
             dropped["deadline_exceeded"] = True
@@ -5325,6 +5332,11 @@ def select_token_budgeted_refs(
             dropped["low_score"] += 1
             dropped["estimated_tokens"]["low_score"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="low_score", token_estimate=ref_tokens)
+            continue
+        if question_type in {"current_state", "latest"} and bool(candidate.get("stale_or_superseded")):
+            dropped["stale"] += 1
+            dropped["estimated_tokens"]["stale"] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason="stale", token_estimate=ref_tokens)
             continue
         if remote_budget <= 0 or (selected and used_tokens + ref_tokens > remote_budget):
             dropped["over_budget"] += 1
