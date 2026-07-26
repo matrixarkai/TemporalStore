@@ -265,6 +265,46 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(1, record["output_summary"]["retrieval_layers"]["profile_memory_refs"])
         self.assertTrue(record["output_summary"]["strict_additional_context_emitted"])
 
+    def test_retrieve_tool_call_trace_records_budget_and_layers(self) -> None:
+        class Server:
+            def handle(self, request):
+                self.request = request
+                result = {
+                    "context_pack_id": "pack-tool",
+                    "used_context_tokens": 33,
+                    "remote_context_budget_tokens": 90,
+                    "selected_ref_counts": {"event": 1, "entity": 1},
+                    "selected_refs": [
+                        {
+                            "ref_type": "event",
+                            "memory_scope": "session",
+                            "session_continuity": "same_session",
+                            "text": "current turn evidence",
+                        },
+                        {
+                            "ref_type": "entity",
+                            "memory_scope": "user_profile",
+                            "session_continuity": "cross_session",
+                            "text": "profile decision",
+                        },
+                    ],
+                }
+                return {"result": {"content": [{"text": json.dumps(result)}]}}
+
+        trace = {"tool_calls": []}
+        result = hook.trace_tool_call(Server(), "matrixark_retrieve", {"query": "profile decision"}, trace)
+
+        self.assertEqual("pack-tool", result["context_pack_id"])
+        self.assertEqual(1, len(trace["tool_calls"]))
+        item = trace["tool_calls"][0]
+        self.assertEqual("ok", item["status"])
+        self.assertEqual(90, item["result"]["retrieval_budget"]["remote_context_budget_tokens"])
+        self.assertEqual(57, item["result"]["retrieval_budget"]["remote_budget_remaining_tokens"])
+        self.assertEqual({"event": 1, "entity": 1}, item["result"]["retrieval_layers"]["selected_ref_counts"])
+        self.assertEqual(1, item["result"]["retrieval_layers"]["same_session_refs"])
+        self.assertEqual(1, item["result"]["retrieval_layers"]["cross_session_refs"])
+        self.assertEqual(1, item["result"]["retrieval_layers"]["profile_memory_refs"])
+
     def test_user_prompt_emit_codex_additional_context_from_selected_refs(self) -> None:
         args = Namespace(session_id="codex-session-1")
         output = hook.codex_hook_output(

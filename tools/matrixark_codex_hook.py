@@ -619,6 +619,7 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 "context_pack_id": result.get("context_pack_id") or result.get("pack_id"),
                 "selected_ref_count": selected_ref_count_from_retrieve(result),
                 "used_context_tokens": used_context_tokens_from_retrieve(result),
+                "retrieval_budget": retrieval_budget_summary_from_retrieve(result),
                 "retrieval_layers": retrieval_layer_summary_from_retrieve(result),
             }
         elif name == "matrixark_session_commit":
