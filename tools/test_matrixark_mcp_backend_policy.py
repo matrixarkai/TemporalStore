@@ -2292,12 +2292,12 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             )
             parent_path = ["tenant:tenant_codex", "user:codex_user"]
             child_path = [*parent_path, "session:parent-summary-session"]
-            parent_hash = mcp.stable_hash("/".join(parent_path))
-            child_hash = mcp.stable_hash("/".join(child_path))
-            child_summary_hash = mcp.stable_hash("child-summary")
-            entity_hash = mcp.stable_hash("gpu-approval-entity")
-            compression_hash = mcp.stable_hash("old-approval-compression")
-            dirty_hash = mcp.stable_hash("parent-summary-dirty")
+            parent_hash = mcp_core.stable_hash("/".join(parent_path))
+            child_hash = mcp_core.stable_hash("/".join(child_path))
+            child_summary_hash = mcp_core.stable_hash("child-summary")
+            entity_hash = mcp_core.stable_hash("gpu-approval-entity")
+            compression_hash = mcp_core.stable_hash("old-approval-compression")
+            dirty_hash = mcp_core.stable_hash("parent-summary-dirty")
 
             adapter.ensure_context_node_path(
                 node_path=child_path,
@@ -2339,7 +2339,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     },
                     {
                         "record_type": "context_event",
-                        "event_id_hash": mcp.stable_hash("raw-leaf-event"),
+                        "event_id_hash": mcp_core.stable_hash("raw-leaf-event"),
                         "node_hash": child_hash,
                         "node_path": child_path,
                         "text": "RAW_LEAF_SHOULD_NOT_APPEAR_IN_PARENT_SUMMARY",
@@ -3542,15 +3542,15 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "tenant_id": "tenant",
                 "user_id": "user",
                 "session_id": "session_current",
-                "tenant_hash": mcp.stable_hash("acct:tenant"),
-                "user_hash": mcp.stable_hash(f"{mcp.stable_hash('acct:tenant')}:user:user"),
-                "session_hash": mcp.stable_hash(f"{mcp.stable_hash('acct:tenant')}:session:session_current"),
+                "tenant_hash": mcp_core.stable_hash("acct:tenant"),
+                "user_hash": mcp_core.stable_hash(f"{mcp_core.stable_hash('acct:tenant')}:user:user"),
+                "session_hash": mcp_core.stable_hash(f"{mcp_core.stable_hash('acct:tenant')}:session:session_current"),
                 "_explicit_scope_keys": ["account_id", "tenant_id", "user_id", "session_id"],
             }
-            same_scope["scope_key"] = mcp.scope_key_from_hashes(same_scope["tenant_hash"], same_scope["user_hash"], same_scope["session_hash"])
-            prior_session_hash = mcp.stable_hash(f"{same_scope['tenant_hash']}:session:session_prior")
+            same_scope["scope_key"] = mcp_core.scope_key_from_hashes(same_scope["tenant_hash"], same_scope["user_hash"], same_scope["session_hash"])
+            prior_session_hash = mcp_core.stable_hash(f"{same_scope['tenant_hash']}:session:session_prior")
             prior_scope = {**same_scope, "session_id": "session_prior", "session_hash": prior_session_hash}
-            prior_scope["scope_key"] = mcp.scope_key_from_hashes(prior_scope["tenant_hash"], prior_scope["user_hash"], prior_session_hash)
+            prior_scope["scope_key"] = mcp_core.scope_key_from_hashes(prior_scope["tenant_hash"], prior_scope["user_hash"], prior_session_hash)
             adapter.append_many([
                 {
                     "record_type": "context_event",
@@ -3738,7 +3738,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
 
 
     def test_cross_session_budget_is_cap_and_raw_events_need_high_confidence(self) -> None:
-        policy = mcp.build_cross_session_policy(
+        policy = mcp_core.build_cross_session_policy(
             {"cross_session": {"budget_tokens": 900, "raw_evidence_min_score": 0.45}},
             {},
             question_type="current_state",
@@ -3748,7 +3748,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(policy["budget_tokens"], 400)
         self.assertEqual(policy["max_budget_ratio"], 0.2)
 
-        selected, used_tokens, dropped = mcp.select_token_budgeted_refs(
+        selected, used_tokens, dropped = mcp_core.select_token_budgeted_refs(
             [
                 {
                     "ref_type": "event",
@@ -3820,7 +3820,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         )
 
     def test_current_state_prefers_profile_entity_over_stale_session_entity(self) -> None:
-        selected, used_tokens, dropped = mcp.select_token_budgeted_refs(
+        selected, used_tokens, dropped = mcp_core.select_token_budgeted_refs(
             [
                 {
                     "ref_type": "entity",
@@ -3867,6 +3867,11 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(selected[0]["profile_current_state_boost"], 0.18)
         self.assertGreater(used_tokens, 0)
         self.assertEqual(dropped["cross_session_policy"]["entity_bridge_selected_ref_count"], 1)
+        self.assertEqual(dropped["stale"], 1)
+        self.assertEqual(dropped["max_selected_refs"], 0)
+        self.assertTrue(
+            any(ref.get("reason") == "stale" and ref.get("ref_hash") == 11 for ref in dropped.get("refs", []))
+        )
 
     def test_shared_context_budget_caps_shared_resources_and_skills(self) -> None:
         capped_policy = mcp_core.build_shared_context_policy(
