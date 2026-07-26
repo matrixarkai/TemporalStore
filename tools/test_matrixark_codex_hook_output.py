@@ -817,6 +817,70 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("hook_boundary", commit_args["commit_reason"])
         self.assertTrue(commit_args["force"])
 
+    def test_fast_async_hook_ingest_commits_idle_timeout_with_zero_timeout(self) -> None:
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.serving_records = []
+                self.session_buffer_records = []
+                self.commit_calls = []
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.serving_records.extend(records)
+
+            def append_session_buffer_event(self, **kwargs):
+                self.session_buffer_records.append(kwargs)
+
+            def pending_session_events(self, scope):
+                return [{"event_id_hash": 1}]
+
+            def session_commit(self, args, *, hook=None):
+                self.commit_calls.append((args, hook))
+                return {
+                    "status": "committed",
+                    "trigger_policy": "idle_timeout",
+                    "extraction_phase": "provisional",
+                    "final_session_boundary": False,
+                }
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        args = Namespace(
+            event="IdleTimeout",
+            account_id="acct_local",
+            tenant_id="tenant_codex",
+            user_id="deeproute",
+            session_id="codex-session-idle",
+            team="codex",
+            project="temporalstore",
+            session_commit_threshold=20,
+            idle_commit_timeout_ms=0,
+            understanding_provider="rules",
+            segment_provider="deterministic",
+        )
+        server = Server()
+        result = hook.fast_async_hook_ingest(
+            server,
+            args=args,
+            text="idle tick",
+            role="assistant",
+            agent_context={"workspace_root": "/repo"},
+            hook={"session_id_source": "payload_field"},
+        )
+
+        self.assertEqual("committed", result["session_commit"]["status"])
+        self.assertEqual(1, len(server.adapter.commit_calls))
+        commit_args, _commit_hook = server.adapter.commit_calls[0]
+        self.assertEqual("idle_timeout", commit_args["commit_reason"])
+        self.assertFalse(commit_args["force"])
+        self.assertEqual(0, commit_args["idle_timeout_ms"])
+        self.assertNotIn("max_messages", commit_args)
+
     def test_retention_keeps_acceptance_prompt_that_mentions_synthetic_rows(self) -> None:
         fields = hook.hook_retention_fields(
             text=(
