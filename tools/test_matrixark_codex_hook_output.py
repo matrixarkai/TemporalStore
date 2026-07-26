@@ -505,6 +505,24 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             output["retrieve"]["rendered_context_chars"],
         )
 
+    def test_heartbeat_only_rendered_context_does_not_emit_additional_context(self) -> None:
+        args = Namespace(session_id="codex-session-1")
+        heartbeat = "user: Codex hook heartbeat 2026-07-15T13:32:00Z: C++ TemporalStore is live and accepting MatrixArk hook writes."
+        output = hook.codex_hook_output(
+            args=args,
+            status="ok",
+            event="UserPromptSubmit",
+            session_id_source="explicit",
+            agent_context={"local_context": [], "workspace_root": "/repo"},
+            retrieve={"pack_id": "pack-heartbeat-only", "context": heartbeat},
+            query="real memory",
+        )
+
+        self.assertNotIn("hookSpecificOutput", output)
+        self.assertFalse(output["retrieve"]["additional_context_emitted"])
+        self.assertEqual(0, output["retrieve"]["selected_ref_count"])
+        self.assertEqual(0, output["retrieve"]["rendered_context_chars"])
+
     def test_non_prompt_event_keeps_audit_json_without_additional_context(self) -> None:
         args = Namespace(session_id="codex-session-1")
         output = hook.codex_hook_output(
