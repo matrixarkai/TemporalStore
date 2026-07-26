@@ -4669,6 +4669,21 @@ def is_shared_skill_candidate(candidate: Json) -> bool:
     return str(candidate.get("ref_type") or "") == "skill_section" and sharing_scope_from_candidate(candidate) in {"tenant_shared", "global_shared"}
 
 
+def is_pending_async_candidate(candidate: Json) -> bool:
+    if str(candidate.get("ref_type") or "") != "event":
+        return False
+    event_type = str(candidate.get("event_type") or "").strip().lower()
+    classification = str(candidate.get("classification") or "").strip().upper()
+    extraction_status = str(candidate.get("extraction_status") or "").strip().lower()
+    extraction_mode = str(candidate.get("extraction_mode") or "").strip().lower()
+    return (
+        event_type == "pending_async"
+        or classification == "PENDING_ASYNC_EXTRACTION"
+        or extraction_status in {"pending", "async_pending"}
+        or extraction_mode == "async_pending"
+    )
+
+
 def bounded_max_children_scored_per_parent(value: int) -> int:
     hard_cap = max(1, HARD_MAX_CHILDREN_SCORED_PER_PARENT)
     if value > hard_cap:
@@ -4847,11 +4862,13 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
 
 def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float]:
     score = float(candidate.get("score", 0.0))
+    pending_async_penalty = 0.32 if is_pending_async_candidate(candidate) else 0.0
     boosted = clamp01(
         score
         + question_type_ref_boost(candidate, question_type)
         + session_continuity_boost(candidate, question_type)
         + cross_session_rerank_adjustment(candidate, question_type)
+        - pending_async_penalty
     )
     token_efficiency = boosted / max(1, token_count(str(candidate.get("text", ""))))
     if candidate.get("ref_type") == "compression" and question_type in {"fact", "current_state", "multi_hop"}:
