@@ -219,6 +219,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             def __init__(self) -> None:
                 self.records = []
                 self.nodes = []
+                self.dirty_counter = 0
 
             def read_all(self):
                 return []
@@ -239,8 +240,21 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             def append_many(self, records):
                 self.records.extend(records)
 
-            def node_summary_dirty_records(self, **_kwargs):
-                return [44], []
+            def node_summary_dirty_records(self, **kwargs):
+                self.dirty_counter += 1
+                dirty_hash = 44 + self.dirty_counter
+                return [
+                    dirty_hash
+                ], [
+                    {
+                        "record_type": "context_summary_dirty",
+                        "dirty_hash": dirty_hash,
+                        "node_path": kwargs["node_path"],
+                        "dirty_reason": kwargs["dirty_reason"],
+                        "source_ref_type": kwargs["source_ref_type"],
+                        "scope": kwargs["scope"],
+                    }
+                ]
 
         adapter = Adapter()
         envelope = {
@@ -301,6 +315,10 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
 
         self.assertEqual(1, result["entities_written"])
         self.assertEqual(1, result["profile_entities_written"])
+        self.assertIn("summary_refresh", result)
+        self.assertGreaterEqual(len(result["summary_refresh"]["dirty_hashes"]), 2)
+        self.assertTrue(result["summary_refresh"]["session_dirty_hashes"])
+        self.assertTrue(result["summary_refresh"]["profile_dirty_hashes"])
         session_entities = [
             record
             for record in adapter.records
@@ -331,6 +349,18 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         ]
         self.assertTrue(any(record.get("index_name") == "memory_scope:user_profile" for record in profile_indexes))
         self.assertTrue(any(record.get("index_name") == "session_continuity:cross_session" for record in profile_indexes))
+        dirty_records = [record for record in adapter.records if record.get("record_type") == "context_summary_dirty"]
+        self.assertTrue(any(record.get("dirty_reason") == "new_event" for record in dirty_records))
+        profile_dirty = [
+            record
+            for record in dirty_records
+            if record.get("dirty_reason") == "profile_entity_promoted"
+        ]
+        self.assertEqual(1, len(profile_dirty))
+        self.assertEqual(
+            ["tenant:tenant_mod", "user:user_mod", "profile:long_term_memory"],
+            profile_dirty[0]["node_path"],
+        )
 
     def test_modular_entity_scan_admits_cross_session_profile_bridge(self) -> None:
         scan_mod = importlib.import_module("tools.matrixark_mcp_retrieve_entity_scan")
