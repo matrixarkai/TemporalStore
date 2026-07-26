@@ -17,8 +17,9 @@ Benchmark result docs must stay strict:
   `require_open_source_reader=true`.
 - MatrixArk vs OpenViking/VikingMem OSS comparisons must pass the shared OSS model contract:
   same reader model, same embedding/encoding model, same retrieved-event budget, same reader
-  context budget, and declared provider identities for both sides. Mismatched model or budget
-  runs are diagnostic-only even when their individual scores look good.
+  context budget, same reader prompt policy, and declared provider identities for both sides.
+  Mismatched model, budget, or reader-policy runs are diagnostic-only even when their individual
+  scores look good.
 - Production parity, production-ready, or paper-comparable benchmark claims require all evidence in
   the same result doc: real dataset artifact, live OSS reader calls, full Rust TemporalStore replay,
   all-pipeline Rust evidence, and passing threshold output with zero threshold violations.
@@ -33,6 +34,8 @@ Benchmark result docs must stay strict:
 `tools/validate_benchmark_claims.py` enforces this wording guard for benchmark result docs.
 `tools/validate_oss_model_contract.py` enforces the shared OSS model contract across MatrixArk and
 OpenViking/VikingMem JSON artifacts before token-savings or reader-quality claims are comparable.
+It fails closed by default on diagnostic-only rows, reader fallback/errors, and prompt-policy drift;
+exceptions must be explicitly marked with the diagnostic flags.
 
 ## Readiness Levels
 
