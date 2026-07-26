@@ -48,7 +48,10 @@ def main() -> int:
     prompt_tokens = sum_token_usage(rows, "prompt_tokens")
     completion_tokens = sum_token_usage(rows, "completion_tokens")
     total_tokens = sum_token_usage(rows, "total_tokens")
+    memory_prompt_tokens = sum_numeric_column(rows, "memory_prompt_tokens")
+    memory_chars = sum_numeric_column(rows, "memory_chars")
     retrieved_uri_counts = [retrieved_uri_count(row) for row in rows]
+    archive_fallback_used = any("session_archive_fallback" in str(row.get("tools_used_names") or "") for row in rows)
     blockers = []
     if case_count == 0:
         blockers.append("empty_openviking_csv")
@@ -58,6 +61,8 @@ def main() -> int:
         blockers.append("openviking_token_usage_missing")
     if case_count and max(retrieved_uri_counts, default=0) <= 0:
         blockers.append("openviking_retrieved_uris_empty")
+    if archive_fallback_used:
+        blockers.append("openviking_session_archive_fallback_used")
     if args.paper_min_cases and case_count < args.paper_min_cases:
         blockers.append(f"case_count_below_paper_min_{args.paper_min_cases}")
 
@@ -79,8 +84,11 @@ def main() -> int:
         "openviking_prompt_tokens": prompt_tokens,
         "openviking_completion_tokens": completion_tokens,
         "openviking_total_tokens": total_tokens,
+        "openviking_memory_prompt_tokens": memory_prompt_tokens,
+        "openviking_memory_chars": memory_chars,
         "openviking_retrieved_uri_count_avg": safe_div(sum(retrieved_uri_counts), case_count),
         "openviking_retrieved_uri_count_max": max(retrieved_uri_counts, default=0),
+        "openviking_session_archive_fallback_used": archive_fallback_used,
         "benchmark_model_contract": model_contract(args),
         "paper_comparable_claim_ready": False,
         "diagnostic_only": True,
@@ -89,7 +97,9 @@ def main() -> int:
         "benchmark_per_query": [summarize_row(row, index) for index, row in enumerate(rows)],
         "elapsed_seconds": round(time.time() - started, 3),
     }
-    if total_tokens > 0:
+    if memory_prompt_tokens > 0:
+        report["benchmark_avg_retrieved_tokens_per_query"] = safe_div(memory_prompt_tokens, case_count)
+    elif total_tokens > 0:
         report["benchmark_avg_retrieved_tokens_per_query"] = safe_div(prompt_tokens, case_count)
     Path(args.output).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(args.output)
@@ -140,6 +150,16 @@ def sum_token_usage(rows: list[dict[str, str]], key: str) -> int:
             continue
         try:
             total += int(float(usage.get(key) or 0))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def sum_numeric_column(rows: list[dict[str, str]], key: str) -> int:
+    total = 0
+    for row in rows:
+        try:
+            total += int(float(row.get(key) or 0))
         except (TypeError, ValueError):
             continue
     return total
