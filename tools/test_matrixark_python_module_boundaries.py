@@ -831,7 +831,10 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                     "token_estimate": 6,
                     "memory_scope": "session",
                     "session_continuity": "same_session",
-                    "entity_type": "decision",
+                    "entity_type": "tool_evidence",
+                    "source_roles": ["tool"],
+                    "source_hook_types": ["tool_result"],
+                    "source_codex_events": ["PostToolUse"],
                     "stale_or_superseded": True,
                     "profile_shadowed_by_ref_hash": 22,
                     "profile_shadowed_reason": "source_entity_lineage",
@@ -907,6 +910,10 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual({"refs": 1, "tokens": 6}, dropped_budget["by_drop_reason"]["stale"])
         self.assertEqual({"refs": 1, "tokens": 6}, dropped_budget["by_memory_scope"]["session"])
         self.assertEqual({"refs": 1, "tokens": 6}, dropped_budget["by_session_continuity"]["same_session"])
+        self.assertEqual({"refs": 1, "tokens": 6}, dropped_budget["by_entity_type"]["tool_evidence"])
+        self.assertEqual({"refs": 1, "tokens": 6}, dropped_budget["by_source_role"]["tool"])
+        self.assertEqual({"refs": 1, "tokens": 6}, dropped_budget["by_hook_type"]["tool_result"])
+        self.assertEqual({"refs": 1, "tokens": 6}, dropped_budget["by_codex_event"]["PostToolUse"])
         self.assertEqual({"refs": 1, "tokens": 6}, dropped_budget["by_profile_shadowed_reason"]["source_entity_lineage"])
 
         metrics_mod.attach_python_retrieval_metrics(

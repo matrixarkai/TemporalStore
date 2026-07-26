@@ -111,6 +111,9 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
         "by_session_continuity": {},
         "by_ref_type": {},
         "by_entity_type": {},
+        "by_source_role": {},
+        "by_hook_type": {},
+        "by_codex_event": {},
         "by_profile_shadowed_reason": {},
         "total_dropped_refs_with_detail": len(refs),
         "total_dropped_tokens_with_detail": 0,
@@ -154,6 +157,27 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
             bucket = breakdown["by_entity_type"].setdefault(entity_type, {"refs": 0, "tokens": 0})
             bucket["refs"] += 1
             bucket["tokens"] += token_estimate
+        source_roles = ref.get("source_roles") if isinstance(ref.get("source_roles"), list) else []
+        for role in source_roles:
+            role_name = str(role or "").strip()
+            if role_name:
+                bucket = breakdown["by_source_role"].setdefault(role_name, {"refs": 0, "tokens": 0})
+                bucket["refs"] += 1
+                bucket["tokens"] += token_estimate
+        source_hook_types = ref.get("source_hook_types") if isinstance(ref.get("source_hook_types"), list) else []
+        for hook_type in source_hook_types:
+            hook_name = str(hook_type or "").strip()
+            if hook_name:
+                bucket = breakdown["by_hook_type"].setdefault(hook_name, {"refs": 0, "tokens": 0})
+                bucket["refs"] += 1
+                bucket["tokens"] += token_estimate
+        source_codex_events = ref.get("source_codex_events") if isinstance(ref.get("source_codex_events"), list) else []
+        for codex_event in source_codex_events:
+            event_name = str(codex_event or "").strip()
+            if event_name:
+                bucket = breakdown["by_codex_event"].setdefault(event_name, {"refs": 0, "tokens": 0})
+                bucket["refs"] += 1
+                bucket["tokens"] += token_estimate
         if bool(ref.get("stale_or_superseded")) or reason == "stale":
             breakdown["stale_ref_count"] += 1
             breakdown["stale_token_estimate"] += token_estimate
