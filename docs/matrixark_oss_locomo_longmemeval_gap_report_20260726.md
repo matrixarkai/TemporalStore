@@ -16,6 +16,7 @@ This report is intentionally conservative: it records what ran locally, what imp
 - Fixed LoCoMo evidence-window source expansion so `speaker:line` evidence refs match the actual dialogue text candidates instead of silently missing.
 - Unblocked local OpenViking enough to run tiny LoCoMo baselines: built `ragfs_python`, rebuilt the native vector engine without the local tcmalloc crash, started OpenViking on `127.0.0.1:1934`, imported LoCoMo sessions, executed MiniLM and Qwen VikingBot evals, and probed direct OpenViking search/recall APIs.
 - Added direct diagnostic baselines for OpenViking archived LoCoMo messages and LongMemEval source sessions so retrieval, token savings, and reader quality can be measured even while OpenViking memory extraction returns empty memory records.
+- Added an OSS reader memory-capability probe so weak/smoke readers are not accidentally used for competitive MatrixArk vs OpenViking/VikingMem claims.
 - Kept benchmark scoring fail-closed: paper-comparable claims remain disabled until full datasets and external baselines run under the same budget/model config.
 
 ## Local OSS Readers
@@ -26,6 +27,15 @@ This report is intentionally conservative: it records what ran locally, what imp
 | Qwen/Qwen2.5-0.5B-Instruct | `127.0.0.1:18087` | Working | Local causal-LM reader; slower but exercises OSS generation path. |
 | vLLM | n/a | Blocked | Python package/import state is inconsistent locally; no reliable vLLM service yet. |
 | Ollama/Qwen larger models | n/a | Not used in final evidence | Use next for stronger full-run reader quality once model serving is stable. |
+
+## OSS Reader Capability Gate
+
+| Reader | Cases | Hit Rate | p95 | Gate Status | Notes |
+|---|---:|---:|---:|---|---|
+| deepset/minilm-uncased-squad2 | 4 | 1.000 | 742.57 ms | competitive_reader_ready | Passes the tiny temporal/personal-fact probe, but remains an extractive diagnostic reader rather than final paper-quality LLM. |
+| Qwen/Qwen2.5-0.5B-Instruct | 4 | 0.750 | 5.41 s | reader_smoke_only | Misses the relative-date LoCoMo probe by answering the conversation timestamp instead of `7 May 2023`; keep as smoke-only until a stronger Qwen/Ollama/vLLM reader is live. |
+
+The gate uses four compact memory QA probes: two LoCoMo temporal questions and two LongMemEval-style personal facts. Default readiness requires at least 0.90 hit rate and p95 under 30 seconds. This does not replace full benchmark scoring; it prevents weak local readers from being mistaken for competitive evidence.
 
 ## MatrixArk Results Collected
 
@@ -77,7 +87,7 @@ For LongMemEval, the official OpenViking importer initially failed every session
 1. **External baseline quality gap:** OpenViking now runs locally, but the tiny VikingBot MiniLM/Qwen baselines answered 0/2 questions correctly.
 2. **OpenViking extraction/indexing gap:** With memory extraction enabled and Qwen configured, LoCoMo session commit extracted 0 memories. LongMemEval import completed only after using the correct user API key, but official eval still retrieved zero memories/context.
 3. **Token accounting gap:** OpenViking returned zero LLM token counters in VikingBot runs; the direct archive baseline therefore uses the same external whitespace-token estimate as the MatrixArk diagnostics.
-4. **Reader/tool-loop gap:** Qwen 0.5B works as a direct OpenAI-compatible chat endpoint, but it does not follow VikingBot's tool loop and gives low-quality direct answers on temporal questions. Full comparison should use Qwen 7B/14B or another stronger OSS reader through Ollama or vLLM.
+4. **Reader/tool-loop gap:** Qwen 0.5B works as a direct OpenAI-compatible chat endpoint, but it does not follow VikingBot's tool loop and fails the stricter reader capability gate. MiniLM passes the tiny gate but is extractive and diagnostic; full comparison should use Qwen 7B/14B or another stronger OSS reader through Ollama or vLLM.
 5. **Backend readiness gap:** Qwen LongMemEval tiny exposed a Rust backend readiness failure in the LongMemEval harness; this needs a real fix, not a Python-only workaround.
 6. **Token-savings methodology gap:** Savings must be computed against the same source universe and token budget. Gold evidence windows are not valid savings evidence.
 7. **Paper-comparable scale gap:** Full LoCoMo 1,542 questions and LongMemEval_s 500 records have not run end-to-end with the same reader, token budget, and baseline.
@@ -110,3 +120,5 @@ For LongMemEval, the official OpenViking importer initially failed every session
 - `/tmp/openviking_matrixark_oss/results_longmem/longmem_eval_last4_userkey_config.csv`
 - `/tmp/openviking_direct_source_longmem_tiny_qwen_20260726.json`
 - `/tmp/openviking_direct_source_longmem_tiny_minilm_20260726.json`
+- `/tmp/oss_reader_capability_minilm_20260726.json`
+- `/tmp/oss_reader_capability_qwen05_20260726.json`
