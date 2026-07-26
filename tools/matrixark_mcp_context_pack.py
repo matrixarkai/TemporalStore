@@ -50,13 +50,36 @@ def compact_context_pack_ref(ref: Json) -> Json:
         "citation",
         "source_ref",
         "resource_type",
+        "sharing_scope",
         "summary_type",
         "operator",
+        "memory_scope",
         "session_continuity",
+        "entity_type",
+        "entity_name",
+        "extraction_phase",
+        "source_memory_scopes",
+        "source_session_continuities",
+        "source_extraction_phases",
+        "source_final_session_boundary_count",
     ]:
         value = ref.get(field)
         if value not in (None, "", [], {}):
             item[field] = value
+    if bool(ref.get("final_session_boundary")):
+        item["final_session_boundary"] = True
+    for field in [
+        "source_session_ids",
+        "source_roles",
+        "source_hook_types",
+        "source_codex_events",
+    ]:
+        value = ref.get(field)
+        if isinstance(value, list) and value:
+            item[field] = value[:8]
+    value = ref.get("source_entity_hashes")
+    if isinstance(value, list) and value:
+        item["source_entity_count"] = len(value)
     context_class = ref.get("context_class")
     if context_class and context_class != item.get("ref_type"):
         item["context_class"] = context_class

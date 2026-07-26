@@ -16,6 +16,7 @@ import matrixark_mcp_server as mcp
 try:
     from tools import matrixark_mcp_local_adapter as mcp_local
     from tools import matrixark_mcp_core as mcp_core
+    from tools import matrixark_mcp_context_pack as mcp_context_pack
     from tools.run_matrixark_cpp_rust_scale_report import (
         comparison,
         default_cpp_lib_path,
@@ -34,6 +35,7 @@ try:
 except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_local_adapter as mcp_local
     import matrixark_mcp_core as mcp_core
+    import matrixark_mcp_context_pack as mcp_context_pack
     from run_matrixark_cpp_rust_scale_report import (
         comparison,
         default_cpp_lib_path,
@@ -3925,6 +3927,10 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "session_continuity": "cross_session",
                     "score": 0.46,
                     "updated_at_ms": 200,
+                    "source_session_ids": ["session_old", "session_new"],
+                    "source_entity_hashes": [11, 12],
+                    "source_roles": ["user", "assistant"],
+                    "source_codex_events": ["UserPromptSubmit", "Stop"],
                     "text": "preference: storage location = use /root/src/github-services in Ubuntu.",
                 },
             ],
@@ -3948,6 +3954,19 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual([item["ref_hash"] for item in selected], [22])
         self.assertEqual(selected[0]["memory_scope"], "user_profile")
         self.assertEqual(selected[0]["profile_current_state_boost"], 0.18)
+        serving_ref = mcp_core.compact_context_pack_refs(selected)[0]
+        modular_serving_ref = mcp_context_pack.compact_context_pack_refs(selected)[0]
+        self.assertEqual(serving_ref["memory_scope"], "user_profile")
+        self.assertEqual(serving_ref["session_continuity"], "cross_session")
+        self.assertEqual(serving_ref["entity_type"], "preference")
+        self.assertEqual(serving_ref["entity_name"], "storage location")
+        self.assertEqual(serving_ref["source_session_ids"], ["session_old", "session_new"])
+        self.assertEqual(serving_ref["source_entity_count"], 2)
+        self.assertEqual(serving_ref["source_roles"], ["user", "assistant"])
+        self.assertEqual(serving_ref["source_codex_events"], ["UserPromptSubmit", "Stop"])
+        self.assertEqual(modular_serving_ref["memory_scope"], serving_ref["memory_scope"])
+        self.assertEqual(modular_serving_ref["source_session_ids"], serving_ref["source_session_ids"])
+        self.assertEqual(modular_serving_ref["source_entity_count"], serving_ref["source_entity_count"])
         self.assertGreater(used_tokens, 0)
         self.assertEqual(dropped["cross_session_policy"]["entity_bridge_selected_ref_count"], 1)
         self.assertEqual(dropped["stale"], 1)
