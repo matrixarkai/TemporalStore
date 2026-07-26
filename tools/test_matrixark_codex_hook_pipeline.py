@@ -1086,6 +1086,33 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(recovered_budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(recovered_budget["by_session_continuity"]["cross_session"]["refs"], 1)
 
+            current_pack = adapter.retrieve(
+                {
+                    "scope": {**base_scope, "session_id": "session_profile_update_2"},
+                    "session_scope": "prefer",
+                    "question_type": "current_state",
+                    "query": "What is the latest assistant decision for bbb222?",
+                    "max_context_tokens": 500,
+                    "audit_mode": "off",
+                    "include_debug_refs": True,
+                    "ranking": {"max_selected_refs": 1, "min_similarity_score": 0.0},
+                }
+            )
+            self.assertEqual(1, len(current_pack["selected_refs"]))
+            current_ref = current_pack["selected_refs"][0]
+            self.assertEqual("entity", current_ref["ref_type"])
+            self.assertEqual("assistant_decision", current_ref["entity_type"])
+            self.assertEqual("user_profile", current_ref["memory_scope"])
+            self.assertEqual("cross_session", current_ref["session_continuity"])
+            self.assertEqual(["session_profile_update_1", "session_profile_update_2"], current_ref["source_session_ids"])
+            self.assertIn("bbb222", current_ref["text"])
+            current_metrics = current_pack["retrieval_metrics"]
+            self.assertGreaterEqual(current_metrics["stale_dropped_refs"], 1)
+            self.assertEqual(
+                current_metrics["stale_dropped_refs"],
+                current_metrics["dropped_ref_bucket_counts"]["stale"],
+            )
+
     def test_async_resource_import_uses_bounded_worker_queue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, mock.patch.dict(
             os.environ,
