@@ -42,6 +42,11 @@ def main() -> int:
         default="",
         help="Optional source benchmark JSON used to compute full-source token denominators.",
     )
+    parser.add_argument(
+        "--import-error-log",
+        default="",
+        help="Optional OpenViking import error log; timeout/auth blockers are copied into the report.",
+    )
     args = parser.parse_args()
 
     started = time.time()
@@ -73,6 +78,8 @@ def main() -> int:
         blockers.append("openviking_context_missing_expected_answer")
     if archive_fallback_used:
         blockers.append("openviking_session_archive_fallback_used")
+    import_error_summary = summarize_import_errors(Path(args.import_error_log)) if args.import_error_log else {}
+    blockers.extend(import_error_summary.get("blockers", []))
     if args.paper_min_cases and case_count < args.paper_min_cases:
         blockers.append(f"case_count_below_paper_min_{args.paper_min_cases}")
 
@@ -102,6 +109,7 @@ def main() -> int:
         "benchmark_context_answer_coverage": safe_div(sum(1 for hit in answer_in_context if hit), case_count),
         "openviking_context_missing_expected_answer_count": sum(1 for hit in answer_in_context if not hit),
         "openviking_session_archive_fallback_used": archive_fallback_used,
+        "openviking_import_error_summary": import_error_summary,
         "benchmark_model_contract": model_contract(args),
         "paper_comparable_claim_ready": False,
         "diagnostic_only": True,
@@ -123,6 +131,27 @@ def main() -> int:
     Path(args.output).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(args.output)
     return 0 if case_count else 1
+
+
+def summarize_import_errors(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"path": str(path), "exists": False, "line_count": 0, "blockers": ["openviking_import_error_log_missing"]}
+    lines = [line.strip() for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+    blockers: list[str] = []
+    lower = "\n".join(lines).lower()
+    if lines:
+        blockers.append("openviking_import_errors_present")
+    if "request timed out" in lower or "timeout" in lower:
+        blockers.append("openviking_session_commit_timeout")
+    if "permissiondenied" in lower or "root api keys cannot access" in lower:
+        blockers.append("openviking_import_auth_failed")
+    return {
+        "path": str(path),
+        "exists": True,
+        "line_count": len(lines),
+        "blockers": blockers,
+        "sample": lines[:5],
+    }
 
 
 def read_rows(path: Path) -> list[dict[str, str]]:
