@@ -5486,7 +5486,7 @@ def compact_context_pack_refs(refs: list[Json], *, include_debug: bool = False) 
     return [compact_context_pack_ref(ref) for ref in refs]
 
 
-def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False) -> Json:
+def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = False) -> Json:
     """Strip non-answer-bearing routing details from normal ContextPack output."""
     if include_debug:
         return pack
@@ -5598,6 +5598,22 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     ]:
         compact.pop(field, None)
     return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
+
+
+def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False) -> Json:
+    """Return the compact server-facing ContextPack shape.
+
+    MCP serving groups answer evidence by context class and session continuity.
+    Adapter-direct callers that need the historical selected_refs list should
+    call compact_context_pack_for_serving_flat.
+    """
+    if include_debug:
+        return pack
+    try:
+        from tools.matrixark_mcp_context_pack import compact_context_pack_for_serving as grouped_compactor
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_context_pack import compact_context_pack_for_serving as grouped_compactor
+    return grouped_compactor(pack, include_debug=include_debug)
 
 
 def compact_context_pack_policy(policy: Any) -> Json:

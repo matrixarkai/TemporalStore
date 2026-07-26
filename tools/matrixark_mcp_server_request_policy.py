@@ -14,6 +14,7 @@ try:
         Json,
         MatrixArkError,
         compact_context_pack_for_serving,
+        compact_context_pack_for_serving_flat,
         infer_query_type,
         local_context_budget,
         optional_object,
@@ -23,6 +24,7 @@ try:
     from tools.matrixark_mcp_admin import is_admin_tool
     from tools.matrixark_mcp_ingestion import is_ingestion_tool
     from tools.matrixark_mcp_native_pack_policy import native_context_pack_required_for_backend
+    from tools.matrixark_mcp_requests import normalize_mcp_tool_request
     from tools.matrixark_mcp_retrieval import is_retrieval_tool
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
@@ -31,6 +33,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         Json,
         MatrixArkError,
         compact_context_pack_for_serving,
+        compact_context_pack_for_serving_flat,
         infer_query_type,
         local_context_budget,
         optional_object,
@@ -40,6 +43,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_admin import is_admin_tool
     from matrixark_mcp_ingestion import is_ingestion_tool
     from matrixark_mcp_native_pack_policy import native_context_pack_required_for_backend
+    from matrixark_mcp_requests import normalize_mcp_tool_request
     from matrixark_mcp_retrieval import is_retrieval_tool
 
 
@@ -223,6 +227,8 @@ class MatrixArkServerRequestPolicyMixin:
                 "request_deadline_ms": request_deadline_ms,
                 "request_elapsed_ms": round(elapsed_ms, 3),
             }
+        if str(args.get("audit_mode") or "").strip().lower() in {"full", "sync", "synchronous"}:
+            return compact_context_pack_for_serving_flat(result)
         return compact_context_pack_for_serving(result)
 
     @contextmanager
@@ -268,3 +274,53 @@ class MatrixArkServerRequestPolicyMixin:
         finally:
             limiter.release()
             self.metrics.observe_pool_release(group)
+
+    def call_tool(self, name: str, args: Json) -> Json:
+        if not isinstance(name, str) or not name:
+            raise MatrixArkError("tool name must be a non-empty string")
+        if not isinstance(args, dict):
+            raise MatrixArkError("tool arguments must be an object")
+        args = normalize_mcp_tool_request(name, args, write_tools=self.IDEMPOTENT_WRITE_TOOLS)
+        request_deadline_ms = self._request_deadline_ms(name, args)
+        hook = args.pop("agent_hook", None)
+        identity = self.access.authorize_and_enrich(name, args)
+        self._enforce_scope_before_output(name, args, identity)
+        idempotent_replay = self._idempotent_replay_response(name, args, identity, hook)
+        if idempotent_replay is not None:
+            return idempotent_replay
+        try:
+            with self._operation_slot(name, request_deadline_ms):
+                return self._call_tool_dispatch(name, args, hook, identity, request_deadline_ms)
+        except MatrixArkBackpressureError as exc:
+            elapsed_ms = 0.0
+            if name == "matrixark_retrieve":
+                effective_retrieve_deadline_ms = int(args.get("deadline_ms") or request_deadline_ms or 0)
+                result = self._retrieve_timeout_fallback(
+                    args,
+                    deadline_ms=effective_retrieve_deadline_ms or request_deadline_ms,
+                    elapsed_ms=elapsed_ms,
+                    reason="service_backpressure",
+                )
+                result["quality_warnings"] = list(result.get("quality_warnings", [])) + ["service_backpressure"]
+                result["partial_context_pack"] = True
+                result["backpressure"] = True
+                self.metrics.observe_operation("retrieve", "ok", elapsed_ms, timeout=True)
+                self.metrics.observe_retrieve_result(result)
+                self.append_audit_policy(
+                    "context.retrieve",
+                    identity,
+                    status="backpressure_partial",
+                    details={
+                        "context_pack_id": result.get("context_pack_id"),
+                        "request_deadline_ms": request_deadline_ms,
+                    },
+                    args=args,
+                    hot_path=True,
+                )
+                return self._retrieve_response(
+                    result,
+                    args,
+                    request_deadline_ms=request_deadline_ms,
+                    elapsed_ms=elapsed_ms,
+                )
+            raise MatrixArkError(str(exc))
