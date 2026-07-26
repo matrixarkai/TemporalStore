@@ -3974,6 +3974,62 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(
             any(ref.get("reason") == "stale" and ref.get("ref_hash") == 11 for ref in dropped.get("refs", []))
         )
+        stale_ref = next(ref for ref in dropped.get("refs", []) if ref.get("reason") == "stale")
+        self.assertEqual(stale_ref["profile_shadowed_by_ref_hash"], 22)
+        self.assertEqual(stale_ref["profile_shadowed_reason"], "source_entity_lineage")
+        self.assertEqual(stale_ref["memory_scope"], "session")
+        self.assertEqual(stale_ref["session_continuity"], "same_session")
+
+    def test_current_state_shadows_session_entity_by_profile_identity_without_lineage(self) -> None:
+        selected, _used_tokens, dropped = mcp_core.select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 31,
+                    "entity_type": "preference",
+                    "entity_name": "repo location",
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "score": 0.7,
+                    "updated_at_ms": 100,
+                    "text": "preference: repo location = use a Windows Codex folder.",
+                },
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 42,
+                    "entity_type": "preference",
+                    "entity_name": "repo location",
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "score": 0.45,
+                    "updated_at_ms": 300,
+                    "source_entity_hashes": [99],
+                    "text": "preference: repo location = use /root/src/github-services in Ubuntu.",
+                },
+            ],
+            [],
+            max_context_tokens=1000,
+            auxiliary_quota=0,
+            question_type="current_state",
+            max_selected_refs=1,
+            min_score=0.2,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 400,
+                "max_sessions": 3,
+                "max_candidates": 8,
+                "min_score": 0.2,
+                "raw_evidence_min_score": 0.45,
+                "min_entity_bridge_refs": 1,
+            },
+        )
+
+        self.assertEqual([item["ref_hash"] for item in selected], [42])
+        self.assertEqual(dropped["stale"], 1)
+        stale_ref = next(ref for ref in dropped.get("refs", []) if ref.get("reason") == "stale")
+        self.assertEqual(stale_ref["ref_hash"], 31)
+        self.assertEqual(stale_ref["profile_shadowed_by_ref_hash"], 42)
+        self.assertEqual(stale_ref["profile_shadowed_reason"], "same_entity_identity")
 
     def test_shared_context_budget_caps_shared_resources_and_skills(self) -> None:
         capped_policy = mcp_core.build_shared_context_policy(
