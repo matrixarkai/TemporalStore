@@ -5200,6 +5200,22 @@ class MatrixArkLocalAdapter:
         else:
             tree_candidate_records = records if traversal.get("fallback_to_flat") else [record for record in records if selected_by_tree(record)]
             tree_prefilter_dropped_count = 0 if traversal.get("fallback_to_flat") else max(0, len(records) - len(tree_candidate_records))
+        if not traversal.get("fallback_to_flat"):
+            seen_profile_summary_hashes = {
+                record.get("summary_hash")
+                for record in tree_candidate_records
+                if record.get("record_type") == "context_summary"
+            }
+            profile_summary_bridges = [
+                record
+                for record in records
+                if record.get("record_type") == "context_summary"
+                and str(record.get("memory_scope") or "") == "user_profile"
+                and str(record.get("session_continuity") or "") == "cross_session"
+                and record.get("summary_hash") not in seen_profile_summary_hashes
+                and access_scope_matches_before_scoring(record, retrieval_scope)
+            ]
+            tree_candidate_records.extend(profile_summary_bridges)
         raw_event_ids_by_node: dict[Any, set[int]] = {}
         raw_event_time_window_dropped_count = 0
         events_by_node: dict[Any, list[Json]] = {}
@@ -5267,7 +5283,11 @@ class MatrixArkLocalAdapter:
                     continue
                 if not access_scope_matches_before_scoring(record, retrieval_scope):
                     continue
-                if not selected_by_tree(record):
+                is_profile_summary_bridge = (
+                    str(record.get("memory_scope") or "") == "user_profile"
+                    and str(record.get("session_continuity") or "") == "cross_session"
+                )
+                if not selected_by_tree(record) and not is_profile_summary_bridge:
                     continue
                 summary_type = str(record.get("summary_type") or "")
                 if summary_type not in {"node_l0", "node_l1", "resource_l0", "batch_l0", "session_l0"}:
@@ -5282,11 +5302,24 @@ class MatrixArkLocalAdapter:
                 text = str(record.get("summary_text", ""))
                 if not text:
                     continue
+                lineage_text = " ".join(
+                    [
+                        str(record.get("memory_scope") or ""),
+                        str(record.get("session_continuity") or ""),
+                        *[str(value) for value in record.get("source_roles", []) if str(value or "")],
+                        *[str(value) for value in record.get("source_hook_types", []) if str(value or "")],
+                        *[str(value) for value in record.get("source_codex_events", []) if str(value or "")],
+                        *[str(value) for value in record.get("source_memory_scopes", []) if str(value or "")],
+                        *[str(value) for value in record.get("source_session_continuities", []) if str(value or "")],
+                        *sorted(index_terms),
+                    ]
+                )
+                lineage_score = sparse_lexical_score(query_terms, lineage_text)
                 sparse_score = sparse_lexical_score(query_terms, text)
                 keyword_score = len(query_terms.intersection(tokens(text)))
                 embedding_score = cosine(query_embedding, embedding_for_text(" ".join(record.get("node_path", []) + [summary_type, text])))
                 node_score = node_scores.get(record.get("node_hash"), {}).get("score", 0.0)
-                origin_score = min(1.0, 0.18 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
+                origin_score = min(1.0, 0.18 + hybrid_origin_score(query_terms, text, embedding_score, node_score) + 0.10 * lineage_score)
                 if origin_score <= 0:
                     continue
                 primary_matches.append(
@@ -5299,6 +5332,7 @@ class MatrixArkLocalAdapter:
                             "origin_score": origin_score,
                             "keyword_score": keyword_score,
                             "sparse_score": sparse_score,
+                            "source_lineage_score": lineage_score,
                             "embedding_score": embedding_score,
                             "node_score": node_score,
                             "matched_index_terms": sorted(index_terms),

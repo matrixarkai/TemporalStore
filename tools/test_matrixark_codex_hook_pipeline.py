@@ -464,6 +464,28 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(any("user_profile" in item.get("source_memory_scopes", []) for item in profile_summaries))
             self.assertTrue(any("cross_session" in item.get("source_session_continuities", []) for item in profile_summaries))
 
+            summary_pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "later_async_summary_session"},
+                    "session_scope": "prefer",
+                    "question_type": "broad_exploration",
+                    "query": "Summarize the user_profile cross_session PostToolUse hook_boundary async idle tool evidence memory.",
+                    "max_context_tokens": 2000,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 8, "min_similarity_score": 0.0, "budget_fill_policy": "force_fill"},
+                }
+            )
+            summary_refs = [ref for ref in summary_pack["selected_refs"] if ref.get("ref_type") == "summary"]
+            self.assertTrue(summary_refs, summary_pack["selected_refs"])
+            self.assertTrue(any("PostToolUse" in ref.get("source_codex_events", []) for ref in summary_refs))
+            summary_budget = summary_pack["retrieval_metrics"]["memory_layer_budget"]
+            self.assertGreaterEqual(summary_budget["by_ref_type"]["summary"]["refs"], 1)
+            self.assertGreaterEqual(summary_budget["by_memory_scope"]["user_profile"]["refs"], 1)
+            self.assertGreaterEqual(summary_budget["by_session_continuity"]["cross_session"]["refs"], 1)
+            self.assertGreaterEqual(summary_budget["by_source_role"]["tool"]["refs"], 1)
+            self.assertGreaterEqual(summary_budget["by_hook_type"]["hook_boundary"]["refs"], 1)
+            self.assertGreaterEqual(summary_budget["by_codex_event"]["PostToolUse"]["refs"], 1)
+
     def test_lightweight_async_ingest_threshold_defaults_to_auto_batch_for_messages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-async-default-threshold.jsonl")
