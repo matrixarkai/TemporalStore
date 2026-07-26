@@ -3618,6 +3618,36 @@ class MatrixArkLocalAdapter:
             )
         profile_node_hash = stable_hash("/".join(profile_node_path)) if profile_node_path else 0
         source_session_id = str(envelope["scope"].get("session_id") or "")
+        source_roles = sorted(
+            {
+                str(message.get("role") or "").strip().lower()
+                for message in envelope.get("messages", [])
+                if isinstance(message, dict) and str(message.get("role") or "").strip()
+            }
+        )
+        envelope_metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
+        source_hook_types = sorted(
+            {
+                str(value).strip()
+                for value in [
+                    envelope.get("hook_type"),
+                    envelope_metadata.get("hook_type"),
+                    (hook or {}).get("hook_type") if isinstance(hook, dict) else "",
+                ]
+                if str(value or "").strip()
+            }
+        )
+        source_codex_events = sorted(
+            {
+                str(value).strip()
+                for value in [
+                    envelope.get("codex_event"),
+                    envelope_metadata.get("codex_event"),
+                    (hook or {}).get("trigger") if isinstance(hook, dict) else "",
+                ]
+                if str(value or "").strip()
+            }
+        )
         entity_hashes = []
         profile_entity_hashes = []
         for entity in extraction["entities"]:
@@ -3648,6 +3678,9 @@ class MatrixArkLocalAdapter:
                     "operator": updated_entity["operator"],
                     "source_refs": updated_entity["source_refs"],
                     "source_event_ids": source_event_ids,
+                    "source_roles": source_roles,
+                    "source_hook_types": source_hook_types,
+                    "source_codex_events": source_codex_events,
                     "field_patches": updated_entity.get("field_patches", []),
                     "patch_results": updated_entity.get("patch_results", []),
                     "update_mode": updated_entity.get("update_mode", ""),
@@ -3723,6 +3756,9 @@ class MatrixArkLocalAdapter:
                         "source_event_ids": source_event_ids,
                         "source_session_ids": [source_session_id] if source_session_id else [],
                         "source_entity_hashes": [entity_hash],
+                        "source_roles": source_roles,
+                        "source_hook_types": source_hook_types,
+                        "source_codex_events": source_codex_events,
                         "source_batch_id_hash": batch_id_hash,
                         "field_patches": promoted_entity.get("field_patches", []),
                         "patch_results": promoted_entity.get("patch_results", []),
@@ -3756,6 +3792,9 @@ class MatrixArkLocalAdapter:
                     f"entity_type:{promoted_entity['entity_type']}",
                     "memory_scope:user_profile",
                     "session_continuity:cross_session",
+                    *[f"source_role:{role}" for role in source_roles],
+                    *[f"hook_type:{hook_type}" for hook_type in source_hook_types],
+                    *[f"codex_event:{codex_event}" for codex_event in source_codex_events],
                 ):
                     profile_index = context_index_posting_record(
                         index_name=index_name,

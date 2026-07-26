@@ -523,6 +523,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                             ),
                         },
                     ],
+                    "metadata": {
+                        "hook_type": "hook_boundary",
+                        "codex_event": "Stop",
+                    },
                     "force": True,
                 }
             )
@@ -554,6 +558,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(["session_codex_1"], profile_entity["source_session_ids"])
             self.assertTrue(profile_entity["source_entity_hashes"])
             self.assertTrue(profile_entity["source_refs"])
+            self.assertIn("assistant", profile_entity["source_roles"])
+            self.assertIn("tool", profile_entity["source_roles"])
+            self.assertIn("hook_boundary", profile_entity["source_hook_types"])
+            self.assertIn("Stop", profile_entity["source_codex_events"])
             index_names = {
                 record.get("index_name")
                 for record in records
@@ -562,6 +570,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             }
             self.assertIn("memory_scope:user_profile", index_names)
             self.assertIn("session_continuity:cross_session", index_names)
+            self.assertIn("source_role:assistant", index_names)
+            self.assertIn("source_role:tool", index_names)
+            self.assertIn("hook_type:hook_boundary", index_names)
+            self.assertIn("codex_event:Stop", index_names)
             self.assertTrue(any(str(name).startswith("entity_type:") for name in index_names))
             self.assertIn("entity_type:assistant_decision", index_names)
             self.assertIn("entity_type:tool_evidence", index_names)
