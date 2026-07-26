@@ -250,6 +250,16 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             "final_session_boundary_ref_count": 1,
                         },
                     },
+                    "memory_hierarchy": {
+                        "models": {
+                            "profile_entity": {
+                                "record_type": "context_entity",
+                                "memory_scope": "user_profile",
+                                "session_continuity": "cross_session",
+                            }
+                        },
+                        "retrieval_strategy": "same-session first, profile entity bridge second",
+                    },
                     "budget_pressure": {
                         "budget_pressure": True,
                         "dropped_by_reason": {"over_budget": 2},
@@ -291,6 +301,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("pack-1", record["output_summary"]["context_pack_id"])
         self.assertEqual(100, record["output_summary"]["retrieval_budget"]["remote_context_budget_tokens"])
         self.assertEqual({"over_budget": 2}, record["output_summary"]["retrieval_budget_pressure"]["dropped_by_reason"])
+        self.assertEqual(
+            "user_profile",
+            record["output_summary"]["memory_hierarchy"]["models"]["profile_entity"]["memory_scope"],
+        )
         self.assertEqual({"event": 1, "entity": 1}, record["output_summary"]["retrieval_layers"]["selected_ref_counts"])
         self.assertEqual(1, record["output_summary"]["retrieval_layers"]["cross_session_refs"])
         self.assertEqual(1, record["output_summary"]["retrieval_layers"]["profile_memory_refs"])
@@ -335,6 +349,19 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             },
                             "final_session_boundary_ref_count": 1,
                         }
+                    },
+                    "recall_policy": {
+                        "session_continuity": {
+                            "mode": "prefer",
+                            "policy": "same-session continuity first; entity state bridges cross-session memory",
+                        },
+                        "cross_session": {
+                            "enabled": True,
+                            "budget_tokens": 90,
+                            "max_sessions": 3,
+                            "max_candidates": 24,
+                        },
+                        "shared_context": {"enabled": True},
                     },
                     "dropped_refs": {
                         "over_budget": 2,
@@ -396,6 +423,14 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual({"over_budget": 2, "cross_session_budget": 1}, pressure["dropped_by_reason"])
         self.assertEqual({"over_budget": 44, "cross_session_budget": 12}, pressure["estimated_tokens_by_reason"])
         self.assertEqual(3, pressure["budget_pressure_reason_count"])
+        hierarchy = item["result"]["memory_hierarchy"]
+        self.assertEqual("context_entity", hierarchy["models"]["session_entity"]["record_type"])
+        self.assertEqual("user_profile", hierarchy["models"]["profile_entity"]["memory_scope"])
+        self.assertEqual("context_profile_entity", hierarchy["models"]["profile_index"]["data_model"])
+        self.assertEqual("prefer", hierarchy["session_scope_mode"])
+        self.assertTrue(hierarchy["cross_session_enabled"])
+        self.assertEqual(90, hierarchy["cross_session_budget_tokens"])
+        self.assertIn("profile_entity_bridge", hierarchy["selected_ref_flow"])
         self.assertEqual(len("user: rendered profile decision"), item["result"]["rendered_context_chars"])
 
     def test_session_commit_tool_call_trace_records_trigger_evidence(self) -> None:
@@ -571,10 +606,19 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 "selected_ref_counts": {"event": 1, "entity": 1, "summary": 1},
                 "recall_policy": {
                     "session_continuity": {
+                        "mode": "prefer",
+                        "policy": "same-session continuity first; entity state bridges cross-session memory",
                         "same_session_selected_ref_count": 1,
                         "cross_session_selected_ref_count": 2,
                         "entity_bridge_selected_ref_count": 1,
-                    }
+                    },
+                    "cross_session": {
+                        "enabled": True,
+                        "budget_tokens": 64,
+                        "max_sessions": 3,
+                        "max_candidates": 24,
+                    },
+                    "shared_context": {"enabled": False},
                 },
                 "local_context_policy": {"local_context_count": 1},
                 "retrieval_metrics": {
@@ -617,6 +661,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertTrue(output["retrieve"]["additional_context_emitted"])
         self.assertEqual(1, output["retrieve"]["selected_ref_count"])
         self.assertEqual(100, output["retrieve"]["budget"]["remote_context_budget_tokens"])
+        self.assertEqual(
+            "context_profile_entity",
+            output["retrieve"]["memory_hierarchy"]["models"]["profile_index"]["data_model"],
+        )
+        self.assertTrue(output["retrieve"]["memory_hierarchy"]["cross_session_enabled"])
+        self.assertEqual(64, output["retrieve"]["memory_hierarchy"]["cross_session_budget_tokens"])
         self.assertTrue(output["retrieve"]["budget_pressure"]["budget_pressure"])
         self.assertEqual(
             {"cross_session_budget": 2, "max_selected_refs": 3},

@@ -283,6 +283,52 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
     return layer_summary
 
 
+def retrieval_memory_hierarchy_contract_from_retrieve(pack: Json | None) -> Json:
+    if not isinstance(pack, dict):
+        return {}
+    recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
+    continuity = recall_policy.get("session_continuity") if isinstance(recall_policy.get("session_continuity"), dict) else {}
+    cross_session = recall_policy.get("cross_session") if isinstance(recall_policy.get("cross_session"), dict) else {}
+    shared_context = recall_policy.get("shared_context") if isinstance(recall_policy.get("shared_context"), dict) else {}
+    return {
+        "models": {
+            "session_entity": {
+                "record_type": "context_entity",
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+            },
+            "profile_entity": {
+                "record_type": "context_entity",
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "node_path_suffix": "profile:long_term_memory",
+            },
+            "profile_index": {
+                "record_type": "context_index",
+                "data_model": "context_profile_entity",
+            },
+        },
+        "retrieval_strategy": continuity.get(
+            "policy",
+            "same-session continuity first; entity state bridges cross-session memory; cross-session evidence remains bounded",
+        ),
+        "session_scope_mode": continuity.get("mode"),
+        "cross_session_enabled": cross_session.get("enabled"),
+        "cross_session_budget_tokens": cross_session.get("budget_tokens"),
+        "cross_session_max_sessions": cross_session.get("max_sessions"),
+        "cross_session_max_candidates": cross_session.get("max_candidates"),
+        "shared_context_enabled": shared_context.get("enabled"),
+        "selected_ref_flow": [
+            "local_context_budget",
+            "same_session_memory",
+            "profile_entity_bridge",
+            "bounded_cross_session_evidence",
+            "summary_or_compression",
+            "shared_resource_or_skill",
+        ],
+    }
+
+
 def session_commit_summary(commit: Json | None) -> Json:
     if not isinstance(commit, dict) or not commit:
         return {}
@@ -691,6 +737,7 @@ def codex_hook_output(
             "budget": retrieval_budget_summary_from_retrieve(retrieve),
             "budget_pressure": retrieval_budget_pressure_from_retrieve(retrieve),
             "layers": retrieval_layer_summary_from_retrieve(retrieve, emitted_refs),
+            "memory_hierarchy": retrieval_memory_hierarchy_contract_from_retrieve(retrieve),
             "rendered_context_chars": len(rendered_context),
             "additional_context_emitted": False,
         },
@@ -837,6 +884,7 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 "retrieval_budget": retrieval_budget_summary_from_retrieve(result),
                 "retrieval_budget_pressure": retrieval_budget_pressure_from_retrieve(result),
                 "retrieval_layers": retrieval_layer_summary_from_retrieve(result, emitted_refs),
+                "memory_hierarchy": retrieval_memory_hierarchy_contract_from_retrieve(result),
                 "rendered_context_chars": len(sanitized_rendered_context_from_retrieve(result)),
             }
         elif name == "matrixark_session_commit":
@@ -921,6 +969,7 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             "retrieval_budget": retrieve.get("budget"),
             "retrieval_budget_pressure": retrieve.get("budget_pressure"),
             "retrieval_layers": retrieve.get("layers"),
+            "memory_hierarchy": retrieve.get("memory_hierarchy"),
             "rendered_context_chars": retrieve.get("rendered_context_chars"),
             "ingest_status": ingest.get("status"),
             "commit_status": commit.get("status"),
