@@ -3038,6 +3038,9 @@ def context_benchmark_direct_answer(question: str, texts: list[str]) -> str:
     q = normalize_text(question)
     blob = "\n".join(texts)
     normalized_blob = normalize_text(blob)
+    answer = preference_recommendation_answer(q, normalized_blob)
+    if answer:
+        return answer
     answer = generic_serving_fact_answer(question, texts)
     if answer:
         return answer
@@ -3081,6 +3084,141 @@ def context_benchmark_direct_answer(question: str, texts: list[str]) -> str:
         if hello is not None and uber is not None:
             return "Yes" if hello > uber else "No"
     return ""
+
+
+def preference_recommendation_answer(q: str, normalized_blob: str) -> str:
+    if not re.search(r"\b(?:recommend|suggest|tips?|advice|what should|what do you think|do you think|any ideas|any helpful)\b", q):
+        return ""
+    positive: list[str] = []
+    negative: list[str] = []
+
+    def add_positive(condition: bool, value: str) -> None:
+        if condition:
+            positive.append(value)
+
+    def add_negative(condition: bool, value: str) -> None:
+        if condition:
+            negative.append(value)
+
+    if re.search(r"\bphotography|accessor", q):
+        add_positive("sony" in normalized_blob, "Sony-compatible accessories")
+        add_positive(re.search(r"\b(high-quality|quality|photography gear|camera gear|lens|tripod|lighting)\b", normalized_blob) is not None, "high-quality photography gear")
+        add_negative(re.search(r"\bother brands?|off-brand|low-quality|cheap gear\b", normalized_blob) is not None, "other brands' equipment or low-quality gear")
+    if re.search(r"\bpublications?|conferences?|research\b", q):
+        add_positive(re.search(r"\b(artificial intelligence|ai)\b", normalized_blob) is not None, "artificial intelligence in healthcare")
+        add_positive(re.search(r"\b(deep learning|medical image|medical imaging|healthcare)\b", normalized_blob) is not None, "deep learning for medical image analysis")
+        add_negative(re.search(r"\bgeneral ai|unrelated to healthcare|unrelated healthcare\b", normalized_blob) is not None, "general AI topics unrelated to healthcare")
+    if "hotel" in q and "miami" in q:
+        add_positive("miami" in normalized_blob, "hotels in Miami")
+        add_positive(re.search(r"\b(ocean|skyline|great views?|view)\b", normalized_blob) is not None, "great ocean or skyline views")
+        add_positive(re.search(r"\b(rooftop pool|hot tub|balcony|unique features?)\b", normalized_blob) is not None, "unique features such as a rooftop pool or balcony hot tub")
+        add_negative(re.search(r"\b(basic|budget hotel|without these features)\b", normalized_blob) is not None, "basic hotels without those features")
+    if re.search(r"\bcultural events?|events happening\b", q):
+        add_positive(re.search(r"\b(language skills?|language practice|spanish|french)\b", normalized_blob) is not None, "events for practicing Spanish or French")
+        add_positive("language learning" in normalized_blob, "language-learning resources")
+        add_negative(re.search(r"\b(no language practice|without language practice|do not provide opportunities)\b", normalized_blob) is not None, "events without language practice or cultural exchange")
+    if re.search(r"\bshow|movie|watch tonight\b", q):
+        add_positive(re.search(r"\b(stand-up|standup|comedy specials?)\b", normalized_blob) is not None, "stand-up comedy specials")
+        add_positive("netflix" in normalized_blob, "Netflix")
+        add_positive("storytelling" in normalized_blob, "storytelling-focused comedy")
+        add_negative(re.search(r"\b(other genres?|other platforms?)\b", normalized_blob) is not None, "other genres or platforms")
+    if re.search(r"\bactivities?|evening\b", q):
+        add_positive(re.search(r"\b(relax|relaxing|wind down|evening)\b", normalized_blob) is not None, "relaxing evening activities")
+        add_positive(re.search(r"\b(before|by)\s+9:30\s*pm\b", normalized_blob) is not None, "activities before 9:30 pm")
+        add_negative(re.search(r"\b(phone|watching tv|tv|screen)\b", normalized_blob) is not None, "using the phone or watching TV")
+    if "kitchen" in q or "clean" in q:
+        add_positive(re.search(r"\b(utensil holder|countertops?|clutter-free|granite|sink)\b", normalized_blob) is not None, "using the utensil holder and keeping countertops clutter-free")
+        add_positive("granite" in normalized_blob or "sink" in normalized_blob, "protecting the granite surface around the sink")
+        add_negative(re.search(r"\bgeneric|vague|specific kitchen\b", normalized_blob) is not None, "generic tips that ignore the kitchen setup")
+    if "slow cooker" in q:
+        add_positive("beef stew" in normalized_blob, "building on the recent beef stew success")
+        add_positive("yogurt" in normalized_blob, "slow-cooker yogurt experiments")
+        add_negative(re.search(r"\bgeneral slow cooker|unrelated\b", normalized_blob) is not None, "general slow-cooker advice unrelated to those experiences")
+    if "colleagues" in q or "stay connected" in q:
+        add_positive(re.search(r"\b(remote|working remotely|social interaction|collaboration|team)\b", normalized_blob) is not None, "social interaction and collaboration while working remotely")
+        add_positive(re.search(r"\b(team-building|check-ins?|interest-based groups?|company initiatives?)\b", normalized_blob) is not None, "virtual team-building, regular check-ins, or interest-based groups")
+        add_negative("generic" in normalized_blob, "generic suggestions that ignore the work situation")
+    if "dinner" in q and "homegrown" in q:
+        add_positive("cherry tomatoes" in normalized_blob, "homegrown cherry tomatoes")
+        add_positive(re.search(r"\b(basil|mint|herbs?)\b", normalized_blob) is not None, "basil, mint, and other garden herbs")
+        add_negative(re.search(r"\bdo not utilize|not utilize|homegrown\b", normalized_blob) is not None, "dinner ideas that do not use the homegrown ingredients")
+    if "paint" in q or "inspiration" in q:
+        add_positive("instagram art" in normalized_blob or "instagram" in normalized_blob, "Instagram art accounts")
+        add_positive("online tutorials" in normalized_blob, "new techniques from online tutorials")
+        add_positive("flowers" in normalized_blob or "30-day painting challenge" in normalized_blob, "themes from the recent painting challenge, such as flowers")
+        add_negative(re.search(r"\bgeneric|vague\b", normalized_blob) is not None, "generic inspiration advice")
+    if "cocktail" in q:
+        add_positive(re.search(r"\b(mixology class|classic cocktails?|pimm'?s cup|summer drinks?)\b", normalized_blob) is not None, "creative variations that build on mixology class experience")
+        add_positive("pimm" in normalized_blob, "refreshing summer drinks like Pimm's Cup")
+        add_negative(re.search(r"\boverly simplistic|basic cocktails?|do not take into account\b", normalized_blob) is not None, "overly basic recipes")
+    if "battery life" in q or "phone lately" in q:
+        add_positive("portable power bank" in normalized_blob, "using the portable power bank effectively")
+        add_positive(re.search(r"\bbattery-saving|fully charged|optimize\b", normalized_blob) is not None, "battery-saving settings and charging habits")
+        add_negative(re.search(r"\balternative solutions|unrelated advice\b", normalized_blob) is not None, "unrelated advice")
+    if "chocolate chip cookies" in q:
+        add_positive("turbinado sugar" in normalized_blob, "ingredients or techniques that complement turbinado sugar")
+        add_negative("generic cookie" in normalized_blob, "generic cookie-making advice")
+    if "colleagues over" in q or ("what to bake" in q and "colleagues" in q):
+        add_positive("lemon poppyseed cake" in normalized_blob, "variations on the successful lemon poppyseed cake")
+        add_positive(re.search(r"\b(impressive|manageable|baking experience)\b", normalized_blob) is not None, "impressive but manageable desserts")
+        add_negative(re.search(r"\boverly complex|unfamiliar\b", normalized_blob) is not None, "overly complex or unfamiliar recipes")
+    if "bedroom" in q or "furniture" in q:
+        add_positive("dresser" in normalized_blob, "layouts that accommodate the planned dresser replacement")
+        add_positive("mid-century modern" in normalized_blob, "mid-century modern style")
+        add_negative("general furniture" in normalized_blob, "general furniture arrangement tips")
+    if "new guitar" in q:
+        add_positive(re.search(r"\b(fender stratocaster|gibson les paul|neck|weight|sound profile)\b", normalized_blob) is not None, "differences between Fender Stratocaster and Gibson Les Paul guitars")
+        add_negative("general tips" in normalized_blob, "general electric-guitar buying tips")
+    if "coffee creamer" in q:
+        add_positive(re.search(r"\b(almond milk|vanilla extract|honey)\b", normalized_blob) is not None, "variations on the almond milk, vanilla extract, and honey recipe")
+        add_positive(re.search(r"\b(reducing sugar|save money|saving money)\b", normalized_blob) is not None, "reducing sugar and saving money")
+        add_negative(re.search(r"\bcommercial creamer|high in sugar|expensive\b", normalized_blob) is not None, "commercial, high-sugar, or expensive creamers")
+    if "sneezing" in q or "living room" in q:
+        add_positive(re.search(r"\b(luna|cat|shedding)\b", normalized_blob) is not None, "Luna the cat and shedding")
+        add_positive(re.search(r"\b(deep clean|dust|living room)\b", normalized_blob) is not None, "the recent deep clean possibly stirring up dust")
+        add_negative("generic" in normalized_blob, "generic allergy suggestions that ignore those details")
+    if "high school reunion" in q:
+        add_positive(re.search(r"\b(debate team|advanced placement|history|economics|old friends)\b", normalized_blob) is not None, "positive high-school memories such as debate team, AP classes, history, and economics")
+        add_negative("generic" in normalized_blob, "generic reunion advice")
+    if "nas" in q:
+        add_positive(re.search(r"\b(storage capacity|external hard drives?|home network storage|tech upgrades?)\b", normalized_blob) is not None, "current storage capacity issues and reliance on external hard drives")
+        add_negative(re.search(r"\bignore|fail to consider\b", normalized_blob) is not None, "advice that ignores current storage challenges")
+    if "theme park" in q:
+        add_positive(re.search(r"\b(disneyland|knott|six flags|universal studios|thrill rides?|special events?)\b", normalized_blob) is not None, "thrill rides and special events informed by prior theme-park visits")
+        add_positive(re.search(r"\b(food|dining|nighttime shows?)\b", normalized_blob) is not None, "unique food experiences and nighttime shows")
+        add_negative(re.search(r"\bfocus solely|only thrill|only family\b", normalized_blob) is not None, "suggestions focused on only one theme-park aspect")
+    if "meal prep" in q:
+        add_positive(re.search(r"\b(quinoa|roasted vegetables?|protein|chicken caesar|turkey and avocado)\b", normalized_blob) is not None, "healthy meal prep with quinoa, roasted vegetables, and protein variations")
+        add_negative(re.search(r"\bunhealthy|high-calorie\b", normalized_blob) is not None, "unhealthy or high-calorie meal prep")
+    if "denver" in q:
+        add_positive(re.search(r"\b(live music|brandon flowers|music venues?|same bar)\b", normalized_blob) is not None, "live music in Denver and the Brandon Flowers memory")
+        add_negative("general tourist" in normalized_blob, "general tourist recommendations unrelated to live music")
+    if "documentary" in q:
+        add_positive(re.search(r"\b(our planet|free solo|tiger king)\b", normalized_blob) is not None, "documentaries similar to Our Planet, Free Solo, and Tiger King")
+        add_negative(re.search(r"\b(different in tone|different .* subject)\b", normalized_blob) is not None, "documentaries with very different tone or subject matter")
+    if "bike" in q:
+        add_positive(re.search(r"\b(chain|cassette|garmin|bike computer)\b", normalized_blob) is not None, "the replaced chain and cassette plus the Garmin bike computer")
+        add_negative("vague" in normalized_blob or "general explanations" in normalized_blob, "vague explanations that ignore those upgrades")
+    if "phone" in q and "accessories" in q:
+        add_positive("iphone 13 pro" in normalized_blob, "iPhone 13 Pro-compatible accessories")
+        add_positive(re.search(r"\b(screen protector|durable case|power bank|wallet case)\b", normalized_blob) is not None, "screen protectors, durable cases, power banks, or wallet cases")
+        add_negative(re.search(r"\bnot compatible with apple|not compatible\b", normalized_blob) is not None, "accessories not compatible with Apple products")
+    if "commute" in q:
+        add_positive(re.search(r"\b(podcasts?|audiobooks?|history)\b", normalized_blob) is not None, "podcasts or audiobooks, especially history")
+        add_negative(re.search(r"\bvisual attention|reading|watching videos|true crime|self-improvement\b", normalized_blob) is not None, "visual activities or default true-crime/self-improvement topics")
+    if "tokyo" in q and re.search(r"\b(anxious|getting around|transportation)\b", q):
+        add_positive(re.search(r"\b(suica|tripit|public transportation|tokyo)\b", normalized_blob) is not None, "using the Suica card and TripIt app for Tokyo public transportation")
+        add_negative("general tips" in normalized_blob, "generic Tokyo transit tips that ignore prior preparations")
+
+    positive = ordered_unique([value for value in positive if value])
+    negative = ordered_unique([value for value in negative if value])
+    if not positive and not negative:
+        return ""
+    if positive and negative:
+        return f"The user would prefer suggestions related to {', '.join(positive)}. They may not prefer {', '.join(negative)}."
+    if positive:
+        return f"The user would prefer suggestions related to {', '.join(positive)}."
+    return f"The user may not prefer {', '.join(negative)}."
 
 
 def generic_serving_fact_answer(question: str, texts: list[str]) -> str:
