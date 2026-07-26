@@ -101,6 +101,72 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
     return breakdown
 
 
+def dropped_ref_layer_budget(dropped: Json) -> Json:
+    refs = dropped.get("refs") if isinstance(dropped, dict) else []
+    if not isinstance(refs, list):
+        refs = []
+    breakdown: Json = {
+        "by_drop_reason": {},
+        "by_memory_scope": {},
+        "by_session_continuity": {},
+        "by_ref_type": {},
+        "by_entity_type": {},
+        "by_profile_shadowed_reason": {},
+        "total_dropped_refs_with_detail": len(refs),
+        "total_dropped_tokens_with_detail": 0,
+        "stale_ref_count": 0,
+        "stale_token_estimate": 0,
+        "profile_shadowed_ref_count": 0,
+        "profile_shadowed_token_estimate": 0,
+    }
+    estimated_tokens = dropped.get("estimated_tokens") if isinstance(dropped, dict) else {}
+    if isinstance(estimated_tokens, dict):
+        compact_estimated = {
+            str(key): int(value)
+            for key, value in estimated_tokens.items()
+            if isinstance(value, int) and value > 0
+        }
+        if compact_estimated:
+            breakdown["estimated_tokens_by_reason"] = compact_estimated
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        try:
+            token_estimate = max(0, int(ref.get("token_estimate") or ref.get("token_cost") or 0))
+        except (TypeError, ValueError):
+            token_estimate = 0
+        breakdown["total_dropped_tokens_with_detail"] += token_estimate
+        reason = str(ref.get("drop_reason") or ref.get("reason") or "unknown")
+        bucket = breakdown["by_drop_reason"].setdefault(reason, {"refs": 0, "tokens": 0})
+        bucket["refs"] += 1
+        bucket["tokens"] += token_estimate
+        for field, bucket_name, default_value in [
+            ("memory_scope", "by_memory_scope", "unscoped"),
+            ("session_continuity", "by_session_continuity", "neutral"),
+            ("ref_type", "by_ref_type", "unknown"),
+        ]:
+            value = str(ref.get(field) or default_value)
+            bucket = breakdown[bucket_name].setdefault(value, {"refs": 0, "tokens": 0})
+            bucket["refs"] += 1
+            bucket["tokens"] += token_estimate
+        entity_type = str(ref.get("entity_type") or "")
+        if entity_type:
+            bucket = breakdown["by_entity_type"].setdefault(entity_type, {"refs": 0, "tokens": 0})
+            bucket["refs"] += 1
+            bucket["tokens"] += token_estimate
+        if bool(ref.get("stale_or_superseded")) or reason == "stale":
+            breakdown["stale_ref_count"] += 1
+            breakdown["stale_token_estimate"] += token_estimate
+        if ref.get("profile_shadowed_by_ref_hash") not in (None, "", [], {}):
+            breakdown["profile_shadowed_ref_count"] += 1
+            breakdown["profile_shadowed_token_estimate"] += token_estimate
+            shadow_reason = str(ref.get("profile_shadowed_reason") or "unknown")
+            bucket = breakdown["by_profile_shadowed_reason"].setdefault(shadow_reason, {"refs": 0, "tokens": 0})
+            bucket["refs"] += 1
+            bucket["tokens"] += token_estimate
+    return breakdown
+
+
 def build_context_pack(
     *,
     context_pack_id: int,
@@ -160,6 +226,7 @@ def build_context_pack(
 ) -> Json:
     selected_context_counts = selected_context_class_counts(selected)
     memory_layer_budget = selected_ref_layer_budget(selected)
+    dropped_memory_layer_budget = dropped_ref_layer_budget(dropped_over_budget)
     return {
         "context_pack_id": str(context_pack_id),
         "context_sources_order": ["local_context", "matrixark_remote_context"],
@@ -189,6 +256,7 @@ def build_context_pack(
                 "entity_bridge_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "cross_session" and item.get("ref_type") == "entity"),
             },
             "memory_layer_budget": memory_layer_budget,
+            "dropped_memory_layer_budget": dropped_memory_layer_budget,
             "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
             "shared_context": dropped_over_budget.get("shared_context_policy", shared_context_policy),
             "backend_retrieval_pushdown": retrieval_scan_stats,
