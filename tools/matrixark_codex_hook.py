@@ -470,6 +470,7 @@ def codex_hook_output(
             "selected_ref_count": selected_ref_count_from_retrieve(retrieve),
             "used_context_tokens": used_context_tokens_from_retrieve(retrieve),
             "budget": retrieval_budget_summary_from_retrieve(retrieve),
+            "layers": retrieval_layer_summary_from_retrieve(retrieve),
             "additional_context_emitted": False,
         },
         "session_commit": {
@@ -618,6 +619,7 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 "context_pack_id": result.get("context_pack_id") or result.get("pack_id"),
                 "selected_ref_count": selected_ref_count_from_retrieve(result),
                 "used_context_tokens": used_context_tokens_from_retrieve(result),
+                "retrieval_layers": retrieval_layer_summary_from_retrieve(result),
             }
         elif name == "matrixark_session_commit":
             item["result"] = {
@@ -704,6 +706,7 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             "context_pack_id": retrieve.get("context_pack_id"),
             "selected_ref_count": retrieve.get("selected_ref_count"),
             "retrieval_budget": retrieve.get("budget"),
+            "retrieval_layers": retrieve.get("layers"),
             "ingest_status": ingest.get("status"),
             "commit_status": commit.get("status"),
         }
