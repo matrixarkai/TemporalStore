@@ -293,6 +293,13 @@ class MatrixArkLocalAdapter:
                     with self._session_buffer_cache_lock:
                         committed = self._session_committed_event_ids_by_key.setdefault(key, set())
                         pending = self._session_pending_event_ids_by_key.setdefault(key, [])
+                        if event_hash in self._context_event_by_hash:
+                            enriched_event = dict(self._context_event_by_hash[event_hash])
+                            if isinstance(record.get("envelope"), dict) and "envelope" not in enriched_event:
+                                enriched_event["envelope"] = record["envelope"]
+                            if isinstance(record.get("agent_hook"), dict) and "agent_hook" not in enriched_event:
+                                enriched_event["agent_hook"] = record["agent_hook"]
+                            self._context_event_by_hash[event_hash] = enriched_event
                         if event_hash not in committed and event_hash not in pending:
                             pending.append(event_hash)
                 continue
@@ -657,6 +664,7 @@ class MatrixArkLocalAdapter:
                     except (TypeError, ValueError):
                         continue
         pending_ids: list[int] = []
+        buffer_event_by_id: dict[int, Json] = {}
         for record in records:
             if record.get("record_type") != "session_buffer_event" or tuple(record.get("buffer_key", [])) != key:
                 continue
@@ -664,6 +672,7 @@ class MatrixArkLocalAdapter:
                 event_hash = int(record.get("event_id_hash"))
             except (TypeError, ValueError):
                 continue
+            buffer_event_by_id[event_hash] = record
             if event_hash not in committed:
                 pending_ids.append(event_hash)
         event_by_id: dict[int, Json] = {}
@@ -675,6 +684,14 @@ class MatrixArkLocalAdapter:
                 event_hash = int(record.get("event_id_hash"))
             except (TypeError, ValueError):
                 continue
+            buffer_record = buffer_event_by_id.get(event_hash, {})
+            if isinstance(buffer_record.get("envelope"), dict) or isinstance(buffer_record.get("agent_hook"), dict):
+                enriched_record = dict(record)
+                if isinstance(buffer_record.get("envelope"), dict) and "envelope" not in enriched_record:
+                    enriched_record["envelope"] = buffer_record["envelope"]
+                if isinstance(buffer_record.get("agent_hook"), dict) and "agent_hook" not in enriched_record:
+                    enriched_record["agent_hook"] = buffer_record["agent_hook"]
+                record = enriched_record
             event_by_id[event_hash] = record
             if not pending_ids and session_buffer_key(record.get("envelope", {})) == key and event_hash not in committed:
                 fallback_events.append(record)
@@ -709,6 +726,7 @@ class MatrixArkLocalAdapter:
                 "node_path": node_path,
                 "scope": envelope["scope"],
                 "status": "pending",
+                "envelope": envelope,
                 "agent_hook": hook,
                 "created_at_ms": envelope["ingestion_time_ms"],
             }
@@ -864,7 +882,24 @@ class MatrixArkLocalAdapter:
         pending = pending_all[:commit_limit] if commit_limit is not None else pending_all
         messages = []
         source_event_ids = []
+        pending_source_hook_types: set[str] = set()
+        pending_source_codex_events: set[str] = set()
         for record in pending:
+            event_envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else {}
+            event_metadata = event_envelope.get("metadata", {}) if isinstance(event_envelope.get("metadata"), dict) else {}
+            event_hook = record.get("agent_hook", {}) if isinstance(record.get("agent_hook"), dict) else {}
+            for value in [event_envelope.get("hook_type"), event_metadata.get("hook_type"), event_hook.get("hook_type")]:
+                if str(value or "").strip():
+                    pending_source_hook_types.add(str(value).strip())
+            for values in [event_metadata.get("source_hook_types")]:
+                if isinstance(values, list):
+                    pending_source_hook_types.update(str(value).strip() for value in values if str(value or "").strip())
+            for value in [event_envelope.get("codex_event"), event_metadata.get("codex_event"), event_hook.get("codex_event"), event_hook.get("trigger")]:
+                if str(value or "").strip():
+                    pending_source_codex_events.add(str(value).strip())
+            for values in [event_metadata.get("source_codex_events")]:
+                if isinstance(values, list):
+                    pending_source_codex_events.update(str(value).strip() for value in values if str(value or "").strip())
             message = message_from_event_record(record)
             if not message:
                 continue
@@ -922,6 +957,14 @@ class MatrixArkLocalAdapter:
             if record.get("event_id_hash") is not None
         ]
         metadata = optional_object(args, "metadata")
+        if pending_source_hook_types:
+            metadata = {**metadata, "source_hook_types": sorted(pending_source_hook_types)}
+            if "hook_type" not in metadata and len(pending_source_hook_types) == 1:
+                metadata["hook_type"] = next(iter(pending_source_hook_types))
+        if pending_source_codex_events:
+            metadata = {**metadata, "source_codex_events": sorted(pending_source_codex_events)}
+            if "codex_event" not in metadata and len(pending_source_codex_events) == 1:
+                metadata["codex_event"] = next(iter(pending_source_codex_events))
         storage_options = normalize_storage_options(args, metadata)
         if "node_path" not in metadata:
             metadata = {**metadata, "node_path": self.default_session_node_path(scope)}
@@ -3832,28 +3875,23 @@ class MatrixArkLocalAdapter:
             }
         )
         envelope_metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
-        source_hook_types = sorted(
-            {
-                str(value).strip()
-                for value in [
-                    envelope.get("hook_type"),
-                    envelope_metadata.get("hook_type"),
-                    (hook or {}).get("hook_type") if isinstance(hook, dict) else "",
-                ]
-                if str(value or "").strip()
-            }
-        )
-        source_codex_events = sorted(
-            {
-                str(value).strip()
-                for value in [
-                    envelope.get("codex_event"),
-                    envelope_metadata.get("codex_event"),
-                    (hook or {}).get("trigger") if isinstance(hook, dict) else "",
-                ]
-                if str(value or "").strip()
-            }
-        )
+        source_hook_type_values = [
+            envelope.get("hook_type"),
+            envelope_metadata.get("hook_type"),
+            (hook or {}).get("hook_type") if isinstance(hook, dict) else "",
+        ]
+        if isinstance(envelope_metadata.get("source_hook_types"), list):
+            source_hook_type_values.extend(envelope_metadata["source_hook_types"])
+        source_hook_types = sorted({str(value).strip() for value in source_hook_type_values if str(value or "").strip()})
+        source_codex_event_values = [
+            envelope.get("codex_event"),
+            envelope_metadata.get("codex_event"),
+            (hook or {}).get("codex_event") if isinstance(hook, dict) else "",
+            (hook or {}).get("trigger") if isinstance(hook, dict) else "",
+        ]
+        if isinstance(envelope_metadata.get("source_codex_events"), list):
+            source_codex_event_values.extend(envelope_metadata["source_codex_events"])
+        source_codex_events = sorted({str(value).strip() for value in source_codex_event_values if str(value or "").strip()})
         entity_hashes = []
         profile_entity_hashes = []
         for entity in extraction["entities"]:
