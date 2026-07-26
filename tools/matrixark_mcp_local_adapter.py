@@ -6238,6 +6238,12 @@ class MatrixArkLocalAdapter:
                 or retrieval_scan_stats.get("native_index_postings_found")
                 or 0
             )
+        dropped_ref_bucket_counts = {
+            key: int(value)
+            for key, value in dropped_over_budget.items()
+            if isinstance(value, int) and key != "deadline_exceeded" and int(value) > 0
+        }
+        dropped_ref_count = sum(dropped_ref_bucket_counts.values())
         pack["retrieval_metrics"] = {
             "query_plan_ms": round(float(stage_latencies_ms.get("query_understanding", 0.0)), 3),
             "node_traversal_ms": round(float(stage_latencies_ms.get("node_traversal", 0.0)), 3),
@@ -6249,7 +6255,9 @@ class MatrixArkLocalAdapter:
             "append_queue_wait_ms": 0.0,
             "append_engine_ms": 0.0,
             "selected_refs": len(selected),
-            "dropped_refs": int(len(dropped_over_budget)),
+            "dropped_refs": dropped_ref_count,
+            "dropped_ref_bucket_counts": dropped_ref_bucket_counts,
+            "stale_dropped_refs": int(dropped_ref_bucket_counts.get("stale", 0)),
             "requested_max_context_tokens": max_context_tokens,
             "used_local_context_tokens": local_tokens,
             "used_remote_context_tokens": used_context_tokens,
