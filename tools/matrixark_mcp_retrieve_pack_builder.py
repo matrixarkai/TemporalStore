@@ -34,6 +34,63 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         selected_context_class_counts,
     )
 
+def selected_ref_layer_budget(refs: list[Json]) -> Json:
+    breakdown: Json = {
+        "by_memory_scope": {},
+        "by_session_continuity": {},
+        "by_extraction_phase": {},
+        "by_entity_type": {},
+        "by_source_role": {},
+        "by_hook_type": {},
+        "final_session_boundary_ref_count": 0,
+        "provisional_ref_count": 0,
+        "final_ref_count": 0,
+        "total_selected_refs": len(refs),
+        "total_selected_tokens": 0,
+    }
+    for ref in refs:
+        try:
+            token_estimate = max(0, int(ref.get("token_estimate") or 0))
+        except (TypeError, ValueError):
+            token_estimate = 0
+        breakdown["total_selected_tokens"] += token_estimate
+        for field, bucket_name, default_value in [
+            ("memory_scope", "by_memory_scope", "unscoped"),
+            ("session_continuity", "by_session_continuity", "neutral"),
+            ("extraction_phase", "by_extraction_phase", "unknown"),
+        ]:
+            value = str(ref.get(field) or default_value)
+            bucket = breakdown[bucket_name].setdefault(value, {"refs": 0, "tokens": 0})
+            bucket["refs"] += 1
+            bucket["tokens"] += token_estimate
+        entity_type = str(ref.get("entity_type") or "")
+        if entity_type:
+            bucket = breakdown["by_entity_type"].setdefault(entity_type, {"refs": 0, "tokens": 0})
+            bucket["refs"] += 1
+            bucket["tokens"] += token_estimate
+        source_roles = ref.get("source_roles") if isinstance(ref.get("source_roles"), list) else []
+        for role in source_roles:
+            role_name = str(role or "").strip()
+            if role_name:
+                bucket = breakdown["by_source_role"].setdefault(role_name, {"refs": 0, "tokens": 0})
+                bucket["refs"] += 1
+                bucket["tokens"] += token_estimate
+        source_hook_types = ref.get("source_hook_types") if isinstance(ref.get("source_hook_types"), list) else []
+        for hook_type in source_hook_types:
+            hook_name = str(hook_type or "").strip()
+            if hook_name:
+                bucket = breakdown["by_hook_type"].setdefault(hook_name, {"refs": 0, "tokens": 0})
+                bucket["refs"] += 1
+                bucket["tokens"] += token_estimate
+        if bool(ref.get("final_session_boundary")):
+            breakdown["final_session_boundary_ref_count"] += 1
+        if str(ref.get("extraction_phase") or "") == "provisional":
+            breakdown["provisional_ref_count"] += 1
+        if str(ref.get("extraction_phase") or "") == "final":
+            breakdown["final_ref_count"] += 1
+    return breakdown
+
+
 def build_context_pack(
     *,
     context_pack_id: int,
@@ -92,6 +149,7 @@ def build_context_pack(
     debug_refs: bool,
 ) -> Json:
     selected_context_counts = selected_context_class_counts(selected)
+    memory_layer_budget = selected_ref_layer_budget(selected)
     return {
         "context_pack_id": str(context_pack_id),
         "context_sources_order": ["local_context", "matrixark_remote_context"],
@@ -120,6 +178,7 @@ def build_context_pack(
                 "cross_session_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "cross_session"),
                 "entity_bridge_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "cross_session" and item.get("ref_type") == "entity"),
             },
+            "memory_layer_budget": memory_layer_budget,
             "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
             "shared_context": dropped_over_budget.get("shared_context_policy", shared_context_policy),
             "backend_retrieval_pushdown": retrieval_scan_stats,

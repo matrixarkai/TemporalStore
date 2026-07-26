@@ -295,6 +295,99 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("cross_session", summary_group["items"][0]["session_continuity"])
         self.assertEqual(3, event_group["items"][0]["tokens"])
 
+    def test_shared_pack_builder_exposes_memory_layer_budget(self) -> None:
+        builder_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pack_builder")
+        metrics_mod = importlib.import_module("tools.matrixark_mcp_retrieve_metrics")
+        selected = [
+            {
+                "ref_type": "entity",
+                "ref_hash": 10,
+                "text": "tool_evidence: tests = Exit code: 0 Ran 87 tests OK",
+                "token_estimate": 8,
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "extraction_phase": "final",
+                "final_session_boundary": True,
+                "entity_type": "tool_evidence",
+                "source_roles": ["tool"],
+                "source_hook_types": ["hook_boundary"],
+            }
+        ]
+        pack = builder_mod.build_context_pack(
+            context_pack_id=123,
+            selected=selected,
+            local_budget={"items": [], "tokens": 0},
+            serving_selected=selected,
+            dropped_over_budget={},
+            serving_dropped=[],
+            layer_scores=[],
+            question_type="fact",
+            query_plan={},
+            retrieval_session_scope="prefer",
+            cross_session_policy={"enabled": True},
+            shared_context_policy={"enabled": True},
+            retrieval_scan_stats={},
+            ranking={},
+            min_similarity_score=0.2,
+            max_global_candidates=24,
+            max_selected_refs=8,
+            budget_fill_policy="quality_first",
+            traversal={},
+            top_k_per_layer=4,
+            max_children_scored_per_parent=16,
+            hard_max_children_scored_per_parent=64,
+            max_candidates_per_node=8,
+            max_raw_events_per_node=4,
+            selected_node_hashes=set(),
+            selected_paths=set(),
+            tree_candidate_records_count=1,
+            tree_prefilter_dropped_count=0,
+            fanout_dropped_count=0,
+            raw_event_time_window_dropped_count=0,
+            secondary_index_filter_groups=[],
+            secondary_index_matched_count=0,
+            secondary_index_dropped_count=0,
+            secondary_index_filter_mode="off",
+            rerank_policy={},
+            time_weighted_recall={"freshness_tolerance_ms": 0, "half_life_ms": 0},
+            reinforcement={},
+            auxiliary_quota=0.0,
+            storage_options={},
+            deadline_ms=0,
+            started_perf=0.0,
+            partial_context_pack=False,
+            primary_candidate_count=1,
+            auxiliary_candidate_count=0,
+            used_context_tokens=8,
+            local_tokens=0,
+            remote_context_budget_tokens=100,
+            max_context_tokens=100,
+            safety_margin_tokens=0,
+            budget_source="test",
+            quality_warnings=[],
+            audit_mode="off",
+            audit_sample_rate=0.0,
+            debug_refs=False,
+        )
+        layer_budget = pack["recall_policy"]["memory_layer_budget"]
+        self.assertEqual(1, layer_budget["by_memory_scope"]["user_profile"]["refs"])
+        self.assertEqual(1, layer_budget["by_session_continuity"]["cross_session"]["refs"])
+        self.assertEqual(1, layer_budget["by_entity_type"]["tool_evidence"]["refs"])
+        self.assertEqual(1, layer_budget["by_source_role"]["tool"]["refs"])
+        self.assertEqual(1, layer_budget["by_hook_type"]["hook_boundary"]["refs"])
+        self.assertEqual(1, layer_budget["final_session_boundary_ref_count"])
+
+        metrics_mod.attach_python_retrieval_metrics(
+            pack,
+            {},
+            stage_latencies_ms={},
+            retrieval_scan_stats={},
+            selected=selected,
+            dropped_over_budget={},
+            records=[],
+        )
+        self.assertEqual(layer_budget, pack["retrieval_metrics"]["memory_layer_budget"])
+
 
 class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
     def _server(self):
