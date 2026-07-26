@@ -620,6 +620,7 @@ def main() -> int:
         case_count=total,
         hit_rate=hit_rate,
         reader_hit_rate=reader_hit_rate,
+        context_answer_coverage=answer_coverage,
         token_reduction=total_token_reduction,
         retrieval_p95=percentile(retrieval_latencies_ms, 95),
         reader_p95=percentile(reader_latencies_ms, 95),
@@ -728,6 +729,8 @@ def main() -> int:
         "mean_reciprocal_rank": reciprocal_rank_sum / total if total else 0.0,
         "benchmark_mean_reciprocal_rank": reciprocal_rank_sum / total if total else 0.0,
         "answer_term_coverage": answer_coverage,
+        "benchmark_context_answer_coverage": answer_coverage,
+        "context_missing_expected_answer_count": total_answer_terms - matched_answer_terms,
         "evidence_ref_coverage": evidence_coverage,
         "reader_hit_rate": reader_hit_rate,
         "reader_answer_coverage": reader_answer_coverage,
@@ -1826,6 +1829,7 @@ def benchmark_threshold_violations(
     case_count: int,
     hit_rate: float,
     reader_hit_rate: float,
+    context_answer_coverage: float,
     token_reduction: float,
     retrieval_p95: float,
     reader_p95: float,
@@ -1838,6 +1842,8 @@ def benchmark_threshold_violations(
         violations.append("case_count_below_min")
     if hit_rate < thresholds["min_hit_at_k"]:
         violations.append("hit_at_k_below_min")
+    if hit_rate >= thresholds["min_hit_at_k"] and context_answer_coverage < hit_rate:
+        violations.append("context_answer_coverage_below_retrieval_hit")
     if reader_hit_rate < thresholds["min_reader_hit_rate"]:
         violations.append("reader_hit_rate_below_min")
     if token_reduction < thresholds["min_token_reduction_percent"]:
