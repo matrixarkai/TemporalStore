@@ -3067,8 +3067,10 @@ def generic_serving_fact_answer(question: str, texts: list[str]) -> str:
 
     q = normalize_text(question)
     sentences = relevant_fact_sentences(question, texts)
+    user_sentences = [sentence for sentence in sentences if sentence_is_user_fact(sentence)]
+    fact_sentences = user_sentences or sentences
     if re.search(r"\bwhere\b", q) and re.search(r"\b(buy|bought|purchase|purchased|get|got|order|ordered)\b", q):
-        for sentence in sentences:
+        for sentence in fact_sentences:
             match = re.search(
                 r"\b(?:bought|buy|got|purchased|picked up|ordered)\b.{0,100}?\b(?:from|at)\s+((?:the\s+)?[A-Za-z0-9][^.;,\n]{2,80})",
                 sentence,
@@ -3079,7 +3081,7 @@ def generic_serving_fact_answer(question: str, texts: list[str]) -> str:
                 if span and not looks_like_timestamp(span):
                     return span
     if re.search(r"\bhow long\b", q):
-        for sentence in sentences:
+        for sentence in fact_sentences:
             match = re.search(
                 r"\b(?:took|take|spent|needed|required|assembled|finished|completed)\b.{0,100}?\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(hours?|minutes?|days?|weeks?)\b",
                 sentence,
@@ -3092,7 +3094,7 @@ def generic_serving_fact_answer(question: str, texts: list[str]) -> str:
                     unit += "s"
                 return f"{value} {unit}"
     if re.search(r"\b(speed|internet plan|bandwidth|connection)\b", q):
-        for sentence in sentences:
+        for sentence in fact_sentences:
             match = re.search(
                 r"\b(\d+(?:\.\d+)?)\s*(mbps|gbps|kbps|megabits? per second|gigabits? per second)\b",
                 sentence,
@@ -3107,18 +3109,22 @@ def generic_serving_fact_answer(question: str, texts: list[str]) -> str:
                 elif unit.startswith("k"):
                     unit = "Kbps"
                 return f"{format_number(number_value(match.group(1)))} {unit}"
+    answer = direct_attribute_fact_answer(question, fact_sentences)
+    if answer:
+        return answer
     if re.search(r"\bhow many\b", q):
         nouns = count_target_nouns(q)
-        for sentence in sentences:
+        for sentence in fact_sentences:
             normalized_sentence = normalize_text(sentence)
-            if nouns and not any(noun in normalized_sentence for noun in nouns):
+            if nouns and not any(noun in normalized_sentence or noun.rstrip("s") in normalized_sentence for noun in nouns):
                 continue
-            if nouns and not re.search(r"\b(pack|packed|bring|brought|take|took|need|needed|have|had|bought|got)\b", normalized_sentence):
+            if nouns and not re.search(r"\b(pack|packed|bring|brought|take|took|need|needed|have|had|bought|got|own|owns|caught|catch|watched|saw)\b", normalized_sentence):
                 continue
             for noun in nouns or ["items"]:
                 noun_pattern = re.escape(noun.rstrip("s")) + r"s?"
                 patterns = (
                     rf"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(?:\w+\s+){{0,2}}{noun_pattern}\b",
+                    rf"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+of\s+them\b.{{0,80}}\b{noun_pattern}\b",
                     rf"\b{noun_pattern}\b.{{0,50}}\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b",
                 )
                 for pattern in patterns:
@@ -3128,6 +3134,93 @@ def generic_serving_fact_answer(question: str, texts: list[str]) -> str:
                         if value and not count_value_is_decoy(question, sentence, value):
                             return value
     return ""
+
+
+def direct_attribute_fact_answer(question: str, sentences: list[str]) -> str:
+    q = normalize_text(question)
+    attribute_patterns: list[tuple[str, tuple[str, ...]]] = [
+        ("brand", ("brand", "favorite running shoes", "running shoes", "shoes")),
+        ("breed", ("breed", "dog", "puppy")),
+        ("certification", ("certification", "certificate", "completed")),
+        ("ram", ("ram", "memory", "laptop")),
+        ("degree", ("degree", "major", "studied")),
+    ]
+    wanted = ""
+    anchors: tuple[str, ...] = ()
+    for label, label_anchors in attribute_patterns:
+        if label in q or any(anchor in q for anchor in label_anchors):
+            wanted = label
+            anchors = label_anchors
+            break
+    if not wanted:
+        return ""
+    for sentence in sentences:
+        span = attribute_span_from_sentence(wanted, anchors, sentence)
+        if span:
+            return span
+    return ""
+
+
+def attribute_span_from_sentence(attribute: str, anchors: tuple[str, ...], sentence: str) -> str:
+    normalized_sentence = normalize_text(sentence)
+    if attribute != "breed" and anchors and not any(anchor in normalized_sentence for anchor in anchors):
+        return ""
+    patterns: dict[str, tuple[str, ...]] = {
+        "brand": (
+            r"\b([A-Z][A-Za-z0-9&' -]{1,40})\s+has\s+been\s+my\s+favou?rite\s+brand\b",
+            r"\bnew\s+pair\s+of\s+([A-Z][A-Za-z0-9&' -]{1,40})\s+(?:running\s+)?shoes?\b",
+            r"\b(?:brand|maker)\s+(?:is|was|are|were|:)\s+([A-Z][A-Za-z0-9&' -]{1,50})",
+            r"\b(?:favorite|favourite|running)\s+shoes?\s+(?:are|were|is|was|:)\s+([A-Z][A-Za-z0-9&' -]{1,50})",
+        ),
+        "breed": (
+            r"\b(?:breed|dog|puppy)\s+(?:is|was|are|were|:)\s+((?:a|an|the)\s+)?([A-Z][A-Za-z -]{2,50})",
+            r"\b(?:a|an)\s+([A-Z][A-Za-z -]{2,50})\s+(?:dog|puppy)\b",
+            r"\b([A-Z][A-Za-z -]{2,50})\s+like\s+[A-Z][A-Za-z]+\b",
+        ),
+        "certification": (
+            r"\b(?:completed|earned|received|got)\s+(?:my\s+)?(?:the\s+)?([A-Z][A-Za-z0-9&' /-]{3,80})\s+(?:certification|certificate)\b",
+            r"\b(?:certification|certificate)\s+in\s+([A-Z][A-Za-z0-9&' /-]{3,80})\b",
+            r"\b([A-Z][A-Za-z0-9&' /-]{3,80})\s+(?:certification|certificate)\b",
+        ),
+        "ram": (
+            r"\b(?:upgraded|upgrade|ram|memory)\b.{0,80}?\b(\d+(?:\.\d+)?)\s*(gb|gib|mb|mib)\b",
+        ),
+        "degree": (
+            r"\bdegree\s+(?:in|was|is|:)\s+([A-Z][A-Za-z&' /-]{3,80})",
+            r"\b(?:studied|majored in)\s+([A-Z][A-Za-z&' /-]{3,80})",
+        ),
+    }
+    for pattern in patterns.get(attribute, ()):
+        flags = re.I if attribute == "ram" else 0
+        match = re.search(pattern, sentence, flags)
+        if not match:
+            continue
+        if attribute == "ram":
+            unit = match.group(2).upper().replace("GIB", "GB").replace("MIB", "MB")
+            return f"{format_number(number_value(match.group(1)))} {unit}"
+        raw = match.group(match.lastindex or 1)
+        if attribute == "breed" and match.lastindex and match.lastindex >= 2:
+            raw = match.group(2)
+        span = clean_attribute_span(raw)
+        if span and not looks_like_timestamp(span):
+            return span
+    return ""
+
+
+def sentence_is_user_fact(sentence: str) -> bool:
+    normalized = normalize_text(sentence)
+    return bool(
+        re.search(r"\buser\s*:", sentence, re.I)
+        or normalized.startswith("user ")
+        or re.search(r"\b(i|my|me|we|our)\b", normalized)
+    )
+
+
+def clean_attribute_span(value: str) -> str:
+    span = clean_serving_fact_span(value)
+    span = re.sub(r"\b(?:and|but|because|after|before|when|while)\b.*$", "", span, flags=re.I)
+    span = re.sub(r"\s+", " ", span).strip(" .;:,")
+    return span[:80]
 
 
 def relevant_fact_sentences(question: str, texts: list[str]) -> list[str]:
@@ -6520,6 +6613,9 @@ def numeric_value_set(value: str) -> set[float]:
         if re.fullmatch(r"\d{4}", raw) and 1800 <= int(raw) <= 2100:
             continue
         values.add(float(re.sub(r"[,\s]", "", raw)))
+    for token in normalize_text(value).split():
+        if token in NUMBER_WORDS:
+            values.add(float(NUMBER_WORDS[token]))
     return values
 
 
