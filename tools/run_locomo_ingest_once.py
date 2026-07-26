@@ -16,6 +16,7 @@ import hashlib
 import json
 import math
 import re
+import signal
 import sys
 import os
 import subprocess
@@ -1739,7 +1740,7 @@ class BenchmarkReader:
             self.fallback_count += 1
             return extractive_reader_answer(question, blocks)
         try:
-            return self.open_source_answer(question, blocks)
+            return self.open_source_answer_with_wall_timeout(question, blocks)
         except Exception as exc:  # noqa: BLE001 - benchmark hooks must report local gateway failures.
             self.error_count += 1
             self.last_error = str(exc)[:300]
@@ -1756,6 +1757,22 @@ class BenchmarkReader:
         if self.fallback_count and self.config.mode != "deterministic":
             return "deterministic-fallback"
         return "deterministic"
+
+    def open_source_answer_with_wall_timeout(self, question: str, blocks: list[dict[str, str]]) -> str:
+        if not hasattr(signal, "SIGALRM"):
+            return self.open_source_answer(question, blocks)
+        previous_handler = signal.getsignal(signal.SIGALRM)
+
+        def _raise_timeout(_signum: int, _frame: Any) -> None:
+            raise TimeoutError(f"reader wall timeout after {self.config.timeout_seconds}s")
+
+        signal.signal(signal.SIGALRM, _raise_timeout)
+        signal.setitimer(signal.ITIMER_REAL, max(1.0, float(self.config.timeout_seconds)))
+        try:
+            return self.open_source_answer(question, blocks)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0.0)
+            signal.signal(signal.SIGALRM, previous_handler)
 
     def open_source_answer(self, question: str, blocks: list[dict[str, str]]) -> str:
         if not self.config.base_url:
