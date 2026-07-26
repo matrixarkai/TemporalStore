@@ -30,8 +30,10 @@ def main() -> int:
     embedding_tokens = sum_int(rows, "embedding_tokens")
     extraction_enabled = bool((config.get("memory") or {}).get("extraction_enabled"))
     vlm_api_base = ((config.get("vlm") or {}).get("api_base"))
+    vlm_model = ((config.get("vlm") or {}).get("model"))
     embedding_api_base = (((config.get("embedding") or {}).get("dense") or {}).get("api_base"))
     vlm_endpoint_probe = probe_openai_models(vlm_api_base)
+    vlm_chat_probe = probe_chat_completion(vlm_api_base, vlm_model)
     embedding_endpoint_probe = probe_openai_models(embedding_api_base)
     report: dict[str, Any] = {
         "schema": "matrixark_openviking_memory_extraction_diagnosis_v1",
@@ -46,9 +48,10 @@ def main() -> int:
         "extracted_memory_counts": extracted_counts,
         "total_extracted_memories": sum(extracted_counts),
         "vlm_provider": ((config.get("vlm") or {}).get("provider")),
-        "vlm_model": ((config.get("vlm") or {}).get("model")),
+        "vlm_model": vlm_model,
         "vlm_api_base": vlm_api_base,
         "vlm_endpoint_probe": vlm_endpoint_probe,
+        "vlm_chat_probe": vlm_chat_probe,
         "embedding_model": (((config.get("embedding") or {}).get("dense") or {}).get("model")),
         "embedding_api_base": embedding_api_base,
         "embedding_endpoint_probe": embedding_endpoint_probe,
@@ -61,6 +64,7 @@ def main() -> int:
             completion_tokens,
             extracted_counts,
             vlm_endpoint_probe,
+            vlm_chat_probe,
         ),
     }
     Path(args.report).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -99,11 +103,14 @@ def infer_gap(
     completion_tokens: int,
     extracted_counts: list[int],
     vlm_endpoint_probe: dict[str, Any],
+    vlm_chat_probe: dict[str, Any],
 ) -> str:
     if not extraction_enabled:
         return "memory_extraction_disabled"
     if not vlm_endpoint_probe.get("ok"):
         return "configured_vlm_endpoint_unreachable_or_not_openai_compatible"
+    if not vlm_chat_probe.get("ok"):
+        return "configured_vlm_endpoint_models_list_works_but_chat_completion_failed"
     if embedding_tokens > 0 and vlm_tokens == 0 and completion_tokens == 0:
         return "messages_archived_and_embedded_but_openviking_did_not_record_chat_completion_usage_for_memory_extraction"
     if extracted_counts and sum(extracted_counts) == 0:
@@ -121,6 +128,47 @@ def probe_openai_models(api_base: str | None) -> dict[str, Any]:
         with urllib.request.urlopen(url, timeout=10) as resp:
             body = resp.read(4096).decode("utf-8", errors="replace")
         return {"ok": True, "status": resp.status, "url": url, "body_prefix": body[:500]}
+    except urllib.error.HTTPError as exc:
+        body = exc.read(1024).decode("utf-8", errors="replace")
+        return {"ok": False, "status": exc.code, "url": url, "error": body[:500]}
+    except Exception as exc:  # noqa: BLE001 - local diagnostic should surface the concrete issue.
+        return {"ok": False, "url": url, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def probe_chat_completion(api_base: str | None, model: str | None) -> dict[str, Any]:
+    if not api_base:
+        return {"ok": False, "error": "missing_api_base"}
+    if not model:
+        return {"ok": False, "error": "missing_model"}
+    url = api_base.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "Return exactly the word ready."},
+            {"role": "user", "content": "health check"},
+        ],
+        "temperature": 0,
+        "max_tokens": 8,
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read(4096).decode("utf-8", errors="replace")
+        data = json.loads(body)
+        content = str(data.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        return {
+            "ok": bool(content),
+            "status": resp.status,
+            "url": url,
+            "content": content[:200],
+            "usage": usage,
+        }
     except urllib.error.HTTPError as exc:
         body = exc.read(1024).decode("utf-8", errors="replace")
         return {"ok": False, "status": exc.code, "url": url, "error": body[:500]}
