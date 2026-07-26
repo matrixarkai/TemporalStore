@@ -25,7 +25,7 @@ CASES = [
         "category": "locomo_temporal",
         "question": "When did Caroline go to the LGBTQ support group?",
         "context": "[D1:3] 1:56 pm on 8 May, 2023 Caroline: I went to a LGBTQ support group yesterday and it was so powerful.",
-        "accepted": ["7 may 2023", "may 7 2023", "yesterday"],
+        "accepted": ["7 may 2023", "may 7 2023", "2023 05 07", "yesterday"],
     },
     {
         "id": "locomo_temporal_year",
@@ -126,7 +126,16 @@ def call_reader(base_url: str, model: str, question: str, context: str, *, timeo
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "Answer using only the context. Return a short direct answer."},
+            {
+                "role": "system",
+                "content": (
+                    "Answer using only the context. Return a short direct answer to the question. "
+                    "If the question asks for a date, year, or when something happened, "
+                    "resolve relative phrases against the context timestamp and return the explicit date or year. "
+                    "If the question asks for a fact such as a degree, owner, place, or duration, "
+                    "return that fact directly and do not substitute an unrelated date."
+                ),
+            },
             {"role": "user", "content": f"Question: {question}\nContext:\n{context}\nAnswer:"},
         ],
         "temperature": 0,
