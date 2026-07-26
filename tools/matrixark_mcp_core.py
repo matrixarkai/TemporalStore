@@ -2339,6 +2339,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "entity_type:correction": "correction wrong changed updated instead",
     "classification:correction": "correction wrong changed update",
     "segment_topic:correction": "correction updated stale changed",
+    "entity_type:assistant_decision": "assistant decision final answer done implemented chose decided next action",
     "entity_type:tool_evidence": "tool evidence tests passed failed exit code commit push rebase validation benchmark blocker",
     "source_type:message": "raw message dialogue evidence",
     "source_type:feedback": "feedback accepted rejected final answer",
@@ -2556,6 +2557,30 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "field_patches": [entity_patch("", summarize_text(tool_text, limit=180))],
             }
         )
+    assistant_messages = [
+        item
+        for item in messages
+        if str(item.get("role") or "").lower() in {"assistant", "agent", "llm"}
+        and str(item.get("content") or "").strip()
+    ]
+    assistant_text = text_from_messages(assistant_messages) if assistant_messages else ""
+    if assistant_text and re.search(
+        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|will|next|choose|chose|use|keep|remove|blocked)\b",
+        assistant_text,
+        re.IGNORECASE,
+    ):
+        decision_state = summarize_text(assistant_text, limit=220)
+        entities.append(
+            {
+                "entity_type": "assistant_decision",
+                "entity_name": "assistant_decision",
+                "state": decision_state,
+                "confidence": 0.82,
+                "source_refs": source_refs,
+                "operator": normalize_entity_operator(None, "assistant_decision"),
+                "field_patches": [entity_patch("", summarize_text(assistant_text, limit=180))],
+            }
+        )
     patterns = [
         ("preference", r"\b(?:prefer|prefers|favorite|likes?|loves?)\s+([^.;!?]{2,120})"),
         ("relationship", r"\b(?:friend|partner|mother|father|sister|brother|wife|husband|manager|teammate)\s+([^.;!?]{0,120})"),
@@ -2638,6 +2663,7 @@ def infer_entity_field_patches(entity_type: str, value: str, text: str) -> list[
         "approval_state",
         "correction",
         "confirmation",
+        "assistant_decision",
         "tool_evidence",
     }
     if entity_type in evolving_entity_types and not patches and value:
@@ -2659,6 +2685,7 @@ def canonical_entity_name(entity_type: str, value: str) -> str:
         "family_profile",
         "correction",
         "confirmation",
+        "assistant_decision",
         "tool_evidence",
     }:
         return entity_type
@@ -4147,6 +4174,8 @@ def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[
             context_index_name("classification", "correction"),
             context_index_name("segment_topic", "correction"),
         )
+    if re.search(r"\b(assistant|decision|decided|done|implemented|fixed|final answer|what did codex|what was done|next action)\b", lower):
+        add_group(context_index_name("entity_type", "assistant_decision"), context_index_name("source_type", "message"))
     if re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
         add_group(context_index_name("entity_type", "tool_evidence"))
     if re.search(r"\b(resource|document|doc|file|pdf|markdown|readme|csv|spreadsheet|excel|html|word|slides?|deck)\b", lower):
@@ -5484,6 +5513,8 @@ def compact_context_pack_ref(ref: Json) -> Json:
         "citation",
         "source_ref",
         "resource_type",
+        "entity_type",
+        "entity_name",
         "summary_type",
         "operator",
         "session_continuity",
