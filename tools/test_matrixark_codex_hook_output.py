@@ -2282,8 +2282,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
 
         self.assertIn('MATRIXARK_CODEX_CPP_USER_PROMPTS_ONLY="${MATRIXARK_CODEX_CPP_USER_PROMPTS_ONLY:-0}"', cpp_script)
         self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', cpp_script)
+        self.assertIn('MATRIXARK_HOOK_FAST_ASYNC_INGEST="${MATRIXARK_HOOK_FAST_ASYNC_INGEST:-1}"', cpp_script)
         self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', rust_script)
+        self.assertIn('MATRIXARK_HOOK_FAST_ASYNC_INGEST="${MATRIXARK_HOOK_FAST_ASYNC_INGEST:-1}"', rust_script)
         self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', dual_script)
+        self.assertIn('MATRIXARK_HOOK_FAST_ASYNC_INGEST="${MATRIXARK_HOOK_FAST_ASYNC_INGEST:-1}"', dual_script)
 
     def test_python_hook_live_fast_path_defaults_on_with_explicit_opt_out(self) -> None:
         original_env = os.environ.pop("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", None)
