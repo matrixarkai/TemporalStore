@@ -772,6 +772,18 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(budget["by_source_role"]["tool"]["refs"], 1)
             self.assertGreaterEqual(budget["by_hook_type"]["hook_boundary"]["refs"], 1)
             self.assertGreaterEqual(budget["by_codex_event"]["PostToolUse"]["refs"], 1)
+            readiness = pack["retrieval_metrics"]["async_pipeline_readiness"]
+            self.assertEqual(3, readiness["task_count"])
+            self.assertEqual(3, readiness["extraction_committed_task_count"])
+            self.assertFalse(readiness["ready_for_retrieval"])
+            self.assertIn("summary", readiness["remaining_stages"])
+            self.assertIn("compression", readiness["remaining_stages"])
+            self.assertIn("embedding", readiness["remaining_stages"])
+            self.assertIn("async_pipeline_followup_pending", readiness["freshness_warnings"])
+            self.assertTrue(
+                any(str(warning).startswith("async_pipeline_remaining_stages:") for warning in pack.get("quality_warnings", [])),
+                pack,
+            )
 
             refresh = adapter.refresh_summaries(
                 {
@@ -850,6 +862,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(summary_budget["by_source_role"]["tool"]["refs"], 1)
             self.assertGreaterEqual(summary_budget["by_hook_type"]["hook_boundary"]["refs"], 1)
             self.assertGreaterEqual(summary_budget["by_codex_event"]["PostToolUse"]["refs"], 1)
+            summary_readiness = summary_pack["retrieval_metrics"]["async_pipeline_readiness"]
+            self.assertEqual(3, summary_readiness["task_count"])
+            self.assertEqual(3, summary_readiness["summary_completed_task_count"])
+            self.assertTrue(summary_readiness["ready_for_retrieval"])
+            self.assertEqual([], summary_readiness["remaining_stages"])
+            self.assertEqual([], summary_readiness["freshness_warnings"])
 
     def test_lightweight_async_ingest_threshold_defaults_to_auto_batch_for_messages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -41,6 +41,7 @@ RETRIEVAL_HOT_RECORD_TYPES = {
     "context_index",
     "context_segment",
     "context_summary",
+    "matrixark_async_pipeline_task",
     "resource_chunk",
     "resource_manifest",
     "skill_registry_update",
@@ -70,6 +71,59 @@ def latest_async_pipeline_rows(rows: list[Json]) -> list[Json]:
         if current is None or (row_rank, row_time) >= (current_rank, current_time):
             latest_by_task[task_hash] = row
     return list(latest_by_task.values())
+
+
+def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json:
+    readiness_scope = dict(scope)
+    session_scope_mode = str(readiness_scope.pop("_session_scope", "") or "")
+    if session_scope_mode == "prefer":
+        readiness_scope.pop("session_id", None)
+    latest_rows = latest_async_pipeline_rows(
+        [
+            record
+            for record in records
+            if record.get("record_type") == "matrixark_async_pipeline_task"
+            and scope_matches(candidate_access_scope(record), readiness_scope)
+        ]
+    )
+    status_counts: dict[str, int] = {}
+    pending_task_count = 0
+    extraction_committed_task_count = 0
+    summary_completed_task_count = 0
+    remaining_stages: set[str] = set()
+    completed_stages: set[str] = set()
+    for row in latest_rows:
+        status = str(row.get("status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+        pending_task_count += int(status == "pending")
+        extraction_committed_task_count += int(status == "extraction_committed")
+        summary_completed_task_count += int(status == "summary_completed")
+        for stage in row.get("remaining_stages") if isinstance(row.get("remaining_stages"), list) else []:
+            stage_name = str(stage or "").strip()
+            if stage_name:
+                remaining_stages.add(stage_name)
+        for stage in row.get("completed_stages") if isinstance(row.get("completed_stages"), list) else []:
+            stage_name = str(stage or "").strip()
+            if stage_name:
+                completed_stages.add(stage_name)
+    warnings: list[str] = []
+    if pending_task_count:
+        warnings.append("async_pipeline_pending")
+    if extraction_committed_task_count:
+        warnings.append("async_pipeline_followup_pending")
+    if remaining_stages:
+        warnings.append("async_pipeline_remaining_stages:" + ",".join(sorted(remaining_stages)))
+    return {
+        "task_count": len(latest_rows),
+        "status_counts": dict(sorted(status_counts.items())),
+        "pending_task_count": pending_task_count,
+        "extraction_committed_task_count": extraction_committed_task_count,
+        "summary_completed_task_count": summary_completed_task_count,
+        "completed_stages": sorted(completed_stages),
+        "remaining_stages": sorted(remaining_stages),
+        "ready_for_retrieval": not pending_task_count and not extraction_committed_task_count and not remaining_stages,
+        "freshness_warnings": warnings,
+    }
 
 
 def codex_session_identity_policy(session_id_source: str) -> Json:
@@ -509,6 +563,13 @@ class MatrixArkLocalAdapter:
             else {}
         )
         stage_budgets = recall_policy.get("stage_latency_budgets", {}) if isinstance(recall_policy.get("stage_latency_budgets"), dict) else {}
+        async_pipeline_readiness = (
+            retrieval_metrics.get("async_pipeline_readiness")
+            if isinstance(retrieval_metrics.get("async_pipeline_readiness"), dict)
+            else recall_policy.get("async_pipeline_readiness")
+            if isinstance(recall_policy.get("async_pipeline_readiness"), dict)
+            else {}
+        )
         tree = recall_policy.get("tree_traversal", {}) if isinstance(recall_policy.get("tree_traversal"), dict) else {}
         secondary = recall_policy.get("secondary_index_filter", {}) if isinstance(recall_policy.get("secondary_index_filter"), dict) else {}
         rerank = recall_policy.get("rerank", {}) if isinstance(recall_policy.get("rerank"), dict) else {}
@@ -557,6 +618,7 @@ class MatrixArkLocalAdapter:
             "requested_max_context_tokens": pack.get("requested_max_context_tokens", 0),
             "memory_layer_budget": memory_layer_budget,
             "dropped_memory_layer_budget": dropped_memory_layer_budget,
+            "async_pipeline_readiness": async_pipeline_readiness,
             "session_identity": session_identity,
             "quality_warnings": pack.get("quality_warnings", []) or [],
             "partial_context_pack": bool(pack.get("partial_context_pack", False)),
@@ -5403,6 +5465,7 @@ class MatrixArkLocalAdapter:
         )
         records = retrieval_record_result["records"]
         retrieval_scan_stats = retrieval_record_result.get("scan_stats", {})
+        async_pipeline_readiness = async_pipeline_retrieval_readiness(records, retrieval_scope)
 
         def deadline_fallback(reason: str, fallback_records: list[Json] | None = None) -> Json:
             return self.deadline_fallback_pack(
@@ -6384,6 +6447,7 @@ class MatrixArkLocalAdapter:
         quality_warnings = []
         if partial_context_pack:
             quality_warnings.append(f"retrieval_deadline_exceeded:{dropped_over_budget.get('deadline_reason', 'deadline_during_context_pack')}")
+        quality_warnings.extend(async_pipeline_readiness.get("freshness_warnings", []))
         session_id_source = str(
             request_metadata.get("session_id_source")
             or request_metadata.get("codex_session_id_source")
@@ -6549,6 +6613,7 @@ class MatrixArkLocalAdapter:
                 "session_identity": session_identity_policy,
                 "memory_layer_budget": memory_layer_budget,
                 "dropped_memory_layer_budget": dropped_memory_layer_budget,
+                "async_pipeline_readiness": async_pipeline_readiness,
                 "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
                 "shared_context": dropped_over_budget.get("shared_context_policy", shared_context_policy),
                 "backend_retrieval_pushdown": retrieval_scan_stats,
@@ -6685,6 +6750,7 @@ class MatrixArkLocalAdapter:
             "local_context_policy": pack["local_context_policy"],
             "memory_layer_budget": memory_layer_budget,
             "dropped_memory_layer_budget": dropped_memory_layer_budget,
+            "async_pipeline_readiness": async_pipeline_readiness,
             "used_local_context_tokens": pack["used_local_context_tokens"],
             "used_remote_context_tokens": pack["used_remote_context_tokens"],
             "total_prompt_context_tokens": pack["total_prompt_context_tokens"],
@@ -6773,6 +6839,7 @@ class MatrixArkLocalAdapter:
             "remote_is_additive_only_within_remaining_budget": True,
             "memory_layer_budget": memory_layer_budget,
             "dropped_memory_layer_budget": dropped_memory_layer_budget,
+            "async_pipeline_readiness": async_pipeline_readiness,
             "scanned_records": int(retrieval_scan_stats.get("loaded_records") or retrieval_scan_stats.get("scanned_records") or len(records)) if isinstance(retrieval_scan_stats, dict) else len(records),
             "candidate_cache_hit": candidate_cache_hit,
             "cache_hit": candidate_cache_hit,
