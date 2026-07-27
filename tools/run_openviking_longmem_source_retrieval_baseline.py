@@ -42,6 +42,7 @@ def main() -> int:
     parser.add_argument("--reader-timeout-seconds", type=float, default=180.0)
     parser.add_argument("--reader-max-tokens", type=int, default=96)
     parser.add_argument("--top-k", type=int, default=16)
+    parser.add_argument("--question-limit", type=int, default=0, help="Optional maximum number of LongMemEval_s questions to score; 0 means all.")
     parser.add_argument("--max-context-chars", type=int, default=12000)
     parser.add_argument("--reader-include-extractive-hint", action="store_true")
     parser.add_argument("--reader-candidate-only", action="store_true")
@@ -107,6 +108,10 @@ def main() -> int:
     if not isinstance(data, list) or not data:
         report["blockers"].append("invalid_longmemeval_input")
         return finish(report, args.report, started, 2)
+    if args.question_limit > 0:
+        data = data[: args.question_limit]
+    report["question_limit"] = args.question_limit
+    report["question_slice_diagnostic"] = args.question_limit > 0
 
     per_query: list[dict[str, Any]] = []
     retrieval_hits = 0

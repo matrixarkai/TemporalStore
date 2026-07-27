@@ -2722,6 +2722,25 @@ def add_domain_reference_sources(
                 re.compile(r"\bwaking up\s+\d+\s+minutes?\s+earlier\b", re.I),
             ]
         )
+    if "commute" in q and re.search(r"\b(how long|duration|time|minutes?|hours?)\b", q):
+        patterns.extend(
+            [
+                re.compile(
+                    r"\b(?:commute|drive|train|bus|subway)\b.{0,140}"
+                    r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|"
+                    r"twenty|thirty|forty(?:[- ]five)?|fifty|sixty)\s+"
+                    r"(?:minutes?|hours?)\s+(?:each\s+way|one[- ]way|round[- ]trip|daily|to\s+work)\b",
+                    re.I,
+                ),
+                re.compile(
+                    r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|"
+                    r"twenty|thirty|forty(?:[- ]five)?|fifty|sixty)\s+"
+                    r"(?:minutes?|hours?)\s+(?:each\s+way|one[- ]way|round[- ]trip|daily|to\s+work)"
+                    r".{0,140}\b(?:commute|drive|train|bus|subway)\b",
+                    re.I,
+                ),
+            ]
+        )
     if "aquarium" in q and "fish" in q:
         patterns.append(re.compile(r"\b(?:i have|my aquarium has|my tank has|currently has)\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:[A-Za-z]+\s+){0,3}(?:fish|tetras|danios|guppies|corydoras|gouramis|bettas?)\b", re.I))
     if "charity" in q and re.search(r"\b(total|money|raise|raised)\b", q):
