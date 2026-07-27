@@ -115,6 +115,10 @@ def main() -> int:
         )
         return 2
     thresholds = resolve_threshold_policy(args)
+    full_min_case_count = int(thresholds["min_case_count"])
+    effective_min_case_count = full_min_case_count
+    if args.question_limit > 0:
+        effective_min_case_count = min(full_min_case_count, args.question_limit)
 
     repo = Path(__file__).resolve().parents[1]
     input_path = Path(args.input)
@@ -136,7 +140,7 @@ def main() -> int:
         "--min-hit-rate",
         str(thresholds["min_hit_rate"]),
         "--min-case-count",
-        str(thresholds["min_case_count"]),
+        str(effective_min_case_count),
         "--min-reader-hit-rate",
         str(thresholds["min_reader_hit_rate"]),
         "--min-token-reduction-percent",
@@ -238,7 +242,9 @@ def main() -> int:
         "mode": report.get("mode"),
         "threshold_profile": args.threshold_profile,
         "case_count": case_count,
-        "min_case_count": thresholds["min_case_count"],
+        "min_case_count": effective_min_case_count,
+        "full_run_min_case_count": full_min_case_count,
+        "bounded_question_limit": int(args.question_limit or 0),
         "conversation_count": int(report.get("conversation_count") or 0),
         "source_count": int(report.get("source_count") or 0),
         "hit_rate": hit_rate,
