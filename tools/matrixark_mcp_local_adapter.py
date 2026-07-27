@@ -6750,6 +6750,11 @@ class MatrixArkLocalAdapter:
                 continue
             if not selected_by_tree(record):
                 continue
+            index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
+            if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
+                secondary_index_dropped_count += 1
+                continue
+            secondary_index_matched_count += 1
             if not admit_candidate_for_node(record):
                 continue
             text = f"TIME_COMPRESS: {summarize_text(str(record.get('summary_text', '')), limit=96)}"
@@ -6769,6 +6774,7 @@ class MatrixArkLocalAdapter:
                 "sparse_score": sparse_score,
                 "embedding_score": embedding_score,
                 "node_score": node_score,
+                "matched_index_terms": sorted(index_terms),
                 "event_type": "time_compress",
                 "operator": "TIME_COMPRESS",
                 "context_class": "compression",
@@ -6796,7 +6802,7 @@ class MatrixArkLocalAdapter:
             }
             if origin_score > 0:
                 primary_matches.append(score_recall_candidate(annotate_session_continuity({**candidate, "recall_path": "primary_time_compression"}, record), ranking, reference_time_ms=reference_time_ms))
-            graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + [text, "time_compress"]))
+            graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + sorted(index_terms) + [text, "time_compress"]))
             if graph_score > 0:
                 auxiliary_matches.append(
                     score_recall_candidate(

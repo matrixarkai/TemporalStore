@@ -4362,6 +4362,31 @@ def candidate_index_terms(
             terms.add(context_index_name("session_continuity", continuity))
         for phase in record.get("source_extraction_phases", [])[:16]:
             terms.add(context_index_name("extraction_phase", phase))
+    elif record_type == "context_compression_event":
+        terms.update(index_terms_by_ref.get(record.get("compression_id_hash"), []))
+        terms.update(index_terms_by_node.get(record.get("node_hash"), []))
+        terms.add(context_index_name("context_class", "compression"))
+        terms.add(context_index_name("operator", record.get("operator") or "TIME_COMPRESS"))
+        for role in record.get("source_roles", [])[:16]:
+            terms.add(context_index_name("source_role", role))
+        for hook_type in record.get("source_hook_types", [])[:16]:
+            terms.add(context_index_name("hook_type", hook_type))
+        for codex_event in record.get("source_codex_events", [])[:16]:
+            terms.add(context_index_name("codex_event", codex_event))
+        for memory_scope in record.get("source_memory_scopes", [])[:16]:
+            terms.add(context_index_name("memory_scope", memory_scope))
+        for continuity in record.get("source_session_continuities", [])[:16]:
+            terms.add(context_index_name("session_continuity", continuity))
+        for phase in record.get("source_extraction_phases", [])[:16]:
+            terms.add(context_index_name("extraction_phase", phase))
+        for field, prefix in [
+            ("memory_scope", "memory_scope"),
+            ("session_continuity", "session_continuity"),
+            ("extraction_phase", "extraction_phase"),
+        ]:
+            value = record.get(field)
+            if value not in (None, "", [], {}):
+                terms.add(context_index_name(prefix, value))
     elif record_type == "context_segment":
         terms.add(context_index_name("segment_topic", record.get("topic")))
     elif record_type == "resource_chunk":
