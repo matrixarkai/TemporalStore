@@ -41,6 +41,16 @@ def main() -> int:
     )
     parser.add_argument("--reader-timeout-seconds", type=float, default=180.0)
     parser.add_argument("--reader-max-tokens", type=int, default=96)
+    parser.add_argument(
+        "--reader-evidence-mode",
+        choices=("candidate-only", "candidate-first", "context-only"),
+        default="candidate-only",
+        help=(
+            "Reader prompt/evidence policy forced for MatrixArk and OpenViking/VikingMem. "
+            "candidate-only is fastest and tests the extracted answer candidate; candidate-first "
+            "also gives the OSS reader compact evidence; context-only omits the extractive hint."
+        ),
+    )
     parser.add_argument("--locomo-input", default="/root/matrixark_benchmarks/data/locomo10.json")
     parser.add_argument("--longmem-input", default="/root/matrixark_benchmarks/data/longmemeval_s_cleaned_official_hf.json")
     parser.add_argument("--locomo-question-limit", type=int, default=300)
@@ -269,8 +279,7 @@ def locomo_matrixark_command(repo: Path, args: argparse.Namespace, report: Path,
         str(args.entity_percent),
         "--retrieval-event-percent",
         str(args.event_percent),
-        "--reader-include-extractive-hint",
-        "--reader-candidate-only",
+        *reader_policy_flags(args),
         "--reader-no-fallback",
         "--require-open-source-reader",
         "--require-shared-oss-models",
@@ -340,8 +349,7 @@ def longmem_matrixark_command(repo: Path, args: argparse.Namespace, report: Path
         str(args.entity_percent),
         "--retrieval-event-percent",
         str(args.event_percent),
-        "--reader-include-extractive-hint",
-        "--reader-candidate-only",
+        *reader_policy_flags(args),
         "--reader-no-fallback",
         "--require-open-source-reader",
         "--require-shared-oss-models",
@@ -392,8 +400,7 @@ def locomo_baseline_command(repo: Path, args: argparse.Namespace, matrixark_repo
         str(args.entity_percent),
         "--event-percent",
         str(args.event_percent),
-        "--reader-include-extractive-hint",
-        "--reader-candidate-only",
+        *reader_policy_flags(args),
         "--require-shared-oss-models",
     ]
 
@@ -432,8 +439,7 @@ def longmem_baseline_command(repo: Path, args: argparse.Namespace, matrixark_rep
         str(args.entity_percent),
         "--event-percent",
         str(args.event_percent),
-        "--reader-include-extractive-hint",
-        "--reader-candidate-only",
+        *reader_policy_flags(args),
         "--require-shared-oss-models",
     ]
     if args.longmem_question_limit > 0:
@@ -456,6 +462,17 @@ def apply_shared_oss_stack_aliases(args: argparse.Namespace) -> None:
         args.reader_model = args.oss_reader_model
     if args.oss_encoding_model:
         args.embedding_model = args.oss_encoding_model
+
+
+def reader_policy_flags(args: argparse.Namespace) -> list[str]:
+    mode = str(getattr(args, "reader_evidence_mode", "candidate-only") or "candidate-only")
+    if mode == "candidate-only":
+        return ["--reader-include-extractive-hint", "--reader-candidate-only"]
+    if mode == "candidate-first":
+        return ["--reader-include-extractive-hint", "--reader-candidate-first", "--reader-focus-evidence"]
+    if mode == "context-only":
+        return ["--reader-focus-evidence"]
+    raise ValueError(f"unsupported reader evidence mode: {mode}")
 
 
 def write_shared_oss_stack_contract(output_root: Path, args: argparse.Namespace) -> None:
@@ -482,6 +499,8 @@ def write_shared_oss_stack_contract(output_root: Path, args: argparse.Namespace)
             "entity_percent": args.entity_percent,
             "event_percent": args.event_percent,
         },
+        "reader_evidence_mode": args.reader_evidence_mode,
+        "reader_policy_flags": reader_policy_flags(args),
     }
     (output_root / "fair_oss_shared_stack_contract.json").write_text(
         json.dumps(contract, indent=2, sort_keys=True) + "\n",
