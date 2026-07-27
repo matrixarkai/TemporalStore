@@ -5844,6 +5844,9 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
     async_pipeline_readiness = recall_summary.get("async_pipeline_readiness") if isinstance(recall_summary, dict) else {}
     if isinstance(async_pipeline_readiness, dict) and async_pipeline_readiness:
         compact["async_pipeline_readiness"] = async_pipeline_readiness
+    memory_hierarchy = memory_hierarchy_contract_from_recall_policy(compact.get("recall_policy", {}))
+    if memory_hierarchy:
+        compact["memory_hierarchy"] = memory_hierarchy
     compact.pop("recall_policy", None)
 
     local_policy = compact.get("local_context_policy")
@@ -5960,6 +5963,56 @@ def compact_dropped_refs_for_context_pack(dropped: Json, *, include_debug: bool 
         compact["dropped_ref_detail_available_in_audit"] = True
         compact["dropped_ref_count"] = len(dropped.get("refs") or [])
     return compact
+
+
+def memory_hierarchy_contract_from_recall_policy(recall_policy: Json) -> Json:
+    if not isinstance(recall_policy, dict):
+        return {}
+    continuity = recall_policy.get("session_continuity") if isinstance(recall_policy.get("session_continuity"), dict) else {}
+    cross_session = recall_policy.get("cross_session") if isinstance(recall_policy.get("cross_session"), dict) else {}
+    shared_context = recall_policy.get("shared_context") if isinstance(recall_policy.get("shared_context"), dict) else {}
+    return {
+        "models": {
+            "session_entity": {
+                "record_type": "context_entity",
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+            },
+            "profile_entity": {
+                "record_type": "context_entity",
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "node_path_suffix": "profile:long_term_memory",
+            },
+            "profile_index": {
+                "record_type": "context_index",
+                "data_model": "context_profile_entity",
+            },
+        },
+        "retrieval_strategy": continuity.get(
+            "policy",
+            "same-session continuity first; entity state bridges cross-session memory; cross-session evidence remains bounded",
+        ),
+        "session_scope_mode": continuity.get("mode"),
+        "cross_session_enabled": cross_session.get("enabled"),
+        "cross_session_budget_tokens": cross_session.get("budget_tokens"),
+        "cross_session_remote_budget_tokens": cross_session.get("remote_budget_tokens"),
+        "cross_session_computed_budget_tokens": cross_session.get("computed_budget_tokens"),
+        "cross_session_budget_floor_tokens": cross_session.get("budget_floor_tokens"),
+        "cross_session_budget_floor_applied": cross_session.get("budget_floor_applied"),
+        "cross_session_budget_floor_status": cross_session.get("budget_floor_status"),
+        "cross_session_max_sessions": cross_session.get("max_sessions"),
+        "cross_session_max_candidates": cross_session.get("max_candidates"),
+        "shared_context_enabled": shared_context.get("enabled"),
+        "selected_ref_flow": [
+            "local_context_budget",
+            "same_session_memory",
+            "profile_entity_bridge",
+            "bounded_cross_session_evidence",
+            "summary_or_compression",
+            "shared_resource_or_skill",
+        ],
+    }
 
 
 def compact_recall_policy_for_audit(recall_policy: Json) -> Json:
