@@ -28,6 +28,11 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_retrieve_pack_builder import selected_ref_layer_budget
 
+try:
+    from tools.matrixark_mcp_summary_runtime import async_summary_progress_records
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_summary_runtime import async_summary_progress_records
+
 RETRIEVAL_HOT_RECORD_TYPES = {
     "context_compression_event",
     "context_embedding",
@@ -2084,6 +2089,20 @@ class MatrixArkLocalAdapter:
                         "scope": dirty.get("scope", scope),
                     }
                 )
+            generated_summary_types = [spec[0] for spec in summary_specs]
+            summary_progress_records = async_summary_progress_records(
+                records=records,
+                scope=dirty.get("scope", scope),
+                source_event_ids=source_event_ids,
+                source_entity_hashes=source_entity_hashes,
+                dirty_hash=dirty.get("dirty_hash"),
+                node_hash=node_hash,
+                node_path=node_path,
+                generated_summary_types=generated_summary_types,
+                refreshed_at_ms=refreshed_at_ms,
+            )
+            if summary_progress_records:
+                self.append_many(summary_progress_records)
             refreshed.append(
                 {
                     "dirty_hash": dirty.get("dirty_hash"),
@@ -2101,9 +2120,10 @@ class MatrixArkLocalAdapter:
                     "source_extraction_phases": source_extraction_phases,
                     "source_final_session_boundary_count": source_final_session_boundary_count,
                     "source_operator_count": len(source_operator_hashes),
-                    "generated_summary_types": [spec[0] for spec in summary_specs],
+                    "generated_summary_types": generated_summary_types,
                     "summary_generation_policy": l1_policy,
                     "time_compression": compression_refresh,
+                    "async_summary_progress_count": len(summary_progress_records),
                 }
             )
         return {

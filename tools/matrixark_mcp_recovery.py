@@ -447,16 +447,32 @@ def matrixark_local_recovery_report(
         record for record in records
         if record.get("record_type") == "matrixark_async_pipeline_task"
     ]
+    latest_async_task_by_hash: dict[int, Json] = {}
+    for record in async_task_records:
+        try:
+            task_hash = int(record.get("task_hash") or record.get("event_id_hash"))
+        except (TypeError, ValueError):
+            continue
+        current = latest_async_task_by_hash.get(task_hash)
+        if current is None or int(record.get("updated_at_ms") or record.get("created_at_ms") or 0) >= int(
+            current.get("updated_at_ms") or current.get("created_at_ms") or 0
+        ):
+            latest_async_task_by_hash[task_hash] = record
+    latest_async_task_records = list(latest_async_task_by_hash.values())
     async_task_status_counts = Counter(
-        str(record.get("status") or "unknown") for record in async_task_records
+        str(record.get("status") or "unknown") for record in latest_async_task_records
     )
     async_committed_task_records = [
-        record for record in async_task_records
+        record for record in latest_async_task_records
         if str(record.get("status") or "") == "extraction_committed"
     ]
     async_pending_task_records = [
-        record for record in async_task_records
+        record for record in latest_async_task_records
         if str(record.get("status") or "") == "pending"
+    ]
+    async_summary_completed_task_records = [
+        record for record in latest_async_task_records
+        if str(record.get("status") or "") == "summary_completed"
     ]
     async_committed_event_ids = {
         int(record.get("event_id_hash"))
@@ -471,7 +487,7 @@ def matrixark_local_recovery_report(
     async_completed_stages = sorted(
         {
             str(stage)
-            for record in async_task_records
+            for record in latest_async_task_records
             for stage in (record.get("completed_stages") if isinstance(record.get("completed_stages"), list) else [])
             if str(stage or "")
         }
@@ -479,18 +495,19 @@ def matrixark_local_recovery_report(
     async_remaining_stages = sorted(
         {
             str(stage)
-            for record in async_task_records
+            for record in latest_async_task_records
             for stage in (record.get("remaining_stages") if isinstance(record.get("remaining_stages"), list) else [])
             if str(stage or "")
         }
     )
     async_trigger_policy_counts = Counter(
         str(record.get("trigger_policy") or "unknown")
-        for record in async_committed_task_records
+        for record in latest_async_task_records
+        if record.get("trigger_policy")
     )
     async_source_role_counts = Counter(
         str(role)
-        for record in async_task_records
+        for record in latest_async_task_records
         for role in (record.get("source_roles") if isinstance(record.get("source_roles"), list) else [])
         if str(role or "")
     )
@@ -707,10 +724,12 @@ def matrixark_local_recovery_report(
             "status_counts": dict(sorted(async_task_status_counts.items())),
             "pending_task_count": len(async_pending_task_records),
             "extraction_committed_task_count": len(async_committed_task_records),
+            "summary_completed_task_count": len(async_summary_completed_task_records),
             "pending_event_count": len(async_pending_event_ids),
             "extraction_committed_event_count": len(async_committed_event_ids),
             "task_progress_rebuildable_from_durable_log": bool(async_task_records) and not blockers,
             "extraction_progress_rebuildable_from_durable_log": bool(async_committed_task_records) and not blockers,
+            "summary_progress_rebuildable_from_durable_log": bool(async_summary_completed_task_records) and not blockers,
             "completed_stages": async_completed_stages,
             "remaining_stages": async_remaining_stages,
             "trigger_policy_counts": dict(sorted(async_trigger_policy_counts.items())),

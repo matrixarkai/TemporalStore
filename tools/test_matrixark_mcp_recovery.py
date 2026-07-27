@@ -180,6 +180,25 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                 },
                 "updated_at_ms": 150,
             },
+            {
+                "record_type": "matrixark_async_pipeline_task",
+                "task_hash": 701,
+                "event_id_hash": 101,
+                "commit_id_hash": 801,
+                "batch_id_hash": 802,
+                "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "codex:session-a"},
+                "status": "summary_completed",
+                "stages": ["extraction", "summary", "compression", "embedding"],
+                "completed_stages": ["extraction", "summary"],
+                "remaining_stages": ["compression", "embedding"],
+                "summary_completed": True,
+                "summary_dirty_hash": 901,
+                "summary_node_hash": 10,
+                "generated_summary_types": ["node_l0", "node_l1"],
+                "trigger_policy": "threshold",
+                "source_roles": ["user", "assistant"],
+                "updated_at_ms": 175,
+            },
         ]
 
         report = matrixark_local_recovery_report(
@@ -302,19 +321,21 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertEqual(512, report["retrieval_visibility"]["max_remote_context_budget_tokens"])
         self.assertTrue(report["cache_rebuild"]["retrieval_visibility_rebuildable_from_durable_log"])
         self.assertTrue(report["cache_rebuild"]["async_pipeline_rebuildable_from_durable_log"])
-        self.assertEqual(2, report["async_pipeline"]["task_count"])
-        self.assertEqual(1, report["async_pipeline"]["pending_task_count"])
-        self.assertEqual(1, report["async_pipeline"]["extraction_committed_task_count"])
-        self.assertEqual(1, report["async_pipeline"]["pending_event_count"])
-        self.assertEqual(1, report["async_pipeline"]["extraction_committed_event_count"])
+        self.assertEqual(3, report["async_pipeline"]["task_count"])
+        self.assertEqual(0, report["async_pipeline"]["pending_task_count"])
+        self.assertEqual(0, report["async_pipeline"]["extraction_committed_task_count"])
+        self.assertEqual(1, report["async_pipeline"]["summary_completed_task_count"])
+        self.assertEqual(0, report["async_pipeline"]["pending_event_count"])
+        self.assertEqual(0, report["async_pipeline"]["extraction_committed_event_count"])
         self.assertTrue(report["async_pipeline"]["task_progress_rebuildable_from_durable_log"])
-        self.assertTrue(report["async_pipeline"]["extraction_progress_rebuildable_from_durable_log"])
-        self.assertEqual(["extraction"], report["async_pipeline"]["completed_stages"])
-        self.assertEqual(["compression", "embedding", "summary"], report["async_pipeline"]["remaining_stages"])
+        self.assertFalse(report["async_pipeline"]["extraction_progress_rebuildable_from_durable_log"])
+        self.assertTrue(report["async_pipeline"]["summary_progress_rebuildable_from_durable_log"])
+        self.assertEqual(["extraction", "summary"], report["async_pipeline"]["completed_stages"])
+        self.assertEqual(["compression", "embedding"], report["async_pipeline"]["remaining_stages"])
         self.assertEqual(1, report["async_pipeline"]["trigger_policy_counts"]["threshold"])
         self.assertEqual(1, report["async_pipeline"]["source_role_counts"]["assistant"])
         self.assertEqual(1, report["async_pipeline"]["source_role_counts"]["user"])
-        self.assertTrue(report["async_pipeline"]["summary_stage_pending_after_extraction"])
+        self.assertFalse(report["async_pipeline"]["summary_stage_pending_after_extraction"])
         self.assertTrue(report["async_pipeline"]["compression_stage_pending_after_extraction"])
         self.assertTrue(report["async_pipeline"]["embedding_stage_pending_after_extraction"])
         bootstrap = report["cluster_join_bootstrap"]

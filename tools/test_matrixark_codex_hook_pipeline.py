@@ -795,6 +795,18 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(any("PostToolUse" in item.get("source_codex_events", []) for item in profile_summaries))
             self.assertTrue(any("user_profile" in item.get("source_memory_scopes", []) for item in profile_summaries))
             self.assertTrue(any("cross_session" in item.get("source_session_continuities", []) for item in profile_summaries))
+            self.assertTrue(any(item.get("async_summary_progress_count", 0) >= 1 for item in profile_summaries))
+            summary_progress = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") == "matrixark_async_pipeline_task"
+                and record.get("status") == "summary_completed"
+            ]
+            self.assertTrue(summary_progress)
+            self.assertTrue(all("summary" in record.get("completed_stages", []) for record in summary_progress))
+            self.assertTrue(all("summary" not in record.get("remaining_stages", []) for record in summary_progress))
+            self.assertTrue(all(record.get("summary_completed") for record in summary_progress))
+            self.assertTrue(any(record.get("generated_summary_types") for record in summary_progress))
 
             summary_pack = adapter.retrieve(
                 {
