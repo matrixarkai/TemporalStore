@@ -830,7 +830,27 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             "Stop": {"refs": 1, "tokens": 12},
                         },
                         "final_session_boundary_ref_count": 2,
-                    }
+                    },
+                    "dropped_memory_layer_budget": {
+                        "by_memory_scope": {
+                            "user_profile": {"refs": 1, "tokens": 22},
+                        },
+                        "by_session_continuity": {
+                            "cross_session": {"refs": 1, "tokens": 22},
+                        },
+                        "by_ref_type": {
+                            "entity": {"refs": 1, "tokens": 22},
+                        },
+                        "by_entity_type": {
+                            "assistant_decision": {"refs": 1, "tokens": 22},
+                        },
+                        "by_source_role": {
+                            "assistant": {"refs": 1, "tokens": 22},
+                        },
+                        "by_hook_type": {
+                            "after_llm": {"refs": 1, "tokens": 22},
+                        },
+                    },
                 },
                 "dropped_refs": {
                     "cross_session_budget": 2,
@@ -867,6 +887,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             output["retrieve"]["budget_pressure"]["dropped_by_reason"],
         )
         self.assertEqual(5, output["retrieve"]["budget_pressure"]["budget_pressure_reason_count"])
+        self.assertEqual(
+            1,
+            output["retrieve"]["budget_pressure"]["dropped_memory_layer_budget"]["by_memory_scope"][
+                "user_profile"
+            ]["refs"],
+        )
         self.assertEqual(58, output["retrieve"]["budget"]["remote_budget_remaining_tokens"])
         self.assertFalse(output["retrieve"]["budget"]["remote_budget_overrun"])
         self.assertEqual("payload_field", output["retrieve"]["session_identity"]["session_id_source"])
@@ -929,6 +955,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("cross_session_budget=2", additional)
         self.assertIn("max_selected_refs=3", additional)
         self.assertIn("budget_fill_policy=quality_first", additional)
+        self.assertIn("dropped_memory_layer_budget:", additional)
+        self.assertIn("scope[user_profile=1/22t]", additional)
+        self.assertIn("continuity[cross_session=1/22t]", additional)
+        self.assertIn("entity_type[assistant_decision=1/22t]", additional)
+        self.assertIn("source_role[assistant=1/22t]", additional)
+        self.assertIn("hook_type[after_llm=1/22t]", additional)
 
     def test_additional_context_layer_summary_falls_back_to_serving_refs(self) -> None:
         args = Namespace(session_id="codex-session-1")

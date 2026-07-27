@@ -195,9 +195,19 @@ def retrieval_budget_summary_from_retrieve(pack: Json | None) -> Json:
 def retrieval_budget_pressure_from_retrieve(pack: Json | None) -> Json:
     if not isinstance(pack, dict):
         return {}
-    dropped = pack.get("dropped_refs") if isinstance(pack.get("dropped_refs"), dict) else {}
+    pack_view = _context_pack_view(pack)
+    dropped = pack_view.get("dropped_refs") if isinstance(pack_view.get("dropped_refs"), dict) else {}
     if not dropped:
         return {}
+    retrieval_metrics = pack_view.get("retrieval_metrics") if isinstance(pack_view.get("retrieval_metrics"), dict) else {}
+    recall_policy = pack_view.get("recall_policy") if isinstance(pack_view.get("recall_policy"), dict) else {}
+    dropped_memory_layer_budget = retrieval_metrics.get("dropped_memory_layer_budget")
+    if not isinstance(dropped_memory_layer_budget, dict):
+        dropped_memory_layer_budget = recall_policy.get("dropped_memory_layer_budget")
+    if not isinstance(dropped_memory_layer_budget, dict):
+        dropped_memory_layer_budget = pack_view.get("dropped_memory_layer_budget")
+    if not isinstance(dropped_memory_layer_budget, dict):
+        dropped_memory_layer_budget = {}
     budget_reasons = [
         "over_budget",
         "cross_session_budget",
@@ -226,6 +236,8 @@ def retrieval_budget_pressure_from_retrieve(pack: Json | None) -> Json:
         "deadline_reason": dropped.get("deadline_reason"),
         "budget_fill_policy": dropped.get("budget_fill_policy"),
     }
+    if dropped_memory_layer_budget:
+        summary["dropped_memory_layer_budget"] = dropped_memory_layer_budget
     if dropped_by_reason:
         summary["budget_pressure_reason_count"] = sum(int(value) for value in dropped_by_reason.values())
     return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
@@ -673,34 +685,7 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
         if value > 0:
             continuity_bits.append(f"{key}={value}")
     memory_layer_budget = layer_summary.get("memory_layer_budget") if isinstance(layer_summary.get("memory_layer_budget"), dict) else {}
-    budget_bits = []
-    for label, bucket_name in [
-        ("scope", "by_memory_scope"),
-        ("continuity", "by_session_continuity"),
-        ("phase", "by_extraction_phase"),
-        ("ref_type", "by_ref_type"),
-        ("entity_type", "by_entity_type"),
-        ("source_role", "by_source_role"),
-        ("hook_type", "by_hook_type"),
-        ("codex_event", "by_codex_event"),
-    ]:
-        buckets = memory_layer_budget.get(bucket_name)
-        if not isinstance(buckets, dict):
-            continue
-        bucket_bits = []
-        for bucket_key in sorted(buckets):
-            bucket = buckets.get(bucket_key)
-            if not isinstance(bucket, dict):
-                continue
-            try:
-                ref_count = int(bucket.get("refs") or 0)
-                token_count_estimate = int(bucket.get("tokens") or 0)
-            except (TypeError, ValueError):
-                continue
-            if ref_count > 0:
-                bucket_bits.append(f"{bucket_key}={ref_count}/{token_count_estimate}t")
-        if bucket_bits:
-            budget_bits.append(f"{label}[" + ", ".join(bucket_bits) + "]")
+    budget_bits = _format_memory_layer_budget_bits(memory_layer_budget)
     try:
         final_boundary_refs = int(memory_layer_budget.get("final_session_boundary_ref_count") or 0)
     except (TypeError, ValueError):
@@ -735,6 +720,40 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
     if readiness_bits:
         details.append("async_pipeline[" + "; ".join(readiness_bits) + "]")
     return "Layer summary: " + "; ".join(details) + "."
+
+
+def _format_memory_layer_budget_bits(memory_layer_budget: Json) -> list[str]:
+    if not isinstance(memory_layer_budget, dict) or not memory_layer_budget:
+        return []
+    budget_bits = []
+    for label, bucket_name in [
+        ("scope", "by_memory_scope"),
+        ("continuity", "by_session_continuity"),
+        ("phase", "by_extraction_phase"),
+        ("ref_type", "by_ref_type"),
+        ("entity_type", "by_entity_type"),
+        ("source_role", "by_source_role"),
+        ("hook_type", "by_hook_type"),
+        ("codex_event", "by_codex_event"),
+    ]:
+        buckets = memory_layer_budget.get(bucket_name)
+        if not isinstance(buckets, dict):
+            continue
+        bucket_bits = []
+        for bucket_key in sorted(buckets):
+            bucket = buckets.get(bucket_key)
+            if not isinstance(bucket, dict):
+                continue
+            try:
+                ref_count = int(bucket.get("refs") or 0)
+                token_count_estimate = int(bucket.get("tokens") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ref_count > 0:
+                bucket_bits.append(f"{bucket_key}={ref_count}/{token_count_estimate}t")
+        if bucket_bits:
+            budget_bits.append(f"{label}[" + ", ".join(bucket_bits) + "]")
+    return budget_bits
 
 
 def normalized_event_name(event: str) -> str:
@@ -935,6 +954,10 @@ def additional_context_from_retrieve(
             pressure_bits.append("deadline_exceeded=true")
         if budget_pressure.get("budget_fill_policy"):
             pressure_bits.append(f"budget_fill_policy={budget_pressure.get('budget_fill_policy')}")
+        dropped_budget = budget_pressure.get("dropped_memory_layer_budget")
+        dropped_budget_bits = _format_memory_layer_budget_bits(dropped_budget if isinstance(dropped_budget, dict) else {})
+        if dropped_budget_bits:
+            pressure_bits.append("dropped_memory_layer_budget: " + "; ".join(dropped_budget_bits))
         if pressure_bits:
             lines.append("Budget pressure: " + ", ".join(pressure_bits) + ".")
     if isinstance(quality_warnings, list) and quality_warnings:
