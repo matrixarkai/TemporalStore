@@ -417,6 +417,14 @@ def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:
             if label:
                 budget[bucket_name][label] = int(budget[bucket_name].get(label, 0)) + 1
 
+    def source_list(ref: Json, source_key: str, fallback: str) -> list[str]:
+        values = ref.get(source_key)
+        if isinstance(values, list):
+            labels = [str(value or "").strip() for value in values if str(value or "").strip()]
+            if labels:
+                return labels
+        return [fallback] if fallback else []
+
     for ref in refs:
         text = _ref_text(ref).lstrip().lower()
         try:
@@ -431,12 +439,18 @@ def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:
         memory_scope = str(ref.get("memory_scope") or "session")
         continuity = str(ref.get("session_continuity") or "same_session")
         extraction_phase = str(ref.get("extraction_phase") or "provisional")
-        add("by_memory_scope", memory_scope, token_estimate)
-        add("by_session_continuity", continuity, token_estimate)
-        add("by_extraction_phase", extraction_phase, token_estimate)
-        if extraction_phase == "final":
+        source_memory_scopes = source_list(ref, "source_memory_scopes", memory_scope)
+        source_session_continuities = source_list(ref, "source_session_continuities", continuity)
+        source_extraction_phases = source_list(ref, "source_extraction_phases", extraction_phase)
+        for source_memory_scope in source_memory_scopes:
+            add("by_memory_scope", source_memory_scope, token_estimate)
+        for source_continuity in source_session_continuities:
+            add("by_session_continuity", source_continuity, token_estimate)
+        for source_phase in source_extraction_phases:
+            add("by_extraction_phase", source_phase, token_estimate)
+        if "final" in source_extraction_phases:
             budget["final_ref_count"] += 1
-        else:
+        if any(phase != "final" for phase in source_extraction_phases):
             budget["provisional_ref_count"] += 1
         entity_type = str(ref.get("entity_type") or "")
         source_roles = ref.get("source_roles") if isinstance(ref.get("source_roles"), list) else []

@@ -1135,6 +1135,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     {
                         "context_class": "summary",
                         "entity_type": "tool_evidence",
+                        "source_memory_scopes": ["session", "user_profile"],
+                        "source_session_continuities": ["same_session", "cross_session"],
+                        "source_extraction_phases": ["final", "provisional"],
                         "source_roles": ["tool"],
                         "source_role_counts": {"tool": 3},
                         "source_hook_types": ["tool_result"],
@@ -1164,6 +1167,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("entity_bridge_refs=1", additional)
         self.assertIn("session_memory_refs=1", additional)
         self.assertIn("profile_memory_refs=1", additional)
+        self.assertIn("scope[session=2/", additional)
+        self.assertIn("user_profile=2/", additional)
+        self.assertIn("continuity[cross_session=2/", additional)
+        self.assertIn("same_session=2/", additional)
+        self.assertIn("phase[final=1/", additional)
+        self.assertIn("provisional=3/", additional)
         self.assertIn("entity_type[assistant_decision=", additional)
         self.assertIn("tool_evidence=", additional)
         self.assertIn("source_role[assistant=", additional)
