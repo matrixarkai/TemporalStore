@@ -1269,6 +1269,15 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
                     "scope_key": f"tenant:readiness/user:{raw_backend}/session:local-recovery",
                     "idempotency_key": f"{raw_backend}:local-recovery:index",
                 },
+                {
+                    "record_type": "context_summary",
+                    "summary_type": "session_l1",
+                    "summary_hash": backfill.stable_hash(f"{raw_backend}:local-recovery:summary"),
+                    "node_hash": backfill.stable_hash(f"{raw_backend}:local-recovery:node"),
+                    "scope": {"tenant_id": "readiness", "user_id": raw_backend, "session_id": "local-recovery"},
+                    "summary_text": "Local recovery can rebuild summary serving records for retrieval.",
+                    "idempotency_key": f"{raw_backend}:local-recovery:summary",
+                },
             ]
             for offset, record in enumerate(recovery_records):
                 sequence = records + offset
