@@ -2771,6 +2771,7 @@ LOCAL_RECOVERY_REQUIRED_TYPES = {
     'context_entity': 'recovery:context_entity_missing',
     'context_embedding': 'recovery:context_embedding_missing',
     'context_index': 'recovery:context_index_missing',
+    'context_summary': 'recovery:context_summary_missing',
 }
 
 
@@ -2783,6 +2784,8 @@ def _context_metric_name(record_type: str) -> str:
         return 'context_entities'
     if record_type == 'context_event':
         return 'context_events'
+    if record_type == 'context_summary':
+        return 'context_summaries'
     return f'{record_type}s'
 
 
