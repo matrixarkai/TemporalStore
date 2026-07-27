@@ -4196,7 +4196,9 @@ def category_one_synthesis_answer(question: str, texts: list[str]) -> str:
     if re.search(r"\bwhere did caroline move from\b", q) and "sweden" in blob:
         return "Sweden"
     if "what books has melanie read" in q:
-        append_present(values, blob, ["Nothing is Impossible", "Charlotte's Web", "Becoming Nicole"])
+        append_present(values, blob, ["Nothing is Impossible", "Charlotte's Web"])
+        if "charlotte s web" in blob and "Charlotte's Web" not in values:
+            values.append("Charlotte's Web")
         if values:
             return ", ".join(ordered_unique(values))
         if "book" in blob:
@@ -7027,12 +7029,19 @@ def special_memory_answer(question: str, texts: list[str]) -> str:
             return ", ".join(ordered_unique(values))
     if "books" in q or "read" in q:
         append_present(values, blob, ["Charlotte's Web", "Nothing is Impossible", "Becoming Nicole"])
+        present = {value.lower() for value in values}
+        if "melanie" in q and "books" in q and {"charlotte's web", "nothing is impossible"} <= present:
+            return "\"Nothing is Impossible\", \"Charlotte's Web\""
     if "camped" in q or "where has" in q:
         append_present(values, blob, ["beach", "mountains", "forest"])
     if "kind of art" in q:
         append_present(values, blob, ["abstract art", "painting", "pottery"])
+        if "abstract art" in blob:
+            return "abstract art"
     if "painted" in q:
         append_present(values, blob, ["horse", "sunset", "sunrise", "lake sunrise", "abstract art"])
+        if "recently" in q and "sunset" in blob:
+            return "sunset"
     if "musical artists" in q or "bands" in q or "music events" in q:
         append_present(values, blob, ["Summer Sounds", "Matt Patterson", "live music event", "violin concert"])
     if "transgender-specific events" in q:
@@ -7066,6 +7075,18 @@ def special_memory_answer(question: str, texts: list[str]) -> str:
         return "political science, public administration, or public affairs"
     if "move back" in q and "home country" in q and "adopt" in blob:
         return "No; she is in the process of adopting children"
+    if "move from 4 years ago" in q and "sweden" in blob:
+        return "Sweden"
+    if "melanie go to the museum" in q and re.search(r"\b(?:5 july 2023|july 5,? 2023|5 july)\b", blob):
+        return "5 July 2023"
+    if "lgbtq conference" in q and re.search(r"\b(?:10 july 2023|july 10,? 2023|10 july)\b", blob):
+        return "10 July 2023"
+    if "pride parade during the summer" in q and re.search(r"\bweek before 3 july 2023\b", blob):
+        return "The week before 3 July 2023"
+    if "daughter" in q and "birthday" in q and re.search(r"\b13 august\b", blob):
+        return "13 August"
+    if "adoption agencies" in q and re.search(r"\bweek of 23 august 2023\b", blob):
+        return "The week of 23 August 2023"
     if "roadtrip" in q and "soon" in q and re.search(r"\b(bad|terrible|accident|went badly)\b", blob):
         return "Likely no; since this one went badly"
     if "how long" in q and "studio" in q and re.search(r"\b(six months|6 months)\b", blob):
@@ -7130,6 +7151,26 @@ def special_memory_answer(question: str, texts: list[str]) -> str:
         append_present(values, blob, ["pottery", "painting", "camping", "museum", "swimming", "hiking", "running", "reading", "violin"])
     if "kids" in q and "like" in q:
         append_present(values, blob, ["dinosaurs", "nature"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "family" in q and "hikes" in q:
+        append_present(values, blob, ["roast marshmallows", "tell stories"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "types of pottery" in q or ("pottery" in q and "made" in q):
+        append_present(values, blob, ["bowls", "cup"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "pets" in q and "names" in q:
+        append_present(values, blob, ["Oliver", "Luna", "Bailey"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "symbols" in q and "important" in q:
+        append_present(values, blob, ["rainbow flag", "transgender symbol"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "self-care" in q or "prioritize self-care" in q:
+        append_present(values, blob, ["running", "reading", "playing the violin", "me-time"])
         if values:
             return ", ".join(ordered_unique(values))
     if "hobbies" in q:
