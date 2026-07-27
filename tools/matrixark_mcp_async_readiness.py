@@ -27,6 +27,59 @@ def latest_async_pipeline_rows(rows: list[Json]) -> list[Json]:
     return list(latest_by_task.values())
 
 
+def _layer_readiness_entry(*, pending_tasks: int, remaining_stages: list[str]) -> Json:
+    return {
+        "ready": pending_tasks == 0 and not remaining_stages,
+        "pending_task_count": pending_tasks,
+        "remaining_stages": remaining_stages,
+    }
+
+
+def async_memory_layer_readiness(
+    *,
+    pending_memory_scopes: dict[str, int],
+    pending_session_continuities: dict[str, int],
+    remaining_stage_counts: dict[str, int],
+) -> Json:
+    layers: Json = {
+        "session": _layer_readiness_entry(
+            pending_tasks=int(pending_memory_scopes.get("session", 0)),
+            remaining_stages=[],
+        ),
+        "user_profile": _layer_readiness_entry(
+            pending_tasks=int(pending_memory_scopes.get("user_profile", 0)),
+            remaining_stages=[],
+        ),
+        "same_session": _layer_readiness_entry(
+            pending_tasks=int(pending_session_continuities.get("same_session", 0)),
+            remaining_stages=[],
+        ),
+        "cross_session": _layer_readiness_entry(
+            pending_tasks=int(pending_session_continuities.get("cross_session", 0)),
+            remaining_stages=[],
+        ),
+        "summary": _layer_readiness_entry(
+            pending_tasks=int(remaining_stage_counts.get("summary", 0)),
+            remaining_stages=["summary"] if int(remaining_stage_counts.get("summary", 0)) else [],
+        ),
+        "compression": _layer_readiness_entry(
+            pending_tasks=int(remaining_stage_counts.get("compression", 0)),
+            remaining_stages=["compression"] if int(remaining_stage_counts.get("compression", 0)) else [],
+        ),
+        "embedding": _layer_readiness_entry(
+            pending_tasks=int(remaining_stage_counts.get("embedding", 0)),
+            remaining_stages=["embedding"] if int(remaining_stage_counts.get("embedding", 0)) else [],
+        ),
+    }
+    blocked_layers = [name for name, layer in layers.items() if not bool(layer.get("ready"))]
+    return {
+        "layers": layers,
+        "blocked_layers": blocked_layers,
+        "ready_layers": [name for name, layer in layers.items() if bool(layer.get("ready"))],
+        "ready_for_retrieval": not blocked_layers,
+    }
+
+
 def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json:
     readiness_scope = dict(scope)
     session_scope_mode = str(readiness_scope.pop("_session_scope", "") or "")
@@ -102,6 +155,11 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
         warnings.append("async_pipeline_followup_pending")
     if remaining_stages:
         warnings.append("async_pipeline_remaining_stages:" + ",".join(sorted(remaining_stages)))
+    layer_readiness = async_memory_layer_readiness(
+        pending_memory_scopes=pending_memory_scopes,
+        pending_session_continuities=pending_session_continuities,
+        remaining_stage_counts=remaining_stage_counts,
+    )
     return {
         "task_count": len(latest_rows),
         "status_counts": dict(sorted(status_counts.items())),
@@ -118,6 +176,7 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
         "pending_session_continuities": dict(sorted(pending_session_continuities.items())),
         "pending_extraction_phases": dict(sorted(pending_extraction_phases.items())),
         "pending_final_session_boundary_count": pending_final_session_boundary_count,
+        "memory_layer_readiness": layer_readiness,
         "ready_for_retrieval": not pending_task_count and not extraction_committed_task_count and not remaining_stages,
         "freshness_warnings": warnings,
     }
