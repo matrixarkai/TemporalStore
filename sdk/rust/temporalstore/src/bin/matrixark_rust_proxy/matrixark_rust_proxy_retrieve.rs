@@ -86,6 +86,7 @@ pub(crate) fn retrieve_context_pack_native(
         dropped_cross_budget: selection.dropped_cross_budget,
         dropped_cross_session_cap: selection.dropped_cross_session_cap,
         dropped_cross_candidate_cap: selection.dropped_cross_candidate_cap,
+        dropped_entity_bridge_slot_reserved: selection.dropped_entity_bridge_slot_reserved,
         dropped_low_score: selection.dropped_low_score,
         dropped_policy_ref: selection.dropped_policy_ref,
         dropped_duplicate_ref: selection.dropped_duplicate_ref,

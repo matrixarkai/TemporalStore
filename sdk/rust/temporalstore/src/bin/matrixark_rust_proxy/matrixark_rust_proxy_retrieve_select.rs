@@ -17,10 +17,10 @@ pub(crate) fn select_retrieve_refs(
     max_refs: u64,
 ) -> RetrieveSelection {
     let mut state = RetrieveSelectState::new();
-    for scored_candidate in scored {
+    for (index, scored_candidate) in scored.iter().enumerate() {
         let score = scored_candidate.score;
         let record = scored_candidate.record;
-        let session_continuity = scored_candidate.session_continuity;
+        let session_continuity = scored_candidate.session_continuity.clone();
         let continuity_boost_value = scored_candidate.continuity_boost;
         let cross_session_rerank_boost_value = scored_candidate.cross_session_rerank_boost;
         if state.selected.len() as u64 >= max_refs {
@@ -85,6 +85,19 @@ pub(crate) fn select_retrieve_refs(
             state.dropped_cross_budget += 1;
             continue;
         }
+        let remaining_slots = max_refs.saturating_sub(state.selected.len() as u64);
+        let remaining_required_bridge_refs = cross_policy
+            .min_entity_bridge_refs
+            .saturating_sub(state.entity_bridge_selected_refs);
+        if cross_policy.enabled
+            && !is_entity_bridge
+            && remaining_required_bridge_refs > 0
+            && remaining_slots <= remaining_required_bridge_refs
+            && eligible_entity_bridge_remains(&scored, index + 1, cross_policy)
+        {
+            state.dropped_entity_bridge_slot_reserved += 1;
+            continue;
+        }
         let ref_signature = selected_ref_signature(record, &context_class);
         if !state.selected_signatures.insert(ref_signature) {
             state.dropped_duplicate_ref += 1;
@@ -114,4 +127,21 @@ pub(crate) fn select_retrieve_refs(
         ));
     }
     state.into_selection()
+}
+
+fn eligible_entity_bridge_remains(
+    scored: &[ScoredCandidate<'_>],
+    start_index: usize,
+    cross_policy: &CrossSessionPolicy,
+) -> bool {
+    if !cross_policy.enabled {
+        return false;
+    }
+    scored.iter().skip(start_index).any(|candidate| {
+        let record = candidate.record;
+        let context_class = context_class_name(record);
+        candidate.session_continuity == "cross_session"
+            && context_class == "entity"
+            && candidate.score >= cross_policy.min_score
+    })
 }
