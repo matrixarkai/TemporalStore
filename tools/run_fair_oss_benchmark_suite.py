@@ -502,6 +502,7 @@ def write_shared_oss_stack_contract(output_root: Path, args: argparse.Namespace)
             "embedding_model": embedding_model,
             "encoding_model": embedding_model,
             "reader_max_tokens": args.reader_max_tokens,
+            "reader_fallback_allowed": False,
             "contract_required": True,
         },
         "openviking_stack": {
@@ -509,6 +510,7 @@ def write_shared_oss_stack_contract(output_root: Path, args: argparse.Namespace)
             "embedding_model": embedding_model,
             "encoding_model": embedding_model,
             "reader_max_tokens": args.reader_max_tokens,
+            "reader_fallback_allowed": False,
             "contract_required": True,
         },
         "vikingmem_stack": {
@@ -516,6 +518,7 @@ def write_shared_oss_stack_contract(output_root: Path, args: argparse.Namespace)
             "embedding_model": embedding_model,
             "encoding_model": embedding_model,
             "reader_max_tokens": args.reader_max_tokens,
+            "reader_fallback_allowed": False,
             "contract_required": True,
         },
         "contract_validators": [
@@ -536,6 +539,7 @@ def write_shared_oss_stack_contract(output_root: Path, args: argparse.Namespace)
         },
         "reader_evidence_mode": args.reader_evidence_mode,
         "reader_policy_flags": reader_policy_flags(args),
+        "reader_fallback_allowed": False,
     }
     (output_root / "fair_oss_shared_stack_contract.json").write_text(
         json.dumps(contract, indent=2, sort_keys=True) + "\n",
