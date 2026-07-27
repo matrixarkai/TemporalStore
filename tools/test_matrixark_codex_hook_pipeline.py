@@ -14,7 +14,7 @@ from unittest import mock
 from pathlib import Path
 
 import matrixark_codex_hook
-from matrixark_mcp_context_pack import compact_context_pack_for_serving
+from matrixark_mcp_context_pack import compact_context_pack_for_serving, compact_refs_for_audit
 from matrixark_mcp_core import packing_sort_key
 from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
@@ -46,6 +46,49 @@ class FastHookLocalAdapter(MatrixArkLocalAdapter):
 
 
 class MatrixArkCodexHookPipelineTest(unittest.TestCase):
+    def test_context_pack_audit_refs_preserve_memory_layer_lineage(self) -> None:
+        refs = compact_refs_for_audit(
+            [
+                {
+                    "ref_type": "entity",
+                    "text": "assistant_decision Commit aaa111 pushed after tests passed.",
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "entity_type": "assistant_decision",
+                    "entity_name": "Commit aaa111",
+                    "extraction_phase": "final",
+                    "profile_current_state_representative": True,
+                    "current_state_policy": "profile_entity_bridge_preferred_over_session_local_history",
+                    "final_session_boundary": True,
+                    "source_roles": ["assistant"],
+                    "source_hook_types": ["hook_boundary"],
+                    "source_codex_events": ["Stop"],
+                    "source_memory_scopes": ["session", "user_profile"],
+                    "source_session_continuities": ["same_session", "cross_session"],
+                    "source_extraction_phases": ["final"],
+                    "source_final_session_boundary_count": 1,
+                    "current_state_source_session_count": 2,
+                    "current_state_source_entity_count": 3,
+                }
+            ]
+        )
+        ref = refs[0]
+        self.assertEqual("user_profile", ref["memory_scope"])
+        self.assertEqual("cross_session", ref["session_continuity"])
+        self.assertEqual("assistant_decision", ref["entity_type"])
+        self.assertEqual("final", ref["extraction_phase"])
+        self.assertTrue(ref["profile_current_state_representative"])
+        self.assertTrue(ref["final_session_boundary"])
+        self.assertEqual(["assistant"], ref["source_roles"])
+        self.assertEqual(["hook_boundary"], ref["source_hook_types"])
+        self.assertEqual(["Stop"], ref["source_codex_events"])
+        self.assertEqual(["session", "user_profile"], ref["source_memory_scopes"])
+        self.assertEqual(["same_session", "cross_session"], ref["source_session_continuities"])
+        self.assertEqual(["final"], ref["source_extraction_phases"])
+        self.assertEqual(1, ref["source_final_session_boundary_count"])
+        self.assertEqual(2, ref["current_state_source_session_count"])
+        self.assertEqual(3, ref["current_state_source_entity_count"])
+
     def test_dropped_memory_layer_budget_tracks_final_phase_and_boundary(self) -> None:
         budget = dropped_ref_layer_budget(
             {
