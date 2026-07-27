@@ -220,6 +220,13 @@ def retrieval_budget_pressure_from_retrieve(pack: Json | None) -> Json:
         dropped_memory_layer_budget = pack_view.get("dropped_memory_layer_budget")
     if not isinstance(dropped_memory_layer_budget, dict):
         dropped_memory_layer_budget = {}
+    memory_layer_pressure = retrieval_metrics.get("memory_layer_pressure")
+    if not isinstance(memory_layer_pressure, dict):
+        memory_layer_pressure = recall_policy.get("memory_layer_pressure")
+    if not isinstance(memory_layer_pressure, dict):
+        memory_layer_pressure = pack_view.get("memory_layer_pressure")
+    if not isinstance(memory_layer_pressure, dict):
+        memory_layer_pressure = {}
     budget_reasons = [
         "over_budget",
         "cross_session_budget",
@@ -250,6 +257,8 @@ def retrieval_budget_pressure_from_retrieve(pack: Json | None) -> Json:
     }
     if dropped_memory_layer_budget:
         summary["dropped_memory_layer_budget"] = dropped_memory_layer_budget
+    if memory_layer_pressure:
+        summary["memory_layer_pressure"] = memory_layer_pressure
     if dropped_by_reason:
         summary["budget_pressure_reason_count"] = sum(int(value) for value in dropped_by_reason.values())
     return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
