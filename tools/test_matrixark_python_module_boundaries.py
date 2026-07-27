@@ -30,6 +30,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         session_props = tools_by_name["matrixark_session_commit"]["inputSchema"]["properties"]
         batch_props = tools_by_name["matrixark_batch_extract"]["inputSchema"]["properties"]
         retrieve_props = tools_by_name["matrixark_retrieve"]["inputSchema"]["properties"]
+        retrieve_output_props = tools_by_name["matrixark_retrieve"]["outputSchema"]["properties"]
         dashboard_table_enum = tools_by_name["matrixark_ingestion_dashboard"]["inputSchema"]["properties"]["table"]["enum"]
 
         self.assertEqual(["provisional", "final", "standalone"], session_props["extraction_phase"]["enum"])
@@ -40,6 +41,16 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("include_retrieval_debug", retrieve_props)
         self.assertIn("debug_context_pack", retrieve_props)
         self.assertIn("remote MatrixArk budget", retrieve_props["local_context_safety_margin_tokens"]["description"])
+        self.assertIn("memory_hierarchy", retrieve_output_props)
+        self.assertIn("async_pipeline_readiness", retrieve_output_props)
+        self.assertIn("memory_layer_budget", retrieve_output_props)
+        self.assertIn("dropped_memory_layer_budget", retrieve_output_props)
+        self.assertIn("memory_layer_pressure", retrieve_output_props)
+        hierarchy_props = retrieve_output_props["memory_hierarchy"]["properties"]
+        self.assertIn("profile entity bridge", retrieve_output_props["memory_hierarchy"]["description"])
+        self.assertIn("cross_session_budget_floor_status", hierarchy_props)
+        self.assertIn("selected_ref_flow", hierarchy_props)
+        self.assertIn("freshness_warnings", retrieve_output_props["async_pipeline_readiness"]["properties"])
         self.assertIn("summary_refresh", dashboard_table_enum)
         self.assertIn("async_pipeline", dashboard_table_enum)
 
