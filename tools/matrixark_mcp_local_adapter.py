@@ -142,6 +142,161 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
     }
 
 
+def source_event_lineage_summary(records: list[Json]) -> Json:
+    role_counts: Json = {}
+    hook_type_counts: Json = {}
+    codex_event_counts: Json = {}
+    memory_scopes: list[str] = []
+    session_continuities: list[str] = []
+    extraction_phases: list[str] = []
+    final_session_boundary_count = 0
+
+    def add_count(counts: Json, name: Any, count: Any = 1) -> None:
+        label = str(name or "").strip()
+        if not label:
+            return
+        try:
+            amount = max(0, int(count or 0))
+        except (TypeError, ValueError):
+            amount = 0
+        if amount:
+            counts[label] = int(counts.get(label, 0)) + amount
+
+    def add_values(values: list[str], source: Any) -> None:
+        if isinstance(source, list):
+            for item in source:
+                label = str(item or "").strip()
+                if label:
+                    values.append(label)
+        else:
+            label = str(source or "").strip()
+            if label:
+                values.append(label)
+
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        existing_role_counts = record.get("source_role_counts") if isinstance(record.get("source_role_counts"), dict) else {}
+        if existing_role_counts:
+            for role, count in existing_role_counts.items():
+                add_count(role_counts, role, count)
+        else:
+            roles = record.get("source_roles") if isinstance(record.get("source_roles"), list) else []
+            if roles:
+                for role in roles:
+                    add_count(role_counts, role, 1)
+            else:
+                event_role = str(record.get("source_role") or "").strip()
+                if event_role:
+                    add_count(role_counts, event_role, 1)
+                else:
+                    for message in messages_from_event_record(record):
+                        add_count(role_counts, message.get("role"), 1)
+
+        existing_hook_counts = record.get("source_hook_type_counts") if isinstance(record.get("source_hook_type_counts"), dict) else {}
+        if existing_hook_counts:
+            for hook_type, count in existing_hook_counts.items():
+                add_count(hook_type_counts, hook_type, count)
+        else:
+            hook_values: list[str] = []
+            add_values(hook_values, record.get("source_hook_types"))
+            envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
+            metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
+            hook = record.get("agent_hook") if isinstance(record.get("agent_hook"), dict) else {}
+            add_values(hook_values, envelope.get("hook_type"))
+            add_values(hook_values, metadata.get("hook_type"))
+            add_values(hook_values, metadata.get("source_hook_types"))
+            add_values(hook_values, hook.get("hook_type"))
+            for hook_type in ordered_unique_any(hook_values):
+                add_count(hook_type_counts, hook_type, 1)
+
+        existing_codex_counts = record.get("source_codex_event_counts") if isinstance(record.get("source_codex_event_counts"), dict) else {}
+        if existing_codex_counts:
+            for codex_event, count in existing_codex_counts.items():
+                add_count(codex_event_counts, codex_event, count)
+        else:
+            codex_values: list[str] = []
+            add_values(codex_values, record.get("source_codex_events"))
+            envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
+            metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
+            hook = record.get("agent_hook") if isinstance(record.get("agent_hook"), dict) else {}
+            add_values(codex_values, envelope.get("codex_event"))
+            add_values(codex_values, metadata.get("codex_event"))
+            add_values(codex_values, metadata.get("source_codex_events"))
+            add_values(codex_values, hook.get("codex_event"))
+            add_values(codex_values, hook.get("trigger"))
+            for codex_event in ordered_unique_any(codex_values):
+                add_count(codex_event_counts, codex_event, 1)
+
+        add_values(memory_scopes, record.get("source_memory_scopes"))
+        add_values(memory_scopes, record.get("memory_scope"))
+        add_values(session_continuities, record.get("source_session_continuities"))
+        add_values(session_continuities, record.get("session_continuity"))
+        add_values(extraction_phases, record.get("source_extraction_phases"))
+        add_values(extraction_phases, record.get("extraction_phase"))
+        try:
+            final_session_boundary_count += max(0, int(record.get("source_final_session_boundary_count") or 0))
+        except (TypeError, ValueError):
+            pass
+        if bool(record.get("final_session_boundary")):
+            final_session_boundary_count += 1
+
+    source_roles = sorted(role_counts)
+    source_hook_types = sorted(hook_type_counts)
+    source_codex_events = sorted(codex_event_counts)
+    source_memory_scopes = ordered_unique_any(memory_scopes)
+    source_session_continuities = ordered_unique_any(session_continuities)
+    source_extraction_phases = ordered_unique_any(extraction_phases)
+    memory_scope = (
+        "user_profile"
+        if source_memory_scopes == ["user_profile"]
+        else "session"
+        if "session" in source_memory_scopes
+        else source_memory_scopes[0]
+        if source_memory_scopes
+        else ""
+    )
+    session_continuity = (
+        "cross_session"
+        if source_session_continuities == ["cross_session"]
+        else "same_session"
+        if "same_session" in source_session_continuities
+        else source_session_continuities[0]
+        if source_session_continuities
+        else ""
+    )
+    extraction_phase = (
+        "final"
+        if source_extraction_phases == ["final"]
+        else "provisional"
+        if "provisional" in source_extraction_phases
+        else source_extraction_phases[0]
+        if source_extraction_phases
+        else ""
+    )
+    lineage = {
+        "source_roles": source_roles,
+        "source_role_counts": role_counts,
+        "source_hook_types": source_hook_types,
+        "source_hook_type_counts": hook_type_counts,
+        "source_codex_events": source_codex_events,
+        "source_codex_event_counts": codex_event_counts,
+        "source_memory_scopes": source_memory_scopes,
+        "source_session_continuities": source_session_continuities,
+        "source_extraction_phases": source_extraction_phases,
+        "source_final_session_boundary_count": final_session_boundary_count,
+    }
+    if memory_scope:
+        lineage["memory_scope"] = memory_scope
+    if session_continuity:
+        lineage["session_continuity"] = session_continuity
+    if extraction_phase:
+        lineage["extraction_phase"] = extraction_phase
+    if final_session_boundary_count:
+        lineage["final_session_boundary"] = True
+    return lineage
+
+
 def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
     record_type = str(record.get("record_type") or "")
     if record_type == "context_node":
@@ -1459,6 +1614,7 @@ class MatrixArkLocalAdapter:
                 f"{len(selected)} selected events{suffix}. " + " | ".join(snippets)
             )
         compression_id_hash = stable_hash(f"compress:{scope}:{node_hash}:{source_start_ms}:{source_end_ms}:{source_event_ids}")
+        source_lineage = source_event_lineage_summary(selected)
         record = {
             "record_type": "context_compression_event",
             "compression_id_hash": compression_id_hash,
@@ -1471,6 +1627,7 @@ class MatrixArkLocalAdapter:
             "summary_text": summarize_text(summary, limit=1200),
             "source_event_ids": source_event_ids,
             "source_event_count": len(source_event_ids),
+            **source_lineage,
             "truncated_source_events": truncated,
             "operator": "TIME_COMPRESS",
             "compression_mode": mode,
@@ -5005,6 +5162,7 @@ class MatrixArkLocalAdapter:
                 f"{len(selected)} selected events{suffix}. " + " | ".join(snippets)
             )
         compression_id_hash = stable_hash(f"compress:{scope}:{node_hash}:{source_start_ms}:{source_end_ms}:{source_event_ids}")
+        source_lineage = source_event_lineage_summary(selected)
         record = {
             "record_type": "context_compression_event",
             "compression_id_hash": compression_id_hash,
@@ -5017,6 +5175,7 @@ class MatrixArkLocalAdapter:
             "summary_text": summarize_text(summary, limit=1200),
             "source_event_ids": source_event_ids,
             "source_event_count": len(selected),
+            **source_lineage,
             "truncated_source_events": truncated,
             "operator": "TIME_COMPRESS",
             "updated_at_ms": compressed_time_ms,
@@ -6567,9 +6726,25 @@ class MatrixArkLocalAdapter:
                 "node_score": node_score,
                 "event_type": "time_compress",
                 "operator": "TIME_COMPRESS",
+                "context_class": "compression",
                 "source_event_ids": record.get("source_event_ids", []),
+                "source_event_count": record.get("source_event_count", 0),
                 "source_start_ms": record.get("source_start_ms"),
                 "source_end_ms": record.get("source_end_ms"),
+                "memory_scope": record.get("memory_scope", ""),
+                "session_continuity": record.get("session_continuity", ""),
+                "extraction_phase": record.get("extraction_phase", ""),
+                "final_session_boundary": bool(record.get("final_session_boundary")),
+                "source_roles": record.get("source_roles", []),
+                "source_role_counts": record.get("source_role_counts", {}),
+                "source_hook_types": record.get("source_hook_types", []),
+                "source_hook_type_counts": record.get("source_hook_type_counts", {}),
+                "source_codex_events": record.get("source_codex_events", []),
+                "source_codex_event_counts": record.get("source_codex_event_counts", {}),
+                "source_memory_scopes": record.get("source_memory_scopes", []),
+                "source_session_continuities": record.get("source_session_continuities", []),
+                "source_extraction_phases": record.get("source_extraction_phases", []),
+                "source_final_session_boundary_count": record.get("source_final_session_boundary_count", 0),
                 "scope": candidate_access_scope(record),
                 "updated_at_ms": record.get("compressed_time_ms", record.get("updated_at_ms", now_ms())),
                 "text": clip_context_text(text),

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import matrixark_codex_hook
 from matrixark_mcp_context_pack import compact_context_pack_for_serving, compact_dropped_refs_for_context_pack, compact_refs_for_audit
-from matrixark_mcp_core import packing_sort_key, select_token_budgeted_refs
+from matrixark_mcp_core import identity_hashes, packing_sort_key, select_token_budgeted_refs
 from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget, memory_layer_pressure_summary, selected_ref_layer_budget
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 
@@ -203,6 +203,116 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         )
         self.assertTrue(pressure["assistant_source_message_pressure"])
         self.assertTrue(pressure["tool_source_message_pressure"])
+
+    def test_time_compression_preserves_source_lineage_for_budgeting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-compression-lineage.jsonl")
+            scope = {
+                "account_id": "acct_compress",
+                "tenant_id": "tenant_compress",
+                "user_id": "user_compress",
+                "session_id": "session_compress",
+            }
+            scope.update(identity_hashes(scope["account_id"], scope["tenant_id"], scope["user_id"], scope["session_id"]))
+            scope["_explicit_scope_keys"] = ["account_id", "tenant_id", "user_id", "session_id"]
+            node_hash = 424242
+            node_path = ["tenant:tenant_compress", "user:user_compress", "session:session_compress"]
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": 101,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "text": "assistant: Commit d0152479 pushed after validation.",
+                        "summary_text": "assistant decision pushed",
+                        "source_roles": ["assistant"],
+                        "source_role_counts": {"assistant": 1},
+                        "source_hook_types": ["hook_boundary"],
+                        "source_hook_type_counts": {"hook_boundary": 1},
+                        "source_codex_events": ["Stop"],
+                        "source_codex_event_counts": {"Stop": 1},
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "extraction_phase": "final",
+                        "final_session_boundary": True,
+                        "envelope": {"scope": scope, "ingestion_time_ms": 1000},
+                        "updated_at_ms": 1000,
+                    },
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": 102,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "text": "tool: Exit code: 0 from hook validation.",
+                        "summary_text": "tool evidence passed",
+                        "source_roles": ["tool"],
+                        "source_role_counts": {"tool": 1},
+                        "source_hook_types": ["hook_boundary"],
+                        "source_hook_type_counts": {"hook_boundary": 1},
+                        "source_codex_events": ["PostToolUse"],
+                        "source_codex_event_counts": {"PostToolUse": 1},
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "extraction_phase": "final",
+                        "final_session_boundary": True,
+                        "envelope": {"scope": scope, "ingestion_time_ms": 1100},
+                        "updated_at_ms": 1100,
+                    },
+                ]
+            )
+
+            compression = adapter.write_time_compression(
+                scope=scope,
+                node_hash=node_hash,
+                node_path=node_path,
+                source_start_ms=900,
+                source_end_ms=1200,
+                compressed_time_ms=2000,
+                summary="Compressed assistant decision and tool validation evidence.",
+            )
+
+            self.assertEqual(["assistant", "tool"], compression["source_roles"])
+            self.assertEqual({"assistant": 1, "tool": 1}, compression["source_role_counts"])
+            self.assertEqual(["hook_boundary"], compression["source_hook_types"])
+            self.assertEqual({"hook_boundary": 2}, compression["source_hook_type_counts"])
+            self.assertEqual(["PostToolUse", "Stop"], compression["source_codex_events"])
+            self.assertEqual({"Stop": 1, "PostToolUse": 1}, compression["source_codex_event_counts"])
+            self.assertEqual(["session"], compression["source_memory_scopes"])
+            self.assertEqual(["same_session"], compression["source_session_continuities"])
+            self.assertEqual(["final"], compression["source_extraction_phases"])
+            self.assertEqual(2, compression["source_final_session_boundary_count"])
+            self.assertEqual("session", compression["memory_scope"])
+            self.assertEqual("same_session", compression["session_continuity"])
+            self.assertEqual("final", compression["extraction_phase"])
+            self.assertTrue(compression["final_session_boundary"])
+
+            budget = selected_ref_layer_budget(
+                [
+                    {
+                        **compression,
+                        "ref_type": "compression",
+                        "ref_hash": compression["compression_id_hash"],
+                        "token_estimate": 17,
+                        "text": compression["summary_text"],
+                    }
+                ]
+            )
+            self.assertEqual(1, budget["by_memory_layer"]["compression"]["refs"])
+            self.assertEqual(17, budget["by_memory_layer"]["compression"]["tokens"])
+            self.assertEqual(1, budget["by_memory_scope"]["session"]["refs"])
+            self.assertEqual(1, budget["by_session_continuity"]["same_session"]["refs"])
+            self.assertEqual(1, budget["by_extraction_phase"]["final"]["refs"])
+            self.assertEqual(1, budget["by_source_role"]["assistant"]["refs"])
+            self.assertEqual(1, budget["by_source_role"]["tool"]["refs"])
+            self.assertEqual(1, budget["by_hook_type"]["hook_boundary"]["refs"])
+            self.assertEqual(1, budget["by_codex_event"]["Stop"]["refs"])
+            self.assertEqual(1, budget["by_codex_event"]["PostToolUse"]["refs"])
+            self.assertEqual({"assistant": 1, "tool": 1}, budget["source_message_counts_by_role"])
+            self.assertEqual({"hook_boundary": 2}, budget["source_hook_counts_by_type"])
+            self.assertEqual({"Stop": 1, "PostToolUse": 1}, budget["source_codex_event_counts_by_event"])
+            self.assertEqual(1, budget["final_session_boundary_ref_count"])
+            self.assertEqual(1, budget["final_ref_count"])
 
     def test_source_role_budget_caps_assistant_context_without_blocking_user_refs(self) -> None:
         selected, used_tokens, dropped = select_token_budgeted_refs(
