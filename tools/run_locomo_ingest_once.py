@@ -143,6 +143,20 @@ def main() -> int:
     parser.add_argument("--max-reader-p95-ms", type=float, default=30000.0)
     parser.add_argument("--max-events", type=int, default=128)
     parser.add_argument(
+        "--adaptive-max-events",
+        action="store_true",
+        help=(
+            "Use a lower base retrieval cap for ordinary questions and reserve --max-events "
+            "for list/name/multi-part/temporal questions. Diagnostic tuning only."
+        ),
+    )
+    parser.add_argument(
+        "--adaptive-base-max-events",
+        type=int,
+        default=128,
+        help="Base retrieval cap used when --adaptive-max-events is enabled.",
+    )
+    parser.add_argument(
         "--question-limit",
         type=int,
         default=0,
@@ -457,6 +471,7 @@ def main() -> int:
     total_retrieved_blocks = 0
     total_retrieved_source_groups = 0
     retrieval_budget_totals: defaultdict[str, int] = defaultdict(int)
+    adaptive_max_event_totals: defaultdict[int, int] = defaultdict(int)
     multi_source_group_queries = 0
     conversations_loaded = 0
     source_count = 0
@@ -500,7 +515,8 @@ def main() -> int:
             )
             source_tokens = sum(estimated_tokens(source.get("body", "")) for source in query_sources)
             retrieval_started = time.perf_counter()
-            blocks = rank_sources(question, query_sources, args.max_events, retrieval_budget)
+            effective_max_events = adaptive_max_events_for_question(question, args)
+            blocks = rank_sources(question, query_sources, effective_max_events, retrieval_budget)
             retrieval_ms = elapsed_ms(retrieval_started)
             reader_started = time.perf_counter()
             reader_answer = reader.answer(question, blocks)
@@ -552,6 +568,7 @@ def main() -> int:
             total_retrieved_source_groups += retrieved_source_groups
             for key, value in budget_counts.items():
                 retrieval_budget_totals[key] += value
+            adaptive_max_event_totals[effective_max_events] += 1
             if retrieved_source_groups >= 2:
                 multi_source_group_queries += 1
             retrieval_latencies_ms.append(retrieval_ms)
@@ -833,6 +850,11 @@ def main() -> int:
         "benchmark_total_source_tokens": total_source_tokens,
         "benchmark_total_retrieved_tokens": total_retrieved_tokens,
         "max_events": args.max_events,
+        "adaptive_max_events": bool(args.adaptive_max_events),
+        "adaptive_base_max_events": args.adaptive_base_max_events,
+        "adaptive_effective_max_event_counts": {
+            str(key): value for key, value in sorted(adaptive_max_event_totals.items())
+        },
         "retrieval_budget_config": retrieval_budget.to_report(),
         "retrieval_budget_avg_counts_per_query": {
             key: value / total if total else 0.0 for key, value in sorted(retrieval_budget_totals.items())
@@ -2438,6 +2460,24 @@ def should_use_cross_session_diversity(question: str) -> bool:
             q,
         )
     )
+
+
+def adaptive_max_events_for_question(question: str, args: argparse.Namespace) -> int:
+    max_events = max(1, int(args.max_events))
+    if not bool(getattr(args, "adaptive_max_events", False)):
+        return max_events
+    base = max(1, min(max_events, int(getattr(args, "adaptive_base_max_events", max_events) or max_events)))
+    q = normalize_text(question)
+    needs_expanded_context = bool(
+        re.search(
+            r"\b(list|which|what .* (?:items?|things?|activities|places|names?|ones)|"
+            r"names?|besides|who else|both|all|total|combined|across|over time|"
+            r"how many|how long|years? ago|months? ago|difference|compare|"
+            r"before|after|earliest|latest|first|last)\b",
+            q,
+        )
+    )
+    return max_events if needs_expanded_context else base
 
 
 def diverse_ranked_sources(
