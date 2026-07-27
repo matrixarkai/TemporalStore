@@ -26,6 +26,8 @@ def tokens(value: str) -> set[str]:
 
 def classify(row: dict[str, Any]) -> str:
     if not row.get("retrieval_hit"):
+        if row.get("reader_hit"):
+            return "source_ref_mismatch_but_answer_hit"
         return "retrieval_missing_expected_ref"
     expected = " ".join(str(v) for v in row.get("answer_terms") or [])
     actual = norm(row.get("reader_answer"))
