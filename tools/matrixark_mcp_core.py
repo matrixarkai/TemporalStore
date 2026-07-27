@@ -5754,19 +5754,39 @@ def select_token_budgeted_refs(
         "selected_ref_count_by_role": source_role_selected_ref_counts,
     }
     if not selected and candidates and remote_budget > 0 and budget_fill_policy != "quality_first":
-        first = next(
-            (
-                candidate
-                for candidate in candidates
-                if not context_text_hashes(str(candidate.get("text", ""))).intersection(duplicate_text_hashes)
-            ),
-            None,
-        )
+        first: Json | None = None
+        first_source_roles: set[str] = set()
+        for candidate in candidates:
+            if context_text_hashes(str(candidate.get("text", ""))).intersection(duplicate_text_hashes):
+                continue
+            fallback_tokens = max(1, token_count(str(candidate.get("text", ""))))
+            candidate_source_roles = candidate_source_role_names(candidate)
+            if any(
+                role in normalized_source_role_budget_tokens
+                and int(source_role_used_tokens.get(role, 0)) + fallback_tokens > int(normalized_source_role_budget_tokens[role])
+                for role in candidate_source_roles
+            ):
+                continue
+            first = candidate
+            first_source_roles = candidate_source_roles
+            break
         if first is None:
             return selected, used_tokens, dropped
         clipped_words = tokens(str(first.get("text", "")))[:remote_budget]
-        selected = [{**first, "text": " ".join(clipped_words), "token_estimate": len(clipped_words)}]
+        selected = [
+            {
+                **first,
+                "text": " ".join(clipped_words),
+                "token_estimate": len(clipped_words),
+                "budget_source_roles": sorted(first_source_roles),
+                "budget_source_role_counts": candidate_budget_source_role_counts(first, first_source_roles),
+            }
+        ]
         used_tokens = len(clipped_words)
+        for role in first_source_roles:
+            if role in normalized_source_role_budget_tokens:
+                source_role_used_tokens[role] = int(source_role_used_tokens.get(role, 0)) + used_tokens
+                source_role_selected_ref_counts[role] = int(source_role_selected_ref_counts.get(role, 0)) + 1
         dropped["over_budget"] = max(0, len(candidates) - 1)
         for candidate in candidates[1:]:
             record_dropped_candidate(

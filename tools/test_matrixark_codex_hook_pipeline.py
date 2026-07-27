@@ -267,6 +267,53 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         )
         self.assertTrue(pressure["assistant_source_message_pressure"])
 
+    def test_source_role_budget_fallback_does_not_reinsert_capped_assistant_summary(self) -> None:
+        selected, used_tokens, dropped = select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "summary",
+                    "ref_hash": 141,
+                    "text": "assistant summary contains a long decision memory that exceeds the assistant budget",
+                    "score": 0.99,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "summary_type": "node_l0",
+                    "source_roles": ["assistant"],
+                    "source_role_counts": {"assistant": 1},
+                }
+            ],
+            [],
+            max_context_tokens=8,
+            auxiliary_quota=0,
+            min_score=0.0,
+            max_selected_refs=1,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 100,
+                "max_sessions": 4,
+                "max_candidates": 4,
+                "min_entity_bridge_refs": 0,
+            },
+            source_role_budget_tokens={"assistant": 1},
+        )
+
+        self.assertEqual([], selected)
+        self.assertEqual(0, used_tokens)
+        self.assertEqual(1, dropped["source_role_budget"])
+        self.assertGreater(dropped["estimated_tokens"]["source_role_budget"], 1)
+        self.assertTrue(
+            any(
+                ref.get("ref_hash") == 141
+                and ref.get("drop_reason") == "source_role_budget"
+                and ref.get("source_role_budget_capped_roles") == ["assistant"]
+                for ref in dropped["refs"]
+            ),
+            dropped["refs"],
+        )
+        compact_dropped = compact_dropped_refs_for_context_pack(dropped)
+        self.assertEqual(1, compact_dropped["source_role_budget"])
+        self.assertEqual({"assistant": 0}, compact_dropped["source_role_budget_policy"]["selected_tokens_by_role"])
+
     def test_source_role_budget_caps_assistant_summary_without_blocking_tool_entity(self) -> None:
         selected, _used_tokens, dropped = select_token_budgeted_refs(
             [
