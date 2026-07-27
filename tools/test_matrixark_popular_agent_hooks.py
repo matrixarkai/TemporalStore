@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 import matrixark_agent_config
+import matrixark_agent_hook
 
 
 class MatrixArkPopularAgentHooksTest(unittest.TestCase):
@@ -115,6 +116,44 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
                 "same-session continuity first; entity state bridges cross-session memory; cross-session evidence remains bounded",
                 result["retrieved"]["memory_hierarchy_contract"]["retrieval_strategy"],
             )
+
+    def test_generic_hook_idle_commit_is_reported_as_auto_batch_decision(self) -> None:
+        ingest = {
+            "session_buffer": {
+                "pending_event_count": 1,
+                "pending_message_count": 1,
+                "threshold_messages": 20,
+                "threshold_ready": False,
+                "idle_ready": True,
+                "auto_batch_extract": True,
+            },
+            "auto_batch_extract_result": {},
+            "idle_commit_result": {
+                "status": "committed",
+                "trigger_policy": "idle_timeout",
+                "commit_reason": "idle_timeout",
+                "source_roles": ["user"],
+                "source_hook_types": ["user_prompt_submit"],
+                "source_codex_events": ["UserPromptSubmit"],
+                "profile_promotion_summary": [{"entity_name": "repo location"}],
+                "trigger_evidence": {
+                    "pending_event_count": 1,
+                    "threshold_ready": False,
+                    "idle_ready": True,
+                    "idle_timeout_ms": 1,
+                },
+            },
+        }
+
+        session_buffer = matrixark_agent_hook.normalized_session_buffer_from_ingest(ingest)
+        decision = matrixark_agent_hook.auto_batch_decision_summary(ingest)
+
+        self.assertTrue(session_buffer["idle_ready"])
+        self.assertFalse(session_buffer["threshold_ready"])
+        self.assertEqual("idle_commit", decision["decision"])
+        self.assertEqual("committed", decision["auto_batch_extract_status"])
+        self.assertEqual("idle_timeout", decision["reason"])
+        self.assertEqual(["user"], decision["source_roles"])
 
     def test_generic_hook_threshold_extracts_user_and_assistant_turns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

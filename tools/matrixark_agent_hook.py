@@ -22,6 +22,7 @@ try:
         build_server,
         call_tool,
         close_server_best_effort,
+        auto_batch_decision_summary,
         default_hook_backend,
         first_string_at,
         generated_session_id,
@@ -44,6 +45,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         build_server,
         call_tool,
         close_server_best_effort,
+        auto_batch_decision_summary,
         default_hook_backend,
         first_string_at,
         generated_session_id,
@@ -733,6 +735,7 @@ def main() -> int:
                     if isinstance(ingest.get("auto_batch_extract_result"), dict)
                     else {}
                 ) if ingest else {},
+                "auto_batch_extract_decision": auto_batch_decision_summary(ingest) if ingest else {},
                 "idle_commit": session_commit_summary(
                     ingest.get("idle_commit_result")
                     if isinstance(ingest.get("idle_commit_result"), dict)
