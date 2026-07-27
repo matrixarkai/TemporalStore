@@ -219,6 +219,26 @@ def main() -> int:
         help="Reader context budget used by the VikingMem/OpenViking or other baseline run.",
     )
     parser.add_argument(
+        "--judge-model",
+        default=os.environ.get("MATRIXARK_BENCHMARK_JUDGE_MODEL", ""),
+        help="Judge model declared for comparable benchmark claims, if a judge is used.",
+    )
+    parser.add_argument(
+        "--judge-prompt",
+        default=os.environ.get("MATRIXARK_BENCHMARK_JUDGE_PROMPT", ""),
+        help="Judge prompt/profile declared for comparable benchmark claims, if a judge is used.",
+    )
+    parser.add_argument(
+        "--baseline-judge-model",
+        default=os.environ.get("MATRIXARK_BENCHMARK_BASELINE_JUDGE_MODEL", ""),
+        help="Judge model used by the VikingMem/OpenViking or other baseline run, if a judge is used.",
+    )
+    parser.add_argument(
+        "--baseline-judge-prompt",
+        default=os.environ.get("MATRIXARK_BENCHMARK_BASELINE_JUDGE_PROMPT", ""),
+        help="Judge prompt/profile used by the VikingMem/OpenViking or other baseline run, if a judge is used.",
+    )
+    parser.add_argument(
         "--require-shared-oss-models",
         action="store_true",
         default=bool(os.environ.get("MATRIXARK_REQUIRE_SHARED_OSS_MODELS")),
@@ -1979,8 +1999,7 @@ def benchmark_model_contract(args: argparse.Namespace, reader: "BenchmarkReader"
     matrixark_reader_max_tokens = reader_max_tokens_from_env()
     baseline_reader_max_tokens = int(
         os.environ.get("MATRIXARK_BENCHMARK_BASELINE_READER_MAX_TOKENS")
-        or os.environ.get("MATRIXARK_READER_MAX_TOKENS")
-        or 0
+        or reader_max_tokens_from_env()
     )
     same_session_percent = clamp_percent(float(args.retrieval_same_session_percent))
     cross_session_percent = clamp_percent(float(args.retrieval_cross_session_percent))

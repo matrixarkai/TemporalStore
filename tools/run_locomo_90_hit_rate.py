@@ -51,6 +51,10 @@ def main() -> int:
     parser.add_argument("--baseline-embedding-model", default="")
     parser.add_argument("--baseline-max-events", type=int, default=0)
     parser.add_argument("--baseline-reader-max-context-chars", type=int, default=0)
+    parser.add_argument("--judge-model", default="")
+    parser.add_argument("--judge-prompt", default="")
+    parser.add_argument("--baseline-judge-model", default="")
+    parser.add_argument("--baseline-judge-prompt", default="")
     parser.add_argument(
         "--require-shared-oss-models",
         dest="require_shared_oss_models",
@@ -130,6 +134,8 @@ def main() -> int:
         help="Optional diagnostic evidence window. Omit for full conversation-load-once scoring.",
     )
     args = parser.parse_args()
+    if not args.baseline_provider_name:
+        args.baseline_provider_name = args.reader_provider_name
     if not args.baseline_reader_model:
         args.baseline_reader_model = args.reader_model
     if not args.baseline_embedding_model:
@@ -226,6 +232,10 @@ def main() -> int:
         command.extend(["--baseline-max-events", str(args.baseline_max_events)])
     if args.baseline_reader_max_context_chars:
         command.extend(["--baseline-reader-max-context-chars", str(args.baseline_reader_max_context_chars)])
+    if args.baseline_judge_model:
+        command.extend(["--baseline-judge-model", args.baseline_judge_model])
+    if args.baseline_judge_prompt:
+        command.extend(["--baseline-judge-prompt", args.baseline_judge_prompt])
     if args.require_shared_oss_models:
         command.append("--require-shared-oss-models")
     if args.adaptive_max_events:
