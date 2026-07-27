@@ -548,6 +548,7 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         else {}
     )
     session_commit = result.get("session_commit") if isinstance(result.get("session_commit"), dict) else {}
+    idle_commit = result.get("idle_commit_result") if isinstance(result.get("idle_commit_result"), dict) else {}
     summary: Json = {
         "pending_event_count": session_buffer.get("pending_event_count"),
         "threshold_messages": session_buffer.get("threshold_messages"),
@@ -572,6 +573,14 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         summary["source_hook_types"] = session_commit.get("source_hook_types")
         summary["source_codex_events"] = session_commit.get("source_codex_events")
         summary["profile_promotion_summary"] = session_commit.get("profile_promotion_summary")
+    elif idle_commit and idle_commit.get("status") in {"accepted", "committed"}:
+        summary["auto_batch_extract_status"] = idle_commit.get("status")
+        summary["decision"] = "idle_commit"
+        summary["reason"] = idle_commit.get("reason") or idle_commit.get("commit_reason") or "idle_timeout"
+        summary["source_roles"] = idle_commit.get("source_roles")
+        summary["source_hook_types"] = idle_commit.get("source_hook_types")
+        summary["source_codex_events"] = idle_commit.get("source_codex_events")
+        summary["profile_promotion_summary"] = idle_commit.get("profile_promotion_summary")
     elif session_buffer:
         summary["decision"] = "deferred"
         if session_buffer.get("auto_batch_extract") is False:
@@ -1078,12 +1087,19 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 if isinstance(result.get("auto_batch_extract_result"), dict)
                 else {}
             )
+            idle_commit_result = (
+                result.get("idle_commit_result")
+                if isinstance(result.get("idle_commit_result"), dict)
+                else {}
+            )
             item["result"] = {
                 "status": result.get("status"),
                 "event_id_hash": result.get("event_id_hash"),
                 "node_hash": result.get("node_hash"),
                 "hook_captured": result.get("hook_captured"),
                 "auto_batch_extract_status": auto_batch_extract_result.get("status"),
+                "idle_commit_status": idle_commit_result.get("status"),
+                "idle_commit": session_commit_summary(idle_commit_result),
                 "auto_batch_extract": session_commit_summary(auto_batch_extract_result),
                 "auto_batch_extract_decision": auto_batch_decision_summary(result),
             }
