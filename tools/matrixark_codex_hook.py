@@ -232,6 +232,7 @@ def retrieval_budget_pressure_from_retrieve(pack: Json | None) -> Json:
         "cross_session_candidate_cap",
         "shared_resource_budget",
         "shared_skill_budget",
+        "source_role_budget",
         "max_selected_refs",
         "deadline",
     ]
