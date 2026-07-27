@@ -133,8 +133,17 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             if isinstance(message, dict) and str(message.get("role") or "")
         }
     )
+    source_role_counts: Json = {}
+    for message in extraction_envelope.get("messages", []):
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "").strip()
+        if role:
+            source_role_counts[role] = int(source_role_counts.get(role, 0)) + 1
     source_hook_types = sorted({str(hook.get("hook_type") or "")}) if isinstance(hook, dict) and hook.get("hook_type") else []
+    source_hook_type_counts = {hook_type: 1 for hook_type in source_hook_types}
     source_codex_events = sorted({str(hook.get("codex_event") or "")}) if isinstance(hook, dict) and hook.get("codex_event") else []
+    source_codex_event_counts = {codex_event: 1 for codex_event in source_codex_events}
     batch_summary = extraction["batch_summary"]
 
     event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
@@ -187,6 +196,13 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "storage_options": envelope.get("storage_options", {}),
                     "extraction_phase": extraction_phase,
                     "final_session_boundary": final_session_boundary,
+                    "source_role": str(message.get("role") or ""),
+                    "source_roles": [str(message.get("role") or "")] if str(message.get("role") or "") else [],
+                    "source_role_counts": {str(message.get("role") or ""): 1} if str(message.get("role") or "") else {},
+                    "source_hook_types": source_hook_types,
+                    "source_hook_type_counts": source_hook_type_counts,
+                    "source_codex_events": source_codex_events,
+                    "source_codex_event_counts": source_codex_event_counts,
                     "extraction_context_event_ids": extraction_context_event_ids,
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
@@ -238,8 +254,11 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "source_refs": updated_entity["source_refs"],
                 "source_event_ids": source_event_ids,
                 "source_roles": source_roles,
+                "source_role_counts": source_role_counts,
                 "source_hook_types": source_hook_types,
+                "source_hook_type_counts": source_hook_type_counts,
                 "source_codex_events": source_codex_events,
+                "source_codex_event_counts": source_codex_event_counts,
                 "field_patches": updated_entity.get("field_patches", []),
                 "patch_results": updated_entity.get("patch_results", []),
                 "update_mode": updated_entity.get("update_mode", ""),
@@ -321,12 +340,21 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             profile_source_roles = ordered_unique_any(
                 list(previous_profile.get("source_roles", [])) + source_roles
             )
+            profile_source_role_counts: Json = dict(previous_profile.get("source_role_counts", {}))
+            for role, count in source_role_counts.items():
+                profile_source_role_counts[role] = int(profile_source_role_counts.get(role, 0)) + int(count)
             profile_source_hook_types = ordered_unique_any(
                 list(previous_profile.get("source_hook_types", [])) + source_hook_types
             )
+            profile_source_hook_type_counts: Json = dict(previous_profile.get("source_hook_type_counts", {}))
+            for hook_type, count in source_hook_type_counts.items():
+                profile_source_hook_type_counts[hook_type] = int(profile_source_hook_type_counts.get(hook_type, 0)) + int(count)
             profile_source_codex_events = ordered_unique_any(
                 list(previous_profile.get("source_codex_events", [])) + source_codex_events
             )
+            profile_source_codex_event_counts: Json = dict(previous_profile.get("source_codex_event_counts", {}))
+            for codex_event, count in source_codex_event_counts.items():
+                profile_source_codex_event_counts[codex_event] = int(profile_source_codex_event_counts.get(codex_event, 0)) + int(count)
             profile_entity_hashes.append(profile_entity_hash)
             records_to_append.append(
                 {
@@ -348,8 +376,11 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "source_session_ids": profile_source_session_ids,
                     "source_entity_hashes": profile_source_entity_hashes,
                     "source_roles": profile_source_roles,
+                    "source_role_counts": profile_source_role_counts,
                     "source_hook_types": profile_source_hook_types,
+                    "source_hook_type_counts": profile_source_hook_type_counts,
                     "source_codex_events": profile_source_codex_events,
+                    "source_codex_event_counts": profile_source_codex_event_counts,
                     "source_batch_id_hash": batch_id_hash,
                     "extraction_context_event_ids": extraction_context_event_ids,
                     "field_patches": promoted_entity.get("field_patches", []),
@@ -430,6 +461,12 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "coordinate_tuples": segment["coordinate_tuples"],
                 "message_indexes": segment["message_indexes"],
                 "source_event_ids": [event_hashes[index] for index in segment["message_indexes"] if index < len(event_hashes)],
+                "source_roles": source_roles,
+                "source_role_counts": source_role_counts,
+                "source_hook_types": source_hook_types,
+                "source_hook_type_counts": source_hook_type_counts,
+                "source_codex_events": source_codex_events,
+                "source_codex_event_counts": source_codex_event_counts,
                 "saliency_score": segment["saliency_score"],
                 "summary_text": segment["summary_text"],
                 "text": segment["text"],
@@ -471,6 +508,12 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             "source_entity_hashes": entity_hashes,
             "source_segment_hashes": segment_hashes,
             "source_event_ids": event_hashes,
+            "source_roles": source_roles,
+            "source_role_counts": source_role_counts,
+            "source_hook_types": source_hook_types,
+            "source_hook_type_counts": source_hook_type_counts,
+            "source_codex_events": source_codex_events,
+            "source_codex_event_counts": source_codex_event_counts,
             "scope": envelope["scope"],
             "extraction_phase": extraction_phase,
             "final_session_boundary": final_session_boundary,
@@ -532,6 +575,12 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             "mode": extraction["mode"],
             "derive_from_existing_events": derive_from_existing_events,
             "source_event_ids": event_hashes,
+            "source_roles": source_roles,
+            "source_role_counts": source_role_counts,
+            "source_hook_types": source_hook_types,
+            "source_hook_type_counts": source_hook_type_counts,
+            "source_codex_events": source_codex_events,
+            "source_codex_event_counts": source_codex_event_counts,
             "extraction_context_event_ids": extraction_context_event_ids,
             "extraction_phase": extraction_phase,
             "final_session_boundary": final_session_boundary,
@@ -590,4 +639,10 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         "threshold_messages": threshold,
         "extraction_phase": extraction_phase,
         "final_session_boundary": final_session_boundary,
+        "source_roles": source_roles,
+        "source_role_counts": source_role_counts,
+        "source_hook_types": source_hook_types,
+        "source_hook_type_counts": source_hook_type_counts,
+        "source_codex_events": source_codex_events,
+        "source_codex_event_counts": source_codex_event_counts,
     }

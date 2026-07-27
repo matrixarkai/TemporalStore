@@ -1266,7 +1266,48 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(result["summary_refresh"]["session_dirty_hashes"])
             self.assertTrue(result["summary_refresh"]["profile_dirty_hashes"])
             self.assertTrue(result["summary_refresh"]["profile_summary_refresh_required"])
+            self.assertEqual({"assistant": 1, "tool": 1, "user": 1}, result["source_role_counts"])
+            self.assertEqual({"hook_boundary": 3}, result["source_hook_type_counts"])
+            self.assertEqual({"Stop": 3}, result["source_codex_event_counts"])
             records = adapter.read_all()
+            durable_records = [
+                record
+                for record in records
+                if record.get("record_type")
+                in {"context_event", "context_entity", "context_segment", "context_summary", "context_extraction_audit"}
+                and record.get("batch_id_hash") == result["batch_id_hash"]
+            ]
+            self.assertTrue(durable_records)
+            for record in durable_records:
+                self.assertIn("source_roles", record)
+                self.assertIn("source_role_counts", record)
+                self.assertIn("source_hook_types", record)
+                self.assertIn("source_hook_type_counts", record)
+                self.assertIn("source_codex_events", record)
+                self.assertIn("source_codex_event_counts", record)
+            batch_level_records = [
+                record
+                for record in durable_records
+                if record.get("record_type") in {"context_entity", "context_segment", "context_summary", "context_extraction_audit"}
+            ]
+            self.assertTrue(batch_level_records)
+            for record in batch_level_records:
+                self.assertEqual({"assistant": 1, "tool": 1, "user": 1}, record["source_role_counts"])
+                self.assertEqual({"hook_boundary": 3}, record["source_hook_type_counts"])
+                self.assertEqual({"Stop": 3}, record["source_codex_event_counts"])
+            event_counts_by_role = {
+                record["source_role"]: record["source_role_counts"]
+                for record in durable_records
+                if record.get("record_type") == "context_event"
+            }
+            self.assertEqual(
+                {
+                    "assistant": {"assistant": 1},
+                    "tool": {"tool": 1},
+                    "user": {"user": 1},
+                },
+                event_counts_by_role,
+            )
             session_entities = [
                 record
                 for record in records

@@ -4263,6 +4263,49 @@ class MatrixArkLocalAdapter:
             updated_at_ms=envelope["ingestion_time_ms"],
         )
         batch_summary = extraction["batch_summary"]
+        source_lineage_count = len(source_event_ids) if source_event_ids else len(envelope.get("messages", []))
+        source_roles = sorted(
+            {
+                str(message.get("role") or "").strip().lower()
+                for message in envelope.get("messages", [])
+                if isinstance(message, dict) and str(message.get("role") or "").strip()
+            }
+        )
+        source_role_counts: Json = {}
+        for message in envelope.get("messages", []):
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "").strip().lower()
+            if role:
+                source_role_counts[role] = int(source_role_counts.get(role, 0)) + 1
+        envelope_metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
+        source_hook_type_values = [
+            envelope.get("hook_type"),
+            envelope_metadata.get("hook_type"),
+            (hook or {}).get("hook_type") if isinstance(hook, dict) else "",
+        ]
+        if isinstance(envelope_metadata.get("source_hook_types"), list):
+            source_hook_type_values.extend(envelope_metadata["source_hook_types"])
+        source_hook_types = sorted({str(value).strip() for value in source_hook_type_values if str(value or "").strip()})
+        source_hook_type_counts = {
+            hook_type: source_lineage_count
+            for hook_type in source_hook_types
+            if hook_type
+        }
+        source_codex_event_values = [
+            envelope.get("codex_event"),
+            envelope_metadata.get("codex_event"),
+            (hook or {}).get("codex_event") if isinstance(hook, dict) else "",
+            (hook or {}).get("trigger") if isinstance(hook, dict) else "",
+        ]
+        if isinstance(envelope_metadata.get("source_codex_events"), list):
+            source_codex_event_values.extend(envelope_metadata["source_codex_events"])
+        source_codex_events = sorted({str(value).strip() for value in source_codex_event_values if str(value or "").strip()})
+        source_codex_event_counts = {
+            codex_event: source_lineage_count
+            for codex_event in source_codex_events
+            if codex_event
+        }
 
         event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
         records_to_append: list[Json] = []
@@ -4285,6 +4328,7 @@ class MatrixArkLocalAdapter:
             event_vectors = embeddings_for_texts([event_text for _index, _message, event_text, _event_id_hash in event_rows])
             for (_index, message, event_text, event_id_hash), event_vector in zip(event_rows, event_vectors):
                 event_time_ms = int(envelope["ingestion_time_ms"])
+                event_role = str(message.get("role") or "").strip().lower()
                 records_to_append.append(
                     {
                         "record_type": "context_event",
@@ -4316,6 +4360,13 @@ class MatrixArkLocalAdapter:
                         "prior_context": prior_context,
                         "agent_hook": hook,
                         **source_lineage,
+                        "source_role": event_role,
+                        "source_roles": [event_role] if event_role else [],
+                        "source_role_counts": {event_role: 1} if event_role else {},
+                        "source_hook_types": source_hook_types,
+                        "source_hook_type_counts": source_hook_type_counts,
+                        "source_codex_events": source_codex_events,
+                        "source_codex_event_counts": source_codex_event_counts,
                         "storage_options": envelope.get("storage_options", {}),
                         "updated_at_ms": envelope["ingestion_time_ms"],
                         "extraction_phase": extraction_phase,
@@ -4354,49 +4405,6 @@ class MatrixArkLocalAdapter:
             )
         profile_node_hash = stable_hash("/".join(profile_node_path)) if profile_node_path else 0
         source_session_id = str(envelope["scope"].get("session_id") or "")
-        source_roles = sorted(
-            {
-                str(message.get("role") or "").strip().lower()
-                for message in envelope.get("messages", [])
-                if isinstance(message, dict) and str(message.get("role") or "").strip()
-            }
-        )
-        source_lineage_count = len(source_event_ids) if source_event_ids else len(envelope.get("messages", []))
-        source_role_counts: Json = {}
-        for message in envelope.get("messages", []):
-            if not isinstance(message, dict):
-                continue
-            role = str(message.get("role") or "").strip().lower()
-            if role:
-                source_role_counts[role] = int(source_role_counts.get(role, 0)) + 1
-        envelope_metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
-        source_hook_type_values = [
-            envelope.get("hook_type"),
-            envelope_metadata.get("hook_type"),
-            (hook or {}).get("hook_type") if isinstance(hook, dict) else "",
-        ]
-        if isinstance(envelope_metadata.get("source_hook_types"), list):
-            source_hook_type_values.extend(envelope_metadata["source_hook_types"])
-        source_hook_types = sorted({str(value).strip() for value in source_hook_type_values if str(value or "").strip()})
-        source_hook_type_counts = {
-            hook_type: source_lineage_count
-            for hook_type in source_hook_types
-            if hook_type
-        }
-        source_codex_event_values = [
-            envelope.get("codex_event"),
-            envelope_metadata.get("codex_event"),
-            (hook or {}).get("codex_event") if isinstance(hook, dict) else "",
-            (hook or {}).get("trigger") if isinstance(hook, dict) else "",
-        ]
-        if isinstance(envelope_metadata.get("source_codex_events"), list):
-            source_codex_event_values.extend(envelope_metadata["source_codex_events"])
-        source_codex_events = sorted({str(value).strip() for value in source_codex_event_values if str(value or "").strip()})
-        source_codex_event_counts = {
-            codex_event: source_lineage_count
-            for codex_event in source_codex_events
-            if codex_event
-        }
         entity_hashes = []
         profile_entity_hashes = []
         entity_type_counts: Json = {}
@@ -4432,8 +4440,11 @@ class MatrixArkLocalAdapter:
                     "source_refs": updated_entity["source_refs"],
                     "source_event_ids": source_event_ids,
                     "source_roles": source_roles,
+                    "source_role_counts": source_role_counts,
                     "source_hook_types": source_hook_types,
+                    "source_hook_type_counts": source_hook_type_counts,
                     "source_codex_events": source_codex_events,
+                    "source_codex_event_counts": source_codex_event_counts,
                     "extraction_context_event_ids": extraction_context_event_ids,
                     "field_patches": updated_entity.get("field_patches", []),
                     "patch_results": updated_entity.get("patch_results", []),
@@ -4515,12 +4526,21 @@ class MatrixArkLocalAdapter:
                 profile_source_roles = ordered_unique_any(
                     list(previous_profile.get("source_roles", [])) + source_roles
                 )
+                profile_source_role_counts: Json = dict(previous_profile.get("source_role_counts", {}))
+                for role, count in source_role_counts.items():
+                    profile_source_role_counts[role] = int(profile_source_role_counts.get(role, 0)) + int(count)
                 profile_source_hook_types = ordered_unique_any(
                     list(previous_profile.get("source_hook_types", [])) + source_hook_types
                 )
+                profile_source_hook_type_counts: Json = dict(previous_profile.get("source_hook_type_counts", {}))
+                for hook_type, count in source_hook_type_counts.items():
+                    profile_source_hook_type_counts[hook_type] = int(profile_source_hook_type_counts.get(hook_type, 0)) + int(count)
                 profile_source_codex_events = ordered_unique_any(
                     list(previous_profile.get("source_codex_events", [])) + source_codex_events
                 )
+                profile_source_codex_event_counts: Json = dict(previous_profile.get("source_codex_event_counts", {}))
+                for codex_event, count in source_codex_event_counts.items():
+                    profile_source_codex_event_counts[codex_event] = int(profile_source_codex_event_counts.get(codex_event, 0)) + int(count)
                 profile_entity_hashes.append(profile_entity_hash)
                 profile_promotion_summary.append(
                     {
@@ -4533,8 +4553,11 @@ class MatrixArkLocalAdapter:
                         "source_ref_count": len(profile_source_refs),
                         "source_event_count": len(profile_source_event_ids),
                         "source_roles": profile_source_roles,
+                        "source_role_counts": profile_source_role_counts,
                         "source_hook_types": profile_source_hook_types,
+                        "source_hook_type_counts": profile_source_hook_type_counts,
                         "source_codex_events": profile_source_codex_events,
+                        "source_codex_event_counts": profile_source_codex_event_counts,
                     }
                 )
                 records_to_append.append(
@@ -4557,8 +4580,11 @@ class MatrixArkLocalAdapter:
                         "source_session_ids": profile_source_session_ids,
                         "source_entity_hashes": profile_source_entity_hashes,
                         "source_roles": profile_source_roles,
+                        "source_role_counts": profile_source_role_counts,
                         "source_hook_types": profile_source_hook_types,
+                        "source_hook_type_counts": profile_source_hook_type_counts,
                         "source_codex_events": profile_source_codex_events,
+                        "source_codex_event_counts": profile_source_codex_event_counts,
                         "source_batch_id_hash": batch_id_hash,
                         "extraction_context_event_ids": extraction_context_event_ids,
                         "field_patches": promoted_entity.get("field_patches", []),
@@ -4639,6 +4665,12 @@ class MatrixArkLocalAdapter:
                     "coordinate_tuples": segment["coordinate_tuples"],
                     "message_indexes": segment["message_indexes"],
                     "source_event_ids": [event_hashes[index] for index in segment["message_indexes"] if index < len(event_hashes)],
+                    "source_roles": source_roles,
+                    "source_role_counts": source_role_counts,
+                    "source_hook_types": source_hook_types,
+                    "source_hook_type_counts": source_hook_type_counts,
+                    "source_codex_events": source_codex_events,
+                    "source_codex_event_counts": source_codex_event_counts,
                     "saliency_score": segment["saliency_score"],
                     "summary_text": segment["summary_text"],
                     "text": segment["text"],
@@ -4680,6 +4712,12 @@ class MatrixArkLocalAdapter:
                 "source_entity_hashes": entity_hashes,
                 "source_segment_hashes": segment_hashes,
                 "source_event_ids": event_hashes,
+                "source_roles": source_roles,
+                "source_role_counts": source_role_counts,
+                "source_hook_types": source_hook_types,
+                "source_hook_type_counts": source_hook_type_counts,
+                "source_codex_events": source_codex_events,
+                "source_codex_event_counts": source_codex_event_counts,
                 "scope": envelope["scope"],
                 "extraction_phase": extraction_phase,
                 "final_session_boundary": final_session_boundary,
@@ -4744,6 +4782,12 @@ class MatrixArkLocalAdapter:
                 "mode": extraction["mode"],
                 "derive_from_existing_events": derive_from_existing_events,
                 "source_event_ids": event_hashes,
+                "source_roles": source_roles,
+                "source_role_counts": source_role_counts,
+                "source_hook_types": source_hook_types,
+                "source_hook_type_counts": source_hook_type_counts,
+                "source_codex_events": source_codex_events,
+                "source_codex_event_counts": source_codex_event_counts,
                 "extraction_context_event_ids": extraction_context_event_ids,
                 "extraction_phase": extraction_phase,
                 "final_session_boundary": final_session_boundary,
