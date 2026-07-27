@@ -60,6 +60,19 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertTrue(result["memory_layer_pressure"]["profile_memory_pressure"])
         self.assertTrue(result["memory_layer_pressure"]["hook_boundary_source_pressure"])
 
+    def test_layer_pressure_flags_include_source_message_pressure_aliases(self) -> None:
+        bits = hook._format_memory_layer_pressure_bits(
+            {
+                "selected_refs": 2,
+                "assistant_source_message_pressure": True,
+                "user_source_message_pressure": True,
+                "tool_source_message_pressure": True,
+            }
+        )
+
+        self.assertIn("selected=2", bits)
+        self.assertIn("flags[assistant,user,tool]", bits)
+
     def test_loose_stop_payload_extracts_current_input_message_and_thread_identity(self) -> None:
         raw = (
             '-- {"type:agent-turn-complete,thread-id:019f8cb5-b4d5-77f2-8c82-0499440da36f,'

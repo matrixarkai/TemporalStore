@@ -939,23 +939,23 @@ def _format_memory_layer_pressure_bits(memory_layer_pressure: Json) -> list[str]
         if value > 0:
             pressure_bits.append(f"{label}={value}")
     flag_bits = []
-    for label, field in [
-        ("profile", "profile_memory_pressure"),
-        ("session", "session_memory_pressure"),
-        ("cross_session", "cross_session_pressure"),
-        ("same_session", "same_session_pressure"),
-        ("final", "final_memory_pressure"),
-        ("provisional", "provisional_memory_pressure"),
-        ("assistant", "assistant_memory_pressure"),
-        ("user", "user_memory_pressure"),
-        ("tool", "tool_memory_pressure"),
-        ("hook_boundary_source", "hook_boundary_source_pressure"),
-        ("after_llm_source", "after_llm_source_pressure"),
-        ("tool_result_source", "tool_result_source_pressure"),
-        ("stop_event_source", "stop_event_source_pressure"),
-        ("post_tool_use_source", "post_tool_use_source_pressure"),
+    for label, fields in [
+        ("profile", ["profile_memory_pressure"]),
+        ("session", ["session_memory_pressure"]),
+        ("cross_session", ["cross_session_pressure"]),
+        ("same_session", ["same_session_pressure"]),
+        ("final", ["final_memory_pressure"]),
+        ("provisional", ["provisional_memory_pressure"]),
+        ("assistant", ["assistant_memory_pressure", "assistant_source_message_pressure"]),
+        ("user", ["user_memory_pressure", "user_source_message_pressure"]),
+        ("tool", ["tool_memory_pressure", "tool_source_message_pressure"]),
+        ("hook_boundary_source", ["hook_boundary_source_pressure"]),
+        ("after_llm_source", ["after_llm_source_pressure"]),
+        ("tool_result_source", ["tool_result_source_pressure"]),
+        ("stop_event_source", ["stop_event_source_pressure"]),
+        ("post_tool_use_source", ["post_tool_use_source_pressure"]),
     ]:
-        if bool(memory_layer_pressure.get(field)):
+        if any(bool(memory_layer_pressure.get(field)) for field in fields):
             flag_bits.append(label)
     if flag_bits:
         pressure_bits.append("flags[" + ",".join(flag_bits) + "]")
