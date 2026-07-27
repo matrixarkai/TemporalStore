@@ -25,11 +25,13 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 try:
     from tools.matrixark_mcp_retrieve_pack_builder import (
+        dropped_ref_layer_budget,
         memory_layer_pressure_summary,
         selected_ref_layer_budget,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_retrieve_pack_builder import (
+        dropped_ref_layer_budget,
         memory_layer_pressure_summary,
         selected_ref_layer_budget,
     )
@@ -5108,8 +5110,11 @@ class MatrixArkLocalAdapter:
                 ref["final_session_boundary"] = True
             for field in [
                 "source_roles",
+                "source_role_counts",
                 "source_hook_types",
+                "source_hook_type_counts",
                 "source_codex_events",
+                "source_codex_event_counts",
                 "source_memory_scopes",
                 "source_session_continuities",
                 "source_extraction_phases",
@@ -5119,6 +5124,12 @@ class MatrixArkLocalAdapter:
                 value = record.get(field, metadata.get(field))
                 if isinstance(value, list) and value:
                     ref[field] = value[:16]
+                elif isinstance(value, dict) and value:
+                    ref[field] = {
+                        str(key): int(count)
+                        for key, count in value.items()
+                        if str(key or "").strip() and isinstance(count, int) and count
+                    }
             selected.append(ref)
             used_context_tokens += item_tokens
             if len(selected) >= 8:
@@ -5434,15 +5445,30 @@ class MatrixArkLocalAdapter:
                 "extraction_phase": candidate.get("extraction_phase") or record.get("extraction_phase", ""),
                 "final_session_boundary": bool(candidate.get("final_session_boundary", record.get("final_session_boundary", False))),
                 "source_roles": candidate.get("source_roles") if isinstance(candidate.get("source_roles"), list) else record.get("source_roles", []),
+                "source_role_counts": (
+                    candidate.get("source_role_counts")
+                    if isinstance(candidate.get("source_role_counts"), dict)
+                    else record.get("source_role_counts", {})
+                ),
                 "source_hook_types": (
                     candidate.get("source_hook_types")
                     if isinstance(candidate.get("source_hook_types"), list)
                     else record.get("source_hook_types", [])
                 ),
+                "source_hook_type_counts": (
+                    candidate.get("source_hook_type_counts")
+                    if isinstance(candidate.get("source_hook_type_counts"), dict)
+                    else record.get("source_hook_type_counts", {})
+                ),
                 "source_codex_events": (
                     candidate.get("source_codex_events")
                     if isinstance(candidate.get("source_codex_events"), list)
                     else record.get("source_codex_events", [])
+                ),
+                "source_codex_event_counts": (
+                    candidate.get("source_codex_event_counts")
+                    if isinstance(candidate.get("source_codex_event_counts"), dict)
+                    else record.get("source_codex_event_counts", {})
                 ),
                 "source_memory_scopes": (
                     candidate.get("source_memory_scopes")
@@ -6598,84 +6624,8 @@ class MatrixArkLocalAdapter:
             "recent_selected_ref_count": sum(1 for age_ms in selected_age_ms if age_ms <= freshness_tolerance_ms),
             "older_selected_ref_count": sum(1 for age_ms in selected_age_ms if age_ms > freshness_tolerance_ms),
         }
-        def ref_layer_budget(refs: list[Json], *, total_ref_field: str, total_token_field: str) -> Json:
-            breakdown: Json = {
-                "by_memory_scope": {},
-                "by_session_continuity": {},
-                "by_extraction_phase": {},
-                "by_ref_type": {},
-                "by_entity_type": {},
-                "by_source_role": {},
-                "by_hook_type": {},
-                "by_codex_event": {},
-                "final_session_boundary_ref_count": 0,
-                "provisional_ref_count": 0,
-                "final_ref_count": 0,
-                total_ref_field: len(refs),
-                total_token_field: 0,
-            }
-            for ref in refs:
-                try:
-                    token_estimate = max(0, int(ref.get("token_estimate") or 0))
-                except (TypeError, ValueError):
-                    token_estimate = 0
-                breakdown[total_token_field] += token_estimate
-                for field, bucket_name, default_value in [
-                    ("memory_scope", "by_memory_scope", "unscoped"),
-                    ("session_continuity", "by_session_continuity", "neutral"),
-                    ("extraction_phase", "by_extraction_phase", "unknown"),
-                    ("ref_type", "by_ref_type", "unknown"),
-                ]:
-                    value = str(ref.get(field) or default_value)
-                    bucket = breakdown[bucket_name].setdefault(value, {"refs": 0, "tokens": 0})
-                    bucket["refs"] += 1
-                    bucket["tokens"] += token_estimate
-                entity_type = str(ref.get("entity_type") or "")
-                if entity_type:
-                    bucket = breakdown["by_entity_type"].setdefault(entity_type, {"refs": 0, "tokens": 0})
-                    bucket["refs"] += 1
-                    bucket["tokens"] += token_estimate
-                source_roles = ref.get("source_roles") if isinstance(ref.get("source_roles"), list) else []
-                for role in source_roles:
-                    role_name = str(role or "").strip()
-                    if not role_name:
-                        continue
-                    bucket = breakdown["by_source_role"].setdefault(role_name, {"refs": 0, "tokens": 0})
-                    bucket["refs"] += 1
-                    bucket["tokens"] += token_estimate
-                source_hook_types = ref.get("source_hook_types") if isinstance(ref.get("source_hook_types"), list) else []
-                for hook_type in source_hook_types:
-                    hook_name = str(hook_type or "").strip()
-                    if not hook_name:
-                        continue
-                    bucket = breakdown["by_hook_type"].setdefault(hook_name, {"refs": 0, "tokens": 0})
-                    bucket["refs"] += 1
-                    bucket["tokens"] += token_estimate
-                source_codex_events = ref.get("source_codex_events") if isinstance(ref.get("source_codex_events"), list) else []
-                for codex_event in source_codex_events:
-                    event_name = str(codex_event or "").strip()
-                    if not event_name:
-                        continue
-                    bucket = breakdown["by_codex_event"].setdefault(event_name, {"refs": 0, "tokens": 0})
-                    bucket["refs"] += 1
-                    bucket["tokens"] += token_estimate
-                if bool(ref.get("final_session_boundary")):
-                    breakdown["final_session_boundary_ref_count"] += 1
-                if str(ref.get("extraction_phase") or "") == "provisional":
-                    breakdown["provisional_ref_count"] += 1
-                if str(ref.get("extraction_phase") or "") == "final":
-                    breakdown["final_ref_count"] += 1
-            return breakdown
-        memory_layer_budget = ref_layer_budget(
-            selected,
-            total_ref_field="total_selected_refs",
-            total_token_field="total_selected_tokens",
-        )
-        dropped_memory_layer_budget = ref_layer_budget(
-            dropped_over_budget.get("refs", []) if isinstance(dropped_over_budget.get("refs"), list) else [],
-            total_ref_field="total_dropped_refs",
-            total_token_field="total_dropped_tokens",
-        )
+        memory_layer_budget = selected_ref_layer_budget(selected)
+        dropped_memory_layer_budget = dropped_ref_layer_budget(dropped_over_budget)
         memory_layer_pressure = memory_layer_pressure_summary(memory_layer_budget, dropped_memory_layer_budget)
         pack = {
             "context_pack_id": str(context_pack_id),

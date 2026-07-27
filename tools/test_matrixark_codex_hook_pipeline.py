@@ -1688,8 +1688,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertGreaterEqual(len(profile_decision["source_entity_hashes"]), 2)
             self.assertIn("assistant", profile_decision["source_roles"])
+            self.assertEqual({"assistant": 2}, profile_decision["source_role_counts"])
             self.assertIn("hook_boundary", profile_decision["source_hook_types"])
+            self.assertEqual({"hook_boundary": 2}, profile_decision["source_hook_type_counts"])
             self.assertIn("Stop", profile_decision["source_codex_events"])
+            self.assertEqual({"Stop": 2}, profile_decision["source_codex_event_counts"])
             self.assertIn("aaa111", profile_decision["state"])
             self.assertIn("bbb222", profile_decision["state"])
 
@@ -1735,10 +1738,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             recovered_decision = recovered_profile_refs[0]
             self.assertIn("session_profile_update_1", recovered_decision["source_session_ids"])
             self.assertIn("session_profile_update_2", recovered_decision["source_session_ids"])
+            self.assertEqual({"assistant": 2}, recovered_decision["source_role_counts"])
+            self.assertEqual({"hook_boundary": 2}, recovered_decision["source_hook_type_counts"])
+            self.assertEqual({"Stop": 2}, recovered_decision["source_codex_event_counts"])
             self.assertIn("bbb222", recovered_decision["text"])
             recovered_budget = recovered_pack["memory_layer_budget"]
             self.assertGreaterEqual(recovered_budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(recovered_budget["by_session_continuity"]["cross_session"]["refs"], 1)
+            self.assertGreaterEqual(recovered_budget["source_message_counts_by_role"]["assistant"], 2)
+            self.assertGreaterEqual(recovered_budget["source_hook_counts_by_type"]["hook_boundary"], 2)
+            self.assertGreaterEqual(recovered_budget["source_codex_event_counts_by_event"]["Stop"], 2)
 
             current_pack = adapter.retrieve(
                 {
@@ -1759,6 +1768,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("user_profile", current_ref["memory_scope"])
             self.assertEqual("cross_session", current_ref["session_continuity"])
             self.assertEqual(["session_profile_update_1", "session_profile_update_2"], current_ref["source_session_ids"])
+            self.assertEqual({"assistant": 2}, current_ref["source_role_counts"])
+            self.assertEqual({"hook_boundary": 2}, current_ref["source_hook_type_counts"])
+            self.assertEqual({"Stop": 2}, current_ref["source_codex_event_counts"])
             self.assertTrue(current_ref["profile_current_state_representative"])
             self.assertEqual(
                 "profile_entity_bridge_preferred_over_session_local_history",
@@ -1783,8 +1795,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(dropped_budget["by_extraction_phase"]["final"]["refs"], 1)
             self.assertGreaterEqual(dropped_budget["final_ref_count"], 1)
             self.assertGreaterEqual(dropped_budget["by_source_role"]["assistant"]["refs"], 1)
+            self.assertGreaterEqual(dropped_budget["source_message_counts_by_role"]["assistant"], 1)
             self.assertGreaterEqual(dropped_budget["by_hook_type"]["hook_boundary"]["refs"], 1)
+            self.assertGreaterEqual(dropped_budget["source_hook_counts_by_type"]["hook_boundary"], 1)
             self.assertGreaterEqual(dropped_budget["by_codex_event"]["Stop"]["refs"], 1)
+            self.assertGreaterEqual(dropped_budget["source_codex_event_counts_by_event"]["Stop"], 1)
             self.assertEqual(dropped_budget, current_metrics["dropped_memory_layer_budget"])
             layer_pressure = current_metrics["memory_layer_pressure"]
             self.assertEqual(current_pack["memory_layer_pressure"], layer_pressure)
@@ -1793,8 +1808,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(layer_pressure["same_session_pressure"])
             self.assertTrue(layer_pressure["final_memory_pressure"])
             self.assertTrue(layer_pressure["assistant_memory_pressure"])
+            self.assertTrue(layer_pressure["assistant_source_message_pressure"])
             self.assertIn("by_extraction_phase", layer_pressure["dropped_dimensions"])
+            self.assertIn("source_message_counts_by_role", layer_pressure["dropped_dimensions"])
             self.assertGreaterEqual(layer_pressure["by_dimension"]["by_extraction_phase"]["final"]["dropped_refs"], 1)
+            self.assertGreaterEqual(
+                layer_pressure["by_dimension"]["source_message_counts_by_role"]["assistant"]["dropped_count"],
+                1,
+            )
             current_dashboard = adapter.ingestion_dashboard(
                 {"scope": {**base_scope, "session_id": "session_profile_update_2"}, "table": "context_packs", "page_size": 5}
             )

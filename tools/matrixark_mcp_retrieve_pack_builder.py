@@ -142,7 +142,9 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
         "provisional_ref_count": 0,
         "final_ref_count": 0,
         "total_dropped_refs_with_detail": len(refs),
+        "total_dropped_refs": len(refs),
         "total_dropped_tokens_with_detail": 0,
+        "total_dropped_tokens": 0,
         "stale_ref_count": 0,
         "stale_token_estimate": 0,
         "profile_shadowed_ref_count": 0,
@@ -165,6 +167,7 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
         except (TypeError, ValueError):
             token_estimate = 0
         breakdown["total_dropped_tokens_with_detail"] += token_estimate
+        breakdown["total_dropped_tokens"] += token_estimate
         reason = str(ref.get("drop_reason") or ref.get("reason") or "unknown")
         bucket = breakdown["by_drop_reason"].setdefault(reason, {"refs": 0, "tokens": 0})
         bucket["refs"] += 1
