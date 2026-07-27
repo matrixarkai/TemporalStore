@@ -36,6 +36,10 @@ def main() -> int:
     parser.add_argument("--baseline-embedding-model", default="")
     parser.add_argument("--baseline-max-events", type=int, default=0)
     parser.add_argument("--baseline-reader-max-context-chars", type=int, default=0)
+    parser.add_argument("--judge-model", default="")
+    parser.add_argument("--judge-prompt", default="")
+    parser.add_argument("--baseline-judge-model", default="")
+    parser.add_argument("--baseline-judge-prompt", default="")
     parser.add_argument(
         "--require-shared-oss-models",
         dest="require_shared_oss_models",
