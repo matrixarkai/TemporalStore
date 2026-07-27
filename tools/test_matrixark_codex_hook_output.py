@@ -1629,7 +1629,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("idle_timeout", commit_args["commit_reason"])
         self.assertFalse(commit_args["force"])
         self.assertEqual(1, commit_args["idle_timeout_ms"])
-        self.assertEqual("idle_timeout_before_prompt", commit_hook["trigger"])
+        self.assertEqual("idle_timeout_before_ingest", commit_hook["trigger"])
         self.assertEqual("thread-idle-preflush", commit_hook["thread_id"])
         self.assertEqual("turn-new-prompt", commit_hook["turn_id"])
         self.assertEqual(1, len(server.adapter.session_buffer_records))
@@ -1846,6 +1846,95 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(2, commit_args["max_messages"])
         self.assertEqual("session_commit", commit_hook["hook_type"])
         self.assertEqual("thread-tool-threshold", commit_hook["thread_id"])
+        self.assertEqual(1, len(server.adapter.session_buffer_records))
+        self.assertEqual("tool", server.adapter.session_buffer_records[0]["envelope"]["messages"][0]["role"])
+
+    def test_fast_async_hook_ingest_preflushes_idle_tail_before_tool_evidence(self) -> None:
+        original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT
+        hook.HOOK_AUTO_BATCH_EXTRACT = True
+
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.serving_records = []
+                self.session_buffer_records = []
+                self.commit_calls = []
+                self.pending = [{"event_id_hash": 91, "envelope": {"ingestion_time_ms": 1}}]
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.serving_records.extend(records)
+
+            def append_session_buffer_event(self, **kwargs):
+                self.session_buffer_records.append(kwargs)
+                self.pending.append({"event_id_hash": kwargs["event_id_hash"], "envelope": kwargs["envelope"]})
+
+            def pending_session_events(self, scope):
+                return list(self.pending)
+
+            def session_commit(self, args, *, hook=None):
+                self.commit_calls.append((args, hook))
+                committed = list(self.pending)
+                self.pending.clear()
+                return {
+                    "status": "committed",
+                    "trigger_policy": "idle_timeout",
+                    "extraction_phase": "provisional",
+                    "final_session_boundary": False,
+                    "committed_event_count": len(committed),
+                    "source_event_ids": [record["event_id_hash"] for record in committed],
+                    "entities_written": 1,
+                    "profile_entities_written": 1,
+                    "indexes_written": 1,
+                }
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        try:
+            args = Namespace(
+                event="PostToolUse",
+                account_id="acct_local",
+                tenant_id="tenant_codex",
+                user_id="deeproute",
+                session_id="codex-session-tool-idle",
+                team="codex",
+                project="temporalstore",
+                session_commit_threshold=20,
+                idle_commit_timeout_ms=1,
+                understanding_provider="rules",
+                segment_provider="deterministic",
+            )
+            server = Server()
+            result = hook.fast_async_hook_ingest(
+                server,
+                args=args,
+                text="Exit code: 0\nTool evidence arrived after an idle tail.",
+                role="tool",
+                agent_context={"workspace_root": "/repo"},
+                hook={"session_id_source": "payload_field", "thread_id": "thread-tool-idle"},
+            )
+        finally:
+            hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+
+        self.assertEqual("committed", result["idle_commit_result"]["status"])
+        self.assertEqual("idle_timeout", result["idle_commit_result"]["trigger_policy"])
+        self.assertEqual([91], result["idle_commit_result"]["source_event_ids"])
+        self.assertTrue(result["session_buffer"]["pre_ingest_idle_ready"])
+        self.assertEqual(1, result["session_buffer"]["pending_before_ingest_count"])
+        self.assertEqual(1, result["session_buffer"]["pending_after_ingest_count"])
+        self.assertFalse(result["session_buffer"]["commit_after_current_ingest"])
+        self.assertTrue(result["session_buffer"]["auto_batch_extract"])
+        self.assertEqual({}, result["auto_batch_extract_result"])
+        self.assertEqual(1, len(server.adapter.commit_calls))
+        commit_args, commit_hook = server.adapter.commit_calls[0]
+        self.assertEqual("idle_timeout", commit_args["commit_reason"])
+        self.assertFalse(commit_args["force"])
+        self.assertEqual(1, commit_args["idle_timeout_ms"])
+        self.assertEqual("idle_timeout_before_ingest", commit_hook["trigger"])
         self.assertEqual(1, len(server.adapter.session_buffer_records))
         self.assertEqual("tool", server.adapter.session_buffer_records[0]["envelope"]["messages"][0]["role"])
 
@@ -2174,6 +2263,58 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', cpp_script)
         self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', rust_script)
         self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', dual_script)
+
+    def test_live_ingest_auto_batch_decision_covers_tool_but_not_boundaries(self) -> None:
+        original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT
+        try:
+            hook.HOOK_AUTO_BATCH_EXTRACT = True
+            self.assertTrue(hook.should_auto_batch_extract_on_ingest("UserPromptSubmit"))
+            self.assertTrue(hook.should_auto_batch_extract_on_ingest("PostToolUse"))
+            self.assertFalse(hook.should_auto_batch_extract_on_ingest("Stop"))
+            self.assertFalse(hook.should_auto_batch_extract_on_ingest("IdleTimeout"))
+
+            hook.HOOK_AUTO_BATCH_EXTRACT = False
+            self.assertFalse(hook.should_auto_batch_extract_on_ingest("UserPromptSubmit"))
+            self.assertFalse(hook.should_auto_batch_extract_on_ingest("PostToolUse"))
+        finally:
+            hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+
+    def test_live_ingest_auto_batch_options_are_explicit_for_tool_and_stop(self) -> None:
+        original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT
+        try:
+            hook.HOOK_AUTO_BATCH_EXTRACT = True
+            tool_args = hook.apply_hook_auto_batch_ingest_options(
+                {},
+                event="PostToolUse",
+                session_commit_threshold=7,
+                idle_commit_timeout_ms=123,
+            )
+            self.assertTrue(tool_args["auto_batch_extract"])
+            self.assertEqual(7, tool_args["session_buffer_threshold"])
+            self.assertEqual(123, tool_args["idle_commit_timeout_ms"])
+
+            stop_args = hook.apply_hook_auto_batch_ingest_options(
+                {"idle_commit_timeout_ms": 456},
+                event="Stop",
+                session_commit_threshold=7,
+                idle_commit_timeout_ms=123,
+            )
+            self.assertFalse(stop_args["auto_batch_extract"])
+            self.assertEqual(7, stop_args["session_buffer_threshold"])
+            self.assertNotIn("idle_commit_timeout_ms", stop_args)
+
+            hook.HOOK_AUTO_BATCH_EXTRACT = False
+            disabled_args = hook.apply_hook_auto_batch_ingest_options(
+                {},
+                event="UserPromptSubmit",
+                session_commit_threshold=7,
+                idle_commit_timeout_ms=123,
+            )
+            self.assertFalse(disabled_args["auto_batch_extract"])
+            self.assertEqual(7, disabled_args["session_buffer_threshold"])
+            self.assertNotIn("idle_commit_timeout_ms", disabled_args)
+        finally:
+            hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
     def test_dual_hook_keeps_derived_context_out_of_raw_ingestion(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_dual_hook.sh").read_text()

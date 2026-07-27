@@ -2125,6 +2125,27 @@ def should_run_session_commit_after_ingest(event: str, hook_warning: str) -> boo
     return True
 
 
+def should_auto_batch_extract_on_ingest(event: str) -> bool:
+    return HOOK_AUTO_BATCH_EXTRACT and not should_commit_session(event)
+
+
+def apply_hook_auto_batch_ingest_options(
+    ingest_args: Json,
+    *,
+    event: str,
+    session_commit_threshold: int,
+    idle_commit_timeout_ms: int,
+) -> Json:
+    auto_batch_extract = should_auto_batch_extract_on_ingest(event)
+    ingest_args["auto_batch_extract"] = auto_batch_extract
+    ingest_args["session_buffer_threshold"] = session_commit_threshold
+    if auto_batch_extract and idle_commit_timeout_ms > 0:
+        ingest_args["idle_commit_timeout_ms"] = idle_commit_timeout_ms
+    else:
+        ingest_args.pop("idle_commit_timeout_ms", None)
+    return ingest_args
+
+
 def commit_reason_for_event(event: str) -> str:
     if event in {"IdleTimeout", "SessionIdle"}:
         return "idle_timeout"
@@ -2472,9 +2493,9 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         )
         if latest_event_time > 0:
             idle_elapsed_before_ingest_ms = max(0, now - latest_event_time)
+    auto_batch_extract_on_ingest = should_auto_batch_extract_on_ingest(args.event)
     should_pre_ingest_idle_commit = (
-        args.event == "UserPromptSubmit"
-        and HOOK_AUTO_BATCH_EXTRACT
+        auto_batch_extract_on_ingest
         and callable(session_commit)
         and bool(pending_before_ingest)
         and idle_timeout_ms > 0
@@ -2485,7 +2506,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
             hook_type="session_commit",
             hook_id=f"fast_async_pre_ingest_idle_commit:{args.event}:{now}",
             idempotency_key=f"fast-async-pre-ingest-idle:{session_id}:{event_id_hash}",
-            trigger="idle_timeout_before_prompt",
+            trigger="idle_timeout_before_ingest",
             session_id_source=str((hook or {}).get("session_id_source") or ""),
             identity=hook,
         )
@@ -2543,7 +2564,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
     should_boundary_commit = should_commit_session(args.event)
     should_threshold_commit = (
         not should_boundary_commit
-        and HOOK_AUTO_BATCH_EXTRACT
+        and auto_batch_extract_on_ingest
         and pending_event_count >= threshold
     )
     should_idle_commit = should_boundary_commit and commit_reason_for_event(args.event) == "idle_timeout"
@@ -2611,7 +2632,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
             "pre_ingest_idle_ready": should_pre_ingest_idle_commit,
             "pre_ingest_idle_elapsed_ms": idle_elapsed_before_ingest_ms,
             "commit_after_current_ingest": bool(should_threshold_commit or should_boundary_commit),
-            "auto_batch_extract": HOOK_AUTO_BATCH_EXTRACT,
+            "auto_batch_extract": auto_batch_extract_on_ingest,
             "boundary_commit_requested": should_boundary_commit,
         },
         "idle_commit_result": pre_ingest_idle_commit_result,
@@ -2937,11 +2958,12 @@ def main() -> int:
                     },
                     "agent_hook": main_hook,
                 }
-                if args.event == "UserPromptSubmit" and HOOK_AUTO_BATCH_EXTRACT:
-                    ingest_args["auto_batch_extract"] = True
-                    ingest_args["session_buffer_threshold"] = args.session_commit_threshold
-                    if args.idle_commit_timeout_ms > 0:
-                        ingest_args["idle_commit_timeout_ms"] = args.idle_commit_timeout_ms
+                apply_hook_auto_batch_ingest_options(
+                    ingest_args,
+                    event=args.event,
+                    session_commit_threshold=args.session_commit_threshold,
+                    idle_commit_timeout_ms=args.idle_commit_timeout_ms,
+                )
                 ingest = trace_tool_call(server, "matrixark_ingest", ingest_args, trace)
                 hook_warning = timeout_warning(ingest)
 
