@@ -555,6 +555,8 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         "threshold_ready": session_buffer.get("threshold_ready"),
         "idle_timeout_ms": session_buffer.get("idle_commit_timeout_ms"),
         "idle_ready": session_buffer.get("idle_ready"),
+        "pre_ingest_idle_ready": session_buffer.get("pre_ingest_idle_ready"),
+        "pre_ingest_idle_elapsed_ms": session_buffer.get("pre_ingest_idle_elapsed_ms"),
         "auto_batch_extract": session_buffer.get("auto_batch_extract"),
         "boundary_commit_requested": session_buffer.get("boundary_commit_requested"),
     }
