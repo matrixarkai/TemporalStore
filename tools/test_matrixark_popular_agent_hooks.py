@@ -145,7 +145,18 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
                     "session_id_source": "payload_field",
                     "strong_session_identity": True,
                     "fallback_session_identity": False,
-                }
+                },
+                "cross_session": {
+                    "enabled": True,
+                    "budget_tokens": 18,
+                    "remote_budget_tokens": 90,
+                    "computed_budget_tokens": 18,
+                    "budget_floor_tokens": 256,
+                    "budget_floor_applied": False,
+                    "budget_floor_status": "remote_budget_too_small_for_profile_floor",
+                    "max_sessions": 3,
+                    "max_candidates": 24,
+                },
             },
         }
 
@@ -161,6 +172,19 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
             summary["layer_summary"]["memory_layer_pressure"],
             summary["memory_layer_pressure"],
         )
+        hierarchy = summary["memory_hierarchy_contract"]
+        self.assertTrue(hierarchy["cross_session_enabled"])
+        self.assertEqual(18, hierarchy["cross_session_budget_tokens"])
+        self.assertEqual(90, hierarchy["cross_session_remote_budget_tokens"])
+        self.assertEqual(18, hierarchy["cross_session_computed_budget_tokens"])
+        self.assertEqual(256, hierarchy["cross_session_budget_floor_tokens"])
+        self.assertFalse(hierarchy["cross_session_budget_floor_applied"])
+        self.assertEqual(
+            "remote_budget_too_small_for_profile_floor",
+            hierarchy["cross_session_budget_floor_status"],
+        )
+        self.assertEqual(3, hierarchy["cross_session_max_sessions"])
+        self.assertEqual(24, hierarchy["cross_session_max_candidates"])
 
     def test_generic_hook_idle_commit_is_reported_as_auto_batch_decision(self) -> None:
         ingest = {
