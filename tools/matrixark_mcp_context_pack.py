@@ -186,6 +186,14 @@ def compact_context_pack_policy(policy: Any) -> Json:
         value = policy.get(field)
         if isinstance(value, int) and value > 0:
             compact[field] = value
+    for field in [
+        "budget_tokens",
+        "selected_tokens_by_role",
+        "selected_ref_count_by_role",
+    ]:
+        value = policy.get(field)
+        if isinstance(value, dict) and value:
+            compact[field] = value
     return compact
 
 
@@ -211,7 +219,7 @@ def compact_dropped_refs_for_context_pack(dropped: Json, *, include_debug: bool 
         value = dropped.get(field)
         if value not in (None, "", [], {}):
             compact[field] = value
-    for field in ["cross_session_policy", "shared_context_policy"]:
+    for field in ["cross_session_policy", "shared_context_policy", "source_role_budget_policy"]:
         value = compact_context_pack_policy(dropped.get(field))
         if value:
             compact[field] = value

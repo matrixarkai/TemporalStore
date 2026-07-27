@@ -5243,6 +5243,7 @@ def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate:
         "source_hook_type_counts",
         "source_codex_events",
         "source_codex_event_counts",
+        "source_role_budget_capped_roles",
         "profile_shadowed_by_ref_hash",
         "profile_shadowed_reason",
     ]:
@@ -5397,6 +5398,7 @@ def select_token_budgeted_refs(
     deadline_reason: str = "deadline_during_pack",
     cross_session_policy: Json | None = None,
     shared_context_policy: Json | None = None,
+    source_role_budget_tokens: Json | None = None,
 ) -> tuple[list[Json], int, Json]:
     duplicate_text_hashes = duplicate_text_hashes or set()
     remote_budget = max(0, max_context_tokens - max(0, reserved_tokens))
@@ -5438,6 +5440,38 @@ def select_token_budgeted_refs(
     shared_skill_used_tokens = 0
     shared_resource_selected_ref_count = 0
     shared_skill_selected_ref_count = 0
+    source_role_budget_tokens = source_role_budget_tokens if isinstance(source_role_budget_tokens, dict) else {}
+    normalized_source_role_budget_tokens: Json = {}
+    for role, budget in source_role_budget_tokens.items():
+        role_name = str(role or "").strip().lower()
+        if not role_name:
+            continue
+        try:
+            budget_tokens = max(0, int(budget or 0))
+        except (TypeError, ValueError):
+            budget_tokens = 0
+        if budget_tokens:
+            normalized_source_role_budget_tokens[role_name] = budget_tokens
+    source_role_used_tokens: Json = {role: 0 for role in normalized_source_role_budget_tokens}
+    source_role_selected_ref_counts: Json = {role: 0 for role in normalized_source_role_budget_tokens}
+    def candidate_source_role_names(candidate: Json) -> set[str]:
+        role_names = {
+            str(role or "").strip().lower()
+            for role in candidate.get("source_roles", [])
+            if str(role or "").strip()
+        } if isinstance(candidate.get("source_roles"), list) else set()
+        source_counts = candidate.get("source_role_counts") if isinstance(candidate.get("source_role_counts"), dict) else {}
+        for role, count in source_counts.items():
+            role_name = str(role or "").strip().lower()
+            if not role_name:
+                continue
+            try:
+                source_count = int(count or 0)
+            except (TypeError, ValueError):
+                source_count = 0
+            if source_count > 0:
+                role_names.add(role_name)
+        return role_names
     selected_cross_sessions: set[str] = set()
     def cross_session_key(candidate: Json) -> str:
         for source in [candidate, candidate.get("access_scope", {}), candidate.get("scope", {}), candidate.get("metadata", {}).get("access_scope", {}) if isinstance(candidate.get("metadata"), dict) else {}]:
@@ -5460,6 +5494,7 @@ def select_token_budgeted_refs(
         "cross_session_candidate_cap": 0,
         "shared_resource_budget": 0,
         "shared_skill_budget": 0,
+        "source_role_budget": 0,
         "deadline": 0,
         "max_selected_refs": 0,
         "estimated_tokens": {
@@ -5474,6 +5509,7 @@ def select_token_budgeted_refs(
             "cross_session_candidate_cap": 0,
             "shared_resource_budget": 0,
             "shared_skill_budget": 0,
+            "source_role_budget": 0,
             "deadline": 0,
             "max_selected_refs": 0,
         },
@@ -5489,6 +5525,7 @@ def select_token_budgeted_refs(
             "cross_session_candidate_cap": "cross-session candidate exceeded the configured cross-session candidate cap",
             "shared_resource_budget": "shared resource candidate exceeded the configured shared-resource token budget",
             "shared_skill_budget": "shared skill candidate exceeded the configured shared-skill token budget",
+            "source_role_budget": "candidate exceeded a configured source-role token budget",
             "deadline": "candidate was not packed because the hard retrieval deadline was reached",
             "max_selected_refs": "candidate was relevant but dropped because max_selected_refs was reached",
         },
@@ -5610,6 +5647,23 @@ def select_token_budgeted_refs(
             dropped["estimated_tokens"]["shared_skill_budget"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="shared_skill_budget", token_estimate=ref_tokens)
             continue
+        candidate_source_roles = candidate_source_role_names(candidate)
+        capped_roles = [
+            role
+            for role in sorted(candidate_source_roles)
+            if role in normalized_source_role_budget_tokens
+            and int(source_role_used_tokens.get(role, 0)) + ref_tokens > int(normalized_source_role_budget_tokens[role])
+        ]
+        if capped_roles:
+            dropped["source_role_budget"] += 1
+            dropped["estimated_tokens"]["source_role_budget"] += ref_tokens
+            record_dropped_candidate(
+                dropped,
+                {**candidate, "source_role_budget_capped_roles": capped_roles},
+                reason="source_role_budget",
+                token_estimate=ref_tokens,
+            )
+            continue
         seen_text_hashes.add(text_hash)
         selected.append(
             {
@@ -5632,6 +5686,10 @@ def select_token_budgeted_refs(
         if is_shared_skill_candidate(candidate):
             shared_skill_used_tokens += ref_tokens
             shared_skill_selected_ref_count += 1
+        for role in candidate_source_roles:
+            if role in normalized_source_role_budget_tokens:
+                source_role_used_tokens[role] = int(source_role_used_tokens.get(role, 0)) + ref_tokens
+                source_role_selected_ref_counts[role] = int(source_role_selected_ref_counts.get(role, 0)) + 1
         if used_tokens >= remote_budget:
             break
     dropped["cross_session_policy"] = {
@@ -5647,6 +5705,12 @@ def select_token_budgeted_refs(
         "skill_selected_tokens": shared_skill_used_tokens,
         "resource_selected_ref_count": shared_resource_selected_ref_count,
         "skill_selected_ref_count": shared_skill_selected_ref_count,
+    }
+    dropped["source_role_budget_policy"] = {
+        "enabled": bool(normalized_source_role_budget_tokens),
+        "budget_tokens": normalized_source_role_budget_tokens,
+        "selected_tokens_by_role": source_role_used_tokens,
+        "selected_ref_count_by_role": source_role_selected_ref_counts,
     }
     if not selected and candidates and remote_budget > 0 and budget_fill_policy != "quality_first":
         first = next(
@@ -5962,6 +6026,14 @@ def compact_context_pack_policy(policy: Any) -> Json:
         value = policy.get(field)
         if isinstance(value, int) and value > 0:
             compact[field] = value
+    for field in [
+        "budget_tokens",
+        "selected_tokens_by_role",
+        "selected_ref_count_by_role",
+    ]:
+        value = policy.get(field)
+        if isinstance(value, dict) and value:
+            compact[field] = value
     return compact
 
 
@@ -5987,7 +6059,7 @@ def compact_dropped_refs_for_context_pack(dropped: Json, *, include_debug: bool 
         value = dropped.get(field)
         if value not in (None, "", [], {}):
             compact[field] = value
-    for field in ["cross_session_policy", "shared_context_policy"]:
+    for field in ["cross_session_policy", "shared_context_policy", "source_role_budget_policy"]:
         value = compact_context_pack_policy(dropped.get(field))
         if value:
             compact[field] = value

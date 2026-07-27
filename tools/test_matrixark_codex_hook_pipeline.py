@@ -14,8 +14,8 @@ from unittest import mock
 from pathlib import Path
 
 import matrixark_codex_hook
-from matrixark_mcp_context_pack import compact_context_pack_for_serving, compact_refs_for_audit
-from matrixark_mcp_core import packing_sort_key
+from matrixark_mcp_context_pack import compact_context_pack_for_serving, compact_dropped_refs_for_context_pack, compact_refs_for_audit
+from matrixark_mcp_core import packing_sort_key, select_token_budgeted_refs
 from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget, memory_layer_pressure_summary, selected_ref_layer_budget
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 
@@ -162,6 +162,85 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         )
         self.assertTrue(pressure["assistant_source_message_pressure"])
         self.assertTrue(pressure["tool_source_message_pressure"])
+
+    def test_source_role_budget_caps_assistant_context_without_blocking_user_refs(self) -> None:
+        selected, used_tokens, dropped = select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 101,
+                    "text": "alpha",
+                    "score": 0.95,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "entity_type": "assistant_decision",
+                    "source_roles": ["assistant"],
+                    "source_role_counts": {"assistant": 1},
+                },
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 102,
+                    "text": "bravo",
+                    "score": 0.94,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "entity_type": "assistant_decision",
+                    "source_roles": ["assistant"],
+                    "source_role_counts": {"assistant": 1},
+                },
+                {
+                    "ref_type": "event",
+                    "ref_hash": 103,
+                    "text": "charlie",
+                    "score": 0.93,
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "source_roles": ["user"],
+                    "source_role_counts": {"user": 1},
+                },
+            ],
+            [],
+            max_context_tokens=20,
+            auxiliary_quota=0,
+            min_score=0.0,
+            max_selected_refs=5,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 20,
+                "max_sessions": 4,
+                "max_candidates": 4,
+                "min_entity_bridge_refs": 0,
+            },
+            source_role_budget_tokens={"assistant": 1},
+        )
+
+        selected_hashes = [ref["ref_hash"] for ref in selected]
+        self.assertEqual([101, 103], selected_hashes)
+        self.assertEqual(2, used_tokens)
+        self.assertEqual(1, dropped["source_role_budget"])
+        self.assertEqual(1, dropped["estimated_tokens"]["source_role_budget"])
+        self.assertEqual({"assistant": 1}, dropped["source_role_budget_policy"]["budget_tokens"])
+        self.assertEqual({"assistant": 1}, dropped["source_role_budget_policy"]["selected_tokens_by_role"])
+        self.assertEqual(["assistant"], dropped["refs"][0]["source_role_budget_capped_roles"])
+
+        compact_dropped = compact_dropped_refs_for_context_pack(dropped)
+        self.assertEqual(1, compact_dropped["source_role_budget"])
+        self.assertEqual(1, compact_dropped["estimated_tokens"]["source_role_budget"])
+        self.assertEqual(
+            {"assistant": 1},
+            compact_dropped["source_role_budget_policy"]["selected_tokens_by_role"],
+        )
+
+        selected_budget = selected_ref_layer_budget(selected)
+        dropped_budget = dropped_ref_layer_budget(dropped)
+        pressure = memory_layer_pressure_summary(selected_budget, dropped_budget)
+        self.assertEqual({"assistant": 1, "user": 1}, selected_budget["source_message_counts_by_role"])
+        self.assertEqual({"assistant": 1}, dropped_budget["source_message_counts_by_role"])
+        self.assertEqual(
+            {"selected_count": 1, "dropped_count": 1, "selected_and_dropped": True},
+            pressure["by_dimension"]["source_message_counts_by_role"]["assistant"],
+        )
+        self.assertTrue(pressure["assistant_source_message_pressure"])
 
     def test_memory_layer_pressure_summary_marks_dropped_profile_final_tool_layers(self) -> None:
         selected = {
