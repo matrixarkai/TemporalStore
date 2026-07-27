@@ -182,7 +182,9 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertFalse(bootstrap["ready_for_context_serving"])
         self.assertEqual("durable_context_records_not_in_memory_index", bootstrap["source_of_truth"])
         self.assertFalse(bootstrap["in_memory_index_persistence_required"])
-        self.assertTrue(bootstrap["durable_source_catchup_required"])
+        self.assertFalse(bootstrap["durable_source_catchup_required"])
+        self.assertFalse(bootstrap["non_raft_import_or_restore_required"])
+        self.assertFalse(bootstrap["automatic_cluster_catchup"])
         self.assertTrue(bootstrap["hot_cache_rebuildable_from_durable_log"])
         self.assertTrue(bootstrap["secondary_indexes_present"])
         self.assertTrue(bootstrap["secondary_indexes_rebuildable_from_context_models"])
@@ -191,7 +193,16 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertTrue(bootstrap["summaries_present"])
         self.assertTrue(bootstrap["dirty_summaries_pending"])
         self.assertEqual(["refresh_summaries_for_dirty_nodes"], bootstrap["missing_rebuild_steps"])
-        self.assertIn("mark MatrixArk context serving ready", bootstrap["new_node_flow"])
+        self.assertIn("mark local MatrixArk context serving ready", bootstrap["new_node_flow"])
+        non_raft = report["non_raft_recovery"]
+        self.assertEqual("local_one_node", non_raft["deployment_mode"])
+        self.assertFalse(non_raft["serving_ready_for_mode"])
+        self.assertFalse(non_raft["local_one_node"]["automatic_cluster_catchup"])
+        self.assertEqual("none", non_raft["distributed"]["membership_protocol"])
+        self.assertEqual(
+            "backup_restore_or_import_not_raft_membership",
+            non_raft["distributed"]["bootstrap_problem"],
+        )
         self.assertEqual([], report["blockers"])
 
     def test_recovery_report_detects_corrupt_jsonl_tail(self) -> None:
@@ -235,6 +246,8 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertEqual("rebuild_required", bootstrap["readiness_status"])
         self.assertFalse(bootstrap["ready_for_context_serving"])
         self.assertFalse(bootstrap["in_memory_index_persistence_required"])
+        self.assertFalse(bootstrap["durable_source_catchup_required"])
+        self.assertFalse(bootstrap["non_raft_import_or_restore_required"])
         self.assertTrue(bootstrap["hot_cache_rebuildable_from_durable_log"])
         self.assertFalse(bootstrap["secondary_indexes_present"])
         self.assertTrue(bootstrap["secondary_indexes_rebuildable_from_context_models"])
@@ -245,6 +258,66 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertIn("rebuild_context_embeddings", bootstrap["missing_rebuild_steps"])
         self.assertIn("rebuild_secondary_indexes", bootstrap["missing_rebuild_steps"])
         self.assertIn("refresh_or_regenerate_context_summaries", bootstrap["missing_rebuild_steps"])
+
+    def test_non_raft_distributed_recovery_requires_import_or_restore_marker(self) -> None:
+        ready_records = [
+            {
+                "record_type": "context_event",
+                "event_id_hash": 1,
+                "scope": {"account_id": "a"},
+                "text": "user: recover this event",
+            },
+            {"record_type": "context_embedding", "embedding_type": "event_text", "ref_type": "event", "ref_hash": 1},
+            {"record_type": "context_index", "index_name": "event", "data_model": "context_event", "ref_hashes": [1]},
+            {"record_type": "context_summary", "summary_type": "batch_l0", "summary_hash": 2, "summary_text": "recover this event"},
+            {"record_type": "context_embedding", "embedding_type": "summary_text", "ref_type": "summary", "ref_hash": 2},
+        ]
+
+        local_report = matrixark_local_recovery_report(
+            ready_records,
+            scope={"account_id": "a"},
+            deployment_mode="local_one_node",
+        )
+        self.assertEqual("ready", local_report["status"])
+        self.assertTrue(local_report["non_raft_recovery"]["serving_ready_for_mode"])
+        self.assertTrue(local_report["cluster_join_bootstrap"]["ready_for_context_serving"])
+        self.assertFalse(local_report["cluster_join_bootstrap"]["automatic_cluster_catchup"])
+
+        distributed_report = matrixark_local_recovery_report(
+            ready_records,
+            scope={"account_id": "a"},
+            deployment_mode="distributed_non_raft",
+        )
+        self.assertEqual("ready", distributed_report["status"])
+        self.assertFalse(distributed_report["non_raft_recovery"]["serving_ready_for_mode"])
+        self.assertFalse(distributed_report["cluster_join_bootstrap"]["ready_for_context_serving"])
+        self.assertTrue(distributed_report["cluster_join_bootstrap"]["non_raft_import_or_restore_required"])
+        self.assertFalse(distributed_report["cluster_join_bootstrap"]["automatic_cluster_catchup"])
+        self.assertIn(
+            "non_raft:distributed_import_or_restore_missing",
+            distributed_report["non_raft_recovery"]["distributed"]["blockers"],
+        )
+        self.assertIn(
+            "restore or import a consistent backup/export/shared-object snapshot",
+            distributed_report["cluster_join_bootstrap"]["new_node_flow"],
+        )
+
+        restored_report = matrixark_local_recovery_report(
+            [
+                {
+                    "record_type": "context_restore_manifest",
+                    "restore_id": "restore-1",
+                    "non_raft_import_complete": True,
+                },
+                *ready_records,
+            ],
+            scope={"account_id": "a"},
+            deployment_mode="distributed_non_raft",
+        )
+        self.assertTrue(restored_report["non_raft_recovery"]["serving_ready_for_mode"])
+        self.assertTrue(restored_report["cluster_join_bootstrap"]["ready_for_context_serving"])
+        self.assertEqual(1, restored_report["non_raft_recovery"]["distributed"]["import_or_restore_marker_count"])
+        self.assertEqual([], restored_report["cluster_join_bootstrap"]["blockers"])
 
     def test_recovery_cli_accepts_scope_json_for_retrieval_smoke(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
