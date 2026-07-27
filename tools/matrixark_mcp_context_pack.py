@@ -249,6 +249,9 @@ def compact_recall_policy_for_audit(recall_policy: Json) -> Json:
     memory_layer_budget = recall_policy.get("memory_layer_budget")
     if isinstance(memory_layer_budget, dict):
         compact["memory_layer_budget"] = memory_layer_budget
+    dropped_memory_layer_budget = recall_policy.get("dropped_memory_layer_budget")
+    if isinstance(dropped_memory_layer_budget, dict):
+        compact["dropped_memory_layer_budget"] = dropped_memory_layer_budget
     if storage_options:
         compact["storage_route"] = {
             field: storage_options.get(field)
@@ -305,6 +308,12 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
         memory_layer_budget = recall_policy.get("memory_layer_budget")
     if isinstance(memory_layer_budget, dict):
         compact["memory_layer_budget"] = memory_layer_budget
+    dropped_memory_layer_budget = record.get("dropped_memory_layer_budget")
+    if not isinstance(dropped_memory_layer_budget, dict):
+        recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
+        dropped_memory_layer_budget = recall_policy.get("dropped_memory_layer_budget")
+    if isinstance(dropped_memory_layer_budget, dict):
+        compact["dropped_memory_layer_budget"] = dropped_memory_layer_budget
     local_policy = record.get("local_context_policy")
     if isinstance(local_policy, dict):
         compact["local_context_policy"] = {
@@ -596,4 +605,13 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     )
     if isinstance(memory_layer_budget, dict) and memory_layer_budget:
         compact["memory_layer_budget"] = memory_layer_budget
+    dropped_memory_layer_budget = (
+        retrieval_metrics.get("dropped_memory_layer_budget")
+        if isinstance(retrieval_metrics.get("dropped_memory_layer_budget"), dict)
+        else recall_policy.get("dropped_memory_layer_budget")
+        if isinstance(recall_policy.get("dropped_memory_layer_budget"), dict)
+        else {}
+    )
+    if isinstance(dropped_memory_layer_budget, dict) and dropped_memory_layer_budget:
+        compact["dropped_memory_layer_budget"] = dropped_memory_layer_budget
     return compact
