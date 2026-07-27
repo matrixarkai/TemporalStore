@@ -1196,6 +1196,13 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(budget, adapter.audit_records[0]["memory_layer_budget"])
         self.assertEqual(pressure, adapter.audit_records[0]["memory_layer_pressure"])
         self.assertEqual(readiness, adapter.audit_records[0]["async_pipeline_readiness"])
+        audit_hierarchy = adapter.audit_records[0]["memory_hierarchy"]
+        self.assertEqual("fallback_recent_context", audit_hierarchy["session_scope_mode"])
+        self.assertEqual(
+            "deadline_fallback_uses_remaining_remote_budget",
+            audit_hierarchy["cross_session_budget_floor_status"],
+        )
+        self.assertIn("profile_entity_bridge", audit_hierarchy["selected_ref_flow"])
         self.assertEqual(pressure, adapter.audit_records[0]["recall_policy_summary"]["memory_layer_pressure"])
         self.assertEqual(readiness, adapter.audit_records[0]["recall_policy_summary"]["async_pipeline_readiness"])
         self.assertEqual(

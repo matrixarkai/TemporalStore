@@ -6126,6 +6126,9 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
     recall_summary = compact_recall_policy_for_audit(record.get("recall_policy", {}))
     if recall_summary:
         compact["recall_policy_summary"] = recall_summary
+    memory_hierarchy = memory_hierarchy_contract_from_recall_policy(record.get("recall_policy", {}))
+    if memory_hierarchy:
+        compact["memory_hierarchy"] = memory_hierarchy
     memory_layer_budget = record.get("memory_layer_budget")
     if not isinstance(memory_layer_budget, dict):
         recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
