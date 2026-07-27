@@ -3238,6 +3238,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "max_context_tokens": 2048,
                 "local_context_tokens": 128,
                 "ranking": {"max_selected_refs": 8},
+                "source_role_budget_tokens": {"assistant": 128},
                 "debug_context_pack": True,
                 "include_retrieval_metrics": True,
             }
@@ -3263,6 +3264,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(request["shared_resource_max_refs"], 4)
         self.assertEqual(request["skill_max_refs"], 4)
         self.assertEqual(request["cross_session_max_refs"], 4)
+        self.assertEqual(request["source_role_budget_tokens"], {"assistant": 128})
         self.assertTrue(request["cross_session_rerank"])
         self.assertTrue(request["same_session_priority"])
         self.assertEqual(

@@ -45,6 +45,31 @@ class FastHookLocalAdapter(MatrixArkLocalAdapter):
         self.append_many(records)
 
 
+class NativeCaptureLocalAdapter(MatrixArkLocalAdapter):
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.native_requests: list[dict] = []
+
+    def supports_native_context_pack(self) -> bool:
+        return True
+
+    def native_context_pack(self, request: dict) -> dict | None:
+        self.native_requests.append(dict(request))
+        return {
+            "context_pack_id": "local-native-pack",
+            "selected_refs": [],
+            "used_context_tokens": 0,
+            "used_remote_context_tokens": 0,
+            "remote_context_budget_tokens": request.get("max_context_tokens", 0),
+            "recall_policy": {
+                "source_role_budget": {
+                    "enabled": bool(request.get("source_role_budget_tokens")),
+                    "budget_tokens": request.get("source_role_budget_tokens", {}),
+                }
+            },
+        }
+
+
 class MatrixArkCodexHookPipelineTest(unittest.TestCase):
     def test_context_pack_audit_refs_preserve_memory_layer_lineage(self) -> None:
         refs = compact_refs_for_audit(
@@ -615,6 +640,33 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertTrue(all("summary" in record["remaining_stages"] for record in progress))
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+
+    def test_local_native_context_pack_receives_source_role_budget_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-budget.jsonl")
+            scope = {
+                "account_id": "acct_native_budget",
+                "tenant_id": "tenant_native_budget",
+                "user_id": "user_native_budget",
+                "session_id": "session_native_budget",
+            }
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "GPU budget",
+                    "max_context_tokens": 256,
+                    "source_role_budget_tokens": {"assistant": 64, "tool": 32},
+                    "ranking": {"max_selected_refs": 4},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertEqual("local-native-pack", pack["pack_id"])
+            self.assertEqual(1, len(adapter.native_requests))
+            request = adapter.native_requests[0]
+            self.assertEqual({"assistant": 64, "tool": 32}, request["source_role_budget_tokens"])
+            self.assertEqual({"max_selected_refs": 4}, request["ranking"])
 
     def test_retrieval_metrics_expose_shared_local_remote_budget(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

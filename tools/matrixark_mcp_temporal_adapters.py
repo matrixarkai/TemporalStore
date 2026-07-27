@@ -2855,6 +2855,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             session_scope=retrieval_session_scope,
             remote_budget_tokens=remote_context_budget_tokens,
         )
+        source_role_budget_tokens = optional_object(args, "source_role_budget_tokens") or optional_object(ranking, "source_role_budget_tokens")
         resource_version_watermark = str(
             ranking.get("resource_version_watermark")
             or args.get("resource_version_watermark")
@@ -2899,6 +2900,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "cross_session_max_refs": int(ranking.get("cross_session_max_refs") or args.get("cross_session_max_refs") or 4),
             "cross_session_rerank": bool(ranking.get("cross_session_rerank", True)),
             "cross_session": cross_session_policy,
+            "source_role_budget_tokens": source_role_budget_tokens,
             "same_session_priority": bool(ranking.get("same_session_priority", True)),
             "leaf_only": bool(ranking.get("leaf_only", False)),
             "allow_broad_scan_fallback": bool(native_retrieve_fallback_allowed(args)),
