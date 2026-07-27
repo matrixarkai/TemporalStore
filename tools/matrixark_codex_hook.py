@@ -1054,6 +1054,56 @@ def _format_memory_layer_pressure_bits(memory_layer_pressure: Json) -> list[str]
     return pressure_bits
 
 
+def _format_count_map_bits(counts: Json, *, limit: int = 6) -> str:
+    if not isinstance(counts, dict) or not counts:
+        return ""
+    bits = []
+    for key in sorted(counts):
+        try:
+            count = int(counts[key] or 0)
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            bits.append(f"{key}={count}")
+    return ",".join(bits[:limit])
+
+
+def _format_memory_lineage_summary(lineage: Json) -> str:
+    if not isinstance(lineage, dict) or not lineage:
+        return ""
+    bits = []
+    for label, field in [
+        ("roles", "source_role_counts"),
+        ("hooks", "source_hook_type_counts"),
+        ("codex_events", "source_codex_event_counts"),
+    ]:
+        formatted = _format_count_map_bits(lineage.get(field))
+        if formatted:
+            bits.append(f"{label}[{formatted}]")
+    flag_bits = []
+    for label, field in [
+        ("user_prompt", "user_prompt_captured"),
+        ("assistant_response", "assistant_response_captured"),
+        ("tool_evidence", "tool_evidence_captured"),
+    ]:
+        if bool(lineage.get(field)):
+            flag_bits.append(label)
+    if flag_bits:
+        bits.append("captured[" + ",".join(flag_bits) + "]")
+    try:
+        promotion_count = int(lineage.get("profile_promotion_count") or 0)
+    except (TypeError, ValueError):
+        promotion_count = 0
+    if promotion_count > 0:
+        bits.append(f"profile_promotions={promotion_count}")
+    session_ids = lineage.get("promoted_source_session_ids")
+    if isinstance(session_ids, list) and session_ids:
+        bits.append("promoted_sessions=" + ",".join(str(value) for value in session_ids[:4]))
+    if not bits:
+        return ""
+    return "Retrieved memory lineage: " + "; ".join(bits) + "."
+
+
 def normalized_event_name(event: str) -> str:
     return "".join(ch for ch in event.lower() if ch.isalnum() or ch == "_")
 
@@ -1229,6 +1279,9 @@ def additional_context_from_retrieve(
     formatted_layer_summary = _format_retrieval_layer_summary(layer_summary)
     if formatted_layer_summary:
         lines.append(formatted_layer_summary)
+    formatted_lineage = _format_memory_lineage_summary(memory_lineage_summary(*refs))
+    if formatted_lineage:
+        lines.append(formatted_lineage)
     try:
         has_profile_memory = int(layer_summary.get("profile_memory_refs") or 0) > 0
     except (TypeError, ValueError):
