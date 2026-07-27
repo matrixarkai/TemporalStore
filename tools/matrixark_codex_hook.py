@@ -973,6 +973,11 @@ def _context_pack_view(pack: Json | None) -> Json:
     nested = pack.get("context_pack")
     if isinstance(nested, dict):
         return nested
+    extra = pack.get("extra")
+    if isinstance(extra, dict):
+        nested = extra.get("context_pack")
+        if isinstance(nested, dict):
+            return nested
     return pack
 
 
