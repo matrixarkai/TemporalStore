@@ -631,6 +631,40 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         summary_refresh = source.get("summary_refresh")
         if isinstance(summary_refresh, dict) and summary_refresh:
             summary["summary_refresh"] = summary_refresh
+        trigger_evidence = source.get("trigger_evidence")
+        if isinstance(trigger_evidence, dict) and trigger_evidence:
+            summary["trigger_evidence"] = {
+                key: trigger_evidence.get(key)
+                for key in [
+                    "pending_event_count",
+                    "pending_message_count",
+                    "threshold_messages",
+                    "threshold_ready",
+                    "idle_timeout_ms",
+                    "idle_elapsed_ms",
+                    "idle_ready",
+                    "force",
+                    "commit_reason",
+                ]
+                if trigger_evidence.get(key) not in (None, "", [], {})
+            }
+        elif session_buffer:
+            fallback_trigger_evidence = {
+                "pending_event_count": session_buffer.get("pending_event_count"),
+                "pending_message_count": session_buffer.get("pending_message_count"),
+                "threshold_messages": session_buffer.get("threshold_messages"),
+                "threshold_ready": session_buffer.get("threshold_ready"),
+                "idle_timeout_ms": session_buffer.get("idle_commit_timeout_ms"),
+                "idle_elapsed_ms": session_buffer.get("idle_elapsed_ms"),
+                "idle_ready": session_buffer.get("idle_ready"),
+                "force": source.get("force"),
+                "commit_reason": source.get("commit_reason") or source.get("reason"),
+            }
+            summary["trigger_evidence"] = {
+                key: value
+                for key, value in fallback_trigger_evidence.items()
+                if value not in (None, "", [], {})
+            }
         for field in [
             "source_role_counts",
             "source_hook_type_counts",

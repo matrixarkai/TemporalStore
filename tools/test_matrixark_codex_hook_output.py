@@ -1607,6 +1607,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(3, decision["memory_layers_written"]["secondary_indexes"])
         self.assertEqual(2, decision["memory_layers_written"]["summary_dirty_nodes"])
         self.assertTrue(decision["summary_refresh"]["profile_summary_refresh_required"])
+        self.assertTrue(decision["trigger_evidence"]["threshold_ready"])
+        self.assertFalse(decision["trigger_evidence"]["idle_ready"])
+        self.assertEqual(2, decision["trigger_evidence"]["pending_event_count"])
+        self.assertEqual(2, decision["trigger_evidence"]["threshold_messages"])
         self.assertEqual(["before_llm", "after_llm"], decision["source_hook_types"])
 
     def test_fast_async_hook_ingest_preflushes_idle_tail_before_next_prompt(self) -> None:
@@ -1727,6 +1731,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(2, decision["memory_layers_written"]["secondary_indexes"])
         self.assertEqual(1, decision["memory_layers_written"]["summary_dirty_nodes"])
         self.assertEqual("dirty_marked", decision["summary_refresh"]["status"])
+        self.assertTrue(decision["trigger_evidence"]["idle_ready"])
+        self.assertEqual(1, decision["trigger_evidence"]["pending_event_count"])
         self.assertEqual(1, len(server.adapter.commit_calls))
         commit_args, commit_hook = server.adapter.commit_calls[0]
         self.assertEqual("idle_timeout", commit_args["commit_reason"])
