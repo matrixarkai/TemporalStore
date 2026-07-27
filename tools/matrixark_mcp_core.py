@@ -4922,7 +4922,7 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     return 0.0
 
 
-def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float]:
+def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float, float]:
     score = float(candidate.get("score", 0.0))
     pending_async_penalty = 0.32 if is_pending_async_candidate(candidate) else 0.0
     boosted = clamp01(
@@ -4937,7 +4937,13 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
         source_count = len(candidate.get("source_event_ids", []) or [])
         if source_count >= 2:
             token_efficiency *= 1.5
-    return (boosted, token_efficiency, score)
+    current_state_priority = 0.0
+    if question_type in {"current_state", "latest"} and candidate.get("ref_type") == "entity":
+        if bool(candidate.get("profile_current_state_representative")) or bool(candidate.get("profile_current_state_boost")):
+            current_state_priority = 1.0
+        elif str(candidate.get("memory_scope") or "") == "user_profile" and str(candidate.get("session_continuity") or "") == "cross_session":
+            current_state_priority = 0.5
+    return (boosted, current_state_priority, token_efficiency, score)
 
 
 def context_text_hashes(text: str) -> set[int]:

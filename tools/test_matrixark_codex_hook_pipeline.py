@@ -267,6 +267,87 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         )
         self.assertTrue(pressure["assistant_source_message_pressure"])
 
+    def test_current_state_retrieval_prefers_profile_entity_over_stale_session_and_summary(self) -> None:
+        session_entity = {
+            "ref_type": "entity",
+            "ref_hash": 201,
+            "text": "user_preference: recovery_mode = wait for Stop before extracting memories",
+            "score": 0.96,
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "entity_type": "user_preference",
+            "entity_name": "recovery_mode",
+            "updated_at_ms": 1000,
+            "source_roles": ["user"],
+            "source_role_counts": {"user": 1},
+        }
+        profile_entity = {
+            "ref_type": "entity",
+            "ref_hash": 202,
+            "text": "user_preference: recovery_mode = commit memories on threshold or idle timeout; Stop only flushes remaining pending messages",
+            "score": 0.60,
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "entity_type": "user_preference",
+            "entity_name": "recovery_mode",
+            "updated_at_ms": 2000,
+            "source_entity_hashes": [201],
+            "source_roles": ["user", "assistant"],
+            "source_role_counts": {"user": 1, "assistant": 1},
+        }
+        summary = {
+            "ref_type": "summary",
+            "ref_hash": 203,
+            "text": "summary: recovery memories previously discussed Stop-only extraction.",
+            "score": 0.99,
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "summary_type": "session_l0",
+            "updated_at_ms": 1500,
+            "source_roles": ["assistant"],
+            "source_role_counts": {"assistant": 1},
+        }
+
+        selected, used_tokens, dropped = select_token_budgeted_refs(
+            [session_entity, summary, profile_entity],
+            [],
+            max_context_tokens=32,
+            auxiliary_quota=0,
+            question_type="current_state",
+            min_score=0.0,
+            max_selected_refs=1,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 32,
+                "max_sessions": 4,
+                "max_candidates": 4,
+                "min_entity_bridge_refs": 1,
+            },
+        )
+
+        self.assertEqual([202], [ref["ref_hash"] for ref in selected])
+        self.assertGreater(used_tokens, 0)
+        self.assertEqual("user_profile", selected[0]["memory_scope"])
+        self.assertEqual("cross_session", selected[0]["session_continuity"])
+        self.assertEqual("current profile entity preferred over session-local historical state", selected[0]["selection_reason"])
+        self.assertEqual(0.18, selected[0]["profile_current_state_boost"])
+        self.assertEqual(1, dropped["stale"])
+        self.assertTrue(
+            any(
+                ref.get("ref_hash") == 201
+                and ref.get("drop_reason") == "stale"
+                and ref.get("profile_shadowed_by_ref_hash") == 202
+                for ref in dropped["refs"]
+            )
+        )
+        self.assertTrue(
+            any(
+                ref.get("ref_hash") == 203
+                and ref.get("drop_reason") == "max_selected_refs"
+                for ref in dropped["refs"]
+            )
+        )
+
     def test_memory_layer_pressure_summary_marks_dropped_profile_final_tool_layers(self) -> None:
         selected = {
             "total_selected_refs": 2,
