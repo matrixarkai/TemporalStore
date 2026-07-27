@@ -147,6 +147,62 @@ class LocomoReaderHintTest(unittest.TestCase):
 
         self.assertEqual("sunset", hint)
 
+    def test_who_when_question_does_not_return_date(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_19 observation Caroline 4",
+                "body": (
+                    "Caroline had a negative experience, but her friends, family, and mentors "
+                    "supported her. The conversation timestamp was 3:19 pm on 17 August, 2023."
+                ),
+            },
+        ]
+
+        hint = extractive_reader_hint("Who supports Caroline when she has a negative experience?", blocks)
+
+        self.assertIn("mentors", hint.lower())
+        self.assertNotIn("August", hint)
+
+    def test_pet_names_answer_uses_names_not_species(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_13 observation Melanie 1",
+                "body": "Luna and Oliver are Melanie's pets, and they got another cat named Bailey too.",
+            },
+        ]
+
+        hint = extractive_reader_hint("What are Melanie's pets' names?", blocks)
+
+        self.assertIn("Oliver", hint)
+        self.assertIn("Luna", hint)
+        self.assertIn("Bailey", hint)
+
+    def test_symbols_answer_includes_transgender_symbol(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_12 observation Caroline 3",
+                "body": "The rainbow flag and transgender symbol are important symbols for Caroline.",
+            },
+        ]
+
+        hint = extractive_reader_hint("What symbols are important to Caroline?", blocks)
+
+        self.assertIn("Rainbow flag", hint)
+        self.assertIn("transgender symbol", hint)
+
+    def test_instrument_answer_extracts_instrument_names(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_15 observation Melanie 2",
+                "body": "Melanie plays the clarinet as a way to relax and also plays violin.",
+            },
+        ]
+
+        hint = extractive_reader_hint("What instruments does Melanie play?", blocks)
+
+        self.assertIn("clarinet", hint.lower())
+        self.assertIn("violin", hint.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
