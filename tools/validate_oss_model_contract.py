@@ -32,6 +32,11 @@ READER_POLICY_KEYS = (
     "reader_focus_evidence",
 )
 
+RETRIEVAL_POLICY_KEYS = (
+    "adaptive_max_events",
+    "adaptive_base_max_events",
+)
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -95,6 +100,11 @@ def main() -> int:
                         errors.append(
                             f"{row['label']}: {key}_mismatch expected={rows[0].get(key)!r} actual={row.get(key)!r}"
                         )
+            for key in RETRIEVAL_POLICY_KEYS:
+                if row.get(key) != rows[0].get(key):
+                    errors.append(
+                        f"{row['label']}: {key}_mismatch expected={rows[0].get(key)!r} actual={row.get(key)!r}"
+                    )
 
     result = {
         "schema": "matrixark_shared_oss_model_contract_validation_v1",
@@ -152,6 +162,17 @@ def normalize_report(path: Path, label: str, errors: list[str]) -> dict[str, Any
         "reader_candidate_only": bool(data.get("reader_candidate_only")),
         "reader_candidate_first": bool(data.get("reader_candidate_first")),
         "reader_focus_evidence": bool(data.get("reader_focus_evidence")),
+        "adaptive_max_events": bool(
+            contract.get(f"{prefix}_adaptive_max_events")
+            if f"{prefix}_adaptive_max_events" in contract
+            else data.get("adaptive_max_events")
+        ),
+        "adaptive_base_max_events": to_int(
+            contract.get(f"{prefix}_adaptive_base_max_events")
+            if f"{prefix}_adaptive_base_max_events" in contract
+            else data.get("adaptive_base_max_events")
+        )
+        or 0,
         "reader_fallback_count": to_int(data.get("reader_fallback_count")) or 0,
         "reader_error_count": to_int(data.get("reader_error_count")) or 0,
         "reader_open_source_calls": to_int(data.get("reader_open_source_calls")),

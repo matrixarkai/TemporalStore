@@ -1960,11 +1960,19 @@ def benchmark_model_contract(args: argparse.Namespace, reader: "BenchmarkReader"
         "matrixark_embedding_model": matrixark_embedding,
         "matrixark_max_events": int(args.max_events),
         "matrixark_reader_max_context_chars": int(reader.config.max_context_chars),
+        "matrixark_adaptive_max_events": bool(args.adaptive_max_events),
+        "matrixark_adaptive_base_max_events": int(args.adaptive_base_max_events)
+        if bool(args.adaptive_max_events)
+        else 0,
         "baseline_provider_name": baseline_provider,
         "baseline_reader_model": baseline_reader,
         "baseline_embedding_model": baseline_embedding,
         "baseline_max_events": baseline_max_events,
         "baseline_reader_max_context_chars": baseline_reader_max_context_chars,
+        "baseline_adaptive_max_events": bool(args.adaptive_max_events),
+        "baseline_adaptive_base_max_events": int(args.adaptive_base_max_events)
+        if bool(args.adaptive_max_events)
+        else 0,
         "provider_identity_declared": provider_declared,
         "reader_model_match": reader_matches,
         "embedding_model_match": embedding_matches,

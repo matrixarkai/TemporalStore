@@ -36,6 +36,7 @@ from run_locomo_ingest_once import (  # noqa: E402
     ReaderConfig,
     RetrievalBudgetConfig,
     answer_equivalent,
+    adaptive_max_events_for_question,
     count_matched_refs,
     count_matched_terms,
     count_reader_context_terms,
@@ -61,6 +62,8 @@ def main() -> int:
     parser.add_argument("--reader-timeout-seconds", type=float, default=60.0)
     parser.add_argument("--reader-max-context-chars", type=int, default=12000)
     parser.add_argument("--max-events", "--top-k", dest="max_events", type=int, default=128)
+    parser.add_argument("--adaptive-max-events", action="store_true")
+    parser.add_argument("--adaptive-base-max-events", type=int, default=128)
     parser.add_argument("--question-limit", type=int, default=0)
     parser.add_argument("--question-offset", type=int, default=0)
     parser.add_argument("--evidence-window", type=int, default=None)
@@ -92,6 +95,8 @@ def main() -> int:
         "embedding_model": args.embedding_model,
         "max_events": args.max_events,
         "top_k": args.max_events,
+        "adaptive_max_events": bool(args.adaptive_max_events),
+        "adaptive_base_max_events": args.adaptive_base_max_events,
         "reader_max_context_chars": args.reader_max_context_chars,
         "reader_include_extractive_hint": bool(args.reader_include_extractive_hint),
         "reader_candidate_only": bool(args.reader_candidate_only),
@@ -154,6 +159,7 @@ def main() -> int:
     reader_answer_coverage_count = 0
     total_refs = 0
     matched_refs = 0
+    adaptive_max_event_totals: defaultdict[int, int] = defaultdict(int)
     source_count = 0
     conversations_loaded = 0
     retrieval_latencies_ms: list[float] = []
@@ -215,7 +221,9 @@ def main() -> int:
 
             source_tokens = sum(estimated_tokens(source.get("body", "")) for source in query_sources)
             retrieval_started = time.perf_counter()
-            blocks = rank_sources(question, query_sources, args.max_events, retrieval_budget)
+            effective_max_events = adaptive_max_events_for_question(question, args)
+            blocks = rank_sources(question, query_sources, effective_max_events, retrieval_budget)
+            adaptive_max_event_totals[effective_max_events] += 1
             retrieval_ms = elapsed_ms(retrieval_started)
             reader_started = time.perf_counter()
             reader_answer = reader.answer(question, blocks)
@@ -302,6 +310,9 @@ def main() -> int:
             "benchmark_total_source_tokens": total_source_tokens,
             "benchmark_total_retrieved_tokens": total_retrieved_tokens,
             "benchmark_token_reduction_percent": reduction_percent(total_retrieved_tokens, total_source_tokens),
+            "adaptive_effective_max_event_counts": {
+                str(key): value for key, value in sorted(adaptive_max_event_totals.items())
+            },
             "benchmark_retrieval_p50_ms": percentile(retrieval_latencies_ms, 50),
             "benchmark_retrieval_p95_ms": percentile(retrieval_latencies_ms, 95),
             "benchmark_reader_p50_ms": percentile(reader_latencies_ms, 50),
@@ -363,6 +374,8 @@ def load_matrixark_reference(path: str) -> dict[str, Any]:
         "benchmark_retrieval_p95_ms": data.get("benchmark_retrieval_p95_ms"),
         "benchmark_reader_p95_ms": data.get("benchmark_reader_p95_ms"),
         "python_only_diagnostic": data.get("python_only_diagnostic"),
+        "adaptive_max_events": data.get("adaptive_max_events"),
+        "adaptive_base_max_events": data.get("adaptive_base_max_events"),
         "benchmark_model_contract": data.get("benchmark_model_contract") or {},
     }
 
@@ -379,32 +392,55 @@ def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict
     baseline_embedding = str(args.embedding_model).strip()
     baseline_max_events = int(args.max_events)
     baseline_reader_budget = int(args.reader_max_context_chars)
+    matrixark_adaptive = bool(
+        reference_contract.get("matrixark_adaptive_max_events")
+        if "matrixark_adaptive_max_events" in reference_contract
+        else matrixark_reference.get("adaptive_max_events")
+    )
+    matrixark_adaptive_base = int(
+        reference_contract.get("matrixark_adaptive_base_max_events")
+        if "matrixark_adaptive_base_max_events" in reference_contract
+        else matrixark_reference.get("adaptive_base_max_events")
+        or 0
+    )
+    baseline_adaptive = bool(args.adaptive_max_events)
+    baseline_adaptive_base = int(args.adaptive_base_max_events) if baseline_adaptive else 0
+    adaptive_policy_match = (
+        matrixark_adaptive == baseline_adaptive
+        and (not matrixark_adaptive or matrixark_adaptive_base == baseline_adaptive_base)
+    )
     return {
         "matrixark_provider_name": str(reference_contract.get("matrixark_provider_name") or "matrixark").strip(),
         "matrixark_reader_model": matrixark_reader,
         "matrixark_embedding_model": matrixark_embedding,
         "matrixark_max_events": matrixark_max_events,
         "matrixark_reader_max_context_chars": matrixark_reader_budget,
+        "matrixark_adaptive_max_events": matrixark_adaptive,
+        "matrixark_adaptive_base_max_events": matrixark_adaptive_base,
         "baseline_provider_name": str(args.provider_name).strip(),
         "baseline_reader_model": baseline_reader,
         "baseline_embedding_model": baseline_embedding,
         "baseline_max_events": baseline_max_events,
         "baseline_reader_max_context_chars": baseline_reader_budget,
+        "baseline_adaptive_max_events": baseline_adaptive,
+        "baseline_adaptive_base_max_events": baseline_adaptive_base,
         "provider_identity_declared": bool(args.provider_name),
         "reader_model_match": normalized_model_name(matrixark_reader) == normalized_model_name(baseline_reader),
         "embedding_model_match": normalized_model_name(matrixark_embedding) == normalized_model_name(baseline_embedding),
         "max_events_match": matrixark_max_events == baseline_max_events,
         "reader_context_budget_match": matrixark_reader_budget == baseline_reader_budget,
+        "adaptive_policy_match": adaptive_policy_match,
         "shared_oss_model_contract_required": True,
         "shared_oss_model_contract_passed": (
             normalized_model_name(matrixark_reader) == normalized_model_name(baseline_reader)
             and normalized_model_name(matrixark_embedding) == normalized_model_name(baseline_embedding)
             and matrixark_max_events == baseline_max_events
             and matrixark_reader_budget == baseline_reader_budget
+            and adaptive_policy_match
         ),
         "comparison_rule": (
             "MatrixArk and OpenViking/VikingMem rows must use the same OSS reader model, "
-            "embedding/encoding model, retrieval block budget, and reader context budget."
+            "embedding/encoding model, retrieval block budget, adaptive retrieval policy, and reader context budget."
         ),
     }
 
