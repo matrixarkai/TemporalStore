@@ -267,6 +267,71 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         )
         self.assertTrue(pressure["assistant_source_message_pressure"])
 
+    def test_source_role_budget_caps_assistant_summary_without_blocking_tool_entity(self) -> None:
+        selected, _used_tokens, dropped = select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "summary",
+                    "ref_hash": 151,
+                    "text": "assistant summary says tests passed and commit was pushed",
+                    "score": 0.99,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "summary_type": "node_l0",
+                    "source_roles": ["assistant", "tool"],
+                    "source_role_counts": {"assistant": 2, "tool": 1},
+                },
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 152,
+                    "text": "tool_evidence: Exit code: 0; tests passed",
+                    "score": 0.72,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "entity_type": "tool_evidence",
+                    "entity_name": "tests passed",
+                    "source_roles": ["assistant", "tool"],
+                    "source_role_counts": {"assistant": 2, "tool": 1},
+                },
+            ],
+            [],
+            max_context_tokens=40,
+            auxiliary_quota=0,
+            question_type="broad_exploration",
+            min_score=0.0,
+            max_selected_refs=2,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 40,
+                "max_sessions": 4,
+                "max_candidates": 4,
+                "min_entity_bridge_refs": 0,
+            },
+            source_role_budget_tokens={"assistant": 1},
+        )
+
+        self.assertEqual([152], [ref["ref_hash"] for ref in selected])
+        self.assertEqual(["tool"], selected[0]["budget_source_roles"])
+        self.assertEqual({"tool": 1}, selected[0]["budget_source_role_counts"])
+        self.assertEqual(1, dropped["source_role_budget"])
+        self.assertTrue(
+            any(
+                ref.get("ref_hash") == 151
+                and ref.get("ref_type") == "summary"
+                and ref.get("drop_reason") == "source_role_budget"
+                and ref.get("source_role_budget_capped_roles") == ["assistant"]
+                for ref in dropped["refs"]
+            ),
+            dropped["refs"],
+        )
+        selected_budget = selected_ref_layer_budget(selected)
+        dropped_budget = dropped_ref_layer_budget(dropped)
+        pressure = memory_layer_pressure_summary(selected_budget, dropped_budget)
+        self.assertEqual({"tool": 1}, selected_budget["source_message_counts_by_role"])
+        self.assertEqual({"assistant": 2, "tool": 1}, dropped_budget["source_message_counts_by_role"])
+        self.assertTrue(pressure["summary_memory_pressure"])
+        self.assertTrue(pressure["assistant_source_message_pressure"])
+
     def test_current_state_retrieval_prefers_profile_entity_over_stale_session_and_summary(self) -> None:
         session_entity = {
             "ref_type": "entity",
