@@ -624,6 +624,73 @@ def session_commit_summary(commit: Json | None) -> Json:
     return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
 
 
+def memory_lineage_summary(*sources: Json | None) -> Json:
+    source_role_counts: Json = {}
+    source_hook_type_counts: Json = {}
+    source_codex_event_counts: Json = {}
+    profile_promotion_count = 0
+    promoted_source_session_ids: set[str] = set()
+
+    def add_counts(target: Json, counts: Any, values: Any = None) -> None:
+        counted = False
+        if isinstance(counts, dict):
+            for key, value in counts.items():
+                try:
+                    count = int(value or 0)
+                except (TypeError, ValueError):
+                    continue
+                if count > 0:
+                    target[str(key)] = int(target.get(str(key), 0)) + count
+                    counted = True
+        if counted:
+            return
+        if isinstance(values, list):
+            for value in values:
+                if value in (None, "", [], {}):
+                    continue
+                key = str(value)
+                target[key] = int(target.get(key, 0)) + 1
+
+    for source in sources:
+        if not isinstance(source, dict) or not source:
+            continue
+        add_counts(source_role_counts, source.get("source_role_counts"), source.get("source_roles"))
+        add_counts(source_hook_type_counts, source.get("source_hook_type_counts"), source.get("source_hook_types"))
+        add_counts(source_codex_event_counts, source.get("source_codex_event_counts"), source.get("source_codex_events"))
+        memory_layers = source.get("memory_layers_written") if isinstance(source.get("memory_layers_written"), dict) else {}
+        if not source.get("source_role_counts") and not source.get("source_roles"):
+            add_counts(source_role_counts, None, memory_layers.get("source_roles"))
+        if not source.get("source_hook_type_counts") and not source.get("source_hook_types"):
+            add_counts(source_hook_type_counts, None, memory_layers.get("source_hook_types"))
+        if not source.get("source_codex_event_counts") and not source.get("source_codex_events"):
+            add_counts(source_codex_event_counts, None, memory_layers.get("source_codex_events"))
+        promotions = source.get("profile_promotion_summary")
+        if isinstance(promotions, list):
+            profile_promotion_count += len([item for item in promotions if isinstance(item, dict)])
+            for item in promotions:
+                if not isinstance(item, dict):
+                    continue
+                session_ids = item.get("source_session_ids")
+                if isinstance(session_ids, list):
+                    promoted_source_session_ids.update(str(value) for value in session_ids if value not in (None, "", [], {}))
+                elif item.get("source_session_id") not in (None, "", [], {}):
+                    promoted_source_session_ids.add(str(item.get("source_session_id")))
+
+    if not source_role_counts and not source_hook_type_counts and not source_codex_event_counts and profile_promotion_count <= 0:
+        return {}
+    summary: Json = {
+        "source_role_counts": source_role_counts,
+        "source_hook_type_counts": source_hook_type_counts,
+        "source_codex_event_counts": source_codex_event_counts,
+        "user_prompt_captured": int(source_role_counts.get("user", 0)) > 0,
+        "assistant_response_captured": int(source_role_counts.get("assistant", 0)) > 0,
+        "tool_evidence_captured": int(source_role_counts.get("tool", 0)) > 0,
+        "profile_promotion_count": profile_promotion_count,
+        "promoted_source_session_ids": sorted(promoted_source_session_ids),
+    }
+    return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
+
+
 def auto_batch_decision_summary(result: Json | None) -> Json:
     if not isinstance(result, dict) or not result:
         return {}
@@ -1282,6 +1349,18 @@ def codex_hook_output(
     ingest = ingest or {}
     retrieve = retrieve or {}
     commit = commit or {}
+    auto_batch_extract = (
+        ingest.get("auto_batch_extract")
+        if isinstance(ingest.get("auto_batch_extract"), dict)
+        else {}
+    )
+    auto_batch_decision = (
+        ingest.get("auto_batch_extract_decision")
+        if isinstance(ingest.get("auto_batch_extract_decision"), dict)
+        else {}
+    )
+    idle_commit = ingest.get("idle_commit") if isinstance(ingest.get("idle_commit"), dict) else {}
+    lineage = memory_lineage_summary(auto_batch_extract or auto_batch_decision, idle_commit, commit)
     emitted_refs = [
         ref for ref in _selected_refs_from_retrieve(retrieve) if not _ref_is_codex_hook_heartbeat(ref)
     ]
@@ -1318,6 +1397,8 @@ def codex_hook_output(
         },
         "session_commit": session_commit_summary(commit),
     }
+    if lineage:
+        output["memory_lineage"] = lineage
     if error:
         output["error"] = error
     if event == "UserPromptSubmit":
@@ -1455,6 +1536,10 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 "idle_commit": session_commit_summary(idle_commit_result),
                 "auto_batch_extract": session_commit_summary(auto_batch_extract_result),
                 "auto_batch_extract_decision": auto_batch_decision_summary(result),
+                "memory_lineage": memory_lineage_summary(
+                    auto_batch_extract_result or auto_batch_decision_summary(result),
+                    idle_commit_result,
+                ),
             }
         elif name == "matrixark_retrieve":
             emitted_refs = [
@@ -1560,6 +1645,7 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             else {}
         )
         idle_commit = ingest.get("idle_commit") if isinstance(ingest.get("idle_commit"), dict) else {}
+        memory_lineage = memory_lineage_summary(auto_batch_extract or auto_batch_decision, idle_commit, commit)
         trace["output_summary"] = {
             "strict_additional_context_emitted": bool(hook_specific.get("additionalContext")),
             "additional_context_chars": len(str(hook_specific.get("additionalContext") or "")),
@@ -1571,6 +1657,7 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             "async_pipeline_readiness": retrieve.get("async_pipeline_readiness"),
             "memory_hierarchy": retrieve.get("memory_hierarchy"),
             "rendered_context_chars": retrieve.get("rendered_context_chars"),
+            "memory_lineage": memory_lineage,
             "ingest_status": ingest.get("status"),
             "auto_batch_extract_status": ingest.get("auto_batch_extract_status"),
             "auto_batch_extract": auto_batch_extract,
