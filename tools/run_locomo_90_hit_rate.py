@@ -31,6 +31,8 @@ def main() -> int:
     parser.add_argument("--misses", default="/tmp/temporalstore_locomo_ingest_once_misses.jsonl")
     add_threshold_policy_args(parser)
     parser.add_argument("--max-events", type=int, default=128)
+    parser.add_argument("--adaptive-max-events", action="store_true")
+    parser.add_argument("--adaptive-base-max-events", type=int, default=128)
     parser.add_argument(
         "--question-limit",
         type=int,
@@ -167,6 +169,8 @@ def main() -> int:
         str(thresholds["max_reader_p95_ms"]),
         "--max-events",
         str(args.max_events),
+        "--adaptive-base-max-events",
+        str(args.adaptive_base_max_events),
         "--question-limit",
         str(args.question_limit),
         "--question-offset",
@@ -198,6 +202,8 @@ def main() -> int:
         command.extend(["--baseline-reader-max-context-chars", str(args.baseline_reader_max_context_chars)])
     if args.require_shared_oss_models:
         command.append("--require-shared-oss-models")
+    if args.adaptive_max_events:
+        command.append("--adaptive-max-events")
     if args.allow_shared_oss_model_drift:
         command.append("--allow-shared-oss-model-drift")
     if args.reader_base_url:
