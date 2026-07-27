@@ -5505,6 +5505,7 @@ class MatrixArkLocalAdapter:
             },
             "cross_session": cross_session_policy,
             "shared_context": shared_context_policy,
+            "source_role_budget_tokens": source_role_budget_tokens,
             "ranking": ranking,
             "deadline_ms": deadline_ms,
             "reference_time_ms": reference_time_ms,
