@@ -46,9 +46,14 @@ RETRIEVAL_POLICY_KEYS = (
 )
 
 NON_OSS_MODEL_MARKERS = (
+    "anthropic",
+    "claude",
+    "gemini",
+    "gpt-",
     "hash",
     "local-token",
     "matrixark-local",
+    "openai",
     "debug",
     "deterministic",
     "fallback",
