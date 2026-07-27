@@ -7050,8 +7050,15 @@ def reader_evidence_bundle(
                     f"(derived only from the retrieved context): {hint}"
                 )
             seen.add(normalize_text(selected[-1]))
-    soft_block_limit = max(96, min(420, max_chars // max(4, min(24, len(blocks) or 1))))
-    for index, block in enumerate(blocks, 1):
+    reader_blocks = blocks
+    if candidate_first and focus_evidence:
+        # Small OSS readers become latency-bound when candidate-first mode still
+        # includes every retrieved record. Keep the candidate plus a compact,
+        # top-ranked evidence window; retrieval quality is measured separately.
+        evidence_window = max(4, min(12, max_chars // 320))
+        reader_blocks = blocks[:evidence_window]
+    soft_block_limit = max(96, min(420, max_chars // max(4, min(24, len(reader_blocks) or 1))))
+    for index, block in enumerate(reader_blocks, 1):
         title = re.sub(r"\s+", " ", str(block.get("title") or block.get("id") or f"source {index}")).strip()
         body = re.sub(r"\s+", " ", str(block.get("body") or "")).strip()
         if not body:
