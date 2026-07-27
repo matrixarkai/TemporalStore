@@ -45,7 +45,7 @@ def main() -> int:
         default=0,
         help="Optional number of supported questions to skip before scoring. Diagnostic/slice reports only.",
     )
-    parser.add_argument("--embedding-model", default="matrixark-local-hash-embedding")
+    parser.add_argument("--embedding-model", default="sentence-transformers/all-MiniLM-L6-v2")
     parser.add_argument("--baseline-provider-name", default="")
     parser.add_argument("--baseline-reader-model", default="")
     parser.add_argument("--baseline-embedding-model", default="")

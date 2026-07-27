@@ -188,7 +188,10 @@ def main() -> int:
     parser.add_argument("--reader-model", default="gpt-4o-mini")
     parser.add_argument(
         "--embedding-model",
-        default=os.environ.get("MATRIXARK_BENCHMARK_EMBEDDING_MODEL", "matrixark-local-hash-embedding"),
+        default=os.environ.get(
+            "MATRIXARK_BENCHMARK_EMBEDDING_MODEL",
+            "sentence-transformers/all-MiniLM-L6-v2",
+        ),
         help="Embedding/encoding model used by the MatrixArk/TemporalStore retrieval path.",
     )
     parser.add_argument(
@@ -241,7 +244,8 @@ def main() -> int:
     parser.add_argument(
         "--require-shared-oss-models",
         action="store_true",
-        default=bool(os.environ.get("MATRIXARK_REQUIRE_SHARED_OSS_MODELS")),
+        default=os.environ.get("MATRIXARK_REQUIRE_SHARED_OSS_MODELS", "1").lower()
+        not in {"0", "false", "no"},
         help=(
             "Fail comparable benchmark claims unless MatrixArk and the baseline declare the same "
             "OSS reader model, embedding/encoding model, and benchmark budgets."
@@ -2087,14 +2091,7 @@ def reader_max_tokens_from_env() -> int:
 def shared_oss_model_contract_is_required(args: argparse.Namespace) -> bool:
     if bool(getattr(args, "allow_shared_oss_model_drift", False)):
         return False
-    return bool(
-        getattr(args, "require_shared_oss_models", False)
-        or getattr(args, "baseline_provider_name", "")
-        or getattr(args, "baseline_reader_model", "")
-        or getattr(args, "baseline_embedding_model", "")
-        or int(getattr(args, "baseline_max_events", 0) or 0) > 0
-        or int(getattr(args, "baseline_reader_max_context_chars", 0) or 0) > 0
-    )
+    return bool(getattr(args, "require_shared_oss_models", True))
 
 
 def normalized_model_name(value: str) -> str:

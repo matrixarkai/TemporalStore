@@ -30,7 +30,7 @@ def main() -> int:
     parser.add_argument("--max-events", type=int, default=14)
     parser.add_argument("--question-limit", type=int, default=0)
     parser.add_argument("--question-offset", type=int, default=0)
-    parser.add_argument("--embedding-model", default="matrixark-local-hash-embedding")
+    parser.add_argument("--embedding-model", default="sentence-transformers/all-MiniLM-L6-v2")
     parser.add_argument("--baseline-provider-name", default="")
     parser.add_argument("--baseline-reader-model", default="")
     parser.add_argument("--baseline-embedding-model", default="")
