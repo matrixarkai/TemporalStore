@@ -668,6 +668,42 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({"assistant": 64, "tool": 32}, request["source_role_budget_tokens"])
             self.assertEqual({"max_selected_refs": 4}, request["ranking"])
 
+    def test_context_pack_cache_key_includes_source_role_budget_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-source-role-cache.jsonl")
+            scope = {
+                "account_id": "acct_source_role_cache",
+                "tenant_id": "tenant_source_role_cache",
+                "user_id": "user_source_role_cache",
+                "session_id": "session_source_role_cache",
+            }
+
+            first = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "GPU budget",
+                    "max_context_tokens": 256,
+                    "source_role_budget_tokens": {"assistant": 128},
+                    "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+            second = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "GPU budget",
+                    "max_context_tokens": 256,
+                    "source_role_budget_tokens": {"assistant": 1},
+                    "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertFalse(first.get("context_pack_cache_hit", False))
+            self.assertFalse(second.get("context_pack_cache_hit", False))
+
     def test_retrieval_metrics_expose_shared_local_remote_budget(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-retrieval-budget.jsonl")

@@ -5407,6 +5407,9 @@ class MatrixArkLocalAdapter:
             int(local_budget.get("token_estimate", 0)),
             tuple(sorted(local_budget.get("text_hashes", set()))),
             json.dumps(ranking, sort_keys=True, separators=(",", ":")),
+            json.dumps(cross_session_policy, sort_keys=True, separators=(",", ":")),
+            json.dumps(shared_context_policy, sort_keys=True, separators=(",", ":")),
+            json.dumps(source_role_budget_tokens, sort_keys=True, separators=(",", ":")),
             bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
         )
         if pack_cache_enabled:
