@@ -1119,8 +1119,11 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "session_continuity": "same_session",
                 "extraction_phase": "provisional",
                 "source_roles": ["assistant"],
+                "source_role_counts": {"assistant": 1},
                 "source_hook_types": ["hook_boundary"],
+                "source_hook_type_counts": {"hook_boundary": 1},
                 "source_codex_events": ["Stop"],
+                "source_codex_event_counts": {"Stop": 1},
             },
             {
                 "record_type": "context_entity",
@@ -1138,8 +1141,11 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "extraction_phase": "final",
                 "final_session_boundary": True,
                 "source_roles": ["assistant"],
+                "source_role_counts": {"assistant": 3},
                 "source_hook_types": ["hook_boundary"],
+                "source_hook_type_counts": {"hook_boundary": 3},
                 "source_codex_events": ["Stop"],
+                "source_codex_event_counts": {"Stop": 3},
                 "source_session_ids": ["session_old", "session_now"],
                 "source_entity_hashes": [10, 11],
             },
@@ -1186,6 +1192,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(2, budget["by_source_role"]["assistant"]["refs"])
         self.assertEqual(2, budget["by_hook_type"]["hook_boundary"]["refs"])
         self.assertEqual(2, budget["by_codex_event"]["Stop"]["refs"])
+        self.assertEqual(4, budget["source_message_counts_by_role"]["assistant"])
+        self.assertEqual(4, budget["source_hook_counts_by_type"]["hook_boundary"])
+        self.assertEqual(4, budget["source_codex_event_counts_by_event"]["Stop"])
         self.assertEqual(1, budget["final_session_boundary_ref_count"])
         pressure = pack["memory_layer_pressure"]
         self.assertEqual(2, pressure["selected_refs"])
@@ -1223,6 +1232,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("cross_session", entity_item["session_continuity"])
         self.assertEqual(["session_old", "session_now"], entity_item["source_session_ids"])
         self.assertEqual(2, entity_item["source_entity_count"])
+        self.assertEqual({"assistant": 3}, entity_item["source_role_counts"])
+        self.assertEqual({"hook_boundary": 3}, entity_item["source_hook_type_counts"])
+        self.assertEqual({"Stop": 3}, entity_item["source_codex_event_counts"])
         self.assertEqual(1, len(adapter.audit_records))
         self.assertEqual(budget, adapter.audit_records[0]["memory_layer_budget"])
         self.assertEqual(pressure, adapter.audit_records[0]["memory_layer_pressure"])
