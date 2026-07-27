@@ -1185,7 +1185,24 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
 
             def session_commit(self, args, *, hook=None):
                 self.commit_calls.append((args, hook))
-                return {"status": "accepted", "entities_written": 2, "indexes_written": 3}
+                return {
+                    "status": "accepted",
+                    "commit_reason": "threshold",
+                    "trigger_policy": "threshold",
+                    "extraction_context_event_count": 2,
+                    "segments_written": 1,
+                    "entities_written": 2,
+                    "profile_entities_written": 1,
+                    "indexes_written": 3,
+                    "summary_refresh": {
+                        "status": "dirty_marked",
+                        "dirty_hashes": [11, 12],
+                        "profile_summary_refresh_required": True,
+                    },
+                    "source_roles": ["user", "assistant"],
+                    "source_hook_types": ["before_llm", "after_llm"],
+                    "source_codex_events": ["UserPromptSubmit", "Stop"],
+                }
 
         class Server:
             def __init__(self) -> None:
@@ -1225,6 +1242,16 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(2, commit_args["threshold_messages"])
         self.assertEqual(2, commit_args["max_messages"])
         self.assertEqual("session_commit", commit_hook["hook_type"])
+        decision = hook.auto_batch_decision_summary(result)
+        self.assertEqual("committed", decision["decision"])
+        self.assertEqual("threshold", decision["reason"])
+        self.assertEqual(2, decision["memory_layers_written"]["context_events"])
+        self.assertEqual(2, decision["memory_layers_written"]["session_entities"])
+        self.assertEqual(1, decision["memory_layers_written"]["profile_entities"])
+        self.assertEqual(3, decision["memory_layers_written"]["secondary_indexes"])
+        self.assertEqual(2, decision["memory_layers_written"]["summary_dirty_nodes"])
+        self.assertTrue(decision["summary_refresh"]["profile_summary_refresh_required"])
+        self.assertEqual(["before_llm", "after_llm"], decision["source_hook_types"])
 
     def test_fast_async_hook_ingest_preflushes_idle_tail_before_next_prompt(self) -> None:
         original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT
@@ -1267,11 +1294,21 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 self.pending.clear()
                 return {
                     "status": "committed",
+                    "commit_reason": "idle_timeout",
                     "trigger_policy": "idle_timeout",
                     "extraction_phase": "provisional",
                     "final_session_boundary": False,
                     "committed_event_count": len(committed),
                     "source_event_ids": [record["event_id_hash"] for record in committed],
+                    "extraction_context_event_count": len(committed),
+                    "segments_written": 1,
+                    "entities_written": 1,
+                    "indexes_written": 2,
+                    "summary_refresh": {
+                        "status": "dirty_marked",
+                        "dirty_hashes": [77],
+                        "profile_summary_refresh_required": False,
+                    },
                     "trigger_evidence": {
                         "pending_event_count": len(committed),
                         "idle_ready": True,
@@ -1323,6 +1360,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("idle_timeout", decision["reason"])
         self.assertTrue(decision["pre_ingest_idle_ready"])
         self.assertGreaterEqual(decision["pre_ingest_idle_elapsed_ms"], 1)
+        self.assertEqual(1, decision["memory_layers_written"]["context_events"])
+        self.assertEqual(1, decision["memory_layers_written"]["session_entities"])
+        self.assertEqual(2, decision["memory_layers_written"]["secondary_indexes"])
+        self.assertEqual(1, decision["memory_layers_written"]["summary_dirty_nodes"])
+        self.assertEqual("dirty_marked", decision["summary_refresh"]["status"])
         self.assertEqual(1, len(server.adapter.commit_calls))
         commit_args, commit_hook = server.adapter.commit_calls[0]
         self.assertEqual("idle_timeout", commit_args["commit_reason"])

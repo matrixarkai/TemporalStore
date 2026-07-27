@@ -560,6 +560,27 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         "auto_batch_extract": session_buffer.get("auto_batch_extract"),
         "boundary_commit_requested": session_buffer.get("boundary_commit_requested"),
     }
+    def add_commit_evidence(source: Json) -> None:
+        memory_layers = source.get("memory_layers_written")
+        if not isinstance(memory_layers, dict) or not memory_layers:
+            memory_layers = session_commit_memory_layers_written(source)
+        if memory_layers:
+            summary["memory_layers_written"] = memory_layers
+        summary_refresh = source.get("summary_refresh")
+        if isinstance(summary_refresh, dict) and summary_refresh:
+            summary["summary_refresh"] = summary_refresh
+        for field in [
+            "extraction_context_event_count",
+            "segments_written",
+            "entities_written",
+            "profile_entities_written",
+            "indexes_written",
+            "extraction_phase",
+            "final_session_boundary",
+        ]:
+            value = source.get(field)
+            if value not in (None, "", [], {}):
+                summary[field] = value
     if auto_batch:
         summary["auto_batch_extract_status"] = auto_batch.get("status")
         summary["decision"] = "committed" if auto_batch.get("status") in {"accepted", "committed"} else "attempted"
@@ -568,6 +589,7 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         summary["source_hook_types"] = auto_batch.get("source_hook_types")
         summary["source_codex_events"] = auto_batch.get("source_codex_events")
         summary["profile_promotion_summary"] = auto_batch.get("profile_promotion_summary")
+        add_commit_evidence(auto_batch)
     elif session_commit:
         summary["decision"] = "boundary_commit"
         summary["reason"] = session_commit.get("reason") or session_commit.get("commit_reason")
@@ -575,6 +597,7 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         summary["source_hook_types"] = session_commit.get("source_hook_types")
         summary["source_codex_events"] = session_commit.get("source_codex_events")
         summary["profile_promotion_summary"] = session_commit.get("profile_promotion_summary")
+        add_commit_evidence(session_commit)
     elif idle_commit and idle_commit.get("status") in {"accepted", "committed"}:
         summary["auto_batch_extract_status"] = idle_commit.get("status")
         summary["decision"] = "idle_commit"
@@ -583,6 +606,7 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         summary["source_hook_types"] = idle_commit.get("source_hook_types")
         summary["source_codex_events"] = idle_commit.get("source_codex_events")
         summary["profile_promotion_summary"] = idle_commit.get("profile_promotion_summary")
+        add_commit_evidence(idle_commit)
     elif session_buffer:
         summary["decision"] = "deferred"
         if session_buffer.get("auto_batch_extract") is False:
