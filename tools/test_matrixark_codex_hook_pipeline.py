@@ -783,6 +783,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("summary", readiness["remaining_stages"])
             self.assertIn("compression", readiness["remaining_stages"])
             self.assertIn("embedding", readiness["remaining_stages"])
+            self.assertEqual(3, readiness["remaining_stage_counts"]["summary"])
+            self.assertEqual(3, readiness["remaining_stage_counts"]["compression"])
+            self.assertEqual(3, readiness["remaining_stage_counts"]["embedding"])
+            self.assertEqual(2, readiness["pending_source_roles"]["assistant"])
+            self.assertEqual(2, readiness["pending_source_roles"]["user"])
+            self.assertEqual(1, readiness["pending_source_roles"]["tool"])
+            self.assertEqual(1, readiness["pending_source_hook_types"]["hook_boundary"])
+            self.assertEqual(1, readiness["pending_source_codex_events"]["PostToolUse"])
             self.assertIn("async_pipeline_followup_pending", readiness["freshness_warnings"])
             self.assertTrue(
                 any(str(warning).startswith("async_pipeline_remaining_stages:") for warning in pack.get("quality_warnings", [])),
@@ -890,6 +898,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(3, summary_readiness["summary_completed_task_count"])
             self.assertTrue(summary_readiness["ready_for_retrieval"])
             self.assertEqual([], summary_readiness["remaining_stages"])
+            self.assertEqual({}, summary_readiness["remaining_stage_counts"])
+            self.assertEqual({}, summary_readiness["pending_source_roles"])
+            self.assertEqual({}, summary_readiness["pending_source_hook_types"])
+            self.assertEqual({}, summary_readiness["pending_source_codex_events"])
             self.assertEqual([], summary_readiness["freshness_warnings"])
 
     def test_lightweight_async_ingest_threshold_defaults_to_auto_batch_for_messages(self) -> None:
