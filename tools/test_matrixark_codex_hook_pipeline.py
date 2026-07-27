@@ -514,6 +514,123 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
+    def test_fast_hook_threshold_commit_promotes_user_assistant_tool_to_profile_retrieval(self) -> None:
+        original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
+        matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-mixed-profile.jsonl")
+
+                class Server:
+                    def __init__(self) -> None:
+                        self.adapter = adapter
+
+                scope_args = {
+                    "event": "UserPromptSubmit",
+                    "account_id": "acct_fast_mixed",
+                    "tenant_id": "tenant_fast_mixed",
+                    "user_id": "user_fast_mixed",
+                    "session_id": "session_fast_mixed",
+                    "team": "codex",
+                    "project": "temporalstore",
+                    "session_commit_threshold": 3,
+                    "idle_commit_timeout_ms": 300000,
+                    "understanding_provider": "rules",
+                    "segment_provider": "deterministic",
+                }
+                server = Server()
+                messages = [
+                    (
+                        "user",
+                        "User prompt: prove mixed Codex hook messages promote into profile memory.",
+                        "turn-fast-mixed-1",
+                    ),
+                    (
+                        "assistant",
+                        "Assistant decision: keep mixed-role extraction and retrieval within the budget.",
+                        "turn-fast-mixed-2",
+                    ),
+                    (
+                        "tool",
+                        "Exit code: 0\nRan 75 tests in 1.22s\nOK\nf05e40ed refs/heads/main",
+                        "turn-fast-mixed-3",
+                    ),
+                ]
+                results = []
+                for role, message, turn_id in messages:
+                    results.append(
+                        matrixark_codex_hook.fast_async_hook_ingest(
+                            server,
+                            args=Namespace(**scope_args),
+                            text=message,
+                            role=role,
+                            agent_context={"workspace_root": "/repo"},
+                            hook={
+                                "session_id_source": "payload_field",
+                                "thread_id": "thread-fast-mixed",
+                                "turn_id": turn_id,
+                                "hook_type": "tool_result" if role == "tool" else "after_llm" if role == "assistant" else "before_llm",
+                            },
+                        )
+                    )
+
+                self.assertFalse(results[0]["session_buffer"]["threshold_ready"])
+                self.assertFalse(results[1]["session_buffer"]["threshold_ready"])
+                self.assertTrue(results[2]["session_buffer"]["threshold_ready"])
+                commit = results[2]["auto_batch_extract_result"]
+                self.assertEqual("committed", commit["status"])
+                self.assertEqual("threshold", commit["trigger_policy"])
+                self.assertEqual(3, commit["committed_event_count"])
+                self.assertEqual(["assistant", "tool", "user"], commit["source_roles"])
+                self.assertGreaterEqual(commit["memory_layers_written"]["profile_entities"], 1)
+                self.assertGreaterEqual(commit["memory_layers_written"]["secondary_indexes"], 1)
+
+                records = adapter.read_all()
+                self.assertTrue(
+                    any(
+                        record.get("record_type") == "context_entity"
+                        and record.get("entity_type") == "tool_evidence"
+                        and record.get("memory_scope") == "user_profile"
+                        and record.get("session_continuity") == "cross_session"
+                        and "Ran 75 tests" in str(record.get("state") or "")
+                        for record in records
+                    )
+                )
+                self.assertIn(
+                    "entity_type:tool_evidence",
+                    {str(record.get("index_name") or "") for record in records if record.get("record_type") == "context_index"},
+                )
+
+                pack = adapter.retrieve(
+                    {
+                        "scope": {
+                            "account_id": "acct_fast_mixed",
+                            "tenant_id": "tenant_fast_mixed",
+                            "user_id": "user_fast_mixed",
+                            "session_id": "session_fast_mixed_followup",
+                        },
+                        "session_scope": "prefer",
+                        "query": "What tool evidence proves the mixed Codex hook extraction was validated and pushed?",
+                        "max_context_tokens": 140,
+                        "audit_mode": "off",
+                        "ranking": {"max_selected_refs": 3},
+                    }
+                )
+                self.assertLessEqual(pack["used_context_tokens"], 140)
+                self.assertTrue(
+                    any(
+                        ref.get("ref_type") == "entity"
+                        and ref.get("entity_type") == "tool_evidence"
+                        and ref.get("memory_scope") == "user_profile"
+                        and ref.get("session_continuity") == "cross_session"
+                        and "Ran 75 tests" in str(ref.get("text") or ref.get("summary_text") or "")
+                        for ref in pack["selected_refs"]
+                    ),
+                    pack["selected_refs"],
+                )
+        finally:
+            matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+
     def test_fast_hook_idle_preflush_persists_real_adapter_memory_layers(self) -> None:
         original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
         matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
