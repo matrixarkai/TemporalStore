@@ -2105,6 +2105,40 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     for record in profile_summaries
                 )
             )
+            current_state_pack = adapter.retrieve(
+                {
+                    "scope": {
+                        "account_id": "acct_profile",
+                        "tenant_id": "tenant_profile",
+                        "user_id": "user_profile",
+                        "session_id": "later_session",
+                    },
+                    "session_scope": "prefer",
+                    "question_type": "current_state",
+                    "query": "What is the current tool evidence for the hook extraction fix?",
+                    "max_context_tokens": 90,
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "ranking": {"max_selected_refs": 2},
+                }
+            )
+            current_refs = current_state_pack["selected_refs"]
+            self.assertLessEqual(current_state_pack["used_context_tokens"], 90)
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "entity"
+                    and ref.get("entity_type") == "tool_evidence"
+                    and ref.get("memory_scope") == "user_profile"
+                    and ref.get("session_continuity") == "cross_session"
+                    and "Exit code: 0" in str(ref.get("text") or ref.get("summary_text") or "")
+                    for ref in current_refs
+                ),
+                current_refs,
+            )
+            self.assertFalse(any(ref.get("ref_type") == "summary" for ref in current_refs), current_refs)
+            current_budget = current_state_pack["recall_policy"]["memory_layer_budget"]
+            self.assertGreaterEqual(current_budget["by_entity_type"]["tool_evidence"]["refs"], 1)
+            self.assertNotIn("summary", current_budget["by_ref_type"])
             summary_pack = adapter.retrieve(
                 {
                     "scope": {
