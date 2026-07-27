@@ -96,6 +96,7 @@ class BackfillMetrics:
     context_embeddings: int = 0
     context_indexes: int = 0
     context_audits: int = 0
+    context_telemetry: int = 0
     source_batches: int = 0
     target_batches: int = 0
     scan_hash_batches: int = 0
@@ -119,6 +120,8 @@ class BackfillMetrics:
                 self.context_indexes += 1
             elif record_type == 'context_pack_audit':
                 self.context_audits += 1
+            elif record_type == 'context_pack_telemetry':
+                self.context_telemetry += 1
 
     def finish(self) -> None:
         self.finished_at_ms = int(time.time() * 1000)
@@ -168,6 +171,7 @@ class BackfillMetrics:
                 'context_embeddings': self.context_embeddings,
                 'context_indexes': self.context_indexes,
                 'context_audits': self.context_audits,
+                'context_telemetry': self.context_telemetry,
                 'source_batches': self.source_batches,
                 'target_batches': self.target_batches,
                 'scan_hash_batches': self.scan_hash_batches,
@@ -203,6 +207,7 @@ class BackfillMetrics:
             f'matrixark_context_backfill_serving_records_total{{{labels},type="context_embedding"}} {self.context_embeddings}',
             f'matrixark_context_backfill_serving_records_total{{{labels},type="context_index"}} {self.context_indexes}',
             f'matrixark_context_backfill_serving_records_total{{{labels},type="context_pack_audit"}} {self.context_audits}',
+            f'matrixark_context_backfill_serving_records_total{{{labels},type="context_pack_telemetry"}} {self.context_telemetry}',
             '# HELP matrixark_context_backfill_serving_record_fingerprint_info Ordered fingerprint for materialized serving records in this run.',
             '# TYPE matrixark_context_backfill_serving_record_fingerprint_info gauge',
             f'matrixark_context_backfill_serving_record_fingerprint_info{{{labels},fingerprint="{self.serving_record_fingerprint()}"}} 1',
@@ -2437,6 +2442,7 @@ SERVING_TYPE_METRIC_MAP = {
     'context_embedding': 'context_embeddings',
     'context_index': 'context_indexes',
     'context_pack_audit': 'context_audits',
+    'context_pack_telemetry': 'context_telemetry',
 }
 
 
@@ -2772,6 +2778,7 @@ LOCAL_RECOVERY_REQUIRED_TYPES = {
     'context_embedding': 'recovery:context_embedding_missing',
     'context_index': 'recovery:context_index_missing',
     'context_summary': 'recovery:context_summary_missing',
+    'context_pack_telemetry': 'recovery:context_pack_telemetry_missing',
 }
 
 
@@ -2786,6 +2793,8 @@ def _context_metric_name(record_type: str) -> str:
         return 'context_events'
     if record_type == 'context_summary':
         return 'context_summaries'
+    if record_type == 'context_pack_telemetry':
+        return 'context_telemetry'
     return f'{record_type}s'
 
 
@@ -2898,6 +2907,8 @@ def run_local_recovery_report(args: argparse.Namespace) -> Json:
             'embeddings': int(metrics.get('context_embeddings', 0) or 0),
             'secondary_indexes': int(metrics.get('context_indexes', 0) or 0),
             'summaries': int(metrics.get('context_summaries', 0) or 0),
+            'retrieval_telemetry': int(metrics.get('context_telemetry', 0) or 0),
+            'retrieval_audits': int(metrics.get('context_audits', 0) or 0),
         },
     }
     if args.prometheus_output:

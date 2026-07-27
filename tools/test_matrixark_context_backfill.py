@@ -299,6 +299,18 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
                     "summary_text": "Session summary: local recovery rebuilds context serving layers.",
                     "idempotency_key": "summary-33",
                 },
+                {
+                    "record_type": "context_pack_telemetry",
+                    "context_pack_id": "pack-44",
+                    "scope": {"tenant_id": "t", "user_id": "u", "session_id": "s"},
+                    "selected_ref_count": 2,
+                    "used_remote_context_tokens": 12,
+                    "remote_context_budget_tokens": 128,
+                    "memory_layer_budget": {
+                        "by_session_continuity": {"same_session": {"refs": 1, "tokens": 6}},
+                    },
+                    "idempotency_key": "telemetry-44",
+                },
             ]
             for sequence, record in enumerate(records):
                 write_sharded(kv, "matrixark:mcp", sequence, record)
@@ -310,7 +322,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
                 resume=False,
                 dry_run=False,
             ))
-            self.assertEqual(built["metrics"]["written"], 5)
+            self.assertEqual(built["metrics"]["written"], 6)
             prom = Path(tmp) / "local_recovery.prom"
 
             report = backfill.run_local_recovery_report(self.make_args(
@@ -329,6 +341,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertTrue(report["checks"]["has_context_embedding"])
             self.assertTrue(report["checks"]["has_context_index"])
             self.assertTrue(report["checks"]["has_context_summary"])
+            self.assertTrue(report["checks"]["has_context_pack_telemetry"])
             self.assertTrue(report["checks"]["target_record_count_matches_rebuild"])
             self.assertTrue(report["checks"]["target_fingerprint_matches_rebuild"])
             self.assertEqual(report["serving_layers"]["events"], 1)
@@ -336,14 +349,16 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(report["serving_layers"]["embeddings"], 1)
             self.assertEqual(report["serving_layers"]["secondary_indexes"], 1)
             self.assertEqual(report["serving_layers"]["summaries"], 1)
+            self.assertEqual(report["serving_layers"]["retrieval_telemetry"], 1)
             prom_text = prom.read_text(encoding="utf-8")
             self.assertIn("matrixark_context_local_recovery_status", prom_text)
             self.assertIn('status="ok"} 1', prom_text)
             self.assertIn('blocker="none"} 0', prom_text)
             self.assertIn('layer="secondary_indexes"} 1', prom_text)
             self.assertIn('layer="summaries"} 1', prom_text)
+            self.assertIn('layer="retrieval_telemetry"} 1', prom_text)
 
-    def test_local_recovery_report_fails_closed_without_secondary_index_or_summary_layer(self):
+    def test_local_recovery_report_fails_closed_without_secondary_index_summary_or_retrieval_telemetry(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "kv.json"
             kv = backfill.LocalJsonKV(path)
@@ -366,8 +381,10 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertFalse(report["ready"])
             self.assertIn("recovery:context_index_missing", report["blockers"])
             self.assertIn("recovery:context_summary_missing", report["blockers"])
+            self.assertIn("recovery:context_pack_telemetry_missing", report["blockers"])
             self.assertFalse(report["checks"]["has_context_index"])
             self.assertFalse(report["checks"]["has_context_summary"])
+            self.assertFalse(report["checks"]["has_context_pack_telemetry"])
             self.assertIsNone(report["checks"]["target_fingerprint_matches_rebuild"])
 
     def test_resume_accepts_legacy_integer_checkpoint(self):
