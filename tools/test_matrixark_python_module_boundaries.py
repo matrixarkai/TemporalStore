@@ -1259,57 +1259,97 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
 
     def test_compact_serving_pack_exposes_async_summary_readiness(self) -> None:
         core_mod = importlib.import_module("tools.matrixark_mcp_core")
-        compact = core_mod.compact_context_pack_for_serving_flat(
-            {
-                "context_pack_id": "pack-summary-stale",
-                "selected_refs": [
-                    {
-                        "ref_type": "entity",
-                        "text": "assistant decision: keep profile summaries visible",
-                        "memory_scope": "user_profile",
-                        "session_continuity": "cross_session",
-                    }
-                ],
-                "recall_policy": {
-                    "session_continuity": {
-                        "mode": "prefer",
-                        "policy": "same-session first, profile entity bridge second",
-                    },
-                    "cross_session": {
-                        "enabled": True,
-                        "budget_tokens": 64,
-                        "remote_budget_tokens": 100,
-                        "computed_budget_tokens": 64,
-                        "budget_floor_tokens": 256,
-                        "budget_floor_applied": False,
-                        "budget_floor_status": "remote_budget_too_small_for_profile_floor",
-                        "max_sessions": 3,
-                        "max_candidates": 24,
-                    },
-                    "shared_context": {"enabled": False},
-                    "async_pipeline_readiness": {
-                        "task_count": 2,
-                        "ready_for_retrieval": False,
-                        "remaining_stages": ["summary", "compression"],
-                        "remaining_stage_counts": {"summary": 1, "compression": 1},
-                        "pending_memory_scopes": {"user_profile": 1},
-                        "pending_session_continuities": {"cross_session": 1},
-                        "freshness_warnings": ["profile_summary_stale"],
-                    },
-                    "memory_layer_budget": {
-                        "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 7}},
-                        "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 7}},
-                    },
+        pack = {
+            "context_pack_id": "pack-summary-stale",
+            "selected_refs": [
+                {
+                    "ref_type": "entity",
+                    "text": "assistant decision: keep profile summaries visible",
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "source_roles": ["assistant", "tool"],
+                    "source_role_counts": {"assistant": 2, "tool": 1},
+                    "source_hook_types": ["hook_boundary"],
+                    "source_hook_type_counts": {"hook_boundary": 3},
+                    "source_codex_events": ["Stop"],
+                    "source_codex_event_counts": {"Stop": 3},
+                    "source_session_ids": ["session_summary_1", "session_summary_2"],
+                    "source_entity_hashes": [101, 102],
+                }
+            ],
+            "recall_policy": {
+                "session_continuity": {
+                    "mode": "prefer",
+                    "policy": "same-session first, profile entity bridge second",
+                },
+                "cross_session": {
+                    "enabled": True,
+                    "budget_tokens": 64,
+                    "remote_budget_tokens": 100,
+                    "computed_budget_tokens": 64,
+                    "budget_floor_tokens": 256,
+                    "budget_floor_applied": False,
+                    "budget_floor_status": "remote_budget_too_small_for_profile_floor",
+                    "max_sessions": 3,
+                    "max_candidates": 24,
+                },
+                "shared_context": {"enabled": False},
+                "async_pipeline_readiness": {
+                    "task_count": 2,
+                    "ready_for_retrieval": False,
+                    "remaining_stages": ["summary", "compression"],
+                    "remaining_stage_counts": {"summary": 1, "compression": 1},
+                    "pending_memory_scopes": {"user_profile": 1},
+                    "pending_session_continuities": {"cross_session": 1},
+                    "freshness_warnings": ["profile_summary_stale"],
+                },
+                "memory_layer_budget": {
+                    "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 7}},
+                    "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 7}},
+                    "source_message_counts_by_role": {"assistant": 2, "tool": 1},
+                    "source_hook_counts_by_type": {"hook_boundary": 3},
+                    "source_codex_event_counts_by_event": {"Stop": 3},
+                },
+                "memory_layer_pressure": {
+                    "selected_refs": 1,
+                    "selected_tokens": 7,
+                    "dropped_refs": 1,
+                    "dropped_tokens": 13,
+                    "profile_memory_pressure": True,
+                    "cross_session_pressure": True,
+                    "assistant_source_message_pressure": True,
                 },
             },
-            include_debug=False,
-        )
+        }
+        compact = core_mod.compact_context_pack_for_serving_flat(pack, include_debug=False)
+        grouped_compact = core_mod.compact_context_pack_for_serving(pack, include_debug=False)
 
         readiness = compact["async_pipeline_readiness"]
         self.assertFalse(readiness["ready_for_retrieval"])
         self.assertEqual(["summary", "compression"], readiness["remaining_stages"])
         self.assertEqual(["profile_summary_stale"], readiness["freshness_warnings"])
         self.assertEqual({"user_profile": {"refs": 1, "tokens": 7}}, compact["memory_layer_budget"]["by_memory_scope"])
+        self.assertEqual({"assistant": 2, "tool": 1}, compact["memory_layer_budget"]["source_message_counts_by_role"])
+        self.assertTrue(compact["memory_layer_pressure"]["profile_memory_pressure"])
+        self.assertTrue(compact["memory_layer_pressure"]["cross_session_pressure"])
+        self.assertTrue(compact["memory_layer_pressure"]["assistant_source_message_pressure"])
+        flat_item = compact["selected_refs"][0]
+        self.assertEqual(["assistant", "tool"], flat_item["source_roles"])
+        self.assertEqual({"assistant": 2, "tool": 1}, flat_item["source_role_counts"])
+        self.assertEqual({"hook_boundary": 3}, flat_item["source_hook_type_counts"])
+        self.assertEqual({"Stop": 3}, flat_item["source_codex_event_counts"])
+        self.assertEqual(["session_summary_1", "session_summary_2"], flat_item["source_session_ids"])
+        self.assertEqual(2, flat_item["source_entity_count"])
+        self.assertEqual({"user_profile": {"refs": 1, "tokens": 7}}, grouped_compact["memory_layer_budget"]["by_memory_scope"])
+        self.assertTrue(grouped_compact["memory_layer_pressure"]["profile_memory_pressure"])
+        self.assertTrue(grouped_compact["memory_layer_pressure"]["cross_session_pressure"])
+        entity_item = grouped_compact["groups"][0]["items"][0]
+        self.assertEqual(["assistant", "tool"], entity_item["source_roles"])
+        self.assertEqual({"assistant": 2, "tool": 1}, entity_item["source_role_counts"])
+        self.assertEqual({"hook_boundary": 3}, entity_item["source_hook_type_counts"])
+        self.assertEqual({"Stop": 3}, entity_item["source_codex_event_counts"])
+        self.assertEqual(["session_summary_1", "session_summary_2"], entity_item["source_session_ids"])
+        self.assertEqual(2, entity_item["source_entity_count"])
         hierarchy = compact["memory_hierarchy"]
         self.assertEqual("user_profile", hierarchy["models"]["profile_entity"]["memory_scope"])
         self.assertEqual("context_profile_entity", hierarchy["models"]["profile_index"]["data_model"])
