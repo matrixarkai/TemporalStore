@@ -545,6 +545,7 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
             prompt = post(
                 {
                     "scope": scope,
+                    "session_buffer_threshold": 2,
                     "normalized_event": {
                         "agent": "codex",
                         "event": "UserPromptSubmit",
@@ -569,6 +570,42 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
             self.assertEqual("ok", prompt_result["status"])
             self.assertEqual("accepted", prompt_result["ingested"]["status"])
             self.assertTrue(prompt_result["retrieved"]["context_pack_id"])
+
+            assistant = post(
+                {
+                    "scope": scope,
+                    "session_buffer_threshold": 2,
+                    "normalized_event": {
+                        "agent": "codex",
+                        "event": "AssistantResponse",
+                        "hook_type": "after_llm",
+                        "lifecycle_stage": "after_llm_ingest",
+                        "should_retrieve": False,
+                        "should_commit": False,
+                        "extraction_phase": "provisional",
+                        "final_session_boundary": False,
+                        "conversation_id": "remote-thread-1",
+                        "session_id": "codex:remote-thread-1",
+                        "session_id_source": "payload.conversation_id",
+                        "role": "assistant",
+                        "text": "Decision: remote assistant response should threshold extract without retrieval.",
+                        "timestamp_ms": 234,
+                    },
+                    "raw_payload": {"conversation_id": "remote-thread-1"},
+                }
+            )
+            self.assertEqual("ok", assistant["status"])
+            assistant_result = assistant["result"]
+            self.assertEqual("accepted", assistant_result["ingested"]["status"])
+            self.assertEqual({}, assistant_result["retrieved"])
+            self.assertEqual(
+                "committed",
+                assistant_result["ingested"]["auto_batch_extract_result"]["status"],
+            )
+            self.assertEqual(
+                "threshold",
+                assistant_result["ingested"]["auto_batch_extract_result"]["trigger_policy"],
+            )
 
             stop = post(
                 {
@@ -603,6 +640,7 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
             commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
             self.assertTrue(commits)
             self.assertTrue(any(record.get("final_session_boundary") is True for record in commits))
+            self.assertTrue(any(record.get("trigger_policy") == "threshold" for record in commits))
             buffer_events = [record for record in records if record.get("record_type") == "session_buffer_event"]
             self.assertTrue(
                 any(
@@ -611,6 +649,7 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
                 )
             )
             self.assertTrue(any("session_commit" in record.get("source_hook_types", []) for record in commits))
+            self.assertTrue(any("AssistantResponse" in record.get("source_codex_events", []) for record in commits))
             self.assertTrue(any("Stop" in record.get("source_codex_events", []) for record in commits))
         finally:
             httpd.shutdown()
