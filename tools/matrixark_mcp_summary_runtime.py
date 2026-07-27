@@ -426,6 +426,100 @@ def append_node_summary_embeddings(
     }
 
 
+def async_summary_progress_records(
+    *,
+    records: list[Json],
+    scope: Json,
+    source_event_ids: list[int],
+    source_entity_hashes: list[int],
+    dirty_hash: object,
+    node_hash: int,
+    node_path: list[str],
+    generated_summary_types: list[str],
+    refreshed_at_ms: int,
+) -> list[Json]:
+    def compatible_scope(candidate: Json, requested: Json) -> bool:
+        if scope_matches(candidate, requested):
+            return True
+        for key in ("account_id", "tenant_id", "user_id"):
+            requested_value = str(requested.get(key) or "")
+            candidate_value = str(candidate.get(key) or "")
+            if requested_value and candidate_value and requested_value != candidate_value:
+                return False
+        requested_session = str(requested.get("session_id") or "")
+        candidate_session = str(candidate.get("session_id") or "")
+        return not requested_session or not candidate_session or requested_session == candidate_session
+
+    source_event_set = {int(event_id) for event_id in source_event_ids if event_id is not None}
+    source_entity_set = {int(entity_hash) for entity_hash in source_entity_hashes if entity_hash is not None}
+    if source_entity_set:
+        for record in records:
+            if record.get("record_type") != "context_entity":
+                continue
+            try:
+                entity_hash = int(record.get("entity_hash"))
+            except (TypeError, ValueError):
+                continue
+            if entity_hash not in source_entity_set:
+                continue
+            if not compatible_scope(candidate_access_scope(record), scope):
+                continue
+            entity_source_event_ids = record.get("source_event_ids")
+            if not isinstance(entity_source_event_ids, list):
+                continue
+            for event_id in entity_source_event_ids:
+                try:
+                    source_event_set.add(int(event_id))
+                except (TypeError, ValueError):
+                    continue
+    if not source_event_set:
+        return []
+    progress_records: list[Json] = []
+    for record in records:
+        if record.get("record_type") != "matrixark_async_pipeline_task":
+            continue
+        if str(record.get("status") or "") != "extraction_committed":
+            continue
+        try:
+            event_id_hash = int(record.get("event_id_hash"))
+        except (TypeError, ValueError):
+            continue
+        if event_id_hash not in source_event_set:
+            continue
+        if not compatible_scope(candidate_access_scope(record), scope):
+            continue
+        completed = [
+            str(stage)
+            for stage in (record.get("completed_stages") if isinstance(record.get("completed_stages"), list) else [])
+            if str(stage or "")
+        ]
+        if "summary" not in completed:
+            completed.append("summary")
+        remaining = [
+            str(stage)
+            for stage in (record.get("remaining_stages") if isinstance(record.get("remaining_stages"), list) else [])
+            if str(stage or "") and str(stage) != "summary"
+        ]
+        progress_records.append(
+            {
+                **record,
+                "record_type": "matrixark_async_pipeline_task",
+                "task_hash": record.get("task_hash", stable_hash(f"async_pipeline:{event_id_hash}")),
+                "status": "summary_completed",
+                "completed_stages": completed,
+                "remaining_stages": remaining,
+                "summary_completed": True,
+                "summary_dirty_hash": dirty_hash,
+                "summary_node_hash": node_hash,
+                "summary_node_path": node_path,
+                "generated_summary_types": generated_summary_types,
+                "summary_completed_at_ms": refreshed_at_ms,
+                "updated_at_ms": refreshed_at_ms,
+            }
+        )
+    return progress_records
+
+
 def refresh_dirty_node_summaries(
     adapter: object,
     *,
@@ -556,6 +650,19 @@ def refresh_dirty_node_summaries(
                     "scope": dirty.get("scope", scope),
                 }
             )
+        summary_progress_records = async_summary_progress_records(
+            records=records,
+            scope=dirty.get("scope", scope),
+            source_event_ids=source_event_ids,
+            source_entity_hashes=source_entity_hashes,
+            dirty_hash=dirty.get("dirty_hash"),
+            node_hash=node_hash,
+            node_path=node_path,
+            generated_summary_types=generated_summary_types,
+            refreshed_at_ms=refreshed_at_ms,
+        )
+        if summary_progress_records:
+            adapter.append_many(summary_progress_records)
         refreshed.append(
             {
                 "dirty_hash": dirty.get("dirty_hash"),
@@ -576,6 +683,7 @@ def refresh_dirty_node_summaries(
                 "generated_summary_types": generated_summary_types,
                 "summary_generation_policy": l1_policy,
                 "time_compression": compression_refresh,
+                "async_summary_progress_count": len(summary_progress_records),
             }
         )
     return {
