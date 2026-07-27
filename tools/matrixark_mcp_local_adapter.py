@@ -1172,6 +1172,7 @@ class MatrixArkLocalAdapter:
             for key, value in memory_layers_written.items()
             if value not in (None, "", [], {})
         }
+        committed_at_ms = now_ms()
         self.append(
             {
                 "record_type": "context_batch_commit",
@@ -1203,8 +1204,34 @@ class MatrixArkLocalAdapter:
                 "agent_hook": hook,
                 "storage_options": storage_options,
                 "storage_route": canonical_storage_route(storage_options),
-                "created_at_ms": now_ms(),
+                "created_at_ms": committed_at_ms,
             }
+        )
+        self.append_many(
+            [
+                {
+                    "record_type": "matrixark_async_pipeline_task",
+                    "task_hash": stable_hash(f"async_pipeline:{event_id}"),
+                    "event_id_hash": event_id,
+                    "commit_id_hash": commit_id_hash,
+                    "batch_id_hash": batch_result.get("batch_id_hash"),
+                    "scope": scope,
+                    "status": "extraction_committed",
+                    "stages": ["extraction", "summary", "compression", "embedding"],
+                    "completed_stages": ["extraction"],
+                    "remaining_stages": ["summary", "compression", "embedding"],
+                    "reason": "session_buffer_commit",
+                    "trigger_policy": trigger_policy,
+                    "extraction_phase": extraction_phase,
+                    "final_session_boundary": final_session_boundary,
+                    "source_roles": source_roles,
+                    "summary_refresh_status": memory_layers_written.get("summary_refresh_status"),
+                    "summary_dirty_nodes": memory_layers_written.get("summary_dirty_nodes", 0),
+                    "memory_layers_written": memory_layers_written,
+                    "updated_at_ms": committed_at_ms,
+                }
+                for event_id in source_event_ids
+            ]
         )
         return {
             **batch_result,
