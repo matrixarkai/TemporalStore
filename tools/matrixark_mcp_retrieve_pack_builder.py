@@ -272,6 +272,7 @@ def memory_layer_pressure_summary(selected_budget: Json, dropped_budget: Json) -
         "by_dimension": {},
     }
     for dimension in [
+        "by_drop_reason",
         "by_memory_scope",
         "by_session_continuity",
         "by_extraction_phase",
@@ -280,6 +281,7 @@ def memory_layer_pressure_summary(selected_budget: Json, dropped_budget: Json) -
         "by_source_role",
         "by_hook_type",
         "by_codex_event",
+        "by_profile_shadowed_reason",
     ]:
         selected_buckets = selected_budget.get(dimension) if isinstance(selected_budget.get(dimension), dict) else {}
         dropped_buckets = dropped_budget.get(dimension) if isinstance(dropped_budget.get(dimension), dict) else {}
@@ -339,8 +341,13 @@ def memory_layer_pressure_summary(selected_budget: Json, dropped_budget: Json) -
     summary["session_memory_pressure"] = dropped_in("by_memory_scope", "session") > 0
     summary["cross_session_pressure"] = dropped_in("by_session_continuity", "cross_session") > 0
     summary["same_session_pressure"] = dropped_in("by_session_continuity", "same_session") > 0
+    summary["summary_memory_pressure"] = dropped_in("by_ref_type", "summary") > 0
+    summary["entity_memory_pressure"] = dropped_in("by_ref_type", "entity") > 0
+    summary["event_memory_pressure"] = dropped_in("by_ref_type", "event") > 0
     summary["final_memory_pressure"] = dropped_in("by_extraction_phase", "final") > 0
     summary["provisional_memory_pressure"] = dropped_in("by_extraction_phase", "provisional") > 0
+    summary["stale_current_state_pressure"] = _budget_total(dropped_budget, "stale_ref_count") > 0
+    summary["profile_shadowed_current_state_pressure"] = _budget_total(dropped_budget, "profile_shadowed_ref_count") > 0
     summary["assistant_memory_pressure"] = dropped_in("by_source_role", "assistant") > 0
     summary["user_memory_pressure"] = dropped_in("by_source_role", "user") > 0
     summary["tool_memory_pressure"] = dropped_in("by_source_role", "tool") > 0
