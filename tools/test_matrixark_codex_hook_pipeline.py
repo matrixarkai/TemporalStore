@@ -2448,6 +2448,55 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(1, len(commits))
             self.assertEqual("threshold", commits[0]["trigger_policy"])
             self.assertEqual("provisional", commits[0]["extraction_phase"])
+            self.assertGreaterEqual(second["auto_batch_extract_result"].get("entities_written", 0), 1)
+            self.assertGreaterEqual(second["auto_batch_extract_result"].get("profile_entities_written", 0), 1)
+            session_entities = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "session"
+                and record.get("session_continuity") == "same_session"
+            ]
+            profile_entities = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
+            ]
+            self.assertTrue(session_entities)
+            self.assertTrue(profile_entities)
+            self.assertTrue(
+                any(
+                    record.get("entity_type") == "assistant_decision"
+                    and "threshold commit" in str(record.get("state") or "")
+                    for record in profile_entities
+                )
+            )
+            pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "later_async_default_session"},
+                    "session_scope": "prefer",
+                    "query": "What did the assistant decide about the threshold commit?",
+                    "max_context_tokens": 160,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 3, "min_similarity_score": 0.0, "budget_fill_policy": "force_fill"},
+                }
+            )
+            selected_refs = pack["selected_refs"]
+            self.assertLessEqual(pack["used_context_tokens"], 160)
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "entity"
+                    and ref.get("entity_type") == "assistant_decision"
+                    and ref.get("session_continuity") == "cross_session"
+                    for ref in selected_refs
+                ),
+                selected_refs,
+            )
+            layer_budget = pack["retrieval_metrics"]["memory_layer_budget"]
+            self.assertGreaterEqual(layer_budget["by_session_continuity"]["cross_session"]["refs"], 1)
+            self.assertGreaterEqual(layer_budget["by_memory_scope"]["user_profile"]["refs"], 1)
 
     def test_stop_boundary_force_commits_full_live_conversation_tail_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
