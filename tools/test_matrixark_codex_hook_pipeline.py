@@ -247,6 +247,19 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         for record in records
                     )
                 )
+                progress = [
+                    record
+                    for record in records
+                    if record.get("record_type") == "matrixark_async_pipeline_task"
+                    and record.get("status") == "extraction_committed"
+                    and record.get("commit_id_hash") == commit["commit_id_hash"]
+                ]
+                self.assertEqual(
+                    sorted(int(event_id) for event_id in commit["source_event_ids"]),
+                    sorted(int(record["event_id_hash"]) for record in progress),
+                )
+                self.assertTrue(all(record["completed_stages"] == ["extraction"] for record in progress))
+                self.assertTrue(all("summary" in record["remaining_stages"] for record in progress))
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
@@ -361,6 +374,19 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         for record in records
                     )
                 )
+                progress = [
+                    record
+                    for record in records
+                    if record.get("record_type") == "matrixark_async_pipeline_task"
+                    and record.get("status") == "extraction_committed"
+                    and record.get("commit_id_hash") == idle_commit["commit_id_hash"]
+                ]
+                self.assertEqual(
+                    [int(event_id) for event_id in idle_commit["source_event_ids"]],
+                    [int(record["event_id_hash"]) for record in progress],
+                )
+                self.assertTrue(all(record["completed_stages"] == ["extraction"] for record in progress))
+                self.assertTrue(all("summary" in record["remaining_stages"] for record in progress))
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 

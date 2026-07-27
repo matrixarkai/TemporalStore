@@ -94,6 +94,57 @@ def session_commit_memory_layers_written(
     return {key: value for key, value in layers.items() if value not in (None, "", [], {})}
 
 
+def append_session_commit_task_progress(
+    adapter: object,
+    *,
+    source_event_ids: list[int],
+    source_roles: list[str],
+    commit_id_hash: int,
+    batch_id_hash: int | None,
+    scope: Json,
+    trigger_policy: str,
+    extraction_phase: str,
+    final_session_boundary: bool,
+    memory_layers_written: Json,
+    updated_at_ms: int,
+) -> None:
+    records: list[Json] = []
+    for event_id in source_event_ids:
+        records.append(
+            {
+                "record_type": "matrixark_async_pipeline_task",
+                "task_hash": stable_hash(f"async_pipeline:{event_id}"),
+                "event_id_hash": event_id,
+                "commit_id_hash": commit_id_hash,
+                "batch_id_hash": batch_id_hash,
+                "scope": scope,
+                "status": "extraction_committed",
+                "stages": ["extraction", "summary", "compression", "embedding"],
+                "completed_stages": ["extraction"],
+                "remaining_stages": ["summary", "compression", "embedding"],
+                "reason": "session_buffer_commit",
+                "trigger_policy": trigger_policy,
+                "extraction_phase": extraction_phase,
+                "final_session_boundary": final_session_boundary,
+                "source_roles": source_roles,
+                "summary_refresh_status": memory_layers_written.get("summary_refresh_status"),
+                "summary_dirty_nodes": memory_layers_written.get("summary_dirty_nodes", 0),
+                "memory_layers_written": memory_layers_written,
+                "updated_at_ms": updated_at_ms,
+            }
+        )
+    if not records:
+        return
+    append_many = getattr(adapter, "append_many", None)
+    if callable(append_many):
+        append_many(records)
+        return
+    append = getattr(adapter, "append", None)
+    if callable(append):
+        for record in records:
+            append(record)
+
+
 def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> Json:
     scope = optional_object(args, "scope")
     threshold = args.get("threshold_messages", 20)
@@ -284,6 +335,7 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         source_hook_types=source_hook_types,
         source_codex_events=source_codex_events,
     )
+    committed_at_ms = now_ms()
     adapter.append(
         {
             "record_type": "context_batch_commit",
@@ -313,8 +365,21 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "agent_hook": hook,
             "storage_options": storage_options,
             "storage_route": canonical_storage_route(storage_options),
-            "created_at_ms": now_ms(),
+            "created_at_ms": committed_at_ms,
         }
+    )
+    append_session_commit_task_progress(
+        adapter,
+        source_event_ids=source_event_ids,
+        source_roles=source_roles,
+        commit_id_hash=commit_id_hash,
+        batch_id_hash=batch_result.get("batch_id_hash"),
+        scope=scope,
+        trigger_policy=trigger_policy,
+        extraction_phase=extraction_phase,
+        final_session_boundary=final_session_boundary,
+        memory_layers_written=memory_layers_written,
+        updated_at_ms=committed_at_ms,
     )
     return {
         **batch_result,
