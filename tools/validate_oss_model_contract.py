@@ -3,7 +3,7 @@
 
 MatrixArk, OpenViking, VikingMem, and similar baselines may have different
 storage and retrieval logic, but benchmark claims are only comparable when the
-reader model, embedding model, retrieval budget, and reader context budget are
+reader model, embedding model, retrieval budget, reader evidence policy, and reader context budget are
 held constant. This validator fails closed when a report omits the contract or
 when any run drifts from the shared OSS model contract.
 """
@@ -121,7 +121,7 @@ def main() -> int:
         "errors": errors,
         "rule": (
             "MatrixArk, OpenViking, VikingMem, and peer rows must use the same OSS "
-            "reader model, embedding/encoding model, retrieved event budget, and "
+            "reader model, embedding/encoding model, retrieved event budget, reader evidence policy, and "
             "reader context budget before token-savings or reader-quality claims are comparable. "
             "Reader fallback, reader errors, diagnostic-only rows, and reader prompt-policy drift fail "
             "by default so MatrixArk and VikingMem/OpenViking use the same OSS encoder and reader setup."
