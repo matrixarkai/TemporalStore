@@ -1055,6 +1055,27 @@ class MatrixArkLocalAdapter:
             hook=hook,
         )
         commit_id_hash = stable_hash(f"commit:{scope}:{source_event_ids}:{now_ms()}")
+        memory_layers_written = {
+            "context_events": int(batch_result.get("extraction_context_event_count") or 0),
+            "segments": int(batch_result.get("segments_written") or 0),
+            "session_entities": int(batch_result.get("entities_written") or 0),
+            "profile_entities": int(batch_result.get("profile_entities_written") or 0),
+            "same_session_entities": int(batch_result.get("entities_written") or 0),
+            "cross_session_entities": int(batch_result.get("profile_entities_written") or 0),
+            "secondary_indexes": int(batch_result.get("indexes_written") or 0),
+            "summary_dirty_nodes": len(batch_result.get("summary_refresh", {}).get("dirty_hashes", [])) if isinstance(batch_result.get("summary_refresh"), dict) else 0,
+            "summary_refresh_status": batch_result.get("summary_refresh", {}).get("status") if isinstance(batch_result.get("summary_refresh"), dict) else None,
+            "extraction_phase": extraction_phase,
+            "final_session_boundary": final_session_boundary,
+            "source_roles": source_roles,
+            "source_hook_types": source_hook_types,
+            "source_codex_events": source_codex_events,
+        }
+        memory_layers_written = {
+            key: value
+            for key, value in memory_layers_written.items()
+            if value not in (None, "", [], {})
+        }
         self.append(
             {
                 "record_type": "context_batch_commit",
@@ -1079,6 +1100,7 @@ class MatrixArkLocalAdapter:
                 "source_codex_events": source_codex_events,
                 "profile_promotion_summary": batch_result.get("profile_promotion_summary", []),
                 "summary_refresh": batch_result.get("summary_refresh", {}),
+                "memory_layers_written": memory_layers_written,
                 "idle_timeout_ms": idle_timeout_ms,
                 "idle_elapsed_ms": idle_elapsed_ms,
                 "trigger_evidence": trigger_evidence,
@@ -1088,27 +1110,6 @@ class MatrixArkLocalAdapter:
                 "created_at_ms": now_ms(),
             }
         )
-        memory_layers_written = {
-            "context_events": int(batch_result.get("extraction_context_event_count") or 0),
-            "segments": int(batch_result.get("segments_written") or 0),
-            "session_entities": int(batch_result.get("entities_written") or 0),
-            "profile_entities": int(batch_result.get("profile_entities_written") or 0),
-            "same_session_entities": int(batch_result.get("entities_written") or 0),
-            "cross_session_entities": int(batch_result.get("profile_entities_written") or 0),
-            "secondary_indexes": int(batch_result.get("indexes_written") or 0),
-            "summary_dirty_nodes": len(batch_result.get("summary_refresh", {}).get("dirty_hashes", [])) if isinstance(batch_result.get("summary_refresh"), dict) else 0,
-            "summary_refresh_status": batch_result.get("summary_refresh", {}).get("status") if isinstance(batch_result.get("summary_refresh"), dict) else None,
-            "extraction_phase": extraction_phase,
-            "final_session_boundary": final_session_boundary,
-            "source_roles": source_roles,
-            "source_hook_types": source_hook_types,
-            "source_codex_events": source_codex_events,
-        }
-        memory_layers_written = {
-            key: value
-            for key, value in memory_layers_written.items()
-            if value not in (None, "", [], {})
-        }
         return {
             **batch_result,
             "status": "committed",
@@ -2300,6 +2301,7 @@ class MatrixArkLocalAdapter:
                             "profile_promotion_count": len(profile_promotion_summary)
                             if isinstance(profile_promotion_summary, list)
                             else 0,
+                            "memory_layers_written": record.get("memory_layers_written", {}),
                             "source_roles": record.get("source_roles", []),
                             "source_hook_types": record.get("source_hook_types", []),
                             "source_codex_events": record.get("source_codex_events", []),

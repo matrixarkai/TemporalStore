@@ -397,6 +397,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(isinstance(commit.get("trigger_evidence"), dict) for commit in commits))
             self.assertTrue(all(commit.get("profile_promotion_summary") for commit in commits))
             self.assertTrue(all(commit.get("summary_refresh", {}).get("profile_summary_refresh_required") for commit in commits))
+            self.assertTrue(all(commit.get("memory_layers_written", {}).get("session_entities", 0) >= 1 for commit in commits))
+            self.assertTrue(all(commit.get("memory_layers_written", {}).get("profile_entities", 0) >= 1 for commit in commits))
+            self.assertTrue(all(commit.get("memory_layers_written", {}).get("secondary_indexes", 0) >= 1 for commit in commits))
             refresh_dashboard = adapter.ingestion_dashboard(
                 {"scope": scope, "table": "summary_refresh", "page_size": 20}
             )
@@ -407,6 +410,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(2, len(refresh_commits), refresh_dashboard)
             self.assertTrue(all(row.get("profile_summary_refresh_required") for row in refresh_commits))
             self.assertTrue(all(row.get("profile_dirty_hash_count", 0) > 0 for row in refresh_commits))
+            self.assertTrue(all(row.get("memory_layers_written", {}).get("session_entities", 0) >= 1 for row in refresh_commits))
+            self.assertTrue(all(row.get("memory_layers_written", {}).get("profile_entities", 0) >= 1 for row in refresh_commits))
+            self.assertTrue(all(row.get("memory_layers_written", {}).get("secondary_indexes", 0) >= 1 for row in refresh_commits))
             self.assertTrue(
                 any(
                     row.get("row_type") == "context_summary_dirty"
