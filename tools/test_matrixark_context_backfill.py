@@ -247,6 +247,115 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertRegex(stats["serving_record_fingerprint"], r"^[0-9a-f]{64}$")
             self.assertEqual(kv.batch_hget_calls, 2)
 
+    def test_local_recovery_report_requires_rebuildable_memory_layers_and_target_parity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            records = [
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 11,
+                    "node_hash": 101,
+                    "scope": {"tenant_id": "t", "user_id": "u", "session_id": "s"},
+                    "text": "user asked to recover local context memory",
+                    "idempotency_key": "event-11",
+                },
+                {
+                    "record_type": "context_entity",
+                    "entity_hash": 22,
+                    "node_hash": 101,
+                    "scope": {"tenant_id": "t", "user_id": "u", "session_id": "s"},
+                    "entity_type": "project",
+                    "entity_name": "TemporalStore",
+                    "state": "Local recovery rebuilds context serving layers from TemporalStore records.",
+                    "idempotency_key": "entity-22",
+                },
+                {
+                    "record_type": "context_embedding",
+                    "embedding_type": "entity_state",
+                    "ref_type": "entity",
+                    "ref_hash": 22,
+                    "node_hash": 101,
+                    "scope": {"tenant_id": "t", "user_id": "u", "session_id": "s"},
+                    "vector": [1.0, 0.0],
+                    "idempotency_key": "embedding-22",
+                },
+                {
+                    "record_type": "context_index",
+                    "index_name": "entity",
+                    "index_value": "TemporalStore",
+                    "ref_hash": 22,
+                    "node_hash": 101,
+                    "scope": {"tenant_id": "t", "user_id": "u", "session_id": "s"},
+                    "scope_key": "tenant:t/user:u/session:s",
+                    "idempotency_key": "index-22",
+                },
+            ]
+            for sequence, record in enumerate(records):
+                write_sharded(kv, "matrixark:mcp", sequence, record)
+            kv.put_string("matrixark:mcp:record_count", str(len(records)))
+            built = backfill.run_backfill(self.make_args(
+                path,
+                target_prefix="matrixark:context_backfill:recovered",
+                batch_size=2,
+                resume=False,
+                dry_run=False,
+            ))
+            self.assertEqual(built["metrics"]["written"], 4)
+            prom = Path(tmp) / "local_recovery.prom"
+
+            report = backfill.run_local_recovery_report(self.make_args(
+                path,
+                mode="local_recovery_report",
+                target_prefix="matrixark:context_backfill:recovered",
+                batch_size=2,
+                prometheus_output=str(prom),
+            ))
+
+            self.assertEqual(report["status"], "ok")
+            self.assertTrue(report["ready"])
+            self.assertEqual(report["blockers"], [])
+            self.assertTrue(report["checks"]["has_context_event"])
+            self.assertTrue(report["checks"]["has_context_entity"])
+            self.assertTrue(report["checks"]["has_context_embedding"])
+            self.assertTrue(report["checks"]["has_context_index"])
+            self.assertTrue(report["checks"]["target_record_count_matches_rebuild"])
+            self.assertTrue(report["checks"]["target_fingerprint_matches_rebuild"])
+            self.assertEqual(report["serving_layers"]["events"], 1)
+            self.assertEqual(report["serving_layers"]["entities"], 1)
+            self.assertEqual(report["serving_layers"]["embeddings"], 1)
+            self.assertEqual(report["serving_layers"]["secondary_indexes"], 1)
+            prom_text = prom.read_text(encoding="utf-8")
+            self.assertIn("matrixark_context_local_recovery_status", prom_text)
+            self.assertIn('status="ok"} 1', prom_text)
+            self.assertIn('blocker="none"} 0', prom_text)
+            self.assertIn('layer="secondary_indexes"} 1', prom_text)
+
+    def test_local_recovery_report_fails_closed_without_secondary_index_layer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            for sequence, record in enumerate([
+                {"record_type": "context_event", "event_id_hash": 1, "idempotency_key": "event"},
+                {"record_type": "context_entity", "entity_hash": 2, "idempotency_key": "entity"},
+                {"record_type": "context_embedding", "ref_hash": 2, "idempotency_key": "embedding"},
+            ]):
+                write_sharded(kv, "matrixark:mcp", sequence, record)
+            kv.put_string("matrixark:mcp:record_count", "3")
+
+            report = backfill.run_local_recovery_report(self.make_args(
+                path,
+                mode="local_recovery_report",
+                target_prefix="",
+                batch_size=2,
+            ))
+
+            self.assertEqual(report["status"], "failed")
+            self.assertFalse(report["ready"])
+            self.assertIn("recovery:context_index_missing", report["blockers"])
+            self.assertFalse(report["checks"]["has_context_index"])
+            self.assertIsNone(report["checks"]["target_fingerprint_matches_rebuild"])
+
     def test_resume_accepts_legacy_integer_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "kv.json"
