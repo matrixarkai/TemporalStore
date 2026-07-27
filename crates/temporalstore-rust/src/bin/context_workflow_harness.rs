@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 
@@ -1391,17 +1391,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         let matched_terms = count_matched_expected_terms(&blocks, &case.expected_terms);
         let matched_refs = count_matched_expected_refs(&blocks, &case.expected_source_refs);
         total_retrieved_blocks += blocks.len();
-        let selected_source_ids = blocks
-            .iter()
-            .take(selected_id_limit)
-            .map(|block| {
-                if block.source_ref.trim().is_empty() {
-                    block.uri.clone()
-                } else {
-                    block.source_ref.clone()
-                }
-            })
-            .collect::<Vec<_>>();
+        let selected_source_ids = unique_selected_source_ids(&blocks, selected_id_limit);
         per_query.push(ExternalContextBenchmarkQueryReport {
             query_id: case.query_id.clone(),
             hit: hit_rank.is_some(),
@@ -1537,6 +1527,53 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         retrieved_source_sets: retrieved_source_sets.len(),
         total_retrieved_blocks,
     }
+}
+
+fn unique_selected_source_ids(blocks: &[temporalstore_rust::ContextBlock], limit: usize) -> Vec<String> {
+    let mut selected = Vec::new();
+    let mut seen = HashSet::new();
+    for block in blocks {
+        let source_id = canonical_selected_source_id(block);
+        let normalized = normalize_selected_source_id(&source_id);
+        if normalized.is_empty() || !seen.insert(normalized) {
+            continue;
+        }
+        selected.push(source_id);
+        if selected.len() >= limit {
+            break;
+        }
+    }
+    selected
+}
+
+fn canonical_selected_source_id(block: &temporalstore_rust::ContextBlock) -> String {
+    let raw = if block.source_ref.trim().is_empty() {
+        block.uri.as_str()
+    } else {
+        block.source_ref.as_str()
+    };
+    let raw = raw.trim();
+    if let Some((_, suffix)) = raw.rsplit_once("/source/") {
+        suffix.trim().to_string()
+    } else {
+        raw.to_string()
+    }
+}
+
+fn normalize_selected_source_id(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn external_benchmark_trace_enabled() -> bool {

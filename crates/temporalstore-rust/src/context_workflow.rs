@@ -1884,7 +1884,7 @@ pub fn extract_context(
         last_event_time_ms: timestamp_ms,
         summary_dirty: true,
         l1_ref: l1.clone(),
-        raw_metadata_ref: l2_ref.clone(),
+        raw_metadata_ref: request.source_id.clone(),
     };
     let event = context_event_with_storage_keys(
         node_hash,
