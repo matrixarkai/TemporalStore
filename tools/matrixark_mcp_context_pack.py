@@ -91,6 +91,8 @@ def compact_context_pack_ref(ref: Json) -> Json:
         "source_session_ids",
         "source_roles",
         "source_role_counts",
+        "budget_source_roles",
+        "budget_source_role_counts",
         "source_hook_types",
         "source_hook_type_counts",
         "source_codex_events",

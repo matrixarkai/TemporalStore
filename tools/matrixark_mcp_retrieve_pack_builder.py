@@ -74,7 +74,7 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
             bucket = breakdown["by_entity_type"].setdefault(entity_type, {"refs": 0, "tokens": 0})
             bucket["refs"] += 1
             bucket["tokens"] += token_estimate
-        source_roles = ref.get("source_roles") if isinstance(ref.get("source_roles"), list) else []
+        source_roles = ref.get("budget_source_roles") if isinstance(ref.get("budget_source_roles"), list) else ref.get("source_roles") if isinstance(ref.get("source_roles"), list) else []
         for role in source_roles:
             role_name = str(role or "").strip()
             if role_name:
@@ -96,10 +96,12 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
                 bucket["refs"] += 1
                 bucket["tokens"] += token_estimate
         for source_field, aggregate_field in [
-            ("source_role_counts", "source_message_counts_by_role"),
+            ("budget_source_role_counts", "source_message_counts_by_role"),
             ("source_hook_type_counts", "source_hook_counts_by_type"),
             ("source_codex_event_counts", "source_codex_event_counts_by_event"),
         ]:
+            if source_field == "budget_source_role_counts" and not isinstance(ref.get(source_field), dict):
+                source_field = "source_role_counts"
             source_counts = ref.get(source_field) if isinstance(ref.get(source_field), dict) else {}
             for name, count in source_counts.items():
                 bucket_name = str(name or "").strip()
@@ -187,7 +189,7 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
             bucket = breakdown["by_entity_type"].setdefault(entity_type, {"refs": 0, "tokens": 0})
             bucket["refs"] += 1
             bucket["tokens"] += token_estimate
-        source_roles = ref.get("source_roles") if isinstance(ref.get("source_roles"), list) else []
+        source_roles = ref.get("budget_source_roles") if isinstance(ref.get("budget_source_roles"), list) else ref.get("source_roles") if isinstance(ref.get("source_roles"), list) else []
         for role in source_roles:
             role_name = str(role or "").strip()
             if role_name:
@@ -209,10 +211,12 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
                 bucket["refs"] += 1
                 bucket["tokens"] += token_estimate
         for source_field, aggregate_field in [
-            ("source_role_counts", "source_message_counts_by_role"),
+            ("budget_source_role_counts", "source_message_counts_by_role"),
             ("source_hook_type_counts", "source_hook_counts_by_type"),
             ("source_codex_event_counts", "source_codex_event_counts_by_event"),
         ]:
+            if source_field == "budget_source_role_counts" and not isinstance(ref.get(source_field), dict):
+                source_field = "source_role_counts"
             source_counts = ref.get(source_field) if isinstance(ref.get(source_field), dict) else {}
             for name, count in source_counts.items():
                 bucket_name = str(name or "").strip()

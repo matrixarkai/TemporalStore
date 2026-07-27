@@ -917,10 +917,22 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 ),
                 pack["selected_refs"],
             )
+            selected_tool_ref = next(
+                ref
+                for ref in pack["selected_refs"]
+                if ref.get("ref_type") == "entity" and ref.get("entity_type") == "tool_evidence"
+            )
+            self.assertEqual(["tool"], selected_tool_ref["budget_source_roles"])
+            self.assertEqual({"tool": 1}, selected_tool_ref["budget_source_role_counts"])
+            self.assertIn("assistant", selected_tool_ref["source_roles"])
             role_policy = pack["recall_policy"]["source_role_budget"]
             self.assertTrue(role_policy["enabled"])
             self.assertEqual({"assistant": 1}, role_policy["budget_tokens"])
             self.assertEqual(0, role_policy["selected_tokens_by_role"]["assistant"])
+            memory_budget = pack["recall_policy"]["memory_layer_budget"]
+            self.assertEqual({"tool": 1}, memory_budget["source_message_counts_by_role"])
+            self.assertIn("tool", memory_budget["by_source_role"])
+            self.assertNotIn("assistant", memory_budget["by_source_role"])
 
     def run_hook(self, repo: Path, event_log: Path, *, event: str, payload: dict, query: str = "") -> dict:
         cmd = [
