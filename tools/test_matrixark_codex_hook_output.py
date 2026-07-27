@@ -17,6 +17,49 @@ from matrixark_codex_hook_payload import decode_payload, extract_identity, extra
 
 
 class MatrixArkCodexHookOutputTest(unittest.TestCase):
+    def test_retrieve_layer_summary_reads_rust_proxy_extra_context_pack_pressure(self) -> None:
+        result = hook.retrieval_layer_summary_from_retrieve(
+            {
+                "ok": True,
+                "extra": {
+                    "context_pack": {
+                        "selected_refs": [
+                            {
+                                "ref_type": "entity",
+                                "memory_scope": "user_profile",
+                                "session_continuity": "cross_session",
+                                "token_estimate": 9,
+                            }
+                        ],
+                        "retrieval_metrics": {
+                            "memory_layer_budget": {
+                                "total_selected_refs": 1,
+                                "total_selected_tokens": 9,
+                                "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 9}},
+                                "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 9}},
+                            },
+                            "memory_layer_pressure": {
+                                "selected_refs": 1,
+                                "dropped_refs": 1,
+                                "profile_memory_pressure": True,
+                                "cross_session_pressure": True,
+                                "hook_boundary_source_pressure": True,
+                            },
+                        },
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(1, result["profile_memory_refs"])
+        self.assertEqual(1, result["cross_session_refs"])
+        self.assertEqual(
+            1,
+            result["memory_layer_budget"]["by_memory_scope"]["user_profile"]["refs"],
+        )
+        self.assertTrue(result["memory_layer_pressure"]["profile_memory_pressure"])
+        self.assertTrue(result["memory_layer_pressure"]["hook_boundary_source_pressure"])
+
     def test_loose_stop_payload_extracts_current_input_message_and_thread_identity(self) -> None:
         raw = (
             '-- {"type:agent-turn-complete,thread-id:019f8cb5-b4d5-77f2-8c82-0499440da36f,'
