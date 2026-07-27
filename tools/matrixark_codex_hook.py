@@ -97,6 +97,9 @@ def selected_ref_count_from_retrieve(pack: Json | None) -> int:
     refs = pack.get("selected_refs")
     if isinstance(refs, list):
         return len(refs)
+    refs = pack.get("remote_context_refs")
+    if isinstance(refs, list):
+        return len(refs)
     groups = pack.get("selected_ref_groups")
     if isinstance(groups, list):
         total = 0
@@ -115,7 +118,11 @@ def selected_ref_count_from_retrieve(pack: Json | None) -> int:
             refs_in_group = group.get("items", [])
             total += int(group.get("n") or (len(refs_in_group) if isinstance(refs_in_group, list) else 0))
         return total
-    return 0
+    local_policy = pack.get("local_context_policy") if isinstance(pack.get("local_context_policy"), dict) else {}
+    try:
+        return int(local_policy.get("local_context_count") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def used_context_tokens_from_retrieve(pack: Json | None) -> int:
@@ -227,16 +234,41 @@ def retrieval_budget_pressure_from_retrieve(pack: Json | None) -> Json:
 def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | None = None) -> Json:
     if not isinstance(pack, dict):
         return {}
-    all_refs = _selected_refs_from_retrieve(pack)
+    pack_view = _context_pack_view(pack)
+    all_refs = _selected_refs_from_retrieve(pack_view)
     refs = refs if refs is not None else all_refs
-    retrieval_metrics = pack.get("retrieval_metrics") if isinstance(pack.get("retrieval_metrics"), dict) else {}
-    recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
+    retrieval_metrics = pack_view.get("retrieval_metrics") if isinstance(pack_view.get("retrieval_metrics"), dict) else {}
+    recall_policy = pack_view.get("recall_policy") if isinstance(pack_view.get("recall_policy"), dict) else {}
     memory_layer_budget = retrieval_metrics.get("memory_layer_budget")
     if not isinstance(memory_layer_budget, dict):
         memory_layer_budget = recall_policy.get("memory_layer_budget")
     if not isinstance(memory_layer_budget, dict):
+        memory_layer_budget = pack_view.get("memory_layer_budget")
+    if not isinstance(memory_layer_budget, dict):
         memory_layer_budget = {}
-    raw_counts = pack.get("selected_ref_counts")
+    if refs and (
+        not memory_layer_budget
+        or not isinstance(memory_layer_budget.get("by_entity_type"), dict)
+        or not memory_layer_budget.get("by_entity_type")
+    ):
+        inferred_budget = inferred_live_ref_layer_budget(refs)
+        if not memory_layer_budget:
+            memory_layer_budget = inferred_budget
+        else:
+            memory_layer_budget = {**inferred_budget, **memory_layer_budget}
+            for bucket_name in [
+                "by_memory_scope",
+                "by_session_continuity",
+                "by_extraction_phase",
+                "by_ref_type",
+                "by_entity_type",
+                "by_source_role",
+                "by_hook_type",
+                "by_codex_event",
+            ]:
+                if not memory_layer_budget.get(bucket_name):
+                    memory_layer_budget[bucket_name] = inferred_budget.get(bucket_name, {})
+    raw_counts = pack_view.get("selected_ref_counts")
     selected_ref_counts: Json = {}
     use_pack_counts = refs is all_refs or len(refs) == len(all_refs)
     if use_pack_counts and isinstance(raw_counts, dict):
@@ -252,7 +284,7 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
             ref_class = str(ref.get("context_class") or ref.get("ref_type") or ref.get("type") or "ref")
             selected_ref_counts[ref_class] = int(selected_ref_counts.get(ref_class, 0)) + 1
     continuity = recall_policy.get("session_continuity") if isinstance(recall_policy.get("session_continuity"), dict) else {}
-    local_policy = pack.get("local_context_policy") if isinstance(pack.get("local_context_policy"), dict) else {}
+    local_policy = pack_view.get("local_context_policy") if isinstance(pack_view.get("local_context_policy"), dict) else {}
     layer_summary: Json = {"selected_ref_counts": selected_ref_counts}
     for source_key, output_key in [
         ("same_session_selected_ref_count", "same_session_refs"),
@@ -281,6 +313,84 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
     if memory_layer_budget:
         layer_summary["memory_layer_budget"] = memory_layer_budget
     return layer_summary
+
+
+def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:
+    budget: Json = {
+        "by_memory_scope": {},
+        "by_session_continuity": {},
+        "by_extraction_phase": {},
+        "by_ref_type": {},
+        "by_entity_type": {},
+        "by_source_role": {},
+        "by_hook_type": {},
+        "by_codex_event": {},
+        "final_session_boundary_ref_count": 0,
+        "provisional_ref_count": 0,
+        "final_ref_count": 0,
+        "total_selected_refs": len(refs),
+        "total_selected_tokens": 0,
+    }
+
+    def add(bucket_name: str, key: str, token_estimate: int) -> None:
+        if not key:
+            return
+        bucket = budget[bucket_name].setdefault(key, {"refs": 0, "tokens": 0})
+        bucket["refs"] += 1
+        bucket["tokens"] += token_estimate
+
+    for ref in refs:
+        text = _ref_text(ref).lstrip().lower()
+        try:
+            token_estimate = max(0, int(ref.get("token_estimate") or 0))
+        except (TypeError, ValueError):
+            token_estimate = 0
+        if token_estimate == 0:
+            token_estimate = max(1, (len(_ref_text(ref)) + 3) // 4)
+        budget["total_selected_tokens"] += token_estimate
+        ref_type = str(ref.get("ref_type") or ref.get("context_class") or "ref")
+        add("by_ref_type", ref_type, token_estimate)
+        memory_scope = str(ref.get("memory_scope") or "session")
+        continuity = str(ref.get("session_continuity") or "same_session")
+        extraction_phase = str(ref.get("extraction_phase") or "provisional")
+        add("by_memory_scope", memory_scope, token_estimate)
+        add("by_session_continuity", continuity, token_estimate)
+        add("by_extraction_phase", extraction_phase, token_estimate)
+        if extraction_phase == "final":
+            budget["final_ref_count"] += 1
+        else:
+            budget["provisional_ref_count"] += 1
+        entity_type = str(ref.get("entity_type") or "")
+        source_roles = ref.get("source_roles") if isinstance(ref.get("source_roles"), list) else []
+        hook_types = ref.get("source_hook_types") if isinstance(ref.get("source_hook_types"), list) else []
+        codex_events = ref.get("source_codex_events") if isinstance(ref.get("source_codex_events"), list) else []
+        tool_evidence_terms = (
+            "tool:",
+            "exit code:",
+            "head -> main",
+            "tests in ",
+            " ran ",
+            "cargo test",
+            "pytest",
+            "unittest",
+        )
+        if not entity_type and any(term in text for term in tool_evidence_terms):
+            entity_type = "tool_evidence"
+            source_roles = source_roles or ["tool"]
+            hook_types = hook_types or ["tool_result"]
+            codex_events = codex_events or ["PostToolUse"]
+        elif not entity_type and text.startswith("assistant:"):
+            entity_type = "assistant_decision"
+            source_roles = source_roles or ["assistant"]
+            hook_types = hook_types or ["after_llm"]
+        add("by_entity_type", entity_type, token_estimate)
+        for role in source_roles:
+            add("by_source_role", str(role or ""), token_estimate)
+        for hook_type in hook_types:
+            add("by_hook_type", str(hook_type or ""), token_estimate)
+        for codex_event in codex_events:
+            add("by_codex_event", str(codex_event or ""), token_estimate)
+    return budget
 
 
 def retrieval_memory_hierarchy_contract_from_retrieve(pack: Json | None) -> Json:
@@ -593,10 +703,22 @@ def sanitized_rendered_context_from_retrieve(pack: Json | None) -> str:
     )
 
 
+def _context_pack_view(pack: Json | None) -> Json:
+    if not isinstance(pack, dict):
+        return {}
+    nested = pack.get("context_pack")
+    if isinstance(nested, dict):
+        return nested
+    return pack
+
+
 def _selected_refs_from_retrieve(pack: Json | None) -> list[Json]:
     if not isinstance(pack, dict):
         return []
+    pack = _context_pack_view(pack)
     refs = pack.get("selected_refs")
+    if not isinstance(refs, list):
+        refs = pack.get("remote_context_refs")
     if isinstance(refs, list):
         return [ref for ref in refs if isinstance(ref, dict)]
     flattened: list[Json] = []

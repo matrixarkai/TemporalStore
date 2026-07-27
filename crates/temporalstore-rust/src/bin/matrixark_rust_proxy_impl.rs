@@ -1,4 +1,3 @@
-#![recursion_limit = "256"]
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;

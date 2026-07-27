@@ -560,6 +560,8 @@ def main() -> int:
         print(json.dumps({"status": "skipped", "reason": "empty hook payload", "agent": args.agent}))
         return 0
     agent_context = agent_context_from_payload(payload, agent=args.agent, event=args.event, session_id_source=session_id_source, args=args)
+    if args.backend in {"temporalstore-rust", "temporalstore-rust-direct"}:
+        os.environ.setdefault("MATRIXARK_RUST_PROXY_PUBLISH_VISIBILITY_AFTER_FLUSH", "1")
 
     server = build_server(args)
     scope = scope_from_args(args)
@@ -577,6 +579,27 @@ def main() -> int:
         "auto_captured": True,
         "session_id_source": session_id_source,
     }
+    retrieve: Json = {}
+    if should_retrieve(args.event) or args.query:
+        retrieve_metadata = {
+            "retrieval_source": f"{args.agent}_hook",
+            "agent": args.agent,
+            "agent_event": args.event,
+            "hook_type": event_hook_type,
+            "session_id_source": session_id_source,
+            "codex_session_id_source": session_id_source if args.agent == "codex" else "",
+        }
+        retrieve_args: Json = {
+            **common,
+            "query": args.query or text[:500],
+            "max_context_tokens": args.max_context_tokens,
+            "metadata": retrieve_metadata,
+            "retrieval_request_metadata": retrieve_metadata,
+        }
+        local_context = agent_context.get("local_context", [])
+        if local_context:
+            retrieve_args["local_context"] = local_context
+        retrieve = call_tool(server, "matrixark_retrieve", retrieve_args)
     base_metadata: Json = {
         "source": f"{args.agent}_hook",
         "agent": args.agent,
@@ -635,8 +658,7 @@ def main() -> int:
             ingest_args["idle_commit_timeout_ms"] = args.idle_commit_timeout_ms
         ingest = call_tool(server, "matrixark_ingest", ingest_args)
 
-    retrieve: Json = {}
-    if should_retrieve(args.event) or args.query:
+    if not retrieve and (should_retrieve(args.event) or args.query):
         retrieve_metadata = {
             "retrieval_source": f"{args.agent}_hook",
             "agent": args.agent,
