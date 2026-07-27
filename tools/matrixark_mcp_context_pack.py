@@ -669,4 +669,12 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     )
     if isinstance(async_pipeline_readiness, dict) and async_pipeline_readiness:
         compact["async_pipeline_readiness"] = async_pipeline_readiness
+    if recall_policy:
+        try:
+            from tools.matrixark_mcp_core import memory_hierarchy_contract_from_recall_policy
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_core import memory_hierarchy_contract_from_recall_policy
+        memory_hierarchy = memory_hierarchy_contract_from_recall_policy(recall_policy)
+        if memory_hierarchy:
+            compact["memory_hierarchy"] = memory_hierarchy
     return compact

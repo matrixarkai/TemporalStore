@@ -1169,6 +1169,20 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(1, readiness["task_count"])
         self.assertEqual(1, readiness["extraction_committed_task_count"])
         self.assertEqual(["compression", "embedding", "summary"], readiness["remaining_stages"])
+        hierarchy = pack["memory_hierarchy"]
+        self.assertEqual("fallback_recent_context", hierarchy["session_scope_mode"])
+        self.assertTrue(hierarchy["cross_session_enabled"])
+        self.assertEqual(80, hierarchy["cross_session_budget_tokens"])
+        self.assertEqual(80, hierarchy["cross_session_remote_budget_tokens"])
+        self.assertEqual(0, hierarchy["cross_session_budget_floor_tokens"])
+        self.assertFalse(hierarchy["cross_session_budget_floor_applied"])
+        self.assertEqual(
+            "deadline_fallback_uses_remaining_remote_budget",
+            hierarchy["cross_session_budget_floor_status"],
+        )
+        self.assertEqual(2, hierarchy["cross_session_max_sessions"])
+        self.assertEqual(1, hierarchy["cross_session_max_candidates"])
+        self.assertIn("profile_entity_bridge", hierarchy["selected_ref_flow"])
         self.assertEqual(pressure, pack["retrieval_metrics"]["memory_layer_pressure"])
         self.assertEqual(readiness, pack["retrieval_metrics"]["async_pipeline_readiness"])
         self.assertIn("async_pipeline_followup_pending", pack["warnings"])

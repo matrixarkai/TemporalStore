@@ -166,6 +166,13 @@ def deadline_fallback_pack(
     memory_layer_pressure = memory_layer_pressure_summary(memory_layer_budget, {})
     async_readiness_scope = retrieval_scope if isinstance(retrieval_scope, dict) else {**scope, "_session_scope": "prefer"}
     async_pipeline_readiness = async_pipeline_retrieval_readiness(records, async_readiness_scope)
+    cross_session_selected = [item for item in selected if item.get("session_continuity") == "cross_session"]
+    cross_session_source_sessions = {
+        str(source_session)
+        for item in cross_session_selected
+        for source_session in item.get("source_session_ids", [])
+        if source_session
+    }
     quality_warnings = [
         f"retrieval_deadline_exceeded:{reason}",
         *async_pipeline_readiness.get("freshness_warnings", []),
@@ -198,6 +205,18 @@ def deadline_fallback_pack(
                 "cross_session_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "cross_session"),
                 "entity_bridge_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "cross_session" and item.get("ref_type") == "entity"),
             },
+            "cross_session": {
+                "enabled": bool(cross_session_selected),
+                "budget_tokens": remote_budget,
+                "remote_budget_tokens": remote_budget,
+                "computed_budget_tokens": remote_budget,
+                "budget_floor_tokens": 0,
+                "budget_floor_applied": False,
+                "budget_floor_status": "deadline_fallback_uses_remaining_remote_budget",
+                "max_sessions": len(cross_session_source_sessions),
+                "max_candidates": len(cross_session_selected),
+            },
+            "shared_context": {"enabled": False},
         },
         "primary_candidate_count": 0,
         "auxiliary_candidate_count": 0,
