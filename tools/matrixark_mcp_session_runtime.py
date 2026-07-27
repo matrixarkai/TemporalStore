@@ -276,6 +276,14 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         hook=hook,
     )
     commit_id_hash = stable_hash(f"commit:{scope}:{source_event_ids}:{now_ms()}")
+    memory_layers_written = session_commit_memory_layers_written(
+        batch_result,
+        extraction_phase=extraction_phase,
+        final_session_boundary=final_session_boundary,
+        source_roles=source_roles,
+        source_hook_types=source_hook_types,
+        source_codex_events=source_codex_events,
+    )
     adapter.append(
         {
             "record_type": "context_batch_commit",
@@ -301,19 +309,12 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "idle_timeout_ms": idle_timeout_ms,
             "idle_elapsed_ms": idle_elapsed_ms,
             "trigger_evidence": trigger_evidence,
+            "memory_layers_written": memory_layers_written,
             "agent_hook": hook,
             "storage_options": storage_options,
             "storage_route": canonical_storage_route(storage_options),
             "created_at_ms": now_ms(),
         }
-    )
-    memory_layers_written = session_commit_memory_layers_written(
-        batch_result,
-        extraction_phase=extraction_phase,
-        final_session_boundary=final_session_boundary,
-        source_roles=source_roles,
-        source_hook_types=source_hook_types,
-        source_codex_events=source_codex_events,
     )
     return {
         **batch_result,
