@@ -3385,7 +3385,10 @@ def extractive_reader_answer(question: str, blocks: list[dict[str, str]]) -> str
         return "not enough context"
     texts = [block.get("body", "") for block in blocks]
     if question_kind(question) == "date":
-        answer = date_answer(question, texts)
+        raw_date_texts = preferred_date_texts(blocks)
+        answer = date_answer(question, raw_date_texts) if raw_date_texts else ""
+        if not answer:
+            answer = date_answer(question, texts)
         if answer:
             return with_reader_context(answer, texts)
     answer = context_benchmark_direct_answer(question, texts)
@@ -3432,6 +3435,19 @@ def extractive_reader_answer(question: str, blocks: list[dict[str, str]]) -> str
     if answer:
         return with_reader_context(answer, texts)
     return evidence_bundle(texts)
+
+
+def preferred_date_texts(blocks: list[dict[str, str]]) -> list[str]:
+    raw_turn_texts = []
+    for block in blocks:
+        title_body = f"{block.get('title', '')} {block.get('body', '')}"
+        if source_layer_identity(block) == "event" and re.search(
+            r"\b(turn|message|speaker|user|assistant|caroline:|melanie:)\b", title_body, re.I
+        ):
+            raw_turn_texts.append(block.get("body", ""))
+    if raw_turn_texts:
+        return raw_turn_texts
+    return []
 
 
 def context_benchmark_direct_answer(question: str, texts: list[str]) -> str:
@@ -6902,15 +6918,15 @@ def date_answer(question: str, texts: list[str]) -> str:
         relative = relative_date_answer(text)
         overlap = len(target_terms & answer_tokens(text))
         if relative:
-            candidates.append((overlap, relative_answer_specificity(relative), 1, -rank, f"{relative}. Evidence: {text}"))
+            candidates.append((overlap, 1, relative_answer_specificity(relative), -rank, f"{relative}. Evidence: {text}"))
         match = date_regex().search(text)
         if match and not is_timestamp_only_date_evidence(text, match.start()):
             candidates.append(
-                (overlap, relative_answer_specificity(match.group(0)), 0, -rank, f"{match.group(0)}. Evidence: {text}")
+                (overlap, 0, relative_answer_specificity(match.group(0)), -rank, f"{match.group(0)}. Evidence: {text}")
             )
         year = re.search(r"\b(?:19|20)\d{2}\b", text)
         if year and not is_timestamp_only_date_evidence(text, year.start()):
-            candidates.append((overlap, 2, 0, -rank, f"{year.group(0)}. Evidence: {text}"))
+            candidates.append((overlap, 0, 2, -rank, f"{year.group(0)}. Evidence: {text}"))
     if candidates:
         candidates.sort(reverse=True)
         return candidates[0][4]

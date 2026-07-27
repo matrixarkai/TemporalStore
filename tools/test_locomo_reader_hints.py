@@ -52,6 +52,42 @@ class LocomoReaderHintTest(unittest.TestCase):
         self.assertIn("2022", hint)
         self.assertNotIn("7 May 2023", hint)
 
+    def test_last_year_answer_beats_same_sentence_timestamp(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_1 turn 14",
+                "body": (
+                    "1:56 pm on 8 May, 2023. D1:14 Melanie: "
+                    "Yeah, I painted that lake sunrise last year! It's special to me."
+                ),
+            },
+        ]
+
+        hint = extractive_reader_hint("When did Melanie paint a sunrise?", blocks)
+
+        self.assertIn("2022", hint)
+        self.assertNotIn("8 May", hint)
+
+    def test_raw_turn_date_beats_extracted_event_timestamp(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_1 event Caroline 1",
+                "body": "event: Caroline went to a LGBTQ support group on 8 May, 2023.",
+            },
+            {
+                "title": "conv_26 session_1 turn 3",
+                "body": (
+                    "D1:3 Caroline: I went to a LGBTQ support group yesterday "
+                    "and met welcoming people. The conversation timestamp was 1:56 pm on 8 May, 2023."
+                ),
+            },
+        ]
+
+        hint = extractive_reader_hint("When did Caroline go to the LGBTQ support group?", blocks)
+
+        self.assertIn("7 May 2023", hint)
+        self.assertNotIn("8 May", hint)
+
 
 if __name__ == "__main__":
     unittest.main()
