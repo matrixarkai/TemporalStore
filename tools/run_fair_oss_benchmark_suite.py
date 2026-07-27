@@ -476,6 +476,9 @@ def reader_policy_flags(args: argparse.Namespace) -> list[str]:
 
 
 def write_shared_oss_stack_contract(output_root: Path, args: argparse.Namespace) -> None:
+    reader_model = str(args.reader_model or "").strip()
+    embedding_model = str(args.embedding_model or "").strip()
+    validator = "tools/validate_oss_model_contract.py"
     contract = {
         "schema": "matrixark_fair_oss_shared_stack_contract_v1",
         "rule": (
@@ -483,9 +486,33 @@ def write_shared_oss_stack_contract(output_root: Path, args: argparse.Namespace)
             "one shared OSS reader model and one shared encoding/embedding model. Child runners and "
             "the validator fail closed if a report drifts from this stack."
         ),
-        "shared_reader_model": args.reader_model,
-        "shared_encoding_model": args.embedding_model,
-        "shared_embedding_model": args.embedding_model,
+        "reader_model": reader_model,
+        "embedding_model": embedding_model,
+        "encoding_model": embedding_model,
+        "shared_reader_model": reader_model,
+        "shared_encoding_model": embedding_model,
+        "shared_embedding_model": embedding_model,
+        "matrixark_stack": {
+            "reader_model": reader_model,
+            "embedding_model": embedding_model,
+            "encoding_model": embedding_model,
+            "contract_required": True,
+        },
+        "openviking_stack": {
+            "reader_model": reader_model,
+            "embedding_model": embedding_model,
+            "encoding_model": embedding_model,
+            "contract_required": True,
+        },
+        "vikingmem_stack": {
+            "reader_model": reader_model,
+            "embedding_model": embedding_model,
+            "encoding_model": embedding_model,
+            "contract_required": True,
+        },
+        "contract_validators": [
+            validator,
+        ],
         "reader_base_url": args.reader_base_url,
         "reader_max_tokens": args.reader_max_tokens,
         "locomo_max_events": args.locomo_max_events,
