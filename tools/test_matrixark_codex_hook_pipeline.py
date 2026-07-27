@@ -811,6 +811,23 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(record.get("embedding_completed") for record in summary_progress))
             self.assertTrue(all(record.get("compression_completed") for record in summary_progress))
             self.assertTrue(any(record.get("generated_summary_types") for record in summary_progress))
+            completed_pipeline_dashboard = adapter.ingestion_dashboard(
+                {"scope": scope, "table": "async_pipeline", "page_size": 20}
+            )
+            completed_pipeline_rows = completed_pipeline_dashboard["rows"]
+            self.assertEqual(3, len(completed_pipeline_rows), completed_pipeline_dashboard)
+            summary_progress_event_ids = {int(record.get("event_id_hash")) for record in summary_progress}
+            completed_pipeline_rows_by_event = {
+                int(row.get("event_id_hash")): row
+                for row in completed_pipeline_rows
+                if int(row.get("event_id_hash")) in summary_progress_event_ids
+            }
+            self.assertEqual(summary_progress_event_ids, set(completed_pipeline_rows_by_event))
+            self.assertTrue(all(row.get("status") == "summary_completed" for row in completed_pipeline_rows_by_event.values()))
+            self.assertTrue(all(not row.get("summary_pending") for row in completed_pipeline_rows_by_event.values()))
+            self.assertTrue(all(not row.get("compression_pending") for row in completed_pipeline_rows_by_event.values()))
+            self.assertTrue(all(not row.get("embedding_pending") for row in completed_pipeline_rows_by_event.values()))
+            self.assertTrue(all(not row.get("remaining_stages", []) for row in completed_pipeline_rows_by_event.values()))
 
             summary_pack = adapter.retrieve(
                 {

@@ -92,6 +92,21 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                         "memory_layers_written": {"profile_entities": 1},
                         "updated_at_ms": 102,
                     },
+                    {
+                        "record_type": "matrixark_async_pipeline_task",
+                        "scope": scope,
+                        "task_hash": 31,
+                        "event_id_hash": 41,
+                        "commit_id_hash": 11,
+                        "status": "summary_completed",
+                        "completed_stages": ["extraction", "summary", "embedding", "compression"],
+                        "remaining_stages": [],
+                        "trigger_policy": "threshold",
+                        "summary_completed": True,
+                        "embedding_completed": True,
+                        "compression_completed": True,
+                        "updated_at_ms": 103,
+                    },
                 ]
 
         summary = dashboard_mod.ingestion_dashboard(Adapter(), {"scope": scope, "table": "summary_refresh"})
@@ -102,10 +117,10 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
 
         pipeline = dashboard_mod.ingestion_dashboard(Adapter(), {"scope": scope, "table": "async_pipeline"})
         self.assertEqual(1, pipeline["total"])
-        self.assertEqual("extraction_committed", pipeline["rows"][0]["status"])
-        self.assertTrue(pipeline["rows"][0]["summary_pending"])
-        self.assertTrue(pipeline["rows"][0]["compression_pending"])
-        self.assertTrue(pipeline["rows"][0]["embedding_pending"])
+        self.assertEqual("summary_completed", pipeline["rows"][0]["status"])
+        self.assertFalse(pipeline["rows"][0]["summary_pending"])
+        self.assertFalse(pipeline["rows"][0]["compression_pending"])
+        self.assertFalse(pipeline["rows"][0]["embedding_pending"])
 
     def test_direct_tools_path_imports_still_work_for_script_launches(self) -> None:
         sys.path.insert(0, str(TOOLS_DIR))
