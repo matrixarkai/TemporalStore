@@ -116,6 +116,64 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
                 result["retrieved"]["memory_hierarchy_contract"]["retrieval_strategy"],
             )
 
+    def test_generic_hook_threshold_extracts_user_and_assistant_turns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            rust_root = Path(tmp_dir) / "rust-store"
+            threshold_args = ["--session-commit-threshold", "2"]
+            first = self.run_agent_hook(
+                agent="codex",
+                event="UserPromptSubmit",
+                rust_root=rust_root,
+                extra=threshold_args,
+                payload={
+                    "prompt": "Should live memory wait for Stop before extracting?",
+                    "conversation_id": "codex-threshold-session",
+                    "workspace_root": "/repo/memory",
+                },
+            )
+            self.assertTrue(first["ingested"])
+            self.assertEqual(1, first["ingest"]["session_buffer"]["pending_event_count"])
+            self.assertTrue(first["ingest"]["session_buffer"]["auto_batch_extract"])
+            self.assertFalse(first["ingest"]["session_buffer"]["threshold_ready"])
+            self.assertEqual({}, first["auto_batch_extract"])
+
+            second = self.run_agent_hook(
+                agent="codex",
+                event="response",
+                rust_root=rust_root,
+                extra=threshold_args,
+                payload={
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Should live memory wait for Stop before extracting?",
+                        },
+                        {
+                            "role": "assistant",
+                            "content": (
+                                "Decision: live memory should use threshold and idle provisional extraction; "
+                                "Stop remains the final session boundary."
+                            ),
+                        }
+                    ],
+                    "conversation_id": "codex-threshold-session",
+                    "workspace_root": "/repo/memory",
+                },
+            )
+            self.assertTrue(second["ingested"])
+            self.assertGreaterEqual(second["ingest"]["session_buffer"]["pending_event_count"], 1)
+            self.assertEqual(2, second["ingest"]["session_buffer"]["pending_message_count"])
+            self.assertTrue(second["ingest"]["session_buffer"]["threshold_ready"])
+            self.assertEqual("committed", second["auto_batch_extract"]["status"])
+            self.assertEqual("threshold", second["auto_batch_extract"]["trigger_policy"])
+            self.assertEqual("provisional", second["auto_batch_extract"]["extraction_phase"])
+            self.assertFalse(second["auto_batch_extract"]["final_session_boundary"])
+            self.assertGreaterEqual(second["auto_batch_extract"]["source_event_count"], 1)
+            self.assertEqual(2, second["auto_batch_extract"]["trigger_evidence"]["pending_message_count"])
+            self.assertEqual(["assistant", "user"], second["auto_batch_extract"]["source_roles"])
+            self.assertGreaterEqual(second["auto_batch_extract"]["session_entities_written"], 1)
+            self.assertGreaterEqual(second["auto_batch_extract"]["profile_entities_written"], 1)
+
     def test_planned_agent_configs_are_marked_todo_not_supported_hooks(self) -> None:
         snippet = json.loads(matrixark_agent_config.openclaw_json(".", "tools/matrixark_mcp_rust_server.sh"))
         self.assertEqual("openclaw", snippet["agent"])
