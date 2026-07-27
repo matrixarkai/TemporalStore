@@ -9,9 +9,17 @@ import queue as thread_queue
 try:
     from tools.matrixark_mcp_core import *
     from tools.matrixark_mcp_core import compact_context_pack_for_serving_flat as compact_context_pack_for_serving
+    from tools.matrixark_mcp_serving_records import (
+        compact_latest_context_state_records,
+        materialize_serving_record_batch,
+    )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import *
     from matrixark_mcp_core import compact_context_pack_for_serving_flat as compact_context_pack_for_serving
+    from matrixark_mcp_serving_records import (
+        compact_latest_context_state_records,
+        materialize_serving_record_batch,
+    )
 
 try:
     from tools.matrixark_mcp_metrics import MatrixArkServiceMetrics

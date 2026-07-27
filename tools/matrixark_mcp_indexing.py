@@ -190,6 +190,7 @@ def context_index_ref_hashes(record: Json) -> list[int]:
 def context_index_posting_record(
     *,
     index_name: str,
+    data_model: str | None = None,
     capability: str | None = None,
     ref_type: str | None = None,
     ref_hashes: list[Any] | None = None,
@@ -217,6 +218,7 @@ def context_index_posting_record(
     timestamp_key_ms = int(updated_at_ms or now_ms())
     identity = {
         "index_name": index_name,
+        "data_model": str(data_model or ""),
         "capability": indexed_capability,
         "timestamp_key_ms": timestamp_key_ms,
         "batch_id_hash": batch_id_hash,
@@ -232,6 +234,8 @@ def context_index_posting_record(
         "ref_hashes": refs,
         "updated_at_ms": timestamp_key_ms,
     }
+    if data_model:
+        record["data_model"] = str(data_model)
     if len(refs) == 1:
         record["ref_hash"] = refs[0]
     if ref_type:
@@ -328,7 +332,7 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
                 "posting_count": 0,
                 "posting_policy": "bucketed_by_scope_capability_index_time",
             }
-            for field in ("scope_key", "ref_type", "storage_options", "storage_record_kind", "storage_part", "storage_route", "placement_key", "placement_hash"):
+            for field in ("data_model", "scope_key", "ref_type", "storage_options", "storage_record_kind", "storage_part", "storage_route", "placement_key", "placement_hash"):
                 value = record.get(field)
                 if value not in (None, "", [], {}):
                     grouped[key][field] = value

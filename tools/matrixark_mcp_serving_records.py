@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 try:
@@ -15,6 +16,7 @@ try:
     )
     from tools.matrixark_mcp_identity import canonical_scope_key, now_ms
     from tools.matrixark_mcp_indexing import compact_context_index_postings, non_default_classification
+    from tools.matrixark_mcp_model_registry import context_model_registry_records
     from tools.matrixark_mcp_models import embedding_model_ref_for_name
     from tools.matrixark_mcp_storage_options import (
         canonical_storage_route,
@@ -30,6 +32,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
     from matrixark_mcp_identity import canonical_scope_key, now_ms
     from matrixark_mcp_indexing import compact_context_index_postings, non_default_classification
+    from matrixark_mcp_model_registry import context_model_registry_records
     from matrixark_mcp_models import embedding_model_ref_for_name
     from matrixark_mcp_storage_options import (
         canonical_storage_route,
@@ -98,6 +101,16 @@ COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS = {
     "session_hash",
     "agent_name",
 }
+
+
+def context_debug_records_enabled() -> bool:
+    if ENABLE_CONTEXT_DEBUG_RECORDS:
+        return True
+    for module_name in ("tools.matrixark_mcp_core", "matrixark_mcp_core"):
+        module = sys.modules.get(module_name)
+        if module is not None and bool(getattr(module, "ENABLE_CONTEXT_DEBUG_RECORDS", False)):
+            return True
+    return False
 
 
 def compact_record_scope(record: Json) -> Json:
@@ -259,7 +272,13 @@ def materialize_serving_records(record: Json) -> list[Json]:
         serving["timestamp_key_ms"] = timestamp_ms
         serving.setdefault("updated_at_ms", timestamp_ms)
         if event_id_hash is not None:
-            serving["context_event_key"] = context_event_time_key(timestamp_ms, event_id_hash)
+            event_time_key = context_event_time_key(timestamp_ms, event_id_hash)
+            serving["event_time_key"] = f"{timestamp_ms:020d}:{event_id_hash}"
+            serving["context_event_key"] = (
+                f"context_event:{serving.get('context_event_parent_type', 'context_node')}:"
+                f"{serving.get('context_event_parent_hash', serving.get('node_hash') or 0)}:"
+                f"{event_time_key:020d}:{event_id_hash}"
+            )
         debug_payload = {field: record[field] for field in EVENT_DEBUG_FIELDS if field in record and record[field] not in (None, "", [], {})}
         debug_type = "event_extraction_detail"
         for field in EVENT_DEBUG_FIELDS:
@@ -270,7 +289,7 @@ def materialize_serving_records(record: Json) -> list[Json]:
         for field in ENTITY_DEBUG_FIELDS:
             serving.pop(field, None)
 
-    if not debug_payload or not ENABLE_CONTEXT_DEBUG_RECORDS:
+    if not debug_payload or not context_debug_records_enabled():
         return [serving]
 
     ref_type, ref_hash = _record_debug_ref(record)
@@ -291,6 +310,7 @@ def materialize_serving_records(record: Json) -> list[Json]:
 
 def materialize_serving_record_batch(records: list[Json]) -> list[Json]:
     materialized: list[Json] = []
+    materialized.extend(context_model_registry_records(records))
     for record in records:
         materialized.extend(materialize_serving_records(record))
     return compact_context_index_postings(materialized)
