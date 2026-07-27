@@ -198,8 +198,12 @@ def matrixark_local_recovery_report(
     *,
     parse_errors: list[Json] | None = None,
     scope: Json | None = None,
+    deployment_mode: str = "local_one_node",
 ) -> Json:
     parse_errors = parse_errors or []
+    deployment_mode = str(deployment_mode or "local_one_node").strip().lower()
+    if deployment_mode not in {"local_one_node", "distributed_non_raft", "raft"}:
+        deployment_mode = "local_one_node"
     compacted = compact_latest_value_records(records)
     record_counts = Counter(str(record.get("record_type") or "unknown") for record in records)
     compacted_counts = Counter(str(record.get("record_type") or "unknown") for record in compacted)
@@ -353,6 +357,62 @@ def matrixark_local_recovery_report(
         and bool(hot_cache_rebuildable)
         and derived_readiness["status"] == "ready"
     )
+    import_markers = [
+        record for record in records
+        if str(record.get("record_type") or "") in {
+            "context_backup_import",
+            "context_restore_manifest",
+            "context_distributed_bootstrap",
+            "matrixark_context_import",
+        }
+        or bool(record.get("non_raft_import_complete"))
+    ]
+    local_non_raft_ready = ready_for_context_serving
+    distributed_non_raft_blockers = list(blockers)
+    if records and not import_markers:
+        distributed_non_raft_blockers.append("non_raft:distributed_import_or_restore_missing")
+    distributed_non_raft_ready = (
+        ready_for_context_serving
+        and bool(import_markers)
+        and not distributed_non_raft_blockers
+    )
+    if deployment_mode == "distributed_non_raft":
+        serving_ready_for_mode = distributed_non_raft_ready
+        mode_blockers = distributed_non_raft_blockers
+    elif deployment_mode == "raft":
+        serving_ready_for_mode = ready_for_context_serving
+        mode_blockers = blockers
+    else:
+        serving_ready_for_mode = local_non_raft_ready
+        mode_blockers = blockers
+    non_raft_local_flow = [
+        "open local TemporalStore durable files and object/page/index storage",
+        "replay or scan persisted MatrixArk context records",
+        "compact latest-value context records",
+        "rebuild in-memory event, entity, retrieval, and read caches",
+        "verify or rebuild context_index secondary postings",
+        "verify or rebuild context_embedding rows",
+        "refresh dirty or missing context_summary rows",
+        "optionally warm retrieval caches for the serving scope",
+        "mark local MatrixArk context serving ready",
+    ]
+    non_raft_distributed_flow = [
+        "restore or import a consistent backup/export/shared-object snapshot",
+        "verify restore manifest, source range, and imported record count",
+        *non_raft_local_flow[1:-1],
+        "mark distributed non-Raft node serving ready only after import evidence is present",
+    ]
+    raft_flow = [
+        "join Raft group and catch up durable WAL or snapshot state",
+        "scan durable MatrixArk context records",
+        "compact latest-value context records",
+        "rebuild in-memory read, retrieval, and entity caches",
+        "verify or rebuild context_index secondary postings",
+        "verify or rebuild context_embedding rows",
+        "refresh dirty or missing context_summary rows",
+        "warm retrieval caches for the serving scope",
+        "mark MatrixArk context serving ready",
+    ]
     return {
         "status": recovery_status,
         "record_count": len(records),
@@ -436,18 +496,44 @@ def matrixark_local_recovery_report(
             ),
         },
         "retrieval_smoke": retrieval_smoke,
+        "non_raft_recovery": {
+            "deployment_mode": deployment_mode,
+            "serving_ready_for_mode": serving_ready_for_mode,
+            "local_one_node": {
+                "ready_for_context_serving": local_non_raft_ready,
+                "automatic_cluster_catchup": False,
+                "source_of_truth": "local_durable_temporalstore_records",
+                "requires_import_or_restore_marker": False,
+                "flow": non_raft_local_flow,
+                "blockers": blockers,
+            },
+            "distributed": {
+                "ready_for_context_serving": distributed_non_raft_ready,
+                "automatic_cluster_catchup": False,
+                "membership_protocol": "none",
+                "bootstrap_problem": "backup_restore_or_import_not_raft_membership",
+                "source_of_truth": "restored_or_imported_durable_context_records",
+                "requires_import_or_restore_marker": True,
+                "import_or_restore_marker_count": len(import_markers),
+                "flow": non_raft_distributed_flow,
+                "blockers": distributed_non_raft_blockers,
+            },
+            "mode_blockers": mode_blockers,
+        },
         "cluster_join_bootstrap": {
             "readiness_status": (
                 "empty"
                 if not records
-                else ("repair_required" if blockers else ("ready" if ready_for_context_serving else "rebuild_required"))
+                else ("repair_required" if mode_blockers else ("ready" if serving_ready_for_mode else "rebuild_required"))
             ),
-            "ready_for_context_serving": ready_for_context_serving,
+            "ready_for_context_serving": serving_ready_for_mode,
             "source_of_truth": "durable_context_records_not_in_memory_index",
             "in_memory_index_persistence_required": False,
             "hot_cache_source": "rebuild_from_compacted_durable_records",
             "secondary_index_source": "persisted_context_index_or_rebuild_from_context_models",
-            "durable_source_catchup_required": True,
+            "durable_source_catchup_required": deployment_mode == "raft",
+            "non_raft_import_or_restore_required": deployment_mode == "distributed_non_raft",
+            "automatic_cluster_catchup": deployment_mode == "raft",
             "durable_source_record_count": durable_source_record_count,
             "hot_cache_rebuildable_from_durable_log": hot_cache_rebuildable,
             "secondary_indexes_present": bool(indexed_ref_hashes),
@@ -457,18 +543,10 @@ def matrixark_local_recovery_report(
             "summaries_present": int(record_counts.get("context_summary", 0)) > 0,
             "dirty_summaries_pending": bool(dirty_summaries),
             "missing_rebuild_steps": cluster_join_missing_steps,
-            "blockers": blockers,
-            "new_node_flow": [
-                "join Raft group and catch up durable WAL or snapshot state",
-                "scan durable MatrixArk context records",
-                "compact latest-value context records",
-                "rebuild in-memory read, retrieval, and entity caches",
-                "verify or rebuild context_index secondary postings",
-                "verify or rebuild context_embedding rows",
-                "refresh dirty or missing context_summary rows",
-                "warm retrieval caches for the serving scope",
-                "mark MatrixArk context serving ready",
-            ],
+            "blockers": mode_blockers,
+            "new_node_flow": raft_flow if deployment_mode == "raft" else (
+                non_raft_distributed_flow if deployment_mode == "distributed_non_raft" else non_raft_local_flow
+            ),
         },
         "parse_errors": parse_errors,
         "blockers": blockers,
@@ -495,6 +573,12 @@ def main() -> int:
     parser.add_argument("--event-log", type=Path, required=True, help="Path to the local MatrixArk JSONL event log.")
     parser.add_argument("--out", type=Path, help="Optional JSON report output path.")
     parser.add_argument("--scope-json", help="Optional retrieval scope JSON for a rebuild smoke check.")
+    parser.add_argument(
+        "--deployment-mode",
+        choices=["local_one_node", "distributed_non_raft", "raft"],
+        default="local_one_node",
+        help="Recovery topology to gate: local one-node, distributed non-Raft import/restore, or Raft catch-up.",
+    )
     args = parser.parse_args()
     scope: Json | None = None
     if args.scope_json:
@@ -503,7 +587,12 @@ def main() -> int:
             raise SystemExit("--scope-json must decode to an object")
         scope = loaded_scope
     records, errors = load_jsonl_records_for_recovery(args.event_log)
-    report = matrixark_local_recovery_report(records, parse_errors=errors, scope=scope)
+    report = matrixark_local_recovery_report(
+        records,
+        parse_errors=errors,
+        scope=scope,
+        deployment_mode=args.deployment_mode,
+    )
     payload = json.dumps(report, indent=2, sort_keys=True)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
