@@ -687,6 +687,39 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
         remaining = readiness.get("remaining_stages")
         if isinstance(remaining, list) and remaining:
             readiness_bits.append("remaining=" + ",".join(str(item) for item in remaining[:4]))
+        memory_layer_readiness = readiness.get("memory_layer_readiness")
+        if isinstance(memory_layer_readiness, dict):
+            if "ready_for_retrieval" in memory_layer_readiness:
+                readiness_bits.append(
+                    "memory_layers_ready="
+                    + str(bool(memory_layer_readiness.get("ready_for_retrieval"))).lower()
+                )
+            for label, field in [
+                ("blocked_layers", "blocked_layers"),
+                ("ready_layers", "ready_layers"),
+            ]:
+                values = memory_layer_readiness.get(field)
+                if isinstance(values, list) and values:
+                    readiness_bits.append(f"{label}[" + ",".join(str(item) for item in values[:8]) + "]")
+            layers = memory_layer_readiness.get("layers")
+            if isinstance(layers, dict) and layers:
+                layer_bits = []
+                for name in sorted(layers):
+                    layer = layers.get(name)
+                    if not isinstance(layer, dict):
+                        continue
+                    try:
+                        pending_tasks = int(layer.get("pending_task_count") or 0)
+                    except (TypeError, ValueError):
+                        pending_tasks = 0
+                    remaining_stages = layer.get("remaining_stages") if isinstance(layer.get("remaining_stages"), list) else []
+                    if pending_tasks > 0 or remaining_stages:
+                        suffix = f"{name}={pending_tasks}"
+                        if remaining_stages:
+                            suffix += ":" + ",".join(str(stage) for stage in remaining_stages[:3])
+                        layer_bits.append(suffix)
+                if layer_bits:
+                    readiness_bits.append("layer_pending[" + ",".join(layer_bits[:8]) + "]")
         for label, field in [
             ("stage_counts", "remaining_stage_counts"),
             ("pending_roles", "pending_source_roles"),

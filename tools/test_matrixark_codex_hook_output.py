@@ -869,6 +869,26 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             "provisional": 3,
                         },
                         "pending_final_session_boundary_count": 1,
+                        "memory_layer_readiness": {
+                            "ready_for_retrieval": False,
+                            "blocked_layers": [
+                                "session",
+                                "user_profile",
+                                "same_session",
+                                "cross_session",
+                                "summary",
+                            ],
+                            "ready_layers": ["compression", "embedding"],
+                            "layers": {
+                                "session": {"ready": False, "pending_task_count": 3, "remaining_stages": []},
+                                "user_profile": {"ready": False, "pending_task_count": 2, "remaining_stages": []},
+                                "same_session": {"ready": False, "pending_task_count": 3, "remaining_stages": []},
+                                "cross_session": {"ready": False, "pending_task_count": 2, "remaining_stages": []},
+                                "summary": {"ready": False, "pending_task_count": 2, "remaining_stages": ["summary"]},
+                                "compression": {"ready": True, "pending_task_count": 0, "remaining_stages": []},
+                                "embedding": {"ready": True, "pending_task_count": 0, "remaining_stages": []},
+                            },
+                        },
                         "freshness_warnings": ["async_pipeline_followup_pending", "profile_summary_stale"],
                     },
                     "memory_layer_budget": {
@@ -1047,7 +1067,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("codex_event[PostToolUse=1/18t, Stop=1/12t]", additional)
         self.assertIn("final_boundary_refs=2", additional)
         self.assertIn(
-            "async_pipeline[tasks=4; ready=false; remaining=entity,secondary_index,summary; stage_counts[entity=1,secondary_index=1,summary=2]; pending_roles[assistant=2,tool=1,user=1]; pending_hooks[after_llm=2,hook_boundary=1]; pending_codex_events[PostToolUse=1,Stop=1]; pending_scopes[session=3,user_profile=2]; pending_continuity[cross_session=2,same_session=3]; pending_phases[final=1,provisional=3]; pending_final_boundary=1; warnings=async_pipeline_followup_pending,profile_summary_stale]",
+            "async_pipeline[tasks=4; ready=false; remaining=entity,secondary_index,summary; memory_layers_ready=false; blocked_layers[session,user_profile,same_session,cross_session,summary]; ready_layers[compression,embedding]; layer_pending[cross_session=2,same_session=3,session=3,summary=2:summary,user_profile=2]; stage_counts[entity=1,secondary_index=1,summary=2]; pending_roles[assistant=2,tool=1,user=1]; pending_hooks[after_llm=2,hook_boundary=1]; pending_codex_events[PostToolUse=1,Stop=1]; pending_scopes[session=3,user_profile=2]; pending_continuity[cross_session=2,same_session=3]; pending_phases[final=1,provisional=3]; pending_final_boundary=1; warnings=async_pipeline_followup_pending,profile_summary_stale]",
             additional,
         )
         self.assertIn("Memory hierarchy:", additional)
