@@ -145,6 +145,44 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                     "pressure_bucket_count": 2,
                     "dropped_bucket_count": 4,
                 },
+                "memory_hierarchy": {
+                    "models": {
+                        "session_entity": {
+                            "record_type": "context_entity",
+                            "memory_scope": "session",
+                            "session_continuity": "same_session",
+                        },
+                        "profile_entity": {
+                            "record_type": "context_entity",
+                            "memory_scope": "user_profile",
+                            "session_continuity": "cross_session",
+                            "node_path_suffix": "profile:long_term_memory",
+                        },
+                        "profile_index": {
+                            "record_type": "context_index",
+                            "data_model": "context_profile_entity",
+                        },
+                    },
+                    "retrieval_strategy": "same-session continuity first; entity state bridges cross-session memory",
+                    "session_scope_mode": "prefer",
+                    "cross_session_enabled": True,
+                    "cross_session_budget_tokens": 128,
+                    "cross_session_remote_budget_tokens": 512,
+                    "cross_session_budget_floor_tokens": 256,
+                    "cross_session_budget_floor_applied": False,
+                    "cross_session_budget_floor_status": "remote_budget_too_small_for_profile_floor",
+                    "cross_session_max_sessions": 3,
+                    "cross_session_max_candidates": 24,
+                    "shared_context_enabled": False,
+                    "selected_ref_flow": [
+                        "local_context_budget",
+                        "same_session_memory",
+                        "profile_entity_bridge",
+                        "bounded_cross_session_evidence",
+                        "summary_or_compression",
+                        "shared_resource_or_skill",
+                    ],
+                },
                 "async_pipeline_readiness": {
                     "task_count": 1,
                     "status_counts": {"extraction_committed": 1},
@@ -281,6 +319,27 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertEqual(["pack-recover-1"], report["retrieval_visibility"]["context_pack_ids"])
         self.assertEqual(1, report["retrieval_visibility"]["memory_layer_budget_record_count"])
         self.assertEqual(1, report["retrieval_visibility"]["dropped_memory_layer_budget_record_count"])
+        self.assertEqual(1, report["retrieval_visibility"]["memory_hierarchy_record_count"])
+        self.assertEqual(1, report["retrieval_visibility"]["memory_hierarchy_session_entity_model_count"])
+        self.assertEqual(1, report["retrieval_visibility"]["memory_hierarchy_profile_entity_model_count"])
+        self.assertEqual(1, report["retrieval_visibility"]["memory_hierarchy_profile_index_model_count"])
+        self.assertEqual(1, report["retrieval_visibility"]["memory_hierarchy_profile_bridge_record_count"])
+        self.assertEqual(
+            ["remote_budget_too_small_for_profile_floor"],
+            report["retrieval_visibility"]["memory_hierarchy_cross_session_budget_floor_statuses"],
+        )
+        self.assertEqual(
+            [
+                "local_context_budget",
+                "same_session_memory",
+                "profile_entity_bridge",
+                "bounded_cross_session_evidence",
+                "summary_or_compression",
+                "shared_resource_or_skill",
+            ],
+            report["retrieval_visibility"]["memory_hierarchy_selected_ref_flow"],
+        )
+        self.assertTrue(report["retrieval_visibility"]["retrieval_memory_hierarchy_rebuildable_from_durable_log"])
         self.assertEqual(1, report["retrieval_visibility"]["memory_layer_pressure_record_count"])
         self.assertEqual(2, report["retrieval_visibility"]["memory_layer_pressure_selected_refs"])
         self.assertEqual(24, report["retrieval_visibility"]["memory_layer_pressure_selected_tokens"])
