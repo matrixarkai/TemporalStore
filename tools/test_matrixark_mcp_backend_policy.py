@@ -3824,6 +3824,21 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             })
             self.assertFalse(any(ref.get("session_continuity") == "cross_session" for ref in strict_pack["selected_refs"]))
 
+    def test_codex_session_identity_policy_treats_exact_payload_sources_as_strong(self) -> None:
+        payload_policy = mcp_local.codex_session_identity_policy("payload.conversation_id")
+        self.assertTrue(payload_policy["strong_session_identity"])
+        self.assertFalse(payload_policy["fallback_session_identity"])
+        self.assertEqual("", payload_policy["risk"])
+
+        env_policy = mcp_local.codex_session_identity_policy("env.CODEX_THREAD_ID")
+        self.assertTrue(env_policy["strong_session_identity"])
+        self.assertFalse(env_policy["fallback_session_identity"])
+
+        workspace_policy = mcp_local.codex_session_identity_policy("workspace_hash")
+        self.assertFalse(workspace_policy["strong_session_identity"])
+        self.assertTrue(workspace_policy["fallback_session_identity"])
+        self.assertEqual("workspace_fallback_may_merge_multiple_codex_tasks", workspace_policy["risk"])
+
     def test_service_backpressure_fallback_does_not_read_all_for_native_backend(self) -> None:
         class _NoReadAllNativeAdapter:
             def __init__(self) -> None:

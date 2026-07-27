@@ -44,6 +44,19 @@ _LOCAL_READ_CACHE_LOCK = threading.RLock()
 _LOCAL_READ_CACHE: dict[str, tuple[int, int, list[Json]]] = {}
 
 
+def codex_session_identity_policy(session_id_source: str) -> Json:
+    source = str(session_id_source or "").strip()
+    strong_sources = {"explicit", "payload_field", "payload_path_hash"}
+    fallback_sources = {"state_file", "state_file_created", "workspace_hash"}
+    strong = source in strong_sources or source.startswith(("payload.", "env."))
+    fallback = source in fallback_sources
+    return {
+        "session_id_source": source,
+        "strong_session_identity": strong,
+        "fallback_session_identity": fallback,
+        "risk": "workspace_fallback_may_merge_multiple_codex_tasks" if fallback else "",
+    }
+
 
 def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
     record_type = str(record.get("record_type") or "")
@@ -405,6 +418,7 @@ class MatrixArkLocalAdapter:
         secondary = recall_policy.get("secondary_index_filter", {}) if isinstance(recall_policy.get("secondary_index_filter"), dict) else {}
         rerank = recall_policy.get("rerank", {}) if isinstance(recall_policy.get("rerank"), dict) else {}
         time_weighted = recall_policy.get("time_weighted_recall", {}) if isinstance(recall_policy.get("time_weighted_recall"), dict) else {}
+        session_identity = recall_policy.get("session_identity", {}) if isinstance(recall_policy.get("session_identity"), dict) else {}
         dropped_refs = pack.get("dropped_refs", {}) if isinstance(pack.get("dropped_refs"), dict) else {}
         metric_bucket_counts = (
             retrieval_metrics.get("dropped_ref_bucket_counts")
@@ -447,6 +461,7 @@ class MatrixArkLocalAdapter:
             "remote_context_budget_tokens": pack.get("remote_context_budget_tokens", 0),
             "requested_max_context_tokens": pack.get("requested_max_context_tokens", 0),
             "memory_layer_budget": memory_layer_budget,
+            "session_identity": session_identity,
             "quality_warnings": pack.get("quality_warnings", []) or [],
             "partial_context_pack": bool(pack.get("partial_context_pack", False)),
             "insufficient_context": bool(pack.get("insufficient_context", False)),
@@ -2239,6 +2254,10 @@ class MatrixArkLocalAdapter:
                 if not isinstance(memory_layer_budget, dict):
                     recall_policy = record.get("recall_policy", {}) if isinstance(record.get("recall_policy"), dict) else {}
                     memory_layer_budget = recall_policy.get("memory_layer_budget", {}) if isinstance(recall_policy.get("memory_layer_budget"), dict) else {}
+                session_identity = record.get("session_identity")
+                if not isinstance(session_identity, dict):
+                    recall_policy = record.get("recall_policy", {}) if isinstance(record.get("recall_policy"), dict) else {}
+                    session_identity = recall_policy.get("session_identity", {}) if isinstance(recall_policy.get("session_identity"), dict) else {}
                 retrieval_request_metadata = (
                     record.get("retrieval_request_metadata")
                     if isinstance(record.get("retrieval_request_metadata"), dict)
@@ -2259,6 +2278,7 @@ class MatrixArkLocalAdapter:
                         "dropped_ref_bucket_counts": dropped_ref_bucket_counts,
                         "stale_dropped_refs": int(record.get("stale_dropped_refs") or dropped_ref_bucket_counts.get("stale", 0)),
                         "memory_layer_budget": memory_layer_budget,
+                        "session_identity": session_identity,
                         "retrieval_request_metadata": retrieval_request_metadata,
                         "retrieval_source": retrieval_request_metadata.get("retrieval_source", retrieval_request_metadata.get("source", "")),
                         "codex_event": retrieval_request_metadata.get("codex_event", ""),
@@ -6061,16 +6081,7 @@ class MatrixArkLocalAdapter:
             or request_metadata.get("codex_session_id_source")
             or ""
         )
-        session_identity_policy = {
-            "session_id_source": session_id_source,
-            "strong_session_identity": session_id_source in {"explicit", "payload_field", "payload_path_hash"},
-            "fallback_session_identity": session_id_source in {"state_file", "state_file_created"},
-            "risk": (
-                "workspace_fallback_may_merge_multiple_codex_tasks"
-                if session_id_source in {"state_file", "state_file_created"}
-                else ""
-            ),
-        }
+        session_identity_policy = codex_session_identity_policy(session_id_source)
         if session_identity_policy["fallback_session_identity"]:
             quality_warnings.append(f"session_identity_fallback:{session_id_source}")
         context_pack_id = stable_hash(f"{query}:{selected}:{now_ms()}")
@@ -6507,6 +6518,7 @@ class MatrixArkLocalAdapter:
                             "total_prompt_context_tokens",
                             "remote_context_budget_tokens",
                             "memory_layer_budget",
+                            "session_identity",
                             "retrieval_request_metadata",
                             "partial_context_pack",
                             "insufficient_context",

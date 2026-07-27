@@ -711,6 +711,26 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
                 "remote_agent_hook",
                 prompt_pack_row["retrieval_request_metadata"]["retrieval_source"],
             )
+            prompt_telemetry_rows = [
+                record
+                for record in prompt_pack_rows
+                if record.get("record_type") == "context_pack_telemetry"
+            ]
+            self.assertTrue(prompt_telemetry_rows)
+            prompt_session_identity = prompt_telemetry_rows[-1]["session_identity"]
+            self.assertEqual("payload.conversation_id", prompt_session_identity["session_id_source"])
+            self.assertTrue(prompt_session_identity["strong_session_identity"])
+            self.assertFalse(prompt_session_identity["fallback_session_identity"])
+            self.assertNotIn("session_identity_fallback:payload.conversation_id", prompt_telemetry_rows[-1]["quality_warnings"])
+            dashboard = server.adapter.ingestion_dashboard({"scope": scope, "table": "context_packs", "page_size": 10})
+            dashboard_pack_rows = [
+                row
+                for row in dashboard["rows"]
+                if row.get("context_pack_id") == prompt_result["retrieved"]["context_pack_id"]
+                and row.get("row_type") == "context_pack_telemetry"
+            ]
+            self.assertTrue(dashboard_pack_rows)
+            self.assertTrue(dashboard_pack_rows[-1]["session_identity"]["strong_session_identity"])
             commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
             self.assertTrue(commits)
             self.assertTrue(any(record.get("final_session_boundary") is True for record in commits))
