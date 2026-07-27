@@ -1107,8 +1107,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 },
                 "dropped_refs": {
                     "cross_session_budget": 2,
+                    "source_role_budget": 1,
                     "max_selected_refs": 3,
-                    "estimated_tokens": {"cross_session_budget": 21, "max_selected_refs": 55},
+                    "estimated_tokens": {"cross_session_budget": 21, "source_role_budget": 8, "max_selected_refs": 55},
                     "budget_fill_policy": "quality_first",
                 },
                 "selected_refs": [
@@ -1140,10 +1141,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         )
         self.assertTrue(output["retrieve"]["budget_pressure"]["budget_pressure"])
         self.assertEqual(
-            {"cross_session_budget": 2, "max_selected_refs": 3},
+            {"cross_session_budget": 2, "source_role_budget": 1, "max_selected_refs": 3},
             output["retrieve"]["budget_pressure"]["dropped_by_reason"],
         )
-        self.assertEqual(5, output["retrieve"]["budget_pressure"]["budget_pressure_reason_count"])
+        self.assertEqual(6, output["retrieve"]["budget_pressure"]["budget_pressure_reason_count"])
         self.assertEqual(
             1,
             output["retrieve"]["budget_pressure"]["dropped_memory_layer_budget"]["by_memory_scope"][
@@ -1228,6 +1229,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("floor_applied=false", additional)
         self.assertIn("Budget pressure:", additional)
         self.assertIn("cross_session_budget=2", additional)
+        self.assertIn("source_role_budget=1", additional)
         self.assertIn("max_selected_refs=3", additional)
         self.assertIn("budget_fill_policy=quality_first", additional)
         self.assertIn("dropped_memory_layer_budget:", additional)
