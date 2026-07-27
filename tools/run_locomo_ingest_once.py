@@ -1944,6 +1944,11 @@ def benchmark_model_contract(args: argparse.Namespace, reader: "BenchmarkReader"
     baseline_embedding = str(args.baseline_embedding_model or "").strip()
     baseline_max_events = int(args.baseline_max_events or 0)
     baseline_reader_max_context_chars = int(args.baseline_reader_max_context_chars or 0)
+    same_session_percent = clamp_percent(float(args.retrieval_same_session_percent))
+    cross_session_percent = clamp_percent(float(args.retrieval_cross_session_percent))
+    summary_percent = clamp_percent(float(args.retrieval_summary_percent))
+    entity_percent = clamp_percent(float(args.retrieval_entity_percent))
+    event_percent = clamp_percent(float(args.retrieval_event_percent))
     reader_matches = bool(baseline_reader) and normalized_model_name(matrixark_reader) == normalized_model_name(baseline_reader)
     embedding_matches = bool(baseline_embedding) and normalized_model_name(matrixark_embedding) == normalized_model_name(
         baseline_embedding
@@ -1964,6 +1969,11 @@ def benchmark_model_contract(args: argparse.Namespace, reader: "BenchmarkReader"
         "matrixark_adaptive_base_max_events": int(args.adaptive_base_max_events)
         if bool(args.adaptive_max_events)
         else 0,
+        "matrixark_retrieval_same_session_percent": same_session_percent,
+        "matrixark_retrieval_cross_session_percent": cross_session_percent,
+        "matrixark_retrieval_summary_percent": summary_percent,
+        "matrixark_retrieval_entity_percent": entity_percent,
+        "matrixark_retrieval_event_percent": event_percent,
         "baseline_provider_name": baseline_provider,
         "baseline_reader_model": baseline_reader,
         "baseline_embedding_model": baseline_embedding,
@@ -1973,6 +1983,11 @@ def benchmark_model_contract(args: argparse.Namespace, reader: "BenchmarkReader"
         "baseline_adaptive_base_max_events": int(args.adaptive_base_max_events)
         if bool(args.adaptive_max_events)
         else 0,
+        "baseline_retrieval_same_session_percent": same_session_percent,
+        "baseline_retrieval_cross_session_percent": cross_session_percent,
+        "baseline_retrieval_summary_percent": summary_percent,
+        "baseline_retrieval_entity_percent": entity_percent,
+        "baseline_retrieval_event_percent": event_percent,
         "provider_identity_declared": provider_declared,
         "reader_model_match": reader_matches,
         "embedding_model_match": embedding_matches,
@@ -1989,8 +2004,8 @@ def benchmark_model_contract(args: argparse.Namespace, reader: "BenchmarkReader"
         "comparison_rule": (
             "Paper/comparable claims require MatrixArk, VikingMem/OpenViking, and other baselines "
             "to use the same OSS reader model, embedding/encoding model, retrieval block budget, "
-            "and reader context budget. Provider names are recorded so reports cannot hide which "
-            "runtime produced each side."
+            "adaptive retrieval policy, retrieval budget split, and reader context budget. Provider "
+            "names are recorded so reports cannot hide which runtime produced each side."
         ),
     }
 
