@@ -109,12 +109,16 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
         "by_drop_reason": {},
         "by_memory_scope": {},
         "by_session_continuity": {},
+        "by_extraction_phase": {},
         "by_ref_type": {},
         "by_entity_type": {},
         "by_source_role": {},
         "by_hook_type": {},
         "by_codex_event": {},
         "by_profile_shadowed_reason": {},
+        "final_session_boundary_ref_count": 0,
+        "provisional_ref_count": 0,
+        "final_ref_count": 0,
         "total_dropped_refs_with_detail": len(refs),
         "total_dropped_tokens_with_detail": 0,
         "stale_ref_count": 0,
@@ -146,6 +150,7 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
         for field, bucket_name, default_value in [
             ("memory_scope", "by_memory_scope", "unscoped"),
             ("session_continuity", "by_session_continuity", "neutral"),
+            ("extraction_phase", "by_extraction_phase", "unknown"),
             ("ref_type", "by_ref_type", "unknown"),
         ]:
             value = str(ref.get(field) or default_value)
@@ -178,6 +183,12 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
                 bucket = breakdown["by_codex_event"].setdefault(event_name, {"refs": 0, "tokens": 0})
                 bucket["refs"] += 1
                 bucket["tokens"] += token_estimate
+        if bool(ref.get("final_session_boundary")):
+            breakdown["final_session_boundary_ref_count"] += 1
+        if str(ref.get("extraction_phase") or "") == "provisional":
+            breakdown["provisional_ref_count"] += 1
+        if str(ref.get("extraction_phase") or "") == "final":
+            breakdown["final_ref_count"] += 1
         if bool(ref.get("stale_or_superseded")) or reason == "stale":
             breakdown["stale_ref_count"] += 1
             breakdown["stale_token_estimate"] += token_estimate

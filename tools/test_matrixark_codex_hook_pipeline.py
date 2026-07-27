@@ -16,6 +16,7 @@ from pathlib import Path
 import matrixark_codex_hook
 from matrixark_mcp_context_pack import compact_context_pack_for_serving
 from matrixark_mcp_core import packing_sort_key
+from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 
 
@@ -45,6 +46,31 @@ class FastHookLocalAdapter(MatrixArkLocalAdapter):
 
 
 class MatrixArkCodexHookPipelineTest(unittest.TestCase):
+    def test_dropped_memory_layer_budget_tracks_final_phase_and_boundary(self) -> None:
+        budget = dropped_ref_layer_budget(
+            {
+                "refs": [
+                    {
+                        "drop_reason": "over_budget",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "extraction_phase": "final",
+                        "ref_type": "entity",
+                        "entity_type": "assistant_decision",
+                        "source_roles": ["assistant"],
+                        "source_hook_types": ["hook_boundary"],
+                        "source_codex_events": ["Stop"],
+                        "final_session_boundary": True,
+                        "token_estimate": 9,
+                    }
+                ]
+            }
+        )
+        self.assertEqual(1, budget["by_extraction_phase"]["final"]["refs"])
+        self.assertEqual(9, budget["by_extraction_phase"]["final"]["tokens"])
+        self.assertEqual(1, budget["final_ref_count"])
+        self.assertEqual(1, budget["final_session_boundary_ref_count"])
+
     def test_pending_async_events_are_demoted_for_budget_packing(self) -> None:
         pending_event = {
             "ref_type": "event",
@@ -1576,6 +1602,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(dropped_budget["by_ref_type"]["entity"]["refs"], 1)
             self.assertGreaterEqual(dropped_budget["by_entity_type"]["assistant_decision"]["refs"], 1)
             self.assertGreaterEqual(dropped_budget["by_extraction_phase"]["final"]["refs"], 1)
+            self.assertGreaterEqual(dropped_budget["final_ref_count"], 1)
             self.assertGreaterEqual(dropped_budget["by_source_role"]["assistant"]["refs"], 1)
             self.assertGreaterEqual(dropped_budget["by_hook_type"]["hook_boundary"]["refs"], 1)
             self.assertGreaterEqual(dropped_budget["by_codex_event"]["Stop"]["refs"], 1)
