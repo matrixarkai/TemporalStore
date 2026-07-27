@@ -5351,6 +5351,15 @@ def prefer_profile_entities_for_current_state(candidates: list[Json], question_t
     return adjusted
 
 
+def is_stale_or_superseded_candidate(candidate: Json) -> bool:
+    if bool(candidate.get("stale_or_superseded") or candidate.get("stale")):
+        return True
+    if candidate.get("superseded_by_ref_hash") or candidate.get("superseded_by_entity_hash"):
+        return True
+    version_state = str(candidate.get("version_state") or candidate.get("current_state_policy") or "").strip().lower()
+    return version_state in {"stale", "superseded", "historical_superseded"}
+
+
 def select_token_budgeted_refs(
     primary: list[Json],
     auxiliary: list[Json],
@@ -5512,7 +5521,7 @@ def select_token_budgeted_refs(
             dropped["estimated_tokens"]["low_score"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="low_score", token_estimate=ref_tokens)
             continue
-        if question_type in {"current_state", "latest"} and bool(candidate.get("stale_or_superseded")):
+        if question_type in {"current_state", "latest"} and is_stale_or_superseded_candidate(candidate):
             dropped["stale"] += 1
             dropped["estimated_tokens"]["stale"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="stale", token_estimate=ref_tokens)
