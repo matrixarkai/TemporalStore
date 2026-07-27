@@ -50,6 +50,83 @@ class LocomoCrossSessionRetrievalTest(unittest.TestCase):
         self.assertIn("beach", bodies)
         self.assertIn("forest", bodies)
 
+    def test_model_kit_question_keeps_distributed_named_kit_evidence(self) -> None:
+        sources = [
+            {
+                "kind": "message",
+                "title": f"conversation_73 filler {index}",
+                "body": f"General modeling advice item {index} with numbered steps and model-building tips.",
+            }
+            for index in range(20)
+        ]
+        sources.extend(
+            [
+                {
+                    "kind": "message",
+                    "title": "conversation_73 model 1",
+                    "body": "I finished a simple Revell F-15 Eagle kit from the hobby store.",
+                },
+                {
+                    "kind": "message",
+                    "title": "conversation_73 model 2",
+                    "body": "I recently completed a Tamiya 1/48 scale Spitfire Mk.V model kit.",
+                },
+                {
+                    "kind": "message",
+                    "title": "conversation_73 model 3",
+                    "body": "I started working on a diorama featuring a 1/16 scale German Tiger I tank.",
+                },
+                {
+                    "kind": "message",
+                    "title": "conversation_73 model 4",
+                    "body": "I got a 1/72 scale B-29 bomber model kit and a 1/24 scale '69 Camaro.",
+                },
+            ]
+        )
+
+        selected = bench.rank_sources(
+            "How many model kits have I worked on or bought?",
+            sources,
+            8,
+            bench.RetrievalBudgetConfig(0.7, 0.45, 0.25, 0.35, 0.8),
+        )
+        hint = bench.extractive_reader_hint("How many model kits have I worked on or bought?", selected)
+
+        self.assertEqual("5", hint)
+
+    def test_longmemeval_aggregate_hints_prefer_exact_synthesis_over_decoy_numbers(self) -> None:
+        movie_blocks = [
+            {"body": "I watched all 22 Marvel Cinematic Universe movies in two weeks."},
+            {"body": "I finished a Star Wars marathon, all the main films in a week and a half."},
+            {"body": "Movie list item 5 is just a row number."},
+        ]
+        road_blocks = [
+            {"body": "My recent trip to Outer Banks only took about four hours to drive there."},
+            {"body": "The drive to Tybee Island from there is around 4-5 hours."},
+            {"body": "I drove for six hours to Washington D.C. recently."},
+            {"body": "Route option 5 is a numbered list entry."},
+        ]
+        japan_blocks = [
+            {"body": "When I was in Japan a few months ago, I spent two weeks traveling solo around the country."},
+            {"body": "I also took a 6-week course later, unrelated to the Japan trip."},
+        ]
+
+        self.assertEqual(
+            "3.5 weeks",
+            bench.extractive_reader_hint(
+                "How many weeks did it take me to watch all the Marvel Cinematic Universe movies and the main Star Wars films?",
+                movie_blocks,
+            ),
+        )
+        self.assertEqual(
+            "15 hours",
+            bench.extractive_reader_hint(
+                "How many hours in total did I spend driving to my three road trip destinations combined?",
+                road_blocks,
+            ),
+        )
+        self.assertEqual("2 weeks", bench.extractive_reader_hint("How long was I in Japan for?", japan_blocks))
+
 
 if __name__ == "__main__":
     raise SystemExit(unittest.main())
