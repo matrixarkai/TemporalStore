@@ -286,6 +286,24 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("same_session", compression["session_continuity"])
             self.assertEqual("final", compression["extraction_phase"])
             self.assertTrue(compression["final_session_boundary"])
+            compression_index_names = {
+                record.get("index_name")
+                for record in adapter.read_all()
+                if record.get("record_type") == "context_index"
+                and record.get("data_model") == "context_compression_event"
+                and record.get("ref_type") == "compression"
+                and compression["compression_id_hash"] in record.get("ref_hashes", [])
+            }
+            self.assertIn("context_class:compression", compression_index_names)
+            self.assertIn("operator:TIME_COMPRESS", compression_index_names)
+            self.assertIn("source_role:assistant", compression_index_names)
+            self.assertIn("source_role:tool", compression_index_names)
+            self.assertIn("hook_type:hook_boundary", compression_index_names)
+            self.assertIn("codex_event:Stop", compression_index_names)
+            self.assertIn("codex_event:PostToolUse", compression_index_names)
+            self.assertIn("memory_scope:session", compression_index_names)
+            self.assertIn("session_continuity:same_session", compression_index_names)
+            self.assertIn("extraction_phase:final", compression_index_names)
 
             budget = selected_ref_layer_budget(
                 [
