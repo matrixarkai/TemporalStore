@@ -91,6 +91,7 @@ HTTP_TOOL_ROUTES: dict[str, str] = {
     "/api/admin/revoke_api_key": "matrixark_admin_revoke_api_key",
     "/api/admin/audit": "matrixark_admin_audit",
 }
+HTTP_SPECIAL_TOOLS = {"matrixark_agent_hook"}
 
 
 def _agent_hook_scope(body: Json, normalized: Json) -> Json:
@@ -736,7 +737,7 @@ def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path)
                 if self.cloud_mode and not _http_has_auth(self.headers, args):
                     self._write_auth_required("tools")
                     return
-                self._write_json(200, {"status": "ok", "tools": sorted(HTTP_TOOL_ROUTES.values())})
+                self._write_json(200, {"status": "ok", "tools": sorted(set(HTTP_TOOL_ROUTES.values()) | HTTP_SPECIAL_TOOLS)})
                 return
             super().do_GET()
 
