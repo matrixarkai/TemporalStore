@@ -56,6 +56,13 @@ STOPWORDS = {
     "before", "after", "likely", "yes", "no", "since", "though", "would", "could", "should",
 }
 
+ACTIVE_RETRIEVAL_EMBEDDING_MODEL = os.environ.get(
+    "MATRIXARK_BENCHMARK_EMBEDDING_MODEL",
+    "matrixark-local-hash-embedding",
+)
+_RETRIEVAL_ENCODER: Any | None = None
+_RETRIEVAL_EMBEDDING_CACHE: dict[tuple[str, str], list[float]] = {}
+
 NUMBER_WORDS = {
     "zero": "0",
     "one": "1",
@@ -408,6 +415,14 @@ def main() -> int:
     )
     args = parser.parse_args()
     args.require_shared_oss_models = shared_oss_model_contract_is_required(args)
+    try:
+        configure_retrieval_embedding_model(
+            args.embedding_model,
+            require_runtime=bool(args.require_shared_oss_models),
+        )
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     if not args.require_rust_temporalstore and not args.allow_python_only_diagnostic:
         print(
             "Rust TemporalStore backend is required for all benchmark/pipeline evidence; "
@@ -2374,6 +2389,62 @@ def warm_source_ranking_caches(sources: list[dict[str, str]]) -> None:
         source_group_identity(source)
         source_layer_identity(source)
         source_date(source)
+
+
+def configure_retrieval_embedding_model(model_name: str, *, require_runtime: bool = False) -> None:
+    """Configure the encoder used by benchmark retrieval ranking.
+
+    Hash/local names keep the historical lexical scorer. Real OSS encoder names
+    such as sentence-transformers/* must load successfully before a fair OSS
+    benchmark can claim encoder parity.
+    """
+
+    global ACTIVE_RETRIEVAL_EMBEDDING_MODEL, _RETRIEVAL_ENCODER
+    ACTIVE_RETRIEVAL_EMBEDDING_MODEL = str(model_name or "").strip() or "matrixark-local-hash-embedding"
+    _RETRIEVAL_ENCODER = None
+    _RETRIEVAL_EMBEDDING_CACHE.clear()
+    if retrieval_embedding_is_hash(ACTIVE_RETRIEVAL_EMBEDDING_MODEL):
+        return
+    try:
+        from sentence_transformers import SentenceTransformer  # type: ignore
+    except Exception as exc:
+        if require_runtime:
+            raise RuntimeError(
+                f"shared OSS encoder {ACTIVE_RETRIEVAL_EMBEDDING_MODEL!r} requires sentence-transformers"
+            ) from exc
+        return
+    _RETRIEVAL_ENCODER = SentenceTransformer(ACTIVE_RETRIEVAL_EMBEDDING_MODEL)
+
+
+def retrieval_embedding_is_hash(model_name: str) -> bool:
+    normalized = normalized_model_name(model_name)
+    return normalized.startswith("matrixark-hash") or normalized.startswith("matrixark-local-hash")
+
+
+def shared_dense_relevance_score(question: str, text: str) -> int:
+    if _RETRIEVAL_ENCODER is None:
+        return 0
+    q_vec = retrieval_embedding(ACTIVE_RETRIEVAL_EMBEDDING_MODEL, question[:512])
+    t_vec = retrieval_embedding(ACTIVE_RETRIEVAL_EMBEDDING_MODEL, text[:4096])
+    if not q_vec or not t_vec:
+        return 0
+    dot = sum(a * b for a, b in zip(q_vec, t_vec))
+    return int(round(dot * 80.0))
+
+
+def retrieval_embedding(model_name: str, text: str) -> list[float]:
+    key = (model_name, text)
+    cached = _RETRIEVAL_EMBEDDING_CACHE.get(key)
+    if cached is not None:
+        return cached
+    if _RETRIEVAL_ENCODER is None:
+        return []
+    vector = _RETRIEVAL_ENCODER.encode(text, normalize_embeddings=True)
+    values = [float(value) for value in vector.tolist()]
+    if len(_RETRIEVAL_EMBEDDING_CACHE) > 20_000:
+        _RETRIEVAL_EMBEDDING_CACHE.clear()
+    _RETRIEVAL_EMBEDDING_CACHE[key] = values
+    return values
 
 
 def dominant_dataset_name(dataset_counts: dict[str, int]) -> str:
@@ -7478,6 +7549,7 @@ def direct_relevance_score(question: str, text: str) -> int:
     score = sum(10 for token in q_tokens if token_matches(token, text_tokens))
     score += update_semantics_score(question, text, text_tokens)
     score += benchmark_gap_relevance_boost(question, text, text_tokens)
+    score += shared_dense_relevance_score(question, text)
     if exact_question_substring_match(text, question):
         score += 100
     return score

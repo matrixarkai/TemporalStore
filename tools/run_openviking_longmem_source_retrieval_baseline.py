@@ -13,10 +13,17 @@ import argparse
 import json
 import math
 import re
+import sys
 import time
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from run_locomo_ingest_once import (  # noqa: E402
+    configure_retrieval_embedding_model,
+    shared_dense_relevance_score,
+)
 
 WORD_RE = re.compile(r"[A-Za-z0-9]+")
 
@@ -72,6 +79,19 @@ def main() -> int:
     parser.add_argument("--report", default="/tmp/openviking_direct_source_longmem_tiny_20260726.json")
     parser.add_argument("--matrixark-report", default="/tmp/matrixark_qwen_longmem_tiny_pythononly_20260726.json")
     args = parser.parse_args()
+    try:
+        configure_retrieval_embedding_model(
+            args.embedding_model,
+            require_runtime=bool(args.require_shared_oss_models),
+        )
+    except RuntimeError as exc:
+        report = {
+            "benchmark_family": "longmemeval_s",
+            "baseline": "openviking_style_direct_source_retrieval",
+            "ready": False,
+            "blockers": [str(exc)],
+        }
+        return finish(report, args.report, time.time(), 2)
 
     started = time.time()
     report: dict[str, Any] = {
@@ -285,7 +305,8 @@ def rank_sessions(question: str, sessions: list[dict[str, Any]]) -> list[dict[st
         overlap = len(q_terms & text_terms)
         phrase_bonus = sum(1 for term in q_terms if len(term) > 4 and term in text) * 0.25
         answerish_bonus = 0.5 if any(token in text for token in ("degree", "graduated", "business administration")) else 0.0
-        ranked.append((overlap + phrase_bonus + answerish_bonus, session))
+        dense_bonus = shared_dense_relevance_score(question, session["text"]) / 80.0
+        ranked.append((overlap + phrase_bonus + answerish_bonus + dense_bonus, session))
     ranked.sort(key=lambda pair: pair[0], reverse=True)
     return [session for _, session in ranked]
 
