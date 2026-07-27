@@ -397,6 +397,7 @@ def session_commit_summary(commit: Json | None) -> Json:
         "source_hook_types": commit.get("source_hook_types"),
         "source_codex_events": commit.get("source_codex_events"),
         "profile_promotion_summary": commit.get("profile_promotion_summary"),
+        "entity_type_counts": commit.get("entity_type_counts"),
         "segments_written": commit.get("segments_written", 0),
         "entities_written": entities_written,
         "session_entities_written": entities_written,

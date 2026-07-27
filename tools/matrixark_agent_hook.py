@@ -33,6 +33,7 @@ try:
         retrieval_budget_summary_from_retrieve,
         retrieval_layer_summary_from_retrieve,
         retrieval_memory_hierarchy_contract_from_retrieve,
+        selected_tool_evidence_text,
         session_commit_summary,
         selected_ref_count_from_retrieve,
         used_context_tokens_from_retrieve,
@@ -54,6 +55,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         retrieval_budget_summary_from_retrieve,
         retrieval_layer_summary_from_retrieve,
         retrieval_memory_hierarchy_contract_from_retrieve,
+        selected_tool_evidence_text,
         session_commit_summary,
         selected_ref_count_from_retrieve,
         used_context_tokens_from_retrieve,
@@ -490,6 +492,27 @@ def hook_messages_from_payload(payload: Json, *, event: str, text: str) -> list[
                 messages.append({"role": role_for_agent_event(event), "content": item.strip()})
     if messages:
         return messages
+    if norm(event) in TOOL_EVENTS:
+        tool_texts: list[str] = []
+        containers = [payload]
+        for nested_key in ("params", "turn", "metadata", "tool", "result"):
+            nested = payload.get(nested_key) if isinstance(payload, dict) else None
+            if isinstance(nested, dict):
+                containers.append(nested)
+        for container in containers:
+            for key in ("tool_outputs", "terminal_output", "stdout", "stderr", "result", "output", "text", "content"):
+                value = container.get(key)
+                values = value if isinstance(value, list) else [value] if value else []
+                for item in values[:8]:
+                    if isinstance(item, str) and item.strip():
+                        tool_texts.append(item)
+                    elif isinstance(item, dict):
+                        item_text = first_string_at(item, [["text"], ["content"], ["stdout"], ["stderr"], ["output"], ["result"], ["summary"]])
+                        if item_text:
+                            tool_texts.append(item_text)
+        evidence = selected_tool_evidence_text("\n".join(tool_texts) or text)
+        if evidence:
+            return [{"role": "tool", "content": evidence}]
     return [{"role": role_for_agent_event(event), "content": text}]
 
 

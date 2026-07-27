@@ -174,6 +174,45 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
             self.assertGreaterEqual(second["auto_batch_extract"]["session_entities_written"], 1)
             self.assertGreaterEqual(second["auto_batch_extract"]["profile_entities_written"], 1)
 
+    def test_generic_hook_post_tool_use_extracts_selected_tool_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            rust_root = Path(tmp_dir) / "rust-store"
+            noisy_output = "\n".join(
+                [
+                    "Compiling generated module with verbose progress that should not be durable.",
+                    "warning: unused import in unrelated generated file",
+                    "Exit code: 0",
+                    "Ran 89 tests in 4.51s",
+                    "OK",
+                    "To https://github.com/bjmeetsfo/TemporalStore.git",
+                    "ca8f8a96 HEAD -> main",
+                    "More streaming output that should be ignored.",
+                ]
+            )
+            result = self.run_agent_hook(
+                agent="codex",
+                event="PostToolUse",
+                rust_root=rust_root,
+                extra=["--session-commit-threshold", "1"],
+                payload={
+                    "conversation_id": "codex-tool-session",
+                    "workspace_root": "/repo/memory",
+                    "tool_name": "shell_command",
+                    "tool_status": "ok",
+                    "terminal_output": noisy_output,
+                },
+            )
+
+            self.assertTrue(result["ingested"])
+            self.assertEqual(1, result["ingest"]["session_buffer"]["pending_message_count"])
+            self.assertEqual("committed", result["auto_batch_extract"]["status"])
+            self.assertEqual("threshold", result["auto_batch_extract"]["trigger_policy"])
+            self.assertEqual(["tool"], result["auto_batch_extract"]["source_roles"])
+            self.assertEqual(["tool_result"], result["auto_batch_extract"]["source_hook_types"])
+            self.assertGreaterEqual(result["auto_batch_extract"]["entity_type_counts"]["tool_evidence"], 1)
+            self.assertGreaterEqual(result["auto_batch_extract"]["session_entities_written"], 1)
+            self.assertGreaterEqual(result["auto_batch_extract"]["profile_entities_written"], 1)
+
     def test_planned_agent_configs_are_marked_todo_not_supported_hooks(self) -> None:
         snippet = json.loads(matrixark_agent_config.openclaw_json(".", "tools/matrixark_mcp_rust_server.sh"))
         self.assertEqual("openclaw", snippet["agent"])

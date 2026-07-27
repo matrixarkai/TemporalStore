@@ -4117,6 +4117,7 @@ class MatrixArkLocalAdapter:
         source_codex_events = sorted({str(value).strip() for value in source_codex_event_values if str(value or "").strip()})
         entity_hashes = []
         profile_entity_hashes = []
+        entity_type_counts: Json = {}
         profile_promotion_summary: list[Json] = []
         profile_dirty_hashes: list[int] = []
         for entity in extraction["entities"]:
@@ -4129,6 +4130,7 @@ class MatrixArkLocalAdapter:
                 entity_name=entity["entity_name"],
             )
             updated_entity = apply_entity_patches(previous_entity, entity)
+            entity_type_counts[updated_entity["entity_type"]] = int(entity_type_counts.get(updated_entity["entity_type"], 0)) + 1
             entity_hashes.append(entity_hash)
             records_to_append.append(
                 {
@@ -4448,6 +4450,7 @@ class MatrixArkLocalAdapter:
                     "entities": len(entity_hashes),
                     "profile_entities": len(profile_entity_hashes),
                     "profile_promotion_summary": profile_promotion_summary[:16],
+                    "entity_type_counts": entity_type_counts,
                     "segments": len(segment_hashes),
                     "summaries": 1,
                     "indexes": len(batch_index_terms),
@@ -4504,6 +4507,7 @@ class MatrixArkLocalAdapter:
             "raw_events_duplicated": not derive_from_existing_events,
             "entities_written": len(entity_hashes),
             "profile_entities_written": len(profile_entity_hashes),
+            "entity_type_counts": entity_type_counts,
             "profile_promotion_summary": profile_promotion_summary[:16],
             "segments_written": len(segment_hashes),
             "summary_hash": summary_hash,
