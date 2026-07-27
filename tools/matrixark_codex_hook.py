@@ -329,6 +329,25 @@ def retrieval_memory_hierarchy_contract_from_retrieve(pack: Json | None) -> Json
     }
 
 
+def retrieval_session_identity_from_retrieve(pack: Json | None, *, session_id_source: str = "") -> Json:
+    source = str(session_id_source or "").strip()
+    if isinstance(pack, dict):
+        recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
+        session_identity = recall_policy.get("session_identity") if isinstance(recall_policy.get("session_identity"), dict) else {}
+        if isinstance(session_identity, dict) and session_identity.get("session_id_source"):
+            return session_identity
+    if not source:
+        return {}
+    fallback = source in {"state_file", "state_file_created", "workspace_hash"}
+    return {
+        "session_id_source": source,
+        "strong_session_identity": source in {"explicit", "payload_field", "payload_path_hash"} or source.startswith(("payload.", "env.")),
+        "fallback_session_identity": fallback,
+        "risk": "workspace_fallback_may_merge_multiple_codex_tasks" if fallback else "",
+        "source": "hook_metadata_fallback",
+    }
+
+
 def session_commit_memory_layers_written(commit: Json | None) -> Json:
     if not isinstance(commit, dict) or not commit:
         return {}
@@ -628,6 +647,7 @@ def additional_context_from_retrieve(
     *,
     query: str,
     local_context_count: int,
+    session_id_source: str = "",
     char_limit: int = DEFAULT_ADDITIONAL_CONTEXT_CHAR_LIMIT,
 ) -> str:
     """Build Codex hook additionalContext from a MatrixArk ContextPack."""
@@ -640,6 +660,7 @@ def additional_context_from_retrieve(
     budget = retrieval_budget_summary_from_retrieve(pack)
     budget_pressure = retrieval_budget_pressure_from_retrieve(pack)
     layer_summary = retrieval_layer_summary_from_retrieve(pack, refs)
+    session_identity = retrieval_session_identity_from_retrieve(pack, session_id_source=session_id_source)
     budget_bits = [
         f"used_remote_tokens={budget.get('used_remote_context_tokens', 0)}",
     ]
@@ -670,6 +691,15 @@ def additional_context_from_retrieve(
         ),
         "Budget summary: " + ", ".join(budget_bits) + ".",
     ]
+    if session_identity:
+        identity_bits = [
+            f"source={session_identity.get('session_id_source', '')}",
+            f"strong={str(bool(session_identity.get('strong_session_identity'))).lower()}",
+            f"fallback={str(bool(session_identity.get('fallback_session_identity'))).lower()}",
+        ]
+        if session_identity.get("risk"):
+            identity_bits.append(f"risk={session_identity.get('risk')}")
+        lines.append("Session identity: " + ", ".join(identity_bits) + ".")
     formatted_layer_summary = _format_retrieval_layer_summary(layer_summary)
     if formatted_layer_summary:
         lines.append(formatted_layer_summary)
@@ -795,6 +825,7 @@ def codex_hook_output(
             "budget": retrieval_budget_summary_from_retrieve(retrieve),
             "budget_pressure": retrieval_budget_pressure_from_retrieve(retrieve),
             "layers": retrieval_layer_summary_from_retrieve(retrieve, emitted_refs),
+            "session_identity": retrieval_session_identity_from_retrieve(retrieve, session_id_source=session_id_source),
             "memory_hierarchy": retrieval_memory_hierarchy_contract_from_retrieve(retrieve),
             "rendered_context_chars": len(rendered_context),
             "additional_context_emitted": False,
@@ -820,6 +851,7 @@ def codex_hook_output(
                 retrieve,
                 query=query,
                 local_context_count=len(agent_context.get("local_context", [])),
+                session_id_source=session_id_source,
             )
         else:
             additional_context = ""
@@ -942,6 +974,10 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 "retrieval_budget": retrieval_budget_summary_from_retrieve(result),
                 "retrieval_budget_pressure": retrieval_budget_pressure_from_retrieve(result),
                 "retrieval_layers": retrieval_layer_summary_from_retrieve(result, emitted_refs),
+                "session_identity": retrieval_session_identity_from_retrieve(
+                    result,
+                    session_id_source=str((args.get("metadata") if isinstance(args.get("metadata"), dict) else {}).get("session_id_source") or ""),
+                ),
                 "memory_hierarchy": retrieval_memory_hierarchy_contract_from_retrieve(result),
                 "rendered_context_chars": len(sanitized_rendered_context_from_retrieve(result)),
             }

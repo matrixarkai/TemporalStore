@@ -699,6 +699,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 "budget_source": "agent_provided_max_context_tokens",
                 "selected_ref_counts": {"event": 1, "entity": 1, "summary": 1},
                 "recall_policy": {
+                    "session_identity": {
+                        "session_id_source": "payload_field",
+                        "strong_session_identity": True,
+                        "fallback_session_identity": False,
+                        "risk": "",
+                    },
                     "session_continuity": {
                         "mode": "prefer",
                         "policy": "same-session continuity first; entity state bridges cross-session memory",
@@ -777,6 +783,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(5, output["retrieve"]["budget_pressure"]["budget_pressure_reason_count"])
         self.assertEqual(58, output["retrieve"]["budget"]["remote_budget_remaining_tokens"])
         self.assertFalse(output["retrieve"]["budget"]["remote_budget_overrun"])
+        self.assertEqual("payload_field", output["retrieve"]["session_identity"]["session_id_source"])
+        self.assertTrue(output["retrieve"]["session_identity"]["strong_session_identity"])
+        self.assertFalse(output["retrieve"]["session_identity"]["fallback_session_identity"])
         self.assertEqual(
             "local_first_remote_fill_remaining",
             output["retrieve"]["budget"]["budget_contract"]["mode"],
@@ -800,6 +809,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("budget_source=agent_provided_max_context_tokens", additional)
         self.assertIn("contract=local_first_remote_fill_remaining", additional)
         self.assertIn("contract_holds=true", additional)
+        self.assertIn("Session identity:", additional)
+        self.assertIn("source=payload_field", additional)
+        self.assertIn("strong=true", additional)
+        self.assertIn("fallback=false", additional)
         self.assertIn("Layer summary:", additional)
         self.assertIn("event=1", additional)
         self.assertIn("entity=1", additional)
@@ -852,6 +865,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         )
 
         additional = output["hookSpecificOutput"]["additionalContext"]
+        self.assertEqual("explicit", output["retrieve"]["session_identity"]["session_id_source"])
+        self.assertTrue(output["retrieve"]["session_identity"]["strong_session_identity"])
+        self.assertEqual("hook_metadata_fallback", output["retrieve"]["session_identity"]["source"])
+        self.assertIn("Session identity:", additional)
+        self.assertIn("source=explicit", additional)
+        self.assertIn("strong=true", additional)
         self.assertIn("Layer summary:", additional)
         self.assertIn("event=1", additional)
         self.assertIn("entity=1", additional)
