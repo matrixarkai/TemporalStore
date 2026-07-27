@@ -1322,6 +1322,44 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("codex_events[PostToolUse=2]", additional)
         self.assertIn("captured[user_prompt,assistant_response,tool_evidence]", additional)
 
+    def test_additional_context_lineage_uses_budget_roles_and_entity_type_fallback(self) -> None:
+        args = Namespace(session_id="codex-session-lineage-fallback")
+        output = hook.codex_hook_output(
+            args=args,
+            status="ok",
+            event="UserPromptSubmit",
+            session_id_source="explicit",
+            agent_context={"local_context": [], "workspace_root": "/repo"},
+            retrieve={
+                "pack_id": "pack-lineage-fallback",
+                "selected_refs": [
+                    {
+                        "ref_type": "entity",
+                        "entity_type": "assistant_decision",
+                        "text": "assistant decided to keep profile extraction enabled",
+                    },
+                    {
+                        "ref_type": "entity",
+                        "entity_type": "tool_evidence",
+                        "budget_source_role_counts": {"tool": 2},
+                        "text": "tests passed after hook extraction",
+                    },
+                    {
+                        "ref_type": "entity",
+                        "entity_type": "user_requirement",
+                        "budget_source_roles": ["user"],
+                        "text": "user requested threshold and idle extraction",
+                    },
+                ],
+            },
+            query="which memory sources were retrieved?",
+        )
+
+        additional = output["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Retrieved memory lineage:", additional)
+        self.assertIn("roles[assistant=1,tool=2,user=1]", additional)
+        self.assertIn("captured[user_prompt,assistant_response,tool_evidence]", additional)
+
     def test_grouped_refs_count_and_format_as_additional_context(self) -> None:
         args = Namespace(session_id="codex-session-1")
         output = hook.codex_hook_output(
