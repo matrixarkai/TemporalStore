@@ -7167,9 +7167,16 @@ def direct_relevance_score(question: str, text: str) -> int:
     score = sum(10 for token in q_tokens if token_matches(token, text_tokens))
     score += update_semantics_score(question, text, text_tokens)
     score += benchmark_gap_relevance_boost(question, text, text_tokens)
-    if text_matches(text, question):
+    if exact_question_substring_match(text, question):
         score += 100
     return score
+
+
+def exact_question_substring_match(text: str, question: str) -> bool:
+    normalized_question = normalize_text(question).strip()
+    if len(normalized_question) < 12:
+        return False
+    return normalized_question in normalize_text(text)
 
 
 def benchmark_gap_relevance_boost(question: str, text: str, text_tokens: set[str]) -> int:
