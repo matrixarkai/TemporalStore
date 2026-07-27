@@ -896,6 +896,17 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(3, readiness["pending_extraction_phases"]["provisional"])
             self.assertNotIn("final", readiness["pending_extraction_phases"])
             self.assertEqual(0, readiness["pending_final_session_boundary_count"])
+            layer_readiness = readiness["memory_layer_readiness"]
+            self.assertFalse(layer_readiness["ready_for_retrieval"])
+            self.assertIn("user_profile", layer_readiness["blocked_layers"])
+            self.assertIn("cross_session", layer_readiness["blocked_layers"])
+            self.assertIn("summary", layer_readiness["blocked_layers"])
+            self.assertIn("compression", layer_readiness["blocked_layers"])
+            self.assertIn("embedding", layer_readiness["blocked_layers"])
+            self.assertFalse(layer_readiness["layers"]["user_profile"]["ready"])
+            self.assertFalse(layer_readiness["layers"]["cross_session"]["ready"])
+            self.assertEqual(3, layer_readiness["layers"]["summary"]["pending_task_count"])
+            self.assertEqual(["summary"], layer_readiness["layers"]["summary"]["remaining_stages"])
             self.assertIn("async_pipeline_followup_pending", readiness["freshness_warnings"])
             self.assertTrue(
                 any(str(warning).startswith("async_pipeline_remaining_stages:") for warning in pack.get("quality_warnings", [])),
@@ -1023,6 +1034,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({}, summary_readiness["pending_session_continuities"])
             self.assertEqual({}, summary_readiness["pending_extraction_phases"])
             self.assertEqual(0, summary_readiness["pending_final_session_boundary_count"])
+            summary_layer_readiness = summary_readiness["memory_layer_readiness"]
+            self.assertTrue(summary_layer_readiness["ready_for_retrieval"])
+            self.assertEqual([], summary_layer_readiness["blocked_layers"])
+            self.assertTrue(summary_layer_readiness["layers"]["user_profile"]["ready"])
+            self.assertTrue(summary_layer_readiness["layers"]["cross_session"]["ready"])
+            self.assertTrue(summary_layer_readiness["layers"]["summary"]["ready"])
             self.assertEqual([], summary_readiness["freshness_warnings"])
 
     def test_lightweight_async_ingest_threshold_defaults_to_auto_batch_for_messages(self) -> None:
