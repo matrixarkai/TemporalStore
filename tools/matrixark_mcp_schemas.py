@@ -482,7 +482,7 @@ TOOLS: list[Json] = [
                 "include_retrieval_metrics": {
                     "type": "boolean",
                     "default": False,
-                    "description": "If true, include compact retrieval metrics such as remote budget, selected ref count, scanned records, cache/pushdown evidence, and drop counters.",
+                    "description": "If true, include compact retrieval metrics such as remote budget, selected ref count, scanned records, cache/pushdown evidence, drop counters, and memory-layer budget/pressure for session/profile/cross-session refs.",
                 },
                 "include_retrieval_debug": {
                     "type": "boolean",

@@ -791,7 +791,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(["UserPromptSubmit", "Stop"], item["source_codex_events"])
         self.assertNotIn("source_entity_hashes", item)
 
-    def test_shared_pack_builder_exposes_memory_layer_budget(self) -> None:
+    def test_shared_pack_builder_exposes_memory_layer_budget_and_pressure(self) -> None:
         builder_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pack_builder")
         metrics_mod = importlib.import_module("tools.matrixark_mcp_retrieve_metrics")
         selected = [
@@ -875,6 +875,18 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(1, layer_budget["by_hook_type"]["hook_boundary"]["refs"])
         self.assertEqual(1, layer_budget["by_codex_event"]["PostToolUse"]["refs"])
         self.assertEqual(1, layer_budget["final_session_boundary_ref_count"])
+        layer_pressure = pack["recall_policy"]["memory_layer_pressure"]
+        self.assertEqual(1, layer_pressure["selected_refs"])
+        self.assertEqual(8, layer_pressure["selected_tokens"])
+        self.assertEqual(0, layer_pressure["dropped_refs"])
+        self.assertEqual(0, layer_pressure["dropped_tokens"])
+        self.assertFalse(layer_pressure["profile_memory_pressure"])
+        self.assertFalse(layer_pressure["cross_session_pressure"])
+        self.assertIn("by_memory_scope", layer_pressure["by_dimension"])
+        self.assertEqual(
+            1,
+            layer_pressure["by_dimension"]["by_memory_scope"]["user_profile"]["selected_refs"],
+        )
 
         metrics_mod.attach_python_retrieval_metrics(
             pack,
@@ -886,6 +898,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             records=[],
         )
         self.assertEqual(layer_budget, pack["retrieval_metrics"]["memory_layer_budget"])
+        self.assertEqual(layer_pressure, pack["retrieval_metrics"]["memory_layer_pressure"])
 
     def test_shared_pack_builder_reports_profile_shadowed_dropped_budget(self) -> None:
         builder_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pack_builder")
@@ -999,6 +1012,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             debug_refs=False,
         )
         dropped_budget = pack["recall_policy"]["dropped_memory_layer_budget"]
+        pressure = pack["recall_policy"]["memory_layer_pressure"]
         self.assertEqual(1, dropped_budget["stale_ref_count"])
         self.assertEqual(6, dropped_budget["stale_token_estimate"])
         self.assertEqual(1, dropped_budget["profile_shadowed_ref_count"])
@@ -1011,6 +1025,18 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual({"refs": 1, "tokens": 6}, dropped_budget["by_hook_type"]["tool_result"])
         self.assertEqual({"refs": 1, "tokens": 6}, dropped_budget["by_codex_event"]["PostToolUse"])
         self.assertEqual({"refs": 1, "tokens": 6}, dropped_budget["by_profile_shadowed_reason"]["source_entity_lineage"])
+        self.assertEqual(1, pressure["selected_refs"])
+        self.assertEqual(9, pressure["selected_tokens"])
+        self.assertEqual(1, pressure["dropped_refs"])
+        self.assertEqual(6, pressure["dropped_tokens"])
+        self.assertTrue(pressure["session_memory_pressure"])
+        self.assertFalse(pressure["profile_memory_pressure"])
+        self.assertFalse(pressure["cross_session_pressure"])
+        self.assertIn("by_memory_scope", pressure["dropped_dimensions"])
+        self.assertEqual(
+            1,
+            pressure["by_dimension"]["by_memory_scope"]["session"]["dropped_refs"],
+        )
 
         metrics_mod.attach_python_retrieval_metrics(
             pack,
@@ -1022,6 +1048,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             records=[],
         )
         self.assertEqual(dropped_budget, pack["retrieval_metrics"]["dropped_memory_layer_budget"])
+        self.assertEqual(pressure, pack["retrieval_metrics"]["memory_layer_pressure"])
 
     def test_deadline_fallback_preserves_memory_layer_budget_and_lineage(self) -> None:
         deadline_mod = importlib.import_module("tools.matrixark_mcp_deadline_pack")
@@ -1118,11 +1145,20 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(2, budget["by_hook_type"]["hook_boundary"]["refs"])
         self.assertEqual(2, budget["by_codex_event"]["Stop"]["refs"])
         self.assertEqual(1, budget["final_session_boundary_ref_count"])
+        pressure = pack["memory_layer_pressure"]
+        self.assertEqual(2, pressure["selected_refs"])
+        self.assertEqual(pack["tokens"]["remote"], pressure["selected_tokens"])
+        self.assertEqual(0, pressure["dropped_refs"])
+        self.assertFalse(pressure["profile_memory_pressure"])
+        self.assertFalse(pressure["cross_session_pressure"])
+        self.assertEqual(1, pressure["by_dimension"]["by_memory_scope"]["user_profile"]["selected_refs"])
+        self.assertEqual(1, pressure["by_dimension"]["by_session_continuity"]["cross_session"]["selected_refs"])
         readiness = pack["async_pipeline_readiness"]
         self.assertFalse(readiness["ready_for_retrieval"])
         self.assertEqual(1, readiness["task_count"])
         self.assertEqual(1, readiness["extraction_committed_task_count"])
         self.assertEqual(["compression", "embedding", "summary"], readiness["remaining_stages"])
+        self.assertEqual(pressure, pack["retrieval_metrics"]["memory_layer_pressure"])
         self.assertEqual(readiness, pack["retrieval_metrics"]["async_pipeline_readiness"])
         self.assertIn("async_pipeline_followup_pending", pack["warnings"])
         entity_group = next(group for group in pack["groups"] if group["type"] == "entity")
@@ -1133,7 +1169,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(2, entity_item["source_entity_count"])
         self.assertEqual(1, len(adapter.audit_records))
         self.assertEqual(budget, adapter.audit_records[0]["memory_layer_budget"])
+        self.assertEqual(pressure, adapter.audit_records[0]["memory_layer_pressure"])
         self.assertEqual(readiness, adapter.audit_records[0]["async_pipeline_readiness"])
+        self.assertEqual(pressure, adapter.audit_records[0]["recall_policy_summary"]["memory_layer_pressure"])
         self.assertEqual(readiness, adapter.audit_records[0]["recall_policy_summary"]["async_pipeline_readiness"])
         self.assertEqual(
             1,

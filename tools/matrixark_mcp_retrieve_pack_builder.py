@@ -204,7 +204,9 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
 
 def _budget_total(budget: Json, *names: str) -> int:
     for name in names:
-        value = budget.get(name) if isinstance(budget, dict) else 0
+        if not isinstance(budget, dict) or name not in budget:
+            continue
+        value = budget.get(name)
         try:
             return max(0, int(value or 0))
         except (TypeError, ValueError):
