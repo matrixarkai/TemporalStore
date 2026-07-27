@@ -467,6 +467,11 @@ def retrieval_memory_hierarchy_contract_from_retrieve(pack: Json | None) -> Json
         "session_scope_mode": continuity.get("mode"),
         "cross_session_enabled": cross_session.get("enabled"),
         "cross_session_budget_tokens": cross_session.get("budget_tokens"),
+        "cross_session_remote_budget_tokens": cross_session.get("remote_budget_tokens"),
+        "cross_session_computed_budget_tokens": cross_session.get("computed_budget_tokens"),
+        "cross_session_budget_floor_tokens": cross_session.get("budget_floor_tokens"),
+        "cross_session_budget_floor_applied": cross_session.get("budget_floor_applied"),
+        "cross_session_budget_floor_status": cross_session.get("budget_floor_status"),
         "cross_session_max_sessions": cross_session.get("max_sessions"),
         "cross_session_max_candidates": cross_session.get("max_candidates"),
         "shared_context_enabled": shared_context.get("enabled"),
@@ -1030,10 +1035,32 @@ def additional_context_from_retrieve(
     except (TypeError, ValueError):
         has_cross_session_memory = False
     if has_profile_memory or has_cross_session_memory:
-        lines.append(
-            "Memory hierarchy: session refs are turn/session-local; "
-            "user_profile/cross_session refs are long-term state and may supersede older session-local entity copies."
-        )
+        hierarchy_bits = [
+            "session refs are turn/session-local",
+            "user_profile/cross_session refs are long-term state and may supersede older session-local entity copies",
+        ]
+        hierarchy = retrieval_memory_hierarchy_contract_from_retrieve(pack)
+        if isinstance(hierarchy, dict):
+            floor_status = hierarchy.get("cross_session_budget_floor_status")
+            if floor_status:
+                hierarchy_bits.append(f"cross_session_budget_floor_status={floor_status}")
+            for label, field in [
+                ("cross_session_budget", "cross_session_budget_tokens"),
+                ("computed", "cross_session_computed_budget_tokens"),
+                ("floor", "cross_session_budget_floor_tokens"),
+            ]:
+                try:
+                    value = int(hierarchy.get(field) or 0)
+                except (TypeError, ValueError):
+                    value = 0
+                if value > 0:
+                    hierarchy_bits.append(f"{label}={value}")
+            if "cross_session_budget_floor_applied" in hierarchy:
+                hierarchy_bits.append(
+                    "floor_applied="
+                    + str(bool(hierarchy.get("cross_session_budget_floor_applied"))).lower()
+                )
+        lines.append("Memory hierarchy: " + "; ".join(hierarchy_bits) + ".")
     if budget_pressure.get("budget_pressure"):
         dropped_by_reason = budget_pressure.get("dropped_by_reason")
         pressure_bits = []

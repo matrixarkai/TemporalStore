@@ -468,7 +468,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         },
                         "cross_session": {
                             "enabled": True,
-                            "budget_tokens": 90,
+                            "budget_tokens": 18,
+                            "remote_budget_tokens": 90,
+                            "computed_budget_tokens": 18,
+                            "budget_floor_tokens": 256,
+                            "budget_floor_applied": False,
+                            "budget_floor_status": "remote_budget_too_small_for_profile_floor",
                             "max_sessions": 3,
                             "max_candidates": 24,
                         },
@@ -545,7 +550,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("context_profile_entity", hierarchy["models"]["profile_index"]["data_model"])
         self.assertEqual("prefer", hierarchy["session_scope_mode"])
         self.assertTrue(hierarchy["cross_session_enabled"])
-        self.assertEqual(90, hierarchy["cross_session_budget_tokens"])
+        self.assertEqual(18, hierarchy["cross_session_budget_tokens"])
+        self.assertEqual(90, hierarchy["cross_session_remote_budget_tokens"])
+        self.assertEqual(18, hierarchy["cross_session_computed_budget_tokens"])
+        self.assertEqual(256, hierarchy["cross_session_budget_floor_tokens"])
+        self.assertFalse(hierarchy["cross_session_budget_floor_applied"])
+        self.assertEqual(
+            "remote_budget_too_small_for_profile_floor",
+            hierarchy["cross_session_budget_floor_status"],
+        )
         self.assertIn("profile_entity_bridge", hierarchy["selected_ref_flow"])
         self.assertEqual(len("user: rendered profile decision"), item["result"]["rendered_context_chars"])
 
@@ -783,6 +796,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     "cross_session": {
                         "enabled": True,
                         "budget_tokens": 64,
+                        "remote_budget_tokens": 100,
+                        "computed_budget_tokens": 64,
+                        "budget_floor_tokens": 256,
+                        "budget_floor_applied": False,
+                        "budget_floor_status": "remote_budget_too_small_for_profile_floor",
                         "max_sessions": 3,
                         "max_candidates": 24,
                     },
@@ -927,6 +945,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         )
         self.assertTrue(output["retrieve"]["memory_hierarchy"]["cross_session_enabled"])
         self.assertEqual(64, output["retrieve"]["memory_hierarchy"]["cross_session_budget_tokens"])
+        self.assertEqual(
+            "remote_budget_too_small_for_profile_floor",
+            output["retrieve"]["memory_hierarchy"]["cross_session_budget_floor_status"],
+        )
         self.assertTrue(output["retrieve"]["budget_pressure"]["budget_pressure"])
         self.assertEqual(
             {"cross_session_budget": 2, "max_selected_refs": 3},
@@ -1004,6 +1026,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         )
         self.assertIn("Memory hierarchy:", additional)
         self.assertIn("user_profile/cross_session refs are long-term state", additional)
+        self.assertIn("cross_session_budget_floor_status=remote_budget_too_small_for_profile_floor", additional)
+        self.assertIn("cross_session_budget=64", additional)
+        self.assertIn("computed=64", additional)
+        self.assertIn("floor=256", additional)
+        self.assertIn("floor_applied=false", additional)
         self.assertIn("Budget pressure:", additional)
         self.assertIn("cross_session_budget=2", additional)
         self.assertIn("max_selected_refs=3", additional)
