@@ -297,6 +297,49 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
     return lineage
 
 
+def compression_context_index_terms(record: Json) -> list[str]:
+    terms = ["operator:TIME_COMPRESS", "context_class:compression"]
+    for field, prefix in [
+        ("source_roles", "source_role"),
+        ("source_hook_types", "hook_type"),
+        ("source_codex_events", "codex_event"),
+        ("source_memory_scopes", "memory_scope"),
+        ("source_session_continuities", "session_continuity"),
+        ("source_extraction_phases", "extraction_phase"),
+    ]:
+        values = record.get(field)
+        if isinstance(values, list):
+            terms.extend(f"{prefix}:{str(value).strip()}" for value in values if str(value or "").strip())
+    for field, prefix in [
+        ("memory_scope", "memory_scope"),
+        ("session_continuity", "session_continuity"),
+        ("extraction_phase", "extraction_phase"),
+    ]:
+        value = str(record.get(field) or "").strip()
+        if value:
+            terms.append(f"{prefix}:{value}")
+    return ordered_unique_any(terms)
+
+
+def compression_context_index_records(record: Json) -> list[Json]:
+    compression_hash = record.get("compression_id_hash")
+    if compression_hash is None:
+        return []
+    scope = candidate_access_scope(record)
+    return [
+        context_index_posting_record(
+            index_name=index_name,
+            data_model="context_compression_event",
+            ref_type="compression",
+            ref_hashes=[compression_hash],
+            node_hash=record.get("node_hash"),
+            scope=scope,
+            updated_at_ms=record.get("compressed_time_ms", record.get("updated_at_ms", now_ms())),
+        )
+        for index_name in compression_context_index_terms(record)
+    ]
+
+
 def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
     record_type = str(record.get("record_type") or "")
     if record_type == "context_node":
@@ -1670,6 +1713,7 @@ class MatrixArkLocalAdapter:
                 "updated_at_ms": compressed_time_ms,
             }
         )
+        self.append_many(compression_context_index_records(record))
         retention_records = []
         evict_after_ms = int(record["retention_policy"]["evict_after_ms"] or 0)
         for event_id in source_event_ids:
@@ -5196,6 +5240,7 @@ class MatrixArkLocalAdapter:
                 "updated_at_ms": compressed_time_ms,
             }
         )
+        self.append_many(compression_context_index_records(record))
         return record
 
     def query_time_compressions(
