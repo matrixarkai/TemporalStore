@@ -48,6 +48,7 @@ DIRECT_RECORD_LOG_SHARD_SIZE = int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_S
 
 VOLATILE_SERVING_FINGERPRINT_FIELDS = {
     'context_event_key',
+    'event_time_key',
     'timestamp_key_ms',
     'updated_at_ms',
 }
@@ -2765,6 +2766,180 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
     return summary
 
 
+LOCAL_RECOVERY_REQUIRED_TYPES = {
+    'context_event': 'recovery:context_event_missing',
+    'context_entity': 'recovery:context_entity_missing',
+    'context_embedding': 'recovery:context_embedding_missing',
+    'context_index': 'recovery:context_index_missing',
+}
+
+
+def _context_metric_name(record_type: str) -> str:
+    if record_type == 'context_index':
+        return 'context_indexes'
+    if record_type == 'context_embedding':
+        return 'context_embeddings'
+    if record_type == 'context_entity':
+        return 'context_entities'
+    if record_type == 'context_event':
+        return 'context_events'
+    return f'{record_type}s'
+
+
+def build_local_recovery_checks(expected_summary: Json, target_state: Json | None, *, raw_backend: str) -> tuple[Json, list[str]]:
+    metrics = expected_summary.get('metrics') if isinstance(expected_summary.get('metrics'), dict) else {}
+    source_range = expected_summary.get('source_range') if isinstance(expected_summary.get('source_range'), dict) else {}
+    expected_records = int(metrics.get('written', 0) or 0)
+    blockers: list[str] = []
+    checks: Json = {
+        'canonical_temporalstore_source': raw_backend in {'temporalstore', 'matrixkv'},
+        'source_scan_had_no_failures': int(metrics.get('failed', 0) or 0) == 0,
+        'source_has_rebuildable_records': expected_records > 0,
+        'raw_source_range_bounded_or_discovered': source_range.get('effective_end_seq') is not None,
+    }
+    for record_type, blocker in sorted(LOCAL_RECOVERY_REQUIRED_TYPES.items()):
+        metric_name = _context_metric_name(record_type)
+        checks[f'has_{record_type}'] = int(metrics.get(metric_name, 0) or 0) > 0
+        if not checks[f'has_{record_type}']:
+            blockers.append(blocker)
+    if not checks['canonical_temporalstore_source']:
+        blockers.append('recovery:external_raw_source')
+    if not checks['source_scan_had_no_failures']:
+        blockers.append('recovery:source_scan_failed')
+    if not checks['source_has_rebuildable_records']:
+        blockers.append('recovery:empty_rebuild_source')
+    if not checks['raw_source_range_bounded_or_discovered']:
+        blockers.append('recovery:unbounded_source_range')
+    if target_state is not None:
+        actual_records = int(target_state.get('record_count', 0) or 0)
+        actual_fingerprint = str(target_state.get('serving_record_fingerprint') or '')
+        expected_fingerprint = str(metrics.get('serving_record_fingerprint') or '')
+        target_scan = target_state.get('serving_type_count_scan') if isinstance(target_state.get('serving_type_count_scan'), dict) else {}
+        target_read_errors = int(target_scan.get('read_errors', 0) or 0)
+        target_missing = int(target_scan.get('missing_records', 0) or 0)
+        target_dead_letters = int(target_state.get('dead_letter_count', 0) or 0)
+        checks.update({
+            'target_records_readable': target_read_errors == 0 and target_missing == 0,
+            'target_has_no_dead_letters': target_dead_letters == 0,
+            'target_record_count_matches_rebuild': actual_records == expected_records,
+            'target_fingerprint_matches_rebuild': bool(expected_fingerprint) and actual_fingerprint == expected_fingerprint,
+        })
+        if not checks['target_records_readable']:
+            blockers.append('recovery:target_records_unreadable')
+        if not checks['target_has_no_dead_letters']:
+            blockers.append('recovery:target_dead_letters_present')
+        if not checks['target_record_count_matches_rebuild']:
+            blockers.append('recovery:target_record_count_mismatch')
+        if not checks['target_fingerprint_matches_rebuild']:
+            blockers.append('recovery:target_fingerprint_mismatch')
+    else:
+        checks.update({
+            'target_records_readable': None,
+            'target_has_no_dead_letters': None,
+            'target_record_count_matches_rebuild': None,
+            'target_fingerprint_matches_rebuild': None,
+        })
+    return checks, blockers
+
+
+def run_local_recovery_report(args: argparse.Namespace) -> Json:
+    """Fail-closed local non-Raft recovery report from TemporalStore-owned data."""
+    raw_backend = normalize_raw_backend(args.raw_backend)
+    validation_args = Namespace(**vars(args))
+    validation_args.mode = 'shadow'
+    validation_args.dry_run = True
+    validation_args.dry_run_check_target = False
+    validation_args.resume = False
+    validation_args.prometheus_output = ''
+    expected_summary = run_backfill(validation_args)
+    kv = make_kv(args)
+    target_prefix = str(getattr(args, 'target_prefix', '') or '')
+    if not target_prefix and getattr(args, 'active_prefix_key', ''):
+        target_prefix = kv.get_string(args.active_prefix_key)
+    target_state = None
+    if target_prefix:
+        target = MatrixKVBackfillTarget(kv, prefix=target_prefix, raw_backend=raw_backend)
+        counts, scan = target.serving_type_counts_with_stats(batch_size=max(1, int(args.batch_size)))
+        target_state = {
+            'target_prefix': target_prefix,
+            'raw_backend': raw_backend,
+            'record_count': int(scan.get('record_count', 0) or 0),
+            'dead_letter_count': target.count_dead_letters(),
+            'serving_type_counts': counts,
+            'serving_record_fingerprint': str(scan.get('serving_record_fingerprint') or ''),
+            'serving_type_count_scan': scan,
+        }
+    checks, blockers = build_local_recovery_checks(expected_summary, target_state, raw_backend=raw_backend)
+    ready = not blockers
+    metrics = expected_summary.get('metrics') if isinstance(expected_summary.get('metrics'), dict) else {}
+    summary = {
+        'status': 'ok' if ready else 'failed',
+        'ready': ready,
+        'mode': 'local_recovery_report',
+        'recovery_model': 'non_raft_local_reopen_rebuild',
+        'source_of_truth': f'{raw_backend}:raw_ingestion_or_serving_log',
+        'job_id': args.job_id,
+        'source_prefix': args.source_prefix,
+        'target_prefix': target_prefix,
+        'raw_backend': raw_backend,
+        'start_seq': args.start_seq,
+        'end_seq': args.end_seq,
+        'source_range': expected_summary.get('source_range', {}),
+        'expected_rebuild_metrics': metrics,
+        'target_state': target_state or {},
+        'checks': checks,
+        'blockers': blockers,
+        'serving_layers': {
+            'events': int(metrics.get('context_events', 0) or 0),
+            'entities': int(metrics.get('context_entities', 0) or 0),
+            'embeddings': int(metrics.get('context_embeddings', 0) or 0),
+            'secondary_indexes': int(metrics.get('context_indexes', 0) or 0),
+            'summaries': int(metrics.get('context_summaries', 0) or 0),
+        },
+    }
+    if args.prometheus_output:
+        Path(args.prometheus_output).write_text(local_recovery_report_to_prometheus(summary), encoding='utf-8')
+    return summary
+
+
+def local_recovery_report_to_prometheus(summary: Json) -> str:
+    base = {
+        'job_id': str(summary.get('job_id') or ''),
+        'raw_backend': str(summary.get('raw_backend') or ''),
+        'mode': 'local_recovery_report',
+    }
+    lines = [
+        '# HELP matrixark_context_local_recovery_status Local non-Raft context recovery readiness status.',
+        '# TYPE matrixark_context_local_recovery_status gauge',
+        f'matrixark_context_local_recovery_status{{{_prom_labels(**base, status=str(summary.get("status") or "unknown"))}}} {1 if summary.get("ready") else 0}',
+        '# HELP matrixark_context_local_recovery_check Local recovery readiness check result.',
+        '# TYPE matrixark_context_local_recovery_check gauge',
+    ]
+    checks = summary.get('checks') if isinstance(summary.get('checks'), dict) else {}
+    for name, value in sorted(checks.items()):
+        if value is None:
+            continue
+        lines.append(f'matrixark_context_local_recovery_check{{{_prom_labels(**base, check=name)}}} {1 if value else 0}')
+    lines.extend([
+        '# HELP matrixark_context_local_recovery_blocker Local recovery blocker presence.',
+        '# TYPE matrixark_context_local_recovery_blocker gauge',
+    ])
+    blockers = [str(item) for item in (summary.get('blockers') or []) if str(item)]
+    if not blockers:
+        lines.append(f'matrixark_context_local_recovery_blocker{{{_prom_labels(**base, blocker="none")}}} 0')
+    else:
+        for blocker in sorted(blockers):
+            lines.append(f'matrixark_context_local_recovery_blocker{{{_prom_labels(**base, blocker=blocker)}}} 1')
+    lines.extend([
+        '# HELP matrixark_context_local_recovery_serving_layers Rebuildable serving records by memory layer.',
+        '# TYPE matrixark_context_local_recovery_serving_layers gauge',
+    ])
+    layers = summary.get('serving_layers') if isinstance(summary.get('serving_layers'), dict) else {}
+    for layer, count in sorted(layers.items()):
+        lines.append(f'matrixark_context_local_recovery_serving_layers{{{_prom_labels(**base, layer=str(layer))}}} {int(count or 0)}')
+    return '\n'.join(lines) + '\n'
+
+
 def run_activate_shadow(args: argparse.Namespace) -> Json:
     if not args.target_prefix:
         raise BackfillError('activate_shadow requires --target-prefix')
@@ -3620,7 +3795,7 @@ def build_parser() -> argparse.ArgumentParser:
         help='raw ingestion message store that owns source-prefix; affects checkpoints, idempotency, manifests, and metrics',
     )
     parser.add_argument('--target-prefix', default='')
-    parser.add_argument('--mode', choices=['plan', 'shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'rollback_activation', 'incremental_repair', 'verify_manifest', 'verify_plan_artifacts', 'export_dead_letters', 'read_raw_event'], default='shadow')
+    parser.add_argument('--mode', choices=['plan', 'shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'rollback_activation', 'incremental_repair', 'verify_manifest', 'verify_plan_artifacts', 'export_dead_letters', 'read_raw_event', 'local_recovery_report'], default='shadow')
     parser.add_argument('--confirm-in-place', default='')
     parser.add_argument('--confirm-activate', default='')
     parser.add_argument('--confirm-rollback', default='')
@@ -3718,6 +3893,8 @@ def main() -> int:
             summary = run_export_dead_letters(args)
         elif args.mode == 'read_raw_event':
             summary = run_read_raw_event(args)
+        elif args.mode == 'local_recovery_report':
+            summary = run_local_recovery_report(args)
         else:
             summary = run_backfill(args)
     except Exception as exc:

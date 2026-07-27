@@ -107,6 +107,7 @@ def parser_support_checks() -> list[Json]:
     return [
         check("backfill_modes_cover_batch_and_incremental", {"shadow", "validate_shadow", "activate_shadow", "rollback_activation", "incremental_repair", "in_place"}.issubset(set(mode_action.choices or []))),
         check("backfill_has_manifest_verification_mode", "verify_manifest" in set(mode_action.choices or [])),
+        check("backfill_has_local_recovery_report_mode", "local_recovery_report" in set(mode_action.choices or [])),
         check("backfill_raw_backend_choices_cover_all_raw_options", {"temporalstore", "matrixkv"}.issubset(set(raw_backend_action.choices or []))),
         check("benchmark_raw_backend_choices_cover_all_raw_options", {"both", "temporalstore", "matrixkv"}.issubset(set(benchmark_raw_action.choices or []))),
         check("benchmark_has_batch_sweep_option", "--batch-sizes" in benchmark_options),
@@ -1212,6 +1213,12 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
         "matrixark_context_backfill_rollback_target_records",
         "matrixark_context_backfill_rollback_target_health",
     ]
+    required_local_recovery_metrics = [
+        "matrixark_context_local_recovery_status",
+        "matrixark_context_local_recovery_check",
+        "matrixark_context_local_recovery_blocker",
+        "matrixark_context_local_recovery_serving_layers",
+    ]
     results: list[Json] = []
     source_prefix = "matrixark:mcp:readiness_prometheus"
     records = max(2, int(args.records))
@@ -1223,6 +1230,53 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
             kv_path = tmp_path / "kv.json"
             kv = backfill.LocalJsonKV(kv_path)
             bench.seed_raw_log(kv, prefix=source_prefix, records=records, payload_bytes=args.payload_bytes)
+            recovery_records = [
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": backfill.stable_hash(f"{raw_backend}:local-recovery:event"),
+                    "node_hash": backfill.stable_hash(f"{raw_backend}:local-recovery:node"),
+                    "scope": {"tenant_id": "readiness", "user_id": raw_backend, "session_id": "local-recovery"},
+                    "text": "local recovery readiness event",
+                    "idempotency_key": f"{raw_backend}:local-recovery:event",
+                },
+                {
+                    "record_type": "context_entity",
+                    "entity_hash": backfill.stable_hash(f"{raw_backend}:local-recovery:entity"),
+                    "node_hash": backfill.stable_hash(f"{raw_backend}:local-recovery:node"),
+                    "scope": {"tenant_id": "readiness", "user_id": raw_backend, "session_id": "local-recovery"},
+                    "entity_type": "recovery_gate",
+                    "entity_name": "local_context_rebuild",
+                    "state": "Local recovery can rebuild context events, entities, embeddings, and secondary indexes.",
+                    "idempotency_key": f"{raw_backend}:local-recovery:entity",
+                },
+                {
+                    "record_type": "context_embedding",
+                    "embedding_type": "entity_state",
+                    "ref_type": "entity",
+                    "ref_hash": backfill.stable_hash(f"{raw_backend}:local-recovery:entity"),
+                    "node_hash": backfill.stable_hash(f"{raw_backend}:local-recovery:node"),
+                    "scope": {"tenant_id": "readiness", "user_id": raw_backend, "session_id": "local-recovery"},
+                    "vector": [1.0, 0.0, 0.5],
+                    "idempotency_key": f"{raw_backend}:local-recovery:embedding",
+                },
+                {
+                    "record_type": "context_index",
+                    "index_name": "entity",
+                    "index_value": "local_context_rebuild",
+                    "ref_hash": backfill.stable_hash(f"{raw_backend}:local-recovery:entity"),
+                    "node_hash": backfill.stable_hash(f"{raw_backend}:local-recovery:node"),
+                    "scope": {"tenant_id": "readiness", "user_id": raw_backend, "session_id": "local-recovery"},
+                    "scope_key": f"tenant:readiness/user:{raw_backend}/session:local-recovery",
+                    "idempotency_key": f"{raw_backend}:local-recovery:index",
+                },
+            ]
+            for offset, record in enumerate(recovery_records):
+                sequence = records + offset
+                shard = sequence // backfill.DIRECT_RECORD_LOG_SHARD_SIZE
+                field = f"{sequence % backfill.DIRECT_RECORD_LOG_SHARD_SIZE:020d}"
+                kv.hset(f"{source_prefix}:records:{shard:06d}", field, json.dumps(record, sort_keys=True))
+            records += len(recovery_records)
+            kv.put_string(f"{source_prefix}:record_count", str(records))
             kv.put_string("matrixark:context:active_prefix", f"matrixark:context:active:prometheus:{raw_backend}")
             backfill.MatrixKVBackfillTarget(
                 kv,
@@ -1274,6 +1328,20 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
             validation_args.prometheus_output = str(validation_prometheus)
             validation_summary = backfill.run_validate_shadow(validation_args)
             validation_text = validation_prometheus.read_text(encoding="utf-8") if validation_prometheus.exists() else ""
+
+            local_recovery_prometheus = tmp_path / "local_recovery.prom"
+            local_recovery_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=f"matrixark:context_backfill:readiness_prometheus:{raw_backend}:full",
+                raw_backend=raw_backend,
+                job_id=f"readiness-prometheus-{raw_backend}-local-recovery",
+                batch_size=args.batch_size,
+                mode="local_recovery_report",
+            )
+            local_recovery_args.prometheus_output = str(local_recovery_prometheus)
+            local_recovery_summary = backfill.run_local_recovery_report(local_recovery_args)
+            local_recovery_text = local_recovery_prometheus.read_text(encoding="utf-8") if local_recovery_prometheus.exists() else ""
 
             activation_prometheus = tmp_path / "activation.prom"
             activation_args = bench.make_backfill_args(
@@ -1345,6 +1413,8 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
                 "plan_execution_readiness_ready": bool((plan_summary.get("execution_readiness") or {}).get("ready")),
                 "shadow_status": shadow_summary.get("status"),
                 "validation_status": validation_summary.get("status"),
+                "local_recovery_status": local_recovery_summary.get("status"),
+                "local_recovery_ready": bool(local_recovery_summary.get("ready")),
                 "activation_status": activation_summary.get("status"),
                 "rollback_status": rollback_summary.get("status"),
                 "repair_status": repair_summary.get("status"),
@@ -1352,18 +1422,21 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
                 "plan_prometheus_output": str(plan_prometheus),
                 "shadow_prometheus_output": str(shadow_prometheus),
                 "validation_prometheus_output": str(validation_prometheus),
+                "local_recovery_prometheus_output": str(local_recovery_prometheus),
                 "activation_prometheus_output": str(activation_prometheus),
                 "rollback_prometheus_output": str(rollback_prometheus),
                 "repair_prometheus_output": str(repair_prometheus),
                 "plan_metric_count": sum(1 for line in plan_text.splitlines() if line and not line.startswith("#")),
                 "shadow_metric_count": sum(1 for line in shadow_text.splitlines() if line and not line.startswith("#")),
                 "validation_metric_count": sum(1 for line in validation_text.splitlines() if line and not line.startswith("#")),
+                "local_recovery_metric_count": sum(1 for line in local_recovery_text.splitlines() if line and not line.startswith("#")),
                 "activation_metric_count": sum(1 for line in activation_text.splitlines() if line and not line.startswith("#")),
                 "rollback_metric_count": sum(1 for line in rollback_text.splitlines() if line and not line.startswith("#")),
                 "repair_metric_count": sum(1 for line in repair_text.splitlines() if line and not line.startswith("#")),
                 "plan_metrics_present": {metric: metric in plan_text for metric in required_plan_metrics},
                 "shadow_metrics_present": {metric: metric in shadow_text for metric in required_shadow_metrics},
                 "validation_metrics_present": {metric: metric in validation_text for metric in required_validation_metrics},
+                "local_recovery_metrics_present": {metric: metric in local_recovery_text for metric in required_local_recovery_metrics},
                 "activation_metrics_present": {metric: metric in activation_text for metric in required_activation_metrics},
                 "rollback_metrics_present": {metric: metric in rollback_text for metric in required_rollback_metrics},
                 "repair_metrics_present": {metric: metric in repair_text for metric in required_repair_metrics},
@@ -1374,6 +1447,8 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
         and item["plan_execution_readiness_ready"]
         and item["shadow_status"] == "ok"
         and item["validation_status"] == "ok"
+        and item["local_recovery_status"] == "ok"
+        and item["local_recovery_ready"]
         and item["activation_status"] == "ok"
         and item["rollback_status"] == "ok"
         and item["repair_status"] == "ok"
@@ -1381,6 +1456,7 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
         and all(item["plan_metrics_present"].values())
         and all(item["shadow_metrics_present"].values())
         and all(item["validation_metrics_present"].values())
+        and all(item["local_recovery_metrics_present"].values())
         and all(item["activation_metrics_present"].values())
         and all(item["rollback_metrics_present"].values())
         and all(item["repair_metrics_present"].values())
@@ -1682,11 +1758,12 @@ def prometheus_checks(summary: Json) -> list[Json]:
         check("prometheus_gate_plan_metrics_present", all(all((item.get("plan_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_shadow_metrics_present", all(all((item.get("shadow_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_validation_metrics_present", all(all((item.get("validation_metrics_present") or {}).values()) for item in results)),
+        check("prometheus_gate_local_recovery_metrics_present", all(all((item.get("local_recovery_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_activation_metrics_present", all(all((item.get("activation_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_rollback_metrics_present", all(all((item.get("rollback_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_incremental_repair_metrics_present", all(all((item.get("repair_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_incremental_repair_manifest_verified", all(item.get("repair_manifest_verification_status") == "ok" for item in results)),
-        check("prometheus_gate_emitted_samples", all(int(item.get("plan_metric_count", 0) or 0) > 0 and int(item.get("shadow_metric_count", 0) or 0) > 0 and int(item.get("validation_metric_count", 0) or 0) > 0 and int(item.get("activation_metric_count", 0) or 0) > 0 and int(item.get("rollback_metric_count", 0) or 0) > 0 and int(item.get("repair_metric_count", 0) or 0) > 0 for item in results)),
+        check("prometheus_gate_emitted_samples", all(int(item.get("plan_metric_count", 0) or 0) > 0 and int(item.get("shadow_metric_count", 0) or 0) > 0 and int(item.get("validation_metric_count", 0) or 0) > 0 and int(item.get("local_recovery_metric_count", 0) or 0) > 0 and int(item.get("activation_metric_count", 0) or 0) > 0 and int(item.get("rollback_metric_count", 0) or 0) > 0 and int(item.get("repair_metric_count", 0) or 0) > 0 for item in results)),
     ]
 
 
