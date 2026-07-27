@@ -443,6 +443,35 @@ def matrixark_local_recovery_report(
         "dropped_memory_layer_budget",
         "by_codex_event",
     )
+    async_readiness_records = [
+        record.get("async_pipeline_readiness")
+        for record in retrieval_visibility_records
+        if isinstance(record.get("async_pipeline_readiness"), dict)
+    ]
+    async_readiness_remaining_stages = sorted(
+        {
+            str(stage)
+            for readiness in async_readiness_records
+            for stage in (readiness.get("remaining_stages") if isinstance(readiness.get("remaining_stages"), list) else [])
+            if str(stage or "")
+        }
+    )
+    async_readiness_warnings = sorted(
+        {
+            str(warning)
+            for readiness in async_readiness_records
+            for warning in (readiness.get("freshness_warnings") if isinstance(readiness.get("freshness_warnings"), list) else [])
+            if str(warning or "")
+        }
+    )
+    async_readiness_status_counts = Counter(
+        "ready" if bool(readiness.get("ready_for_retrieval")) else "not_ready"
+        for readiness in async_readiness_records
+    )
+    async_readiness_task_count = sum(
+        int(readiness.get("task_count") or 0)
+        for readiness in async_readiness_records
+    )
     async_task_records = [
         record for record in records
         if record.get("record_type") == "matrixark_async_pipeline_task"
@@ -711,6 +740,13 @@ def matrixark_local_recovery_report(
             "retrieval_budget_pressure_rebuildable_from_durable_log": bool(
                 memory_layer_budget_record_count or dropped_memory_layer_budget_record_count
             ) and not blockers,
+            "async_readiness_record_count": len(async_readiness_records),
+            "async_readiness_ready_count": int(async_readiness_status_counts.get("ready", 0)),
+            "async_readiness_not_ready_count": int(async_readiness_status_counts.get("not_ready", 0)),
+            "async_readiness_task_count": async_readiness_task_count,
+            "async_readiness_remaining_stages": async_readiness_remaining_stages,
+            "async_readiness_freshness_warnings": async_readiness_warnings,
+            "async_readiness_rebuildable_from_durable_log": bool(async_readiness_records) and not blockers,
             "session_identity_record_count": len(telemetry_session_identities),
             "strong_session_identity_count": sum(1 for identity in telemetry_session_identities if bool(identity.get("strong_session_identity"))),
             "fallback_session_identity_count": sum(1 for identity in telemetry_session_identities if bool(identity.get("fallback_session_identity"))),

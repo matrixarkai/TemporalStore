@@ -126,6 +126,20 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                     "by_hook_type": {"hook_boundary": {"refs": 1, "tokens": 9}},
                     "by_codex_event": {"Stop": {"refs": 1, "tokens": 9}},
                 },
+                "async_pipeline_readiness": {
+                    "task_count": 1,
+                    "status_counts": {"extraction_committed": 1},
+                    "pending_task_count": 0,
+                    "extraction_committed_task_count": 1,
+                    "summary_completed_task_count": 0,
+                    "completed_stages": ["extraction"],
+                    "remaining_stages": ["summary", "compression", "embedding"],
+                    "ready_for_retrieval": False,
+                    "freshness_warnings": [
+                        "async_pipeline_followup_pending",
+                        "async_pipeline_remaining_stages:compression,embedding,summary",
+                    ],
+                },
                 "session_identity": {
                     "session_id_source": "payload_field",
                     "strong_session_identity": True,
@@ -313,6 +327,22 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
             {"refs": 1, "tokens": 9},
             report["retrieval_visibility"]["dropped_budget_by_codex_event"]["Stop"],
         )
+        self.assertEqual(1, report["retrieval_visibility"]["async_readiness_record_count"])
+        self.assertEqual(0, report["retrieval_visibility"]["async_readiness_ready_count"])
+        self.assertEqual(1, report["retrieval_visibility"]["async_readiness_not_ready_count"])
+        self.assertEqual(1, report["retrieval_visibility"]["async_readiness_task_count"])
+        self.assertEqual(
+            ["compression", "embedding", "summary"],
+            report["retrieval_visibility"]["async_readiness_remaining_stages"],
+        )
+        self.assertEqual(
+            [
+                "async_pipeline_followup_pending",
+                "async_pipeline_remaining_stages:compression,embedding,summary",
+            ],
+            report["retrieval_visibility"]["async_readiness_freshness_warnings"],
+        )
+        self.assertTrue(report["retrieval_visibility"]["async_readiness_rebuildable_from_durable_log"])
         self.assertEqual(1, report["retrieval_visibility"]["session_identity_record_count"])
         self.assertEqual(1, report["retrieval_visibility"]["strong_session_identity_count"])
         self.assertEqual(0, report["retrieval_visibility"]["fallback_session_identity_count"])
