@@ -61,7 +61,7 @@ HOOK_CLOSE_TIMEOUT_MS = _env_int("MATRIXARK_HOOK_CLOSE_TIMEOUT_MS", 750, minimum
 HOOK_TOOL_CALL_TIMEOUT_MS = _env_int("MATRIXARK_HOOK_TOOL_CALL_TIMEOUT_MS", 8000, minimum=0)
 HOOK_RETRIEVE_TIMEOUT_MS = _env_int("MATRIXARK_HOOK_RETRIEVE_TIMEOUT_MS", 5000, minimum=0)
 HOOK_AUTO_BATCH_EXTRACT = _env_bool("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", True)
-HOOK_FAST_ASYNC_INGEST = os.environ.get("MATRIXARK_HOOK_FAST_ASYNC_INGEST", "").strip().lower() in {"1", "true", "yes", "on"}
+HOOK_FAST_ASYNC_INGEST = _env_bool("MATRIXARK_HOOK_FAST_ASYNC_INGEST", True)
 HOOK_COMPACT_HOT_PREFIX_ONLY = os.environ.get("MATRIXARK_HOOK_COMPACT_HOT_PREFIX_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
 
 RESOURCE_TYPE_BY_SUFFIX = {
@@ -2981,7 +2981,7 @@ def main() -> int:
                     hook=main_hook,
                 )
                 if not ingest:
-                    hook_warning = "fast async hook ingest was requested but the backend has no direct write queue"
+                    trace.setdefault("fast_async_ingest", {})["fallback_reason"] = "direct_write_queue_unavailable"
             if ingest:
                 hook_warning = timeout_warning(ingest)
             if not ingest and not hook_warning:
