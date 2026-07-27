@@ -77,6 +77,17 @@ class OssModelContractValidationTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("reader_model_not_oss", result.stderr)
 
+    def test_matching_proprietary_reader_is_not_oss(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            matrixark = write_report(tmp_path / "matrixark.json", reader_model="gpt-4o-mini")
+            baseline = write_report(tmp_path / "openviking.json", reader_model="gpt-4o-mini")
+
+            result = run_validator(matrixark, baseline)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("reader_model_not_oss", result.stderr)
+
     def test_reader_output_token_budget_drift_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
