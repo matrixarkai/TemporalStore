@@ -1207,6 +1207,10 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING")
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
+    let stored_record_scoring =
+        std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_STORED_RECORD_SCORING")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(true);
     let compact_source_replay =
         std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_COMPACT_SOURCE_REPLAY")
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -1335,44 +1339,49 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                     }
                 };
                 let retrieve_started = Instant::now();
-                let retrieve = retrieve_context(
-                    engine,
-                    ContextRetrieveRequest {
-                        shard_id: 1,
+                let blocks = if stored_record_scoring {
+                    external_stored_source_blocks(
+                        engine,
                         tenant_hash,
-                        node_hashes,
-                        query: if all_source_replay {
-                            String::new()
-                        } else {
-                            String::new()
+                        &node_hashes,
+                        case,
+                        case_max_events,
+                    )
+                } else {
+                    let retrieve = retrieve_context(
+                        engine,
+                        ContextRetrieveRequest {
+                            shard_id: 1,
+                            tenant_hash,
+                            node_hashes,
+                            query: case.query.clone(),
+                            start_time_ms: 0,
+                            end_time_ms: 10_000,
+                            max_events: case_max_events,
+                            min_confidence: 0.0,
+                            min_importance: 0.0,
+                            tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+                            max_summary_nodes: case_max_events,
+                            max_event_nodes: case_max_events,
+                            prefer_current_agent: false,
+                            current_agent_scope_key: "agent:codex".to_string(),
+                            provider: ContextModelProviderConfig::default(),
                         },
-                        start_time_ms: 0,
-                        end_time_ms: 10_000,
-                        max_events: case_max_events,
-                        min_confidence: 0.0,
-                        min_importance: 0.0,
-                        tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
-                        max_summary_nodes: case_max_events,
-                        max_event_nodes: case_max_events,
-                        prefer_current_agent: false,
-                        current_agent_scope_key: "agent:codex".to_string(),
-                        provider: ContextModelProviderConfig::default(),
-                    },
-                );
+                    );
+                    retrieve.blocks
+                };
+                let elapsed_ms = retrieve_started.elapsed().as_millis();
                 if trace_enabled {
-                    let elapsed_ms = retrieve_started.elapsed().as_millis();
                     eprintln!(
                         "external_context_benchmark case={} retrieve_ms={} blocks={}",
                         case.query_id,
                         elapsed_ms,
-                        retrieve.blocks.len()
+                        blocks.len()
                     );
-                    retrieval_ms_override = Some(elapsed_ms);
-                } else {
-                    retrieval_ms_override = Some(retrieve_started.elapsed().as_millis());
                 }
-                retrieved_source_sets.insert(source_digest, retrieve.blocks.clone());
-                retrieve.blocks
+                retrieval_ms_override = Some(elapsed_ms);
+                retrieved_source_sets.insert(source_digest, blocks.clone());
+                blocks
             }
         };
         order_external_blocks_by_case_source_order(case, &mut blocks);
@@ -1786,6 +1795,84 @@ fn external_direct_source_blocks(
                 &block.text,
             )),
             block.event_time_ms,
+            block.uri.clone(),
+        )
+    });
+    blocks.truncate(max_events.max(1));
+    blocks
+}
+
+fn external_stored_source_blocks(
+    engine: &TemporalEngine,
+    tenant_hash: u64,
+    node_hashes: &[u64],
+    case: &ExternalContextBenchmarkCase,
+    max_events: usize,
+) -> Vec<temporalstore_rust::ContextBlock> {
+    let mut blocks = Vec::new();
+    for node_hash in node_hashes {
+        let node_source_ref = match engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextGetNode {
+                    tenant_hash,
+                    node_hash: *node_hash,
+                },
+            })
+            .response
+        {
+            CommandResponse::ContextNode { node: Some(node), .. } => node.raw_metadata_ref,
+            _ => String::new(),
+        };
+        let events = match engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextQueryEvents {
+                    tenant_hash,
+                    node_hash: *node_hash,
+                    start_time_ms: 0,
+                    end_time_ms: 10_000,
+                    limit: Some(8),
+                    current_valid_only: false,
+                    as_of_ms: 0,
+                    kinds: Vec::new(),
+                    statuses: Vec::new(),
+                    min_confidence: 0.0,
+                    min_importance: 0.0,
+                },
+            })
+            .response
+        {
+            CommandResponse::ContextEvents { events, .. } => events,
+            _ => Vec::new(),
+        };
+        for event in events {
+            let source_ref = if event.source_ref.trim().is_empty() {
+                node_source_ref.clone()
+            } else {
+                event.source_ref.clone()
+            };
+            blocks.push(temporalstore_rust::ContextBlock {
+                uri: format!("external-stored://{tenant_hash}/{node_hash}/{}", event.event_id_hash),
+                tier: ContextTier::L2,
+                node_hash: *node_hash,
+                event_time_ms: event.event_time_ms,
+                text: event.text,
+                estimated_tokens: 0,
+                source_ref,
+            });
+        }
+    }
+    blocks.sort_by_key(|block| {
+        (
+            Reverse(external_direct_relevance_score(
+                case.query.as_str(),
+                &block.text,
+            )),
+            external_block_source_order(case, block),
+            external_block_tier_order(block.tier),
+            Reverse(context_benchmark_block_is_hit(case, block) as u8),
+            Reverse(block.event_time_ms),
             block.uri.clone(),
         )
     });

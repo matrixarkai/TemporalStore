@@ -399,7 +399,7 @@ def locomo_baseline_command(repo: Path, args: argparse.Namespace, matrixark_repo
 
 
 def longmem_baseline_command(repo: Path, args: argparse.Namespace, matrixark_report: Path, report: Path) -> list[str]:
-    return [
+    command = [
         sys.executable,
         str(repo / "tools" / "run_openviking_longmem_source_retrieval_baseline.py"),
         "--input",
@@ -436,6 +436,9 @@ def longmem_baseline_command(repo: Path, args: argparse.Namespace, matrixark_rep
         "--reader-candidate-only",
         "--require-shared-oss-models",
     ]
+    if args.longmem_question_limit > 0:
+        command.extend(["--question-limit", str(args.longmem_question_limit)])
+    return command
 
 
 def require_files(*paths: Path) -> None:
