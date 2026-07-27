@@ -244,6 +244,12 @@ def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate:
         "resource_version": candidate.get("resource_version") or metadata.get("resource_version", ""),
         "version_state": candidate.get("version_state", "current"),
         "stale_or_superseded": bool(candidate.get("stale_or_superseded", False)),
+        "session_continuity": candidate.get("session_continuity", ""),
+        "memory_scope": candidate.get("memory_scope", ""),
+        "entity_type": candidate.get("entity_type") or metadata.get("entity_type", ""),
+        "entity_name": candidate.get("entity_name") or metadata.get("entity_name", ""),
+        "profile_shadowed_by_ref_hash": candidate.get("profile_shadowed_by_ref_hash"),
+        "profile_shadowed_reason": candidate.get("profile_shadowed_reason", ""),
         "access_decision": candidate.get("access_decision", "allowed_by_scope"),
         "selection_reason": candidate.get("selection_reason", ""),
         "matched_index_terms": candidate.get("matched_index_terms", []),
@@ -253,7 +259,9 @@ def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate:
 
 
 def record_dropped_candidate(dropped: Json, candidate: Json, *, reason: str, token_estimate: int) -> None:
-    if not is_resource_or_skill_candidate(candidate):
+    if not is_resource_or_skill_candidate(candidate) and not (
+        reason == "stale" and str(candidate.get("ref_type") or "") == "entity"
+    ):
         return
     dropped.setdefault("refs", []).append(dropped_candidate_audit_ref(candidate, reason=reason, token_estimate=token_estimate))
 

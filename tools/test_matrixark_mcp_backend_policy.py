@@ -3880,6 +3880,64 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             dropped["reason_descriptions"]["entity_bridge_slot_reserved"],
         )
 
+    def test_budget_packer_drops_stale_session_entity_for_profile_bridge(self) -> None:
+        primary = [
+            {
+                "ref_type": "entity",
+                "ref_hash": 7001,
+                "text": "Session entity says the Windows repo folder is still the TemporalStore workspace.",
+                "score": 0.99,
+                "session_continuity": "same_session",
+                "entity_type": "repo_workspace",
+                "entity_name": "TemporalStore",
+                "memory_scope": "session",
+                "updated_at_ms": 1000,
+            },
+            {
+                "ref_type": "entity",
+                "ref_hash": 7002,
+                "text": "User profile says TemporalStore work must use /root/src/github-services/TemporalStore.",
+                "score": 0.72,
+                "session_continuity": "cross_session",
+                "entity_type": "repo_workspace",
+                "entity_name": "TemporalStore",
+                "memory_scope": "user_profile",
+                "version_state": "current",
+                "updated_at_ms": 2000,
+                "source_entity_hashes": [7001],
+                "scope": {"session_id": "profile"},
+            },
+        ]
+
+        selected, _, dropped = mcp_budget_pack.select_token_budgeted_refs(
+            primary,
+            [],
+            max_context_tokens=180,
+            auxiliary_quota=0,
+            question_type="current_state",
+            max_selected_refs=2,
+            max_global_candidates=8,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 180,
+                "max_sessions": 3,
+                "max_candidates": 8,
+                "min_score": 0.0,
+                "raw_evidence_min_score": 0.45,
+                "min_entity_bridge_refs": 1,
+            },
+        )
+
+        self.assertEqual(["cross_session"], [ref.get("session_continuity") for ref in selected])
+        self.assertEqual(["current"], [ref.get("version_state") for ref in selected])
+        self.assertEqual(0.18, selected[0]["profile_current_state_boost"])
+        self.assertEqual(1, dropped["stale"])
+        self.assertEqual(1, dropped["cross_session_policy"]["entity_bridge_selected_ref_count"])
+        stale_drop = next(ref for ref in dropped["refs"] if ref.get("drop_reason") == "stale")
+        self.assertEqual("same_session", stale_drop["session_continuity"])
+        self.assertTrue(stale_drop["stale_or_superseded"])
+        self.assertEqual(7002, stale_drop["profile_shadowed_by_ref_hash"])
+
     def test_codex_session_identity_policy_treats_exact_payload_sources_as_strong(self) -> None:
         payload_policy = mcp_local.codex_session_identity_policy("payload.conversation_id")
         self.assertTrue(payload_policy["strong_session_identity"])

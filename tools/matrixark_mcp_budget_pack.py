@@ -79,6 +79,82 @@ def context_text_hashes(text: str) -> set[int]:
     return {stable_hash(variant) for variant in variants if variant}
 
 
+def entity_current_state_key(candidate: Json) -> tuple[str, str] | None:
+    if str(candidate.get("ref_type") or "") != "entity":
+        return None
+    metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
+    entity_type = str(candidate.get("entity_type") or metadata.get("entity_type") or "").strip().lower()
+    entity_name = str(candidate.get("entity_name") or metadata.get("entity_name") or "").strip().lower()
+    if not entity_type or not entity_name:
+        return None
+    return entity_type, entity_name
+
+
+def prefer_profile_entities_for_current_state(candidates: list[Json], question_type: str) -> list[Json]:
+    if question_type not in {"current_state", "latest"}:
+        return candidates
+    latest_profile_by_entity: dict[tuple[str, str], Json] = {}
+    latest_profile_by_source_entity_hash: dict[Any, Json] = {}
+    for candidate in candidates:
+        key = entity_current_state_key(candidate)
+        if key is None:
+            continue
+        if str(candidate.get("memory_scope") or "") != "user_profile":
+            continue
+        if str(candidate.get("session_continuity") or "") != "cross_session":
+            continue
+        existing = latest_profile_by_entity.get(key)
+        if existing is None or int(candidate.get("updated_at_ms") or 0) >= int(existing.get("updated_at_ms") or 0):
+            latest_profile_by_entity[key] = candidate
+        for source_entity_hash in candidate.get("source_entity_hashes", []):
+            existing_by_source = latest_profile_by_source_entity_hash.get(source_entity_hash)
+            if existing_by_source is None or int(candidate.get("updated_at_ms") or 0) >= int(existing_by_source.get("updated_at_ms") or 0):
+                latest_profile_by_source_entity_hash[source_entity_hash] = candidate
+    if not latest_profile_by_entity:
+        return candidates
+    adjusted: list[Json] = []
+    for candidate in candidates:
+        key = entity_current_state_key(candidate)
+        profile = latest_profile_by_source_entity_hash.get(candidate.get("ref_hash"))
+        if profile is None and key is not None:
+            profile = latest_profile_by_entity.get(key)
+        if profile is None:
+            adjusted.append(candidate)
+            continue
+        if candidate is profile or candidate.get("ref_hash") == profile.get("ref_hash"):
+            adjusted.append({
+                **candidate,
+                "score": min(1.0, max(0.0, float(candidate.get("score", 0.0)) + 0.18)),
+                "profile_current_state_boost": 0.18,
+                "selection_reason": candidate.get("selection_reason") or "current profile entity preferred over session-local historical state",
+            })
+            continue
+        if str(candidate.get("memory_scope") or "") == "session":
+            adjusted.append({
+                **candidate,
+                "stale_or_superseded": True,
+                "profile_shadowed_by_ref_hash": profile.get("ref_hash"),
+                "profile_shadowed_reason": (
+                    "source_entity_lineage"
+                    if candidate.get("ref_hash") in set(profile.get("source_entity_hashes", []))
+                    else "same_entity_identity"
+                ),
+                "selection_reason": candidate.get("selection_reason") or "session-local entity kept as historical evidence behind current profile state",
+            })
+            continue
+        adjusted.append(candidate)
+    return adjusted
+
+
+def is_stale_or_superseded_candidate(candidate: Json) -> bool:
+    if bool(candidate.get("stale_or_superseded") or candidate.get("stale")):
+        return True
+    if candidate.get("superseded_by_ref_hash") or candidate.get("superseded_by_entity_hash"):
+        return True
+    version_state = str(candidate.get("version_state") or candidate.get("current_state_policy") or "").strip().lower()
+    return version_state in {"stale", "superseded", "historical_superseded"}
+
+
 def local_context_budget(args: Json) -> Json:
     raw_items = args.get("local_context", [])
     if raw_items is None:
@@ -217,6 +293,7 @@ def select_token_budgeted_refs(
         total_limit=candidate_pool_limit,
         auxiliary_quota=auxiliary_quota,
     )
+    candidates = prefer_profile_entities_for_current_state(candidates, question_type)
     candidates.sort(key=lambda item: packing_sort_key(item, question_type), reverse=True)
     candidates = diversify_for_question_type(candidates, question_type, total_limit=candidate_pool_limit)
     selected: list[Json] = []
@@ -361,6 +438,11 @@ def select_token_budgeted_refs(
             dropped["low_score"] += 1
             dropped["estimated_tokens"]["low_score"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="low_score", token_estimate=ref_tokens)
+            continue
+        if question_type in {"current_state", "latest"} and is_stale_or_superseded_candidate(candidate):
+            dropped["stale"] += 1
+            dropped["estimated_tokens"]["stale"] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason="stale", token_estimate=ref_tokens)
             continue
         if remote_budget <= 0 or (selected and used_tokens + ref_tokens > remote_budget):
             dropped["over_budget"] += 1
