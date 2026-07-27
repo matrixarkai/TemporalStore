@@ -1883,16 +1883,37 @@ def _extract_tool_text_from_rollout(path: Path) -> str:
 
 
 def _latest_rollout_files(payload: Json) -> list[Path]:
+    direct_files: list[Path] = []
+    for path_value in [
+        first_string_at(payload, [["transcript_path"], ["transcriptPath"], ["conversation_path"], ["conversationPath"], ["log_path"], ["logPath"]]),
+    ]:
+        if not path_value:
+            continue
+        candidate = Path(path_value)
+        try:
+            if candidate.exists() and candidate.is_file():
+                direct_files.append(candidate)
+        except OSError:
+            continue
     root = _windows_codex_sessions_root_from_payload(payload)
     if root is None:
-        return []
+        return direct_files
     now = datetime.now(timezone.utc)
     day_dir = root / f"{now.year:04d}" / f"{now.month:02d}" / f"{now.day:02d}"
     search_roots = [day_dir] if day_dir.exists() else [root]
-    files: list[Path] = []
+    files: list[Path] = list(direct_files)
+    seen = {str(path.resolve()) for path in files}
     for search_root in search_roots:
         try:
-            files.extend(search_root.glob("rollout-*.jsonl"))
+            for candidate in search_root.glob("rollout-*.jsonl"):
+                try:
+                    key = str(candidate.resolve())
+                except OSError:
+                    key = str(candidate)
+                if key in seen:
+                    continue
+                seen.add(key)
+                files.append(candidate)
         except OSError:
             continue
     files.sort(key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
@@ -2857,7 +2878,7 @@ def main() -> int:
             common["api_key"] = args.api_key
 
         ingest = {}
-        if args.event == "UserPromptSubmit" and not HOOK_FAST_ASYNC_INGEST:
+        if args.event == "UserPromptSubmit":
             previous_tool_output = selected_tool_evidence_text(latest_codex_tool_output_from_rollout(payload))
             if previous_tool_output and previous_tool_output != text and not hook_warning:
                 backfill_result = trace_tool_call(
