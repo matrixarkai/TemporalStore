@@ -2789,6 +2789,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     for ref in selected
                 )
             )
+            retrieved_tool_profile_ref = next(
+                ref
+                for ref in selected
+                if ref.get("ref_type") == "entity"
+                and ref.get("session_continuity") == "cross_session"
+                and "Exit code: 0" in str(ref.get("text") or ref.get("summary_text") or "")
+            )
+            for key in ["session_id", "session_hash", "scope_key"]:
+                self.assertNotIn(key, retrieved_tool_profile_ref)
+            self.assertEqual(["session_codex_1"], retrieved_tool_profile_ref["source_session_ids"])
             decision_pack = adapter.retrieve(
                 {
                     "scope": {
@@ -2813,6 +2823,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     for ref in decision_pack["selected_refs"]
                 )
             )
+            retrieved_decision_profile_ref = next(
+                ref
+                for ref in decision_pack["selected_refs"]
+                if ref.get("ref_type") == "entity"
+                and ref.get("entity_type") == "assistant_decision"
+                and "Commit d0152479 pushed" in str(ref.get("text") or ref.get("summary_text") or "")
+            )
+            for key in ["session_id", "session_hash", "scope_key"]:
+                self.assertNotIn(key, retrieved_decision_profile_ref)
+            self.assertEqual(["session_codex_1"], retrieved_decision_profile_ref["source_session_ids"])
             self.assertTrue(
                 any(
                     record.get("record_type") == "context_summary_dirty"
