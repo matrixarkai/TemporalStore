@@ -5378,6 +5378,7 @@ class MatrixArkLocalAdapter:
             ranking,
             remote_budget_tokens=remote_context_budget_tokens,
         )
+        source_role_budget_tokens = optional_object(args, "source_role_budget_tokens") or optional_object(ranking, "source_role_budget_tokens")
         query_terms = {term for term in tokens(query) if len(term) > 2}
         raw_reference_time_ms = args.get("reference_time_ms", now_ms())
         if not isinstance(raw_reference_time_ms, int):
@@ -6561,6 +6562,7 @@ class MatrixArkLocalAdapter:
             deadline_reason="deadline_during_context_pack",
             cross_session_policy=cross_session_policy,
             shared_context_policy=shared_context_policy,
+            source_role_budget_tokens=source_role_budget_tokens,
         )
         partial_context_pack = bool(dropped_over_budget.get("deadline_exceeded"))
         request_metadata = optional_object(args, "metadata")
@@ -6662,6 +6664,7 @@ class MatrixArkLocalAdapter:
                 "async_pipeline_readiness": async_pipeline_readiness,
                 "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
                 "shared_context": dropped_over_budget.get("shared_context_policy", shared_context_policy),
+                "source_role_budget": dropped_over_budget.get("source_role_budget_policy", {"enabled": False}),
                 "backend_retrieval_pushdown": retrieval_scan_stats,
                 "ranking": {
                     "min_similarity_score": min_similarity_score,
