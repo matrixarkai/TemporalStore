@@ -247,6 +247,117 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
+    def test_fast_hook_idle_preflush_persists_real_adapter_memory_layers(self) -> None:
+        original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
+        matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-idle.jsonl")
+
+                class Server:
+                    def __init__(self) -> None:
+                        self.adapter = adapter
+
+                scope_args = {
+                    "event": "UserPromptSubmit",
+                    "account_id": "acct_fast_idle",
+                    "tenant_id": "tenant_fast_idle",
+                    "user_id": "user_fast_idle",
+                    "session_id": "session_fast_idle",
+                    "team": "codex",
+                    "project": "temporalstore",
+                    "session_commit_threshold": 20,
+                    "idle_commit_timeout_ms": 1,
+                    "understanding_provider": "rules",
+                    "segment_provider": "deterministic",
+                }
+                server = Server()
+                first = matrixark_codex_hook.fast_async_hook_ingest(
+                    server,
+                    args=Namespace(**scope_args),
+                    text="Tool evidence before idle: Exit code: 0 and hook pipeline tests passed.",
+                    role="tool",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={
+                        "session_id_source": "payload_field",
+                        "thread_id": "thread-fast-idle",
+                        "turn_id": "turn-fast-idle-1",
+                    },
+                )
+                self.assertEqual("accepted", first["status"])
+                self.assertFalse(first["session_buffer"]["threshold_ready"])
+                self.assertFalse(first["idle_commit_result"])
+                time.sleep(0.01)
+
+                second = matrixark_codex_hook.fast_async_hook_ingest(
+                    server,
+                    args=Namespace(**scope_args),
+                    text="New user prompt should not mix into the previous idle batch.",
+                    role="user",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={
+                        "session_id_source": "payload_field",
+                        "thread_id": "thread-fast-idle",
+                        "turn_id": "turn-fast-idle-2",
+                    },
+                )
+                idle_commit = second["idle_commit_result"]
+                self.assertEqual("committed", idle_commit["status"])
+                self.assertEqual("idle_timeout", idle_commit["trigger_policy"])
+                self.assertEqual("provisional", idle_commit["extraction_phase"])
+                self.assertFalse(idle_commit["final_session_boundary"])
+                self.assertEqual(1, idle_commit["committed_event_count"])
+                self.assertEqual(["tool"], idle_commit["source_roles"])
+                self.assertTrue(second["session_buffer"]["pre_ingest_idle_ready"])
+                self.assertGreaterEqual(second["session_buffer"]["pre_ingest_idle_elapsed_ms"], 1)
+                self.assertEqual({}, second["auto_batch_extract_result"])
+
+                layers = idle_commit["memory_layers_written"]
+                self.assertGreaterEqual(layers["session_entities"], 1)
+                self.assertGreaterEqual(layers["profile_entities"], 1)
+                self.assertGreaterEqual(layers["secondary_indexes"], 1)
+                self.assertGreaterEqual(layers["summary_dirty_nodes"], 1)
+
+                scope = {
+                    "account_id": "acct_fast_idle",
+                    "tenant_id": "tenant_fast_idle",
+                    "user_id": "user_fast_idle",
+                    "session_id": "session_fast_idle",
+                }
+                pending_after_preflush = adapter.pending_session_events(scope)
+                self.assertEqual(1, len(pending_after_preflush))
+                self.assertIn("New user prompt", pending_after_preflush[0]["text"])
+
+                records = adapter.read_all()
+                commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
+                self.assertEqual(1, len(commits))
+                self.assertEqual("idle_timeout", commits[0]["trigger_policy"])
+                self.assertEqual(["tool"], commits[0]["source_roles"])
+                self.assertTrue(commits[0]["trigger_evidence"]["idle_ready"])
+                self.assertEqual(1, commits[0]["trigger_evidence"]["pending_event_count"])
+                self.assertGreaterEqual(
+                    sum(1 for record in records if record.get("record_type") == "context_event"),
+                    2,
+                )
+                self.assertTrue(any(record.get("record_type") == "context_index" for record in records))
+                self.assertTrue(
+                    any(
+                        record.get("record_type") == "context_entity"
+                        and record.get("memory_scope") == "session"
+                        for record in records
+                    )
+                )
+                self.assertTrue(
+                    any(
+                        record.get("record_type") == "context_entity"
+                        and record.get("memory_scope") == "user_profile"
+                        and record.get("session_continuity") == "cross_session"
+                        for record in records
+                    )
+                )
+        finally:
+            matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+
     def test_retrieval_metrics_expose_shared_local_remote_budget(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-retrieval-budget.jsonl")
