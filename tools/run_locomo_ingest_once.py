@@ -2523,6 +2523,7 @@ def should_use_cross_session_diversity(question: str) -> bool:
             r"\b(across|over time|all sessions?|multi[- ]?session|total|combined|in all|altogether|average|mean|minimum|min|maximum|max|difference|compared|how many total|how much total|list|which|what named|updates?)\b",
             q,
         )
+        or re.search(r"\bwhere\s+has\b|\bwhere\b.{0,40}\b(?:camped|visited|been|gone|traveled|travelled)\b", q)
     )
 
 
@@ -2537,7 +2538,7 @@ def adaptive_max_events_for_question(question: str, args: argparse.Namespace) ->
             r"\b(list|which|what .* (?:items?|things?|activities|places|names?|ones)|"
             r"names?|besides|who else|both|all|total|combined|across|over time|"
             r"how many|how long|years? ago|months? ago|difference|compare|"
-            r"before|after|earliest|latest|first|last)\b",
+            r"before|after|earliest|latest|first|last|where has|where .* (?:camped|visited|been|gone|traveled|travelled))\b",
             q,
         )
     )
@@ -2945,6 +2946,7 @@ def add_domain_reference_sources(
             r"\b(activities|different|fields?|countries|items?|doctors?|games?|friends?|total|spent|earned)\b",
             q,
         )
+        or re.search(r"\bwhere\s+has\b|\bplaces?\b", q)
     )
     per_pattern_limit = max(1, (max(1, max_events) + len(patterns) - 1) // max(1, len(patterns)))
     for pattern in patterns:
