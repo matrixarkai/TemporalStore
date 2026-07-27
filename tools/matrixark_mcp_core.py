@@ -5096,6 +5096,8 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
     for field in [
         "source_roles",
         "source_role_counts",
+        "budget_source_roles",
+        "budget_source_role_counts",
         "source_hook_types",
         "source_hook_type_counts",
         "source_codex_events",
@@ -5239,6 +5241,8 @@ def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate:
         "entity_name",
         "source_roles",
         "source_role_counts",
+        "budget_source_roles",
+        "budget_source_role_counts",
         "source_hook_types",
         "source_hook_type_counts",
         "source_codex_events",
@@ -5485,6 +5489,17 @@ def select_token_budgeted_refs(
         if semantic_role and semantic_role in role_names:
             return {semantic_role}
         return role_names
+
+    def candidate_budget_source_role_counts(candidate: Json, role_names: set[str]) -> Json:
+        source_counts = candidate.get("source_role_counts") if isinstance(candidate.get("source_role_counts"), dict) else {}
+        result: Json = {}
+        for role in sorted(role_names):
+            try:
+                source_count = max(0, int(source_counts.get(role, 0) or 0))
+            except (TypeError, ValueError):
+                source_count = 0
+            result[role] = source_count if source_count > 0 else 1
+        return result
     selected_cross_sessions: set[str] = set()
     def cross_session_key(candidate: Json) -> str:
         for source in [candidate, candidate.get("access_scope", {}), candidate.get("scope", {}), candidate.get("metadata", {}).get("access_scope", {}) if isinstance(candidate.get("metadata"), dict) else {}]:
@@ -5672,7 +5687,12 @@ def select_token_budgeted_refs(
             dropped["estimated_tokens"]["source_role_budget"] += ref_tokens
             record_dropped_candidate(
                 dropped,
-                {**candidate, "source_role_budget_capped_roles": capped_roles},
+                {
+                    **candidate,
+                    "budget_source_roles": sorted(candidate_source_roles),
+                    "budget_source_role_counts": candidate_budget_source_role_counts(candidate, candidate_source_roles),
+                    "source_role_budget_capped_roles": capped_roles,
+                },
                 reason="source_role_budget",
                 token_estimate=ref_tokens,
             )
@@ -5684,6 +5704,8 @@ def select_token_budgeted_refs(
                 "token_estimate": ref_tokens,
                 "packing_score": round(packing_sort_key(candidate, question_type)[0], 6),
                 "packing_policy": question_type,
+                "budget_source_roles": sorted(candidate_source_roles),
+                "budget_source_role_counts": candidate_budget_source_role_counts(candidate, candidate_source_roles),
             }
         )
         used_tokens += ref_tokens
@@ -5796,6 +5818,8 @@ def compact_context_pack_ref(ref: Json) -> Json:
         "current_state_policy",
         "source_roles",
         "source_role_counts",
+        "budget_source_roles",
+        "budget_source_role_counts",
         "source_hook_types",
         "source_hook_type_counts",
         "source_codex_events",
