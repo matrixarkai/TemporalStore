@@ -4375,7 +4375,7 @@ def candidate_index_terms(
         terms.add(context_index_name("summary_type", record.get("summary_type")))
         for entity_type in record.get("source_entity_types", [])[:16]:
             terms.add(context_index_name("entity_type", entity_type))
-        for role in record.get("source_roles", [])[:16]:
+        for role in sorted({normalize_message_role(role) for role in record.get("source_roles", [])[:16] if normalize_message_role(role)}):
             terms.add(context_index_name("source_role", role))
         for hook_type in record.get("source_hook_types", [])[:16]:
             terms.add(context_index_name("hook_type", hook_type))
@@ -4392,7 +4392,7 @@ def candidate_index_terms(
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))
         terms.add(context_index_name("context_class", "compression"))
         terms.add(context_index_name("operator", record.get("operator") or "TIME_COMPRESS"))
-        for role in record.get("source_roles", [])[:16]:
+        for role in sorted({normalize_message_role(role) for role in record.get("source_roles", [])[:16] if normalize_message_role(role)}):
             terms.add(context_index_name("source_role", role))
         for hook_type in record.get("source_hook_types", [])[:16]:
             terms.add(context_index_name("hook_type", hook_type))

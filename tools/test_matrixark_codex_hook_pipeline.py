@@ -276,6 +276,33 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             pressure["by_dimension"]["source_message_counts_by_role"]["assistant"],
         )
 
+    def test_candidate_index_terms_normalize_llm_role_aliases(self) -> None:
+        summary_terms = candidate_index_terms(
+            {
+                "record_type": "context_summary",
+                "summary_type": "node_l0",
+                "source_roles": ["llm", "model", "assistant"],
+            },
+            {},
+            {},
+            {},
+        )
+        compression_terms = candidate_index_terms(
+            {
+                "record_type": "context_compression_event",
+                "compression_id_hash": 901,
+                "source_roles": ["model", "assistant"],
+            },
+            {},
+            {},
+            {},
+        )
+
+        for terms in [summary_terms, compression_terms]:
+            self.assertIn("source_role:assistant", terms)
+            self.assertNotIn("source_role:llm", terms)
+            self.assertNotIn("source_role:model", terms)
+
     def test_time_compression_preserves_source_lineage_for_budgeting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-compression-lineage.jsonl")
