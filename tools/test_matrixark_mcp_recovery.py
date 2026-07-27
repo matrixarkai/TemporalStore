@@ -177,6 +177,21 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertEqual(1, report["retrieval_visibility"]["dropped_ref_count"])
         self.assertEqual(512, report["retrieval_visibility"]["max_remote_context_budget_tokens"])
         self.assertTrue(report["cache_rebuild"]["retrieval_visibility_rebuildable_from_durable_log"])
+        bootstrap = report["cluster_join_bootstrap"]
+        self.assertEqual("rebuild_required", bootstrap["readiness_status"])
+        self.assertFalse(bootstrap["ready_for_context_serving"])
+        self.assertEqual("durable_context_records_not_in_memory_index", bootstrap["source_of_truth"])
+        self.assertFalse(bootstrap["in_memory_index_persistence_required"])
+        self.assertTrue(bootstrap["durable_source_catchup_required"])
+        self.assertTrue(bootstrap["hot_cache_rebuildable_from_durable_log"])
+        self.assertTrue(bootstrap["secondary_indexes_present"])
+        self.assertTrue(bootstrap["secondary_indexes_rebuildable_from_context_models"])
+        self.assertTrue(bootstrap["embeddings_present"])
+        self.assertTrue(bootstrap["embeddings_rebuildable_from_context_models"])
+        self.assertTrue(bootstrap["summaries_present"])
+        self.assertTrue(bootstrap["dirty_summaries_pending"])
+        self.assertEqual(["refresh_summaries_for_dirty_nodes"], bootstrap["missing_rebuild_steps"])
+        self.assertIn("mark MatrixArk context serving ready", bootstrap["new_node_flow"])
         self.assertEqual([], report["blockers"])
 
     def test_recovery_report_detects_corrupt_jsonl_tail(self) -> None:
@@ -216,6 +231,20 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertIn("derived:indexes_missing", report["warnings"])
         self.assertIn("derived:summaries_missing", report["warnings"])
         self.assertGreaterEqual(len(report["recovery_actions"]), 3)
+        bootstrap = report["cluster_join_bootstrap"]
+        self.assertEqual("rebuild_required", bootstrap["readiness_status"])
+        self.assertFalse(bootstrap["ready_for_context_serving"])
+        self.assertFalse(bootstrap["in_memory_index_persistence_required"])
+        self.assertTrue(bootstrap["hot_cache_rebuildable_from_durable_log"])
+        self.assertFalse(bootstrap["secondary_indexes_present"])
+        self.assertTrue(bootstrap["secondary_indexes_rebuildable_from_context_models"])
+        self.assertFalse(bootstrap["embeddings_present"])
+        self.assertTrue(bootstrap["embeddings_rebuildable_from_context_models"])
+        self.assertFalse(bootstrap["summaries_present"])
+        self.assertFalse(bootstrap["dirty_summaries_pending"])
+        self.assertIn("rebuild_context_embeddings", bootstrap["missing_rebuild_steps"])
+        self.assertIn("rebuild_secondary_indexes", bootstrap["missing_rebuild_steps"])
+        self.assertIn("refresh_or_regenerate_context_summaries", bootstrap["missing_rebuild_steps"])
 
     def test_recovery_cli_accepts_scope_json_for_retrieval_smoke(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
