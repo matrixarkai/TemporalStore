@@ -117,6 +117,51 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
                 result["retrieved"]["memory_hierarchy_contract"]["retrieval_strategy"],
             )
 
+    def test_generic_agent_retrieval_summary_exposes_memory_layer_pressure(self) -> None:
+        retrieve = {
+            "context_pack_id": "pack-pressure",
+            "selected_refs": [{"ref_type": "entity", "text": "assistant decision memory"}],
+            "retrieval_metrics": {
+                "memory_layer_budget": {
+                    "total_selected_refs": 1,
+                    "total_selected_tokens": 8,
+                    "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 8}},
+                },
+                "memory_layer_pressure": {
+                    "selected_refs": 1,
+                    "selected_tokens": 8,
+                    "dropped_refs": 2,
+                    "dropped_tokens": 19,
+                    "pressure_dimensions": ["by_memory_scope", "by_source_role"],
+                    "dropped_dimensions": ["by_memory_scope", "by_source_role"],
+                    "profile_memory_pressure": True,
+                    "assistant_memory_pressure": True,
+                    "pressure_bucket_count": 1,
+                    "dropped_bucket_count": 2,
+                },
+            },
+            "recall_policy": {
+                "session_identity": {
+                    "session_id_source": "payload_field",
+                    "strong_session_identity": True,
+                    "fallback_session_identity": False,
+                }
+            },
+        }
+
+        summary = matrixark_agent_hook.agent_retrieval_summary(
+            retrieve,
+            session_id_source="payload_field",
+        )
+
+        self.assertEqual("pack-pressure", summary["context_pack_id"])
+        self.assertEqual(2, summary["memory_layer_pressure"]["dropped_refs"])
+        self.assertTrue(summary["memory_layer_pressure"]["profile_memory_pressure"])
+        self.assertEqual(
+            summary["layer_summary"]["memory_layer_pressure"],
+            summary["memory_layer_pressure"],
+        )
+
     def test_generic_hook_idle_commit_is_reported_as_auto_batch_decision(self) -> None:
         ingest = {
             "session_buffer": {
