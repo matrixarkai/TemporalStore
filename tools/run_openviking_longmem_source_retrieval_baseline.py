@@ -141,8 +141,9 @@ def main() -> int:
     if not isinstance(data, list) or not data:
         report["blockers"].append("invalid_longmemeval_input")
         return finish(report, args.report, started, 2)
+    query_items = flatten_longmem_questions(data)
     if args.question_limit > 0:
-        data = data[: args.question_limit]
+        query_items = query_items[: args.question_limit]
     report["question_limit"] = args.question_limit
     report["question_slice_diagnostic"] = args.question_limit > 0
 
@@ -156,7 +157,7 @@ def main() -> int:
     reader_latencies: list[float] = []
     progress_path = Path(args.report + ".progress.json")
 
-    for query_index, item in enumerate(data):
+    for query_index, item in enumerate(query_items):
         question = str(item.get("question") or "")
         expected_answer = str(item.get("answer") or "")
         expected_session_ids = {str(x) for x in item.get("answer_session_ids") or []}
@@ -221,7 +222,7 @@ def main() -> int:
             write_progress(
                 progress_path,
                 completed=query_index + 1,
-                total=len(data),
+                total=len(query_items),
                 phase="running_reader",
                 last_query_id=per_query[-1]["query_id"],
                 retrieval_hits=retrieval_hits,
@@ -260,7 +261,7 @@ def main() -> int:
     write_progress(
         progress_path,
         completed=len(per_query),
-        total=len(data),
+        total=len(query_items),
         phase="complete",
         last_query_id=per_query[-1]["query_id"] if per_query else "",
         retrieval_hits=retrieval_hits,
@@ -272,6 +273,54 @@ def main() -> int:
         total_source_tokens=total_source_tokens,
     )
     return finish_with_contract_gate(report, args.report, started, args.require_shared_oss_models)
+
+
+def flatten_longmem_questions(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    flattened: list[dict[str, Any]] = []
+    for sample_index, item in enumerate(data):
+        if not isinstance(item, dict):
+            continue
+        if item.get("question"):
+            cloned = dict(item)
+            if not cloned.get("question_id"):
+                cloned["question_id"] = str(item.get("sample_id") or f"longmem_q{sample_index}")
+            if not cloned.get("answer_session_ids"):
+                cloned["answer_session_ids"] = infer_answer_session_ids(cloned, str(cloned.get("answer") or ""))
+            flattened.append(cloned)
+            continue
+        nested_questions = item.get("questions") or item.get("qa") or []
+        for question_index, question in enumerate(nested_questions):
+            if not isinstance(question, dict) or not question.get("question"):
+                continue
+            answer = question.get("answer")
+            if answer is None and isinstance(question.get("answers"), list) and question["answers"]:
+                answer = question["answers"][0]
+            cloned = dict(item)
+            cloned.update(question)
+            cloned["question"] = str(question.get("question") or "")
+            cloned["answer"] = str(answer or "")
+            cloned["question_type"] = question.get("question_type") or question.get("ability") or question.get("reasoning_type")
+            cloned["question_id"] = str(
+                question.get("question_id")
+                or f"{item.get('sample_id') or f'longmem_sample_{sample_index + 1}'}-q{question_index + 1}"
+            )
+            if not cloned.get("answer_session_ids"):
+                cloned["answer_session_ids"] = infer_answer_session_ids(cloned, cloned["answer"])
+            flattened.append(cloned)
+    return flattened
+
+
+def infer_answer_session_ids(item: dict[str, Any], answer: str) -> list[str]:
+    answer_terms = terms(answer)
+    if not answer_terms:
+        return []
+    sessions = build_sessions(item)
+    matches: list[str] = []
+    for session in sessions:
+        text_terms = terms(session["text"])
+        if answer_terms <= text_terms or normalize(answer) in normalize(session["text"]):
+            matches.append(session["session_id"])
+    return matches
 
 
 def build_sessions(item: dict[str, Any]) -> list[dict[str, Any]]:
