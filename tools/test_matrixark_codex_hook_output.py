@@ -1317,6 +1317,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertTrue(result["session_buffer"]["pre_ingest_idle_ready"])
         self.assertGreaterEqual(result["session_buffer"]["pre_ingest_idle_elapsed_ms"], 1)
         self.assertEqual({}, result["auto_batch_extract_result"])
+        decision = hook.auto_batch_decision_summary(result)
+        self.assertEqual("idle_commit", decision["decision"])
+        self.assertEqual("committed", decision["auto_batch_extract_status"])
+        self.assertEqual("idle_timeout", decision["reason"])
         self.assertEqual(1, len(server.adapter.commit_calls))
         commit_args, commit_hook = server.adapter.commit_calls[0]
         self.assertEqual("idle_timeout", commit_args["commit_reason"])
