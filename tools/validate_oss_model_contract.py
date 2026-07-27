@@ -32,6 +32,7 @@ READER_POLICY_KEYS = (
     "reader_candidate_only",
     "reader_candidate_first",
     "reader_focus_evidence",
+    "reader_fallback_allowed",
 )
 
 RETRIEVAL_POLICY_KEYS = (
@@ -176,6 +177,13 @@ def normalize_report(path: Path, label: str, errors: list[str]) -> dict[str, Any
         "reader_candidate_only": bool(data.get("reader_candidate_only")),
         "reader_candidate_first": bool(data.get("reader_candidate_first")),
         "reader_focus_evidence": bool(data.get("reader_focus_evidence")),
+        "reader_fallback_allowed": bool(
+            contract.get(f"{prefix}_reader_fallback_allowed")
+            if f"{prefix}_reader_fallback_allowed" in contract
+            else contract.get("reader_fallback_allowed")
+            if "reader_fallback_allowed" in contract
+            else data.get("reader_fallback_allowed")
+        ),
         "adaptive_max_events": bool(
             contract.get(f"{prefix}_adaptive_max_events")
             if f"{prefix}_adaptive_max_events" in contract

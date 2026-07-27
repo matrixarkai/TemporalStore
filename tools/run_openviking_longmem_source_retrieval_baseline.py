@@ -471,11 +471,13 @@ def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict
     matrixark_max_events = int(reference_contract.get("matrixark_max_events") or args.top_k)
     matrixark_reader_budget = int(reference_contract.get("matrixark_reader_max_context_chars") or args.max_context_chars)
     matrixark_reader_max_tokens = int(reference_contract.get("matrixark_reader_max_tokens") or args.reader_max_tokens)
+    matrixark_reader_fallback_allowed = bool(reference_contract.get("matrixark_reader_fallback_allowed"))
     baseline_reader = str(args.reader_model).strip()
     baseline_embedding = str(args.embedding_model).strip()
     baseline_max_events = int(args.top_k)
     baseline_reader_budget = int(args.max_context_chars)
     baseline_reader_max_tokens = int(args.reader_max_tokens)
+    baseline_reader_fallback_allowed = False
     baseline_same_session_percent = clamp_percent(args.same_session_percent)
     baseline_cross_session_percent = clamp_percent(args.cross_session_percent)
     baseline_summary_percent = clamp_percent(args.summary_percent)
@@ -524,6 +526,7 @@ def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict
         "matrixark_max_events": matrixark_max_events,
         "matrixark_reader_max_context_chars": matrixark_reader_budget,
         "matrixark_reader_max_tokens": matrixark_reader_max_tokens,
+        "matrixark_reader_fallback_allowed": matrixark_reader_fallback_allowed,
         "matrixark_retrieval_same_session_percent": matrixark_same_session_percent,
         "matrixark_retrieval_cross_session_percent": matrixark_cross_session_percent,
         "matrixark_retrieval_summary_percent": matrixark_summary_percent,
@@ -536,6 +539,7 @@ def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict
         "baseline_max_events": baseline_max_events,
         "baseline_reader_max_context_chars": baseline_reader_budget,
         "baseline_reader_max_tokens": baseline_reader_max_tokens,
+        "baseline_reader_fallback_allowed": baseline_reader_fallback_allowed,
         "baseline_retrieval_same_session_percent": baseline_same_session_percent,
         "baseline_retrieval_cross_session_percent": baseline_cross_session_percent,
         "baseline_retrieval_summary_percent": baseline_summary_percent,
@@ -547,6 +551,7 @@ def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict
         "max_events_match": matrixark_max_events == baseline_max_events,
         "reader_context_budget_match": matrixark_reader_budget == baseline_reader_budget,
         "reader_output_budget_match": matrixark_reader_max_tokens == baseline_reader_max_tokens,
+        "reader_fallback_policy_match": matrixark_reader_fallback_allowed == baseline_reader_fallback_allowed,
         "retrieval_budget_match": retrieval_budget_match,
         "shared_oss_model_contract_required": True,
         "shared_oss_model_contract_passed": (
@@ -555,12 +560,13 @@ def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict
             and matrixark_max_events == baseline_max_events
             and matrixark_reader_budget == baseline_reader_budget
             and matrixark_reader_max_tokens == baseline_reader_max_tokens
+            and matrixark_reader_fallback_allowed == baseline_reader_fallback_allowed
             and retrieval_budget_match
         ),
         "comparison_rule": (
             "MatrixArk and OpenViking/VikingMem rows must use the same OSS reader model, "
             "embedding/encoding model, retrieval block budget, retrieval budget split, reader context budget, "
-            "and reader output-token budget."
+            "reader output-token budget, and reader fallback policy."
         ),
     }
 
