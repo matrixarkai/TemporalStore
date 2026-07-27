@@ -1,5 +1,3 @@
-#![recursion_limit = "256"]
-
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
@@ -1949,6 +1947,9 @@ fn pack_ref_from_record(
         "source_codex_event_counts": record.get("source_codex_event_counts").cloned().unwrap_or_else(|| json!({})),
         "source_session_ids": record.get("source_session_ids").cloned().unwrap_or_else(|| json!([])),
         "source_entity_hashes": record.get("source_entity_hashes").cloned().unwrap_or_else(|| json!([])),
+        "source_memory_scopes": record.get("source_memory_scopes").cloned().unwrap_or_else(|| json!([])),
+        "source_session_continuities": record.get("source_session_continuities").cloned().unwrap_or_else(|| json!([])),
+        "source_extraction_phases": record.get("source_extraction_phases").cloned().unwrap_or_else(|| json!([])),
         "source_ref": record.get("source_ref").cloned().unwrap_or(Value::Null),
     })
 }
@@ -1977,6 +1978,41 @@ fn increment_layer_bucket(breakdown: &mut Value, bucket_name: &str, key: &str, t
         bucket_object.insert("refs".to_string(), json!(refs));
         bucket_object.insert("tokens".to_string(), json!(total_tokens));
     }
+}
+
+fn source_layer_values(
+    record: &Value,
+    source_field: &str,
+    fallback_field: &str,
+    default_value: &str,
+) -> Vec<String> {
+    let mut values = Vec::new();
+    if let Some(source_values) = record.get(source_field).and_then(Value::as_array) {
+        for value in source_values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if !values.iter().any(|existing| existing == value) {
+                values.push(value.to_string());
+            }
+        }
+    }
+    if values.is_empty() {
+        if let Some(value) = record
+            .get(fallback_field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            values.push(value.to_string());
+        }
+    }
+    if values.is_empty() {
+        values.push(default_value.to_string());
+    }
+    values
 }
 
 fn selected_ref_layer_budget(refs: &[Value]) -> Value {
@@ -2011,34 +2047,40 @@ fn selected_ref_layer_budget(refs: &[Value]) -> Value {
         if let Some(object) = breakdown.as_object_mut() {
             object.insert("total_selected_tokens".to_string(), json!(total_tokens));
         }
-        let memory_scope = item
-            .get("memory_scope")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("unscoped");
-        increment_layer_bucket(&mut breakdown, "by_memory_scope", memory_scope, tokens);
-        let session_continuity = item
-            .get("session_continuity")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("neutral");
-        increment_layer_bucket(
-            &mut breakdown,
-            "by_session_continuity",
-            session_continuity,
-            tokens,
-        );
+        for memory_scope in source_layer_values(item, "source_memory_scopes", "memory_scope", "unscoped") {
+            increment_layer_bucket(&mut breakdown, "by_memory_scope", &memory_scope, tokens);
+        }
+        for session_continuity in source_layer_values(
+            item,
+            "source_session_continuities",
+            "session_continuity",
+            "neutral",
+        ) {
+            increment_layer_bucket(
+                &mut breakdown,
+                "by_session_continuity",
+                &session_continuity,
+                tokens,
+            );
+        }
         let extraction_phase = item
             .get("extraction_phase")
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .unwrap_or("unknown");
-        increment_layer_bucket(
-            &mut breakdown,
-            "by_extraction_phase",
-            extraction_phase,
-            tokens,
-        );
+        for source_extraction_phase in source_layer_values(
+            item,
+            "source_extraction_phases",
+            "extraction_phase",
+            "unknown",
+        ) {
+            increment_layer_bucket(
+                &mut breakdown,
+                "by_extraction_phase",
+                &source_extraction_phase,
+                tokens,
+            );
+        }
         let ref_type = item
             .get("ref_type")
             .and_then(Value::as_str)
@@ -2332,6 +2374,9 @@ fn native_dropped_ref_detail(
         "source_hook_type_counts": record.get("source_hook_type_counts").cloned().unwrap_or_else(|| json!({})),
         "source_codex_events": record.get("source_codex_events").cloned().unwrap_or_else(|| json!([])),
         "source_codex_event_counts": record.get("source_codex_event_counts").cloned().unwrap_or_else(|| json!({})),
+        "source_memory_scopes": record.get("source_memory_scopes").cloned().unwrap_or_else(|| json!([])),
+        "source_session_continuities": record.get("source_session_continuities").cloned().unwrap_or_else(|| json!([])),
+        "source_extraction_phases": record.get("source_extraction_phases").cloned().unwrap_or_else(|| json!([])),
         "stale_or_superseded": reason == "stale",
         "text_preview": text.chars().take(160).collect::<String>(),
     });
@@ -2370,6 +2415,7 @@ fn dropped_ref_layer_budget_from_native_counts(
     let mut detail_budget = json!({
         "by_memory_scope": {},
         "by_session_continuity": {},
+        "by_extraction_phase": {},
         "by_entity_type": {},
         "by_source_role": {},
         "by_hook_type": {},
@@ -2398,18 +2444,35 @@ fn dropped_ref_layer_budget_from_native_counts(
         if let Some(object) = detail_budget.as_object_mut() {
             object.insert("total_dropped_tokens_with_detail".to_string(), json!(total_detail_tokens));
         }
-        let memory_scope = detail
-            .get("memory_scope")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("unscoped");
-        increment_layer_bucket(&mut detail_budget, "by_memory_scope", memory_scope, tokens);
-        let session_continuity = detail
-            .get("session_continuity")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("neutral");
-        increment_layer_bucket(&mut detail_budget, "by_session_continuity", session_continuity, tokens);
+        for memory_scope in source_layer_values(detail, "source_memory_scopes", "memory_scope", "unscoped") {
+            increment_layer_bucket(&mut detail_budget, "by_memory_scope", &memory_scope, tokens);
+        }
+        for session_continuity in source_layer_values(
+            detail,
+            "source_session_continuities",
+            "session_continuity",
+            "neutral",
+        ) {
+            increment_layer_bucket(
+                &mut detail_budget,
+                "by_session_continuity",
+                &session_continuity,
+                tokens,
+            );
+        }
+        for extraction_phase in source_layer_values(
+            detail,
+            "source_extraction_phases",
+            "extraction_phase",
+            "unknown",
+        ) {
+            increment_layer_bucket(
+                &mut detail_budget,
+                "by_extraction_phase",
+                &extraction_phase,
+                tokens,
+            );
+        }
         if let Some(entity_type) = detail
             .get("entity_type")
             .and_then(Value::as_str)
@@ -2506,6 +2569,7 @@ fn dropped_ref_layer_budget_from_native_counts(
         "by_drop_reason": Value::Object(by_drop_reason),
         "by_memory_scope": detail_budget["by_memory_scope"].clone(),
         "by_session_continuity": detail_budget["by_session_continuity"].clone(),
+        "by_extraction_phase": detail_budget["by_extraction_phase"].clone(),
         "by_ref_type": ref_type_budget_from_counts(ref_type_counts, ref_type_token_counts),
         "by_entity_type": detail_budget["by_entity_type"].clone(),
         "by_source_role": detail_budget["by_source_role"].clone(),
@@ -5141,6 +5205,73 @@ mod tests {
     }
 
     #[test]
+    fn matrixark_native_selected_budget_counts_source_layers() {
+        let record = json!({
+            "record_type": "context_entity",
+            "entity_hash": 42,
+            "entity_type": "decision",
+            "entity_name": "assistant rollout decision",
+            "state": "Assistant responses should promote durable profile memory.",
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "extraction_phase": "final",
+            "source_memory_scopes": ["session", "user_profile"],
+            "source_session_continuities": ["same_session", "cross_session"],
+            "source_extraction_phases": ["provisional", "final"],
+            "source_roles": ["assistant"],
+            "source_hook_types": ["hook_boundary"],
+            "source_codex_events": ["Stop"],
+        });
+        let selected_ref = pack_ref_from_record(
+            &record,
+            "Assistant responses should promote durable profile memory.",
+            "entity",
+            1.0,
+            "unit_test",
+            "cross_session",
+            0.0,
+            0.0,
+        );
+        let budget = selected_ref_layer_budget(&[selected_ref]);
+        assert_eq!(
+            budget
+                .pointer("/by_memory_scope/session/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            budget
+                .pointer("/by_memory_scope/user_profile/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            budget
+                .pointer("/by_session_continuity/same_session/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            budget
+                .pointer("/by_session_continuity/cross_session/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            budget
+                .pointer("/by_extraction_phase/provisional/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            budget
+                .pointer("/by_extraction_phase/final/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn matrixark_native_retrieve_context_pack_returns_selected_refs() {
         let _guard = env_guard();
         let dir = tempdir().expect("tempdir");
@@ -5154,7 +5285,7 @@ mod tests {
         append.entries_compact = vec![CompactHashEntry(
             format!("{storage_prefix}:records:000000"),
             "00000000000000000000".to_string(),
-            r#"{"record_bundle":[{"record_type":"context_event","event_id_hash":7,"text":"Alice approved GPU budget and Bob owns procurement","memory_scope":"session","extraction_phase":"provisional","source_roles":["user"],"source_hook_types":["UserPromptSubmit"]},{"record_type":"context_entity","entity_hash":8,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Project Aurora GPU procurement owner is Bob","memory_scope":"user_profile","session_continuity":"cross_session","extraction_phase":"final","final_session_boundary":true,"source_roles":["assistant","tool"],"source_hook_types":["hook_boundary"],"source_codex_events":["Stop"],"source_session_ids":["codex:prior-session"]}]}"#.to_string(),
+            r#"{"record_bundle":[{"record_type":"context_event","event_id_hash":7,"text":"Alice approved GPU budget and Bob owns procurement","memory_scope":"session","extraction_phase":"provisional","source_roles":["user"],"source_hook_types":["UserPromptSubmit"]},{"record_type":"context_entity","entity_hash":8,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Project Aurora GPU procurement owner is Bob","memory_scope":"user_profile","session_continuity":"cross_session","extraction_phase":"final","final_session_boundary":true,"source_roles":["assistant","tool"],"source_hook_types":["hook_boundary"],"source_codex_events":["Stop"],"source_session_ids":["codex:prior-session"],"source_memory_scopes":["session","user_profile"],"source_session_continuities":["same_session","cross_session"],"source_extraction_phases":["provisional","final"]}]}"#.to_string(),
         )];
 
         let root = record_log_root(&append);
@@ -5200,7 +5331,17 @@ mod tests {
             Some(1)
         );
         assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_budget/by_memory_scope/session/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
             pack.pointer("/recall_policy/memory_layer_budget/by_session_continuity/cross_session/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_budget/by_extraction_phase/final/refs")
                 .and_then(Value::as_u64),
             Some(1)
         );
@@ -5289,7 +5430,7 @@ mod tests {
         append.entries_compact = vec![CompactHashEntry(
             format!("{storage_prefix}:records:000000"),
             "00000000000000000000".to_string(),
-            r#"{"record_bundle":[{"record_type":"context_entity","entity_hash":101,"entity_type":"decision","entity_name":"assistant alpha","state":"gpu","memory_scope":"user_profile","session_continuity":"same_session","source_roles":["assistant"],"source_role_counts":{"assistant":1},"source_hook_types":["hook_boundary"],"source_hook_type_counts":{"hook_boundary":1},"source_codex_events":["Stop"],"source_codex_event_counts":{"Stop":1}},{"record_type":"context_entity","entity_hash":102,"entity_type":"decision","entity_name":"assistant bravo","state":"gpu","memory_scope":"user_profile","session_continuity":"same_session","source_roles":["assistant"],"source_role_counts":{"assistant":1},"source_hook_types":["hook_boundary"],"source_hook_type_counts":{"hook_boundary":1},"source_codex_events":["Stop"],"source_codex_event_counts":{"Stop":1}},{"record_type":"context_event","event_id_hash":103,"text":"gpu","memory_scope":"session","session_continuity":"same_session","source_roles":["user"],"source_role_counts":{"user":1},"source_hook_types":["UserPromptSubmit"],"source_hook_type_counts":{"UserPromptSubmit":1}}]}"#.to_string(),
+            r#"{"record_bundle":[{"record_type":"context_entity","entity_hash":101,"entity_type":"decision","entity_name":"assistant alpha","state":"gpu","memory_scope":"user_profile","session_continuity":"same_session","source_roles":["assistant"],"source_role_counts":{"assistant":1},"source_hook_types":["hook_boundary"],"source_hook_type_counts":{"hook_boundary":1},"source_codex_events":["Stop"],"source_codex_event_counts":{"Stop":1}},{"record_type":"context_entity","entity_hash":102,"entity_type":"decision","entity_name":"assistant bravo","state":"gpu","memory_scope":"user_profile","session_continuity":"same_session","extraction_phase":"final","source_memory_scopes":["session","user_profile"],"source_session_continuities":["same_session","cross_session"],"source_extraction_phases":["provisional","final"],"source_roles":["assistant"],"source_role_counts":{"assistant":1},"source_hook_types":["hook_boundary"],"source_hook_type_counts":{"hook_boundary":1},"source_codex_events":["Stop"],"source_codex_event_counts":{"Stop":1}},{"record_type":"context_event","event_id_hash":103,"text":"gpu","memory_scope":"session","session_continuity":"same_session","source_roles":["user"],"source_role_counts":{"user":1},"source_hook_types":["UserPromptSubmit"],"source_hook_type_counts":{"UserPromptSubmit":1}}]}"#.to_string(),
         )];
 
         let root = record_log_root(&append);
@@ -5352,6 +5493,26 @@ mod tests {
         );
         assert_eq!(
             pack.pointer("/recall_policy/dropped_memory_layer_budget/source_message_counts_by_role/assistant")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_memory_scope/session/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_memory_scope/user_profile/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_session_continuity/cross_session/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_extraction_phase/provisional/refs")
                 .and_then(Value::as_u64),
             Some(1)
         );
