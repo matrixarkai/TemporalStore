@@ -287,7 +287,38 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     },
                     "rendered_context_chars": 37,
                 },
-                "ingest": {"status": "accepted"},
+                "ingest": {
+                    "status": "accepted",
+                    "auto_batch_extract_status": "committed",
+                    "auto_batch_extract": {
+                        "status": "committed",
+                        "commit_reason": "threshold",
+                        "trigger_policy": "threshold",
+                        "memory_layers_written": {
+                            "context_events": 2,
+                            "session_entities": 3,
+                            "profile_entities": 1,
+                            "secondary_indexes": 5,
+                            "summary_dirty_nodes": 2,
+                        },
+                    },
+                    "auto_batch_extract_decision": {
+                        "decision": "committed",
+                        "reason": "threshold",
+                        "memory_layers_written": {
+                            "context_events": 2,
+                            "session_entities": 3,
+                            "profile_entities": 1,
+                            "secondary_indexes": 5,
+                            "summary_dirty_nodes": 2,
+                        },
+                        "summary_refresh": {
+                            "status": "dirty_marked",
+                            "dirty_hashes": [7, 8],
+                            "profile_summary_refresh_required": True,
+                        },
+                    },
+                },
                 "session_commit": {
                     "status": "committed",
                     "commit_id_hash": 42,
@@ -355,6 +386,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         )
         self.assertEqual(37, record["output_summary"]["rendered_context_chars"])
         self.assertTrue(record["output_summary"]["strict_additional_context_emitted"])
+        self.assertEqual("committed", record["output_summary"]["auto_batch_extract_status"])
+        auto_batch = record["output_summary"]["auto_batch_extract"]
+        self.assertEqual("threshold", auto_batch["trigger_policy"])
+        self.assertEqual(3, auto_batch["memory_layers_written"]["session_entities"])
+        auto_batch_decision = record["output_summary"]["auto_batch_extract_decision"]
+        self.assertEqual("committed", auto_batch_decision["decision"])
+        self.assertEqual("threshold", auto_batch_decision["reason"])
+        self.assertEqual(1, auto_batch_decision["memory_layers_written"]["profile_entities"])
+        self.assertTrue(auto_batch_decision["summary_refresh"]["profile_summary_refresh_required"])
         commit_summary = record["output_summary"]["session_commit"]
         self.assertEqual("idle_timeout", commit_summary["trigger_policy"])
         self.assertEqual("provisional", commit_summary["extraction_phase"])

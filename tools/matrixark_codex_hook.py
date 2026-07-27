@@ -1221,6 +1221,17 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
         retrieve = output.get("retrieve") if isinstance(output.get("retrieve"), dict) else {}
         ingest = output.get("ingest") if isinstance(output.get("ingest"), dict) else {}
         commit = output.get("session_commit") if isinstance(output.get("session_commit"), dict) else {}
+        auto_batch_extract = (
+            ingest.get("auto_batch_extract")
+            if isinstance(ingest.get("auto_batch_extract"), dict)
+            else {}
+        )
+        auto_batch_decision = (
+            ingest.get("auto_batch_extract_decision")
+            if isinstance(ingest.get("auto_batch_extract_decision"), dict)
+            else {}
+        )
+        idle_commit = ingest.get("idle_commit") if isinstance(ingest.get("idle_commit"), dict) else {}
         trace["output_summary"] = {
             "strict_additional_context_emitted": bool(hook_specific.get("additionalContext")),
             "additional_context_chars": len(str(hook_specific.get("additionalContext") or "")),
@@ -1232,6 +1243,11 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             "memory_hierarchy": retrieve.get("memory_hierarchy"),
             "rendered_context_chars": retrieve.get("rendered_context_chars"),
             "ingest_status": ingest.get("status"),
+            "auto_batch_extract_status": ingest.get("auto_batch_extract_status"),
+            "auto_batch_extract": auto_batch_extract,
+            "auto_batch_extract_decision": auto_batch_decision,
+            "idle_commit_status": ingest.get("idle_commit_status"),
+            "idle_commit": idle_commit,
             "commit_status": commit.get("status"),
             "session_commit": session_commit_summary(commit),
         }
