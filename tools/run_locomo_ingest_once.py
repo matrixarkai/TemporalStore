@@ -6897,26 +6897,32 @@ def matching_temporal_entries(anchor: str, entries: list[TemporalEntry]) -> list
 
 def date_answer(question: str, texts: list[str]) -> str:
     target_terms = answer_tokens(question) - {name.lower() for name in re.findall(r"\b[A-Z][a-z]+\b", question)}
-    relative_candidates = []
-    absolute_candidates = []
+    candidates = []
     for rank, text in enumerate(texts):
         relative = relative_date_answer(text)
         overlap = len(target_terms & answer_tokens(text))
         if relative:
-            relative_candidates.append((relative_answer_specificity(relative), overlap, -rank, f"{relative}. Evidence: {text}"))
+            candidates.append((overlap, relative_answer_specificity(relative), 1, -rank, f"{relative}. Evidence: {text}"))
         match = date_regex().search(text)
-        if match:
-            absolute_candidates.append((overlap, -rank, f"{match.group(0)}. Evidence: {text}"))
-    if relative_candidates:
-        relative_candidates.sort(reverse=True)
-        return relative_candidates[0][3]
+        if match and not is_timestamp_only_date_evidence(text, match.start()):
+            candidates.append(
+                (overlap, relative_answer_specificity(match.group(0)), 0, -rank, f"{match.group(0)}. Evidence: {text}")
+            )
+        year = re.search(r"\b(?:19|20)\d{2}\b", text)
+        if year and not is_timestamp_only_date_evidence(text, year.start()):
+            candidates.append((overlap, 2, 0, -rank, f"{year.group(0)}. Evidence: {text}"))
+    if candidates:
+        candidates.sort(reverse=True)
+        return candidates[0][4]
     ordered = temporal_ordering_answer(question, texts)
     if ordered:
         return ordered
-    if absolute_candidates:
-        absolute_candidates.sort(reverse=True)
-        return absolute_candidates[0][2]
     return ""
+
+
+def is_timestamp_only_date_evidence(text: str, match_start: int) -> bool:
+    prefix = normalize_text(text[max(0, match_start - 80) : match_start])
+    return bool(re.search(r"\b(conversation|session|message|turn)\s+timestamp\s+(?:was|is)?\s*$", prefix))
 
 
 def relative_answer_specificity(value: str) -> int:

@@ -32,6 +32,26 @@ class LocomoReaderHintTest(unittest.TestCase):
         self.assertIn("7 May 2023", hint)
         self.assertNotIn("week before", hint.lower())
 
+    def test_relevant_absolute_date_beats_unrelated_exact_relative_date(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_1 turn 3",
+                "body": (
+                    "turn 3: D1:3 Caroline: I went to a LGBTQ support group yesterday. "
+                    "The conversation timestamp was 1:56 pm on 8 May, 2023."
+                ),
+            },
+            {
+                "title": "conv_26 session_1 turn 12",
+                "body": "turn 12: D1:12 Melanie: I painted a sunrise in 2022.",
+            },
+        ]
+
+        hint = extractive_reader_hint("When did Melanie paint a sunrise?", blocks)
+
+        self.assertIn("2022", hint)
+        self.assertNotIn("7 May 2023", hint)
+
 
 if __name__ == "__main__":
     unittest.main()
