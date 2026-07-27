@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 try:
-    from tools.matrixark_mcp_core import Json, candidate_access_scope, scope_matches
+    from tools.matrixark_mcp_core import Json, candidate_access_scope, normalize_message_role, scope_matches
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import Json, candidate_access_scope, scope_matches
+    from matrixark_mcp_core import Json, candidate_access_scope, normalize_message_role, scope_matches
 
 
 def latest_async_pipeline_rows(rows: list[Json]) -> list[Json]:
@@ -131,7 +131,7 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
                 completed_stages.add(stage_name)
         if row_remaining_stages or status in {"pending", "extraction_committed"}:
             for role in row.get("source_roles") if isinstance(row.get("source_roles"), list) else []:
-                add_count(pending_source_roles, role)
+                add_count(pending_source_roles, normalize_message_role(role))
             for hook_type in row.get("source_hook_types") if isinstance(row.get("source_hook_types"), list) else []:
                 add_count(pending_source_hook_types, hook_type)
             for codex_event in row.get("source_codex_events") if isinstance(row.get("source_codex_events"), list) else []:

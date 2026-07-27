@@ -1257,6 +1257,44 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("retrieval_deadline_exceeded:deadline_after_record_load", adapter.audit_records[0]["quality_warnings"])
         self.assertIn("async_pipeline_followup_pending", adapter.audit_records[0]["quality_warnings"])
 
+    def test_async_readiness_normalizes_llm_role_aliases_to_assistant(self) -> None:
+        readiness_mod = importlib.import_module("tools.matrixark_mcp_async_readiness")
+        scope = {
+            "account_id": "acct_alias_readiness",
+            "tenant_id": "tenant_alias_readiness",
+            "user_id": "user_alias_readiness",
+            "session_id": "session_alias_readiness",
+        }
+        readiness = readiness_mod.async_pipeline_retrieval_readiness(
+            [
+                {
+                    "record_type": "matrixark_async_pipeline_task",
+                    "task_hash": 1,
+                    "scope": scope,
+                    "status": "extraction_committed",
+                    "remaining_stages": ["summary"],
+                    "source_roles": ["llm", "model", "assistant"],
+                    "memory_layers_written": {
+                        "session_entities": 1,
+                        "profile_entities": 1,
+                        "same_session_entities": 1,
+                        "cross_session_entities": 1,
+                    },
+                }
+            ],
+            {**scope, "_session_scope": "prefer"},
+        )
+
+        self.assertEqual({"assistant": 3}, readiness["pending_source_roles"])
+        self.assertNotIn("llm", readiness["pending_source_roles"])
+        self.assertNotIn("model", readiness["pending_source_roles"])
+        self.assertFalse(readiness["ready_for_retrieval"])
+        self.assertIn("summary", readiness["remaining_stages"])
+        layer_readiness = readiness["memory_layer_readiness"]
+        self.assertIn("user_profile", layer_readiness["blocked_layers"])
+        self.assertIn("cross_session", layer_readiness["blocked_layers"])
+        self.assertIn("summary", layer_readiness["blocked_layers"])
+
     def test_compact_serving_pack_exposes_async_summary_readiness(self) -> None:
         core_mod = importlib.import_module("tools.matrixark_mcp_core")
         pack = {
