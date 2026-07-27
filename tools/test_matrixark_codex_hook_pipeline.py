@@ -752,6 +752,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertTrue(
                     any(
                         record.get("record_type") == "context_entity"
+                        and record.get("entity_type") == "assistant_decision"
+                        and record.get("memory_scope") == "user_profile"
+                        and record.get("session_continuity") == "cross_session"
+                        and "mixed-role extraction" in str(record.get("state") or "")
+                        for record in records
+                    )
+                )
+                self.assertTrue(
+                    any(
+                        record.get("record_type") == "context_entity"
                         and record.get("entity_type") == "tool_evidence"
                         and record.get("memory_scope") == "user_profile"
                         and record.get("session_continuity") == "cross_session"
@@ -761,6 +771,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 )
                 self.assertIn(
                     "entity_type:tool_evidence",
+                    {str(record.get("index_name") or "") for record in records if record.get("record_type") == "context_index"},
+                )
+                self.assertIn(
+                    "entity_type:assistant_decision",
                     {str(record.get("index_name") or "") for record in records if record.get("record_type") == "context_index"},
                 )
 
@@ -775,7 +789,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "session_scope": "prefer",
                         "query": "What tool evidence proves the mixed Codex hook extraction was validated and pushed?",
                         "max_context_tokens": 140,
+                        "source_role_budget_tokens": {"assistant": 1},
                         "audit_mode": "off",
+                        "debug_context_pack": True,
                         "ranking": {"max_selected_refs": 3},
                     }
                 )
@@ -791,6 +807,62 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     ),
                     pack["selected_refs"],
                 )
+                selected_tool_ref = next(
+                    ref
+                    for ref in pack["selected_refs"]
+                    if ref.get("ref_type") == "entity" and ref.get("entity_type") == "tool_evidence"
+                )
+                self.assertEqual(["tool"], selected_tool_ref["budget_source_roles"])
+                self.assertEqual({"tool": 1}, selected_tool_ref["budget_source_role_counts"])
+                tool_role_policy = pack["recall_policy"]["source_role_budget"]
+                self.assertTrue(tool_role_policy["enabled"])
+                self.assertEqual({"assistant": 1}, tool_role_policy["budget_tokens"])
+                self.assertEqual(0, tool_role_policy["selected_tokens_by_role"]["assistant"])
+                tool_layer_budget = pack["recall_policy"]["memory_layer_budget"]
+                self.assertEqual({"tool": 1}, tool_layer_budget["source_message_counts_by_role"])
+
+                assistant_pack = adapter.retrieve(
+                    {
+                        "scope": {
+                            "account_id": "acct_fast_mixed",
+                            "tenant_id": "tenant_fast_mixed",
+                            "user_id": "user_fast_mixed",
+                            "session_id": "session_fast_mixed_assistant_followup",
+                        },
+                        "session_scope": "prefer",
+                        "query": "What assistant decision kept mixed-role extraction and retrieval within budget?",
+                        "max_context_tokens": 140,
+                        "source_role_budget_tokens": {"tool": 1},
+                        "audit_mode": "off",
+                        "debug_context_pack": True,
+                        "ranking": {"max_selected_refs": 3},
+                    }
+                )
+                self.assertLessEqual(assistant_pack["used_context_tokens"], 140)
+                self.assertTrue(
+                    any(
+                        ref.get("ref_type") == "entity"
+                        and ref.get("entity_type") == "assistant_decision"
+                        and ref.get("memory_scope") == "user_profile"
+                        and ref.get("session_continuity") == "cross_session"
+                        and "mixed-role extraction" in str(ref.get("text") or ref.get("summary_text") or "")
+                        for ref in assistant_pack["selected_refs"]
+                    ),
+                    assistant_pack["selected_refs"],
+                )
+                selected_assistant_ref = next(
+                    ref
+                    for ref in assistant_pack["selected_refs"]
+                    if ref.get("ref_type") == "entity" and ref.get("entity_type") == "assistant_decision"
+                )
+                self.assertEqual(["assistant"], selected_assistant_ref["budget_source_roles"])
+                self.assertEqual({"assistant": 1}, selected_assistant_ref["budget_source_role_counts"])
+                assistant_role_policy = assistant_pack["recall_policy"]["source_role_budget"]
+                self.assertTrue(assistant_role_policy["enabled"])
+                self.assertEqual({"tool": 1}, assistant_role_policy["budget_tokens"])
+                self.assertEqual(0, assistant_role_policy["selected_tokens_by_role"]["tool"])
+                assistant_layer_budget = assistant_pack["recall_policy"]["memory_layer_budget"]
+                self.assertEqual({"assistant": 1}, assistant_layer_budget["source_message_counts_by_role"])
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
