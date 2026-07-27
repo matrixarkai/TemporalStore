@@ -5841,6 +5841,9 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
     memory_layer_pressure = recall_summary.get("memory_layer_pressure") if isinstance(recall_summary, dict) else {}
     if isinstance(memory_layer_pressure, dict) and memory_layer_pressure:
         compact["memory_layer_pressure"] = memory_layer_pressure
+    async_pipeline_readiness = recall_summary.get("async_pipeline_readiness") if isinstance(recall_summary, dict) else {}
+    if isinstance(async_pipeline_readiness, dict) and async_pipeline_readiness:
+        compact["async_pipeline_readiness"] = async_pipeline_readiness
     compact.pop("recall_policy", None)
 
     local_policy = compact.get("local_context_policy")
