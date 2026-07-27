@@ -225,6 +225,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         )
         self.assertTrue(pressure["assistant_source_message_pressure"])
         self.assertTrue(pressure["tool_source_message_pressure"])
+        self.assertTrue(pressure["hook_boundary_source_pressure"])
+        self.assertFalse(pressure["tool_result_source_pressure"])
+        self.assertTrue(pressure["stop_event_source_pressure"])
+        self.assertFalse(pressure["post_tool_use_source_pressure"])
+        self.assertGreaterEqual(pressure["dropped_bucket_count"], 1)
 
     def test_time_compression_preserves_source_lineage_for_budgeting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
