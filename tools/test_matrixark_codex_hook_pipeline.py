@@ -148,6 +148,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "ref_type": "entity",
                     "memory_scope": "user_profile",
                     "session_continuity": "cross_session",
+                    "source_memory_scopes": ["session", "user_profile"],
+                    "source_session_continuities": ["same_session", "cross_session"],
+                    "source_extraction_phases": ["final", "provisional"],
                     "source_roles": ["assistant", "user"],
                     "source_role_counts": {"assistant": 3, "user": 1},
                     "source_hook_types": ["hook_boundary"],
@@ -166,6 +169,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "ref_type": "summary",
                         "memory_scope": "user_profile",
                         "session_continuity": "cross_session",
+                        "source_memory_scopes": ["session", "user_profile"],
+                        "source_session_continuities": ["same_session", "cross_session"],
+                        "source_extraction_phases": ["final", "provisional"],
                         "source_roles": ["assistant", "tool"],
                         "source_role_counts": {"assistant": 2, "tool": 1},
                         "source_hook_types": ["hook_boundary"],
@@ -181,8 +187,24 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
 
         self.assertEqual(1, selected_budget["by_memory_layer"]["profile_entity"]["refs"])
         self.assertEqual(11, selected_budget["by_memory_layer"]["profile_entity"]["tokens"])
+        self.assertEqual(1, selected_budget["by_memory_scope"]["session"]["refs"])
+        self.assertEqual(1, selected_budget["by_memory_scope"]["user_profile"]["refs"])
+        self.assertEqual(1, selected_budget["by_session_continuity"]["same_session"]["refs"])
+        self.assertEqual(1, selected_budget["by_session_continuity"]["cross_session"]["refs"])
+        self.assertEqual(1, selected_budget["by_extraction_phase"]["final"]["refs"])
+        self.assertEqual(1, selected_budget["by_extraction_phase"]["provisional"]["refs"])
+        self.assertEqual(1, selected_budget["final_ref_count"])
+        self.assertEqual(1, selected_budget["provisional_ref_count"])
         self.assertEqual(1, dropped_budget["by_memory_layer"]["summary"]["refs"])
         self.assertEqual(13, dropped_budget["by_memory_layer"]["summary"]["tokens"])
+        self.assertEqual(1, dropped_budget["by_memory_scope"]["session"]["refs"])
+        self.assertEqual(1, dropped_budget["by_memory_scope"]["user_profile"]["refs"])
+        self.assertEqual(1, dropped_budget["by_session_continuity"]["same_session"]["refs"])
+        self.assertEqual(1, dropped_budget["by_session_continuity"]["cross_session"]["refs"])
+        self.assertEqual(1, dropped_budget["by_extraction_phase"]["final"]["refs"])
+        self.assertEqual(1, dropped_budget["by_extraction_phase"]["provisional"]["refs"])
+        self.assertEqual(1, dropped_budget["final_ref_count"])
+        self.assertEqual(1, dropped_budget["provisional_ref_count"])
         self.assertEqual(
             {"selected_refs": 1, "selected_tokens": 11, "dropped_refs": 0, "dropped_tokens": 0, "selected_and_dropped": False},
             pressure["by_dimension"]["by_memory_layer"]["profile_entity"],

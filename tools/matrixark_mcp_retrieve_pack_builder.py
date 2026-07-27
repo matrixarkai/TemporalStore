@@ -74,6 +74,38 @@ def memory_layer_name(ref: Json) -> str:
     return context_class or ref_type or "unknown"
 
 
+def source_layer_values(ref: Json, source_key: str, fallback_key: str, default_value: str) -> list[str]:
+    source_values = ref.get(source_key)
+    if isinstance(source_values, list):
+        values = [str(value or "").strip() for value in source_values if str(value or "").strip()]
+        if values:
+            return values
+    fallback = str(ref.get(fallback_key) or default_value).strip()
+    return [fallback] if fallback else []
+
+
+def add_ref_bucket(breakdown: Json, bucket_name: str, value: str, token_estimate: int) -> None:
+    label = str(value or "").strip()
+    if not label:
+        return
+    bucket = breakdown[bucket_name].setdefault(label, {"refs": 0, "tokens": 0})
+    bucket["refs"] += 1
+    bucket["tokens"] += token_estimate
+
+
+def add_source_layer_buckets(breakdown: Json, ref: Json, token_estimate: int) -> tuple[list[str], list[str], list[str]]:
+    source_memory_scopes = source_layer_values(ref, "source_memory_scopes", "memory_scope", "unscoped")
+    source_session_continuities = source_layer_values(ref, "source_session_continuities", "session_continuity", "neutral")
+    source_extraction_phases = source_layer_values(ref, "source_extraction_phases", "extraction_phase", "unknown")
+    for value in source_memory_scopes:
+        add_ref_bucket(breakdown, "by_memory_scope", value, token_estimate)
+    for value in source_session_continuities:
+        add_ref_bucket(breakdown, "by_session_continuity", value, token_estimate)
+    for value in source_extraction_phases:
+        add_ref_bucket(breakdown, "by_extraction_phase", value, token_estimate)
+    return source_memory_scopes, source_session_continuities, source_extraction_phases
+
+
 def selected_ref_layer_budget(refs: list[Json]) -> Json:
     breakdown: Json = {
         "by_memory_layer": {},
@@ -103,16 +135,12 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
         layer_bucket = breakdown["by_memory_layer"].setdefault(memory_layer_name(ref), {"refs": 0, "tokens": 0})
         layer_bucket["refs"] += 1
         layer_bucket["tokens"] += token_estimate
-        for field, bucket_name, default_value in [
-            ("memory_scope", "by_memory_scope", "unscoped"),
-            ("session_continuity", "by_session_continuity", "neutral"),
-            ("extraction_phase", "by_extraction_phase", "unknown"),
-            ("ref_type", "by_ref_type", "unknown"),
-        ]:
-            value = str(ref.get(field) or default_value)
-            bucket = breakdown[bucket_name].setdefault(value, {"refs": 0, "tokens": 0})
-            bucket["refs"] += 1
-            bucket["tokens"] += token_estimate
+        _source_memory_scopes, _source_session_continuities, source_extraction_phases = add_source_layer_buckets(
+            breakdown,
+            ref,
+            token_estimate,
+        )
+        add_ref_bucket(breakdown, "by_ref_type", str(ref.get("ref_type") or "unknown"), token_estimate)
         entity_type = str(ref.get("entity_type") or "")
         if entity_type:
             bucket = breakdown["by_entity_type"].setdefault(entity_type, {"refs": 0, "tokens": 0})
@@ -159,9 +187,9 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
                     breakdown[aggregate_field][bucket_name] = int(breakdown[aggregate_field].get(bucket_name, 0)) + source_count
         if bool(ref.get("final_session_boundary")):
             breakdown["final_session_boundary_ref_count"] += 1
-        if str(ref.get("extraction_phase") or "") == "provisional":
+        if any(phase == "provisional" for phase in source_extraction_phases):
             breakdown["provisional_ref_count"] += 1
-        if str(ref.get("extraction_phase") or "") == "final":
+        if any(phase == "final" for phase in source_extraction_phases):
             breakdown["final_ref_count"] += 1
     return breakdown
 
@@ -222,16 +250,12 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
         bucket = breakdown["by_drop_reason"].setdefault(reason, {"refs": 0, "tokens": 0})
         bucket["refs"] += 1
         bucket["tokens"] += token_estimate
-        for field, bucket_name, default_value in [
-            ("memory_scope", "by_memory_scope", "unscoped"),
-            ("session_continuity", "by_session_continuity", "neutral"),
-            ("extraction_phase", "by_extraction_phase", "unknown"),
-            ("ref_type", "by_ref_type", "unknown"),
-        ]:
-            value = str(ref.get(field) or default_value)
-            bucket = breakdown[bucket_name].setdefault(value, {"refs": 0, "tokens": 0})
-            bucket["refs"] += 1
-            bucket["tokens"] += token_estimate
+        _source_memory_scopes, _source_session_continuities, source_extraction_phases = add_source_layer_buckets(
+            breakdown,
+            ref,
+            token_estimate,
+        )
+        add_ref_bucket(breakdown, "by_ref_type", str(ref.get("ref_type") or "unknown"), token_estimate)
         entity_type = str(ref.get("entity_type") or "")
         if entity_type:
             bucket = breakdown["by_entity_type"].setdefault(entity_type, {"refs": 0, "tokens": 0})
@@ -278,9 +302,9 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
                     breakdown[aggregate_field][bucket_name] = int(breakdown[aggregate_field].get(bucket_name, 0)) + source_count
         if bool(ref.get("final_session_boundary")):
             breakdown["final_session_boundary_ref_count"] += 1
-        if str(ref.get("extraction_phase") or "") == "provisional":
+        if any(phase == "provisional" for phase in source_extraction_phases):
             breakdown["provisional_ref_count"] += 1
-        if str(ref.get("extraction_phase") or "") == "final":
+        if any(phase == "final" for phase in source_extraction_phases):
             breakdown["final_ref_count"] += 1
         if bool(ref.get("stale_or_superseded")) or reason == "stale":
             breakdown["stale_ref_count"] += 1
