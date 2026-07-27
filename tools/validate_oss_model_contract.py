@@ -21,6 +21,7 @@ from typing import Any
 CONTRACT_KEYS = (
     "reader_model",
     "embedding_model",
+    "encoding_model",
     "max_events",
     "reader_max_context_chars",
 )
@@ -159,6 +160,12 @@ def normalize_report(path: Path, label: str, errors: list[str]) -> dict[str, Any
         "provider_name": str(contract.get(f"{prefix}_provider_name") or data.get("reader_provider_name") or "").strip(),
         "reader_model": normalized(contract.get(f"{prefix}_reader_model") or data.get("reader_model") or data.get("model")),
         "embedding_model": normalized(contract.get(f"{prefix}_embedding_model") or data.get("embedding_model")),
+        "encoding_model": normalized(
+            contract.get(f"{prefix}_encoding_model")
+            or contract.get(f"{prefix}_embedding_model")
+            or data.get("encoding_model")
+            or data.get("embedding_model")
+        ),
         "max_events": to_int(contract.get(f"{prefix}_max_events") or data.get("max_events")),
         "reader_max_context_chars": to_int(
             contract.get(f"{prefix}_reader_max_context_chars") or data.get("reader_max_context_chars")
@@ -221,6 +228,11 @@ def normalize_report(path: Path, label: str, errors: list[str]) -> dict[str, Any
     for key in CONTRACT_KEYS:
         if row.get(key) in ("", None, 0):
             errors.append(f"{label}: {key}_missing")
+    if row.get("embedding_model") and row.get("encoding_model") and row["embedding_model"] != row["encoding_model"]:
+        errors.append(
+            f"{label}: embedding_encoding_model_mismatch "
+            f"embedding={row.get('embedding_model')!r} encoding={row.get('encoding_model')!r}"
+        )
     return row
 
 
