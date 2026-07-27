@@ -322,6 +322,41 @@ def _memory_hierarchy_profile_bridge_count(records: list[Json]) -> int:
     return count
 
 
+def _async_memory_layer_readiness_records(readiness_records: list[Json]) -> list[Json]:
+    records: list[Json] = []
+    for readiness in readiness_records:
+        memory_layer_readiness = readiness.get("memory_layer_readiness")
+        if isinstance(memory_layer_readiness, dict):
+            records.append(memory_layer_readiness)
+    return records
+
+
+def _readiness_layer_values(records: list[Json], field: str) -> list[str]:
+    values: set[str] = set()
+    for record in records:
+        raw_values = record.get(field)
+        if not isinstance(raw_values, list):
+            continue
+        for value in raw_values:
+            value_name = str(value or "").strip()
+            if value_name:
+                values.add(value_name)
+    return sorted(values)
+
+
+def _readiness_blocked_layer_counts(records: list[Json]) -> Json:
+    counts: Counter[str] = Counter()
+    for record in records:
+        raw_values = record.get("blocked_layers")
+        if not isinstance(raw_values, list):
+            continue
+        for value in raw_values:
+            value_name = str(value or "").strip()
+            if value_name:
+                counts[value_name] += 1
+    return dict(sorted(counts.items()))
+
+
 def _sum_pressure_int(records: list[Json], field: str) -> int:
     total = 0
     for record in records:
@@ -557,6 +592,7 @@ def matrixark_local_recovery_report(
         for record in retrieval_visibility_records
         if isinstance(record.get("async_pipeline_readiness"), dict)
     ]
+    async_memory_layer_readiness_records = _async_memory_layer_readiness_records(async_readiness_records)
     async_readiness_remaining_stages = sorted(
         {
             str(stage)
@@ -902,6 +938,18 @@ def matrixark_local_recovery_report(
             "async_readiness_task_count": async_readiness_task_count,
             "async_readiness_remaining_stages": async_readiness_remaining_stages,
             "async_readiness_freshness_warnings": async_readiness_warnings,
+            "async_memory_layer_readiness_record_count": len(async_memory_layer_readiness_records),
+            "async_memory_layer_readiness_blocked_layers": _readiness_layer_values(
+                async_memory_layer_readiness_records,
+                "blocked_layers",
+            ),
+            "async_memory_layer_readiness_ready_layers": _readiness_layer_values(
+                async_memory_layer_readiness_records,
+                "ready_layers",
+            ),
+            "async_memory_layer_readiness_blocked_layer_counts": _readiness_blocked_layer_counts(
+                async_memory_layer_readiness_records,
+            ),
             "async_readiness_rebuildable_from_durable_log": bool(async_readiness_records) and not blockers,
             "session_identity_record_count": len(telemetry_session_identities),
             "strong_session_identity_count": sum(1 for identity in telemetry_session_identities if bool(identity.get("strong_session_identity"))),
