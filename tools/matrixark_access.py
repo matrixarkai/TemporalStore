@@ -1848,7 +1848,16 @@ class MatrixArkAccessManager:
             return {"total": len(rows), "rows": page, "next_page_token": next_token, "page_token": page_token, "page_size": page_size}
         include_revoked = bool(args.get("include_revoked", False))
         records = self.adapter.read_all() + self.metadata.read_all()
-        tables = ["messages", "resources", "skills", "events", "entities", "context_packs"]
+        tables = [
+            "messages",
+            "resources",
+            "skills",
+            "events",
+            "entities",
+            "context_packs",
+            "summary_refresh",
+            "async_pipeline",
+        ]
         dashboard = {}
         totals = {}
         for table in tables:
