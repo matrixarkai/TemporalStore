@@ -45,6 +45,10 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
     pending_source_roles: dict[str, int] = {}
     pending_source_hook_types: dict[str, int] = {}
     pending_source_codex_events: dict[str, int] = {}
+    pending_memory_scopes: dict[str, int] = {}
+    pending_session_continuities: dict[str, int] = {}
+    pending_extraction_phases: dict[str, int] = {}
+    pending_final_session_boundary_count = 0
     pending_task_count = 0
     extraction_committed_task_count = 0
     summary_completed_task_count = 0
@@ -79,6 +83,18 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
                 add_count(pending_source_hook_types, hook_type)
             for codex_event in row.get("source_codex_events") if isinstance(row.get("source_codex_events"), list) else []:
                 add_count(pending_source_codex_events, codex_event)
+            layers = row.get("memory_layers_written") if isinstance(row.get("memory_layers_written"), dict) else {}
+            if int(layers.get("session_entities") or 0) > 0:
+                add_count(pending_memory_scopes, "session")
+            if int(layers.get("profile_entities") or 0) > 0:
+                add_count(pending_memory_scopes, "user_profile")
+            if int(layers.get("same_session_entities") or 0) > 0:
+                add_count(pending_session_continuities, "same_session")
+            if int(layers.get("cross_session_entities") or 0) > 0:
+                add_count(pending_session_continuities, "cross_session")
+            add_count(pending_extraction_phases, row.get("extraction_phase"))
+            if bool(row.get("final_session_boundary")):
+                pending_final_session_boundary_count += 1
     warnings: list[str] = []
     if pending_task_count:
         warnings.append("async_pipeline_pending")
@@ -98,6 +114,10 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
         "pending_source_roles": dict(sorted(pending_source_roles.items())),
         "pending_source_hook_types": dict(sorted(pending_source_hook_types.items())),
         "pending_source_codex_events": dict(sorted(pending_source_codex_events.items())),
+        "pending_memory_scopes": dict(sorted(pending_memory_scopes.items())),
+        "pending_session_continuities": dict(sorted(pending_session_continuities.items())),
+        "pending_extraction_phases": dict(sorted(pending_extraction_phases.items())),
+        "pending_final_session_boundary_count": pending_final_session_boundary_count,
         "ready_for_retrieval": not pending_task_count and not extraction_committed_task_count and not remaining_stages,
         "freshness_warnings": warnings,
     }

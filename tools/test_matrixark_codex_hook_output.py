@@ -812,6 +812,19 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             "PostToolUse": 1,
                             "Stop": 1,
                         },
+                        "pending_memory_scopes": {
+                            "session": 3,
+                            "user_profile": 2,
+                        },
+                        "pending_session_continuities": {
+                            "cross_session": 2,
+                            "same_session": 3,
+                        },
+                        "pending_extraction_phases": {
+                            "final": 1,
+                            "provisional": 3,
+                        },
+                        "pending_final_session_boundary_count": 1,
                         "freshness_warnings": ["async_pipeline_followup_pending", "profile_summary_stale"],
                     },
                     "memory_layer_budget": {
@@ -964,7 +977,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("codex_event[PostToolUse=1/18t, Stop=1/12t]", additional)
         self.assertIn("final_boundary_refs=2", additional)
         self.assertIn(
-            "async_pipeline[tasks=4; ready=false; remaining=entity,secondary_index,summary; stage_counts[entity=1,secondary_index=1,summary=2]; pending_roles[assistant=2,tool=1,user=1]; pending_hooks[after_llm=2,hook_boundary=1]; pending_codex_events[PostToolUse=1,Stop=1]; warnings=async_pipeline_followup_pending,profile_summary_stale]",
+            "async_pipeline[tasks=4; ready=false; remaining=entity,secondary_index,summary; stage_counts[entity=1,secondary_index=1,summary=2]; pending_roles[assistant=2,tool=1,user=1]; pending_hooks[after_llm=2,hook_boundary=1]; pending_codex_events[PostToolUse=1,Stop=1]; pending_scopes[session=3,user_profile=2]; pending_continuity[cross_session=2,same_session=3]; pending_phases[final=1,provisional=3]; pending_final_boundary=1; warnings=async_pipeline_followup_pending,profile_summary_stale]",
             additional,
         )
         self.assertIn("Memory hierarchy:", additional)

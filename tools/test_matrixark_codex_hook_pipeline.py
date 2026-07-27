@@ -791,6 +791,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(1, readiness["pending_source_roles"]["tool"])
             self.assertEqual(1, readiness["pending_source_hook_types"]["hook_boundary"])
             self.assertEqual(1, readiness["pending_source_codex_events"]["PostToolUse"])
+            self.assertEqual(3, readiness["pending_memory_scopes"]["session"])
+            self.assertEqual(3, readiness["pending_memory_scopes"]["user_profile"])
+            self.assertEqual(3, readiness["pending_session_continuities"]["same_session"])
+            self.assertEqual(3, readiness["pending_session_continuities"]["cross_session"])
+            self.assertEqual(3, readiness["pending_extraction_phases"]["provisional"])
+            self.assertNotIn("final", readiness["pending_extraction_phases"])
+            self.assertEqual(0, readiness["pending_final_session_boundary_count"])
             self.assertIn("async_pipeline_followup_pending", readiness["freshness_warnings"])
             self.assertTrue(
                 any(str(warning).startswith("async_pipeline_remaining_stages:") for warning in pack.get("quality_warnings", [])),
@@ -902,6 +909,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({}, summary_readiness["pending_source_roles"])
             self.assertEqual({}, summary_readiness["pending_source_hook_types"])
             self.assertEqual({}, summary_readiness["pending_source_codex_events"])
+            self.assertEqual({}, summary_readiness["pending_memory_scopes"])
+            self.assertEqual({}, summary_readiness["pending_session_continuities"])
+            self.assertEqual({}, summary_readiness["pending_extraction_phases"])
+            self.assertEqual(0, summary_readiness["pending_final_session_boundary_count"])
             self.assertEqual([], summary_readiness["freshness_warnings"])
 
     def test_lightweight_async_ingest_threshold_defaults_to_auto_batch_for_messages(self) -> None:

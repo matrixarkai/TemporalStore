@@ -710,6 +710,9 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
             ("pending_roles", "pending_source_roles"),
             ("pending_hooks", "pending_source_hook_types"),
             ("pending_codex_events", "pending_source_codex_events"),
+            ("pending_scopes", "pending_memory_scopes"),
+            ("pending_continuity", "pending_session_continuities"),
+            ("pending_phases", "pending_extraction_phases"),
         ]:
             bucket = readiness.get(field)
             if not isinstance(bucket, dict) or not bucket:
@@ -724,6 +727,12 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
                     bucket_bits.append(f"{key}={count}")
             if bucket_bits:
                 readiness_bits.append(f"{label}[" + ",".join(bucket_bits[:6]) + "]")
+        try:
+            final_boundary_count = int(readiness.get("pending_final_session_boundary_count") or 0)
+        except (TypeError, ValueError):
+            final_boundary_count = 0
+        if final_boundary_count > 0:
+            readiness_bits.append(f"pending_final_boundary={final_boundary_count}")
         warnings = readiness.get("freshness_warnings")
         if isinstance(warnings, list) and warnings:
             readiness_bits.append("warnings=" + ",".join(str(item) for item in warnings[:3]))
