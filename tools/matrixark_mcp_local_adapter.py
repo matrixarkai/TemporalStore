@@ -473,6 +473,13 @@ class MatrixArkLocalAdapter:
             if isinstance(recall_policy.get("memory_layer_budget"), dict)
             else {}
         )
+        dropped_memory_layer_budget = (
+            retrieval_metrics.get("dropped_memory_layer_budget")
+            if isinstance(retrieval_metrics.get("dropped_memory_layer_budget"), dict)
+            else recall_policy.get("dropped_memory_layer_budget")
+            if isinstance(recall_policy.get("dropped_memory_layer_budget"), dict)
+            else {}
+        )
         stage_budgets = recall_policy.get("stage_latency_budgets", {}) if isinstance(recall_policy.get("stage_latency_budgets"), dict) else {}
         tree = recall_policy.get("tree_traversal", {}) if isinstance(recall_policy.get("tree_traversal"), dict) else {}
         secondary = recall_policy.get("secondary_index_filter", {}) if isinstance(recall_policy.get("secondary_index_filter"), dict) else {}
@@ -521,6 +528,7 @@ class MatrixArkLocalAdapter:
             "remote_context_budget_tokens": pack.get("remote_context_budget_tokens", 0),
             "requested_max_context_tokens": pack.get("requested_max_context_tokens", 0),
             "memory_layer_budget": memory_layer_budget,
+            "dropped_memory_layer_budget": dropped_memory_layer_budget,
             "session_identity": session_identity,
             "quality_warnings": pack.get("quality_warnings", []) or [],
             "partial_context_pack": bool(pack.get("partial_context_pack", False)),
@@ -607,6 +615,8 @@ class MatrixArkLocalAdapter:
             audit_record["operational_visibility_policy"] = visibility_decision
             if isinstance(telemetry.get("memory_layer_budget"), dict) and "memory_layer_budget" not in audit_record:
                 audit_record["memory_layer_budget"] = telemetry["memory_layer_budget"]
+            if isinstance(telemetry.get("dropped_memory_layer_budget"), dict) and "dropped_memory_layer_budget" not in audit_record:
+                audit_record["dropped_memory_layer_budget"] = telemetry["dropped_memory_layer_budget"]
             if audit_mode == "full":
                 self.append_audit(audit_record)
             else:
@@ -2320,6 +2330,14 @@ class MatrixArkLocalAdapter:
                 if not isinstance(memory_layer_budget, dict):
                     recall_policy = record.get("recall_policy", {}) if isinstance(record.get("recall_policy"), dict) else {}
                     memory_layer_budget = recall_policy.get("memory_layer_budget", {}) if isinstance(recall_policy.get("memory_layer_budget"), dict) else {}
+                dropped_memory_layer_budget = record.get("dropped_memory_layer_budget")
+                if not isinstance(dropped_memory_layer_budget, dict):
+                    recall_policy = record.get("recall_policy", {}) if isinstance(record.get("recall_policy"), dict) else {}
+                    dropped_memory_layer_budget = (
+                        recall_policy.get("dropped_memory_layer_budget", {})
+                        if isinstance(recall_policy.get("dropped_memory_layer_budget"), dict)
+                        else {}
+                    )
                 session_identity = record.get("session_identity")
                 if not isinstance(session_identity, dict):
                     recall_policy = record.get("recall_policy", {}) if isinstance(record.get("recall_policy"), dict) else {}
@@ -2344,6 +2362,7 @@ class MatrixArkLocalAdapter:
                         "dropped_ref_bucket_counts": dropped_ref_bucket_counts,
                         "stale_dropped_refs": int(record.get("stale_dropped_refs") or dropped_ref_bucket_counts.get("stale", 0)),
                         "memory_layer_budget": memory_layer_budget,
+                        "dropped_memory_layer_budget": dropped_memory_layer_budget,
                         "session_identity": session_identity,
                         "retrieval_request_metadata": retrieval_request_metadata,
                         "retrieval_source": retrieval_request_metadata.get("retrieval_source", retrieval_request_metadata.get("source", "")),
@@ -6221,7 +6240,7 @@ class MatrixArkLocalAdapter:
             "recent_selected_ref_count": sum(1 for age_ms in selected_age_ms if age_ms <= freshness_tolerance_ms),
             "older_selected_ref_count": sum(1 for age_ms in selected_age_ms if age_ms > freshness_tolerance_ms),
         }
-        def selected_ref_layer_budget(refs: list[Json]) -> Json:
+        def ref_layer_budget(refs: list[Json], *, total_ref_field: str, total_token_field: str) -> Json:
             breakdown: Json = {
                 "by_memory_scope": {},
                 "by_session_continuity": {},
@@ -6234,15 +6253,15 @@ class MatrixArkLocalAdapter:
                 "final_session_boundary_ref_count": 0,
                 "provisional_ref_count": 0,
                 "final_ref_count": 0,
-                "total_selected_refs": len(refs),
-                "total_selected_tokens": 0,
+                total_ref_field: len(refs),
+                total_token_field: 0,
             }
             for ref in refs:
                 try:
                     token_estimate = max(0, int(ref.get("token_estimate") or 0))
                 except (TypeError, ValueError):
                     token_estimate = 0
-                breakdown["total_selected_tokens"] += token_estimate
+                breakdown[total_token_field] += token_estimate
                 for field, bucket_name, default_value in [
                     ("memory_scope", "by_memory_scope", "unscoped"),
                     ("session_continuity", "by_session_continuity", "neutral"),
@@ -6289,7 +6308,16 @@ class MatrixArkLocalAdapter:
                 if str(ref.get("extraction_phase") or "") == "final":
                     breakdown["final_ref_count"] += 1
             return breakdown
-        memory_layer_budget = selected_ref_layer_budget(selected)
+        memory_layer_budget = ref_layer_budget(
+            selected,
+            total_ref_field="total_selected_refs",
+            total_token_field="total_selected_tokens",
+        )
+        dropped_memory_layer_budget = ref_layer_budget(
+            dropped_over_budget.get("refs", []) if isinstance(dropped_over_budget.get("refs"), list) else [],
+            total_ref_field="total_dropped_refs",
+            total_token_field="total_dropped_tokens",
+        )
         pack = {
             "context_pack_id": str(context_pack_id),
             "context_sources_order": ["local_context", "matrixark_remote_context"],
@@ -6320,6 +6348,7 @@ class MatrixArkLocalAdapter:
                 },
                 "session_identity": session_identity_policy,
                 "memory_layer_budget": memory_layer_budget,
+                "dropped_memory_layer_budget": dropped_memory_layer_budget,
                 "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
                 "shared_context": dropped_over_budget.get("shared_context_policy", shared_context_policy),
                 "backend_retrieval_pushdown": retrieval_scan_stats,
@@ -6455,6 +6484,7 @@ class MatrixArkLocalAdapter:
             "storage_options": storage_options,
             "local_context_policy": pack["local_context_policy"],
             "memory_layer_budget": memory_layer_budget,
+            "dropped_memory_layer_budget": dropped_memory_layer_budget,
             "used_local_context_tokens": pack["used_local_context_tokens"],
             "used_remote_context_tokens": pack["used_remote_context_tokens"],
             "total_prompt_context_tokens": pack["total_prompt_context_tokens"],
@@ -6542,6 +6572,7 @@ class MatrixArkLocalAdapter:
             "local_context_count": len(local_budget["items"]),
             "remote_is_additive_only_within_remaining_budget": True,
             "memory_layer_budget": memory_layer_budget,
+            "dropped_memory_layer_budget": dropped_memory_layer_budget,
             "scanned_records": int(retrieval_scan_stats.get("loaded_records") or retrieval_scan_stats.get("scanned_records") or len(records)) if isinstance(retrieval_scan_stats, dict) else len(records),
             "candidate_cache_hit": candidate_cache_hit,
             "cache_hit": candidate_cache_hit,

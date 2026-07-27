@@ -5184,8 +5184,12 @@ def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate:
     for field in [
         "memory_scope",
         "session_continuity",
+        "extraction_phase",
         "entity_type",
         "entity_name",
+        "source_roles",
+        "source_hook_types",
+        "source_codex_events",
         "profile_shadowed_by_ref_hash",
         "profile_shadowed_reason",
     ]:
@@ -5196,9 +5200,27 @@ def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate:
 
 
 def record_dropped_candidate(dropped: Json, candidate: Json, *, reason: str, token_estimate: int) -> None:
-    if not is_resource_or_skill_candidate(candidate) and not (
-        reason == "stale" and str(candidate.get("ref_type") or "") == "entity"
-    ):
+    ref_type = str(candidate.get("ref_type") or "")
+    context_class = str(candidate.get("context_class") or "")
+    is_memory_candidate = ref_type in {
+        "event",
+        "entity",
+        "segment",
+        "summary",
+        "compression",
+        "resource_chunk",
+        "skill_section",
+    } or context_class in {
+        "raw_event",
+        "entity_state",
+        "assistant_decision",
+        "tool_evidence",
+        "summary",
+        "compression",
+        "resource_fact",
+        "resource_entity_fact",
+    }
+    if not is_memory_candidate and not is_resource_or_skill_candidate(candidate):
         return
     dropped.setdefault("refs", []).append(dropped_candidate_audit_ref(candidate, reason=reason, token_estimate=token_estimate))
 
@@ -5780,6 +5802,9 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
     memory_layer_budget = recall_summary.get("memory_layer_budget") if isinstance(recall_summary, dict) else {}
     if isinstance(memory_layer_budget, dict) and memory_layer_budget:
         compact["memory_layer_budget"] = memory_layer_budget
+    dropped_memory_layer_budget = recall_summary.get("dropped_memory_layer_budget") if isinstance(recall_summary, dict) else {}
+    if isinstance(dropped_memory_layer_budget, dict) and dropped_memory_layer_budget:
+        compact["dropped_memory_layer_budget"] = dropped_memory_layer_budget
     compact.pop("recall_policy", None)
 
     local_policy = compact.get("local_context_policy")
@@ -5950,6 +5975,9 @@ def compact_recall_policy_for_audit(recall_policy: Json) -> Json:
     memory_layer_budget = recall_policy.get("memory_layer_budget")
     if isinstance(memory_layer_budget, dict):
         compact["memory_layer_budget"] = memory_layer_budget
+    dropped_memory_layer_budget = recall_policy.get("dropped_memory_layer_budget")
+    if isinstance(dropped_memory_layer_budget, dict):
+        compact["dropped_memory_layer_budget"] = dropped_memory_layer_budget
     if storage_options:
         compact["storage_route"] = {
             field: storage_options.get(field)
@@ -6006,6 +6034,12 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
         memory_layer_budget = recall_policy.get("memory_layer_budget")
     if isinstance(memory_layer_budget, dict):
         compact["memory_layer_budget"] = memory_layer_budget
+    dropped_memory_layer_budget = record.get("dropped_memory_layer_budget")
+    if not isinstance(dropped_memory_layer_budget, dict):
+        recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
+        dropped_memory_layer_budget = recall_policy.get("dropped_memory_layer_budget")
+    if isinstance(dropped_memory_layer_budget, dict):
+        compact["dropped_memory_layer_budget"] = dropped_memory_layer_budget
     local_policy = record.get("local_context_policy")
     if isinstance(local_policy, dict):
         compact["local_context_policy"] = {

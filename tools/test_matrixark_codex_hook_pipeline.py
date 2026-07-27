@@ -1181,6 +1181,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 current_metrics["stale_dropped_refs"],
                 current_metrics["dropped_ref_bucket_counts"]["stale"],
             )
+            dropped_budget = current_pack["dropped_memory_layer_budget"]
+            self.assertGreaterEqual(dropped_budget["total_dropped_refs"], 1)
+            self.assertGreaterEqual(dropped_budget["by_memory_scope"]["session"]["refs"], 1)
+            self.assertGreaterEqual(dropped_budget["by_session_continuity"]["same_session"]["refs"], 1)
+            self.assertGreaterEqual(dropped_budget["by_ref_type"]["entity"]["refs"], 1)
+            self.assertGreaterEqual(dropped_budget["by_entity_type"]["assistant_decision"]["refs"], 1)
+            self.assertEqual(dropped_budget, current_metrics["dropped_memory_layer_budget"])
             current_dashboard = adapter.ingestion_dashboard(
                 {"scope": {**base_scope, "session_id": "session_profile_update_2"}, "table": "context_packs", "page_size": 5}
             )
@@ -1195,6 +1202,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(current_metrics["stale_dropped_refs"], current_row["stale_dropped_refs"])
             self.assertEqual(current_metrics["dropped_ref_bucket_counts"]["stale"], current_row["dropped_ref_bucket_counts"]["stale"])
             self.assertGreaterEqual(current_row["memory_layer_budget"]["by_memory_scope"]["user_profile"]["refs"], 1)
+            self.assertEqual(dropped_budget, current_row["dropped_memory_layer_budget"])
             self.assertLessEqual(current_row["used_remote_context_tokens"], current_row["remote_context_budget_tokens"])
 
     def test_retrieval_flags_state_file_session_identity_fallback(self) -> None:
