@@ -621,6 +621,7 @@ def main() -> int:
                 {
                     "query_id": query_id,
                     "category": case_category,
+                    "question": question,
                     "hit": rank is not None,
                     "rank": rank,
                     "reader_hit": reader_hit,
