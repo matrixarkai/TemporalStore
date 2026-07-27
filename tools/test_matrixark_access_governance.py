@@ -607,6 +607,35 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
                 assistant_result["ingested"]["auto_batch_extract_result"]["trigger_policy"],
             )
 
+            string_false = post(
+                {
+                    "scope": {**scope, "session_id": "codex:remote-thread-string-false"},
+                    "normalized_event": {
+                        "agent": "codex",
+                        "event": "AssistantResponse",
+                        "hook_type": "after_llm",
+                        "lifecycle_stage": "after_llm_ingest",
+                        "should_retrieve": "false",
+                        "should_commit": "false",
+                        "auto_batch_extract": "false",
+                        "final_session_boundary": "false",
+                        "conversation_id": "remote-thread-string-false",
+                        "session_id": "codex:remote-thread-string-false",
+                        "session_id_source": "payload.conversation_id",
+                        "role": "assistant",
+                        "text": "String false lifecycle flags must not retrieve or commit.",
+                        "timestamp_ms": 345,
+                    },
+                    "raw_payload": {"conversation_id": "remote-thread-string-false"},
+                }
+            )
+            self.assertEqual("ok", string_false["status"])
+            string_false_result = string_false["result"]
+            self.assertEqual("accepted", string_false_result["ingested"]["status"])
+            self.assertFalse(string_false_result["ingested"]["session_buffer"]["auto_batch_extract"])
+            self.assertEqual({}, string_false_result["retrieved"])
+            self.assertEqual({}, string_false_result["committed"])
+
             stop = post(
                 {
                     "scope": scope,

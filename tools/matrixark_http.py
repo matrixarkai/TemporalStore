@@ -201,7 +201,7 @@ def _agent_hook_call(server: Any, body: Json) -> Json:
         if idle_timeout is not None:
             ingest_args["idle_commit_timeout_ms"] = int(idle_timeout)
         result["ingested"] = server.call_tool("matrixark_ingest", ingest_args)
-    if bool(normalized.get("should_retrieve")):
+    if _agent_hook_bool(normalized.get("should_retrieve")):
         retrieve_metadata = {
             "retrieval_source": "remote_agent_hook",
             "codex_event": event,
@@ -223,13 +223,13 @@ def _agent_hook_call(server: Any, body: Json) -> Json:
         if isinstance(local_context, list) and local_context:
             retrieve_args["local_context"] = local_context
         result["retrieved"] = server.call_tool("matrixark_retrieve", retrieve_args)
-    if bool(normalized.get("should_commit")):
+    if _agent_hook_bool(normalized.get("should_commit")):
         commit_args: Json = {
             **args_common,
             "force": True,
             "commit_reason": "hook_boundary",
             "extraction_phase": str(normalized.get("extraction_phase") or "final"),
-            "final_session_boundary": bool(normalized.get("final_session_boundary", True)),
+            "final_session_boundary": _agent_hook_bool(normalized.get("final_session_boundary", True)),
             "metadata": metadata,
             "agent_hook": {**agent_hook, "hook_type": "session_commit"},
             "storage_options": storage_options,
