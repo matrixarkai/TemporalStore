@@ -693,6 +693,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 "max_candidates": 24,
             },
             "shared_context": {"enabled": False},
+            "source_role_budget": {
+                "enabled": True,
+                "budget_tokens": {"assistant": 32, "tool": 24, "user": 40},
+                "selected_tokens_by_role": {"assistant": 22, "tool": 18},
+                "selected_ref_count_by_role": {"assistant": 1, "tool": 1},
+            },
         }
 
         self.assertEqual(
@@ -958,6 +964,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "max_candidates": 24,
                     },
                     "shared_context": {"enabled": False},
+                    "source_role_budget": {
+                        "enabled": True,
+                        "budget_tokens": {"assistant": 32, "tool": 24, "user": 40},
+                        "selected_tokens_by_role": {"assistant": 22, "tool": 18},
+                        "selected_ref_count_by_role": {"assistant": 1, "tool": 1},
+                    },
                 },
                 "local_context_policy": {"local_context_count": 1},
                 "retrieval_metrics": {
@@ -1138,6 +1150,19 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(
             "remote_budget_too_small_for_profile_floor",
             output["retrieve"]["memory_hierarchy"]["cross_session_budget_floor_status"],
+        )
+        self.assertTrue(output["retrieve"]["memory_hierarchy"]["source_role_budget_enabled"])
+        self.assertEqual(
+            {"assistant": 32, "tool": 24, "user": 40},
+            output["retrieve"]["memory_hierarchy"]["source_role_budget_tokens"],
+        )
+        self.assertEqual(
+            {"assistant": 22, "tool": 18},
+            output["retrieve"]["memory_hierarchy"]["source_role_selected_tokens_by_role"],
+        )
+        self.assertIn(
+            "source_role_budget_gate",
+            output["retrieve"]["memory_hierarchy"]["selected_ref_flow"],
         )
         self.assertTrue(output["retrieve"]["budget_pressure"]["budget_pressure"])
         self.assertEqual(
