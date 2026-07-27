@@ -505,6 +505,16 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             "remaining_stages": ["entity", "secondary_index", "summary"],
                             "freshness_warnings": ["entity_extraction_pending"],
                         },
+                        "memory_layer_pressure": {
+                            "selected_refs": 2,
+                            "selected_tokens": 7,
+                            "dropped_refs": 3,
+                            "dropped_tokens": 56,
+                            "profile_memory_pressure": True,
+                            "cross_session_pressure": True,
+                            "assistant_source_message_pressure": True,
+                            "dropped_dimensions": ["by_memory_scope", "source_message_counts_by_role"],
+                        },
                     },
                     "recall_policy": {
                         "session_continuity": {
@@ -589,6 +599,13 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual({"over_budget": 2, "cross_session_budget": 1}, pressure["dropped_by_reason"])
         self.assertEqual({"over_budget": 44, "cross_session_budget": 12}, pressure["estimated_tokens_by_reason"])
         self.assertEqual(3, pressure["budget_pressure_reason_count"])
+        self.assertTrue(pressure["memory_layer_pressure"]["profile_memory_pressure"])
+        self.assertTrue(pressure["memory_layer_pressure"]["cross_session_pressure"])
+        self.assertTrue(pressure["memory_layer_pressure"]["assistant_source_message_pressure"])
+        self.assertEqual(
+            ["by_memory_scope", "source_message_counts_by_role"],
+            pressure["memory_layer_pressure"]["dropped_dimensions"],
+        )
         hierarchy = item["result"]["memory_hierarchy"]
         self.assertEqual("context_entity", hierarchy["models"]["session_entity"]["record_type"])
         self.assertEqual("user_profile", hierarchy["models"]["profile_entity"]["memory_scope"])
