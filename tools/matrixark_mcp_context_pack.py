@@ -626,4 +626,13 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     )
     if isinstance(dropped_memory_layer_budget, dict) and dropped_memory_layer_budget:
         compact["dropped_memory_layer_budget"] = dropped_memory_layer_budget
+    async_pipeline_readiness = (
+        retrieval_metrics.get("async_pipeline_readiness")
+        if isinstance(retrieval_metrics.get("async_pipeline_readiness"), dict)
+        else recall_policy.get("async_pipeline_readiness")
+        if isinstance(recall_policy.get("async_pipeline_readiness"), dict)
+        else {}
+    )
+    if isinstance(async_pipeline_readiness, dict) and async_pipeline_readiness:
+        compact["async_pipeline_readiness"] = async_pipeline_readiness
     return compact
