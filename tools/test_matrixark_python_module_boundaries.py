@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import re
 import sys
 import tempfile
 import unittest
@@ -53,6 +54,36 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("freshness_warnings", retrieve_output_props["async_pipeline_readiness"]["properties"])
         self.assertIn("summary_refresh", dashboard_table_enum)
         self.assertIn("async_pipeline", dashboard_table_enum)
+
+    def test_python_and_rust_retrieval_drop_reasons_stay_in_parity(self) -> None:
+        python_source = (TOOLS_DIR / "matrixark_mcp_budget_pack.py").read_text(encoding="utf-8")
+        rust_telemetry_source = (
+            REPO_ROOT
+            / "sdk/rust/temporalstore/src/bin/matrixark_rust_proxy/matrixark_rust_proxy_retrieve_telemetry.rs"
+        ).read_text(encoding="utf-8")
+        rust_proxy_source = (
+            REPO_ROOT / "sdk/rust/temporalstore/src/bin/matrixark_rust_proxy_impl.rs"
+        ).read_text(encoding="utf-8")
+        required_reasons = {
+            "over_budget",
+            "cross_session_budget",
+            "cross_session_session_cap",
+            "cross_session_candidate_cap",
+            "entity_bridge_slot_reserved",
+            "low_score",
+        }
+
+        python_drop_reasons = set(re.findall(r'"([a-z_]+)": "candidate[^"]+"', python_source))
+        python_drop_reasons.update(re.findall(r'"(cross_session_[a-z_]+|entity_bridge_slot_reserved|over_budget|low_score)"', python_source))
+        rust_drop_reasons = set(re.findall(r'"([a-z_]+)": dropped\.', rust_telemetry_source))
+        rust_drop_reasons.update(re.findall(r'"([a-z_]+)": dropped_', rust_proxy_source))
+
+        self.assertTrue(required_reasons <= python_drop_reasons, sorted(required_reasons - python_drop_reasons))
+        self.assertTrue(required_reasons <= rust_drop_reasons, sorted(required_reasons - rust_drop_reasons))
+        self.assertIn(
+            "candidate was skipped to preserve a minimum cross-session entity bridge slot",
+            python_source,
+        )
 
     def test_dashboard_helper_exposes_async_pipeline_and_summary_refresh_tables(self) -> None:
         dashboard_mod = importlib.import_module("tools.matrixark_mcp_dashboard")
