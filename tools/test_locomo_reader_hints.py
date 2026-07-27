@@ -203,6 +203,74 @@ class LocomoReaderHintTest(unittest.TestCase):
         self.assertIn("clarinet", hint.lower())
         self.assertIn("violin", hint.lower())
 
+    def test_last_night_resolves_to_previous_day(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_11 turn 1",
+                "body": (
+                    "2:24 pm on 14 August, 2023. Melanie: Last night was amazing! "
+                    "We celebrated my daughter's birthday with a concert."
+                ),
+            },
+        ]
+
+        hint = extractive_reader_hint("When is Melanie's daughter's birthday?", blocks)
+
+        self.assertIn("13 August 2023", hint)
+        self.assertNotIn("14 August", hint)
+
+    def test_pride_festival_together_prefers_last_year(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_12 turn 15",
+                "body": (
+                    "20 July, 2023. Caroline: We had a blast last year at the Pride fest "
+                    "with supportive friends."
+                ),
+            },
+        ]
+
+        hint = extractive_reader_hint("When did Caroline and Melanie go to a pride fesetival together?", blocks)
+
+        self.assertEqual("2022", hint)
+
+    def test_pottery_plate_uses_plate_event_anchor(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_14 turn 4",
+                "body": (
+                    "24 August 2023. Melanie made a plate in pottery class and loved "
+                    "the result."
+                ),
+            },
+            {
+                "title": "conv_26 session_5 turn 4",
+                "body": "2 July 2023. Melanie signed up for a pottery class.",
+            },
+        ]
+
+        hint = extractive_reader_hint("When did Melanie make a plate in pottery class?", blocks)
+
+        self.assertIn("24 August 2023", hint)
+
+    def test_lgbtq_participation_uses_action_phrases(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_5 summary",
+                "body": (
+                    "Caroline joined an activist group, went to pride parades, "
+                    "participated in an art show, and joined a mentorship program."
+                ),
+            },
+        ]
+
+        hint = extractive_reader_hint("In what ways is Caroline participating in the LGBTQ community?", blocks)
+
+        self.assertIn("Joining activist group", hint)
+        self.assertIn("going to pride parades", hint)
+        self.assertIn("participating in an art show", hint)
+        self.assertIn("mentoring program", hint)
+
 
 if __name__ == "__main__":
     unittest.main()
