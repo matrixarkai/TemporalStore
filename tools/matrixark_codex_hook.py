@@ -209,8 +209,6 @@ def retrieval_budget_pressure_from_retrieve(pack: Json | None) -> Json:
         return {}
     pack_view = _context_pack_view(pack)
     dropped = pack_view.get("dropped_refs") if isinstance(pack_view.get("dropped_refs"), dict) else {}
-    if not dropped:
-        return {}
     retrieval_metrics = pack_view.get("retrieval_metrics") if isinstance(pack_view.get("retrieval_metrics"), dict) else {}
     recall_policy = pack_view.get("recall_policy") if isinstance(pack_view.get("recall_policy"), dict) else {}
     dropped_memory_layer_budget = retrieval_metrics.get("dropped_memory_layer_budget")
@@ -247,8 +245,28 @@ def retrieval_budget_pressure_from_retrieve(pack: Json | None) -> Json:
         token_count = _int_field(raw_estimated, reason)
         if token_count > 0:
             estimated_tokens[reason] = token_count
+    memory_layer_pressure_active = False
+    if memory_layer_pressure:
+        memory_layer_pressure_active = any(
+            [
+                _int_field(memory_layer_pressure, "dropped_refs") > 0,
+                _int_field(memory_layer_pressure, "dropped_tokens") > 0,
+                _int_field(memory_layer_pressure, "dropped_bucket_count") > 0,
+                bool(memory_layer_pressure.get("dropped_dimensions")),
+                any(
+                    bool(value)
+                    for key, value in memory_layer_pressure.items()
+                    if str(key).endswith("_pressure")
+                ),
+            ]
+        )
     summary: Json = {
-        "budget_pressure": bool(dropped_by_reason or dropped.get("deadline_exceeded")),
+        "budget_pressure": bool(
+            dropped_by_reason
+            or dropped.get("deadline_exceeded")
+            or dropped_memory_layer_budget
+            or memory_layer_pressure_active
+        ),
         "dropped_by_reason": dropped_by_reason,
         "estimated_tokens_by_reason": estimated_tokens,
         "deadline_exceeded": bool(dropped.get("deadline_exceeded")),
