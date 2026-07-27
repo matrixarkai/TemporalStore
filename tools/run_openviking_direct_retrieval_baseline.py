@@ -55,6 +55,11 @@ def main() -> int:
     parser.add_argument("--reader-candidate-first", action="store_true")
     parser.add_argument("--reader-focus-evidence", action="store_true")
     parser.add_argument("--top-k", type=int, default=8)
+    parser.add_argument(
+        "--require-shared-oss-models",
+        action="store_true",
+        help="Fail if the baseline does not match MatrixArk reader, embedding, retrieval, and context-budget settings.",
+    )
     parser.add_argument("--report", default="/tmp/openviking_direct_retrieval_locomo_tiny_20260726.json")
     parser.add_argument("--matrixark-report", default="/tmp/matrixark_qwen_locomo_tiny_postfix2_20260726.json")
     args = parser.parse_args()
@@ -193,7 +198,7 @@ def main() -> int:
         }
     )
     report["benchmark_model_contract"] = benchmark_model_contract(args, report.get("matrixark_reference") or {})
-    return finish(report, args.report, started, 0)
+    return finish_with_contract_gate(report, args.report, started, args.require_shared_oss_models)
 
 
 def load_archive_messages(path: Path) -> list[dict[str, Any]]:
@@ -432,6 +437,14 @@ def finish(report: dict[str, Any], path: str, started: float, code: int) -> int:
     Path(path).write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     print(path)
     return code
+
+
+def finish_with_contract_gate(report: dict[str, Any], path: str, started: float, require_contract: bool) -> int:
+    contract = report.get("benchmark_model_contract")
+    if require_contract and not (isinstance(contract, dict) and contract.get("shared_oss_model_contract_passed")):
+        report.setdefault("blockers", []).append("shared_oss_model_contract_mismatch")
+        return finish(report, path, started, 2)
+    return finish(report, path, started, 0)
 
 
 if __name__ == "__main__":

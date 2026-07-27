@@ -31,6 +31,18 @@ def main() -> int:
     parser.add_argument("--misses", default="/tmp/temporalstore_locomo_ingest_once_misses.jsonl")
     add_threshold_policy_args(parser)
     parser.add_argument("--max-events", type=int, default=128)
+    parser.add_argument(
+        "--question-limit",
+        type=int,
+        default=0,
+        help="Optional maximum number of supported questions to score. Diagnostic/slice reports only.",
+    )
+    parser.add_argument(
+        "--question-offset",
+        type=int,
+        default=0,
+        help="Optional number of supported questions to skip before scoring. Diagnostic/slice reports only.",
+    )
     parser.add_argument("--embedding-model", default="matrixark-local-hash-embedding")
     parser.add_argument("--baseline-provider-name", default="")
     parser.add_argument("--baseline-reader-model", default="")
@@ -155,6 +167,10 @@ def main() -> int:
         str(thresholds["max_reader_p95_ms"]),
         "--max-events",
         str(args.max_events),
+        "--question-limit",
+        str(args.question_limit),
+        "--question-offset",
+        str(args.question_offset),
         "--embedding-model",
         args.embedding_model,
         "--reader-mode",
