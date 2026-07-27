@@ -271,6 +271,134 @@ class LocomoReaderHintTest(unittest.TestCase):
         self.assertIn("participating in an art show", hint)
         self.assertIn("mentoring program", hint)
 
+    def test_adoption_plan_answer_is_compact(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_2 turn 8",
+                "body": "Caroline is researching adoption agencies to give a loving home to kids who need it.",
+            },
+        ]
+
+        hint = extractive_reader_hint("What are Caroline's plans for the summer?", blocks)
+
+        self.assertEqual("researching adoption agencies", hint)
+
+    def test_counseling_motivation_answer_is_exact(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_4 turn 15",
+                "body": (
+                    "Caroline said her own journey and the support she received, "
+                    "and how counseling improved her life, motivated her to pursue counseling."
+                ),
+            },
+        ]
+
+        hint = extractive_reader_hint("What motivated Caroline to pursue counseling?", blocks)
+
+        self.assertIn("own journey", hint)
+        self.assertIn("support she received", hint)
+
+    def test_camping_activities_answer_is_exact(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_4 turn 8",
+                "body": "Melanie and her family explored nature, roasted marshmallows, and went on a hike while camping.",
+            },
+        ]
+
+        hint = extractive_reader_hint("What did Melanie and her family do while camping?", blocks)
+
+        self.assertIn("explored nature", hint)
+        self.assertIn("roasted marshmallows", hint)
+        self.assertIn("hike", hint)
+
+    def test_self_care_realization_answer_is_not_date(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_2 turn 5",
+                "body": "After the charity race, Melanie realized that self-care is important.",
+            },
+        ]
+
+        hint = extractive_reader_hint("What did Melanie realize after the charity race?", blocks)
+
+        self.assertEqual("self-care is important", hint)
+
+    def test_black_and_white_bowl_yes_answer(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_5 turn 8",
+                "body": "Melanie showed a photo of a black and white bowl she made in pottery class.",
+            },
+        ]
+
+        hint = extractive_reader_hint("Did Melanie make the black and white bowl in the photo?", blocks)
+
+        self.assertEqual("Yes", hint)
+
+    def test_practicing_art_duration_maps_to_since_year(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_16 turn 8",
+                "body": "Melanie said she has been practicing art for seven years.",
+            },
+        ]
+
+        hint = extractive_reader_hint("How long has Melanie been practicing art?", blocks)
+
+        self.assertEqual("Since 2016", hint)
+
+    def test_caroline_library_books_are_not_melanie_titles(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_6 turn 9",
+                "body": "Caroline has kids' books - classics, stories from different cultures, educational books in her library.",
+            },
+        ]
+
+        hint = extractive_reader_hint("What kind of books does Caroline have in her library?", blocks)
+
+        self.assertIn("kids' books", hint)
+        self.assertIn("educational books", hint)
+
+    def test_becoming_nicole_takeaway_answer(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_7 turn 11",
+                "body": "Caroline took lessons on self-acceptance and finding support from the book Becoming Nicole.",
+            },
+        ]
+
+        hint = extractive_reader_hint('What did Caroline take away from the book "Becoming Nicole"?', blocks)
+
+        self.assertIn("self-acceptance", hint)
+        self.assertIn("finding support", hint)
+
+    def test_birthday_performer_answer(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_11 turn 3",
+                "body": "Matt Patterson performed at the concert at Melanie's daughter's birthday.",
+            },
+        ]
+
+        hint = extractive_reader_hint("Who performed at the concert at Melanie's daughter's birthday?", blocks)
+
+        self.assertEqual("Matt Patterson", hint)
+
+    def test_last_year_what_did_see_question_is_not_date(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_10 turn 18",
+                "body": "Melanie and her family saw the Perseid meteor shower during their camping trip last year.",
+            },
+        ]
+
+        hint = extractive_reader_hint("What did Melanie and her family see during their camping trip last year?", blocks)
+
+        self.assertEqual("Perseid meteor shower", hint)
+
 
 if __name__ == "__main__":
     unittest.main()
