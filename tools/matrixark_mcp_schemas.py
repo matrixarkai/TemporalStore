@@ -523,6 +523,84 @@ TOOLS: list[Json] = [
             },
             "additionalProperties": True,
         },
+        "outputSchema": {
+            "type": "object",
+            "description": (
+                "Compact prompt-facing ContextPack. Normal retrieval output includes selected refs plus "
+                "memory hierarchy, async freshness/readiness, and memory-layer budget/pressure evidence so "
+                "agents can reason over same-session, cross-session/profile, summary, and shared context layers."
+            ),
+            "properties": {
+                "selected_refs": {
+                    "type": "array",
+                    "description": "Prompt-facing refs selected under the shared local+remote context budget.",
+                    "items": {"type": "object", "additionalProperties": True},
+                },
+                "memory_hierarchy": {
+                    "type": "object",
+                    "description": (
+                        "Public retrieval hierarchy contract: same-session memory first, profile entity bridge "
+                        "for cross-session state, bounded cross-session evidence, then summary/compression and shared context."
+                    ),
+                    "properties": {
+                        "models": {
+                            "type": "object",
+                            "description": "Context data models participating in retrieval, including session entities and profile entities/indexes.",
+                            "additionalProperties": True,
+                        },
+                        "retrieval_strategy": {"type": "string"},
+                        "session_scope_mode": {"type": "string"},
+                        "cross_session_enabled": {"type": "boolean"},
+                        "cross_session_budget_tokens": {"type": "integer"},
+                        "cross_session_remote_budget_tokens": {"type": "integer"},
+                        "cross_session_computed_budget_tokens": {"type": "integer"},
+                        "cross_session_budget_floor_tokens": {"type": "integer"},
+                        "cross_session_budget_floor_applied": {"type": "boolean"},
+                        "cross_session_budget_floor_status": {"type": "string"},
+                        "cross_session_max_sessions": {"type": "integer"},
+                        "cross_session_max_candidates": {"type": "integer"},
+                        "shared_context_enabled": {"type": "boolean"},
+                        "selected_ref_flow": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Ordered retrieval layer flow used when packing selected refs.",
+                        },
+                    },
+                    "additionalProperties": True,
+                },
+                "async_pipeline_readiness": {
+                    "type": "object",
+                    "description": (
+                        "Async extraction/summary/compression/embedding freshness state. If ready_for_retrieval is false, "
+                        "freshness_warnings and remaining_stages explain stale profile summaries or pending follow-up work."
+                    ),
+                    "properties": {
+                        "task_count": {"type": "integer"},
+                        "ready_for_retrieval": {"type": "boolean"},
+                        "remaining_stages": {"type": "array", "items": {"type": "string"}},
+                        "remaining_stage_counts": {"type": "object", "additionalProperties": True},
+                        "freshness_warnings": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "additionalProperties": True,
+                },
+                "memory_layer_budget": {
+                    "type": "object",
+                    "description": "Selected ref/token budget grouped by memory scope, session continuity, ref type, source role, hook type, and related memory dimensions.",
+                    "additionalProperties": True,
+                },
+                "dropped_memory_layer_budget": {
+                    "type": "object",
+                    "description": "Dropped ref/token budget grouped by memory layer dimensions, including cross-session/profile pressure and shadowed profile refs.",
+                    "additionalProperties": True,
+                },
+                "memory_layer_pressure": {
+                    "type": "object",
+                    "description": "Budget pressure summary for selected and dropped memory layers, including profile/cross-session/assistant/tool pressure flags.",
+                    "additionalProperties": True,
+                },
+            },
+            "additionalProperties": True,
+        },
     },
     {
         "name": "matrixark_batch_extract",
