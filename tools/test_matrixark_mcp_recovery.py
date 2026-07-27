@@ -189,9 +189,11 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                 "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "codex:session-a"},
                 "status": "summary_completed",
                 "stages": ["extraction", "summary", "compression", "embedding"],
-                "completed_stages": ["extraction", "summary"],
-                "remaining_stages": ["compression", "embedding"],
+                "completed_stages": ["extraction", "summary", "embedding", "compression"],
+                "remaining_stages": [],
                 "summary_completed": True,
+                "embedding_completed": True,
+                "compression_completed": True,
                 "summary_dirty_hash": 901,
                 "summary_node_hash": 10,
                 "generated_summary_types": ["node_l0", "node_l1"],
@@ -330,14 +332,14 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertTrue(report["async_pipeline"]["task_progress_rebuildable_from_durable_log"])
         self.assertFalse(report["async_pipeline"]["extraction_progress_rebuildable_from_durable_log"])
         self.assertTrue(report["async_pipeline"]["summary_progress_rebuildable_from_durable_log"])
-        self.assertEqual(["extraction", "summary"], report["async_pipeline"]["completed_stages"])
-        self.assertEqual(["compression", "embedding"], report["async_pipeline"]["remaining_stages"])
+        self.assertEqual(["compression", "embedding", "extraction", "summary"], report["async_pipeline"]["completed_stages"])
+        self.assertEqual([], report["async_pipeline"]["remaining_stages"])
         self.assertEqual(1, report["async_pipeline"]["trigger_policy_counts"]["threshold"])
         self.assertEqual(1, report["async_pipeline"]["source_role_counts"]["assistant"])
         self.assertEqual(1, report["async_pipeline"]["source_role_counts"]["user"])
         self.assertFalse(report["async_pipeline"]["summary_stage_pending_after_extraction"])
-        self.assertTrue(report["async_pipeline"]["compression_stage_pending_after_extraction"])
-        self.assertTrue(report["async_pipeline"]["embedding_stage_pending_after_extraction"])
+        self.assertFalse(report["async_pipeline"]["compression_stage_pending_after_extraction"])
+        self.assertFalse(report["async_pipeline"]["embedding_stage_pending_after_extraction"])
         bootstrap = report["cluster_join_bootstrap"]
         self.assertEqual("rebuild_required", bootstrap["readiness_status"])
         self.assertFalse(bootstrap["ready_for_context_serving"])
