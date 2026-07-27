@@ -679,6 +679,9 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
         ("continuity", "by_session_continuity"),
         ("phase", "by_extraction_phase"),
         ("ref_type", "by_ref_type"),
+        ("entity_type", "by_entity_type"),
+        ("source_role", "by_source_role"),
+        ("hook_type", "by_hook_type"),
         ("codex_event", "by_codex_event"),
     ]:
         buckets = memory_layer_budget.get(bucket_name)
