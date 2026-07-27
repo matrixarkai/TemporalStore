@@ -654,11 +654,26 @@ def memory_lineage_summary(*sources: Json | None) -> Json:
     for source in sources:
         if not isinstance(source, dict) or not source:
             continue
-        add_counts(source_role_counts, source.get("source_role_counts"), source.get("source_roles"))
+        role_counts = source.get("source_role_counts")
+        role_values = source.get("source_roles")
+        if not isinstance(role_counts, dict) or not role_counts:
+            role_counts = source.get("budget_source_role_counts")
+        if not isinstance(role_values, list) or not role_values:
+            role_values = source.get("budget_source_roles")
+        entity_role = {
+            "assistant_decision": "assistant",
+            "assistant_response": "assistant",
+            "tool_evidence": "tool",
+            "user_requirement": "user",
+            "user_preference": "user",
+        }.get(str(source.get("entity_type") or "").strip().lower())
+        if entity_role and not role_counts and not role_values:
+            role_values = [entity_role]
+        add_counts(source_role_counts, role_counts, role_values)
         add_counts(source_hook_type_counts, source.get("source_hook_type_counts"), source.get("source_hook_types"))
         add_counts(source_codex_event_counts, source.get("source_codex_event_counts"), source.get("source_codex_events"))
         memory_layers = source.get("memory_layers_written") if isinstance(source.get("memory_layers_written"), dict) else {}
-        if not source.get("source_role_counts") and not source.get("source_roles"):
+        if not role_counts and not role_values:
             add_counts(source_role_counts, None, memory_layers.get("source_roles"))
         if not source.get("source_hook_type_counts") and not source.get("source_hook_types"):
             add_counts(source_hook_type_counts, None, memory_layers.get("source_hook_types"))
