@@ -971,6 +971,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "final_memory_pressure": True,
                         "assistant_memory_pressure": True,
                         "tool_memory_pressure": True,
+                        "hook_boundary_source_pressure": True,
+                        "after_llm_source_pressure": True,
+                        "stop_event_source_pressure": True,
+                        "post_tool_use_source_pressure": True,
                         "pressure_bucket_count": 2,
                         "dropped_bucket_count": 5,
                     },
@@ -1068,7 +1072,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("memory_layer_pressure:", additional)
         self.assertIn("selected=3", additional)
         self.assertIn("dropped=5", additional)
-        self.assertIn("flags[profile,cross_session,final,assistant,tool]", additional)
+        self.assertIn(
+            "flags[profile,cross_session,final,assistant,tool,hook_boundary_source,after_llm_source,stop_event_source,post_tool_use_source]",
+            additional,
+        )
         self.assertIn("pressure_dimensions[by_memory_scope,by_source_role]", additional)
         self.assertIn("scope[session=1/12t, user_profile=2/30t]", additional)
         self.assertIn("continuity[cross_session=2/30t, same_session=1/12t]", additional)
