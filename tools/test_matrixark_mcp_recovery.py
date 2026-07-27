@@ -126,6 +126,25 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                     "by_hook_type": {"hook_boundary": {"refs": 1, "tokens": 9}},
                     "by_codex_event": {"Stop": {"refs": 1, "tokens": 9}},
                 },
+                "memory_layer_pressure": {
+                    "selected_refs": 2,
+                    "selected_tokens": 24,
+                    "dropped_refs": 1,
+                    "dropped_tokens": 9,
+                    "pressure_dimensions": ["by_extraction_phase", "by_source_role"],
+                    "dropped_dimensions": [
+                        "by_memory_scope",
+                        "by_session_continuity",
+                        "by_extraction_phase",
+                        "by_source_role",
+                    ],
+                    "session_memory_pressure": True,
+                    "same_session_pressure": True,
+                    "final_memory_pressure": True,
+                    "assistant_memory_pressure": True,
+                    "pressure_bucket_count": 2,
+                    "dropped_bucket_count": 4,
+                },
                 "async_pipeline_readiness": {
                     "task_count": 1,
                     "status_counts": {"extraction_committed": 1},
@@ -262,6 +281,25 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertEqual(["pack-recover-1"], report["retrieval_visibility"]["context_pack_ids"])
         self.assertEqual(1, report["retrieval_visibility"]["memory_layer_budget_record_count"])
         self.assertEqual(1, report["retrieval_visibility"]["dropped_memory_layer_budget_record_count"])
+        self.assertEqual(1, report["retrieval_visibility"]["memory_layer_pressure_record_count"])
+        self.assertEqual(2, report["retrieval_visibility"]["memory_layer_pressure_selected_refs"])
+        self.assertEqual(24, report["retrieval_visibility"]["memory_layer_pressure_selected_tokens"])
+        self.assertEqual(1, report["retrieval_visibility"]["memory_layer_pressure_dropped_refs"])
+        self.assertEqual(9, report["retrieval_visibility"]["memory_layer_pressure_dropped_tokens"])
+        self.assertEqual(2, report["retrieval_visibility"]["memory_layer_pressure_bucket_count"])
+        self.assertEqual(4, report["retrieval_visibility"]["memory_layer_pressure_dropped_bucket_count"])
+        self.assertEqual(
+            ["by_extraction_phase", "by_source_role"],
+            report["retrieval_visibility"]["memory_layer_pressure_dimensions"],
+        )
+        self.assertEqual(
+            ["by_extraction_phase", "by_memory_scope", "by_session_continuity", "by_source_role"],
+            report["retrieval_visibility"]["memory_layer_pressure_dropped_dimensions"],
+        )
+        self.assertEqual(1, report["retrieval_visibility"]["memory_layer_pressure_flags"]["session"])
+        self.assertEqual(1, report["retrieval_visibility"]["memory_layer_pressure_flags"]["same_session"])
+        self.assertEqual(1, report["retrieval_visibility"]["memory_layer_pressure_flags"]["final"])
+        self.assertEqual(1, report["retrieval_visibility"]["memory_layer_pressure_flags"]["assistant"])
         self.assertTrue(report["retrieval_visibility"]["retrieval_budget_pressure_rebuildable_from_durable_log"])
         self.assertEqual(
             {"refs": 1, "tokens": 12},

@@ -241,6 +241,43 @@ def _budget_record_count(records: list[Json], field: str) -> int:
     return count
 
 
+def _memory_layer_pressure_records(records: list[Json]) -> list[Json]:
+    pressure_records: list[Json] = []
+    for record in records:
+        pressure = record.get("memory_layer_pressure")
+        if not isinstance(pressure, dict):
+            recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
+            pressure = recall_policy.get("memory_layer_pressure")
+        if isinstance(pressure, dict):
+            pressure_records.append(pressure)
+    return pressure_records
+
+
+def _sum_pressure_int(records: list[Json], field: str) -> int:
+    total = 0
+    for record in records:
+        try:
+            total += int(record.get(field) or 0)
+        except (TypeError, ValueError):
+            pass
+    return total
+
+
+def _pressure_flag_count(records: list[Json], field: str) -> int:
+    return sum(1 for record in records if bool(record.get(field)))
+
+
+def _pressure_dimension_set(records: list[Json], field: str) -> list[str]:
+    return sorted(
+        {
+            str(value)
+            for record in records
+            for value in (record.get(field) if isinstance(record.get(field), list) else [])
+            if str(value or "")
+        }
+    )
+
+
 def matrixark_local_recovery_report(
     records: list[Json],
     *,
@@ -365,6 +402,7 @@ def matrixark_local_recovery_report(
         retrieval_visibility_records,
         "dropped_memory_layer_budget",
     )
+    memory_layer_pressure_records = _memory_layer_pressure_records(retrieval_visibility_records)
     selected_budget_by_memory_scope = _memory_scope_budget_counts(
         retrieval_visibility_records,
         "memory_layer_budget",
@@ -721,6 +759,26 @@ def matrixark_local_recovery_report(
             "lifecycle_stages": telemetry_lifecycle_stages,
             "memory_layer_budget_record_count": memory_layer_budget_record_count,
             "dropped_memory_layer_budget_record_count": dropped_memory_layer_budget_record_count,
+            "memory_layer_pressure_record_count": len(memory_layer_pressure_records),
+            "memory_layer_pressure_selected_refs": _sum_pressure_int(memory_layer_pressure_records, "selected_refs"),
+            "memory_layer_pressure_selected_tokens": _sum_pressure_int(memory_layer_pressure_records, "selected_tokens"),
+            "memory_layer_pressure_dropped_refs": _sum_pressure_int(memory_layer_pressure_records, "dropped_refs"),
+            "memory_layer_pressure_dropped_tokens": _sum_pressure_int(memory_layer_pressure_records, "dropped_tokens"),
+            "memory_layer_pressure_bucket_count": _sum_pressure_int(memory_layer_pressure_records, "pressure_bucket_count"),
+            "memory_layer_pressure_dropped_bucket_count": _sum_pressure_int(memory_layer_pressure_records, "dropped_bucket_count"),
+            "memory_layer_pressure_dimensions": _pressure_dimension_set(memory_layer_pressure_records, "pressure_dimensions"),
+            "memory_layer_pressure_dropped_dimensions": _pressure_dimension_set(memory_layer_pressure_records, "dropped_dimensions"),
+            "memory_layer_pressure_flags": {
+                "profile": _pressure_flag_count(memory_layer_pressure_records, "profile_memory_pressure"),
+                "session": _pressure_flag_count(memory_layer_pressure_records, "session_memory_pressure"),
+                "cross_session": _pressure_flag_count(memory_layer_pressure_records, "cross_session_pressure"),
+                "same_session": _pressure_flag_count(memory_layer_pressure_records, "same_session_pressure"),
+                "final": _pressure_flag_count(memory_layer_pressure_records, "final_memory_pressure"),
+                "provisional": _pressure_flag_count(memory_layer_pressure_records, "provisional_memory_pressure"),
+                "assistant": _pressure_flag_count(memory_layer_pressure_records, "assistant_memory_pressure"),
+                "user": _pressure_flag_count(memory_layer_pressure_records, "user_memory_pressure"),
+                "tool": _pressure_flag_count(memory_layer_pressure_records, "tool_memory_pressure"),
+            },
             "selected_budget_by_memory_scope": selected_budget_by_memory_scope,
             "dropped_budget_by_memory_scope": dropped_budget_by_memory_scope,
             "selected_budget_by_session_continuity": selected_budget_by_session_continuity,
@@ -738,7 +796,9 @@ def matrixark_local_recovery_report(
             "selected_budget_by_codex_event": selected_budget_by_codex_event,
             "dropped_budget_by_codex_event": dropped_budget_by_codex_event,
             "retrieval_budget_pressure_rebuildable_from_durable_log": bool(
-                memory_layer_budget_record_count or dropped_memory_layer_budget_record_count
+                memory_layer_budget_record_count
+                or dropped_memory_layer_budget_record_count
+                or memory_layer_pressure_records
             ) and not blockers,
             "async_readiness_record_count": len(async_readiness_records),
             "async_readiness_ready_count": int(async_readiness_status_counts.get("ready", 0)),
