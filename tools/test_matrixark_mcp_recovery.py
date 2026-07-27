@@ -106,8 +106,26 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                 "dropped_ref_count": 1,
                 "used_remote_context_tokens": 42,
                 "remote_context_budget_tokens": 512,
-                "memory_layer_budget": {"by_memory_scope": {"user_profile": {"refs": 1, "tokens": 12}}},
-                "dropped_memory_layer_budget": {"by_memory_scope": {"session": {"refs": 1, "tokens": 9}}},
+                "memory_layer_budget": {
+                    "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 12}},
+                    "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 12}},
+                    "by_extraction_phase": {"final": {"refs": 1, "tokens": 12}},
+                    "by_ref_type": {"entity": {"refs": 1, "tokens": 12}},
+                    "by_entity_type": {"assistant_decision": {"refs": 1, "tokens": 12}},
+                    "by_source_role": {"assistant": {"refs": 1, "tokens": 12}},
+                    "by_hook_type": {"hook_boundary": {"refs": 1, "tokens": 12}},
+                    "by_codex_event": {"Stop": {"refs": 1, "tokens": 12}},
+                },
+                "dropped_memory_layer_budget": {
+                    "by_memory_scope": {"session": {"refs": 1, "tokens": 9}},
+                    "by_session_continuity": {"same_session": {"refs": 1, "tokens": 9}},
+                    "by_extraction_phase": {"final": {"refs": 1, "tokens": 9}},
+                    "by_ref_type": {"entity": {"refs": 1, "tokens": 9}},
+                    "by_entity_type": {"assistant_decision": {"refs": 1, "tokens": 9}},
+                    "by_source_role": {"assistant": {"refs": 1, "tokens": 9}},
+                    "by_hook_type": {"hook_boundary": {"refs": 1, "tokens": 9}},
+                    "by_codex_event": {"Stop": {"refs": 1, "tokens": 9}},
+                },
                 "session_identity": {
                     "session_id_source": "payload_field",
                     "strong_session_identity": True,
@@ -178,6 +196,62 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertEqual(
             {"refs": 1, "tokens": 9},
             report["retrieval_visibility"]["dropped_budget_by_memory_scope"]["session"],
+        )
+        self.assertEqual(
+            {"refs": 1, "tokens": 12},
+            report["retrieval_visibility"]["selected_budget_by_session_continuity"]["cross_session"],
+        )
+        self.assertEqual(
+            {"refs": 1, "tokens": 9},
+            report["retrieval_visibility"]["dropped_budget_by_session_continuity"]["same_session"],
+        )
+        self.assertEqual(
+            {"refs": 1, "tokens": 12},
+            report["retrieval_visibility"]["selected_budget_by_extraction_phase"]["final"],
+        )
+        self.assertEqual(
+            {"refs": 1, "tokens": 9},
+            report["retrieval_visibility"]["dropped_budget_by_extraction_phase"]["final"],
+        )
+        self.assertEqual(
+            {"refs": 1, "tokens": 12},
+            report["retrieval_visibility"]["selected_budget_by_ref_type"]["entity"],
+        )
+        self.assertEqual(
+            {"refs": 1, "tokens": 9},
+            report["retrieval_visibility"]["dropped_budget_by_ref_type"]["entity"],
+        )
+        self.assertEqual(
+            {"refs": 1, "tokens": 12},
+            report["retrieval_visibility"]["selected_budget_by_entity_type"]["assistant_decision"],
+        )
+        self.assertEqual(
+            {"refs": 1, "tokens": 9},
+            report["retrieval_visibility"]["dropped_budget_by_entity_type"]["assistant_decision"],
+        )
+        self.assertEqual(
+            {"refs": 1, "tokens": 12},
+            report["retrieval_visibility"]["selected_budget_by_source_role"]["assistant"],
+        )
+        self.assertEqual(
+            {"refs": 1, "tokens": 9},
+            report["retrieval_visibility"]["dropped_budget_by_source_role"]["assistant"],
+        )
+        self.assertEqual(
+            {"refs": 1, "tokens": 12},
+            report["retrieval_visibility"]["selected_budget_by_hook_type"]["hook_boundary"],
+        )
+        self.assertEqual(
+            {"refs": 1, "tokens": 9},
+            report["retrieval_visibility"]["dropped_budget_by_hook_type"]["hook_boundary"],
+        )
+        self.assertEqual(
+            {"refs": 1, "tokens": 12},
+            report["retrieval_visibility"]["selected_budget_by_codex_event"]["Stop"],
+        )
+        self.assertEqual(
+            {"refs": 1, "tokens": 9},
+            report["retrieval_visibility"]["dropped_budget_by_codex_event"]["Stop"],
         )
         self.assertEqual(1, report["retrieval_visibility"]["session_identity_record_count"])
         self.assertEqual(1, report["retrieval_visibility"]["strong_session_identity_count"])

@@ -193,7 +193,7 @@ def _derived_view_readiness(
     }
 
 
-def _memory_scope_budget_counts(records: list[Json], field: str) -> Json:
+def _budget_counts(records: list[Json], field: str, bucket_field: str) -> Json:
     counts: Counter[str] = Counter()
     tokens: Counter[str] = Counter()
     for record in records:
@@ -203,13 +203,13 @@ def _memory_scope_budget_counts(records: list[Json], field: str) -> Json:
             budget = recall_policy.get(field)
         if not isinstance(budget, dict):
             continue
-        by_scope = budget.get("by_memory_scope")
-        if not isinstance(by_scope, dict):
+        by_bucket = budget.get(bucket_field)
+        if not isinstance(by_bucket, dict):
             continue
-        for scope_name, bucket in by_scope.items():
+        for bucket_name, bucket in by_bucket.items():
             if not isinstance(bucket, dict):
                 continue
-            name = str(scope_name or "unscoped")
+            name = str(bucket_name or "unscoped")
             try:
                 counts[name] += int(bucket.get("refs") or 0)
             except (TypeError, ValueError):
@@ -223,6 +223,10 @@ def _memory_scope_budget_counts(records: list[Json], field: str) -> Json:
         for name in sorted(counts)
         if counts[name] > 0 or tokens[name] > 0
     }
+
+
+def _memory_scope_budget_counts(records: list[Json], field: str) -> Json:
+    return _budget_counts(records, field, "by_memory_scope")
 
 
 def _budget_record_count(records: list[Json], field: str) -> int:
@@ -368,6 +372,76 @@ def matrixark_local_recovery_report(
     dropped_budget_by_memory_scope = _memory_scope_budget_counts(
         retrieval_visibility_records,
         "dropped_memory_layer_budget",
+    )
+    selected_budget_by_session_continuity = _budget_counts(
+        retrieval_visibility_records,
+        "memory_layer_budget",
+        "by_session_continuity",
+    )
+    dropped_budget_by_session_continuity = _budget_counts(
+        retrieval_visibility_records,
+        "dropped_memory_layer_budget",
+        "by_session_continuity",
+    )
+    selected_budget_by_extraction_phase = _budget_counts(
+        retrieval_visibility_records,
+        "memory_layer_budget",
+        "by_extraction_phase",
+    )
+    dropped_budget_by_extraction_phase = _budget_counts(
+        retrieval_visibility_records,
+        "dropped_memory_layer_budget",
+        "by_extraction_phase",
+    )
+    selected_budget_by_ref_type = _budget_counts(
+        retrieval_visibility_records,
+        "memory_layer_budget",
+        "by_ref_type",
+    )
+    dropped_budget_by_ref_type = _budget_counts(
+        retrieval_visibility_records,
+        "dropped_memory_layer_budget",
+        "by_ref_type",
+    )
+    selected_budget_by_entity_type = _budget_counts(
+        retrieval_visibility_records,
+        "memory_layer_budget",
+        "by_entity_type",
+    )
+    dropped_budget_by_entity_type = _budget_counts(
+        retrieval_visibility_records,
+        "dropped_memory_layer_budget",
+        "by_entity_type",
+    )
+    selected_budget_by_source_role = _budget_counts(
+        retrieval_visibility_records,
+        "memory_layer_budget",
+        "by_source_role",
+    )
+    dropped_budget_by_source_role = _budget_counts(
+        retrieval_visibility_records,
+        "dropped_memory_layer_budget",
+        "by_source_role",
+    )
+    selected_budget_by_hook_type = _budget_counts(
+        retrieval_visibility_records,
+        "memory_layer_budget",
+        "by_hook_type",
+    )
+    dropped_budget_by_hook_type = _budget_counts(
+        retrieval_visibility_records,
+        "dropped_memory_layer_budget",
+        "by_hook_type",
+    )
+    selected_budget_by_codex_event = _budget_counts(
+        retrieval_visibility_records,
+        "memory_layer_budget",
+        "by_codex_event",
+    )
+    dropped_budget_by_codex_event = _budget_counts(
+        retrieval_visibility_records,
+        "dropped_memory_layer_budget",
+        "by_codex_event",
     )
     profile_dirty_summaries = [
         record for record in dirty_summaries
@@ -548,6 +622,20 @@ def matrixark_local_recovery_report(
             "dropped_memory_layer_budget_record_count": dropped_memory_layer_budget_record_count,
             "selected_budget_by_memory_scope": selected_budget_by_memory_scope,
             "dropped_budget_by_memory_scope": dropped_budget_by_memory_scope,
+            "selected_budget_by_session_continuity": selected_budget_by_session_continuity,
+            "dropped_budget_by_session_continuity": dropped_budget_by_session_continuity,
+            "selected_budget_by_extraction_phase": selected_budget_by_extraction_phase,
+            "dropped_budget_by_extraction_phase": dropped_budget_by_extraction_phase,
+            "selected_budget_by_ref_type": selected_budget_by_ref_type,
+            "dropped_budget_by_ref_type": dropped_budget_by_ref_type,
+            "selected_budget_by_entity_type": selected_budget_by_entity_type,
+            "dropped_budget_by_entity_type": dropped_budget_by_entity_type,
+            "selected_budget_by_source_role": selected_budget_by_source_role,
+            "dropped_budget_by_source_role": dropped_budget_by_source_role,
+            "selected_budget_by_hook_type": selected_budget_by_hook_type,
+            "dropped_budget_by_hook_type": dropped_budget_by_hook_type,
+            "selected_budget_by_codex_event": selected_budget_by_codex_event,
+            "dropped_budget_by_codex_event": dropped_budget_by_codex_event,
             "retrieval_budget_pressure_rebuildable_from_durable_log": bool(
                 memory_layer_budget_record_count or dropped_memory_layer_budget_record_count
             ) and not blockers,
