@@ -191,6 +191,28 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                     "summary_completed_task_count": 0,
                     "completed_stages": ["extraction"],
                     "remaining_stages": ["summary", "compression", "embedding"],
+                    "memory_layer_readiness": {
+                        "layers": {
+                            "session": {"ready": False, "pending_task_count": 1, "remaining_stages": []},
+                            "user_profile": {"ready": False, "pending_task_count": 1, "remaining_stages": []},
+                            "same_session": {"ready": False, "pending_task_count": 1, "remaining_stages": []},
+                            "cross_session": {"ready": False, "pending_task_count": 1, "remaining_stages": []},
+                            "summary": {"ready": False, "pending_task_count": 1, "remaining_stages": ["summary"]},
+                            "compression": {"ready": False, "pending_task_count": 1, "remaining_stages": ["compression"]},
+                            "embedding": {"ready": False, "pending_task_count": 1, "remaining_stages": ["embedding"]},
+                        },
+                        "blocked_layers": [
+                            "session",
+                            "user_profile",
+                            "same_session",
+                            "cross_session",
+                            "summary",
+                            "compression",
+                            "embedding",
+                        ],
+                        "ready_layers": [],
+                        "ready_for_retrieval": False,
+                    },
                     "ready_for_retrieval": False,
                     "freshness_warnings": [
                         "async_pipeline_followup_pending",
@@ -438,6 +460,32 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                 "async_pipeline_remaining_stages:compression,embedding,summary",
             ],
             report["retrieval_visibility"]["async_readiness_freshness_warnings"],
+        )
+        self.assertEqual(1, report["retrieval_visibility"]["async_memory_layer_readiness_record_count"])
+        self.assertEqual(
+            [
+                "compression",
+                "cross_session",
+                "embedding",
+                "same_session",
+                "session",
+                "summary",
+                "user_profile",
+            ],
+            report["retrieval_visibility"]["async_memory_layer_readiness_blocked_layers"],
+        )
+        self.assertEqual([], report["retrieval_visibility"]["async_memory_layer_readiness_ready_layers"])
+        self.assertEqual(
+            {
+                "compression": 1,
+                "cross_session": 1,
+                "embedding": 1,
+                "same_session": 1,
+                "session": 1,
+                "summary": 1,
+                "user_profile": 1,
+            },
+            report["retrieval_visibility"]["async_memory_layer_readiness_blocked_layer_counts"],
         )
         self.assertTrue(report["retrieval_visibility"]["async_readiness_rebuildable_from_durable_log"])
         self.assertEqual(1, report["retrieval_visibility"]["session_identity_record_count"])
