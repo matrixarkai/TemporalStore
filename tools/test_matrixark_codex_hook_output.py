@@ -925,6 +925,18 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             "PostToolUse": {"refs": 1, "tokens": 18},
                             "Stop": {"refs": 1, "tokens": 12},
                         },
+                        "source_message_counts_by_role": {
+                            "assistant": 3,
+                            "tool": 1,
+                        },
+                        "source_hook_counts_by_type": {
+                            "after_llm": 2,
+                            "hook_boundary": 1,
+                        },
+                        "source_codex_event_counts_by_event": {
+                            "PostToolUse": 1,
+                            "Stop": 2,
+                        },
                         "final_session_boundary_ref_count": 2,
                     },
                     "dropped_memory_layer_budget": {
@@ -1066,6 +1078,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("source_role[assistant=1/14t, tool=1/16t]", additional)
         self.assertIn("hook_type[after_llm=1/14t, hook_boundary=1/16t]", additional)
         self.assertIn("codex_event[PostToolUse=1/18t, Stop=1/12t]", additional)
+        self.assertIn("source_messages[assistant=3, tool=1]", additional)
+        self.assertIn("source_hooks[after_llm=2, hook_boundary=1]", additional)
+        self.assertIn("source_codex_events[PostToolUse=1, Stop=2]", additional)
         self.assertIn("final_boundary_refs=2", additional)
         self.assertIn(
             "async_pipeline[tasks=4; ready=false; remaining=entity,secondary_index,summary; memory_layers_ready=false; blocked_layers[session,user_profile,same_session,cross_session,summary]; ready_layers[compression,embedding]; layer_pending[cross_session=2,same_session=3,session=3,summary=2:summary,user_profile=2]; stage_counts[entity=1,secondary_index=1,summary=2]; pending_roles[assistant=2,tool=1,user=1]; pending_hooks[after_llm=2,hook_boundary=1]; pending_codex_events[PostToolUse=1,Stop=1]; pending_scopes[session=3,user_profile=2]; pending_continuity[cross_session=2,same_session=3]; pending_phases[final=1,provisional=3]; pending_final_boundary=1; warnings=async_pipeline_followup_pending,profile_summary_stale]",
@@ -1112,15 +1127,20 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "session_continuity": "cross_session",
                         "entity_type": "assistant_decision",
                         "source_roles": ["assistant"],
+                        "source_role_counts": {"assistant": 4, "user": 1},
                         "source_hook_types": ["after_llm"],
+                        "source_hook_type_counts": {"after_llm": 2},
                         "text": "assistant: keep cross-session profile decision",
                     },
                     {
                         "context_class": "summary",
                         "entity_type": "tool_evidence",
                         "source_roles": ["tool"],
+                        "source_role_counts": {"tool": 3},
                         "source_hook_types": ["tool_result"],
+                        "source_hook_type_counts": {"tool_result": 2},
                         "source_codex_events": ["PostToolUse"],
+                        "source_codex_event_counts": {"PostToolUse": 2},
                         "text": "tool: tests ran successfully",
                     },
                 ],
@@ -1151,6 +1171,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("hook_type[after_llm=", additional)
         self.assertIn("tool_result=", additional)
         self.assertIn("codex_event[PostToolUse=", additional)
+        self.assertIn("source_messages[assistant=4, tool=3, user=1]", additional)
+        self.assertIn("source_hooks[after_llm=2, tool_result=2]", additional)
+        self.assertIn("source_codex_events[PostToolUse=2]", additional)
 
     def test_grouped_refs_count_and_format_as_additional_context(self) -> None:
         args = Namespace(session_id="codex-session-1")

@@ -289,6 +289,9 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
                 "by_source_role",
                 "by_hook_type",
                 "by_codex_event",
+                "source_message_counts_by_role",
+                "source_hook_counts_by_type",
+                "source_codex_event_counts_by_event",
             ]:
                 if not memory_layer_budget.get(bucket_name):
                     memory_layer_budget[bucket_name] = inferred_budget.get(bucket_name, {})
@@ -379,6 +382,9 @@ def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:
         "by_source_role": {},
         "by_hook_type": {},
         "by_codex_event": {},
+        "source_message_counts_by_role": {},
+        "source_hook_counts_by_type": {},
+        "source_codex_event_counts_by_event": {},
         "final_session_boundary_ref_count": 0,
         "provisional_ref_count": 0,
         "final_ref_count": 0,
@@ -392,6 +398,24 @@ def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:
         bucket = budget[bucket_name].setdefault(key, {"refs": 0, "tokens": 0})
         bucket["refs"] += 1
         bucket["tokens"] += token_estimate
+
+    def add_source_counts(bucket_name: str, counts: Any, fallback_names: list[Any]) -> None:
+        if isinstance(counts, dict) and counts:
+            for name, count in counts.items():
+                label = str(name or "").strip()
+                if not label:
+                    continue
+                try:
+                    amount = max(0, int(count or 0))
+                except (TypeError, ValueError):
+                    amount = 0
+                if amount:
+                    budget[bucket_name][label] = int(budget[bucket_name].get(label, 0)) + amount
+            return
+        for name in fallback_names:
+            label = str(name or "").strip()
+            if label:
+                budget[bucket_name][label] = int(budget[bucket_name].get(label, 0)) + 1
 
     for ref in refs:
         text = _ref_text(ref).lstrip().lower()
@@ -444,6 +468,9 @@ def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:
             add("by_hook_type", str(hook_type or ""), token_estimate)
         for codex_event in codex_events:
             add("by_codex_event", str(codex_event or ""), token_estimate)
+        add_source_counts("source_message_counts_by_role", ref.get("source_role_counts"), source_roles)
+        add_source_counts("source_hook_counts_by_type", ref.get("source_hook_type_counts"), hook_types)
+        add_source_counts("source_codex_event_counts_by_event", ref.get("source_codex_event_counts"), codex_events)
     return budget
 
 
@@ -810,6 +837,24 @@ def _format_memory_layer_budget_bits(memory_layer_budget: Json) -> list[str]:
                 bucket_bits.append(f"{bucket_key}={ref_count}/{token_count_estimate}t")
         if bucket_bits:
             budget_bits.append(f"{label}[" + ", ".join(bucket_bits) + "]")
+    for label, bucket_name in [
+        ("source_messages", "source_message_counts_by_role"),
+        ("source_hooks", "source_hook_counts_by_type"),
+        ("source_codex_events", "source_codex_event_counts_by_event"),
+    ]:
+        counts = memory_layer_budget.get(bucket_name)
+        if not isinstance(counts, dict):
+            continue
+        count_bits = []
+        for key in sorted(counts):
+            try:
+                count = int(counts[key] or 0)
+            except (TypeError, ValueError):
+                continue
+            if count > 0:
+                count_bits.append(f"{key}={count}")
+        if count_bits:
+            budget_bits.append(f"{label}[" + ", ".join(count_bits) + "]")
     return budget_bits
 
 
