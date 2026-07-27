@@ -705,6 +705,25 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
         remaining = readiness.get("remaining_stages")
         if isinstance(remaining, list) and remaining:
             readiness_bits.append("remaining=" + ",".join(str(item) for item in remaining[:4]))
+        for label, field in [
+            ("stage_counts", "remaining_stage_counts"),
+            ("pending_roles", "pending_source_roles"),
+            ("pending_hooks", "pending_source_hook_types"),
+            ("pending_codex_events", "pending_source_codex_events"),
+        ]:
+            bucket = readiness.get(field)
+            if not isinstance(bucket, dict) or not bucket:
+                continue
+            bucket_bits = []
+            for key in sorted(bucket):
+                try:
+                    count = int(bucket[key])
+                except (TypeError, ValueError):
+                    continue
+                if count > 0:
+                    bucket_bits.append(f"{key}={count}")
+            if bucket_bits:
+                readiness_bits.append(f"{label}[" + ",".join(bucket_bits[:6]) + "]")
         warnings = readiness.get("freshness_warnings")
         if isinstance(warnings, list) and warnings:
             readiness_bits.append("warnings=" + ",".join(str(item) for item in warnings[:3]))
