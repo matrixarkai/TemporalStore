@@ -10,6 +10,7 @@ OpenViking/VikingMem-style baselines, then validates and summarizes the output.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -83,13 +84,41 @@ def main() -> int:
     longmem_validation = out / "longmemeval_s_shared_oss_contract_validation.json"
 
     if not args.skip_matrixark:
-        run(locomo_matrixark_command(repo, args, locomo_matrixark, locomo_matrixark_misses), repo, env)
-        run(longmem_matrixark_command(repo, args, longmem_matrixark, longmem_matrixark_misses), repo, env)
+        if not run_or_record_blocker(
+            "matrixark_locomo",
+            locomo_matrixark_command(repo, args, locomo_matrixark, locomo_matrixark_misses),
+            repo,
+            env,
+            out,
+        ):
+            return 1
+        if not run_or_record_blocker(
+            "matrixark_longmemeval_s",
+            longmem_matrixark_command(repo, args, longmem_matrixark, longmem_matrixark_misses),
+            repo,
+            env,
+            out,
+        ):
+            return 1
     require_files(locomo_matrixark, longmem_matrixark)
 
     if not args.skip_baseline:
-        run(locomo_baseline_command(repo, args, locomo_matrixark, locomo_baseline), repo, env)
-        run(longmem_baseline_command(repo, args, longmem_matrixark, longmem_baseline), repo, env)
+        if not run_or_record_blocker(
+            "openviking_locomo",
+            locomo_baseline_command(repo, args, locomo_matrixark, locomo_baseline),
+            repo,
+            env,
+            out,
+        ):
+            return 1
+        if not run_or_record_blocker(
+            "openviking_longmemeval_s",
+            longmem_baseline_command(repo, args, longmem_matrixark, longmem_baseline),
+            repo,
+            env,
+            out,
+        ):
+            return 1
     require_files(locomo_baseline, longmem_baseline)
 
     run(
@@ -407,6 +436,39 @@ def smoke_or(args: argparse.Namespace, smoke_value: str, full_value: str) -> str
 def run(command: list[str], cwd: Path, env: dict[str, str]) -> None:
     print("+ " + " ".join(command), flush=True)
     subprocess.run(command, cwd=cwd, env=env, check=True)
+
+
+def run_or_record_blocker(stage: str, command: list[str], cwd: Path, env: dict[str, str], output_root: Path) -> bool:
+    print("+ " + " ".join(command), flush=True)
+    completed = subprocess.run(command, cwd=cwd, env=env, text=True, capture_output=True)
+    if completed.stdout:
+        print(completed.stdout, end="")
+    if completed.stderr:
+        print(completed.stderr, end="", file=sys.stderr)
+    if completed.returncode == 0:
+        return True
+    blocker = {
+        "schema": "matrixark_fair_oss_benchmark_blocker_v1",
+        "stage": stage,
+        "returncode": completed.returncode,
+        "command": command,
+        "cwd": str(cwd),
+        "message": (
+            "Fair OSS benchmark suite stopped before comparison because this stage failed. "
+            "Do not use partial rows as MatrixArk vs OpenViking/VikingMem quality evidence."
+        ),
+        "stdout_tail": tail_text(completed.stdout),
+        "stderr_tail": tail_text(completed.stderr),
+        "known_report_paths": sorted(str(path) for path in output_root.glob("*.json")),
+    }
+    blocker_path = output_root / "oss_benchmark_blocker.json"
+    blocker_path.write_text(json.dumps(blocker, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(blocker_path, file=sys.stderr)
+    return False
+
+
+def tail_text(value: str, max_chars: int = 12000) -> str:
+    return value[-max_chars:] if len(value) > max_chars else value
 
 
 if __name__ == "__main__":
