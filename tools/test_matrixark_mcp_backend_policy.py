@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import matrixark_mcp_server as mcp
 
 try:
+    from tools import matrixark_mcp_budget_pack as mcp_budget_pack
     from tools import matrixark_mcp_local_adapter as mcp_local
     from tools import matrixark_mcp_core as mcp_core
     from tools import matrixark_mcp_context_pack as mcp_context_pack
@@ -33,6 +34,7 @@ try:
     )
     from tools.validate_storage_lifecycle_parity import REPORT_PAIR_CORPUS, _load_json, validate_report_pair
 except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
+    import matrixark_mcp_budget_pack as mcp_budget_pack
     import matrixark_mcp_local_adapter as mcp_local
     import matrixark_mcp_core as mcp_core
     import matrixark_mcp_context_pack as mcp_context_pack
@@ -3823,6 +3825,60 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "ranking": {"max_selected_refs": 8},
             })
             self.assertFalse(any(ref.get("session_continuity") == "cross_session" for ref in strict_pack["selected_refs"]))
+
+    def test_budget_packer_reserves_slot_for_required_profile_entity_bridge(self) -> None:
+        primary = [
+            {
+                "ref_type": "event",
+                "text": "Current session says the storage migration is blocked on capacity review.",
+                "score": 0.99,
+                "session_continuity": "same_session",
+            },
+            {
+                "ref_type": "event",
+                "text": "Build hosts passed the local disk capacity gate.",
+                "score": 0.98,
+                "session_continuity": "same_session",
+            },
+            {
+                "ref_type": "entity",
+                "text": "User profile says Alice approved the GPU request after finance review.",
+                "score": 0.21,
+                "session_continuity": "cross_session",
+                "scope": {"session_id": "prior-session"},
+            },
+        ]
+
+        selected, used_tokens, dropped = mcp_budget_pack.select_token_budgeted_refs(
+            primary,
+            [],
+            max_context_tokens=200,
+            auxiliary_quota=0,
+            question_type="current_state",
+            max_selected_refs=1,
+            max_global_candidates=8,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 200,
+                "max_sessions": 3,
+                "max_candidates": 8,
+                "min_score": 0.0,
+                "raw_evidence_min_score": 0.45,
+                "min_entity_bridge_refs": 1,
+            },
+        )
+
+        self.assertGreater(used_tokens, 0)
+        self.assertEqual(1, len(selected))
+        self.assertTrue(
+            any(ref.get("session_continuity") == "cross_session" and ref.get("ref_type") == "entity" for ref in selected)
+        )
+        self.assertEqual(1, dropped["entity_bridge_slot_reserved"])
+        self.assertEqual(1, dropped["cross_session_policy"]["entity_bridge_selected_ref_count"])
+        self.assertEqual(
+            "candidate was skipped to preserve a minimum cross-session entity bridge slot",
+            dropped["reason_descriptions"]["entity_bridge_slot_reserved"],
+        )
 
     def test_codex_session_identity_policy_treats_exact_payload_sources_as_strong(self) -> None:
         payload_policy = mcp_local.codex_session_identity_policy("payload.conversation_id")

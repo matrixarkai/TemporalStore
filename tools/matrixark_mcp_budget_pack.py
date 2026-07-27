@@ -261,6 +261,7 @@ def select_token_budgeted_refs(
         "cross_session_budget": 0,
         "cross_session_session_cap": 0,
         "cross_session_candidate_cap": 0,
+        "entity_bridge_slot_reserved": 0,
         "shared_resource_budget": 0,
         "shared_skill_budget": 0,
         "deadline": 0,
@@ -275,6 +276,7 @@ def select_token_budgeted_refs(
             "cross_session_budget": 0,
             "cross_session_session_cap": 0,
             "cross_session_candidate_cap": 0,
+            "entity_bridge_slot_reserved": 0,
             "shared_resource_budget": 0,
             "shared_skill_budget": 0,
             "deadline": 0,
@@ -290,6 +292,7 @@ def select_token_budgeted_refs(
             "cross_session_budget": "cross-session candidate exceeded the configured cross-session token budget",
             "cross_session_session_cap": "cross-session candidate came from a session beyond max cross-session session fanout",
             "cross_session_candidate_cap": "cross-session candidate exceeded the configured cross-session candidate cap",
+            "entity_bridge_slot_reserved": "candidate was skipped to preserve a minimum cross-session entity bridge slot",
             "shared_resource_budget": "shared resource candidate exceeded the configured shared-resource token budget",
             "shared_skill_budget": "shared skill candidate exceeded the configured shared-skill token budget",
             "deadline": "candidate was not packed because the hard retrieval deadline was reached",
@@ -302,6 +305,26 @@ def select_token_budgeted_refs(
         "budget_fill_policy": budget_fill_policy,
     }
     seen_text_hashes: set[int] = set()
+
+    def eligible_entity_bridge_remains(start_index: int) -> bool:
+        if not cross_enabled or cross_min_entity_bridge_refs <= entity_bridge_selected_ref_count:
+            return False
+        for future in candidates[start_index:]:
+            if future.get("session_continuity") != "cross_session" or str(future.get("ref_type") or "") != "entity":
+                continue
+            future_text = str(future.get("text", ""))
+            if context_text_hashes(future_text).intersection(duplicate_text_hashes):
+                continue
+            if stable_hash(future_text[:512]) in seen_text_hashes:
+                continue
+            future_score = float(future.get("score", 0.0))
+            if future_score < min_score:
+                continue
+            if cross_min_score > 0.0 and future_score < cross_min_score:
+                continue
+            return True
+        return False
+
     for index, candidate in enumerate(candidates):
         if len(selected) >= selected_ref_cap:
             remaining_candidates = candidates[index:]
@@ -379,6 +402,19 @@ def select_token_budgeted_refs(
             dropped["cross_session_budget"] += 1
             dropped["estimated_tokens"]["cross_session_budget"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="cross_session_budget", token_estimate=ref_tokens)
+            continue
+        remaining_slots = selected_ref_cap - len(selected)
+        remaining_required_bridge_refs = max(0, cross_min_entity_bridge_refs - entity_bridge_selected_ref_count)
+        if (
+            cross_enabled
+            and not is_entity_bridge
+            and remaining_required_bridge_refs > 0
+            and remaining_slots <= remaining_required_bridge_refs
+            and eligible_entity_bridge_remains(index + 1)
+        ):
+            dropped["entity_bridge_slot_reserved"] += 1
+            dropped["estimated_tokens"]["entity_bridge_slot_reserved"] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason="entity_bridge_slot_reserved", token_estimate=ref_tokens)
             continue
         is_shared_resource = is_shared_resource_candidate(candidate)
         is_shared_skill = is_shared_skill_candidate(candidate)
