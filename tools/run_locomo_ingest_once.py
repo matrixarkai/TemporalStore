@@ -143,6 +143,18 @@ def main() -> int:
     parser.add_argument("--max-reader-p95-ms", type=float, default=30000.0)
     parser.add_argument("--max-events", type=int, default=128)
     parser.add_argument(
+        "--question-limit",
+        type=int,
+        default=0,
+        help="Optional maximum number of supported questions to score. Diagnostic/slice reports only.",
+    )
+    parser.add_argument(
+        "--question-offset",
+        type=int,
+        default=0,
+        help="Optional number of supported questions to skip before scoring. Diagnostic/slice reports only.",
+    )
+    parser.add_argument(
         "--reader-mode",
         choices=("deterministic", "open-source", "auto"),
         default="deterministic",
@@ -451,6 +463,7 @@ def main() -> int:
     dataset_counts: defaultdict[str, int] = defaultdict(int)
     unsupported_case_count = 0
     unsupported_cases: list[dict[str, str]] = []
+    supported_question_index = 0
 
     for record_index, record in enumerate(records):
         if not isinstance(record, dict):
@@ -524,7 +537,13 @@ def main() -> int:
                     }
                 )
                 continue
+            if args.question_offset and supported_question_index < args.question_offset:
+                supported_question_index += 1
+                continue
+            if args.question_limit and total >= args.question_limit:
+                break
 
+            supported_question_index += 1
             total += 1
             total_source_tokens += source_tokens
             total_retrieved_tokens += retrieved_tokens
@@ -624,6 +643,8 @@ def main() -> int:
                     reader_latencies_ms=reader_latencies_ms,
                     last_query_id=query_id,
                 )
+        if args.question_limit and total >= args.question_limit:
+            break
 
     hit_rate = hit_count / total if total else 0.0
     reader_hit_rate = reader_hit_count / total if total else 0.0
@@ -745,6 +766,9 @@ def main() -> int:
             rust_backend_report and rust_backend_report.get("rust_temporalstore_full_replay_ready")
         ),
         "case_count": total,
+        "question_limit": args.question_limit,
+        "question_offset": args.question_offset,
+        "question_slice_diagnostic": bool(args.question_limit or args.question_offset),
         "unsupported_benchmark_case_count": unsupported_case_count,
         "unsupported_benchmark_cases": unsupported_cases[:200],
         "conversation_count": conversations_loaded,
