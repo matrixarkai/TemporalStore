@@ -5756,10 +5756,14 @@ def select_token_budgeted_refs(
     if not selected and candidates and remote_budget > 0 and budget_fill_policy != "quality_first":
         first: Json | None = None
         first_source_roles: set[str] = set()
+        first_clipped_words: list[str] = []
         for candidate in candidates:
             if context_text_hashes(str(candidate.get("text", ""))).intersection(duplicate_text_hashes):
                 continue
-            fallback_tokens = max(1, token_count(str(candidate.get("text", ""))))
+            clipped_words_for_candidate = tokens(str(candidate.get("text", "")))[:remote_budget]
+            fallback_tokens = len(clipped_words_for_candidate)
+            if fallback_tokens <= 0:
+                continue
             candidate_source_roles = candidate_source_role_names(candidate)
             if any(
                 role in normalized_source_role_budget_tokens
@@ -5769,10 +5773,11 @@ def select_token_budgeted_refs(
                 continue
             first = candidate
             first_source_roles = candidate_source_roles
+            first_clipped_words = clipped_words_for_candidate
             break
         if first is None:
             return selected, used_tokens, dropped
-        clipped_words = tokens(str(first.get("text", "")))[:remote_budget]
+        clipped_words = first_clipped_words
         selected = [
             {
                 **first,
@@ -5783,6 +5788,23 @@ def select_token_budgeted_refs(
             }
         ]
         used_tokens = len(clipped_words)
+        removed_source_role_budget_tokens = 0
+        kept_dropped_refs: list[Json] = []
+        for dropped_ref in dropped.get("refs", []):
+            if dropped_ref.get("drop_reason") == "source_role_budget" and dropped_ref.get("ref_hash") == first.get("ref_hash"):
+                try:
+                    removed_source_role_budget_tokens += max(0, int(dropped_ref.get("token_estimate") or 0))
+                except (TypeError, ValueError):
+                    pass
+                continue
+            kept_dropped_refs.append(dropped_ref)
+        if len(kept_dropped_refs) != len(dropped.get("refs", [])):
+            dropped["refs"] = kept_dropped_refs
+            dropped["source_role_budget"] = max(0, int(dropped.get("source_role_budget", 0)) - 1)
+            dropped["estimated_tokens"]["source_role_budget"] = max(
+                0,
+                int(dropped.get("estimated_tokens", {}).get("source_role_budget", 0)) - removed_source_role_budget_tokens,
+            )
         for role in first_source_roles:
             if role in normalized_source_role_budget_tokens:
                 source_role_used_tokens[role] = int(source_role_used_tokens.get(role, 0)) + used_tokens

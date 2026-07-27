@@ -267,6 +267,47 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         )
         self.assertTrue(pressure["assistant_source_message_pressure"])
 
+    def test_source_role_budget_fallback_allows_clipped_summary_within_role_budget(self) -> None:
+        selected, used_tokens, dropped = select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "summary",
+                    "ref_hash": 140,
+                    "text": "assistant summary contains a long decision memory that can be clipped for the role budget",
+                    "score": 0.99,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "summary_type": "node_l0",
+                    "source_roles": ["assistant"],
+                    "source_role_counts": {"assistant": 1},
+                }
+            ],
+            [],
+            max_context_tokens=8,
+            auxiliary_quota=0,
+            min_score=0.0,
+            budget_fill_policy="force_fill",
+            max_selected_refs=1,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 100,
+                "max_sessions": 4,
+                "max_candidates": 4,
+                "min_entity_bridge_refs": 0,
+            },
+            source_role_budget_tokens={"assistant": 8},
+        )
+
+        self.assertEqual([140], [ref["ref_hash"] for ref in selected])
+        self.assertEqual(8, used_tokens)
+        self.assertEqual(8, selected[0]["token_estimate"])
+        self.assertEqual(["assistant"], selected[0]["budget_source_roles"])
+        self.assertEqual({"assistant": 1}, selected[0]["budget_source_role_counts"])
+        self.assertLessEqual(len(selected[0]["text"].split()), 8)
+        self.assertEqual(0, dropped["source_role_budget"])
+        self.assertEqual({"assistant": 8}, dropped["source_role_budget_policy"]["selected_tokens_by_role"])
+        self.assertEqual({"assistant": 1}, dropped["source_role_budget_policy"]["selected_ref_count_by_role"])
+
     def test_source_role_budget_fallback_does_not_reinsert_capped_assistant_summary(self) -> None:
         selected, used_tokens, dropped = select_token_budgeted_refs(
             [
@@ -286,6 +327,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             max_context_tokens=8,
             auxiliary_quota=0,
             min_score=0.0,
+            budget_fill_policy="force_fill",
             max_selected_refs=1,
             cross_session_policy={
                 "enabled": True,
