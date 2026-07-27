@@ -1306,6 +1306,37 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertIn("user_profile", memory_budget["by_memory_scope"])
                 self.assertIn("cross_session", memory_budget["by_session_continuity"])
                 self.assertEqual({"tool": 1}, memory_budget["source_message_counts_by_role"])
+                session_only_pack = adapter.retrieve(
+                    {
+                        "scope": {
+                            "account_id": "acct_fast_idle",
+                            "tenant_id": "tenant_fast_idle",
+                            "user_id": "user_fast_idle",
+                            "session_id": "session_fast_idle_followup",
+                        },
+                        "session_scope": "only",
+                        "query": "What tool evidence was captured by the idle timeout memory commit?",
+                        "max_context_tokens": 120,
+                        "audit_mode": "off",
+                        "ranking": {"max_selected_refs": 3},
+                    }
+                )
+                session_only_refs = session_only_pack.get("selected_refs", [])
+                self.assertFalse(
+                    any(ref.get("session_continuity") == "cross_session" for ref in session_only_refs),
+                    session_only_refs,
+                )
+                self.assertFalse(
+                    any(ref.get("memory_scope") == "user_profile" for ref in session_only_refs),
+                    session_only_refs,
+                )
+                session_only_budget = session_only_pack.get("recall_policy", {}).get("memory_layer_budget", {})
+                self.assertEqual(0, session_only_budget.get("by_memory_scope", {}).get("user_profile", {}).get("refs", 0))
+                self.assertEqual(0, session_only_budget.get("by_session_continuity", {}).get("cross_session", {}).get("refs", 0))
+                session_only_cross_policy = session_only_pack.get("recall_policy", {}).get("cross_session", {})
+                if session_only_cross_policy:
+                    self.assertFalse(session_only_cross_policy["enabled"])
+                    self.assertEqual(0, session_only_cross_policy["budget_tokens"])
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
