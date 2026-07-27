@@ -2446,6 +2446,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(dropped_budget["source_hook_counts_by_type"]["hook_boundary"], 1)
             self.assertGreaterEqual(dropped_budget["by_codex_event"]["Stop"]["refs"], 1)
             self.assertGreaterEqual(dropped_budget["source_codex_event_counts_by_event"]["Stop"], 1)
+            self.assertGreaterEqual(dropped_budget["profile_shadowed_ref_count"], 1)
+            self.assertGreaterEqual(dropped_budget["by_profile_shadowed_reason"]["source_entity_lineage"]["refs"], 1)
             self.assertEqual(dropped_budget, current_metrics["dropped_memory_layer_budget"])
             layer_pressure = current_metrics["memory_layer_pressure"]
             self.assertEqual(current_pack["memory_layer_pressure"], layer_pressure)
@@ -2453,10 +2455,17 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(layer_pressure["session_memory_pressure"])
             self.assertTrue(layer_pressure["same_session_pressure"])
             self.assertTrue(layer_pressure["final_memory_pressure"])
+            self.assertTrue(layer_pressure["stale_current_state_pressure"])
+            self.assertTrue(layer_pressure["profile_shadowed_current_state_pressure"])
             self.assertTrue(layer_pressure["assistant_memory_pressure"])
             self.assertTrue(layer_pressure["assistant_source_message_pressure"])
+            self.assertIn("by_profile_shadowed_reason", layer_pressure["dropped_dimensions"])
             self.assertIn("by_extraction_phase", layer_pressure["dropped_dimensions"])
             self.assertIn("source_message_counts_by_role", layer_pressure["dropped_dimensions"])
+            self.assertGreaterEqual(
+                layer_pressure["by_dimension"]["by_profile_shadowed_reason"]["source_entity_lineage"]["dropped_refs"],
+                1,
+            )
             self.assertGreaterEqual(layer_pressure["by_dimension"]["by_extraction_phase"]["final"]["dropped_refs"], 1)
             self.assertGreaterEqual(
                 layer_pressure["by_dimension"]["source_message_counts_by_role"]["assistant"]["dropped_count"],
