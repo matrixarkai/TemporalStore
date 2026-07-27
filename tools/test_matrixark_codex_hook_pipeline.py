@@ -16,7 +16,7 @@ from pathlib import Path
 import matrixark_codex_hook
 from matrixark_mcp_context_pack import compact_context_pack_for_serving, compact_refs_for_audit
 from matrixark_mcp_core import packing_sort_key
-from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget, memory_layer_pressure_summary
+from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget, memory_layer_pressure_summary, selected_ref_layer_budget
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 
 
@@ -113,6 +113,55 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(9, budget["by_extraction_phase"]["final"]["tokens"])
         self.assertEqual(1, budget["final_ref_count"])
         self.assertEqual(1, budget["final_session_boundary_ref_count"])
+
+    def test_memory_layer_budget_tracks_persisted_source_counts(self) -> None:
+        selected_budget = selected_ref_layer_budget(
+            [
+                {
+                    "ref_type": "entity",
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "source_roles": ["assistant", "user"],
+                    "source_role_counts": {"assistant": 3, "user": 1},
+                    "source_hook_types": ["hook_boundary"],
+                    "source_hook_type_counts": {"hook_boundary": 4},
+                    "source_codex_events": ["Stop"],
+                    "source_codex_event_counts": {"Stop": 4},
+                    "token_estimate": 11,
+                }
+            ]
+        )
+        dropped_budget = dropped_ref_layer_budget(
+            {
+                "refs": [
+                    {
+                        "drop_reason": "over_budget",
+                        "ref_type": "summary",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "source_roles": ["assistant", "tool"],
+                        "source_role_counts": {"assistant": 2, "tool": 1},
+                        "source_hook_types": ["hook_boundary"],
+                        "source_hook_type_counts": {"hook_boundary": 3},
+                        "source_codex_events": ["Stop"],
+                        "source_codex_event_counts": {"Stop": 3},
+                        "token_estimate": 13,
+                    }
+                ]
+            }
+        )
+        pressure = memory_layer_pressure_summary(selected_budget, dropped_budget)
+
+        self.assertEqual({"assistant": 3, "user": 1}, selected_budget["source_message_counts_by_role"])
+        self.assertEqual({"assistant": 2, "tool": 1}, dropped_budget["source_message_counts_by_role"])
+        self.assertEqual({"hook_boundary": 4}, selected_budget["source_hook_counts_by_type"])
+        self.assertEqual({"Stop": 3}, dropped_budget["source_codex_event_counts_by_event"])
+        self.assertEqual(
+            {"selected_count": 3, "dropped_count": 2, "selected_and_dropped": True},
+            pressure["by_dimension"]["source_message_counts_by_role"]["assistant"],
+        )
+        self.assertTrue(pressure["assistant_source_message_pressure"])
+        self.assertTrue(pressure["tool_source_message_pressure"])
 
     def test_memory_layer_pressure_summary_marks_dropped_profile_final_tool_layers(self) -> None:
         selected = {

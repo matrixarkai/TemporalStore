@@ -4768,6 +4768,9 @@ class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
                         "by_source_role": {"assistant": {"refs": 1, "tokens": 20}},
                         "by_hook_type": {"hook_boundary": {"refs": 1, "tokens": 20}},
                         "by_codex_event": {"Stop": {"refs": 1, "tokens": 20}},
+                        "source_message_counts_by_role": {"assistant": 3, "user": 1},
+                        "source_hook_counts_by_type": {"hook_boundary": 4},
+                        "source_codex_event_counts_by_event": {"Stop": 4},
                         "final_session_boundary_ref_count": 1,
                         "provisional_ref_count": 1,
                         "final_ref_count": 1,
@@ -4798,6 +4801,9 @@ class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
         self.assertEqual(layer_totals["by_source_role"]["assistant"], {"refs": 1, "tokens": 20})
         self.assertEqual(layer_totals["by_hook_type"]["hook_boundary"], {"refs": 1, "tokens": 20})
         self.assertEqual(layer_totals["by_codex_event"]["Stop"], {"refs": 1, "tokens": 20})
+        self.assertEqual(layer_totals["source_message_counts_by_role"], {"assistant": 3, "user": 1})
+        self.assertEqual(layer_totals["source_hook_counts_by_type"], {"hook_boundary": 4})
+        self.assertEqual(layer_totals["source_codex_event_counts_by_event"], {"Stop": 4})
         self.assertEqual(layer_totals["final_session_boundary_ref_count"], 1)
         self.assertEqual(layer_totals["provisional_ref_count"], 1)
         self.assertEqual(layer_totals["final_ref_count"], 1)

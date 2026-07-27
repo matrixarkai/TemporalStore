@@ -74,6 +74,18 @@ def _add_bucket_totals(target_bucket: Json, source_bucket: Any) -> None:
         bucket["tokens"] = int(bucket.get("tokens") or 0) + int(value.get("tokens") or 0)
 
 
+def _add_count_totals(target_bucket: Json, source_bucket: Any) -> None:
+    if not isinstance(source_bucket, dict):
+        return
+    for key, value in source_bucket.items():
+        try:
+            count = int(value or 0)
+        except (TypeError, ValueError):
+            continue
+        if count:
+            target_bucket[str(key)] = int(target_bucket.get(str(key)) or 0) + count
+
+
 def merge_memory_layer_budget(target: Any, response: Json) -> None:
     budget = nested_dict(
         response,
@@ -95,6 +107,12 @@ def merge_memory_layer_budget(target: Any, response: Json) -> None:
         "by_codex_event",
     ]:
         _add_bucket_totals(totals.setdefault(bucket_name, {}), budget.get(bucket_name))
+    for bucket_name in [
+        "source_message_counts_by_role",
+        "source_hook_counts_by_type",
+        "source_codex_event_counts_by_event",
+    ]:
+        _add_count_totals(totals.setdefault(bucket_name, {}), budget.get(bucket_name))
     for counter_name in [
         "final_session_boundary_ref_count",
         "provisional_ref_count",

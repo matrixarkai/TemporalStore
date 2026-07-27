@@ -5095,8 +5095,11 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
         item["final_session_boundary"] = True
     for field in [
         "source_roles",
+        "source_role_counts",
         "source_hook_types",
+        "source_hook_type_counts",
         "source_codex_events",
+        "source_codex_event_counts",
         "source_memory_scopes",
         "source_session_continuities",
         "source_extraction_phases",
@@ -5104,6 +5107,20 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
         value = ref.get(field, metadata.get(field))
         if isinstance(value, list) and value:
             item[field] = value[:8]
+        elif isinstance(value, dict) and value:
+            compact_counts: Json = {}
+            for key, count in list(value.items())[:8]:
+                name = str(key or "").strip()
+                if not name:
+                    continue
+                try:
+                    compact_count = int(count or 0)
+                except (TypeError, ValueError):
+                    continue
+                if compact_count:
+                    compact_counts[name] = compact_count
+            if compact_counts:
+                item[field] = compact_counts
     source_entity_hashes = ref.get("source_entity_hashes", metadata.get("source_entity_hashes"))
     if isinstance(source_entity_hashes, list) and source_entity_hashes:
         item["source_entity_count"] = len(source_entity_hashes)
@@ -5221,8 +5238,11 @@ def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate:
         "entity_type",
         "entity_name",
         "source_roles",
+        "source_role_counts",
         "source_hook_types",
+        "source_hook_type_counts",
         "source_codex_events",
+        "source_codex_event_counts",
         "profile_shadowed_by_ref_hash",
         "profile_shadowed_reason",
     ]:
@@ -5698,8 +5718,11 @@ def compact_context_pack_ref(ref: Json) -> Json:
         "profile_current_state_representative",
         "current_state_policy",
         "source_roles",
+        "source_role_counts",
         "source_hook_types",
+        "source_hook_type_counts",
         "source_codex_events",
+        "source_codex_event_counts",
         "source_memory_scopes",
         "source_session_continuities",
         "source_extraction_phases",

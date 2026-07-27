@@ -17,6 +17,23 @@ def _clip_context_text(text: str, *, max_chars: int = 160) -> str:
     return text[:max_chars].rstrip() + " ...[truncated]"
 
 
+def _compact_count_map(value: Any, *, limit: int = 8) -> Json:
+    if not isinstance(value, dict):
+        return {}
+    compact: Json = {}
+    for key, count in list(value.items())[:limit]:
+        name = str(key or "").strip()
+        if not name:
+            continue
+        try:
+            compact_count = int(count or 0)
+        except (TypeError, ValueError):
+            continue
+        if compact_count:
+            compact[name] = compact_count
+    return compact
+
+
 def selected_context_class_counts(refs: list[Json]) -> Json:
     counts: Json = {
         "event": 0,
@@ -73,12 +90,19 @@ def compact_context_pack_ref(ref: Json) -> Json:
     for field in [
         "source_session_ids",
         "source_roles",
+        "source_role_counts",
         "source_hook_types",
+        "source_hook_type_counts",
         "source_codex_events",
+        "source_codex_event_counts",
     ]:
         value = ref.get(field)
         if isinstance(value, list) and value:
             item[field] = value[:8]
+        elif isinstance(value, dict):
+            compact_counts = _compact_count_map(value)
+            if compact_counts:
+                item[field] = compact_counts
     value = ref.get("source_entity_hashes")
     if isinstance(value, list) and value:
         item["source_entity_count"] = len(value)
@@ -405,8 +429,11 @@ def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> lis
         "current_state_policy",
         "final_session_boundary",
         "source_roles",
+        "source_role_counts",
         "source_hook_types",
+        "source_hook_type_counts",
         "source_codex_events",
+        "source_codex_event_counts",
         "source_memory_scopes",
         "source_session_continuities",
         "source_extraction_phases",
@@ -489,8 +516,11 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
     for field in [
         "source_session_ids",
         "source_roles",
+        "source_role_counts",
         "source_hook_types",
+        "source_hook_type_counts",
         "source_codex_events",
+        "source_codex_event_counts",
         "source_memory_scopes",
         "source_session_continuities",
         "source_extraction_phases",
@@ -498,6 +528,10 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
         value = ref.get(field, metadata.get(field))
         if isinstance(value, list) and value:
             item[field] = value[:8]
+        elif isinstance(value, dict):
+            compact_counts = _compact_count_map(value)
+            if compact_counts:
+                item[field] = compact_counts
     value = ref.get("source_entity_hashes", metadata.get("source_entity_hashes"))
     if isinstance(value, list) and value:
         item["source_entity_count"] = len(value)

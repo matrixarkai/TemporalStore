@@ -44,6 +44,9 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
         "by_source_role": {},
         "by_hook_type": {},
         "by_codex_event": {},
+        "source_message_counts_by_role": {},
+        "source_hook_counts_by_type": {},
+        "source_codex_event_counts_by_event": {},
         "final_session_boundary_ref_count": 0,
         "provisional_ref_count": 0,
         "final_ref_count": 0,
@@ -92,6 +95,22 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
                 bucket = breakdown["by_codex_event"].setdefault(event_name, {"refs": 0, "tokens": 0})
                 bucket["refs"] += 1
                 bucket["tokens"] += token_estimate
+        for source_field, aggregate_field in [
+            ("source_role_counts", "source_message_counts_by_role"),
+            ("source_hook_type_counts", "source_hook_counts_by_type"),
+            ("source_codex_event_counts", "source_codex_event_counts_by_event"),
+        ]:
+            source_counts = ref.get(source_field) if isinstance(ref.get(source_field), dict) else {}
+            for name, count in source_counts.items():
+                bucket_name = str(name or "").strip()
+                if not bucket_name:
+                    continue
+                try:
+                    source_count = max(0, int(count or 0))
+                except (TypeError, ValueError):
+                    source_count = 0
+                if source_count:
+                    breakdown[aggregate_field][bucket_name] = int(breakdown[aggregate_field].get(bucket_name, 0)) + source_count
         if bool(ref.get("final_session_boundary")):
             breakdown["final_session_boundary_ref_count"] += 1
         if str(ref.get("extraction_phase") or "") == "provisional":
@@ -115,6 +134,9 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
         "by_source_role": {},
         "by_hook_type": {},
         "by_codex_event": {},
+        "source_message_counts_by_role": {},
+        "source_hook_counts_by_type": {},
+        "source_codex_event_counts_by_event": {},
         "by_profile_shadowed_reason": {},
         "final_session_boundary_ref_count": 0,
         "provisional_ref_count": 0,
@@ -183,6 +205,22 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
                 bucket = breakdown["by_codex_event"].setdefault(event_name, {"refs": 0, "tokens": 0})
                 bucket["refs"] += 1
                 bucket["tokens"] += token_estimate
+        for source_field, aggregate_field in [
+            ("source_role_counts", "source_message_counts_by_role"),
+            ("source_hook_type_counts", "source_hook_counts_by_type"),
+            ("source_codex_event_counts", "source_codex_event_counts_by_event"),
+        ]:
+            source_counts = ref.get(source_field) if isinstance(ref.get(source_field), dict) else {}
+            for name, count in source_counts.items():
+                bucket_name = str(name or "").strip()
+                if not bucket_name:
+                    continue
+                try:
+                    source_count = max(0, int(count or 0))
+                except (TypeError, ValueError):
+                    source_count = 0
+                if source_count:
+                    breakdown[aggregate_field][bucket_name] = int(breakdown[aggregate_field].get(bucket_name, 0)) + source_count
         if bool(ref.get("final_session_boundary")):
             breakdown["final_session_boundary_ref_count"] += 1
         if str(ref.get("extraction_phase") or "") == "provisional":
@@ -261,9 +299,35 @@ def memory_layer_pressure_summary(selected_budget: Json, dropped_budget: Json) -
                 summary["dropped_dimensions"].append(dimension)
             if any(bucket["selected_and_dropped"] for bucket in dimension_summary.values()):
                 summary["pressure_dimensions"].append(dimension)
+    for dimension in [
+        "source_message_counts_by_role",
+        "source_hook_counts_by_type",
+        "source_codex_event_counts_by_event",
+    ]:
+        selected_counts = selected_budget.get(dimension) if isinstance(selected_budget.get(dimension), dict) else {}
+        dropped_counts = dropped_budget.get(dimension) if isinstance(dropped_budget.get(dimension), dict) else {}
+        count_summary: Json = {}
+        for bucket_name in sorted(set(selected_counts) | set(dropped_counts)):
+            selected_count = _budget_total(selected_counts, str(bucket_name))
+            dropped_count = _budget_total(dropped_counts, str(bucket_name))
+            if not selected_count and not dropped_count:
+                continue
+            count_summary[str(bucket_name)] = {
+                "selected_count": selected_count,
+                "dropped_count": dropped_count,
+                "selected_and_dropped": bool(selected_count and dropped_count),
+            }
+        if count_summary:
+            summary["by_dimension"][dimension] = count_summary
+            if any(bucket["dropped_count"] > 0 for bucket in count_summary.values()):
+                summary["dropped_dimensions"].append(dimension)
+            if any(bucket["selected_and_dropped"] for bucket in count_summary.values()):
+                summary["pressure_dimensions"].append(dimension)
     dimension_data = summary["by_dimension"]
     def dropped_in(dimension: str, bucket: str) -> int:
         return int(dimension_data.get(dimension, {}).get(bucket, {}).get("dropped_refs", 0))
+    def dropped_count_in(dimension: str, bucket: str) -> int:
+        return int(dimension_data.get(dimension, {}).get(bucket, {}).get("dropped_count", 0))
     summary["profile_memory_pressure"] = dropped_in("by_memory_scope", "user_profile") > 0
     summary["session_memory_pressure"] = dropped_in("by_memory_scope", "session") > 0
     summary["cross_session_pressure"] = dropped_in("by_session_continuity", "cross_session") > 0
@@ -273,6 +337,9 @@ def memory_layer_pressure_summary(selected_budget: Json, dropped_budget: Json) -
     summary["assistant_memory_pressure"] = dropped_in("by_source_role", "assistant") > 0
     summary["user_memory_pressure"] = dropped_in("by_source_role", "user") > 0
     summary["tool_memory_pressure"] = dropped_in("by_source_role", "tool") > 0
+    summary["assistant_source_message_pressure"] = dropped_count_in("source_message_counts_by_role", "assistant") > 0
+    summary["user_source_message_pressure"] = dropped_count_in("source_message_counts_by_role", "user") > 0
+    summary["tool_source_message_pressure"] = dropped_count_in("source_message_counts_by_role", "tool") > 0
     summary["pressure_bucket_count"] = sum(
         1
         for buckets in dimension_data.values()

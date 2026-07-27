@@ -4067,6 +4067,9 @@ class MatrixArkRustProxyClient:
             "by_source_role": {},
             "by_hook_type": {},
             "by_codex_event": {},
+            "source_message_counts_by_role": {},
+            "source_hook_counts_by_type": {},
+            "source_codex_event_counts_by_event": {},
             "final_session_boundary_ref_count": 0,
             "provisional_ref_count": 0,
             "final_ref_count": 0,
@@ -4467,6 +4470,18 @@ class MatrixArkRustProxyClient:
             bucket["refs"] = int(bucket.get("refs") or 0) + int(value.get("refs") or 0)
             bucket["tokens"] = int(bucket.get("tokens") or 0) + int(value.get("tokens") or 0)
 
+    @staticmethod
+    def _add_count_totals(target_bucket: Json, source_bucket: Any) -> None:
+        if not isinstance(source_bucket, dict):
+            return
+        for key, value in source_bucket.items():
+            try:
+                count = int(value or 0)
+            except (TypeError, ValueError):
+                continue
+            if count:
+                target_bucket[str(key)] = int(target_bucket.get(str(key)) or 0) + count
+
     def _merge_memory_layer_budget(self, response: Json) -> None:
         budget = self._nested_dict(
             response,
@@ -4488,6 +4503,12 @@ class MatrixArkRustProxyClient:
             "by_codex_event",
         ]:
             self._add_bucket_totals(totals.setdefault(bucket_name, {}), budget.get(bucket_name))
+        for bucket_name in [
+            "source_message_counts_by_role",
+            "source_hook_counts_by_type",
+            "source_codex_event_counts_by_event",
+        ]:
+            self._add_count_totals(totals.setdefault(bucket_name, {}), budget.get(bucket_name))
         for counter_name in [
             "final_session_boundary_ref_count",
             "provisional_ref_count",
