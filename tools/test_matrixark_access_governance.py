@@ -279,7 +279,9 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
                 "audit_mode": "full",
             },
         )
-        server.call_tool("matrixark_replay", {"api_key": admin_key, "context_pack_id": pack["context_pack_id"], "enable_replay": True, "audit_mode": "full"})
+        pack_id = pack.get("context_pack_id") or pack.get("pack_id")
+        self.assertTrue(pack_id)
+        server.call_tool("matrixark_replay", {"api_key": admin_key, "context_pack_id": pack_id, "enable_replay": True, "audit_mode": "full"})
         portal = server.call_tool(
             "matrixark_management_portal",
             {"api_key": admin_key, "scope": {"account_id": "acct_audit", "tenant_id": "tenant_audit", "user_id": "alice"}},
@@ -290,7 +292,7 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
         self.assertIn("context_summaries", portal["topology"]["records"])
         self.assertIn("context_embeddings", portal["topology"]["records"])
         self.assertIn("dirty_summaries", portal["topology"]["records"])
-        self.assertEqual(pack["context_pack_id"], portal["context_pack_debugger"]["context_pack_id"])
+        self.assertEqual(pack_id, portal["context_pack_debugger"]["context_pack_id"])
         self.assertIn("selected_refs", portal["context_pack_debugger"])
         self.assertIn("dropped_refs", portal["context_pack_debugger"])
         self.assertIn("replay_link", portal["context_pack_debugger"])
@@ -504,6 +506,110 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
             )
             self.assertEqual("matrixark_admin_audit", audit["tool"])
             self.assertTrue(audit["result"]["audit_logs"])
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+    def test_http_agent_hook_accepts_remote_normalized_lifecycle_events(self) -> None:
+        server = self.make_server()
+        handler = make_matrixark_http_handler(
+            server,
+            Path(__file__).resolve().parents[1] / "tools" / "temporalstore-monitoring-ui",
+        )
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        base_url = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+        def post(payload: dict) -> dict:
+            body = json.dumps(payload).encode("utf-8")
+            req = Request(
+                base_url + "/api/agent/hook",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(req, timeout=10) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        scope = {
+            "account_id": "acct_http_hook",
+            "tenant_id": "tenant_http_hook",
+            "user_id": "hook_user",
+            "session_id": "codex:remote-thread-1",
+        }
+        try:
+            prompt = post(
+                {
+                    "scope": scope,
+                    "normalized_event": {
+                        "agent": "codex",
+                        "event": "UserPromptSubmit",
+                        "hook_type": "before_llm",
+                        "lifecycle_stage": "before_llm_retrieve",
+                        "should_retrieve": True,
+                        "should_commit": False,
+                        "extraction_phase": "provisional",
+                        "final_session_boundary": False,
+                        "conversation_id": "remote-thread-1",
+                        "session_id": "codex:remote-thread-1",
+                        "session_id_source": "payload.conversation_id",
+                        "role": "user",
+                        "text": "Remote hook should retrieve memory and keep lifecycle metadata.",
+                        "timestamp_ms": 123,
+                    },
+                    "raw_payload": {"conversation_id": "remote-thread-1"},
+                }
+            )
+            self.assertEqual("ok", prompt["status"])
+            prompt_result = prompt["result"]
+            self.assertEqual("ok", prompt_result["status"])
+            self.assertEqual("accepted", prompt_result["ingested"]["status"])
+            self.assertTrue(prompt_result["retrieved"]["context_pack_id"])
+
+            stop = post(
+                {
+                    "scope": scope,
+                    "normalized_event": {
+                        "agent": "codex",
+                        "event": "Stop",
+                        "hook_type": "session_commit",
+                        "lifecycle_stage": "session_boundary_commit",
+                        "should_retrieve": False,
+                        "should_commit": True,
+                        "extraction_phase": "final",
+                        "final_session_boundary": True,
+                        "conversation_id": "remote-thread-1",
+                        "session_id": "codex:remote-thread-1",
+                        "session_id_source": "payload.conversation_id",
+                        "role": "assistant",
+                        "text": "Final answer: remote hook commit should extract session memory.",
+                        "timestamp_ms": 456,
+                    },
+                    "raw_payload": {"conversation_id": "remote-thread-1"},
+                }
+            )
+            self.assertEqual("ok", stop["status"])
+            stop_result = stop["result"]
+            self.assertEqual("accepted", stop_result["ingested"]["status"])
+            self.assertEqual("committed", stop_result["committed"]["status"])
+            self.assertEqual("final", stop_result["committed"]["extraction_phase"])
+            self.assertTrue(stop_result["committed"]["final_session_boundary"])
+
+            records = server.adapter.read_all()
+            commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
+            self.assertTrue(commits)
+            self.assertTrue(any(record.get("final_session_boundary") is True for record in commits))
+            buffer_events = [record for record in records if record.get("record_type") == "session_buffer_event"]
+            self.assertTrue(
+                any(
+                    record.get("envelope", {}).get("metadata", {}).get("lifecycle_stage") == "before_llm_retrieve"
+                    for record in buffer_events
+                )
+            )
+            self.assertTrue(any("session_commit" in record.get("source_hook_types", []) for record in commits))
+            self.assertTrue(any("Stop" in record.get("source_codex_events", []) for record in commits))
         finally:
             httpd.shutdown()
             httpd.server_close()

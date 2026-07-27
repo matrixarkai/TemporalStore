@@ -92,6 +92,113 @@ HTTP_TOOL_ROUTES: dict[str, str] = {
     "/api/admin/audit": "matrixark_admin_audit",
 }
 
+
+def _agent_hook_scope(body: Json, normalized: Json) -> Json:
+    body_scope = body.get("scope") if isinstance(body.get("scope"), dict) else {}
+    normalized_scope = normalized.get("scope") if isinstance(normalized.get("scope"), dict) else {}
+    scope: Json = {
+        "account_id": body_scope.get("account_id") or normalized_scope.get("account_id") or normalized.get("account_id") or "acct_agent",
+        "tenant_id": body_scope.get("tenant_id") or normalized_scope.get("tenant_id") or normalized.get("tenant_id") or f"tenant_{normalized.get('agent') or 'agent'}",
+        "user_id": body_scope.get("user_id") or normalized_scope.get("user_id") or normalized.get("user_id") or "agent_user",
+        "session_id": body_scope.get("session_id") or normalized_scope.get("session_id") or normalized.get("session_id") or normalized.get("conversation_id") or "",
+    }
+    for key in ("team", "project"):
+        value = body_scope.get(key) or normalized_scope.get(key) or normalized.get(key)
+        if value:
+            scope[key] = value
+    return {key: str(value) for key, value in scope.items() if value not in (None, "")}
+
+
+def _agent_hook_metadata(body: Json, normalized: Json, raw_payload: Json) -> Json:
+    event = normalized.get("event") or body.get("event", "")
+    return {
+        "source": f"{normalized.get('agent') or 'agent'}_remote_hook",
+        "agent": normalized.get("agent", ""),
+        "agent_event": event,
+        "hook_type": normalized.get("hook_type", ""),
+        "lifecycle_stage": normalized.get("lifecycle_stage", ""),
+        "codex_event": event,
+        "session_id_source": normalized.get("session_id_source", ""),
+        "normalized_event": normalized,
+        "raw_hook_payload": raw_payload,
+    }
+
+
+def _agent_hook_call(server: Any, body: Json) -> Json:
+    normalized = body.get("normalized_event") if isinstance(body.get("normalized_event"), dict) else {}
+    raw_payload = body.get("raw_payload") if isinstance(body.get("raw_payload"), dict) else {}
+    if not normalized:
+        raise MatrixArkError("body.normalized_event is required")
+    event = str(normalized.get("event") or body.get("event") or "")
+    text = str(normalized.get("text") or "").strip()
+    role = str(normalized.get("role") or "unknown").strip() or "unknown"
+    scope = _agent_hook_scope(body, normalized)
+    args_common: Json = {"scope": scope}
+    if body.get("api_key"):
+        args_common["api_key"] = body.get("api_key")
+    storage_options = body.get("storage_options") if isinstance(body.get("storage_options"), dict) else {}
+    if not storage_options:
+        storage_options = {"route": "shared_store_async"}
+    metadata = _agent_hook_metadata(body, normalized, raw_payload)
+    observed_at_ms = normalized.get("timestamp_ms") or now_ms()
+    agent_hook = {
+        "source": normalized.get("agent", "agent"),
+        "hook_type": normalized.get("hook_type", ""),
+        "hook_id": f"{normalized.get('agent') or 'agent'}:{event}:{observed_at_ms}",
+        "observed_at_ms": observed_at_ms,
+        "trigger": event,
+        "auto_captured": True,
+        "session_id_source": normalized.get("session_id_source", ""),
+    }
+    result: Json = {
+        "status": "ok",
+        "event": event,
+        "scope": scope,
+        "ingested": {},
+        "retrieved": {},
+        "committed": {},
+    }
+    if text:
+        ingest_args: Json = {
+            **args_common,
+            "messages": [{"role": role, "content": text}],
+            "metadata": metadata,
+            "agent_hook": agent_hook,
+            "storage_options": storage_options,
+            "auto_batch_extract": bool(normalized.get("should_retrieve")),
+        }
+        result["ingested"] = server.call_tool("matrixark_ingest", ingest_args)
+    if bool(normalized.get("should_retrieve")):
+        retrieve_args: Json = {
+            **args_common,
+            "query": str(body.get("query") or text or event)[:500],
+            "max_context_tokens": int(body.get("max_context_tokens") or normalized.get("max_context_tokens") or 10000),
+            "retrieval_request_metadata": {
+                "source": "remote_agent_hook",
+                "codex_event": event,
+                "hook_type": normalized.get("hook_type", ""),
+                "lifecycle_stage": normalized.get("lifecycle_stage", ""),
+            },
+        }
+        local_context = normalized.get("local_context") or raw_payload.get("local_context")
+        if isinstance(local_context, list) and local_context:
+            retrieve_args["local_context"] = local_context
+        result["retrieved"] = server.call_tool("matrixark_retrieve", retrieve_args)
+    if bool(normalized.get("should_commit")):
+        commit_args: Json = {
+            **args_common,
+            "force": True,
+            "commit_reason": "hook_boundary",
+            "extraction_phase": str(normalized.get("extraction_phase") or "final"),
+            "final_session_boundary": bool(normalized.get("final_session_boundary", True)),
+            "metadata": metadata,
+            "agent_hook": {**agent_hook, "hook_type": "session_commit"},
+            "storage_options": storage_options,
+        }
+        result["committed"] = server.call_tool("matrixark_session_commit", commit_args)
+    return result
+
+
 _CODEX_HOOK_SHARD_SIZE = 10000
 _CODEX_HOOK_SYNTHETIC_MARKERS = {
     "matrixark synthetic",
@@ -647,6 +754,17 @@ def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path)
                     self._write_json(400, {"status": "error", "error": "body requires tool and arguments object"})
                     return
                 self._call_tool_route(tool_name, args)
+                return
+            if parsed.path == "/api/agent/hook":
+                if self.cloud_mode and not _http_has_auth(self.headers, body):
+                    self._write_auth_required("agent_hook")
+                    return
+                _http_api_key(self.headers, body)
+                try:
+                    result = _agent_hook_call(server, body)
+                    self._write_json(200, {"status": "ok", "tool": "matrixark_agent_hook", "result": result})
+                except Exception as exc:
+                    self._write_json(500, {"status": "error", "tool": "matrixark_agent_hook", "error": str(exc)})
                 return
             if parsed.path in HTTP_TOOL_ROUTES:
                 args = body.get("arguments") if isinstance(body.get("arguments"), dict) else body
