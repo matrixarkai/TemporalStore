@@ -414,6 +414,18 @@ def main() -> int:
         help="Reuse an existing ready Rust TemporalStore report instead of replaying the corpus again.",
     )
     args = parser.parse_args()
+    if not args.baseline_reader_model:
+        args.baseline_reader_model = args.reader_model
+    if not args.baseline_embedding_model:
+        args.baseline_embedding_model = args.embedding_model
+    if not args.baseline_max_events:
+        args.baseline_max_events = args.max_events
+    if not args.baseline_reader_max_context_chars:
+        args.baseline_reader_max_context_chars = args.reader_max_context_chars
+    if not args.baseline_judge_model:
+        args.baseline_judge_model = args.judge_model
+    if not args.baseline_judge_prompt:
+        args.baseline_judge_prompt = args.judge_prompt
     args.require_shared_oss_models = shared_oss_model_contract_is_required(args)
     try:
         configure_retrieval_embedding_model(
