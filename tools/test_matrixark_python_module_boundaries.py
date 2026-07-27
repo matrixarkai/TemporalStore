@@ -1074,6 +1074,21 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "source_session_ids": ["session_old", "session_now"],
                 "source_entity_hashes": [10, 11],
             },
+            {
+                "record_type": "matrixark_async_pipeline_task",
+                "task_hash": 3003,
+                "event_id_hash": 1001,
+                "scope": {
+                    "account_id": "acct_deadline",
+                    "tenant_id": "tenant_deadline",
+                    "user_id": "user_deadline",
+                },
+                "status": "extraction_committed",
+                "completed_stages": ["extraction"],
+                "remaining_stages": ["summary", "compression", "embedding"],
+                "trigger_policy": "threshold",
+                "updated_at_ms": 100,
+            },
         ]
 
         pack = deadline_mod.deadline_fallback_pack(
@@ -1103,6 +1118,13 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(2, budget["by_hook_type"]["hook_boundary"]["refs"])
         self.assertEqual(2, budget["by_codex_event"]["Stop"]["refs"])
         self.assertEqual(1, budget["final_session_boundary_ref_count"])
+        readiness = pack["async_pipeline_readiness"]
+        self.assertFalse(readiness["ready_for_retrieval"])
+        self.assertEqual(1, readiness["task_count"])
+        self.assertEqual(1, readiness["extraction_committed_task_count"])
+        self.assertEqual(["compression", "embedding", "summary"], readiness["remaining_stages"])
+        self.assertEqual(readiness, pack["retrieval_metrics"]["async_pipeline_readiness"])
+        self.assertIn("async_pipeline_followup_pending", pack["warnings"])
         entity_group = next(group for group in pack["groups"] if group["type"] == "entity")
         entity_item = entity_group["items"][0]
         self.assertEqual("user_profile", entity_item["memory_scope"])
@@ -1111,6 +1133,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(2, entity_item["source_entity_count"])
         self.assertEqual(1, len(adapter.audit_records))
         self.assertEqual(budget, adapter.audit_records[0]["memory_layer_budget"])
+        self.assertEqual(readiness, adapter.audit_records[0]["async_pipeline_readiness"])
+        self.assertEqual(readiness, adapter.audit_records[0]["recall_policy_summary"]["async_pipeline_readiness"])
         self.assertEqual(
             1,
             adapter.audit_records[0]["recall_policy_summary"]["session_continuity"]["cross_session_selected_ref_count"],
@@ -1118,6 +1142,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(adapter.audit_records[0]["partial_context_pack"])
         self.assertEqual(1, adapter.audit_records[0]["selected_ref_counts"]["entity"])
         self.assertIn("retrieval_deadline_exceeded:deadline_after_record_load", adapter.audit_records[0]["quality_warnings"])
+        self.assertIn("async_pipeline_followup_pending", adapter.audit_records[0]["quality_warnings"])
 
 
 class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):

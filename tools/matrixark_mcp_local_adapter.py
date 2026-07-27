@@ -33,6 +33,11 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_summary_runtime import async_summary_progress_records
 
+try:
+    from tools.matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness, latest_async_pipeline_rows
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness, latest_async_pipeline_rows
+
 RETRIEVAL_HOT_RECORD_TYPES = {
     "context_compression_event",
     "context_embedding",
@@ -53,77 +58,6 @@ LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").s
 
 _LOCAL_READ_CACHE_LOCK = threading.RLock()
 _LOCAL_READ_CACHE: dict[str, tuple[int, int, list[Json]]] = {}
-
-
-def latest_async_pipeline_rows(rows: list[Json]) -> list[Json]:
-    status_rank = {"pending": 0, "extraction_committed": 1, "summary_completed": 2}
-    latest_by_task: dict[int, Json] = {}
-    for row in rows:
-        try:
-            task_hash = int(row.get("task_hash") or row.get("event_id_hash"))
-        except (TypeError, ValueError):
-            continue
-        current = latest_by_task.get(task_hash)
-        current_rank = status_rank.get(str(current.get("status") or ""), -1) if current else -1
-        row_rank = status_rank.get(str(row.get("status") or ""), -1)
-        current_time = int(current.get("updated_at_ms") or current.get("created_at_ms") or 0) if current else -1
-        row_time = int(row.get("updated_at_ms") or row.get("created_at_ms") or 0)
-        if current is None or (row_rank, row_time) >= (current_rank, current_time):
-            latest_by_task[task_hash] = row
-    return list(latest_by_task.values())
-
-
-def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json:
-    readiness_scope = dict(scope)
-    session_scope_mode = str(readiness_scope.pop("_session_scope", "") or "")
-    if session_scope_mode == "prefer":
-        readiness_scope.pop("session_id", None)
-    latest_rows = latest_async_pipeline_rows(
-        [
-            record
-            for record in records
-            if record.get("record_type") == "matrixark_async_pipeline_task"
-            and scope_matches(candidate_access_scope(record), readiness_scope)
-        ]
-    )
-    status_counts: dict[str, int] = {}
-    pending_task_count = 0
-    extraction_committed_task_count = 0
-    summary_completed_task_count = 0
-    remaining_stages: set[str] = set()
-    completed_stages: set[str] = set()
-    for row in latest_rows:
-        status = str(row.get("status") or "unknown")
-        status_counts[status] = status_counts.get(status, 0) + 1
-        pending_task_count += int(status == "pending")
-        extraction_committed_task_count += int(status == "extraction_committed")
-        summary_completed_task_count += int(status == "summary_completed")
-        for stage in row.get("remaining_stages") if isinstance(row.get("remaining_stages"), list) else []:
-            stage_name = str(stage or "").strip()
-            if stage_name:
-                remaining_stages.add(stage_name)
-        for stage in row.get("completed_stages") if isinstance(row.get("completed_stages"), list) else []:
-            stage_name = str(stage or "").strip()
-            if stage_name:
-                completed_stages.add(stage_name)
-    warnings: list[str] = []
-    if pending_task_count:
-        warnings.append("async_pipeline_pending")
-    if extraction_committed_task_count:
-        warnings.append("async_pipeline_followup_pending")
-    if remaining_stages:
-        warnings.append("async_pipeline_remaining_stages:" + ",".join(sorted(remaining_stages)))
-    return {
-        "task_count": len(latest_rows),
-        "status_counts": dict(sorted(status_counts.items())),
-        "pending_task_count": pending_task_count,
-        "extraction_committed_task_count": extraction_committed_task_count,
-        "summary_completed_task_count": summary_completed_task_count,
-        "completed_stages": sorted(completed_stages),
-        "remaining_stages": sorted(remaining_stages),
-        "ready_for_retrieval": not pending_task_count and not extraction_committed_task_count and not remaining_stages,
-        "freshness_warnings": warnings,
-    }
 
 
 def codex_session_identity_policy(session_id_source: str) -> Json:
@@ -4986,6 +4920,7 @@ class MatrixArkLocalAdapter:
         records: list[Json],
         reason: str,
         budget_source: str = "matrixark_default_max_context_tokens",
+        retrieval_scope: Json | None = None,
     ) -> Json:
         selected = []
         used_context_tokens = 0
@@ -5070,6 +5005,12 @@ class MatrixArkLocalAdapter:
         context_pack_id = str(stable_hash(f"deadline:{query}:{selected}:{now_ms()}"))
         serving_selected = compact_context_pack_refs(selected, include_debug=False)
         memory_layer_budget = selected_ref_layer_budget(selected)
+        async_readiness_scope = retrieval_scope if isinstance(retrieval_scope, dict) else {**scope, "_session_scope": "prefer"}
+        async_pipeline_readiness = async_pipeline_retrieval_readiness(records, async_readiness_scope)
+        quality_warnings = [
+            f"retrieval_deadline_exceeded:{reason}",
+            *async_pipeline_readiness.get("freshness_warnings", []),
+        ]
         pack = {
             "context_pack_id": context_pack_id,
             "context_sources_order": ["local_context", "matrixark_remote_context"],
@@ -5089,6 +5030,7 @@ class MatrixArkLocalAdapter:
                 "partial_context_pack": True,
                 "fallback_reason": reason,
                 "memory_layer_budget": memory_layer_budget,
+                "async_pipeline_readiness": async_pipeline_readiness,
                 "session_continuity": {
                     "mode": "fallback_recent_context",
                     "policy": "deadline fallback preserves same-session/cross-session/profile lineage while staying within the remaining remote budget",
@@ -5103,10 +5045,22 @@ class MatrixArkLocalAdapter:
             "used_remote_context_tokens": used_context_tokens,
             "used_local_context_tokens": local_tokens,
             "total_prompt_context_tokens": used_context_tokens + local_tokens,
-            "remote_context_budget_tokens": remote_budget,
-            "requested_max_context_tokens": max_context_tokens,
-            "local_context_safety_margin_tokens": safety_margin_tokens,
-            "budget_source": budget_source,
+                "remote_context_budget_tokens": remote_budget,
+                "requested_max_context_tokens": max_context_tokens,
+                "retrieval_metrics": {
+                    "memory_layer_budget": memory_layer_budget,
+                    "async_pipeline_readiness": async_pipeline_readiness,
+                    "requested_max_context_tokens": max_context_tokens,
+                    "used_local_context_tokens": local_tokens,
+                    "used_remote_context_tokens": used_context_tokens,
+                    "total_prompt_context_tokens": used_context_tokens + local_tokens,
+                    "remote_context_budget_tokens": remote_budget,
+                    "partial_context_pack": True,
+                    "fallback_reason": reason,
+                    "source": "deadline_fallback_pack",
+                },
+                "local_context_safety_margin_tokens": safety_margin_tokens,
+                "budget_source": budget_source,
             "local_context_policy": {
                 "mode": "shared_budget_dedupe",
                 "local_context_count": len(local_budget["items"]),
@@ -5116,11 +5070,11 @@ class MatrixArkLocalAdapter:
                 "safety_margin_source": local_budget.get("safety_margin_source", "matrixark_default_5_percent_capped"),
                 "dedupe_remote_against_local": True,
                 "remote_is_additive_only_within_remaining_budget": True,
-            },
-            "dropped_refs": {},
-            "quality_warnings": [f"retrieval_deadline_exceeded:{reason}"],
-            "insufficient_context": not selected,
-            "partial_context_pack": True,
+                },
+                "dropped_refs": {},
+                "quality_warnings": quality_warnings,
+                "insufficient_context": not selected,
+                "partial_context_pack": True,
         }
         if reason != "service_backpressure":
             self.append_audit(
@@ -5137,10 +5091,11 @@ class MatrixArkLocalAdapter:
                     "question_type": question_type,
                     "packing_policy": pack["packing_policy"],
                     "recall_policy": pack["recall_policy"],
-                    "quality_warnings": pack["quality_warnings"],
-                    "partial_context_pack": True,
-                    "memory_layer_budget": memory_layer_budget,
-                    "local_context_policy": pack["local_context_policy"],
+                        "quality_warnings": pack["quality_warnings"],
+                        "partial_context_pack": True,
+                        "memory_layer_budget": memory_layer_budget,
+                        "async_pipeline_readiness": async_pipeline_readiness,
+                        "local_context_policy": pack["local_context_policy"],
                     "used_local_context_tokens": pack["used_local_context_tokens"],
                     "used_remote_context_tokens": pack["used_remote_context_tokens"],
                     "total_prompt_context_tokens": pack["total_prompt_context_tokens"],
@@ -5490,6 +5445,7 @@ class MatrixArkLocalAdapter:
                 records=records if fallback_records is None else fallback_records,
                 reason=reason,
                 budget_source=budget_source,
+                retrieval_scope=retrieval_scope,
             )
         skill_controls = self.latest_skill_controls(records)
         include_superseded_resources = bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False))
@@ -5525,6 +5481,7 @@ class MatrixArkLocalAdapter:
                 records=records,
                 reason="deadline_after_record_load",
                 budget_source=budget_source,
+                retrieval_scope=retrieval_scope,
             )
         node_scores: dict[int, Json] = {}
         event_embedding_vectors: dict[int, list[float]] = {}
@@ -5652,6 +5609,7 @@ class MatrixArkLocalAdapter:
                 records=records,
                 reason="deadline_after_embedding_index_scan",
                 budget_source=budget_source,
+                retrieval_scope=retrieval_scope,
             )
 
         top_k_per_layer = integer_arg(ranking, "top_k_per_layer", DEFAULT_TOP_K_PER_LAYER, minimum=1)
@@ -6058,6 +6016,7 @@ class MatrixArkLocalAdapter:
                 records=records,
                 reason="deadline_after_event_scan",
                 budget_source=budget_source,
+                retrieval_scope=retrieval_scope,
             )
         for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
             if scan_index % 64 == 0 and deadline_exceeded():
@@ -6157,6 +6116,7 @@ class MatrixArkLocalAdapter:
                 records=records,
                 reason="deadline_after_entity_scan",
                 budget_source=budget_source,
+                retrieval_scope=retrieval_scope,
             )
         for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
             if scan_index % 64 == 0 and deadline_exceeded():
@@ -6232,6 +6192,7 @@ class MatrixArkLocalAdapter:
                 records=records,
                 reason="deadline_after_segment_scan",
                 budget_source=budget_source,
+                retrieval_scope=retrieval_scope,
             )
         for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
             if scan_index % 64 == 0 and deadline_exceeded():
@@ -6406,6 +6367,7 @@ class MatrixArkLocalAdapter:
                 records=records,
                 reason="deadline_after_compression_scan",
                 budget_source=budget_source,
+                retrieval_scope=retrieval_scope,
             )
         finish_retrieval_stage("rerank_score", stage_started_perf)
         stage_started_perf = time.perf_counter()

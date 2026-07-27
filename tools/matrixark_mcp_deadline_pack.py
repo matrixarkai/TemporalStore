@@ -53,6 +53,11 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_retrieve_pack_builder import selected_ref_layer_budget
 
+try:
+    from tools.matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness
+
 
 def deadline_fallback_pack(
     adapter: Any,
@@ -67,6 +72,7 @@ def deadline_fallback_pack(
     records: list[Json],
     reason: str,
     budget_source: str = "matrixark_default_max_context_tokens",
+    retrieval_scope: Json | None = None,
 ) -> Json:
     selected = []
     used_context_tokens = 0
@@ -151,6 +157,12 @@ def deadline_fallback_pack(
     context_pack_id = str(stable_hash(f"deadline:{query}:{selected}:{now_ms()}"))
     serving_selected = compact_context_pack_refs(selected, include_debug=False)
     memory_layer_budget = selected_ref_layer_budget(selected)
+    async_readiness_scope = retrieval_scope if isinstance(retrieval_scope, dict) else {**scope, "_session_scope": "prefer"}
+    async_pipeline_readiness = async_pipeline_retrieval_readiness(records, async_readiness_scope)
+    quality_warnings = [
+        f"retrieval_deadline_exceeded:{reason}",
+        *async_pipeline_readiness.get("freshness_warnings", []),
+    ]
     pack = {
         "context_pack_id": context_pack_id,
         "context_sources_order": ["local_context", "matrixark_remote_context"],
@@ -170,6 +182,7 @@ def deadline_fallback_pack(
             "partial_context_pack": True,
             "fallback_reason": reason,
             "memory_layer_budget": memory_layer_budget,
+            "async_pipeline_readiness": async_pipeline_readiness,
             "session_continuity": {
                 "mode": "fallback_recent_context",
                 "policy": "deadline fallback preserves same-session/cross-session/profile lineage while staying within the remaining remote budget",
@@ -186,6 +199,18 @@ def deadline_fallback_pack(
         "total_prompt_context_tokens": used_context_tokens + local_tokens,
         "remote_context_budget_tokens": remote_budget,
         "requested_max_context_tokens": max_context_tokens,
+        "retrieval_metrics": {
+            "memory_layer_budget": memory_layer_budget,
+            "async_pipeline_readiness": async_pipeline_readiness,
+            "requested_max_context_tokens": max_context_tokens,
+            "used_local_context_tokens": local_tokens,
+            "used_remote_context_tokens": used_context_tokens,
+            "total_prompt_context_tokens": used_context_tokens + local_tokens,
+            "remote_context_budget_tokens": remote_budget,
+            "partial_context_pack": True,
+            "fallback_reason": reason,
+            "source": "deadline_fallback_pack",
+        },
         "local_context_safety_margin_tokens": safety_margin_tokens,
         "budget_source": budget_source,
         "local_context_policy": {
@@ -199,7 +224,7 @@ def deadline_fallback_pack(
             "remote_is_additive_only_within_remaining_budget": True,
         },
         "dropped_refs": {},
-        "quality_warnings": [f"retrieval_deadline_exceeded:{reason}"],
+        "quality_warnings": quality_warnings,
         "insufficient_context": not selected,
         "partial_context_pack": True,
     }
@@ -221,6 +246,7 @@ def deadline_fallback_pack(
                 "quality_warnings": pack["quality_warnings"],
                 "partial_context_pack": True,
                 "memory_layer_budget": memory_layer_budget,
+                "async_pipeline_readiness": async_pipeline_readiness,
                 "local_context_policy": pack["local_context_policy"],
                 "used_local_context_tokens": pack["used_local_context_tokens"],
                 "used_remote_context_tokens": pack["used_remote_context_tokens"],

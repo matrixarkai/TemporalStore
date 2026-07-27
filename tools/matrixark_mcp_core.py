@@ -5984,6 +5984,9 @@ def compact_recall_policy_for_audit(recall_policy: Json) -> Json:
     dropped_memory_layer_budget = recall_policy.get("dropped_memory_layer_budget")
     if isinstance(dropped_memory_layer_budget, dict):
         compact["dropped_memory_layer_budget"] = dropped_memory_layer_budget
+    async_pipeline_readiness = recall_policy.get("async_pipeline_readiness")
+    if isinstance(async_pipeline_readiness, dict):
+        compact["async_pipeline_readiness"] = async_pipeline_readiness
     if storage_options:
         compact["storage_route"] = {
             field: storage_options.get(field)
@@ -6046,6 +6049,12 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
         dropped_memory_layer_budget = recall_policy.get("dropped_memory_layer_budget")
     if isinstance(dropped_memory_layer_budget, dict):
         compact["dropped_memory_layer_budget"] = dropped_memory_layer_budget
+    async_pipeline_readiness = record.get("async_pipeline_readiness")
+    if not isinstance(async_pipeline_readiness, dict):
+        recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
+        async_pipeline_readiness = recall_policy.get("async_pipeline_readiness")
+    if isinstance(async_pipeline_readiness, dict):
+        compact["async_pipeline_readiness"] = async_pipeline_readiness
     local_policy = record.get("local_context_policy")
     if isinstance(local_policy, dict):
         compact["local_context_policy"] = {
