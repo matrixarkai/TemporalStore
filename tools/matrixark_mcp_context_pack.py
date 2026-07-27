@@ -252,6 +252,9 @@ def compact_recall_policy_for_audit(recall_policy: Json) -> Json:
     dropped_memory_layer_budget = recall_policy.get("dropped_memory_layer_budget")
     if isinstance(dropped_memory_layer_budget, dict):
         compact["dropped_memory_layer_budget"] = dropped_memory_layer_budget
+    memory_layer_pressure = recall_policy.get("memory_layer_pressure")
+    if isinstance(memory_layer_pressure, dict):
+        compact["memory_layer_pressure"] = memory_layer_pressure
     async_pipeline_readiness = recall_policy.get("async_pipeline_readiness")
     if isinstance(async_pipeline_readiness, dict):
         compact["async_pipeline_readiness"] = async_pipeline_readiness
@@ -317,6 +320,12 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
         dropped_memory_layer_budget = recall_policy.get("dropped_memory_layer_budget")
     if isinstance(dropped_memory_layer_budget, dict):
         compact["dropped_memory_layer_budget"] = dropped_memory_layer_budget
+    memory_layer_pressure = record.get("memory_layer_pressure")
+    if not isinstance(memory_layer_pressure, dict):
+        recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
+        memory_layer_pressure = recall_policy.get("memory_layer_pressure")
+    if isinstance(memory_layer_pressure, dict):
+        compact["memory_layer_pressure"] = memory_layer_pressure
     async_pipeline_readiness = record.get("async_pipeline_readiness")
     if not isinstance(async_pipeline_readiness, dict):
         recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
@@ -642,6 +651,15 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     )
     if isinstance(dropped_memory_layer_budget, dict) and dropped_memory_layer_budget:
         compact["dropped_memory_layer_budget"] = dropped_memory_layer_budget
+    memory_layer_pressure = (
+        retrieval_metrics.get("memory_layer_pressure")
+        if isinstance(retrieval_metrics.get("memory_layer_pressure"), dict)
+        else recall_policy.get("memory_layer_pressure")
+        if isinstance(recall_policy.get("memory_layer_pressure"), dict)
+        else {}
+    )
+    if isinstance(memory_layer_pressure, dict) and memory_layer_pressure:
+        compact["memory_layer_pressure"] = memory_layer_pressure
     async_pipeline_readiness = (
         retrieval_metrics.get("async_pipeline_readiness")
         if isinstance(retrieval_metrics.get("async_pipeline_readiness"), dict)

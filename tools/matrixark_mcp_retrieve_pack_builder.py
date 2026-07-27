@@ -202,6 +202,90 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
     return breakdown
 
 
+def _budget_total(budget: Json, *names: str) -> int:
+    for name in names:
+        value = budget.get(name) if isinstance(budget, dict) else 0
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def memory_layer_pressure_summary(selected_budget: Json, dropped_budget: Json) -> Json:
+    selected_budget = selected_budget if isinstance(selected_budget, dict) else {}
+    dropped_budget = dropped_budget if isinstance(dropped_budget, dict) else {}
+    summary: Json = {
+        "selected_refs": _budget_total(selected_budget, "total_selected_refs"),
+        "selected_tokens": _budget_total(selected_budget, "total_selected_tokens"),
+        "dropped_refs": _budget_total(dropped_budget, "total_dropped_refs", "total_dropped_refs_with_detail"),
+        "dropped_tokens": _budget_total(dropped_budget, "total_dropped_tokens", "total_dropped_tokens_with_detail"),
+        "pressure_dimensions": [],
+        "dropped_dimensions": [],
+        "by_dimension": {},
+    }
+    for dimension in [
+        "by_memory_scope",
+        "by_session_continuity",
+        "by_extraction_phase",
+        "by_ref_type",
+        "by_entity_type",
+        "by_source_role",
+        "by_hook_type",
+        "by_codex_event",
+    ]:
+        selected_buckets = selected_budget.get(dimension) if isinstance(selected_budget.get(dimension), dict) else {}
+        dropped_buckets = dropped_budget.get(dimension) if isinstance(dropped_budget.get(dimension), dict) else {}
+        dimension_summary: Json = {}
+        for bucket_name in sorted(set(selected_buckets) | set(dropped_buckets)):
+            selected_bucket = selected_buckets.get(bucket_name, {}) if isinstance(selected_buckets.get(bucket_name), dict) else {}
+            dropped_bucket = dropped_buckets.get(bucket_name, {}) if isinstance(dropped_buckets.get(bucket_name), dict) else {}
+            selected_refs = _budget_total(selected_bucket, "refs")
+            dropped_refs = _budget_total(dropped_bucket, "refs")
+            if not selected_refs and not dropped_refs:
+                continue
+            selected_tokens = _budget_total(selected_bucket, "tokens")
+            dropped_tokens = _budget_total(dropped_bucket, "tokens")
+            dimension_summary[str(bucket_name)] = {
+                "selected_refs": selected_refs,
+                "selected_tokens": selected_tokens,
+                "dropped_refs": dropped_refs,
+                "dropped_tokens": dropped_tokens,
+                "selected_and_dropped": bool(selected_refs and dropped_refs),
+            }
+        if dimension_summary:
+            summary["by_dimension"][dimension] = dimension_summary
+            if any(bucket["dropped_refs"] > 0 for bucket in dimension_summary.values()):
+                summary["dropped_dimensions"].append(dimension)
+            if any(bucket["selected_and_dropped"] for bucket in dimension_summary.values()):
+                summary["pressure_dimensions"].append(dimension)
+    dimension_data = summary["by_dimension"]
+    def dropped_in(dimension: str, bucket: str) -> int:
+        return int(dimension_data.get(dimension, {}).get(bucket, {}).get("dropped_refs", 0))
+    summary["profile_memory_pressure"] = dropped_in("by_memory_scope", "user_profile") > 0
+    summary["session_memory_pressure"] = dropped_in("by_memory_scope", "session") > 0
+    summary["cross_session_pressure"] = dropped_in("by_session_continuity", "cross_session") > 0
+    summary["same_session_pressure"] = dropped_in("by_session_continuity", "same_session") > 0
+    summary["final_memory_pressure"] = dropped_in("by_extraction_phase", "final") > 0
+    summary["provisional_memory_pressure"] = dropped_in("by_extraction_phase", "provisional") > 0
+    summary["assistant_memory_pressure"] = dropped_in("by_source_role", "assistant") > 0
+    summary["user_memory_pressure"] = dropped_in("by_source_role", "user") > 0
+    summary["tool_memory_pressure"] = dropped_in("by_source_role", "tool") > 0
+    summary["pressure_bucket_count"] = sum(
+        1
+        for buckets in dimension_data.values()
+        for bucket in buckets.values()
+        if bucket.get("selected_and_dropped")
+    )
+    summary["dropped_bucket_count"] = sum(
+        1
+        for buckets in dimension_data.values()
+        for bucket in buckets.values()
+        if int(bucket.get("dropped_refs", 0)) > 0
+    )
+    return summary
+
+
 def build_context_pack(
     *,
     context_pack_id: int,
@@ -262,6 +346,7 @@ def build_context_pack(
     selected_context_counts = selected_context_class_counts(selected)
     memory_layer_budget = selected_ref_layer_budget(selected)
     dropped_memory_layer_budget = dropped_ref_layer_budget(dropped_over_budget)
+    memory_layer_pressure = memory_layer_pressure_summary(memory_layer_budget, dropped_memory_layer_budget)
     return {
         "context_pack_id": str(context_pack_id),
         "context_sources_order": ["local_context", "matrixark_remote_context"],
@@ -292,6 +377,7 @@ def build_context_pack(
             },
             "memory_layer_budget": memory_layer_budget,
             "dropped_memory_layer_budget": dropped_memory_layer_budget,
+            "memory_layer_pressure": memory_layer_pressure,
             "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
             "shared_context": dropped_over_budget.get("shared_context_policy", shared_context_policy),
             "backend_retrieval_pushdown": retrieval_scan_stats,

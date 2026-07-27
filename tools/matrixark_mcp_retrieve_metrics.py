@@ -7,6 +7,11 @@ from typing import Any
 
 Json = dict[str, Any]
 
+try:
+    from tools.matrixark_mcp_retrieve_pack_builder import memory_layer_pressure_summary
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieve_pack_builder import memory_layer_pressure_summary
+
 
 def attach_python_retrieval_metrics(
     pack: Json,
@@ -22,6 +27,11 @@ def attach_python_retrieval_metrics(
     recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
     memory_layer_budget = recall_policy.get("memory_layer_budget") if isinstance(recall_policy.get("memory_layer_budget"), dict) else {}
     dropped_memory_layer_budget = recall_policy.get("dropped_memory_layer_budget") if isinstance(recall_policy.get("dropped_memory_layer_budget"), dict) else {}
+    memory_layer_pressure = (
+        recall_policy.get("memory_layer_pressure")
+        if isinstance(recall_policy.get("memory_layer_pressure"), dict)
+        else memory_layer_pressure_summary(memory_layer_budget, dropped_memory_layer_budget)
+    )
     candidate_cache_hit = bool(
         isinstance(retrieval_scan_stats, dict)
         and (
@@ -64,6 +74,7 @@ def attach_python_retrieval_metrics(
         "raw_candidate_tables_returned": False,
         "memory_layer_budget": memory_layer_budget,
         "dropped_memory_layer_budget": dropped_memory_layer_budget,
+        "memory_layer_pressure": memory_layer_pressure,
         "source": "python_reference_pack",
     }
     if bool(args.get("include_retrieval_metrics")):
