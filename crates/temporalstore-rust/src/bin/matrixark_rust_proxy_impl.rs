@@ -1,5 +1,7 @@
+#![recursion_limit = "256"]
+
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, Read, Write};
@@ -1411,6 +1413,92 @@ fn parse_cross_session_policy(
     }
 }
 
+fn parse_source_role_budget_tokens(request: &Value) -> BTreeMap<String, u64> {
+    let config = request
+        .get("source_role_budget_tokens")
+        .or_else(|| json_field(request, &["ranking", "source_role_budget_tokens"]));
+    let mut budgets = BTreeMap::new();
+    let Some(object) = config.and_then(Value::as_object) else {
+        return budgets;
+    };
+    for (role, value) in object {
+        let role_name = role.trim().to_ascii_lowercase();
+        if role_name.is_empty() {
+            continue;
+        }
+        let Some(tokens) = value.as_u64() else {
+            continue;
+        };
+        if tokens > 0 {
+            budgets.insert(role_name, tokens);
+        }
+    }
+    budgets
+}
+
+fn source_role_names(value: &Value) -> BTreeSet<String> {
+    let mut roles = BTreeSet::new();
+    if let Some(source_roles) = value.get("source_roles").and_then(Value::as_array) {
+        for role in source_roles.iter().filter_map(Value::as_str) {
+            let role_name = role.trim().to_ascii_lowercase();
+            if !role_name.is_empty() {
+                roles.insert(role_name);
+            }
+        }
+    }
+    if let Some(counts) = value.get("source_role_counts").and_then(Value::as_object) {
+        for (role, count) in counts {
+            if count.as_u64().unwrap_or(0) == 0 {
+                continue;
+            }
+            let role_name = role.trim().to_ascii_lowercase();
+            if !role_name.is_empty() {
+                roles.insert(role_name);
+            }
+        }
+    }
+    roles
+}
+
+fn increment_source_count_bucket(breakdown: &mut Value, field: &str, source_counts: Option<&Value>) {
+    let Some(counts) = source_counts.and_then(Value::as_object) else {
+        return;
+    };
+    let Some(target) = breakdown.get_mut(field).and_then(Value::as_object_mut) else {
+        return;
+    };
+    for (name, count) in counts {
+        let bucket_name = name.trim();
+        if bucket_name.is_empty() {
+            continue;
+        }
+        let source_count = count.as_u64().unwrap_or(0);
+        if source_count == 0 {
+            continue;
+        }
+        let current = target.get(bucket_name).and_then(Value::as_u64).unwrap_or(0);
+        target.insert(bucket_name.to_string(), json!(current + source_count));
+    }
+}
+
+fn json_u64_map(values: &BTreeMap<String, u64>) -> Value {
+    let mut object = serde_json::Map::new();
+    for (key, value) in values {
+        object.insert(key.clone(), json!(value));
+    }
+    Value::Object(object)
+}
+
+fn hash_u64_map_to_json(values: &HashMap<String, u64>) -> Value {
+    let mut object = serde_json::Map::new();
+    let mut keys: Vec<_> = values.keys().cloned().collect();
+    keys.sort();
+    for key in keys {
+        object.insert(key.clone(), json!(values.get(&key).copied().unwrap_or(0)));
+    }
+    Value::Object(object)
+}
+
 fn record_ref_hash(record: &Value) -> Option<String> {
     for field in [
         "ref_hash",
@@ -1854,8 +1942,11 @@ fn pack_ref_from_record(
         "entity_type": record.get("entity_type").and_then(Value::as_str).unwrap_or(""),
         "entity_name": record.get("entity_name").and_then(Value::as_str).unwrap_or(""),
         "source_roles": record.get("source_roles").cloned().unwrap_or_else(|| json!([])),
+        "source_role_counts": record.get("source_role_counts").cloned().unwrap_or_else(|| json!({})),
         "source_hook_types": record.get("source_hook_types").cloned().unwrap_or_else(|| json!([])),
+        "source_hook_type_counts": record.get("source_hook_type_counts").cloned().unwrap_or_else(|| json!({})),
         "source_codex_events": record.get("source_codex_events").cloned().unwrap_or_else(|| json!([])),
+        "source_codex_event_counts": record.get("source_codex_event_counts").cloned().unwrap_or_else(|| json!({})),
         "source_session_ids": record.get("source_session_ids").cloned().unwrap_or_else(|| json!([])),
         "source_entity_hashes": record.get("source_entity_hashes").cloned().unwrap_or_else(|| json!([])),
         "source_ref": record.get("source_ref").cloned().unwrap_or(Value::Null),
@@ -1898,6 +1989,9 @@ fn selected_ref_layer_budget(refs: &[Value]) -> Value {
         "by_source_role": {},
         "by_hook_type": {},
         "by_codex_event": {},
+        "source_message_counts_by_role": {},
+        "source_hook_counts_by_type": {},
+        "source_codex_event_counts_by_event": {},
         "final_session_boundary_ref_count": 0,
         "provisional_ref_count": 0,
         "final_ref_count": 0,
@@ -1985,6 +2079,21 @@ fn selected_ref_layer_budget(refs: &[Value]) -> Value {
                 increment_layer_bucket(&mut breakdown, "by_codex_event", codex_event, tokens);
             }
         }
+        increment_source_count_bucket(
+            &mut breakdown,
+            "source_message_counts_by_role",
+            item.get("source_role_counts"),
+        );
+        increment_source_count_bucket(
+            &mut breakdown,
+            "source_hook_counts_by_type",
+            item.get("source_hook_type_counts"),
+        );
+        increment_source_count_bucket(
+            &mut breakdown,
+            "source_codex_event_counts_by_event",
+            item.get("source_codex_event_counts"),
+        );
         if item
             .get("final_session_boundary")
             .and_then(Value::as_bool)
@@ -2218,8 +2327,11 @@ fn native_dropped_ref_detail(
         "entity_type": string_field(record, "entity_type"),
         "entity_name": string_field(record, "entity_name"),
         "source_roles": record.get("source_roles").cloned().unwrap_or_else(|| json!([])),
+        "source_role_counts": record.get("source_role_counts").cloned().unwrap_or_else(|| json!({})),
         "source_hook_types": record.get("source_hook_types").cloned().unwrap_or_else(|| json!([])),
+        "source_hook_type_counts": record.get("source_hook_type_counts").cloned().unwrap_or_else(|| json!({})),
         "source_codex_events": record.get("source_codex_events").cloned().unwrap_or_else(|| json!([])),
+        "source_codex_event_counts": record.get("source_codex_event_counts").cloned().unwrap_or_else(|| json!({})),
         "stale_or_superseded": reason == "stale",
         "text_preview": text.chars().take(160).collect::<String>(),
     });
@@ -2262,6 +2374,9 @@ fn dropped_ref_layer_budget_from_native_counts(
         "by_source_role": {},
         "by_hook_type": {},
         "by_codex_event": {},
+        "source_message_counts_by_role": {},
+        "source_hook_counts_by_type": {},
+        "source_codex_event_counts_by_event": {},
         "by_profile_shadowed_reason": {},
         "total_dropped_tokens_with_detail": 0,
         "stale_ref_count": 0,
@@ -2329,6 +2444,21 @@ fn dropped_ref_layer_budget_from_native_counts(
                 increment_layer_bucket(&mut detail_budget, "by_codex_event", codex_event, tokens);
             }
         }
+        increment_source_count_bucket(
+            &mut detail_budget,
+            "source_message_counts_by_role",
+            detail.get("source_role_counts"),
+        );
+        increment_source_count_bucket(
+            &mut detail_budget,
+            "source_hook_counts_by_type",
+            detail.get("source_hook_type_counts"),
+        );
+        increment_source_count_bucket(
+            &mut detail_budget,
+            "source_codex_event_counts_by_event",
+            detail.get("source_codex_event_counts"),
+        );
         if detail
             .get("stale_or_superseded")
             .and_then(Value::as_bool)
@@ -2381,6 +2511,9 @@ fn dropped_ref_layer_budget_from_native_counts(
         "by_source_role": detail_budget["by_source_role"].clone(),
         "by_hook_type": detail_budget["by_hook_type"].clone(),
         "by_codex_event": detail_budget["by_codex_event"].clone(),
+        "source_message_counts_by_role": detail_budget["source_message_counts_by_role"].clone(),
+        "source_hook_counts_by_type": detail_budget["source_hook_counts_by_type"].clone(),
+        "source_codex_event_counts_by_event": detail_budget["source_codex_event_counts_by_event"].clone(),
         "by_profile_shadowed_reason": detail_budget["by_profile_shadowed_reason"].clone(),
         "total_dropped_refs_with_detail": dropped_ref_details.len() as u64,
         "total_dropped_tokens_with_detail": detail_budget["total_dropped_tokens_with_detail"].clone(),
@@ -2494,6 +2627,13 @@ fn retrieve_context_pack_native(
         remote_budget,
         &question_type,
     );
+    let source_role_budget_tokens = parse_source_role_budget_tokens(&request);
+    let mut source_role_used_tokens: HashMap<String, u64> = HashMap::new();
+    let mut source_role_selected_ref_counts: HashMap<String, u64> = HashMap::new();
+    for role in source_role_budget_tokens.keys() {
+        source_role_used_tokens.insert(role.clone(), 0);
+        source_role_selected_ref_counts.insert(role.clone(), 0);
+    }
     let mut raw_candidate_class_counts: HashMap<String, u64> = HashMap::new();
     let mut text_candidate_class_counts: HashMap<String, u64> = HashMap::new();
     let mut prepared_records = Vec::with_capacity(records.len());
@@ -2590,6 +2730,7 @@ fn retrieve_context_pack_native(
     let mut dropped_cross_budget = 0_u64;
     let mut dropped_cross_session_cap = 0_u64;
     let mut dropped_cross_candidate_cap = 0_u64;
+    let mut dropped_source_role_budget = 0_u64;
     let mut dropped_low_score = 0_u64;
     let mut dropped_duplicate_ref = 0_u64;
     let mut dropped_policy_ref = 0_u64;
@@ -2600,6 +2741,7 @@ fn retrieve_context_pack_native(
     let mut cross_policy_dropped_class_counts: HashMap<String, u64> = HashMap::new();
     let mut cross_low_score_dropped_class_counts: HashMap<String, u64> = HashMap::new();
     let mut cross_cap_dropped_class_counts: HashMap<String, u64> = HashMap::new();
+    let mut source_role_budget_dropped_class_counts: HashMap<String, u64> = HashMap::new();
     let mut selected_class_counts: HashMap<String, u64> = HashMap::new();
     let mut dropped_ref_type_counts: HashMap<String, u64> = HashMap::new();
     let mut dropped_ref_type_token_counts: HashMap<String, u64> = HashMap::new();
@@ -2607,6 +2749,7 @@ fn retrieve_context_pack_native(
     let mut dropped_cross_budget_tokens = 0_u64;
     let mut dropped_cross_session_cap_tokens = 0_u64;
     let mut dropped_cross_candidate_cap_tokens = 0_u64;
+    let mut dropped_source_role_budget_tokens = 0_u64;
     let mut dropped_low_score_tokens = 0_u64;
     let mut dropped_duplicate_ref_tokens = 0_u64;
     let mut dropped_policy_ref_tokens = 0_u64;
@@ -2773,6 +2916,42 @@ fn retrieve_context_pack_native(
             increment_class_tokens(&mut dropped_ref_type_token_counts, &context_class, tokens);
             continue;
         }
+        let candidate_source_roles = source_role_names(&record);
+        let capped_roles: Vec<String> = candidate_source_roles
+            .iter()
+            .filter(|role| {
+                source_role_budget_tokens
+                    .get(*role)
+                    .map(|budget| {
+                        source_role_used_tokens.get(*role).copied().unwrap_or(0) + tokens > *budget
+                    })
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        if !capped_roles.is_empty() {
+            dropped_source_role_budget += 1;
+            dropped_source_role_budget_tokens += tokens;
+            increment_class_count(&mut source_role_budget_dropped_class_counts, &context_class);
+            increment_class_count(&mut dropped_ref_type_counts, &context_class);
+            increment_class_tokens(&mut dropped_ref_type_token_counts, &context_class, tokens);
+            let mut detail = native_dropped_ref_detail(
+                &record,
+                &text,
+                &context_class,
+                "source_role_budget",
+                tokens,
+                None,
+            );
+            if let Some(object) = detail.as_object_mut() {
+                object.insert(
+                    "source_role_budget_capped_roles".to_string(),
+                    json!(capped_roles),
+                );
+            }
+            dropped_ref_details.push(detail);
+            continue;
+        }
         let ref_signature = format!(
             "{}:{}",
             context_class,
@@ -2799,6 +2978,12 @@ fn retrieve_context_pack_native(
             selected_cross_sessions.insert(cross_key);
             if is_entity_bridge {
                 entity_bridge_selected_refs += 1;
+            }
+        }
+        for role in candidate_source_roles {
+            if source_role_budget_tokens.contains_key(&role) {
+                *source_role_used_tokens.entry(role.clone()).or_default() += tokens;
+                *source_role_selected_ref_counts.entry(role).or_default() += 1;
             }
         }
         *selected_counts.entry(context_class.clone()).or_default() += 1;
@@ -2838,9 +3023,16 @@ fn retrieve_context_pack_native(
         "duplicate_dropped": duplicate_dropped_class_counts,
         "cross_policy_dropped": cross_policy_dropped_class_counts,
         "cross_low_score_dropped": cross_low_score_dropped_class_counts,
-        "cross_cap_dropped": cross_cap_dropped_class_counts
+        "cross_cap_dropped": cross_cap_dropped_class_counts,
+        "source_role_budget_dropped": source_role_budget_dropped_class_counts
     });
     let memory_layer_budget = selected_ref_layer_budget(&selected);
+    let source_role_budget_policy = json!({
+        "enabled": !source_role_budget_tokens.is_empty(),
+        "budget_tokens": json_u64_map(&source_role_budget_tokens),
+        "selected_tokens_by_role": hash_u64_map_to_json(&source_role_used_tokens),
+        "selected_ref_count_by_role": hash_u64_map_to_json(&source_role_selected_ref_counts)
+    });
     let dropped_memory_layer_budget = dropped_ref_layer_budget_from_native_counts(
         &[
             ("over_budget", dropped_over_budget, dropped_over_budget_tokens),
@@ -2854,6 +3046,11 @@ fn retrieve_context_pack_native(
                 "cross_session_candidate_cap",
                 dropped_cross_candidate_cap,
                 dropped_cross_candidate_cap_tokens,
+            ),
+            (
+                "source_role_budget",
+                dropped_source_role_budget,
+                dropped_source_role_budget_tokens,
             ),
             ("low_score", dropped_low_score, dropped_low_score_tokens),
             ("duplicate_ref", dropped_duplicate_ref, dropped_duplicate_ref_tokens),
@@ -2876,6 +3073,7 @@ fn retrieve_context_pack_native(
             "cross_session_budget": dropped_cross_budget,
             "cross_session_session_cap": dropped_cross_session_cap,
             "cross_session_candidate_cap": dropped_cross_candidate_cap,
+            "source_role_budget": dropped_source_role_budget,
             "low_score": dropped_low_score,
             "duplicate_ref": dropped_duplicate_ref,
             "policy_ref": dropped_policy_ref,
@@ -2884,6 +3082,7 @@ fn retrieve_context_pack_native(
                 "cross_session_budget": dropped_cross_budget,
                 "cross_session_session_cap": dropped_cross_session_cap,
                 "cross_session_candidate_cap": dropped_cross_candidate_cap,
+                "source_role_budget": dropped_source_role_budget,
                 "low_score": dropped_low_score,
                 "duplicate_ref": dropped_duplicate_ref,
                 "policy_ref": dropped_policy_ref,
@@ -2934,6 +3133,7 @@ fn retrieve_context_pack_native(
             },
             "memory_layer_budget": memory_layer_budget,
             "dropped_memory_layer_budget": dropped_memory_layer_budget,
+            "source_role_budget": source_role_budget_policy,
             "cross_session": {
                 "enabled": cross_policy.enabled,
                 "mode": if cross_policy.enabled { "prefer" } else { "disabled" },
@@ -2993,6 +3193,7 @@ fn retrieve_context_pack_native(
         + dropped_cross_budget
         + dropped_cross_session_cap
         + dropped_cross_candidate_cap
+        + dropped_source_role_budget
         + dropped_policy_ref
         + dropped_duplicate_ref
         + scan_dropped_count;
@@ -4275,8 +4476,11 @@ fn selected_ref_from_record(record: &Value, text: &str) -> Value {
         "entity_type": record.get("entity_type").and_then(Value::as_str).unwrap_or(""),
         "entity_name": record.get("entity_name").and_then(Value::as_str).unwrap_or(""),
         "source_roles": record.get("source_roles").cloned().unwrap_or_else(|| json!([])),
+        "source_role_counts": record.get("source_role_counts").cloned().unwrap_or_else(|| json!({})),
         "source_hook_types": record.get("source_hook_types").cloned().unwrap_or_else(|| json!([])),
+        "source_hook_type_counts": record.get("source_hook_type_counts").cloned().unwrap_or_else(|| json!({})),
         "source_codex_events": record.get("source_codex_events").cloned().unwrap_or_else(|| json!([])),
+        "source_codex_event_counts": record.get("source_codex_event_counts").cloned().unwrap_or_else(|| json!({})),
         "source_session_ids": record.get("source_session_ids").cloned().unwrap_or_else(|| json!([])),
         "source_entity_hashes": record.get("source_entity_hashes").cloned().unwrap_or_else(|| json!([])),
         "updated_at_ms": record.get("updated_at_ms").and_then(Value::as_u64).unwrap_or(0),
@@ -5066,6 +5270,107 @@ mod tests {
             .and_then(Value::as_array)
             .expect("default selected refs");
         assert_eq!(default_refs.len(), 2);
+
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+    }
+
+
+    #[test]
+    fn matrixark_native_retrieve_enforces_source_role_budget() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        env::remove_var("MATRIXARK_RUST_PROXY_FULL_RETRIEVE_SCAN");
+
+        let storage_prefix = "matrixark:test:native-source-role-budget";
+        let mut append = request("matrixark_batch_append_records");
+        append.key = format!("{storage_prefix}:record_count");
+        append.value = "1".to_string();
+        append.entries_compact = vec![CompactHashEntry(
+            format!("{storage_prefix}:records:000000"),
+            "00000000000000000000".to_string(),
+            r#"{"record_bundle":[{"record_type":"context_entity","entity_hash":101,"entity_type":"decision","entity_name":"assistant alpha","state":"gpu","memory_scope":"user_profile","session_continuity":"same_session","source_roles":["assistant"],"source_role_counts":{"assistant":1},"source_hook_types":["hook_boundary"],"source_hook_type_counts":{"hook_boundary":1},"source_codex_events":["Stop"],"source_codex_event_counts":{"Stop":1}},{"record_type":"context_entity","entity_hash":102,"entity_type":"decision","entity_name":"assistant bravo","state":"gpu","memory_scope":"user_profile","session_continuity":"same_session","source_roles":["assistant"],"source_role_counts":{"assistant":1},"source_hook_types":["hook_boundary"],"source_hook_type_counts":{"hook_boundary":1},"source_codex_events":["Stop"],"source_codex_event_counts":{"Stop":1}},{"record_type":"context_event","event_id_hash":103,"text":"gpu","memory_scope":"session","session_continuity":"same_session","source_roles":["user"],"source_role_counts":{"user":1},"source_hook_types":["UserPromptSubmit"],"source_hook_type_counts":{"UserPromptSubmit":1}}]}"#.to_string(),
+        )];
+
+        let root = record_log_root(&append);
+        let engine = open_engine(&append).expect("engine");
+        execute_record_log_request(&engine, append, root.clone()).expect("append compact bundle");
+
+        let mut retrieve = request("matrixark_retrieve_context_pack_full_scan");
+        retrieve.storage_prefix = storage_prefix.to_string();
+        retrieve.count_key = Some(format!("{storage_prefix}:record_count"));
+        retrieve.record_hash_key = Some(format!("{storage_prefix}:records"));
+        retrieve.record = Some(json!({
+            "query": "gpu",
+            "max_context_tokens": 64,
+            "source_role_budget_tokens": {"assistant": 1},
+            "ranking": {
+                "max_selected_refs": 4,
+                "min_similarity_score": 0.0
+            }
+        }));
+        let output = execute_record_log_request(&engine, retrieve, root.clone())
+            .expect("native retrieve with source-role budget");
+        let pack = output
+            .extra
+            .get("context_pack")
+            .expect("wrapped context pack from proxy op");
+        let selected_hashes: BTreeSet<_> = pack
+            .get("selected_refs")
+            .and_then(Value::as_array)
+            .expect("selected refs")
+            .iter()
+            .filter_map(|value| {
+                value
+                    .get("ref_hash")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+        assert!(selected_hashes.contains("101"));
+        assert!(selected_hashes.contains("103"));
+        assert!(!selected_hashes.contains("102"));
+        assert_eq!(
+            pack.pointer("/dropped_refs/source_role_budget")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/source_role_budget/budget_tokens/assistant")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/source_role_budget/selected_tokens_by_role/assistant")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_drop_reason/source_role_budget/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/source_message_counts_by_role/assistant")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_budget/source_message_counts_by_role/user")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        let dropped_refs = pack
+            .pointer("/dropped_refs/refs")
+            .and_then(Value::as_array)
+            .expect("dropped ref audit details");
+        assert_eq!(dropped_refs.len(), 1);
+        assert_eq!(
+            dropped_refs[0]
+                .pointer("/source_role_budget_capped_roles/0")
+                .and_then(Value::as_str),
+            Some("assistant")
+        );
 
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
     }
