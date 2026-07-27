@@ -150,6 +150,16 @@ def _agent_hook_auto_batch_extract(body: Json, normalized: Json, event: str, tex
     }
 
 
+def _agent_hook_commit_reason(body: Json, normalized: Json, event: str) -> str:
+    explicit = str(normalized.get("commit_reason") or body.get("commit_reason") or "").strip()
+    if explicit:
+        return explicit
+    lifecycle_stage = str(normalized.get("lifecycle_stage") or "").lower()
+    if event in {"IdleTimeout", "SessionIdle"} or "idle" in lifecycle_stage:
+        return "idle_timeout"
+    return "hook_boundary"
+
+
 def _agent_hook_call(server: Any, body: Json) -> Json:
     normalized = body.get("normalized_event") if isinstance(body.get("normalized_event"), dict) else {}
     raw_payload = body.get("raw_payload") if isinstance(body.get("raw_payload"), dict) else {}
@@ -224,16 +234,25 @@ def _agent_hook_call(server: Any, body: Json) -> Json:
             retrieve_args["local_context"] = local_context
         result["retrieved"] = server.call_tool("matrixark_retrieve", retrieve_args)
     if _agent_hook_bool(normalized.get("should_commit")):
+        commit_reason = _agent_hook_commit_reason(body, normalized, event)
+        explicit_force = normalized.get("force", body.get("force"))
+        force = _agent_hook_bool(explicit_force) if explicit_force is not None else commit_reason != "idle_timeout"
         commit_args: Json = {
             **args_common,
-            "force": True,
-            "commit_reason": "hook_boundary",
+            "force": force,
+            "commit_reason": commit_reason,
             "extraction_phase": str(normalized.get("extraction_phase") or "final"),
             "final_session_boundary": _agent_hook_bool(normalized.get("final_session_boundary", True)),
             "metadata": metadata,
             "agent_hook": {**agent_hook, "hook_type": "session_commit"},
             "storage_options": storage_options,
         }
+        threshold = normalized.get("session_buffer_threshold", body.get("session_buffer_threshold"))
+        if threshold is not None:
+            commit_args["threshold_messages"] = int(threshold)
+        idle_timeout = normalized.get("idle_commit_timeout_ms", body.get("idle_commit_timeout_ms"))
+        if idle_timeout is not None:
+            commit_args["idle_timeout_ms"] = int(idle_timeout)
         result["committed"] = server.call_tool("matrixark_session_commit", commit_args)
     return result
 

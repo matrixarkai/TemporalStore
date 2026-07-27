@@ -636,6 +636,35 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
             self.assertEqual({}, string_false_result["retrieved"])
             self.assertEqual({}, string_false_result["committed"])
 
+            idle = post(
+                {
+                    "scope": {**scope, "session_id": "codex:remote-thread-string-false"},
+                    "idle_commit_timeout_ms": 0,
+                    "normalized_event": {
+                        "agent": "codex",
+                        "event": "IdleTimeout",
+                        "hook_type": "session_commit",
+                        "lifecycle_stage": "idle_timeout_commit",
+                        "should_retrieve": False,
+                        "should_commit": True,
+                        "conversation_id": "remote-thread-string-false",
+                        "session_id": "codex:remote-thread-string-false",
+                        "session_id_source": "payload.conversation_id",
+                        "role": "system",
+                        "timestamp_ms": 346,
+                    },
+                    "raw_payload": {"conversation_id": "remote-thread-string-false"},
+                }
+            )
+            self.assertEqual("ok", idle["status"])
+            idle_commit = idle["result"]["committed"]
+            self.assertEqual("committed", idle_commit["status"])
+            self.assertEqual("idle_timeout", idle_commit["commit_reason"])
+            self.assertEqual("idle_timeout", idle_commit["trigger_policy"])
+            self.assertEqual("provisional", idle_commit["extraction_phase"])
+            self.assertFalse(idle_commit["final_session_boundary"])
+            self.assertEqual(1, idle_commit["committed_event_count"])
+
             stop = post(
                 {
                     "scope": scope,
