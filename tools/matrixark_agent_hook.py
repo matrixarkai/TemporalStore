@@ -28,6 +28,10 @@ try:
         payload_session_candidate,
         payload_text,
         read_stdin_payload,
+        retrieval_budget_pressure_from_retrieve,
+        retrieval_budget_summary_from_retrieve,
+        retrieval_layer_summary_from_retrieve,
+        retrieval_memory_hierarchy_contract_from_retrieve,
         selected_ref_count_from_retrieve,
         used_context_tokens_from_retrieve,
         validate_hook_backend_policy,
@@ -43,6 +47,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         payload_session_candidate,
         payload_text,
         read_stdin_payload,
+        retrieval_budget_pressure_from_retrieve,
+        retrieval_budget_summary_from_retrieve,
+        retrieval_layer_summary_from_retrieve,
+        retrieval_memory_hierarchy_contract_from_retrieve,
         selected_ref_count_from_retrieve,
         used_context_tokens_from_retrieve,
         validate_hook_backend_policy,
@@ -434,6 +442,36 @@ def scope_from_args(args: argparse.Namespace) -> Json:
     }
 
 
+def retrieval_session_identity_from_retrieve(pack: Json | None, *, session_id_source: str = "") -> Json:
+    if not isinstance(pack, dict):
+        source = str(session_id_source or "")
+        return {
+            "session_id_source": source,
+            "strong_session_identity": source in {"explicit", "payload_field", "payload_path_hash"} or source.startswith(("payload.", "env.")),
+            "fallback_session_identity": source in {"state_file", "state_file_created", "workspace_hash"},
+            "risk": "workspace_fallback_may_merge_multiple_codex_tasks" if source in {"state_file", "state_file_created", "workspace_hash"} else "",
+        } if source else {}
+    recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
+    session_identity = recall_policy.get("session_identity") if isinstance(recall_policy.get("session_identity"), dict) else {}
+    if isinstance(session_identity, dict) and session_identity.get("session_id_source"):
+        return session_identity
+    source = str(session_id_source or "")
+    return {
+        "session_id_source": source,
+        "strong_session_identity": source in {"explicit", "payload_field", "payload_path_hash"} or source.startswith(("payload.", "env.")),
+        "fallback_session_identity": source in {"state_file", "state_file_created", "workspace_hash"},
+        "risk": "workspace_fallback_may_merge_multiple_codex_tasks" if source in {"state_file", "state_file_created", "workspace_hash"} else "",
+        "source": "hook_metadata_fallback",
+    } if source else {}
+
+
+def retrieval_quality_warnings_from_retrieve(pack: Json | None) -> list[Any]:
+    if not isinstance(pack, dict):
+        return []
+    warnings = pack.get("quality_warnings")
+    return warnings if isinstance(warnings, list) else []
+
+
 def hook_storage_options() -> Json:
     return {"route": os.environ.get("MATRIXARK_HOOK_STORAGE_ROUTE", "shared_store_async")}
 
@@ -528,10 +566,20 @@ def main() -> int:
 
     retrieve: Json = {}
     if should_retrieve(args.event) or args.query:
+        retrieve_metadata = {
+            "retrieval_source": f"{args.agent}_hook",
+            "agent": args.agent,
+            "agent_event": args.event,
+            "hook_type": event_hook_type,
+            "session_id_source": session_id_source,
+            "codex_session_id_source": session_id_source if args.agent == "codex" else "",
+        }
         retrieve_args: Json = {
             **common,
             "query": args.query or text[:500],
             "max_context_tokens": args.max_context_tokens,
+            "metadata": retrieve_metadata,
+            "retrieval_request_metadata": retrieve_metadata,
         }
         local_context = agent_context.get("local_context", [])
         if local_context:
@@ -584,6 +632,13 @@ def main() -> int:
                     "context_pack_id": retrieve.get("context_pack_id"),
                     "selected_ref_count": selected_ref_count_from_retrieve(retrieve),
                     "used_context_tokens": used_context_tokens_from_retrieve(retrieve),
+                    "budget": retrieval_budget_summary_from_retrieve(retrieve),
+                    "budget_pressure": retrieval_budget_pressure_from_retrieve(retrieve),
+                    "layer_summary": retrieval_layer_summary_from_retrieve(retrieve),
+                    "memory_layer_budget": retrieval_layer_summary_from_retrieve(retrieve).get("memory_layer_budget", {}),
+                    "session_identity": retrieval_session_identity_from_retrieve(retrieve, session_id_source=session_id_source),
+                    "quality_warnings": retrieval_quality_warnings_from_retrieve(retrieve),
+                    "memory_hierarchy_contract": retrieval_memory_hierarchy_contract_from_retrieve(retrieve),
                 },
                 "committed": {
                     "status": commit.get("status"),

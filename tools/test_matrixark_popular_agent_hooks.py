@@ -101,6 +101,20 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
             self.assertEqual(1, result["agent_context_refs"])
             self.assertTrue(result["ingested"])
             self.assertGreaterEqual(result["retrieved"]["selected_ref_count"], 1)
+            self.assertEqual("payload_field", result["retrieved"]["session_identity"]["session_id_source"])
+            self.assertTrue(result["retrieved"]["session_identity"]["strong_session_identity"])
+            self.assertFalse(result["retrieved"]["session_identity"]["fallback_session_identity"])
+            self.assertNotIn("session_identity_fallback:payload_field", result["retrieved"]["quality_warnings"])
+            self.assertIn("memory_layer_budget", result["retrieved"])
+            self.assertIn("layer_summary", result["retrieved"])
+            self.assertEqual(
+                result["retrieved"]["memory_layer_budget"],
+                result["retrieved"]["layer_summary"].get("memory_layer_budget", {}),
+            )
+            self.assertEqual(
+                "same-session continuity first; entity state bridges cross-session memory; cross-session evidence remains bounded",
+                result["retrieved"]["memory_hierarchy_contract"]["retrieval_strategy"],
+            )
 
     def test_planned_agent_configs_are_marked_todo_not_supported_hooks(self) -> None:
         snippet = json.loads(matrixark_agent_config.openclaw_json(".", "tools/matrixark_mcp_rust_server.sh"))
