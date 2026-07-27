@@ -34,8 +34,49 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         selected_context_class_counts,
     )
 
+def memory_layer_name(ref: Json) -> str:
+    ref_type = str(ref.get("ref_type") or "")
+    context_class = str(ref.get("context_class") or ref_type)
+    memory_scope = str(ref.get("memory_scope") or "")
+    session_continuity = str(ref.get("session_continuity") or "")
+    if context_class == "resource_entity_fact":
+        return "resource_entity_fact"
+    if context_class == "resource_fact":
+        return "resource_fact"
+    if ref_type == "resource_chunk":
+        return "resource_chunk"
+    if ref_type == "skill_section":
+        return "skill_section"
+    if ref_type == "compression" or context_class == "compression":
+        return "compression"
+    if ref_type == "summary" or context_class == "summary":
+        return "summary"
+    if ref_type == "segment":
+        if session_continuity == "same_session":
+            return "same_session_segment"
+        if session_continuity == "cross_session":
+            return "cross_session_segment"
+        return "session_neutral_segment"
+    if ref_type == "event":
+        if session_continuity == "same_session":
+            return "same_session_event"
+        if session_continuity == "cross_session":
+            return "cross_session_event"
+        return "session_neutral_event"
+    if ref_type == "entity":
+        if memory_scope == "user_profile":
+            return "profile_entity"
+        if session_continuity == "same_session":
+            return "same_session_entity"
+        if session_continuity == "cross_session":
+            return "cross_session_entity"
+        return "session_entity"
+    return context_class or ref_type or "unknown"
+
+
 def selected_ref_layer_budget(refs: list[Json]) -> Json:
     breakdown: Json = {
+        "by_memory_layer": {},
         "by_memory_scope": {},
         "by_session_continuity": {},
         "by_extraction_phase": {},
@@ -59,6 +100,9 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
         except (TypeError, ValueError):
             token_estimate = 0
         breakdown["total_selected_tokens"] += token_estimate
+        layer_bucket = breakdown["by_memory_layer"].setdefault(memory_layer_name(ref), {"refs": 0, "tokens": 0})
+        layer_bucket["refs"] += 1
+        layer_bucket["tokens"] += token_estimate
         for field, bucket_name, default_value in [
             ("memory_scope", "by_memory_scope", "unscoped"),
             ("session_continuity", "by_session_continuity", "neutral"),
@@ -127,6 +171,7 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
     if not isinstance(refs, list):
         refs = []
     breakdown: Json = {
+        "by_memory_layer": {},
         "by_drop_reason": {},
         "by_memory_scope": {},
         "by_session_continuity": {},
@@ -170,6 +215,9 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
             token_estimate = 0
         breakdown["total_dropped_tokens_with_detail"] += token_estimate
         breakdown["total_dropped_tokens"] += token_estimate
+        layer_bucket = breakdown["by_memory_layer"].setdefault(memory_layer_name(ref), {"refs": 0, "tokens": 0})
+        layer_bucket["refs"] += 1
+        layer_bucket["tokens"] += token_estimate
         reason = str(ref.get("drop_reason") or ref.get("reason") or "unknown")
         bucket = breakdown["by_drop_reason"].setdefault(reason, {"refs": 0, "tokens": 0})
         bucket["refs"] += 1
@@ -272,6 +320,7 @@ def memory_layer_pressure_summary(selected_budget: Json, dropped_budget: Json) -
         "by_dimension": {},
     }
     for dimension in [
+        "by_memory_layer",
         "by_drop_reason",
         "by_memory_scope",
         "by_session_continuity",
@@ -337,6 +386,17 @@ def memory_layer_pressure_summary(selected_budget: Json, dropped_budget: Json) -
         return int(dimension_data.get(dimension, {}).get(bucket, {}).get("dropped_refs", 0))
     def dropped_count_in(dimension: str, bucket: str) -> int:
         return int(dimension_data.get(dimension, {}).get(bucket, {}).get("dropped_count", 0))
+    summary["profile_entity_pressure"] = dropped_in("by_memory_layer", "profile_entity") > 0
+    summary["same_session_event_pressure"] = dropped_in("by_memory_layer", "same_session_event") > 0
+    summary["cross_session_event_pressure"] = dropped_in("by_memory_layer", "cross_session_event") > 0
+    summary["summary_layer_pressure"] = dropped_in("by_memory_layer", "summary") > 0
+    summary["compression_layer_pressure"] = dropped_in("by_memory_layer", "compression") > 0
+    summary["resource_layer_pressure"] = (
+        dropped_in("by_memory_layer", "resource_fact") > 0
+        or dropped_in("by_memory_layer", "resource_entity_fact") > 0
+        or dropped_in("by_memory_layer", "resource_chunk") > 0
+    )
+    summary["skill_layer_pressure"] = dropped_in("by_memory_layer", "skill_section") > 0
     summary["profile_memory_pressure"] = dropped_in("by_memory_scope", "user_profile") > 0
     summary["session_memory_pressure"] = dropped_in("by_memory_scope", "session") > 0
     summary["cross_session_pressure"] = dropped_in("by_session_continuity", "cross_session") > 0

@@ -134,6 +134,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 ]
             }
         )
+        self.assertEqual(1, budget["by_memory_layer"]["profile_entity"]["refs"])
+        self.assertEqual(9, budget["by_memory_layer"]["profile_entity"]["tokens"])
         self.assertEqual(1, budget["by_extraction_phase"]["final"]["refs"])
         self.assertEqual(9, budget["by_extraction_phase"]["final"]["tokens"])
         self.assertEqual(1, budget["final_ref_count"])
@@ -177,6 +179,20 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         )
         pressure = memory_layer_pressure_summary(selected_budget, dropped_budget)
 
+        self.assertEqual(1, selected_budget["by_memory_layer"]["profile_entity"]["refs"])
+        self.assertEqual(11, selected_budget["by_memory_layer"]["profile_entity"]["tokens"])
+        self.assertEqual(1, dropped_budget["by_memory_layer"]["summary"]["refs"])
+        self.assertEqual(13, dropped_budget["by_memory_layer"]["summary"]["tokens"])
+        self.assertEqual(
+            {"selected_refs": 1, "selected_tokens": 11, "dropped_refs": 0, "dropped_tokens": 0, "selected_and_dropped": False},
+            pressure["by_dimension"]["by_memory_layer"]["profile_entity"],
+        )
+        self.assertEqual(
+            {"selected_refs": 0, "selected_tokens": 0, "dropped_refs": 1, "dropped_tokens": 13, "selected_and_dropped": False},
+            pressure["by_dimension"]["by_memory_layer"]["summary"],
+        )
+        self.assertTrue(pressure["summary_layer_pressure"])
+        self.assertFalse(pressure["profile_entity_pressure"])
         self.assertEqual({"assistant": 3, "user": 1}, selected_budget["source_message_counts_by_role"])
         self.assertEqual({"assistant": 2, "tool": 1}, dropped_budget["source_message_counts_by_role"])
         self.assertEqual({"hook_boundary": 4}, selected_budget["source_hook_counts_by_type"])
@@ -416,8 +432,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         selected_budget = selected_ref_layer_budget(selected)
         dropped_budget = dropped_ref_layer_budget(dropped)
         pressure = memory_layer_pressure_summary(selected_budget, dropped_budget)
+        self.assertEqual(1, selected_budget["by_memory_layer"]["profile_entity"]["refs"])
+        self.assertEqual(1, dropped_budget["by_memory_layer"]["summary"]["refs"])
         self.assertEqual({"tool": 1}, selected_budget["source_message_counts_by_role"])
         self.assertEqual({"assistant": 2, "tool": 1}, dropped_budget["source_message_counts_by_role"])
+        self.assertTrue(pressure["summary_layer_pressure"])
         self.assertTrue(pressure["summary_memory_pressure"])
         self.assertTrue(pressure["assistant_source_message_pressure"])
 
