@@ -26,6 +26,19 @@ def main() -> int:
     parser.add_argument("--reader-base-url", default="http://127.0.0.1:11434/v1")
     parser.add_argument("--reader-model", default="qwen2.5:1.5b")
     parser.add_argument("--embedding-model", default="matrixark-hash-embedding-32")
+    parser.add_argument(
+        "--oss-reader-model",
+        default="",
+        help="Shared OSS reader model forced for MatrixArk and OpenViking/VikingMem. Overrides --reader-model.",
+    )
+    parser.add_argument(
+        "--oss-encoding-model",
+        default="",
+        help=(
+            "Shared OSS encoding/embedding model forced for MatrixArk and OpenViking/VikingMem. "
+            "Overrides --embedding-model."
+        ),
+    )
     parser.add_argument("--reader-timeout-seconds", type=float, default=180.0)
     parser.add_argument("--reader-max-tokens", type=int, default=96)
     parser.add_argument("--locomo-input", default="/root/matrixark_benchmarks/data/locomo10.json")
@@ -66,12 +79,14 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+    apply_shared_oss_stack_aliases(args)
 
     repo = Path(__file__).resolve().parents[1]
     out = Path(args.output_root)
     out.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env["MATRIXARK_READER_MAX_TOKENS"] = str(args.reader_max_tokens)
+    write_shared_oss_stack_contract(out, args)
 
     locomo_matrixark = out / "matrixark_locomo_oss_report.json"
     locomo_matrixark_misses = out / "matrixark_locomo_oss_misses.jsonl"
@@ -431,6 +446,44 @@ def require_files(*paths: Path) -> None:
 
 def smoke_or(args: argparse.Namespace, smoke_value: str, full_value: str) -> str:
     return smoke_value if args.diagnostic_smoke else full_value
+
+
+def apply_shared_oss_stack_aliases(args: argparse.Namespace) -> None:
+    if args.oss_reader_model:
+        args.reader_model = args.oss_reader_model
+    if args.oss_encoding_model:
+        args.embedding_model = args.oss_encoding_model
+
+
+def write_shared_oss_stack_contract(output_root: Path, args: argparse.Namespace) -> None:
+    contract = {
+        "schema": "matrixark_fair_oss_shared_stack_contract_v1",
+        "rule": (
+            "MatrixArk, OpenViking, VikingMem, and other baselines in this suite are forced to use "
+            "one shared OSS reader model and one shared encoding/embedding model. Child runners and "
+            "the validator fail closed if a report drifts from this stack."
+        ),
+        "shared_reader_model": args.reader_model,
+        "shared_encoding_model": args.embedding_model,
+        "shared_embedding_model": args.embedding_model,
+        "reader_base_url": args.reader_base_url,
+        "reader_max_tokens": args.reader_max_tokens,
+        "locomo_max_events": args.locomo_max_events,
+        "longmem_max_events": args.longmem_max_events,
+        "locomo_reader_context_chars": args.locomo_reader_context_chars,
+        "longmem_reader_context_chars": args.longmem_reader_context_chars,
+        "retrieval_budget_split": {
+            "same_session_percent": args.same_session_percent,
+            "cross_session_percent": args.cross_session_percent,
+            "summary_percent": args.summary_percent,
+            "entity_percent": args.entity_percent,
+            "event_percent": args.event_percent,
+        },
+    }
+    (output_root / "fair_oss_shared_stack_contract.json").write_text(
+        json.dumps(contract, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def run(command: list[str], cwd: Path, env: dict[str, str]) -> None:
