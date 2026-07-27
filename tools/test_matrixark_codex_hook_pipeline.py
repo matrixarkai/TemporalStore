@@ -786,6 +786,69 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             raise AssertionError(f"hook failed\nstdout={proc.stdout}\nstderr={proc.stderr}")
         return json.loads(proc.stdout)
 
+    def test_user_prompt_fast_async_still_backfills_previous_assistant_rollout(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            event_log = tmp / "matrixark-fast-backfill.jsonl"
+            rollout = tmp / "rollout.jsonl"
+            rollout.write_text(
+                json.dumps(
+                    {
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": "Assistant decision: keep prior answer memory even when fast async ingest is enabled.",
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            msg = self.run_hook(
+                repo,
+                event_log,
+                event="UserPromptSubmit",
+                payload={
+                    "prompt": "User prompt: verify previous assistant backfill under fast async.",
+                    "transcript_path": str(rollout),
+                    "thread_id": "codex-fast-backfill-thread",
+                },
+            )
+
+            self.assertEqual("ok", msg["status"])
+            records = [
+                json.loads(line)
+                for line in event_log.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            assistant_events = [
+                record
+                for record in records
+                if record.get("record_type") == "context_event"
+                and "Assistant decision: keep prior answer memory" in str(record.get("text") or "")
+            ]
+            self.assertTrue(assistant_events, records)
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "session_buffer_event"
+                    and (record.get("agent_hook") or {}).get("trigger") == "UserPromptSubmit:previous_assistant_backfill"
+                    and ((record.get("envelope") or {}).get("messages") or [{}])[0].get("role") == "assistant"
+                    and ((record.get("envelope") or {}).get("metadata") or {}).get("codex_event") == "PreviousAssistantBackfill"
+                    for record in records
+                ),
+                records,
+            )
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_event"
+                    and "User prompt: verify previous assistant backfill" in str(record.get("text") or "")
+                    for record in records
+                ),
+                records,
+            )
+
     def test_message_ingest_batches_hot_path_writes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             event_log = Path(tmp_dir) / "matrixark-message-batch.jsonl"
