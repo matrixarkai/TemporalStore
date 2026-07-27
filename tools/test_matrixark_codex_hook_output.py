@@ -73,6 +73,35 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("selected=2", bits)
         self.assertIn("flags[assistant,user,tool]", bits)
 
+    def test_budget_pressure_uses_native_layer_metrics_without_dropped_refs(self) -> None:
+        pressure = hook.retrieval_budget_pressure_from_retrieve(
+            {
+                "context_pack_id": "pack-native-pressure",
+                "retrieval_metrics": {
+                    "dropped_memory_layer_budget": {
+                        "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 21}},
+                        "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 21}},
+                    },
+                    "memory_layer_pressure": {
+                        "dropped_refs": 1,
+                        "dropped_tokens": 21,
+                        "profile_memory_pressure": True,
+                        "cross_session_pressure": True,
+                        "assistant_source_message_pressure": True,
+                        "dropped_dimensions": ["by_memory_scope", "source_message_counts_by_role"],
+                    },
+                },
+            }
+        )
+
+        self.assertTrue(pressure["budget_pressure"])
+        self.assertEqual(
+            1,
+            pressure["dropped_memory_layer_budget"]["by_memory_scope"]["user_profile"]["refs"],
+        )
+        self.assertTrue(pressure["memory_layer_pressure"]["profile_memory_pressure"])
+        self.assertTrue(pressure["memory_layer_pressure"]["assistant_source_message_pressure"])
+
     def test_loose_stop_payload_extracts_current_input_message_and_thread_identity(self) -> None:
         raw = (
             '-- {"type:agent-turn-complete,thread-id:019f8cb5-b4d5-77f2-8c82-0499440da36f,'
