@@ -141,6 +141,45 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                 },
                 "created_at_ms": 250,
             },
+            {
+                "record_type": "matrixark_async_pipeline_task",
+                "task_hash": 701,
+                "event_id_hash": 101,
+                "node_hash": 10,
+                "node_path": ["tenant:t", "user:u", "session:codex:session-a"],
+                "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "codex:session-a"},
+                "status": "pending",
+                "stages": ["extraction", "summary", "compression", "embedding"],
+                "reason": "sync_accept_async_processing",
+                "created_at_ms": 100,
+                "updated_at_ms": 100,
+            },
+            {
+                "record_type": "matrixark_async_pipeline_task",
+                "task_hash": 701,
+                "event_id_hash": 101,
+                "commit_id_hash": 801,
+                "batch_id_hash": 802,
+                "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "codex:session-a"},
+                "status": "extraction_committed",
+                "stages": ["extraction", "summary", "compression", "embedding"],
+                "completed_stages": ["extraction"],
+                "remaining_stages": ["summary", "compression", "embedding"],
+                "reason": "session_buffer_commit",
+                "trigger_policy": "threshold",
+                "extraction_phase": "provisional",
+                "final_session_boundary": False,
+                "source_roles": ["user", "assistant"],
+                "summary_refresh_status": "dirty_marked",
+                "summary_dirty_nodes": 2,
+                "memory_layers_written": {
+                    "session_entities": 1,
+                    "profile_entities": 1,
+                    "secondary_indexes": 1,
+                    "summary_dirty_nodes": 2,
+                },
+                "updated_at_ms": 150,
+            },
         ]
 
         report = matrixark_local_recovery_report(
@@ -262,6 +301,22 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertEqual(1, report["retrieval_visibility"]["dropped_ref_count"])
         self.assertEqual(512, report["retrieval_visibility"]["max_remote_context_budget_tokens"])
         self.assertTrue(report["cache_rebuild"]["retrieval_visibility_rebuildable_from_durable_log"])
+        self.assertTrue(report["cache_rebuild"]["async_pipeline_rebuildable_from_durable_log"])
+        self.assertEqual(2, report["async_pipeline"]["task_count"])
+        self.assertEqual(1, report["async_pipeline"]["pending_task_count"])
+        self.assertEqual(1, report["async_pipeline"]["extraction_committed_task_count"])
+        self.assertEqual(1, report["async_pipeline"]["pending_event_count"])
+        self.assertEqual(1, report["async_pipeline"]["extraction_committed_event_count"])
+        self.assertTrue(report["async_pipeline"]["task_progress_rebuildable_from_durable_log"])
+        self.assertTrue(report["async_pipeline"]["extraction_progress_rebuildable_from_durable_log"])
+        self.assertEqual(["extraction"], report["async_pipeline"]["completed_stages"])
+        self.assertEqual(["compression", "embedding", "summary"], report["async_pipeline"]["remaining_stages"])
+        self.assertEqual(1, report["async_pipeline"]["trigger_policy_counts"]["threshold"])
+        self.assertEqual(1, report["async_pipeline"]["source_role_counts"]["assistant"])
+        self.assertEqual(1, report["async_pipeline"]["source_role_counts"]["user"])
+        self.assertTrue(report["async_pipeline"]["summary_stage_pending_after_extraction"])
+        self.assertTrue(report["async_pipeline"]["compression_stage_pending_after_extraction"])
+        self.assertTrue(report["async_pipeline"]["embedding_stage_pending_after_extraction"])
         bootstrap = report["cluster_join_bootstrap"]
         self.assertEqual("rebuild_required", bootstrap["readiness_status"])
         self.assertFalse(bootstrap["ready_for_context_serving"])

@@ -443,6 +443,57 @@ def matrixark_local_recovery_report(
         "dropped_memory_layer_budget",
         "by_codex_event",
     )
+    async_task_records = [
+        record for record in records
+        if record.get("record_type") == "matrixark_async_pipeline_task"
+    ]
+    async_task_status_counts = Counter(
+        str(record.get("status") or "unknown") for record in async_task_records
+    )
+    async_committed_task_records = [
+        record for record in async_task_records
+        if str(record.get("status") or "") == "extraction_committed"
+    ]
+    async_pending_task_records = [
+        record for record in async_task_records
+        if str(record.get("status") or "") == "pending"
+    ]
+    async_committed_event_ids = {
+        int(record.get("event_id_hash"))
+        for record in async_committed_task_records
+        if record.get("event_id_hash") is not None
+    }
+    async_pending_event_ids = {
+        int(record.get("event_id_hash"))
+        for record in async_pending_task_records
+        if record.get("event_id_hash") is not None
+    }
+    async_completed_stages = sorted(
+        {
+            str(stage)
+            for record in async_task_records
+            for stage in (record.get("completed_stages") if isinstance(record.get("completed_stages"), list) else [])
+            if str(stage or "")
+        }
+    )
+    async_remaining_stages = sorted(
+        {
+            str(stage)
+            for record in async_task_records
+            for stage in (record.get("remaining_stages") if isinstance(record.get("remaining_stages"), list) else [])
+            if str(stage or "")
+        }
+    )
+    async_trigger_policy_counts = Counter(
+        str(record.get("trigger_policy") or "unknown")
+        for record in async_committed_task_records
+    )
+    async_source_role_counts = Counter(
+        str(role)
+        for record in async_task_records
+        for role in (record.get("source_roles") if isinstance(record.get("source_roles"), list) else [])
+        if str(role or "")
+    )
     profile_dirty_summaries = [
         record for record in dirty_summaries
         if str(record.get("dirty_reason") or "") == "profile_entity_promoted"
@@ -569,6 +620,7 @@ def matrixark_local_recovery_report(
             "read_cache_rebuildable_from_durable_log": bool(records) and not blockers,
             "retrieval_cache_rebuildable_from_hot_records": any(count > 0 for count in compacted_hot_counts.values()) and not blockers,
             "retrieval_visibility_rebuildable_from_durable_log": bool(telemetry_records or audit_records) and not blockers,
+            "async_pipeline_rebuildable_from_durable_log": bool(async_task_records) and not blockers,
             "latest_value_compaction_rebuilt_records": len(compacted),
             "hot_record_types": sorted(RETRIEVAL_HOT_RECORD_TYPES),
         },
@@ -649,6 +701,23 @@ def matrixark_local_recovery_report(
             "max_remote_context_budget_tokens": max(
                 [int(record.get("remote_context_budget_tokens") or 0) for record in telemetry_records] or [0]
             ),
+        },
+        "async_pipeline": {
+            "task_count": len(async_task_records),
+            "status_counts": dict(sorted(async_task_status_counts.items())),
+            "pending_task_count": len(async_pending_task_records),
+            "extraction_committed_task_count": len(async_committed_task_records),
+            "pending_event_count": len(async_pending_event_ids),
+            "extraction_committed_event_count": len(async_committed_event_ids),
+            "task_progress_rebuildable_from_durable_log": bool(async_task_records) and not blockers,
+            "extraction_progress_rebuildable_from_durable_log": bool(async_committed_task_records) and not blockers,
+            "completed_stages": async_completed_stages,
+            "remaining_stages": async_remaining_stages,
+            "trigger_policy_counts": dict(sorted(async_trigger_policy_counts.items())),
+            "source_role_counts": dict(sorted(async_source_role_counts.items())),
+            "summary_stage_pending_after_extraction": "summary" in async_remaining_stages,
+            "compression_stage_pending_after_extraction": "compression" in async_remaining_stages,
+            "embedding_stage_pending_after_extraction": "embedding" in async_remaining_stages,
         },
         "retrieval_smoke": retrieval_smoke,
         "non_raft_recovery": {
