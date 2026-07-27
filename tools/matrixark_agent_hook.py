@@ -549,6 +549,27 @@ def hook_storage_options() -> Json:
     return {"route": os.environ.get("MATRIXARK_HOOK_STORAGE_ROUTE", "shared_store_async")}
 
 
+def agent_retrieval_summary(retrieve: Json | None, *, session_id_source: str) -> Json:
+    retrieve = retrieve if isinstance(retrieve, dict) else {}
+    layer_summary = retrieval_layer_summary_from_retrieve(retrieve)
+    return {
+        "context_pack_id": retrieve.get("context_pack_id"),
+        "selected_ref_count": selected_ref_count_from_retrieve(retrieve),
+        "used_context_tokens": used_context_tokens_from_retrieve(retrieve),
+        "budget": retrieval_budget_summary_from_retrieve(retrieve),
+        "budget_pressure": retrieval_budget_pressure_from_retrieve(retrieve),
+        "layer_summary": layer_summary,
+        "memory_layer_budget": layer_summary.get("memory_layer_budget", {}),
+        "memory_layer_pressure": layer_summary.get("memory_layer_pressure", {}),
+        "session_identity": retrieval_session_identity_from_retrieve(
+            retrieve,
+            session_id_source=session_id_source,
+        ),
+        "quality_warnings": retrieval_quality_warnings_from_retrieve(retrieve),
+        "memory_hierarchy_contract": retrieval_memory_hierarchy_contract_from_retrieve(retrieve),
+    }
+
+
 def main() -> int:
     args = parse_args()
     validate_hook_backend_policy(args.backend)
@@ -744,18 +765,7 @@ def main() -> int:
                 "feedbacked": bool(feedback),
                 "resource_uri": raw_uri,
                 "resource_type": resource_type,
-                "retrieved": {
-                    "context_pack_id": retrieve.get("context_pack_id"),
-                    "selected_ref_count": selected_ref_count_from_retrieve(retrieve),
-                    "used_context_tokens": used_context_tokens_from_retrieve(retrieve),
-                    "budget": retrieval_budget_summary_from_retrieve(retrieve),
-                    "budget_pressure": retrieval_budget_pressure_from_retrieve(retrieve),
-                    "layer_summary": retrieval_layer_summary_from_retrieve(retrieve),
-                    "memory_layer_budget": retrieval_layer_summary_from_retrieve(retrieve).get("memory_layer_budget", {}),
-                    "session_identity": retrieval_session_identity_from_retrieve(retrieve, session_id_source=session_id_source),
-                    "quality_warnings": retrieval_quality_warnings_from_retrieve(retrieve),
-                    "memory_hierarchy_contract": retrieval_memory_hierarchy_contract_from_retrieve(retrieve),
-                },
+                "retrieved": agent_retrieval_summary(retrieve, session_id_source=session_id_source),
                 "committed": session_commit_summary(commit),
             },
             sort_keys=True,
