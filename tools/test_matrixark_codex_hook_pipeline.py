@@ -231,6 +231,51 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertFalse(pressure["post_tool_use_source_pressure"])
         self.assertGreaterEqual(pressure["dropped_bucket_count"], 1)
 
+    def test_memory_layer_budget_normalizes_llm_role_aliases(self) -> None:
+        selected_budget = selected_ref_layer_budget(
+            [
+                {
+                    "ref_type": "entity",
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "source_roles": ["llm", "model", "assistant"],
+                    "source_role_counts": {"llm": 1, "model": 2, "assistant": 3},
+                    "entity_type": "assistant_decision",
+                    "token_estimate": 17,
+                }
+            ]
+        )
+        dropped_budget = dropped_ref_layer_budget(
+            {
+                "refs": [
+                    {
+                        "drop_reason": "over_budget",
+                        "ref_type": "summary",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "source_roles": ["model"],
+                        "source_role_counts": {"model": 4},
+                        "summary_type": "node_l0",
+                        "token_estimate": 19,
+                    }
+                ]
+            }
+        )
+        pressure = memory_layer_pressure_summary(selected_budget, dropped_budget)
+
+        self.assertEqual({"assistant": {"refs": 1, "tokens": 17}}, selected_budget["by_source_role"])
+        self.assertEqual({"assistant": 6}, selected_budget["source_message_counts_by_role"])
+        self.assertEqual({"assistant": {"refs": 1, "tokens": 19}}, dropped_budget["by_source_role"])
+        self.assertEqual({"assistant": 4}, dropped_budget["source_message_counts_by_role"])
+        self.assertNotIn("llm", selected_budget["by_source_role"])
+        self.assertNotIn("model", selected_budget["source_message_counts_by_role"])
+        self.assertTrue(pressure["assistant_memory_pressure"])
+        self.assertTrue(pressure["assistant_source_message_pressure"])
+        self.assertEqual(
+            {"selected_count": 6, "dropped_count": 4, "selected_and_dropped": True},
+            pressure["by_dimension"]["source_message_counts_by_role"]["assistant"],
+        )
+
     def test_time_compression_preserves_source_lineage_for_budgeting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-compression-lineage.jsonl")

@@ -16,6 +16,7 @@ try:
         embedding_fallback_used,
         embedding_model_name,
         local_context_refs_for_pack,
+        normalize_message_role,
         optional_object,
         selected_context_class_counts,
     )
@@ -30,6 +31,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         embedding_fallback_used,
         embedding_model_name,
         local_context_refs_for_pack,
+        normalize_message_role,
         optional_object,
         selected_context_class_counts,
     )
@@ -147,12 +149,11 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
             bucket["refs"] += 1
             bucket["tokens"] += token_estimate
         source_roles = ref.get("budget_source_roles") if isinstance(ref.get("budget_source_roles"), list) else ref.get("source_roles") if isinstance(ref.get("source_roles"), list) else []
-        for role in source_roles:
-            role_name = str(role or "").strip()
-            if role_name:
-                bucket = breakdown["by_source_role"].setdefault(role_name, {"refs": 0, "tokens": 0})
-                bucket["refs"] += 1
-                bucket["tokens"] += token_estimate
+        normalized_source_roles = sorted({normalize_message_role(role) for role in source_roles if normalize_message_role(role)})
+        for role_name in normalized_source_roles:
+            bucket = breakdown["by_source_role"].setdefault(role_name, {"refs": 0, "tokens": 0})
+            bucket["refs"] += 1
+            bucket["tokens"] += token_estimate
         source_hook_types = ref.get("source_hook_types") if isinstance(ref.get("source_hook_types"), list) else []
         for hook_type in source_hook_types:
             hook_name = str(hook_type or "").strip()
@@ -176,7 +177,7 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
                 source_field = "source_role_counts"
             source_counts = ref.get(source_field) if isinstance(ref.get(source_field), dict) else {}
             for name, count in source_counts.items():
-                bucket_name = str(name or "").strip()
+                bucket_name = normalize_message_role(name) if aggregate_field == "source_message_counts_by_role" else str(name or "").strip()
                 if not bucket_name:
                     continue
                 try:
@@ -262,12 +263,11 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
             bucket["refs"] += 1
             bucket["tokens"] += token_estimate
         source_roles = ref.get("budget_source_roles") if isinstance(ref.get("budget_source_roles"), list) else ref.get("source_roles") if isinstance(ref.get("source_roles"), list) else []
-        for role in source_roles:
-            role_name = str(role or "").strip()
-            if role_name:
-                bucket = breakdown["by_source_role"].setdefault(role_name, {"refs": 0, "tokens": 0})
-                bucket["refs"] += 1
-                bucket["tokens"] += token_estimate
+        normalized_source_roles = sorted({normalize_message_role(role) for role in source_roles if normalize_message_role(role)})
+        for role_name in normalized_source_roles:
+            bucket = breakdown["by_source_role"].setdefault(role_name, {"refs": 0, "tokens": 0})
+            bucket["refs"] += 1
+            bucket["tokens"] += token_estimate
         source_hook_types = ref.get("source_hook_types") if isinstance(ref.get("source_hook_types"), list) else []
         for hook_type in source_hook_types:
             hook_name = str(hook_type or "").strip()
@@ -291,7 +291,7 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
                 source_field = "source_role_counts"
             source_counts = ref.get(source_field) if isinstance(ref.get(source_field), dict) else {}
             for name, count in source_counts.items():
-                bucket_name = str(name or "").strip()
+                bucket_name = normalize_message_role(name) if aggregate_field == "source_message_counts_by_role" else str(name or "").strip()
                 if not bucket_name:
                     continue
                 try:
