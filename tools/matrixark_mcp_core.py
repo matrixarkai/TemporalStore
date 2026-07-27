@@ -405,20 +405,45 @@ def require_string(data: Json, field: str) -> str:
     return value
 
 
+def normalize_message_role(role: Any) -> str:
+    role_name = str(role or "").strip().lower()
+    role_aliases = {
+        "human": "user",
+        "prompt": "user",
+        "assistant_response": "assistant",
+        "agent": "assistant",
+        "ai": "assistant",
+        "bot": "assistant",
+        "llm": "assistant",
+        "model": "assistant",
+        "tool_result": "tool",
+        "tool_output": "tool",
+        "function": "tool",
+    }
+    return role_aliases.get(role_name, role_name)
+
+
 def require_messages(data: Json) -> list[Json]:
     messages = data.get("messages")
     if not isinstance(messages, list) or not messages:
         raise MatrixArkError("messages must be a non-empty list")
+    normalized_messages: list[Json] = []
     for message in messages:
         if not isinstance(message, dict):
             raise MatrixArkError("messages entries must be objects")
-        role = message.get("role")
+        original_role = str(message.get("role") or "").strip()
+        role = normalize_message_role(original_role)
         content = message.get("content")
         if role not in {"user", "assistant", "tool", "system"}:
-            raise MatrixArkError("message role must be user, assistant, tool, or system")
+            raise MatrixArkError("message role must be user, assistant, tool, system, or a supported role alias")
         if not isinstance(content, str) or not content:
             raise MatrixArkError("message content must be a non-empty string")
-    return messages
+        normalized = dict(message)
+        normalized["role"] = role
+        if original_role and original_role.lower() != role and "original_role" not in normalized:
+            normalized["original_role"] = original_role
+        normalized_messages.append(normalized)
+    return normalized_messages
 
 
 def optional_object(data: Json, field: str) -> Json:
@@ -5478,7 +5503,7 @@ def select_token_budgeted_refs(
     source_role_budget_tokens = source_role_budget_tokens if isinstance(source_role_budget_tokens, dict) else {}
     normalized_source_role_budget_tokens: Json = {}
     for role, budget in source_role_budget_tokens.items():
-        role_name = str(role or "").strip().lower()
+        role_name = normalize_message_role(role)
         if not role_name:
             continue
         try:
@@ -5491,9 +5516,9 @@ def select_token_budgeted_refs(
     source_role_selected_ref_counts: Json = {role: 0 for role in normalized_source_role_budget_tokens}
     def candidate_source_role_names(candidate: Json) -> set[str]:
         role_names = {
-            str(role or "").strip().lower()
+            normalize_message_role(role)
             for role in candidate.get("source_roles", [])
-            if str(role or "").strip()
+            if normalize_message_role(role)
         } if isinstance(candidate.get("source_roles"), list) else set()
         entity_type = str(candidate.get("entity_type") or "").strip().lower()
         role_specific_entity_types = {
@@ -5508,7 +5533,7 @@ def select_token_budgeted_refs(
             return {semantic_role}
         source_counts = candidate.get("source_role_counts") if isinstance(candidate.get("source_role_counts"), dict) else {}
         for role, count in source_counts.items():
-            role_name = str(role or "").strip().lower()
+            role_name = normalize_message_role(role)
             if not role_name:
                 continue
             try:
@@ -5523,10 +5548,19 @@ def select_token_budgeted_refs(
 
     def candidate_budget_source_role_counts(candidate: Json, role_names: set[str]) -> Json:
         source_counts = candidate.get("source_role_counts") if isinstance(candidate.get("source_role_counts"), dict) else {}
+        normalized_source_counts: Json = {}
+        for role, count in source_counts.items():
+            role_name = normalize_message_role(role)
+            if not role_name:
+                continue
+            try:
+                normalized_source_counts[role_name] = int(normalized_source_counts.get(role_name, 0)) + max(0, int(count or 0))
+            except (TypeError, ValueError):
+                continue
         result: Json = {}
         for role in sorted(role_names):
             try:
-                source_count = max(0, int(source_counts.get(role, 0) or 0))
+                source_count = max(0, int(normalized_source_counts.get(role, 0) or 0))
             except (TypeError, ValueError):
                 source_count = 0
             result[role] = source_count if source_count > 0 else 1

@@ -3146,6 +3146,93 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(any("Stop" in item.get("source_codex_events", []) for item in summary_items))
             self.assertTrue(any(item.get("final_session_boundary") is True for item in summary_items))
 
+    def test_batch_extract_normalizes_llm_response_aliases_to_assistant_profile_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-llm-aliases.jsonl")
+            scope = {
+                "account_id": "acct_profile_alias",
+                "tenant_id": "tenant_profile_alias",
+                "user_id": "user_profile_alias",
+                "session_id": "session_llm_alias_1",
+            }
+            result = adapter.batch_extract(
+                {
+                    "scope": scope,
+                    "messages": [
+                        {"role": "user", "content": "Remember the LLM response alias memory behavior."},
+                        {
+                            "role": "llm",
+                            "content": "Decision: commit abc123 after LLM alias extraction passes.",
+                        },
+                        {
+                            "role": "model",
+                            "content": "Done. Use assistant budget controls for model alias response def456.",
+                        },
+                    ],
+                    "metadata": {"source_roles": ["llm", "model"], "hook_type": "hook_boundary"},
+                    "force": True,
+                }
+            )
+
+            self.assertEqual("accepted", result["status"])
+            self.assertEqual({"assistant": 2, "user": 1}, result["source_role_counts"])
+            records = adapter.read_all()
+            events_by_original_role = {
+                record.get("original_source_role"): record
+                for record in records
+                if record.get("record_type") == "context_event"
+                and record.get("source_role") == "assistant"
+                and record.get("original_source_role") in {"llm", "model"}
+            }
+            self.assertEqual({"llm", "model"}, set(events_by_original_role))
+            self.assertTrue(all(record["source_role_counts"] == {"assistant": 1} for record in events_by_original_role.values()))
+
+            profile_decisions = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
+                and record.get("entity_type") == "assistant_decision"
+            ]
+            self.assertTrue(profile_decisions)
+            profile_decision = profile_decisions[0]
+            self.assertEqual(["assistant", "user"], profile_decision["source_roles"])
+            self.assertEqual({"assistant": 2, "user": 1}, profile_decision["source_role_counts"])
+            self.assertIn("abc123", profile_decision["state"])
+            self.assertIn("def456", profile_decision["state"])
+
+            index_names = {
+                record.get("index_name")
+                for record in records
+                if record.get("record_type") == "context_index"
+                and record.get("data_model") == "context_profile_entity"
+            }
+            self.assertIn("source_role:assistant", index_names)
+            self.assertNotIn("source_role:llm", index_names)
+            self.assertNotIn("source_role:model", index_names)
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "session_llm_alias_2"},
+                    "session_scope": "prefer",
+                    "query": "abc123 def456 assistant decision",
+                    "max_context_tokens": 500,
+                    "audit_mode": "off",
+                    "source_role_budget_tokens": {"llm": 500},
+                    "ranking": {"max_selected_refs": 5, "min_similarity_score": 0.0},
+                }
+            )
+            selected_decision = next(
+                ref
+                for ref in pack["selected_refs"]
+                if ref.get("ref_type") == "entity"
+                and ref.get("entity_type") == "assistant_decision"
+                and ref.get("memory_scope") == "user_profile"
+            )
+            self.assertEqual(["assistant"], selected_decision["budget_source_roles"])
+            self.assertEqual({"assistant": 2}, selected_decision["budget_source_role_counts"])
+
     def test_profile_entity_updates_preserve_cross_session_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             event_log = Path(tmp_dir) / "matrixark-profile-entity-update.jsonl"

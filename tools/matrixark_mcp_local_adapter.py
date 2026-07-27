@@ -110,13 +110,14 @@ def session_events_by_message_limit(records: list[Json], limit: int | None) -> l
 def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
     metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
     roles = {
-        str(message.get("role") or "").strip()
+        normalize_message_role(message.get("role"))
         for message in envelope.get("messages", [])
-        if isinstance(message, dict) and str(message.get("role") or "").strip()
+        if isinstance(message, dict) and normalize_message_role(message.get("role"))
     }
     for value in metadata.get("source_roles", []) if isinstance(metadata.get("source_roles"), list) else []:
-        if str(value or "").strip():
-            roles.add(str(value).strip())
+        role = normalize_message_role(value)
+        if role:
+            roles.add(role)
     hook_types = set()
     for value in metadata.get("source_hook_types", []) if isinstance(metadata.get("source_hook_types"), list) else []:
         if str(value or "").strip():
@@ -1295,12 +1296,12 @@ class MatrixArkLocalAdapter:
             if not record_messages:
                 continue
             for message in record_messages:
-                role = str(message.get("role") or "").strip()
+                role = normalize_message_role(message.get("role"))
                 if role:
                     pending_source_roles.add(role)
             for values in [event_metadata.get("source_roles")]:
                 if isinstance(values, list):
-                    pending_source_roles.update(str(value).strip() for value in values if str(value or "").strip())
+                    pending_source_roles.update(normalize_message_role(value) for value in values if normalize_message_role(value))
             messages.extend(record_messages)
             source_event_ids.append(record["event_id_hash"])
         if not messages:
@@ -2128,21 +2129,21 @@ class MatrixArkLocalAdapter:
             )
             source_roles = sorted(
                 {
-                    str(role).strip()
+                    normalize_message_role(role)
                     for record in events + entity_states + child_summaries
                     for role in (
                         record.get("source_roles")
                         if isinstance(record.get("source_roles"), list)
                         else [record.get("source_role")]
                     )
-                    if str(role or "").strip()
+                    if normalize_message_role(role)
                 }
             )
             source_role_counts: Json = {}
             for record in events + entity_states + child_summaries:
                 counts = record.get("source_role_counts") if isinstance(record.get("source_role_counts"), dict) else {}
                 for role, count in counts.items():
-                    role_name = str(role or "").strip()
+                    role_name = normalize_message_role(role)
                     if not role_name:
                         continue
                     try:
@@ -2156,7 +2157,7 @@ class MatrixArkLocalAdapter:
                         else [record.get("source_role")]
                     )
                     for role in fallback_roles:
-                        role_name = str(role or "").strip()
+                        role_name = normalize_message_role(role)
                         if role_name:
                             source_role_counts[role_name] = int(source_role_counts.get(role_name, 0)) + 1
             source_hook_types = sorted(
@@ -4560,16 +4561,16 @@ class MatrixArkLocalAdapter:
         source_lineage_count = len(source_event_ids) if source_event_ids else len(envelope.get("messages", []))
         source_roles = sorted(
             {
-                str(message.get("role") or "").strip().lower()
+                normalize_message_role(message.get("role"))
                 for message in envelope.get("messages", [])
-                if isinstance(message, dict) and str(message.get("role") or "").strip()
+                if isinstance(message, dict) and normalize_message_role(message.get("role"))
             }
         )
         source_role_counts: Json = {}
         for message in envelope.get("messages", []):
             if not isinstance(message, dict):
                 continue
-            role = str(message.get("role") or "").strip().lower()
+            role = normalize_message_role(message.get("role"))
             if role:
                 source_role_counts[role] = int(source_role_counts.get(role, 0)) + 1
         envelope_metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
@@ -4622,7 +4623,8 @@ class MatrixArkLocalAdapter:
             event_vectors = embeddings_for_texts([event_text for _index, _message, event_text, _event_id_hash in event_rows])
             for (_index, message, event_text, event_id_hash), event_vector in zip(event_rows, event_vectors):
                 event_time_ms = int(envelope["ingestion_time_ms"])
-                event_role = str(message.get("role") or "").strip().lower()
+                event_role = normalize_message_role(message.get("role"))
+                original_event_role = str(message.get("original_role") or message.get("role") or "").strip().lower()
                 records_to_append.append(
                     {
                         "record_type": "context_event",
@@ -4655,6 +4657,7 @@ class MatrixArkLocalAdapter:
                         "agent_hook": hook,
                         **source_lineage,
                         "source_role": event_role,
+                        "original_source_role": original_event_role,
                         "source_roles": [event_role] if event_role else [],
                         "source_role_counts": {event_role: 1} if event_role else {},
                         "source_hook_types": source_hook_types,
