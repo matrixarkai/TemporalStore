@@ -45,6 +45,15 @@ RETRIEVAL_POLICY_KEYS = (
     "retrieval_event_percent",
 )
 
+NON_OSS_MODEL_MARKERS = (
+    "hash",
+    "local-token",
+    "matrixark-local",
+    "debug",
+    "deterministic",
+    "fallback",
+)
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -238,6 +247,10 @@ def normalize_report(path: Path, label: str, errors: list[str]) -> dict[str, Any
     for key in CONTRACT_KEYS:
         if row.get(key) in ("", None, 0):
             errors.append(f"{label}: {key}_missing")
+    for key in ("reader_model", "embedding_model", "encoding_model"):
+        model_name = str(row.get(key) or "")
+        if any(marker in model_name for marker in NON_OSS_MODEL_MARKERS):
+            errors.append(f"{label}: {key}_not_oss actual={model_name!r}")
     if row.get("embedding_model") and row.get("encoding_model") and row["embedding_model"] != row["encoding_model"]:
         errors.append(
             f"{label}: embedding_encoding_model_mismatch "

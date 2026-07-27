@@ -48,6 +48,35 @@ class OssModelContractValidationTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("embedding_encoding_model_mismatch", result.stderr)
 
+    def test_shared_hash_encoder_is_not_oss(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            matrixark = write_report(
+                tmp_path / "matrixark.json",
+                embedding_model="matrixark-hash-embedding-32",
+            )
+            baseline = write_report(
+                tmp_path / "openviking.json",
+                embedding_model="matrixark-hash-embedding-32",
+            )
+
+            result = run_validator(matrixark, baseline)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("embedding_model_not_oss", result.stderr)
+            self.assertIn("encoding_model_not_oss", result.stderr)
+
+    def test_deterministic_reader_is_not_oss(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            matrixark = write_report(tmp_path / "matrixark.json", reader_model="deterministic-reader")
+            baseline = write_report(tmp_path / "openviking.json", reader_model="deterministic-reader")
+
+            result = run_validator(matrixark, baseline)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("reader_model_not_oss", result.stderr)
+
     def test_reader_output_token_budget_drift_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
