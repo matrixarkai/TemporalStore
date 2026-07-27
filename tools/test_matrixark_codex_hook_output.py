@@ -501,6 +501,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(["PostToolUse"], commit_summary["source_codex_events"])
         self.assertEqual(701, commit_summary["profile_promotion_summary"][0]["profile_entity_hash"])
         self.assertEqual(["codex-session-1"], commit_summary["profile_promotion_summary"][0]["source_session_ids"])
+        lineage = record["output_summary"]["memory_lineage"]
+        self.assertFalse(lineage["user_prompt_captured"])
+        self.assertFalse(lineage["assistant_response_captured"])
+        self.assertTrue(lineage["tool_evidence_captured"])
+        self.assertEqual({"tool": 1}, lineage["source_role_counts"])
+        self.assertEqual({"hook_boundary": 1}, lineage["source_hook_type_counts"])
+        self.assertEqual({"PostToolUse": 1}, lineage["source_codex_event_counts"])
+        self.assertEqual(1, lineage["profile_promotion_count"])
+        self.assertEqual(["codex-session-1"], lineage["promoted_source_session_ids"])
         self.assertEqual(2, commit_summary["memory_layers_written"]["context_events"])
         self.assertEqual(1, commit_summary["memory_layers_written"]["segments"])
         self.assertEqual(3, commit_summary["memory_layers_written"]["session_entities"])
@@ -848,6 +857,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual({"before_llm": 1, "after_llm": 1}, decision["source_hook_type_counts"])
         self.assertEqual({"Stop": 1, "UserPromptSubmit": 1}, decision["source_codex_event_counts"])
         self.assertEqual(801, decision["profile_promotion_summary"][0]["profile_entity_hash"])
+        lineage = item["result"]["memory_lineage"]
+        self.assertTrue(lineage["user_prompt_captured"])
+        self.assertTrue(lineage["assistant_response_captured"])
+        self.assertFalse(lineage["tool_evidence_captured"])
+        self.assertEqual({"assistant": 1, "user": 1}, lineage["source_role_counts"])
+        self.assertEqual({"before_llm": 1, "after_llm": 1}, lineage["source_hook_type_counts"])
+        self.assertEqual({"Stop": 1, "UserPromptSubmit": 1}, lineage["source_codex_event_counts"])
+        self.assertEqual(1, lineage["profile_promotion_count"])
+        self.assertEqual(["codex-session-threshold"], lineage["promoted_source_session_ids"])
 
     def test_ingest_tool_call_trace_records_auto_batch_deferred_decision(self) -> None:
         class Server:
