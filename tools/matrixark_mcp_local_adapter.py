@@ -2527,6 +2527,21 @@ class MatrixArkLocalAdapter:
                 source_codex_events = record.get("source_codex_events", [])
                 if not isinstance(source_codex_events, list):
                     source_codex_events = []
+                def layer_count(name: str) -> int:
+                    try:
+                        return int(memory_layers_written.get(name, 0) or 0)
+                    except (TypeError, ValueError):
+                        return 0
+                source_memory_scopes = []
+                if layer_count("session_entities") > 0:
+                    source_memory_scopes.append("session")
+                if layer_count("profile_entities") > 0:
+                    source_memory_scopes.append("user_profile")
+                source_session_continuities = []
+                if layer_count("same_session_entities") > 0:
+                    source_session_continuities.append("same_session")
+                if layer_count("cross_session_entities") > 0:
+                    source_session_continuities.append("cross_session")
                 rows.append(
                     {
                         "row_type": record_type,
@@ -2551,6 +2566,12 @@ class MatrixArkLocalAdapter:
                         "source_hook_types": source_hook_types,
                         "source_codex_events": source_codex_events,
                         "memory_layers_written": memory_layers_written,
+                        "source_memory_scopes": source_memory_scopes,
+                        "source_session_continuities": source_session_continuities,
+                        "session_entities_written": layer_count("session_entities"),
+                        "profile_entities_written": layer_count("profile_entities"),
+                        "same_session_entities_written": layer_count("same_session_entities"),
+                        "cross_session_entities_written": layer_count("cross_session_entities"),
                         "summary_refresh_status": record.get("summary_refresh_status", ""),
                         "summary_dirty_nodes": record.get("summary_dirty_nodes", 0),
                         "created_at_ms": record.get("created_at_ms", 0),

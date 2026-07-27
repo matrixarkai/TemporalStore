@@ -878,6 +878,18 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(not row.get("compression_pending") for row in completed_pipeline_rows_by_event.values()))
             self.assertTrue(all(not row.get("embedding_pending") for row in completed_pipeline_rows_by_event.values()))
             self.assertTrue(all(not row.get("remaining_stages", []) for row in completed_pipeline_rows_by_event.values()))
+            completed_pipeline_values = list(completed_pipeline_rows_by_event.values())
+            self.assertTrue(any("tool" in row.get("source_roles", []) for row in completed_pipeline_values))
+            self.assertTrue(any("hook_boundary" in row.get("source_hook_types", []) for row in completed_pipeline_values))
+            self.assertTrue(any("PostToolUse" in row.get("source_codex_events", []) for row in completed_pipeline_values))
+            self.assertTrue(all("session" in row.get("source_memory_scopes", []) for row in completed_pipeline_values))
+            self.assertTrue(all("user_profile" in row.get("source_memory_scopes", []) for row in completed_pipeline_values))
+            self.assertTrue(all("same_session" in row.get("source_session_continuities", []) for row in completed_pipeline_values))
+            self.assertTrue(all("cross_session" in row.get("source_session_continuities", []) for row in completed_pipeline_values))
+            self.assertTrue(all(row.get("session_entities_written", 0) >= 1 for row in completed_pipeline_values))
+            self.assertTrue(all(row.get("profile_entities_written", 0) >= 1 for row in completed_pipeline_values))
+            self.assertTrue(all(row.get("same_session_entities_written", 0) >= 1 for row in completed_pipeline_values))
+            self.assertTrue(all(row.get("cross_session_entities_written", 0) >= 1 for row in completed_pipeline_values))
 
             summary_pack = adapter.retrieve(
                 {
