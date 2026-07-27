@@ -1182,6 +1182,45 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("retrieval_deadline_exceeded:deadline_after_record_load", adapter.audit_records[0]["quality_warnings"])
         self.assertIn("async_pipeline_followup_pending", adapter.audit_records[0]["quality_warnings"])
 
+    def test_compact_serving_pack_exposes_async_summary_readiness(self) -> None:
+        core_mod = importlib.import_module("tools.matrixark_mcp_core")
+        compact = core_mod.compact_context_pack_for_serving_flat(
+            {
+                "context_pack_id": "pack-summary-stale",
+                "selected_refs": [
+                    {
+                        "ref_type": "entity",
+                        "text": "assistant decision: keep profile summaries visible",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                    }
+                ],
+                "recall_policy": {
+                    "async_pipeline_readiness": {
+                        "task_count": 2,
+                        "ready_for_retrieval": False,
+                        "remaining_stages": ["summary", "compression"],
+                        "remaining_stage_counts": {"summary": 1, "compression": 1},
+                        "pending_memory_scopes": {"user_profile": 1},
+                        "pending_session_continuities": {"cross_session": 1},
+                        "freshness_warnings": ["profile_summary_stale"],
+                    },
+                    "memory_layer_budget": {
+                        "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 7}},
+                        "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 7}},
+                    },
+                },
+            },
+            include_debug=False,
+        )
+
+        readiness = compact["async_pipeline_readiness"]
+        self.assertFalse(readiness["ready_for_retrieval"])
+        self.assertEqual(["summary", "compression"], readiness["remaining_stages"])
+        self.assertEqual(["profile_summary_stale"], readiness["freshness_warnings"])
+        self.assertEqual({"user_profile": {"refs": 1, "tokens": 7}}, compact["memory_layer_budget"]["by_memory_scope"])
+        self.assertNotIn("recall_policy", compact)
+
 
 class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
     def _server(self):
