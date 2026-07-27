@@ -1392,6 +1392,84 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 records,
             )
 
+            adapter = MatrixArkLocalAdapter(event_log)
+            scope = {
+                "account_id": "acct_hook",
+                "tenant_id": "tenant_hook",
+                "user_id": "codex_user",
+                "session_id": "codex_session_1",
+            }
+            commit = adapter.session_commit(
+                {
+                    "scope": scope,
+                    "threshold_messages": 1,
+                    "force": True,
+                    "commit_reason": "test_previous_assistant_profile",
+                    "skip_prior_context": True,
+                }
+            )
+            self.assertEqual("committed", commit["status"])
+            self.assertEqual("final", commit["extraction_phase"])
+            self.assertTrue(commit["final_session_boundary"])
+            self.assertGreaterEqual(commit["memory_layers_written"]["session_entities"], 1)
+            self.assertGreaterEqual(commit["memory_layers_written"]["profile_entities"], 1)
+            self.assertGreaterEqual(commit["memory_layers_written"]["secondary_indexes"], 1)
+            self.assertIn("assistant", commit["source_roles"])
+            self.assertIn("PreviousAssistantBackfill", commit["source_codex_events"])
+
+            records = adapter.read_all()
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_entity"
+                    and record.get("entity_type") == "assistant_decision"
+                    and record.get("memory_scope") == "user_profile"
+                    and record.get("session_continuity") == "cross_session"
+                    and "prior answer memory" in str(record.get("state") or "")
+                    and "PreviousAssistantBackfill" in record.get("source_codex_events", [])
+                    for record in records
+                ),
+                records,
+            )
+            index_names = {
+                str(record.get("index_name") or "")
+                for record in records
+                if record.get("record_type") == "context_index"
+                and record.get("data_model") == "context_profile_entity"
+            }
+            self.assertIn("entity_type:assistant_decision", index_names)
+            self.assertIn("source_role:assistant", index_names)
+            self.assertIn("codex_event:PreviousAssistantBackfill", index_names)
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "codex_session_2"},
+                    "session_scope": "prefer",
+                    "query": "What assistant decision should be remembered from prior answer memory?",
+                    "max_context_tokens": 120,
+                    "source_role_budget_tokens": {"tool": 1},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "ranking": {"max_selected_refs": 3},
+                }
+            )
+            selected_decision = next(
+                ref
+                for ref in pack["selected_refs"]
+                if ref.get("ref_type") == "entity"
+                and ref.get("entity_type") == "assistant_decision"
+                and ref.get("memory_scope") == "user_profile"
+                and ref.get("session_continuity") == "cross_session"
+            )
+            self.assertIn("prior answer memory", selected_decision["text"])
+            self.assertIn("PreviousAssistantBackfill", selected_decision["source_codex_events"])
+            self.assertEqual(["assistant"], selected_decision["budget_source_roles"])
+            self.assertEqual({"assistant": 1}, selected_decision["budget_source_role_counts"])
+            role_policy = pack["recall_policy"]["source_role_budget"]
+            self.assertEqual({"tool": 1}, role_policy["budget_tokens"])
+            self.assertEqual(0, role_policy["selected_tokens_by_role"]["tool"])
+            memory_budget = pack["recall_policy"]["memory_layer_budget"]
+            self.assertEqual({"assistant": 1}, memory_budget["source_message_counts_by_role"])
+
     def test_message_ingest_batches_hot_path_writes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             event_log = Path(tmp_dir) / "matrixark-message-batch.jsonl"
