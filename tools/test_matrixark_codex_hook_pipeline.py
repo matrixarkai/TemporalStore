@@ -865,6 +865,63 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertTrue(metrics["remote_is_additive_only_within_remaining_budget"])
 
+    def test_retrieve_source_role_budget_uses_entity_semantics_for_mixed_profile_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-mixed-role-budget.jsonl")
+            scope = {
+                "account_id": "acct_mixed_role_budget",
+                "tenant_id": "tenant_mixed_role_budget",
+                "user_id": "user_mixed_role_budget",
+                "session_id": "session_mixed_role_budget",
+            }
+            adapter.batch_extract(
+                {
+                    "scope": scope,
+                    "force": True,
+                    "messages": [
+                        {"role": "assistant", "content": "Assistant decision alpha: prefer threshold extraction for Codex memory."},
+                        {"role": "assistant", "content": "Assistant decision bravo: maintain source role budget during retrieval."},
+                        {"role": "user", "content": "User requirement charlie: keep user evidence available in retrieval."},
+                        {"role": "tool", "content": "Exit code: 0\nRan 76 tests in 1.03s\nOK"},
+                    ],
+                    "metadata": {
+                        "source_roles": ["assistant", "assistant", "user", "tool"],
+                        "source_hook_types": ["before_llm", "after_llm", "tool_result"],
+                        "source_codex_events": ["UserPromptSubmit", "PreviousAssistantBackfill", "PostToolUse"],
+                    },
+                }
+            )
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "session_mixed_role_budget_followup"},
+                    "session_scope": "prefer",
+                    "query": "What test evidence was kept for retrieval budget?",
+                    "max_context_tokens": 80,
+                    "source_role_budget_tokens": {"assistant": 1},
+                    "ranking": {"max_selected_refs": 5, "min_similarity_score": 0.0},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertLessEqual(pack["used_context_tokens"], 80)
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "entity"
+                    and ref.get("entity_type") == "tool_evidence"
+                    and ref.get("memory_scope") == "user_profile"
+                    and ref.get("session_continuity") == "cross_session"
+                    and "Ran 76 tests" in str(ref.get("text") or ref.get("summary_text") or "")
+                    for ref in pack["selected_refs"]
+                ),
+                pack["selected_refs"],
+            )
+            role_policy = pack["recall_policy"]["source_role_budget"]
+            self.assertTrue(role_policy["enabled"])
+            self.assertEqual({"assistant": 1}, role_policy["budget_tokens"])
+            self.assertEqual(0, role_policy["selected_tokens_by_role"]["assistant"])
+
     def run_hook(self, repo: Path, event_log: Path, *, event: str, payload: dict, query: str = "") -> dict:
         cmd = [
             sys.executable,
