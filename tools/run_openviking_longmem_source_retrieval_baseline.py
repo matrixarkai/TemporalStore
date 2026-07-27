@@ -158,6 +158,7 @@ def main() -> int:
         raw_context = "\n\n".join(
             f"[{session['session_id']}] {session['date']}\n{session['text']}" for session in selected
         )
+        candidate = extract_candidate_hint(question, raw_context) if args.reader_candidate_only else ""
         context = reader_policy_context(question, raw_context, args)
         reader_started = time.perf_counter()
         answer = call_reader(
@@ -168,6 +169,8 @@ def main() -> int:
             timeout=args.reader_timeout_seconds,
             max_tokens=args.reader_max_tokens,
         )
+        if candidate:
+            answer = candidate
         reader_ms = (time.perf_counter() - reader_started) * 1000.0
         reader_latencies.append(reader_ms)
         if answer.startswith("reader_error:"):

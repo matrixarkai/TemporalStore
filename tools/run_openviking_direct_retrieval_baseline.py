@@ -150,6 +150,7 @@ def main() -> int:
         raw_context = "\n".join(
             f"[{item['source_ref']}] {item['created_at']} {item['text']}" for item in selected
         )[: max(1, args.reader_max_context_chars)]
+        candidate = extract_candidate_hint(question, raw_context) if args.reader_candidate_only else ""
         context = reader_policy_context(question, raw_context, args)
         retrieved_tokens = token_count(context)
         total_retrieved_tokens += retrieved_tokens
@@ -162,6 +163,8 @@ def main() -> int:
             timeout=args.reader_timeout_seconds,
             max_tokens=args.reader_max_tokens,
         )
+        if candidate:
+            answer = candidate
         reader_ms = (time.perf_counter() - reader_started) * 1000.0
         reader_latencies.append(reader_ms)
         if answer.startswith("reader_error:"):
