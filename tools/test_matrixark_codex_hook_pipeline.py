@@ -804,8 +804,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             ]
             self.assertTrue(summary_progress)
             self.assertTrue(all("summary" in record.get("completed_stages", []) for record in summary_progress))
-            self.assertTrue(all("summary" not in record.get("remaining_stages", []) for record in summary_progress))
+            self.assertTrue(all("embedding" in record.get("completed_stages", []) for record in summary_progress))
+            self.assertTrue(all("compression" in record.get("completed_stages", []) for record in summary_progress))
+            self.assertTrue(all(not record.get("remaining_stages", []) for record in summary_progress))
             self.assertTrue(all(record.get("summary_completed") for record in summary_progress))
+            self.assertTrue(all(record.get("embedding_completed") for record in summary_progress))
+            self.assertTrue(all(record.get("compression_completed") for record in summary_progress))
             self.assertTrue(any(record.get("generated_summary_types") for record in summary_progress))
 
             summary_pack = adapter.retrieve(

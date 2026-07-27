@@ -437,6 +437,7 @@ def async_summary_progress_records(
     node_path: list[str],
     generated_summary_types: list[str],
     refreshed_at_ms: int,
+    completed_followup_stages: list[str] | None = None,
 ) -> list[Json]:
     def compatible_scope(candidate: Json, requested: Json) -> bool:
         if scope_matches(candidate, requested):
@@ -474,6 +475,11 @@ def async_summary_progress_records(
                     continue
     if not source_event_set:
         return []
+    followup_stages = [
+        str(stage)
+        for stage in (completed_followup_stages or ["summary"])
+        if str(stage or "")
+    ]
     progress_records: list[Json] = []
     for record in records:
         if record.get("record_type") != "matrixark_async_pipeline_task":
@@ -493,12 +499,14 @@ def async_summary_progress_records(
             for stage in (record.get("completed_stages") if isinstance(record.get("completed_stages"), list) else [])
             if str(stage or "")
         ]
-        if "summary" not in completed:
-            completed.append("summary")
+        for stage in followup_stages:
+            if stage not in completed:
+                completed.append(stage)
+        completed_stage_set = set(completed)
         remaining = [
             str(stage)
             for stage in (record.get("remaining_stages") if isinstance(record.get("remaining_stages"), list) else [])
-            if str(stage or "") and str(stage) != "summary"
+            if str(stage or "") and str(stage) not in completed_stage_set
         ]
         progress_records.append(
             {
@@ -509,6 +517,8 @@ def async_summary_progress_records(
                 "completed_stages": completed,
                 "remaining_stages": remaining,
                 "summary_completed": True,
+                "embedding_completed": "embedding" in completed_stage_set,
+                "compression_completed": "compression" in completed_stage_set,
                 "summary_dirty_hash": dirty_hash,
                 "summary_node_hash": node_hash,
                 "summary_node_path": node_path,
@@ -660,6 +670,7 @@ def refresh_dirty_node_summaries(
             node_path=node_path,
             generated_summary_types=generated_summary_types,
             refreshed_at_ms=refreshed_at_ms,
+            completed_followup_stages=["summary", "embedding", "compression"],
         )
         if summary_progress_records:
             adapter.append_many(summary_progress_records)

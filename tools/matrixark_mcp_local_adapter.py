@@ -2100,6 +2100,7 @@ class MatrixArkLocalAdapter:
                 node_path=node_path,
                 generated_summary_types=generated_summary_types,
                 refreshed_at_ms=refreshed_at_ms,
+                completed_followup_stages=["summary", "embedding", "compression"],
             )
             if summary_progress_records:
                 self.append_many(summary_progress_records)
