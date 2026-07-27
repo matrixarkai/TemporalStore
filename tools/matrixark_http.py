@@ -202,16 +202,22 @@ def _agent_hook_call(server: Any, body: Json) -> Json:
             ingest_args["idle_commit_timeout_ms"] = int(idle_timeout)
         result["ingested"] = server.call_tool("matrixark_ingest", ingest_args)
     if bool(normalized.get("should_retrieve")):
+        retrieve_metadata = {
+            "retrieval_source": "remote_agent_hook",
+            "codex_event": event,
+            "hook_type": normalized.get("hook_type", ""),
+            "lifecycle_stage": normalized.get("lifecycle_stage", ""),
+            "codex_session_id_source": normalized.get("session_id_source", ""),
+            "session_id_source": normalized.get("session_id_source", ""),
+        }
         retrieve_args: Json = {
             **args_common,
             "query": str(body.get("query") or text or event)[:500],
             "max_context_tokens": int(body.get("max_context_tokens") or normalized.get("max_context_tokens") or 10000),
-            "retrieval_request_metadata": {
-                "source": "remote_agent_hook",
-                "codex_event": event,
-                "hook_type": normalized.get("hook_type", ""),
-                "lifecycle_stage": normalized.get("lifecycle_stage", ""),
-            },
+            "audit_mode": str(body.get("audit_mode") or normalized.get("audit_mode") or "telemetry_only"),
+            "audit_sample_rate": float(body.get("audit_sample_rate") or normalized.get("audit_sample_rate") or 0.0),
+            "metadata": retrieve_metadata,
+            "retrieval_request_metadata": retrieve_metadata,
         }
         local_context = normalized.get("local_context") or raw_payload.get("local_context")
         if isinstance(local_context, list) and local_context:

@@ -637,6 +637,22 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
             self.assertTrue(stop_result["committed"]["final_session_boundary"])
 
             records = server.adapter.read_all()
+            prompt_pack_rows = [
+                record
+                for record in records
+                if record.get("record_type") in {"context_pack_audit", "context_pack_telemetry"}
+                and record.get("context_pack_id") == prompt_result["retrieved"]["context_pack_id"]
+            ]
+            self.assertTrue(prompt_pack_rows, records)
+            prompt_pack_row = prompt_pack_rows[-1]
+            self.assertEqual(
+                "payload.conversation_id",
+                prompt_pack_row["retrieval_request_metadata"]["session_id_source"],
+            )
+            self.assertEqual(
+                "remote_agent_hook",
+                prompt_pack_row["retrieval_request_metadata"]["retrieval_source"],
+            )
             commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
             self.assertTrue(commits)
             self.assertTrue(any(record.get("final_session_boundary") is True for record in commits))
