@@ -36,7 +36,13 @@ def main() -> int:
     parser.add_argument("--baseline-embedding-model", default="")
     parser.add_argument("--baseline-max-events", type=int, default=0)
     parser.add_argument("--baseline-reader-max-context-chars", type=int, default=0)
-    parser.add_argument("--require-shared-oss-models", action="store_true")
+    parser.add_argument(
+        "--require-shared-oss-models",
+        dest="require_shared_oss_models",
+        action="store_true",
+        default=True,
+        help="Require MatrixArk and OpenViking/VikingMem to use the same OSS reader, encoder, cap, and context budget.",
+    )
     parser.add_argument(
         "--allow-shared-oss-model-drift",
         action="store_true",
@@ -107,6 +113,18 @@ def main() -> int:
         help="Require every converted LongMemEval_s case and all sources to run through Rust TemporalStore.",
     )
     args = parser.parse_args()
+    if not args.baseline_reader_model:
+        args.baseline_reader_model = args.reader_model
+    if not args.baseline_embedding_model:
+        args.baseline_embedding_model = args.embedding_model
+    if not args.baseline_max_events:
+        args.baseline_max_events = args.max_events
+    if not args.baseline_reader_max_context_chars:
+        args.baseline_reader_max_context_chars = args.reader_max_context_chars
+    if not args.baseline_judge_model:
+        args.baseline_judge_model = args.judge_model
+    if not args.baseline_judge_prompt:
+        args.baseline_judge_prompt = args.judge_prompt
     if not args.allow_shared_oss_model_drift and (
         args.baseline_provider_name
         or args.baseline_reader_model
