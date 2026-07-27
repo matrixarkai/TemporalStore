@@ -55,8 +55,19 @@ def main() -> int:
     parser.add_argument("--event-percent", type=float, default=0.80)
     parser.add_argument(
         "--require-shared-oss-models",
+        dest="require_shared_oss_models",
         action="store_true",
-        help="Fail if the baseline does not match MatrixArk reader, embedding, retrieval, and context-budget settings.",
+        default=True,
+        help=(
+            "Fail if the baseline does not match MatrixArk reader, embedding/encoding, "
+            "retrieval, context-budget, and output-token settings. Enabled by default."
+        ),
+    )
+    parser.add_argument(
+        "--allow-shared-oss-model-drift",
+        dest="require_shared_oss_models",
+        action="store_false",
+        help="Diagnostic-only escape hatch for intentionally unfair local model or budget experiments.",
     )
     parser.add_argument("--report", default="/tmp/openviking_direct_source_longmem_tiny_20260726.json")
     parser.add_argument("--matrixark-report", default="/tmp/matrixark_qwen_longmem_tiny_pythononly_20260726.json")
@@ -72,6 +83,7 @@ def main() -> int:
         "reader_provider_name": args.provider_name,
         "reader_model": args.reader_model,
         "embedding_model": args.embedding_model,
+        "encoding_model": args.embedding_model,
         "reader_include_extractive_hint": bool(args.reader_include_extractive_hint),
         "reader_candidate_only": bool(args.reader_candidate_only),
         "reader_candidate_first": bool(args.reader_candidate_first),
@@ -88,6 +100,7 @@ def main() -> int:
         "max_events": args.top_k,
         "max_context_chars": args.max_context_chars,
         "reader_max_context_chars": args.max_context_chars,
+        "reader_max_tokens": args.reader_max_tokens,
         "blockers": [],
         "warnings": [
             "OpenViking LongMemEval import completed only after setting a user API key, but official eval retrieved zero memories locally.",
