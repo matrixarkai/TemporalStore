@@ -2687,6 +2687,24 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(any("cross_session" in record.get("source_session_continuities", []) for record in profile_summaries))
             self.assertTrue(any("final" in record.get("source_extraction_phases", []) for record in profile_summaries))
             self.assertTrue(any(record.get("source_final_session_boundary_count", 0) >= 1 for record in profile_summaries))
+            summary_index_names = {
+                str(record.get("index_name") or "")
+                for record in records
+                if record.get("record_type") == "context_index"
+                and record.get("data_model") == "context_summary"
+                and record.get("ref_type") == "summary"
+                and record.get("node_hash") in {summary.get("node_hash") for summary in profile_summaries}
+            }
+            self.assertIn("summary_type:node_l0", summary_index_names)
+            self.assertIn("source_role:assistant", summary_index_names)
+            self.assertIn("source_role:tool", summary_index_names)
+            self.assertIn("hook_type:hook_boundary", summary_index_names)
+            self.assertIn("codex_event:stop", summary_index_names)
+            self.assertIn("memory_scope:user_profile", summary_index_names)
+            self.assertIn("session_continuity:cross_session", summary_index_names)
+            self.assertIn("extraction_phase:final", summary_index_names)
+            self.assertIn("entity_type:assistant_decision", summary_index_names)
+            self.assertIn("entity_type:tool_evidence", summary_index_names)
             profile_entity_hashes_by_type = {
                 record.get("entity_type"): record.get("entity_hash")
                 for record in profile_entities
