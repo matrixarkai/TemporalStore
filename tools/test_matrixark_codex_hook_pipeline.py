@@ -2833,6 +2833,38 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             for key in ["session_id", "session_hash", "scope_key"]:
                 self.assertNotIn(key, retrieved_decision_profile_ref)
             self.assertEqual(["session_codex_1"], retrieved_decision_profile_ref["source_session_ids"])
+            session_only_pack = adapter.retrieve(
+                {
+                    "scope": {
+                        "account_id": "acct_profile",
+                        "tenant_id": "tenant_profile",
+                        "user_id": "user_profile",
+                        "session_id": "later_session",
+                    },
+                    "session_scope": "only",
+                    "query": "What tool evidence proves the hook extraction fix was pushed?",
+                    "max_context_tokens": 120,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 4},
+                }
+            )
+            session_only_refs = session_only_pack.get("selected_refs", [])
+            self.assertFalse(
+                any(ref.get("session_continuity") == "cross_session" for ref in session_only_refs),
+                session_only_refs,
+            )
+            self.assertFalse(
+                any(ref.get("memory_scope") == "user_profile" for ref in session_only_refs),
+                session_only_refs,
+            )
+            session_only_metrics = session_only_pack.get("retrieval_metrics", {})
+            session_only_budget = session_only_metrics.get("memory_layer_budget", {})
+            self.assertEqual(0, session_only_budget.get("by_session_continuity", {}).get("cross_session", {}).get("refs", 0))
+            self.assertEqual(0, session_only_budget.get("by_memory_scope", {}).get("user_profile", {}).get("refs", 0))
+            session_only_cross_policy = session_only_pack.get("recall_policy", {}).get("cross_session", {})
+            if session_only_cross_policy:
+                self.assertEqual(0, session_only_cross_policy["budget_tokens"])
+                self.assertFalse(session_only_cross_policy["enabled"])
             self.assertTrue(
                 any(
                     record.get("record_type") == "context_summary_dirty"
