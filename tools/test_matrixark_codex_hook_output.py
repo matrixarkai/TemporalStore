@@ -2285,7 +2285,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', rust_script)
         self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', dual_script)
 
-    def test_python_hook_auto_batch_defaults_on_with_explicit_opt_out(self) -> None:
+    def test_python_hook_live_fast_path_defaults_on_with_explicit_opt_out(self) -> None:
         original_env = os.environ.pop("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", None)
         try:
             self.assertTrue(hook._env_bool("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", True))
@@ -2301,8 +2301,22 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             else:
                 os.environ["MATRIXARK_HOOK_AUTO_BATCH_EXTRACT"] = original_env
 
+        original_fast_env = os.environ.pop("MATRIXARK_HOOK_FAST_ASYNC_INGEST", None)
+        try:
+            self.assertTrue(hook._env_bool("MATRIXARK_HOOK_FAST_ASYNC_INGEST", True))
+            os.environ["MATRIXARK_HOOK_FAST_ASYNC_INGEST"] = "off"
+            self.assertFalse(hook._env_bool("MATRIXARK_HOOK_FAST_ASYNC_INGEST", True))
+            os.environ["MATRIXARK_HOOK_FAST_ASYNC_INGEST"] = "yes"
+            self.assertTrue(hook._env_bool("MATRIXARK_HOOK_FAST_ASYNC_INGEST", True))
+        finally:
+            if original_fast_env is None:
+                os.environ.pop("MATRIXARK_HOOK_FAST_ASYNC_INGEST", None)
+            else:
+                os.environ["MATRIXARK_HOOK_FAST_ASYNC_INGEST"] = original_fast_env
+
         source = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_hook.py").read_text()
         self.assertIn('HOOK_AUTO_BATCH_EXTRACT = _env_bool("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", True)', source)
+        self.assertIn('HOOK_FAST_ASYNC_INGEST = _env_bool("MATRIXARK_HOOK_FAST_ASYNC_INGEST", True)', source)
 
     def test_live_ingest_auto_batch_decision_covers_tool_but_not_boundaries(self) -> None:
         original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT
