@@ -2590,6 +2590,219 @@ fn dropped_ref_layer_budget_from_native_counts(
     })
 }
 
+fn budget_total(budget: &Value, names: &[&str]) -> u64 {
+    for name in names {
+        if let Some(value) = budget.get(*name).and_then(Value::as_u64) {
+            return value;
+        }
+    }
+    0
+}
+
+fn budget_bucket_total(bucket: Option<&Value>, name: &str) -> u64 {
+    bucket.and_then(|value| value.get(name))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
+fn memory_layer_pressure_summary(selected_budget: &Value, dropped_budget: &Value) -> Value {
+    let mut by_dimension = serde_json::Map::new();
+    let mut pressure_dimensions: Vec<String> = Vec::new();
+    let mut dropped_dimensions: Vec<String> = Vec::new();
+    for dimension in [
+        "by_memory_layer",
+        "by_drop_reason",
+        "by_memory_scope",
+        "by_session_continuity",
+        "by_extraction_phase",
+        "by_ref_type",
+        "by_entity_type",
+        "by_source_role",
+        "by_hook_type",
+        "by_codex_event",
+        "by_profile_shadowed_reason",
+    ] {
+        let selected_buckets = selected_budget.get(dimension).and_then(Value::as_object);
+        let dropped_buckets = dropped_budget.get(dimension).and_then(Value::as_object);
+        let mut bucket_names = BTreeSet::new();
+        if let Some(buckets) = selected_buckets {
+            bucket_names.extend(buckets.keys().cloned());
+        }
+        if let Some(buckets) = dropped_buckets {
+            bucket_names.extend(buckets.keys().cloned());
+        }
+        let mut dimension_summary = serde_json::Map::new();
+        for bucket_name in bucket_names {
+            let selected_bucket = selected_buckets.and_then(|buckets| buckets.get(&bucket_name));
+            let dropped_bucket = dropped_buckets.and_then(|buckets| buckets.get(&bucket_name));
+            let selected_refs = budget_bucket_total(selected_bucket, "refs");
+            let dropped_refs = budget_bucket_total(dropped_bucket, "refs");
+            if selected_refs == 0 && dropped_refs == 0 {
+                continue;
+            }
+            let selected_tokens = budget_bucket_total(selected_bucket, "tokens");
+            let dropped_tokens = budget_bucket_total(dropped_bucket, "tokens");
+            dimension_summary.insert(
+                bucket_name,
+                json!({
+                    "selected_refs": selected_refs,
+                    "selected_tokens": selected_tokens,
+                    "dropped_refs": dropped_refs,
+                    "dropped_tokens": dropped_tokens,
+                    "selected_and_dropped": selected_refs > 0 && dropped_refs > 0,
+                }),
+            );
+        }
+        if !dimension_summary.is_empty() {
+            if dimension_summary
+                .values()
+                .any(|bucket| bucket.get("dropped_refs").and_then(Value::as_u64).unwrap_or(0) > 0)
+            {
+                dropped_dimensions.push(dimension.to_string());
+            }
+            if dimension_summary
+                .values()
+                .any(|bucket| bucket.get("selected_and_dropped").and_then(Value::as_bool).unwrap_or(false))
+            {
+                pressure_dimensions.push(dimension.to_string());
+            }
+            by_dimension.insert(dimension.to_string(), Value::Object(dimension_summary));
+        }
+    }
+    for dimension in [
+        "source_message_counts_by_role",
+        "source_hook_counts_by_type",
+        "source_codex_event_counts_by_event",
+    ] {
+        let selected_counts = selected_budget.get(dimension).and_then(Value::as_object);
+        let dropped_counts = dropped_budget.get(dimension).and_then(Value::as_object);
+        let mut bucket_names = BTreeSet::new();
+        if let Some(counts) = selected_counts {
+            bucket_names.extend(counts.keys().cloned());
+        }
+        if let Some(counts) = dropped_counts {
+            bucket_names.extend(counts.keys().cloned());
+        }
+        let mut count_summary = serde_json::Map::new();
+        for bucket_name in bucket_names {
+            let selected_count = selected_counts
+                .and_then(|counts| counts.get(&bucket_name))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let dropped_count = dropped_counts
+                .and_then(|counts| counts.get(&bucket_name))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if selected_count == 0 && dropped_count == 0 {
+                continue;
+            }
+            count_summary.insert(
+                bucket_name,
+                json!({
+                    "selected_count": selected_count,
+                    "dropped_count": dropped_count,
+                    "selected_and_dropped": selected_count > 0 && dropped_count > 0,
+                }),
+            );
+        }
+        if !count_summary.is_empty() {
+            if count_summary
+                .values()
+                .any(|bucket| bucket.get("dropped_count").and_then(Value::as_u64).unwrap_or(0) > 0)
+            {
+                dropped_dimensions.push(dimension.to_string());
+            }
+            if count_summary
+                .values()
+                .any(|bucket| bucket.get("selected_and_dropped").and_then(Value::as_bool).unwrap_or(false))
+            {
+                pressure_dimensions.push(dimension.to_string());
+            }
+            by_dimension.insert(dimension.to_string(), Value::Object(count_summary));
+        }
+    }
+    let dropped_in = |dimension: &str, bucket: &str| -> u64 {
+        by_dimension
+            .get(dimension)
+            .and_then(Value::as_object)
+            .and_then(|buckets| buckets.get(bucket))
+            .and_then(|entry| entry.get("dropped_refs"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    let dropped_count_in = |dimension: &str, bucket: &str| -> u64 {
+        by_dimension
+            .get(dimension)
+            .and_then(Value::as_object)
+            .and_then(|buckets| buckets.get(bucket))
+            .and_then(|entry| entry.get("dropped_count"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    let pressure_bucket_count = by_dimension
+        .values()
+        .filter_map(Value::as_object)
+        .flat_map(|buckets| buckets.values())
+        .filter(|bucket| {
+            bucket
+                .get("selected_and_dropped")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .count() as u64;
+    let dropped_bucket_count = by_dimension
+        .values()
+        .filter_map(Value::as_object)
+        .flat_map(|buckets| buckets.values())
+        .filter(|bucket| {
+            bucket.get("dropped_refs").and_then(Value::as_u64).unwrap_or(0) > 0
+                || bucket.get("dropped_count").and_then(Value::as_u64).unwrap_or(0) > 0
+        })
+        .count() as u64;
+    json!({
+        "selected_refs": budget_total(selected_budget, &["total_selected_refs"]),
+        "selected_tokens": budget_total(selected_budget, &["total_selected_tokens"]),
+        "dropped_refs": budget_total(dropped_budget, &["total_dropped_refs", "total_dropped_refs_with_detail"]),
+        "dropped_tokens": budget_total(dropped_budget, &["total_dropped_tokens", "total_dropped_tokens_with_detail"]),
+        "pressure_dimensions": pressure_dimensions,
+        "dropped_dimensions": dropped_dimensions,
+        "by_dimension": by_dimension,
+        "profile_entity_pressure": dropped_in("by_memory_layer", "profile_entity") > 0,
+        "same_session_event_pressure": dropped_in("by_memory_layer", "same_session_event") > 0,
+        "cross_session_event_pressure": dropped_in("by_memory_layer", "cross_session_event") > 0,
+        "summary_layer_pressure": dropped_in("by_memory_layer", "summary") > 0,
+        "compression_layer_pressure": dropped_in("by_memory_layer", "compression") > 0,
+        "resource_layer_pressure": dropped_in("by_memory_layer", "resource_fact") > 0
+            || dropped_in("by_memory_layer", "resource_entity_fact") > 0
+            || dropped_in("by_memory_layer", "resource_chunk") > 0,
+        "skill_layer_pressure": dropped_in("by_memory_layer", "skill_section") > 0,
+        "profile_memory_pressure": dropped_in("by_memory_scope", "user_profile") > 0,
+        "session_memory_pressure": dropped_in("by_memory_scope", "session") > 0,
+        "cross_session_pressure": dropped_in("by_session_continuity", "cross_session") > 0,
+        "same_session_pressure": dropped_in("by_session_continuity", "same_session") > 0,
+        "summary_memory_pressure": dropped_in("by_ref_type", "summary") > 0,
+        "entity_memory_pressure": dropped_in("by_ref_type", "entity") > 0,
+        "event_memory_pressure": dropped_in("by_ref_type", "event") > 0,
+        "final_memory_pressure": dropped_in("by_extraction_phase", "final") > 0,
+        "provisional_memory_pressure": dropped_in("by_extraction_phase", "provisional") > 0,
+        "stale_current_state_pressure": budget_total(dropped_budget, &["stale_ref_count"]) > 0,
+        "profile_shadowed_current_state_pressure": budget_total(dropped_budget, &["profile_shadowed_ref_count"]) > 0,
+        "assistant_memory_pressure": dropped_in("by_source_role", "assistant") > 0,
+        "user_memory_pressure": dropped_in("by_source_role", "user") > 0,
+        "tool_memory_pressure": dropped_in("by_source_role", "tool") > 0,
+        "assistant_source_message_pressure": dropped_count_in("source_message_counts_by_role", "assistant") > 0,
+        "user_source_message_pressure": dropped_count_in("source_message_counts_by_role", "user") > 0,
+        "tool_source_message_pressure": dropped_count_in("source_message_counts_by_role", "tool") > 0,
+        "hook_boundary_source_pressure": dropped_count_in("source_hook_counts_by_type", "hook_boundary") > 0,
+        "after_llm_source_pressure": dropped_count_in("source_hook_counts_by_type", "after_llm") > 0,
+        "tool_result_source_pressure": dropped_count_in("source_hook_counts_by_type", "tool_result") > 0,
+        "stop_event_source_pressure": dropped_count_in("source_codex_event_counts_by_event", "Stop") > 0,
+        "post_tool_use_source_pressure": dropped_count_in("source_codex_event_counts_by_event", "PostToolUse") > 0,
+        "pressure_bucket_count": pressure_bucket_count,
+        "dropped_bucket_count": dropped_bucket_count,
+    })
+}
+
 fn retrieve_context_pack_native(
     engine: &TemporalEngine,
     command: &RecordLogRequest,
@@ -3125,6 +3338,8 @@ fn retrieve_context_pack_native(
         &dropped_ref_type_token_counts,
         &dropped_ref_details,
     );
+    let memory_layer_pressure =
+        memory_layer_pressure_summary(&memory_layer_budget, &dropped_memory_layer_budget);
     let pack = json!({
         "context_pack_id": context_pack_id,
         "query": query,
@@ -3197,6 +3412,7 @@ fn retrieve_context_pack_native(
             },
             "memory_layer_budget": memory_layer_budget,
             "dropped_memory_layer_budget": dropped_memory_layer_budget,
+            "memory_layer_pressure": memory_layer_pressure,
             "source_role_budget": source_role_budget_policy,
             "cross_session": {
                 "enabled": cross_policy.enabled,
@@ -3315,6 +3531,7 @@ fn retrieve_context_pack_native(
             "raw_candidate_tables_returned": false,
             "memory_layer_budget": memory_layer_budget,
             "dropped_memory_layer_budget": dropped_memory_layer_budget,
+            "memory_layer_pressure": memory_layer_pressure,
             "broad_scan_used": false,
             "broad_scan_blocked": false,
             "fallback_flags": [],
@@ -4379,6 +4596,8 @@ fn retrieve_context_pack_output(
         &dropped_ref_type_token_counts,
         &dropped_ref_details,
     );
+    let memory_layer_pressure =
+        memory_layer_pressure_summary(&memory_layer_budget, &dropped_memory_layer_budget);
     let elapsed_ms = started.elapsed().as_millis() as u64;
     let correctness = selected_count > 0;
     let pack = json!({
@@ -4393,6 +4612,7 @@ fn retrieve_context_pack_output(
         "recall_policy": {
             "memory_layer_budget": memory_layer_budget,
             "dropped_memory_layer_budget": dropped_memory_layer_budget,
+            "memory_layer_pressure": memory_layer_pressure,
         },
         "retrieval_metrics": {
             "query_plan_ms": 0.0,
@@ -4416,6 +4636,7 @@ fn retrieve_context_pack_output(
             "raw_candidate_tables_returned": false,
             "memory_layer_budget": memory_layer_budget,
             "dropped_memory_layer_budget": dropped_memory_layer_budget,
+            "memory_layer_pressure": memory_layer_pressure,
             "broad_scan_used": false,
             "broad_scan_blocked": false,
             "fallback_flags": [],
@@ -5515,6 +5736,35 @@ mod tests {
             pack.pointer("/recall_policy/dropped_memory_layer_budget/by_extraction_phase/provisional/refs")
                 .and_then(Value::as_u64),
             Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_pressure/profile_memory_pressure")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_pressure/cross_session_pressure")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_pressure/assistant_source_message_pressure")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_pressure/hook_boundary_source_pressure")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_pressure/stop_event_source_pressure")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            pack.pointer("/retrieval_metrics/memory_layer_pressure"),
+            pack.pointer("/recall_policy/memory_layer_pressure")
         );
         assert_eq!(
             pack.pointer("/recall_policy/memory_layer_budget/source_message_counts_by_role/user")
