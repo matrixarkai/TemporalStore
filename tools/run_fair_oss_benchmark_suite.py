@@ -98,6 +98,9 @@ def main() -> int:
     env = os.environ.copy()
     env["MATRIXARK_READER_MAX_TOKENS"] = str(args.reader_max_tokens)
     env["MATRIXARK_BENCHMARK_BASELINE_READER_MAX_TOKENS"] = str(args.reader_max_tokens)
+    env.setdefault("HF_HUB_DISABLE_XET", "1")
+    env["NO_PROXY"] = append_no_proxy(env.get("NO_PROXY", ""), "127.0.0.1", "localhost", "::1")
+    env["no_proxy"] = append_no_proxy(env.get("no_proxy", ""), "127.0.0.1", "localhost", "::1")
     write_shared_oss_stack_contract(out, args)
 
     locomo_matrixark = out / "matrixark_locomo_oss_report.json"
@@ -468,6 +471,16 @@ def apply_shared_oss_stack_aliases(args: argparse.Namespace) -> None:
         args.reader_model = args.oss_reader_model
     if args.oss_encoding_model:
         args.embedding_model = args.oss_encoding_model
+
+
+def append_no_proxy(current: str, *entries: str) -> str:
+    values = [value.strip() for value in str(current or "").split(",") if value.strip()]
+    seen = {value.lower() for value in values}
+    for entry in entries:
+        if entry.lower() not in seen:
+            values.append(entry)
+            seen.add(entry.lower())
+    return ",".join(values)
 
 
 def validate_shared_oss_stack(args: argparse.Namespace) -> None:

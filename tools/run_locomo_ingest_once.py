@@ -2389,6 +2389,8 @@ def warm_source_ranking_caches(sources: list[dict[str, str]]) -> None:
         source_group_identity(source)
         source_layer_identity(source)
         source_date(source)
+    if _RETRIEVAL_ENCODER is not None:
+        warm_retrieval_embeddings(source.get("body", "")[:4096] for source in sources)
 
 
 def configure_retrieval_embedding_model(model_name: str, *, require_runtime: bool = False) -> None:
@@ -2430,6 +2432,29 @@ def shared_dense_relevance_score(question: str, text: str) -> int:
         return 0
     dot = sum(a * b for a, b in zip(q_vec, t_vec))
     return int(round(dot * 80.0))
+
+
+def warm_retrieval_embeddings(texts: Any) -> None:
+    if _RETRIEVAL_ENCODER is None:
+        return
+    pending: list[str] = []
+    seen: set[str] = set()
+    for raw_text in texts:
+        text = str(raw_text or "")
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        key = (ACTIVE_RETRIEVAL_EMBEDDING_MODEL, text)
+        if key not in _RETRIEVAL_EMBEDDING_CACHE:
+            pending.append(text)
+    batch_size = int(os.environ.get("MATRIXARK_BENCHMARK_ENCODER_BATCH_SIZE", "64") or "64")
+    for start in range(0, len(pending), max(1, batch_size)):
+        batch = pending[start : start + max(1, batch_size)]
+        vectors = _RETRIEVAL_ENCODER.encode(batch, normalize_embeddings=True)
+        for text, vector in zip(batch, vectors):
+            _RETRIEVAL_EMBEDDING_CACHE[(ACTIVE_RETRIEVAL_EMBEDDING_MODEL, text)] = [
+                float(value) for value in vector.tolist()
+            ]
 
 
 def retrieval_embedding(model_name: str, text: str) -> list[float]:
