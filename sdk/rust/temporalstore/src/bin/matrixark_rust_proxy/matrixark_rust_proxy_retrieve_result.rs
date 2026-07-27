@@ -25,6 +25,7 @@ pub(crate) struct RetrieveSelection {
     pub(crate) dropped_cross_budget: u64,
     pub(crate) dropped_cross_session_cap: u64,
     pub(crate) dropped_cross_candidate_cap: u64,
+    pub(crate) dropped_entity_bridge_slot_reserved: u64,
     pub(crate) dropped_low_score: u64,
     pub(crate) dropped_policy_ref: u64,
     pub(crate) dropped_duplicate_ref: u64,

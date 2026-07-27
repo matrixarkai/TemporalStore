@@ -1434,6 +1434,40 @@ fn parse_cross_session_policy(
     }
 }
 
+fn eligible_entity_bridge_tuple_remains(
+    scored: &[(f64, &Value, String, f64, f64)],
+    start_index: usize,
+    cross_policy: &CrossSessionPolicy,
+) -> bool {
+    if !cross_policy.enabled {
+        return false;
+    }
+    scored.iter().skip(start_index).any(|(score, record, continuity, _, _)| {
+        *continuity == "cross_session"
+            && context_class_name(record) == "entity"
+            && *score >= cross_policy.min_score
+    })
+}
+
+fn should_reserve_entity_bridge_slot(
+    cross_policy: &CrossSessionPolicy,
+    is_entity_bridge: bool,
+    selected_count: u64,
+    max_refs: u64,
+    entity_bridge_selected_refs: u64,
+    eligible_bridge_remains: bool,
+) -> bool {
+    let remaining_slots = max_refs.saturating_sub(selected_count);
+    let remaining_required_bridge_refs = cross_policy
+        .min_entity_bridge_refs
+        .saturating_sub(entity_bridge_selected_refs);
+    cross_policy.enabled
+        && !is_entity_bridge
+        && remaining_required_bridge_refs > 0
+        && remaining_slots <= remaining_required_bridge_refs
+        && eligible_bridge_remains
+}
+
 fn record_ref_hash(record: &Value) -> Option<String> {
     for field in ["ref_hash", "chunk_hash", "section_hash", "skill_hash"] {
         if let Some(value) = record.get(field) {
@@ -2258,6 +2292,7 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
     let mut dropped_cross_budget = 0_u64;
     let mut dropped_cross_session_cap = 0_u64;
     let mut dropped_cross_candidate_cap = 0_u64;
+    let mut dropped_entity_bridge_slot_reserved = 0_u64;
     let mut dropped_low_score = 0_u64;
     let mut dropped_policy_ref = 0_u64;
     let mut used_tokens = 0_u64;
@@ -2266,12 +2301,15 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
     let mut entity_bridge_selected_refs = 0_u64;
     let mut selected_cross_sessions: HashSet<String> = HashSet::new();
     for (
+        index,
+        (
         score,
         record,
         session_continuity,
         continuity_boost_value,
         cross_session_rerank_boost_value,
-    ) in scored
+        ),
+    ) in scored.iter().enumerate()
     {
         if selected.len() as u64 >= max_refs {
             break;
@@ -2300,13 +2338,13 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
             dropped_cross_budget += 1;
             continue;
         }
-        if is_cross_session && cross_policy.min_score > 0.0 && score < cross_policy.min_score {
+        if is_cross_session && cross_policy.min_score > 0.0 && *score < cross_policy.min_score {
             dropped_low_score += 1;
             continue;
         }
         if is_cross_session_raw_evidence
             && cross_policy.raw_evidence_min_score > 0.0
-            && score < cross_policy.raw_evidence_min_score
+            && *score < cross_policy.raw_evidence_min_score
         {
             dropped_low_score += 1;
             continue;
@@ -2333,6 +2371,21 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
                 && entity_bridge_selected_refs < cross_policy.min_entity_bridge_refs)
         {
             dropped_cross_budget += 1;
+            continue;
+        }
+        if should_reserve_entity_bridge_slot(
+            &cross_policy,
+            is_entity_bridge,
+            selected.len() as u64,
+            max_refs,
+            entity_bridge_selected_refs,
+            eligible_entity_bridge_tuple_remains(
+                &scored,
+                index + 1,
+                &cross_policy,
+            ),
+        ) {
+            dropped_entity_bridge_slot_reserved += 1;
             continue;
         }
         let ref_signature = format!(
@@ -2369,11 +2422,11 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         }
         selected.push(pack_ref_from_record(
             record,
-            score,
+            *score,
             "native_rust_proxy_score_pack",
             &session_continuity,
-            continuity_boost_value,
-            cross_session_rerank_boost_value,
+            *continuity_boost_value,
+            *cross_session_rerank_boost_value,
         ));
     }
     let context_pack_id = format!("rust-native-{}-{}", unix_ms(), selected.len());
@@ -2398,6 +2451,7 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
             "cross_session_budget": dropped_cross_budget,
             "cross_session_session_cap": dropped_cross_session_cap,
             "cross_session_candidate_cap": dropped_cross_candidate_cap,
+            "entity_bridge_slot_reserved": dropped_entity_bridge_slot_reserved,
             "low_score": dropped_low_score,
             "duplicate_ref": dropped_duplicate_ref,
             "policy_ref": dropped_policy_ref,
@@ -2406,6 +2460,7 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
                 "cross_session_budget": dropped_cross_budget,
                 "cross_session_session_cap": dropped_cross_session_cap,
                 "cross_session_candidate_cap": dropped_cross_candidate_cap,
+                "entity_bridge_slot_reserved": dropped_entity_bridge_slot_reserved,
                 "low_score": dropped_low_score,
                 "duplicate_ref": dropped_duplicate_ref,
                 "policy_ref": dropped_policy_ref
@@ -2510,6 +2565,7 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         + dropped_cross_budget
         + dropped_cross_session_cap
         + dropped_cross_candidate_cap
+        + dropped_entity_bridge_slot_reserved
         + dropped_policy_ref
         + dropped_duplicate_ref
         + scan_dropped_count;
@@ -3067,5 +3123,66 @@ mod tests {
         let stats = command_stats(&command, &json!({"ok": true, "written": 2}));
         assert_eq!(stats.records_written, 2);
         assert!(stats.bytes_written > 0);
+    }
+
+    #[test]
+    fn retrieve_budget_reserves_required_profile_entity_bridge_slot() {
+        let policy = CrossSessionPolicy {
+            enabled: true,
+            budget_ratio: 1.0,
+            budget_tokens: 200,
+            max_budget_ratio: 1.0,
+            max_budget_tokens: 200,
+            max_sessions: 3,
+            max_candidates: 8,
+            min_score: 0.0,
+            raw_evidence_min_score: 0.45,
+            min_entity_bridge_refs: 1,
+            parallelism: 1,
+        };
+        let same_session = json!({
+            "record_type": "context_event",
+            "event_id_hash": 1_u64,
+            "text": "Current session says the storage migration is blocked on capacity review."
+        });
+        let profile_entity = json!({
+            "record_type": "context_entity",
+            "entity_hash": 2_u64,
+            "scope": {"session_id": "prior-session"},
+            "state": "User profile says Alice approved the GPU request after finance review."
+        });
+        let scored = vec![
+            (
+                0.99,
+                &same_session,
+                "same_session".to_string(),
+                0.0,
+                0.0,
+            ),
+            (
+                0.21,
+                &profile_entity,
+                "cross_session".to_string(),
+                0.0,
+                0.0,
+            ),
+        ];
+
+        assert!(should_reserve_entity_bridge_slot(
+            &policy,
+            false,
+            0,
+            1,
+            0,
+            eligible_entity_bridge_tuple_remains(&scored, 1, &policy),
+        ));
+        assert!(!should_reserve_entity_bridge_slot(
+            &policy,
+            true,
+            0,
+            1,
+            0,
+            eligible_entity_bridge_tuple_remains(&scored, 1, &policy),
+        ));
     }
 }

@@ -11,6 +11,9 @@ use crate::matrixark_rust_proxy_records::{
     matrixark_record_id, matrixark_record_type, matrixark_storage_field, matrixark_storage_key,
     matrixark_tenant_hash,
 };
+use crate::matrixark_rust_proxy_cross_session::CrossSessionPolicy;
+use crate::matrixark_rust_proxy_retrieve_scoring::ScoredCandidate;
+use crate::matrixark_rust_proxy_retrieve_select::select_retrieve_refs;
 
 #[test]
 fn matrixark_record_derives_storage_key_from_common_ids() {
@@ -164,4 +167,63 @@ fn command_stats_counts_matrixark_batch_records() {
     let stats = command_stats(&command, &json!({"ok": true, "written": 2}));
     assert_eq!(stats.records_written, 2);
     assert!(stats.bytes_written > 0);
+}
+
+#[test]
+fn retrieve_selection_reserves_required_profile_entity_bridge_slot() {
+    let same_session = json!({
+        "record_type": "context_event",
+        "event_id_hash": 1_u64,
+        "text": "Current session says the storage migration is blocked on capacity review."
+    });
+    let profile_entity = json!({
+        "record_type": "context_entity",
+        "entity_hash": 2_u64,
+        "scope": {"session_id": "prior-session"},
+        "state": "User profile says Alice approved the GPU request after finance review."
+    });
+    let scored = vec![
+        ScoredCandidate {
+            score: 0.99,
+            record: &same_session,
+            session_continuity: "same_session".to_string(),
+            continuity_boost: 0.0,
+            cross_session_rerank_boost: 0.0,
+        },
+        ScoredCandidate {
+            score: 0.21,
+            record: &profile_entity,
+            session_continuity: "cross_session".to_string(),
+            continuity_boost: 0.0,
+            cross_session_rerank_boost: 0.0,
+        },
+    ];
+    let selection = select_retrieve_refs(
+        scored,
+        &CrossSessionPolicy {
+            enabled: true,
+            budget_ratio: 1.0,
+            budget_tokens: 200,
+            max_budget_ratio: 1.0,
+            max_budget_tokens: 200,
+            max_sessions: 3,
+            max_candidates: 8,
+            min_score: 0.0,
+            raw_evidence_min_score: 0.45,
+            min_entity_bridge_refs: 1,
+            parallelism: 1,
+        },
+        200,
+        1,
+    );
+
+    assert_eq!(selection.selected.len(), 1);
+    assert_eq!(
+        selection.selected[0]
+            .get("session_continuity")
+            .and_then(Value::as_str),
+        Some("cross_session")
+    );
+    assert_eq!(selection.entity_bridge_selected_refs, 1);
+    assert_eq!(selection.dropped_entity_bridge_slot_reserved, 1);
 }
