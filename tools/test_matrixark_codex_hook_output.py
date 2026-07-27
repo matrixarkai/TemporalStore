@@ -844,6 +844,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertFalse(decision["threshold_ready"])
         self.assertFalse(decision["idle_ready"])
         self.assertTrue(decision["auto_batch_extract"])
+        self.assertEqual("threshold_not_reached", decision["trigger_evidence"]["commit_reason"])
+        self.assertEqual(1, decision["trigger_evidence"]["pending_event_count"])
+        self.assertEqual(2, decision["trigger_evidence"]["threshold_messages"])
+        self.assertFalse(decision["trigger_evidence"]["threshold_ready"])
+        self.assertEqual(300000, decision["trigger_evidence"]["idle_timeout_ms"])
+        self.assertFalse(decision["trigger_evidence"]["idle_ready"])
         self.assertNotIn("batch me into entities", json.dumps(decision))
 
     def test_user_prompt_emit_codex_additional_context_from_selected_refs(self) -> None:

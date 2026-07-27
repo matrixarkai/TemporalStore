@@ -631,18 +631,12 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         "auto_batch_extract": session_buffer.get("auto_batch_extract"),
         "boundary_commit_requested": session_buffer.get("boundary_commit_requested"),
     }
-    def add_commit_evidence(source: Json) -> None:
-        memory_layers = source.get("memory_layers_written")
-        if not isinstance(memory_layers, dict) or not memory_layers:
-            memory_layers = session_commit_memory_layers_written(source)
-        if memory_layers:
-            summary["memory_layers_written"] = memory_layers
-        summary_refresh = source.get("summary_refresh")
-        if isinstance(summary_refresh, dict) and summary_refresh:
-            summary["summary_refresh"] = summary_refresh
-        trigger_evidence = source.get("trigger_evidence")
+
+    def session_trigger_evidence(source: Json | None = None) -> Json:
+        source = source or {}
+        trigger_evidence = source.get("trigger_evidence") if isinstance(source.get("trigger_evidence"), dict) else {}
         if isinstance(trigger_evidence, dict) and trigger_evidence:
-            summary["trigger_evidence"] = {
+            raw = {
                 key: trigger_evidence.get(key)
                 for key in [
                     "pending_event_count",
@@ -655,10 +649,9 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
                     "force",
                     "commit_reason",
                 ]
-                if trigger_evidence.get(key) not in (None, "", [], {})
             }
-        elif session_buffer:
-            fallback_trigger_evidence = {
+        else:
+            raw = {
                 "pending_event_count": session_buffer.get("pending_event_count"),
                 "pending_message_count": session_buffer.get("pending_message_count"),
                 "threshold_messages": session_buffer.get("threshold_messages"),
@@ -669,11 +662,20 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
                 "force": source.get("force"),
                 "commit_reason": source.get("commit_reason") or source.get("reason"),
             }
-            summary["trigger_evidence"] = {
-                key: value
-                for key, value in fallback_trigger_evidence.items()
-                if value not in (None, "", [], {})
-            }
+        return {key: value for key, value in raw.items() if value not in (None, "", [], {})}
+
+    def add_commit_evidence(source: Json) -> None:
+        memory_layers = source.get("memory_layers_written")
+        if not isinstance(memory_layers, dict) or not memory_layers:
+            memory_layers = session_commit_memory_layers_written(source)
+        if memory_layers:
+            summary["memory_layers_written"] = memory_layers
+        summary_refresh = source.get("summary_refresh")
+        if isinstance(summary_refresh, dict) and summary_refresh:
+            summary["summary_refresh"] = summary_refresh
+        trigger_evidence = session_trigger_evidence(source)
+        if trigger_evidence:
+            summary["trigger_evidence"] = trigger_evidence
         for field in [
             "source_role_counts",
             "source_hook_type_counts",
@@ -725,6 +727,9 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
             summary["reason"] = "idle_timeout_not_reached"
         else:
             summary["reason"] = "no_auto_batch_commit_result"
+        trigger_evidence = session_trigger_evidence({"commit_reason": summary.get("reason")})
+        if trigger_evidence:
+            summary["trigger_evidence"] = trigger_evidence
     return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
 
 
