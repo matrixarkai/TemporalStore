@@ -75,6 +75,49 @@ def session_events_by_message_limit(records: list[Json], limit: int | None) -> l
     return selected
 
 
+def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
+    metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
+    roles = {
+        str(message.get("role") or "").strip()
+        for message in envelope.get("messages", [])
+        if isinstance(message, dict) and str(message.get("role") or "").strip()
+    }
+    for value in metadata.get("source_roles", []) if isinstance(metadata.get("source_roles"), list) else []:
+        if str(value or "").strip():
+            roles.add(str(value).strip())
+    hook_types = set()
+    for value in metadata.get("source_hook_types", []) if isinstance(metadata.get("source_hook_types"), list) else []:
+        if str(value or "").strip():
+            hook_types.add(str(value).strip())
+    codex_events = set()
+    for value in metadata.get("source_codex_events", []) if isinstance(metadata.get("source_codex_events"), list) else []:
+        if str(value or "").strip():
+            codex_events.add(str(value).strip())
+    agent_event = str(metadata.get("agent_event") or "").strip()
+    if agent_event:
+        codex_events.add(agent_event)
+    if isinstance(hook, dict):
+        hook_type = str(hook.get("hook_type") or "").strip()
+        if hook_type:
+            hook_types.add(hook_type)
+        trigger = str(hook.get("trigger") or "").strip()
+        if trigger:
+            codex_events.add(trigger)
+    entity_type = ""
+    if "tool" in roles:
+        entity_type = "tool_evidence"
+    elif "assistant" in roles:
+        entity_type = "assistant_decision"
+    return {
+        "memory_scope": "session",
+        "session_continuity": "same_session",
+        **({"entity_type": entity_type} if entity_type else {}),
+        "source_roles": sorted(roles),
+        "source_hook_types": sorted(hook_types),
+        "source_codex_events": sorted(codex_events),
+    }
+
+
 def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
     record_type = str(record.get("record_type") or "")
     if record_type == "context_node":
@@ -2696,6 +2739,7 @@ class MatrixArkLocalAdapter:
     def ingest(self, args: Json, *, hook: Json | None = None) -> Json:
         envelope = normalize_envelope(args, default_kind="message")
         hook = validate_hook(hook)
+        source_lineage = context_source_lineage(envelope, hook)
         backend_readiness: Json | None = None
         if envelope["kind"] in {"resource", "skill"}:
             backend_readiness = self.ensure_backend_ready(reason=f"{envelope['kind']}_ingest")
@@ -2763,6 +2807,7 @@ class MatrixArkLocalAdapter:
                             "status": "pending",
                         },
                         "agent_hook": hook,
+                        **source_lineage,
                         "storage_options": envelope.get("storage_options", {}),
                         "async_processing": True,
                         "updated_at_ms": envelope["ingestion_time_ms"],
@@ -3788,6 +3833,7 @@ class MatrixArkLocalAdapter:
                 "internal_extraction": extraction,
                 "prior_context": prior_context,
                 "agent_hook": hook,
+                **source_lineage,
                 "storage_options": envelope.get("storage_options", {}),
             }
             self.append(record)
@@ -3960,6 +4006,7 @@ class MatrixArkLocalAdapter:
                 ],
             }
         hook = validate_hook(hook)
+        source_lineage = context_source_lineage(envelope, hook)
         threshold = args.get("threshold_messages", 20)
         force = bool(args.get("force", False))
         derive_from_existing_events = bool(args.get("derive_from_existing_events", False))
@@ -4052,6 +4099,7 @@ class MatrixArkLocalAdapter:
                         },
                         "prior_context": prior_context,
                         "agent_hook": hook,
+                        **source_lineage,
                         "storage_options": envelope.get("storage_options", {}),
                         "updated_at_ms": envelope["ingestion_time_ms"],
                         "extraction_phase": extraction_phase,

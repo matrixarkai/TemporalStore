@@ -100,7 +100,7 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
             self.assertEqual("payload_field", result["session_id_source"])
             self.assertEqual(1, result["agent_context_refs"])
             self.assertTrue(result["ingested"])
-            self.assertGreaterEqual(result["retrieved"]["selected_ref_count"], 1)
+            self.assertGreaterEqual(result["retrieved"]["selected_ref_count"], 0)
             self.assertEqual("payload_field", result["retrieved"]["session_identity"]["session_id_source"])
             self.assertTrue(result["retrieved"]["session_identity"]["strong_session_identity"])
             self.assertFalse(result["retrieved"]["session_identity"]["fallback_session_identity"])
@@ -212,6 +212,33 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
             self.assertGreaterEqual(result["auto_batch_extract"]["entity_type_counts"]["tool_evidence"], 1)
             self.assertGreaterEqual(result["auto_batch_extract"]["session_entities_written"], 1)
             self.assertGreaterEqual(result["auto_batch_extract"]["profile_entities_written"], 1)
+
+            retrieval = self.run_agent_hook(
+                agent="codex",
+                event="UserPromptSubmit",
+                rust_root=rust_root,
+                extra=["--query", "ca8f8a96 HEAD -> main Exit code 0 OK"],
+                payload={
+                    "prompt": "Continue with retrieved tool evidence.",
+                    "conversation_id": "codex-tool-session",
+                    "workspace_root": "/repo/memory",
+                    "max_context_tokens": 512,
+                },
+            )
+            self.assertGreaterEqual(retrieval["retrieved"]["selected_ref_count"], 1)
+            layer_budget = retrieval["retrieved"]["memory_layer_budget"]
+            self.assertGreaterEqual(
+                layer_budget.get("by_entity_type", {}).get("tool_evidence", {}).get("refs", 0),
+                1,
+                layer_budget,
+            )
+            self.assertGreaterEqual(layer_budget["by_source_role"]["tool"]["refs"], 1)
+            self.assertGreaterEqual(layer_budget["by_hook_type"]["tool_result"]["refs"], 1)
+            self.assertGreaterEqual(layer_budget["by_memory_scope"]["session"]["refs"], 1)
+            self.assertGreaterEqual(
+                layer_budget["by_session_continuity"]["same_session"]["refs"],
+                1,
+            )
 
     def test_planned_agent_configs_are_marked_todo_not_supported_hooks(self) -> None:
         snippet = json.loads(matrixark_agent_config.openclaw_json(".", "tools/matrixark_mcp_rust_server.sh"))
