@@ -1246,6 +1246,8 @@ class MatrixArkLocalAdapter:
                     "extraction_phase": extraction_phase,
                     "final_session_boundary": final_session_boundary,
                     "source_roles": source_roles,
+                    "source_hook_types": source_hook_types,
+                    "source_codex_events": source_codex_events,
                     "summary_refresh_status": memory_layers_written.get("summary_refresh_status"),
                     "summary_dirty_nodes": memory_layers_written.get("summary_dirty_nodes", 0),
                     "memory_layers_written": memory_layers_written,

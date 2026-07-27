@@ -41,25 +41,44 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
         ]
     )
     status_counts: dict[str, int] = {}
+    remaining_stage_counts: dict[str, int] = {}
+    pending_source_roles: dict[str, int] = {}
+    pending_source_hook_types: dict[str, int] = {}
+    pending_source_codex_events: dict[str, int] = {}
     pending_task_count = 0
     extraction_committed_task_count = 0
     summary_completed_task_count = 0
     remaining_stages: set[str] = set()
     completed_stages: set[str] = set()
+
+    def add_count(bucket: dict[str, int], key: object) -> None:
+        value = str(key or "").strip()
+        if value:
+            bucket[value] = bucket.get(value, 0) + 1
+
     for row in latest_rows:
         status = str(row.get("status") or "unknown")
         status_counts[status] = status_counts.get(status, 0) + 1
         pending_task_count += int(status == "pending")
         extraction_committed_task_count += int(status == "extraction_committed")
         summary_completed_task_count += int(status == "summary_completed")
-        for stage in row.get("remaining_stages") if isinstance(row.get("remaining_stages"), list) else []:
+        row_remaining_stages = row.get("remaining_stages") if isinstance(row.get("remaining_stages"), list) else []
+        for stage in row_remaining_stages:
             stage_name = str(stage or "").strip()
             if stage_name:
                 remaining_stages.add(stage_name)
+                remaining_stage_counts[stage_name] = remaining_stage_counts.get(stage_name, 0) + 1
         for stage in row.get("completed_stages") if isinstance(row.get("completed_stages"), list) else []:
             stage_name = str(stage or "").strip()
             if stage_name:
                 completed_stages.add(stage_name)
+        if row_remaining_stages or status in {"pending", "extraction_committed"}:
+            for role in row.get("source_roles") if isinstance(row.get("source_roles"), list) else []:
+                add_count(pending_source_roles, role)
+            for hook_type in row.get("source_hook_types") if isinstance(row.get("source_hook_types"), list) else []:
+                add_count(pending_source_hook_types, hook_type)
+            for codex_event in row.get("source_codex_events") if isinstance(row.get("source_codex_events"), list) else []:
+                add_count(pending_source_codex_events, codex_event)
     warnings: list[str] = []
     if pending_task_count:
         warnings.append("async_pipeline_pending")
@@ -75,6 +94,10 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
         "summary_completed_task_count": summary_completed_task_count,
         "completed_stages": sorted(completed_stages),
         "remaining_stages": sorted(remaining_stages),
+        "remaining_stage_counts": dict(sorted(remaining_stage_counts.items())),
+        "pending_source_roles": dict(sorted(pending_source_roles.items())),
+        "pending_source_hook_types": dict(sorted(pending_source_hook_types.items())),
+        "pending_source_codex_events": dict(sorted(pending_source_codex_events.items())),
         "ready_for_retrieval": not pending_task_count and not extraction_committed_task_count and not remaining_stages,
         "freshness_warnings": warnings,
     }
