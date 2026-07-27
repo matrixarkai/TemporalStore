@@ -1316,6 +1316,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("source_messages[assistant=4, tool=3, user=1]", additional)
         self.assertIn("source_hooks[after_llm=2, tool_result=2]", additional)
         self.assertIn("source_codex_events[PostToolUse=2]", additional)
+        self.assertIn("Retrieved memory lineage:", additional)
+        self.assertIn("roles[assistant=4,tool=3,user=1]", additional)
+        self.assertIn("hooks[after_llm=2,tool_result=2]", additional)
+        self.assertIn("codex_events[PostToolUse=2]", additional)
+        self.assertIn("captured[user_prompt,assistant_response,tool_evidence]", additional)
 
     def test_grouped_refs_count_and_format_as_additional_context(self) -> None:
         args = Namespace(session_id="codex-session-1")
