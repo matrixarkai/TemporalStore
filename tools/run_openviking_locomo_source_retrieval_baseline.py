@@ -80,8 +80,19 @@ def main() -> int:
     parser.add_argument("--event-percent", type=float, default=1.0)
     parser.add_argument(
         "--require-shared-oss-models",
+        dest="require_shared_oss_models",
         action="store_true",
-        help="Fail if this baseline does not match MatrixArk reader, embedding, retrieval, and context budgets.",
+        default=True,
+        help=(
+            "Fail if this baseline does not match MatrixArk reader, embedding/encoding, "
+            "retrieval, context-budget, and output-token settings. Enabled by default."
+        ),
+    )
+    parser.add_argument(
+        "--allow-shared-oss-model-drift",
+        dest="require_shared_oss_models",
+        action="store_false",
+        help="Diagnostic-only escape hatch for intentionally unfair local model or budget experiments.",
     )
     args = parser.parse_args()
 
@@ -95,11 +106,13 @@ def main() -> int:
         "reader_provider_name": args.provider_name,
         "reader_model": args.reader_model,
         "embedding_model": args.embedding_model,
+        "encoding_model": args.embedding_model,
         "max_events": args.max_events,
         "top_k": args.max_events,
         "adaptive_max_events": bool(args.adaptive_max_events),
         "adaptive_base_max_events": args.adaptive_base_max_events,
         "reader_max_context_chars": args.reader_max_context_chars,
+        "reader_max_tokens": args.reader_max_tokens,
         "reader_include_extractive_hint": bool(args.reader_include_extractive_hint),
         "reader_candidate_only": bool(args.reader_candidate_only),
         "reader_candidate_first": bool(args.reader_candidate_first),

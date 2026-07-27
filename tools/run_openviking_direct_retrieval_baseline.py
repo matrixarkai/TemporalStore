@@ -57,8 +57,19 @@ def main() -> int:
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument(
         "--require-shared-oss-models",
+        dest="require_shared_oss_models",
         action="store_true",
-        help="Fail if the baseline does not match MatrixArk reader, embedding, retrieval, and context-budget settings.",
+        default=True,
+        help=(
+            "Fail if the baseline does not match MatrixArk reader, embedding/encoding, "
+            "retrieval, context-budget, and output-token settings. Enabled by default."
+        ),
+    )
+    parser.add_argument(
+        "--allow-shared-oss-model-drift",
+        dest="require_shared_oss_models",
+        action="store_false",
+        help="Diagnostic-only escape hatch for intentionally unfair local model or budget experiments.",
     )
     parser.add_argument("--report", default="/tmp/openviking_direct_retrieval_locomo_tiny_20260726.json")
     parser.add_argument("--matrixark-report", default="/tmp/matrixark_qwen_locomo_tiny_postfix2_20260726.json")
@@ -74,6 +85,7 @@ def main() -> int:
         "reader_provider_name": args.provider_name,
         "reader_model": args.reader_model,
         "embedding_model": args.embedding_model,
+        "encoding_model": args.embedding_model,
         "reader_include_extractive_hint": bool(args.reader_include_extractive_hint),
         "reader_candidate_only": bool(args.reader_candidate_only),
         "reader_candidate_first": bool(args.reader_candidate_first),
@@ -83,6 +95,7 @@ def main() -> int:
         "top_k": args.top_k,
         "max_events": args.top_k,
         "reader_max_context_chars": args.reader_max_context_chars,
+        "reader_max_tokens": args.reader_max_tokens,
         "blockers": [],
         "warnings": [
             "OpenViking memory extraction produced zero recallable memories locally; this run uses archived messages as retrieval corpus.",
@@ -393,36 +406,44 @@ def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict
     matrixark_embedding = str(reference_contract.get("matrixark_embedding_model") or args.embedding_model).strip()
     matrixark_max_events = int(reference_contract.get("matrixark_max_events") or args.top_k)
     matrixark_reader_budget = int(reference_contract.get("matrixark_reader_max_context_chars") or args.reader_max_context_chars)
+    matrixark_reader_max_tokens = int(reference_contract.get("matrixark_reader_max_tokens") or args.reader_max_tokens)
     baseline_reader = str(args.reader_model).strip()
     baseline_embedding = str(args.embedding_model).strip()
     baseline_max_events = int(args.top_k)
     baseline_reader_budget = int(args.reader_max_context_chars)
+    baseline_reader_max_tokens = int(args.reader_max_tokens)
     return {
         "matrixark_provider_name": str(reference_contract.get("matrixark_provider_name") or "matrixark").strip(),
         "matrixark_reader_model": matrixark_reader,
         "matrixark_embedding_model": matrixark_embedding,
+        "matrixark_encoding_model": matrixark_embedding,
         "matrixark_max_events": matrixark_max_events,
         "matrixark_reader_max_context_chars": matrixark_reader_budget,
+        "matrixark_reader_max_tokens": matrixark_reader_max_tokens,
         "baseline_provider_name": str(args.provider_name).strip(),
         "baseline_reader_model": baseline_reader,
         "baseline_embedding_model": baseline_embedding,
+        "baseline_encoding_model": baseline_embedding,
         "baseline_max_events": baseline_max_events,
         "baseline_reader_max_context_chars": baseline_reader_budget,
+        "baseline_reader_max_tokens": baseline_reader_max_tokens,
         "provider_identity_declared": bool(args.provider_name),
         "reader_model_match": normalized_model_name(matrixark_reader) == normalized_model_name(baseline_reader),
         "embedding_model_match": normalized_model_name(matrixark_embedding) == normalized_model_name(baseline_embedding),
         "max_events_match": matrixark_max_events == baseline_max_events,
         "reader_context_budget_match": matrixark_reader_budget == baseline_reader_budget,
+        "reader_output_budget_match": matrixark_reader_max_tokens == baseline_reader_max_tokens,
         "shared_oss_model_contract_required": True,
         "shared_oss_model_contract_passed": (
             normalized_model_name(matrixark_reader) == normalized_model_name(baseline_reader)
             and normalized_model_name(matrixark_embedding) == normalized_model_name(baseline_embedding)
             and matrixark_max_events == baseline_max_events
             and matrixark_reader_budget == baseline_reader_budget
+            and matrixark_reader_max_tokens == baseline_reader_max_tokens
         ),
         "comparison_rule": (
             "MatrixArk and OpenViking/VikingMem rows must use the same OSS reader model, "
-            "embedding/encoding model, retrieval block budget, and reader context budget."
+            "embedding/encoding model, retrieval block budget, reader context budget, and reader output-token budget."
         ),
     }
 

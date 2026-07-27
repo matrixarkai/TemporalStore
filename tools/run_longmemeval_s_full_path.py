@@ -107,6 +107,14 @@ def main() -> int:
         help="Require every converted LongMemEval_s case and all sources to run through Rust TemporalStore.",
     )
     args = parser.parse_args()
+    if not args.allow_shared_oss_model_drift and (
+        args.baseline_provider_name
+        or args.baseline_reader_model
+        or args.baseline_embedding_model
+        or args.baseline_max_events
+        or args.baseline_reader_max_context_chars
+    ):
+        args.require_shared_oss_models = True
     if not args.require_rust_temporalstore and not args.allow_python_only_diagnostic:
         print(
             "Rust TemporalStore backend is required for LongMemEval_s benchmark evidence; "
