@@ -37,6 +37,7 @@ from run_locomo_ingest_once import (  # noqa: E402
     RetrievalBudgetConfig,
     answer_equivalent,
     adaptive_max_events_for_question,
+    clamp_percent,
     count_matched_refs,
     count_matched_terms,
     count_reader_context_terms,
@@ -140,6 +141,8 @@ def main() -> int:
         entity_percent=args.entity_percent,
         event_percent=args.event_percent,
     )
+    retrieval_budget_report = retrieval_budget.to_report()
+    report["retrieval_budget_config"] = retrieval_budget_report
 
     records = json.loads(input_path.read_text(encoding="utf-8"))
     if not isinstance(records, list) or not records:
@@ -405,9 +408,54 @@ def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict
     )
     baseline_adaptive = bool(args.adaptive_max_events)
     baseline_adaptive_base = int(args.adaptive_base_max_events) if baseline_adaptive else 0
+    baseline_same_session_percent = clamp_percent(float(args.same_session_percent))
+    baseline_cross_session_percent = clamp_percent(float(args.cross_session_percent))
+    baseline_summary_percent = clamp_percent(float(args.summary_percent))
+    baseline_entity_percent = clamp_percent(float(args.entity_percent))
+    baseline_event_percent = clamp_percent(float(args.event_percent))
+    matrixark_budget = matrixark_reference.get("retrieval_budget_config")
+    if not isinstance(matrixark_budget, dict):
+        matrixark_budget = {}
+    matrixark_same_session_percent = float(
+        reference_contract.get("matrixark_retrieval_same_session_percent")
+        if "matrixark_retrieval_same_session_percent" in reference_contract
+        else matrixark_budget.get("same_session_percent")
+        or baseline_same_session_percent
+    )
+    matrixark_cross_session_percent = float(
+        reference_contract.get("matrixark_retrieval_cross_session_percent")
+        if "matrixark_retrieval_cross_session_percent" in reference_contract
+        else matrixark_budget.get("cross_session_percent")
+        or baseline_cross_session_percent
+    )
+    matrixark_summary_percent = float(
+        reference_contract.get("matrixark_retrieval_summary_percent")
+        if "matrixark_retrieval_summary_percent" in reference_contract
+        else matrixark_budget.get("summary_percent")
+        or baseline_summary_percent
+    )
+    matrixark_entity_percent = float(
+        reference_contract.get("matrixark_retrieval_entity_percent")
+        if "matrixark_retrieval_entity_percent" in reference_contract
+        else matrixark_budget.get("entity_percent")
+        or baseline_entity_percent
+    )
+    matrixark_event_percent = float(
+        reference_contract.get("matrixark_retrieval_event_percent")
+        if "matrixark_retrieval_event_percent" in reference_contract
+        else matrixark_budget.get("event_percent")
+        or baseline_event_percent
+    )
     adaptive_policy_match = (
         matrixark_adaptive == baseline_adaptive
         and (not matrixark_adaptive or matrixark_adaptive_base == baseline_adaptive_base)
+    )
+    retrieval_budget_match = (
+        round(matrixark_same_session_percent, 6) == round(baseline_same_session_percent, 6)
+        and round(matrixark_cross_session_percent, 6) == round(baseline_cross_session_percent, 6)
+        and round(matrixark_summary_percent, 6) == round(baseline_summary_percent, 6)
+        and round(matrixark_entity_percent, 6) == round(baseline_entity_percent, 6)
+        and round(matrixark_event_percent, 6) == round(baseline_event_percent, 6)
     )
     return {
         "matrixark_provider_name": str(reference_contract.get("matrixark_provider_name") or "matrixark").strip(),
@@ -417,6 +465,11 @@ def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict
         "matrixark_reader_max_context_chars": matrixark_reader_budget,
         "matrixark_adaptive_max_events": matrixark_adaptive,
         "matrixark_adaptive_base_max_events": matrixark_adaptive_base,
+        "matrixark_retrieval_same_session_percent": matrixark_same_session_percent,
+        "matrixark_retrieval_cross_session_percent": matrixark_cross_session_percent,
+        "matrixark_retrieval_summary_percent": matrixark_summary_percent,
+        "matrixark_retrieval_entity_percent": matrixark_entity_percent,
+        "matrixark_retrieval_event_percent": matrixark_event_percent,
         "baseline_provider_name": str(args.provider_name).strip(),
         "baseline_reader_model": baseline_reader,
         "baseline_embedding_model": baseline_embedding,
@@ -424,12 +477,18 @@ def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict
         "baseline_reader_max_context_chars": baseline_reader_budget,
         "baseline_adaptive_max_events": baseline_adaptive,
         "baseline_adaptive_base_max_events": baseline_adaptive_base,
+        "baseline_retrieval_same_session_percent": baseline_same_session_percent,
+        "baseline_retrieval_cross_session_percent": baseline_cross_session_percent,
+        "baseline_retrieval_summary_percent": baseline_summary_percent,
+        "baseline_retrieval_entity_percent": baseline_entity_percent,
+        "baseline_retrieval_event_percent": baseline_event_percent,
         "provider_identity_declared": bool(args.provider_name),
         "reader_model_match": normalized_model_name(matrixark_reader) == normalized_model_name(baseline_reader),
         "embedding_model_match": normalized_model_name(matrixark_embedding) == normalized_model_name(baseline_embedding),
         "max_events_match": matrixark_max_events == baseline_max_events,
         "reader_context_budget_match": matrixark_reader_budget == baseline_reader_budget,
         "adaptive_policy_match": adaptive_policy_match,
+        "retrieval_budget_match": retrieval_budget_match,
         "shared_oss_model_contract_required": True,
         "shared_oss_model_contract_passed": (
             normalized_model_name(matrixark_reader) == normalized_model_name(baseline_reader)
@@ -437,10 +496,12 @@ def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict
             and matrixark_max_events == baseline_max_events
             and matrixark_reader_budget == baseline_reader_budget
             and adaptive_policy_match
+            and retrieval_budget_match
         ),
         "comparison_rule": (
             "MatrixArk and OpenViking/VikingMem rows must use the same OSS reader model, "
-            "embedding/encoding model, retrieval block budget, adaptive retrieval policy, and reader context budget."
+            "embedding/encoding model, retrieval block budget, adaptive retrieval policy, retrieval budget split, "
+            "and reader context budget."
         ),
     }
 

@@ -35,6 +35,11 @@ READER_POLICY_KEYS = (
 RETRIEVAL_POLICY_KEYS = (
     "adaptive_max_events",
     "adaptive_base_max_events",
+    "retrieval_same_session_percent",
+    "retrieval_cross_session_percent",
+    "retrieval_summary_percent",
+    "retrieval_entity_percent",
+    "retrieval_event_percent",
 )
 
 
@@ -173,6 +178,31 @@ def normalize_report(path: Path, label: str, errors: list[str]) -> dict[str, Any
             else data.get("adaptive_base_max_events")
         )
         or 0,
+        "retrieval_same_session_percent": to_float_policy(
+            contract.get(f"{prefix}_retrieval_same_session_percent"),
+            data,
+            "same_session_percent",
+        ),
+        "retrieval_cross_session_percent": to_float_policy(
+            contract.get(f"{prefix}_retrieval_cross_session_percent"),
+            data,
+            "cross_session_percent",
+        ),
+        "retrieval_summary_percent": to_float_policy(
+            contract.get(f"{prefix}_retrieval_summary_percent"),
+            data,
+            "summary_percent",
+        ),
+        "retrieval_entity_percent": to_float_policy(
+            contract.get(f"{prefix}_retrieval_entity_percent"),
+            data,
+            "entity_percent",
+        ),
+        "retrieval_event_percent": to_float_policy(
+            contract.get(f"{prefix}_retrieval_event_percent"),
+            data,
+            "event_percent",
+        ),
         "reader_fallback_count": to_int(data.get("reader_fallback_count")) or 0,
         "reader_error_count": to_int(data.get("reader_error_count")) or 0,
         "reader_open_source_calls": to_int(data.get("reader_open_source_calls")),
@@ -218,6 +248,17 @@ def to_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def to_float_policy(value: Any, data: dict[str, Any], key: str) -> float:
+    if value is None:
+        config = data.get("retrieval_budget_config")
+        if isinstance(config, dict):
+            value = config.get(key)
+    try:
+        return round(float(value), 6)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 if __name__ == "__main__":
