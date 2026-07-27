@@ -438,6 +438,11 @@ def memory_layer_pressure_summary(selected_budget: Json, dropped_budget: Json) -
     summary["assistant_source_message_pressure"] = dropped_count_in("source_message_counts_by_role", "assistant") > 0
     summary["user_source_message_pressure"] = dropped_count_in("source_message_counts_by_role", "user") > 0
     summary["tool_source_message_pressure"] = dropped_count_in("source_message_counts_by_role", "tool") > 0
+    summary["hook_boundary_source_pressure"] = dropped_count_in("source_hook_counts_by_type", "hook_boundary") > 0
+    summary["after_llm_source_pressure"] = dropped_count_in("source_hook_counts_by_type", "after_llm") > 0
+    summary["tool_result_source_pressure"] = dropped_count_in("source_hook_counts_by_type", "tool_result") > 0
+    summary["stop_event_source_pressure"] = dropped_count_in("source_codex_event_counts_by_event", "Stop") > 0
+    summary["post_tool_use_source_pressure"] = dropped_count_in("source_codex_event_counts_by_event", "PostToolUse") > 0
     summary["pressure_bucket_count"] = sum(
         1
         for buckets in dimension_data.values()
@@ -448,7 +453,7 @@ def memory_layer_pressure_summary(selected_budget: Json, dropped_budget: Json) -
         1
         for buckets in dimension_data.values()
         for bucket in buckets.values()
-        if int(bucket.get("dropped_refs", 0)) > 0
+        if int(bucket.get("dropped_refs", bucket.get("dropped_count", 0)) or 0) > 0
     )
     return summary
 
