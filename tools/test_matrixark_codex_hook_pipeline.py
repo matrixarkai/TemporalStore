@@ -2588,6 +2588,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "tenant_id": "tenant_profile",
                         "user_id": "user_profile",
                         "session_id": "session_codex_1",
+                        "session_hash": 10101,
+                        "scope_key": "acct_profile:tenant_profile:user_profile:session_codex_1",
+                        "_explicit_scope_keys": ["account_id", "tenant_id", "user_id", "session_id"],
                     },
                     "messages": [
                         {
@@ -2692,6 +2695,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 {"account_id": "acct_profile", "tenant_id": "tenant_profile", "user_id": "user_profile"},
                 profile_entity["access_scope"],
             )
+            for key in ["session_id", "session_hash", "scope_key", "_explicit_scope_keys"]:
+                self.assertNotIn(key, profile_entity["access_scope"])
+                if "scope" in profile_entity:
+                    self.assertNotIn(key, profile_entity["scope"])
             self.assertEqual(["session_codex_1"], profile_entity["source_session_ids"])
             self.assertTrue(profile_entity["source_entity_hashes"])
             self.assertTrue(profile_entity["source_refs"])

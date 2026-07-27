@@ -4676,7 +4676,17 @@ class MatrixArkLocalAdapter:
                     }
                 )
 
-        profile_scope = {key: value for key, value in envelope["scope"].items() if key != "session_id"}
+        profile_scope = {
+            key: value
+            for key, value in envelope["scope"].items()
+            if key
+            not in {
+                "session_id",
+                "session_hash",
+                "scope_key",
+                "_explicit_scope_keys",
+            }
+        }
         profile_node_path: list[str] = []
         if profile_scope.get("tenant_id") and profile_scope.get("user_id"):
             profile_node_path = [
