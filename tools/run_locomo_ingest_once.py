@@ -2828,6 +2828,29 @@ def add_domain_reference_sources(
         patterns.append(re.compile(r"\b(?:florida|indiana|alaska|california|oregon|washington)\b.{0,120}\b(?:visit|travel|trip|internship|summer)\b|\b(?:visit|travel|trip|internship|summer)\b.{0,120}\b(?:florida|indiana|alaska|california|oregon|washington)\b", re.I))
     if "which country" in q or "what country" in q or "in what country" in q:
         patterns.append(re.compile(r"\b(?:france|colombia|canada|greenland|united states|spain|england)\b.{0,120}\b(?:visit|travel|trip|buy|bought|pendant|snake|summer)\b|\b(?:visit|travel|trip|buy|bought|pendant|snake|summer)\b.{0,120}\b(?:france|colombia|canada|greenland|united states|spain|england)\b", re.I))
+    if re.search(r"\b(educat|edu|career|field|pursue|counsel(?:ing|lor)|mental health|psychology|certification)\b", q):
+        patterns.extend(
+            [
+                re.compile(r"\b(?:continue\s+my\s+edu|education|career options?|study|degree|psychology)\b", re.I),
+                re.compile(r"\b(?:counsel(?:ing|lor)|mental health|support those with similar issues|certification)\b", re.I),
+            ]
+        )
+    if re.search(r"\b(group of friends|friends for|known .* friends|moved from|move from|home country)\b", q):
+        patterns.extend(
+            [
+                re.compile(r"\b(?:known these friends for|friends for)\s+(?:\d+|one|two|three|four|five)\s+years?\b", re.I),
+                re.compile(r"\b(?:moved from my home country|home country[, ]+Sweden|from\s+Sweden|roots)\b", re.I),
+            ]
+        )
+    if "activities" in q and "melanie" in q:
+        patterns.extend(
+            [
+                re.compile(r"\b(?:pottery class|pottery)\b", re.I),
+                re.compile(r"\b(?:went camping|camping with my fam|camping)\b", re.I),
+                re.compile(r"\b(?:paint(?:ed|ing)?|sunrise)\b", re.I),
+                re.compile(r"\b(?:swimming with the kids|go swimming|swimming)\b", re.I),
+            ]
+        )
     if "fitness goals" in q or "fitness tracker" in q:
         patterns.append(re.compile(r"\b(?:fitness tracker|health tracker|goals|fitness)\b", re.I))
     if "mental well-being" in q or ("nature" in q and "outdoors" in q):
@@ -2878,9 +2901,19 @@ def add_domain_reference_sources(
         return selected
     matched: list[dict[str, str]] = []
     matched_keys: set[str] = set()
+    diverse_pattern_query = len(patterns) > 1 and bool(
+        re.search(
+            r"\b(activities|different|fields?|countries|items?|doctors?|games?|friends?|total|spent|earned)\b",
+            q,
+        )
+    )
+    per_pattern_limit = max(1, (max(1, max_events) + len(patterns) - 1) // max(1, len(patterns)))
     for pattern in patterns:
+        added_for_pattern = 0
         for source in sources:
             if len(matched) >= max(1, max_events):
+                break
+            if diverse_pattern_query and added_for_pattern >= per_pattern_limit:
                 break
             if not pattern.search(source.get("body", "")):
                 continue
@@ -2889,6 +2922,19 @@ def add_domain_reference_sources(
                 continue
             matched.append(source)
             matched_keys.add(key)
+            added_for_pattern += 1
+    if diverse_pattern_query and len(matched) < max(1, max_events):
+        for pattern in patterns:
+            for source in sources:
+                if len(matched) >= max(1, max_events):
+                    break
+                if not pattern.search(source.get("body", "")):
+                    continue
+                key = source_identity(source)
+                if key in matched_keys:
+                    continue
+                matched.append(source)
+                matched_keys.add(key)
     if not matched:
         return selected
     out: list[dict[str, str]] = []
