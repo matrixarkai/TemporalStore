@@ -44,11 +44,23 @@ def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
         return max(minimum, default)
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 HOOK_TRACE_APPEND_TIMEOUT_MS = _env_int("MATRIXARK_HOOK_TRACE_APPEND_TIMEOUT_MS", 750, minimum=0)
 HOOK_CLOSE_TIMEOUT_MS = _env_int("MATRIXARK_HOOK_CLOSE_TIMEOUT_MS", 750, minimum=0)
 HOOK_TOOL_CALL_TIMEOUT_MS = _env_int("MATRIXARK_HOOK_TOOL_CALL_TIMEOUT_MS", 8000, minimum=0)
 HOOK_RETRIEVE_TIMEOUT_MS = _env_int("MATRIXARK_HOOK_RETRIEVE_TIMEOUT_MS", 5000, minimum=0)
-HOOK_AUTO_BATCH_EXTRACT = os.environ.get("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", "").strip().lower() in {"1", "true", "yes", "on"}
+HOOK_AUTO_BATCH_EXTRACT = _env_bool("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", True)
 HOOK_FAST_ASYNC_INGEST = os.environ.get("MATRIXARK_HOOK_FAST_ASYNC_INGEST", "").strip().lower() in {"1", "true", "yes", "on"}
 HOOK_COMPACT_HOT_PREFIX_ONLY = os.environ.get("MATRIXARK_HOOK_COMPACT_HOT_PREFIX_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
 

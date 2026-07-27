@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -2283,6 +2284,25 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', cpp_script)
         self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', rust_script)
         self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', dual_script)
+
+    def test_python_hook_auto_batch_defaults_on_with_explicit_opt_out(self) -> None:
+        original_env = os.environ.pop("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", None)
+        try:
+            self.assertTrue(hook._env_bool("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", True))
+            os.environ["MATRIXARK_HOOK_AUTO_BATCH_EXTRACT"] = "0"
+            self.assertFalse(hook._env_bool("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", True))
+            os.environ["MATRIXARK_HOOK_AUTO_BATCH_EXTRACT"] = "false"
+            self.assertFalse(hook._env_bool("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", True))
+            os.environ["MATRIXARK_HOOK_AUTO_BATCH_EXTRACT"] = "1"
+            self.assertTrue(hook._env_bool("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", True))
+        finally:
+            if original_env is None:
+                os.environ.pop("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", None)
+            else:
+                os.environ["MATRIXARK_HOOK_AUTO_BATCH_EXTRACT"] = original_env
+
+        source = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_hook.py").read_text()
+        self.assertIn('HOOK_AUTO_BATCH_EXTRACT = _env_bool("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", True)', source)
 
     def test_live_ingest_auto_batch_decision_covers_tool_but_not_boundaries(self) -> None:
         original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT
