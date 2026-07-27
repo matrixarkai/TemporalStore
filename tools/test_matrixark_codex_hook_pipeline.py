@@ -746,7 +746,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "session_scope": "prefer",
                     "query": "What tool evidence proved the async threshold and idle extraction path?",
                     "max_context_tokens": 240,
-                    "audit_mode": "off",
+                    "audit_mode": "telemetry_only",
                     "ranking": {"max_selected_refs": 4},
                 }
             )
@@ -784,6 +784,25 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 any(str(warning).startswith("async_pipeline_remaining_stages:") for warning in pack.get("quality_warnings", [])),
                 pack,
             )
+            telemetry_rows = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") == "context_pack_telemetry"
+                and record.get("context_pack_id") == pack["pack_id"]
+            ]
+            self.assertTrue(telemetry_rows)
+            telemetry_readiness = telemetry_rows[-1]["async_pipeline_readiness"]
+            self.assertEqual(readiness, telemetry_readiness)
+            replay = adapter.replay({"context_pack_id": pack["pack_id"], "enable_replay": True})
+            replay_telemetry = [
+                row for row in replay["events"] if row.get("record_type") == "context_pack_telemetry"
+            ]
+            self.assertTrue(replay_telemetry, replay)
+            self.assertEqual(readiness, replay_telemetry[-1]["async_pipeline_readiness"])
+            pack_dashboard = adapter.ingestion_dashboard({"scope": scope, "table": "context_packs", "page_size": 10})
+            pack_rows = [row for row in pack_dashboard["rows"] if row.get("context_pack_id") == pack["pack_id"]]
+            self.assertTrue(pack_rows, pack_dashboard)
+            self.assertEqual(readiness, pack_rows[-1]["async_pipeline_readiness"])
 
             refresh = adapter.refresh_summaries(
                 {
