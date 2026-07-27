@@ -1929,6 +1929,27 @@ class MatrixArkLocalAdapter:
                     if str(role or "").strip()
                 }
             )
+            source_role_counts: Json = {}
+            for record in events + entity_states + child_summaries:
+                counts = record.get("source_role_counts") if isinstance(record.get("source_role_counts"), dict) else {}
+                for role, count in counts.items():
+                    role_name = str(role or "").strip()
+                    if not role_name:
+                        continue
+                    try:
+                        source_role_counts[role_name] = int(source_role_counts.get(role_name, 0)) + max(0, int(count or 0))
+                    except (TypeError, ValueError):
+                        continue
+                if not counts:
+                    fallback_roles = (
+                        record.get("source_roles")
+                        if isinstance(record.get("source_roles"), list)
+                        else [record.get("source_role")]
+                    )
+                    for role in fallback_roles:
+                        role_name = str(role or "").strip()
+                        if role_name:
+                            source_role_counts[role_name] = int(source_role_counts.get(role_name, 0)) + 1
             source_hook_types = sorted(
                 {
                     str(hook_type).strip()
@@ -1941,6 +1962,27 @@ class MatrixArkLocalAdapter:
                     if str(hook_type or "").strip()
                 }
             )
+            source_hook_type_counts: Json = {}
+            for record in events + entity_states + child_summaries:
+                counts = record.get("source_hook_type_counts") if isinstance(record.get("source_hook_type_counts"), dict) else {}
+                for hook_type, count in counts.items():
+                    hook_name = str(hook_type or "").strip()
+                    if not hook_name:
+                        continue
+                    try:
+                        source_hook_type_counts[hook_name] = int(source_hook_type_counts.get(hook_name, 0)) + max(0, int(count or 0))
+                    except (TypeError, ValueError):
+                        continue
+                if not counts:
+                    fallback_hook_types = (
+                        record.get("source_hook_types")
+                        if isinstance(record.get("source_hook_types"), list)
+                        else [record.get("hook_type")]
+                    )
+                    for hook_type in fallback_hook_types:
+                        hook_name = str(hook_type or "").strip()
+                        if hook_name:
+                            source_hook_type_counts[hook_name] = int(source_hook_type_counts.get(hook_name, 0)) + 1
             source_codex_events = sorted(
                 {
                     str(codex_event).strip()
@@ -1953,6 +1995,27 @@ class MatrixArkLocalAdapter:
                     if str(codex_event or "").strip()
                 }
             )
+            source_codex_event_counts: Json = {}
+            for record in events + entity_states + child_summaries:
+                counts = record.get("source_codex_event_counts") if isinstance(record.get("source_codex_event_counts"), dict) else {}
+                for codex_event, count in counts.items():
+                    event_name = str(codex_event or "").strip()
+                    if not event_name:
+                        continue
+                    try:
+                        source_codex_event_counts[event_name] = int(source_codex_event_counts.get(event_name, 0)) + max(0, int(count or 0))
+                    except (TypeError, ValueError):
+                        continue
+                if not counts:
+                    fallback_codex_events = (
+                        record.get("source_codex_events")
+                        if isinstance(record.get("source_codex_events"), list)
+                        else [record.get("codex_event")]
+                    )
+                    for codex_event in fallback_codex_events:
+                        event_name = str(codex_event or "").strip()
+                        if event_name:
+                            source_codex_event_counts[event_name] = int(source_codex_event_counts.get(event_name, 0)) + 1
             source_memory_scopes = sorted(
                 {
                     str(record.get("memory_scope") or "").strip()
@@ -2029,8 +2092,11 @@ class MatrixArkLocalAdapter:
                         "source_entity_hashes": source_entity_hashes,
                         "source_entity_types": source_entity_types,
                         "source_roles": source_roles,
+                        "source_role_counts": source_role_counts,
                         "source_hook_types": source_hook_types,
+                        "source_hook_type_counts": source_hook_type_counts,
                         "source_codex_events": source_codex_events,
+                        "source_codex_event_counts": source_codex_event_counts,
                         "source_memory_scopes": source_memory_scopes,
                         "source_session_continuities": source_session_continuities,
                         "source_extraction_phases": source_extraction_phases,
@@ -2104,8 +2170,11 @@ class MatrixArkLocalAdapter:
                         "source_entity_count": len(source_entity_hashes),
                         "source_entity_types": source_entity_types,
                         "source_roles": source_roles,
+                        "source_role_counts": source_role_counts,
                         "source_hook_types": source_hook_types,
+                        "source_hook_type_counts": source_hook_type_counts,
                         "source_codex_events": source_codex_events,
+                        "source_codex_event_counts": source_codex_event_counts,
                         "source_memory_scopes": source_memory_scopes,
                         "source_session_continuities": source_session_continuities,
                         "source_extraction_phases": source_extraction_phases,
@@ -2153,8 +2222,11 @@ class MatrixArkLocalAdapter:
                     "source_entity_count": len(source_entity_hashes),
                     "source_entity_types": source_entity_types,
                     "source_roles": source_roles,
+                    "source_role_counts": source_role_counts,
                     "source_hook_types": source_hook_types,
+                    "source_hook_type_counts": source_hook_type_counts,
                     "source_codex_events": source_codex_events,
+                    "source_codex_event_counts": source_codex_event_counts,
                     "source_memory_scopes": source_memory_scopes,
                     "source_session_continuities": source_session_continuities,
                     "source_extraction_phases": source_extraction_phases,
