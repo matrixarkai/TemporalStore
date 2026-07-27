@@ -28,6 +28,8 @@ def main() -> int:
     parser.add_argument("--misses", default="/tmp/temporalstore_longmemeval_s_full_path_misses.jsonl")
     add_threshold_policy_args(parser)
     parser.add_argument("--max-events", type=int, default=14)
+    parser.add_argument("--question-limit", type=int, default=0)
+    parser.add_argument("--question-offset", type=int, default=0)
     parser.add_argument("--embedding-model", default="matrixark-local-hash-embedding")
     parser.add_argument("--baseline-provider-name", default="")
     parser.add_argument("--baseline-reader-model", default="")
@@ -47,6 +49,11 @@ def main() -> int:
     parser.add_argument("--reader-api-key-env", default="OPENAI_API_KEY")
     parser.add_argument("--reader-timeout-seconds", type=float, default=20.0)
     parser.add_argument("--reader-max-context-chars", type=int, default=12000)
+    parser.add_argument("--retrieval-same-session-percent", type=float, default=0.70)
+    parser.add_argument("--retrieval-cross-session-percent", type=float, default=0.45)
+    parser.add_argument("--retrieval-summary-percent", type=float, default=0.25)
+    parser.add_argument("--retrieval-entity-percent", type=float, default=0.35)
+    parser.add_argument("--retrieval-event-percent", type=float, default=0.80)
     parser.add_argument(
         "--reader-include-extractive-hint",
         action="store_true",
@@ -140,6 +147,10 @@ def main() -> int:
         str(thresholds["max_reader_p95_ms"]),
         "--max-events",
         str(args.max_events),
+        "--question-limit",
+        str(args.question_limit),
+        "--question-offset",
+        str(args.question_offset),
         "--embedding-model",
         args.embedding_model,
         "--reader-mode",
@@ -154,6 +165,16 @@ def main() -> int:
         str(args.reader_timeout_seconds),
         "--reader-max-context-chars",
         str(args.reader_max_context_chars),
+        "--retrieval-same-session-percent",
+        str(args.retrieval_same_session_percent),
+        "--retrieval-cross-session-percent",
+        str(args.retrieval_cross_session_percent),
+        "--retrieval-summary-percent",
+        str(args.retrieval_summary_percent),
+        "--retrieval-entity-percent",
+        str(args.retrieval_entity_percent),
+        "--retrieval-event-percent",
+        str(args.retrieval_event_percent),
     ]
     if args.baseline_provider_name:
         command.extend(["--baseline-provider-name", args.baseline_provider_name])
