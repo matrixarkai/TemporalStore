@@ -332,6 +332,27 @@ def matrixark_local_recovery_report(
         summary_count=int(record_counts.get("context_summary", 0)),
     )
     recovery_status = "empty" if not records else ("repair_required" if blockers else derived_readiness["status"])
+    cluster_join_missing_steps: list[str] = []
+    warning_rebuild_steps = {
+        "derived:embeddings_missing_or_stale": "rebuild_context_embeddings",
+        "derived:indexes_missing": "rebuild_secondary_indexes",
+        "derived:summaries_dirty": "refresh_summaries_for_dirty_nodes",
+        "derived:summaries_missing": "refresh_or_regenerate_context_summaries",
+    }
+    if blockers:
+        cluster_join_missing_steps.append("repair_durable_log_before_bootstrap")
+    for warning in derived_readiness["warnings"]:
+        step = warning_rebuild_steps.get(str(warning))
+        if step:
+            cluster_join_missing_steps.append(step)
+    durable_source_record_count = sum(int(record_counts.get(record_type, 0)) for record_type in PRIMARY_RECOVERY_RECORD_TYPES)
+    hot_cache_rebuildable = any(count > 0 for count in compacted_hot_counts.values()) and not blockers
+    ready_for_context_serving = (
+        bool(records)
+        and not blockers
+        and bool(hot_cache_rebuildable)
+        and derived_readiness["status"] == "ready"
+    )
     return {
         "status": recovery_status,
         "record_count": len(records),
@@ -415,6 +436,40 @@ def matrixark_local_recovery_report(
             ),
         },
         "retrieval_smoke": retrieval_smoke,
+        "cluster_join_bootstrap": {
+            "readiness_status": (
+                "empty"
+                if not records
+                else ("repair_required" if blockers else ("ready" if ready_for_context_serving else "rebuild_required"))
+            ),
+            "ready_for_context_serving": ready_for_context_serving,
+            "source_of_truth": "durable_context_records_not_in_memory_index",
+            "in_memory_index_persistence_required": False,
+            "hot_cache_source": "rebuild_from_compacted_durable_records",
+            "secondary_index_source": "persisted_context_index_or_rebuild_from_context_models",
+            "durable_source_catchup_required": True,
+            "durable_source_record_count": durable_source_record_count,
+            "hot_cache_rebuildable_from_durable_log": hot_cache_rebuildable,
+            "secondary_indexes_present": bool(indexed_ref_hashes),
+            "secondary_indexes_rebuildable_from_context_models": bool(source_refs) and not blockers,
+            "embeddings_present": bool(embedding_refs),
+            "embeddings_rebuildable_from_context_models": bool(source_refs) and not blockers,
+            "summaries_present": int(record_counts.get("context_summary", 0)) > 0,
+            "dirty_summaries_pending": bool(dirty_summaries),
+            "missing_rebuild_steps": cluster_join_missing_steps,
+            "blockers": blockers,
+            "new_node_flow": [
+                "join Raft group and catch up durable WAL or snapshot state",
+                "scan durable MatrixArk context records",
+                "compact latest-value context records",
+                "rebuild in-memory read, retrieval, and entity caches",
+                "verify or rebuild context_index secondary postings",
+                "verify or rebuild context_embedding rows",
+                "refresh dirty or missing context_summary rows",
+                "warm retrieval caches for the serving scope",
+                "mark MatrixArk context serving ready",
+            ],
+        },
         "parse_errors": parse_errors,
         "blockers": blockers,
         "warnings": derived_readiness["warnings"] if not blockers else [],
@@ -430,6 +485,7 @@ def matrixark_local_recovery_report(
             "rebuild read/retrieval/entity hot caches from compacted records",
             "rebuild context_index and context_embedding views when stale or missing",
             "run refresh_summaries for context_summary_dirty records",
+            "warm retrieval caches before admitting context serving traffic",
         ],
     }
 
