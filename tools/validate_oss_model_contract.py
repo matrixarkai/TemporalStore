@@ -249,7 +249,8 @@ def normalize_report(path: Path, label: str, errors: list[str]) -> dict[str, Any
             errors.append(f"{label}: {key}_missing")
     for key in ("reader_model", "embedding_model", "encoding_model"):
         model_name = str(row.get(key) or "")
-        if any(marker in model_name for marker in NON_OSS_MODEL_MARKERS):
+        normalized_model_name = model_name.lower()
+        if any(marker in normalized_model_name for marker in NON_OSS_MODEL_MARKERS):
             errors.append(f"{label}: {key}_not_oss actual={model_name!r}")
     if row.get("embedding_model") and row.get("encoding_model") and row["embedding_model"] != row["encoding_model"]:
         errors.append(
