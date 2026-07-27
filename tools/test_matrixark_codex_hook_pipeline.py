@@ -853,6 +853,39 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 )
                 self.assertTrue(all(record["completed_stages"] == ["extraction"] for record in progress))
                 self.assertTrue(all("summary" in record["remaining_stages"] for record in progress))
+
+                pack = adapter.retrieve(
+                    {
+                        "scope": {
+                            "account_id": "acct_fast_idle",
+                            "tenant_id": "tenant_fast_idle",
+                            "user_id": "user_fast_idle",
+                            "session_id": "session_fast_idle_followup",
+                        },
+                        "session_scope": "prefer",
+                        "query": "What tool evidence was captured by the idle timeout memory commit?",
+                        "max_context_tokens": 120,
+                        "audit_mode": "off",
+                        "debug_context_pack": True,
+                        "ranking": {"max_selected_refs": 3},
+                    }
+                )
+                self.assertLessEqual(pack["used_context_tokens"], 120)
+                self.assertTrue(
+                    any(
+                        ref.get("ref_type") == "entity"
+                        and ref.get("entity_type") == "tool_evidence"
+                        and ref.get("memory_scope") == "user_profile"
+                        and ref.get("session_continuity") == "cross_session"
+                        and "hook pipeline tests passed" in str(ref.get("text") or ref.get("summary_text") or "")
+                        for ref in pack["selected_refs"]
+                    ),
+                    pack["selected_refs"],
+                )
+                memory_budget = pack["recall_policy"]["memory_layer_budget"]
+                self.assertIn("user_profile", memory_budget["by_memory_scope"])
+                self.assertIn("cross_session", memory_budget["by_session_continuity"])
+                self.assertEqual({"tool": 1}, memory_budget["source_message_counts_by_role"])
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
