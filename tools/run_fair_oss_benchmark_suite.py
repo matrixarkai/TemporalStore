@@ -88,6 +88,15 @@ def main() -> int:
             "The shared OSS model/budget contract is still enforced."
         ),
     )
+    parser.add_argument(
+        "--online-oss-model-checks",
+        action="store_true",
+        help=(
+            "Allow child benchmark processes to contact model hubs while loading the shared OSS encoder. "
+            "By default the suite uses the local model cache after installation so repeated fair runs do "
+            "not fail on remote metadata HEAD requests."
+        ),
+    )
     args = parser.parse_args()
     apply_shared_oss_stack_aliases(args)
     validate_shared_oss_stack(args)
@@ -99,6 +108,9 @@ def main() -> int:
     env["MATRIXARK_READER_MAX_TOKENS"] = str(args.reader_max_tokens)
     env["MATRIXARK_BENCHMARK_BASELINE_READER_MAX_TOKENS"] = str(args.reader_max_tokens)
     env.setdefault("HF_HUB_DISABLE_XET", "1")
+    if not args.online_oss_model_checks:
+        env.setdefault("HF_HUB_OFFLINE", "1")
+        env.setdefault("TRANSFORMERS_OFFLINE", "1")
     env["NO_PROXY"] = append_no_proxy(env.get("NO_PROXY", ""), "127.0.0.1", "localhost", "::1")
     env["no_proxy"] = append_no_proxy(env.get("no_proxy", ""), "127.0.0.1", "localhost", "::1")
     write_shared_oss_stack_contract(out, args)
