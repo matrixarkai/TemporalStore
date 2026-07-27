@@ -48,6 +48,17 @@ class OssModelContractValidationTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("embedding_encoding_model_mismatch", result.stderr)
 
+    def test_reader_output_token_budget_drift_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            matrixark = write_report(tmp_path / "matrixark.json")
+            baseline = write_report(tmp_path / "openviking.json", reader_max_tokens=192)
+
+            result = run_validator(matrixark, baseline)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("reader_max_tokens_mismatch", result.stderr)
+
 
 def run_validator(matrixark: Path, baseline: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -76,6 +87,7 @@ def write_report(
     reader_model: str = "qwen2.5:7b",
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
     encoding_model: str | None = None,
+    reader_max_tokens: int = 128,
 ) -> Path:
     encoding = encoding_model or embedding_model
     matrixark_like = path.name.startswith("matrixark")
@@ -88,6 +100,7 @@ def write_report(
         f"{prefix}_encoding_model": encoding,
         f"{prefix}_max_events": 64,
         f"{prefix}_reader_max_context_chars": 4096,
+        f"{prefix}_reader_max_tokens": reader_max_tokens,
         f"{prefix}_adaptive_max_events": False,
         f"{prefix}_adaptive_base_max_events": 0,
         f"{prefix}_retrieval_same_session_percent": 0.7,
@@ -101,6 +114,7 @@ def write_report(
         f"{other_prefix}_encoding_model": "sentence-transformers/all-MiniLM-L6-v2",
         f"{other_prefix}_max_events": 64,
         f"{other_prefix}_reader_max_context_chars": 4096,
+        f"{other_prefix}_reader_max_tokens": 128,
         f"{other_prefix}_adaptive_max_events": False,
         f"{other_prefix}_adaptive_base_max_events": 0,
         f"{other_prefix}_retrieval_same_session_percent": 0.7,

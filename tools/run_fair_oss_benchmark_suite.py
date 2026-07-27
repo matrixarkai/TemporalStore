@@ -96,6 +96,7 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env["MATRIXARK_READER_MAX_TOKENS"] = str(args.reader_max_tokens)
+    env["MATRIXARK_BENCHMARK_BASELINE_READER_MAX_TOKENS"] = str(args.reader_max_tokens)
     write_shared_oss_stack_contract(out, args)
 
     locomo_matrixark = out / "matrixark_locomo_oss_report.json"
@@ -383,6 +384,8 @@ def locomo_baseline_command(repo: Path, args: argparse.Namespace, matrixark_repo
         str(args.reader_timeout_seconds),
         "--reader-max-context-chars",
         str(args.locomo_reader_context_chars),
+        "--reader-max-tokens",
+        str(args.reader_max_tokens),
         "--max-events",
         str(args.locomo_max_events),
         "--adaptive-max-events",
@@ -429,6 +432,8 @@ def longmem_baseline_command(repo: Path, args: argparse.Namespace, matrixark_rep
         str(args.longmem_max_events),
         "--max-context-chars",
         str(args.longmem_reader_context_chars),
+        "--reader-max-tokens",
+        str(args.reader_max_tokens),
         "--same-session-percent",
         str(args.same_session_percent),
         "--cross-session-percent",
@@ -496,18 +501,21 @@ def write_shared_oss_stack_contract(output_root: Path, args: argparse.Namespace)
             "reader_model": reader_model,
             "embedding_model": embedding_model,
             "encoding_model": embedding_model,
+            "reader_max_tokens": args.reader_max_tokens,
             "contract_required": True,
         },
         "openviking_stack": {
             "reader_model": reader_model,
             "embedding_model": embedding_model,
             "encoding_model": embedding_model,
+            "reader_max_tokens": args.reader_max_tokens,
             "contract_required": True,
         },
         "vikingmem_stack": {
             "reader_model": reader_model,
             "embedding_model": embedding_model,
             "encoding_model": embedding_model,
+            "reader_max_tokens": args.reader_max_tokens,
             "contract_required": True,
         },
         "contract_validators": [

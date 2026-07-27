@@ -818,6 +818,7 @@ def main() -> int:
         "reader_prompt_system": OSS_READER_SYSTEM_PROMPT,
         "reader_prompt_user_template": OSS_READER_USER_PROMPT_TEMPLATE,
         "reader_max_context_chars": reader.config.max_context_chars,
+        "reader_max_tokens": reader_max_tokens_from_env(),
         "reader_include_extractive_hint": reader.config.include_extractive_hint,
         "reader_focus_evidence": reader.config.focus_evidence,
         "reader_candidate_first": reader.config.candidate_first,
@@ -1947,6 +1948,12 @@ def benchmark_model_contract(args: argparse.Namespace, reader: "BenchmarkReader"
     baseline_embedding = str(args.baseline_embedding_model or "").strip()
     baseline_max_events = int(args.baseline_max_events or 0)
     baseline_reader_max_context_chars = int(args.baseline_reader_max_context_chars or 0)
+    matrixark_reader_max_tokens = reader_max_tokens_from_env()
+    baseline_reader_max_tokens = int(
+        os.environ.get("MATRIXARK_BENCHMARK_BASELINE_READER_MAX_TOKENS")
+        or os.environ.get("MATRIXARK_READER_MAX_TOKENS")
+        or 0
+    )
     same_session_percent = clamp_percent(float(args.retrieval_same_session_percent))
     cross_session_percent = clamp_percent(float(args.retrieval_cross_session_percent))
     summary_percent = clamp_percent(float(args.retrieval_summary_percent))
@@ -1961,6 +1968,9 @@ def benchmark_model_contract(args: argparse.Namespace, reader: "BenchmarkReader"
         baseline_reader_max_context_chars > 0
         and int(reader.config.max_context_chars) == baseline_reader_max_context_chars
     )
+    reader_output_budget_matches = (
+        baseline_reader_max_tokens > 0 and matrixark_reader_max_tokens == baseline_reader_max_tokens
+    )
     provider_declared = bool(matrixark_provider) and bool(baseline_provider)
     return {
         "matrixark_provider_name": matrixark_provider,
@@ -1969,6 +1979,7 @@ def benchmark_model_contract(args: argparse.Namespace, reader: "BenchmarkReader"
         "matrixark_encoding_model": matrixark_embedding,
         "matrixark_max_events": int(args.max_events),
         "matrixark_reader_max_context_chars": int(reader.config.max_context_chars),
+        "matrixark_reader_max_tokens": matrixark_reader_max_tokens,
         "matrixark_adaptive_max_events": bool(args.adaptive_max_events),
         "matrixark_adaptive_base_max_events": int(args.adaptive_base_max_events)
         if bool(args.adaptive_max_events)
@@ -1984,6 +1995,7 @@ def benchmark_model_contract(args: argparse.Namespace, reader: "BenchmarkReader"
         "baseline_encoding_model": baseline_embedding,
         "baseline_max_events": baseline_max_events,
         "baseline_reader_max_context_chars": baseline_reader_max_context_chars,
+        "baseline_reader_max_tokens": baseline_reader_max_tokens,
         "baseline_adaptive_max_events": bool(args.adaptive_max_events),
         "baseline_adaptive_base_max_events": int(args.adaptive_base_max_events)
         if bool(args.adaptive_max_events)
@@ -1998,6 +2010,7 @@ def benchmark_model_contract(args: argparse.Namespace, reader: "BenchmarkReader"
         "embedding_model_match": embedding_matches,
         "max_events_match": max_events_matches,
         "reader_context_budget_match": reader_budget_matches,
+        "reader_output_budget_match": reader_output_budget_matches,
         "shared_oss_model_contract_required": bool(args.require_shared_oss_models),
         "shared_oss_model_contract_passed": (
             provider_declared
@@ -2005,14 +2018,20 @@ def benchmark_model_contract(args: argparse.Namespace, reader: "BenchmarkReader"
             and embedding_matches
             and max_events_matches
             and reader_budget_matches
+            and reader_output_budget_matches
         ),
         "comparison_rule": (
             "Paper/comparable claims require MatrixArk, VikingMem/OpenViking, and other baselines "
             "to use the same OSS reader model, embedding/encoding model, retrieval block budget, "
-            "adaptive retrieval policy, retrieval budget split, and reader context budget. Provider "
+            "adaptive retrieval policy, retrieval budget split, reader context budget, and reader "
+            "output-token budget. Provider "
             "names are recorded so reports cannot hide which runtime produced each side."
         ),
     }
+
+
+def reader_max_tokens_from_env() -> int:
+    return int(os.environ.get("MATRIXARK_READER_MAX_TOKENS", "160") or "160")
 
 
 def shared_oss_model_contract_is_required(args: argparse.Namespace) -> bool:
@@ -2956,6 +2975,19 @@ def add_domain_reference_sources(
                 matched_keys.add(key)
     if not matched:
         return selected
+    if not diverse_pattern_query:
+        out = ordered_sources(selected)
+        selected_keys = {source_identity(source) for source in out}
+        for source in matched:
+            key = source_identity(source)
+            if key in selected_keys:
+                continue
+            if len(out) >= max(1, max_events):
+                removed = out.pop()
+                selected_keys.discard(source_identity(removed))
+            out.append(source)
+            selected_keys.add(key)
+        return out[: max(1, max_events)]
     out: list[dict[str, str]] = []
     selected_keys: set[str] = set()
     for source in matched:
