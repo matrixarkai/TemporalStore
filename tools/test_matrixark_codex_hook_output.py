@@ -11,6 +11,7 @@ from pathlib import Path
 
 import matrixark_codex_hook as hook
 import matrixark_http
+from matrixark_mcp_core import memory_hierarchy_contract_from_recall_policy
 from matrixark_codex_hook_payload import decode_payload, extract_identity, extract_prompt
 
 
@@ -561,6 +562,31 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         )
         self.assertIn("profile_entity_bridge", hierarchy["selected_ref_flow"])
         self.assertEqual(len("user: rendered profile decision"), item["result"]["rendered_context_chars"])
+
+    def test_codex_hierarchy_contract_delegates_to_core_contract(self) -> None:
+        recall_policy = {
+            "session_continuity": {
+                "mode": "prefer",
+                "policy": "same-session first, profile entity bridge second",
+            },
+            "cross_session": {
+                "enabled": True,
+                "budget_tokens": 64,
+                "remote_budget_tokens": 100,
+                "computed_budget_tokens": 64,
+                "budget_floor_tokens": 256,
+                "budget_floor_applied": False,
+                "budget_floor_status": "remote_budget_too_small_for_profile_floor",
+                "max_sessions": 3,
+                "max_candidates": 24,
+            },
+            "shared_context": {"enabled": False},
+        }
+
+        self.assertEqual(
+            memory_hierarchy_contract_from_recall_policy(recall_policy),
+            hook.retrieval_memory_hierarchy_contract_from_retrieve({"recall_policy": recall_policy}),
+        )
 
     def test_session_commit_tool_call_trace_records_trigger_evidence(self) -> None:
         class Server:

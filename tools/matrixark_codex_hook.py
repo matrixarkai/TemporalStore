@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from tools.matrixark_mcp_core import _mcp_debug_log
+    from tools.matrixark_mcp_core import _mcp_debug_log, memory_hierarchy_contract_from_recall_policy
 except ModuleNotFoundError:
-    from matrixark_mcp_core import _mcp_debug_log
+    from matrixark_mcp_core import _mcp_debug_log, memory_hierarchy_contract_from_recall_policy
 
 
 Json = dict[str, Any]
@@ -439,51 +439,7 @@ def retrieval_memory_hierarchy_contract_from_retrieve(pack: Json | None) -> Json
     if not isinstance(pack, dict):
         return {}
     recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
-    continuity = recall_policy.get("session_continuity") if isinstance(recall_policy.get("session_continuity"), dict) else {}
-    cross_session = recall_policy.get("cross_session") if isinstance(recall_policy.get("cross_session"), dict) else {}
-    shared_context = recall_policy.get("shared_context") if isinstance(recall_policy.get("shared_context"), dict) else {}
-    return {
-        "models": {
-            "session_entity": {
-                "record_type": "context_entity",
-                "memory_scope": "session",
-                "session_continuity": "same_session",
-            },
-            "profile_entity": {
-                "record_type": "context_entity",
-                "memory_scope": "user_profile",
-                "session_continuity": "cross_session",
-                "node_path_suffix": "profile:long_term_memory",
-            },
-            "profile_index": {
-                "record_type": "context_index",
-                "data_model": "context_profile_entity",
-            },
-        },
-        "retrieval_strategy": continuity.get(
-            "policy",
-            "same-session continuity first; entity state bridges cross-session memory; cross-session evidence remains bounded",
-        ),
-        "session_scope_mode": continuity.get("mode"),
-        "cross_session_enabled": cross_session.get("enabled"),
-        "cross_session_budget_tokens": cross_session.get("budget_tokens"),
-        "cross_session_remote_budget_tokens": cross_session.get("remote_budget_tokens"),
-        "cross_session_computed_budget_tokens": cross_session.get("computed_budget_tokens"),
-        "cross_session_budget_floor_tokens": cross_session.get("budget_floor_tokens"),
-        "cross_session_budget_floor_applied": cross_session.get("budget_floor_applied"),
-        "cross_session_budget_floor_status": cross_session.get("budget_floor_status"),
-        "cross_session_max_sessions": cross_session.get("max_sessions"),
-        "cross_session_max_candidates": cross_session.get("max_candidates"),
-        "shared_context_enabled": shared_context.get("enabled"),
-        "selected_ref_flow": [
-            "local_context_budget",
-            "same_session_memory",
-            "profile_entity_bridge",
-            "bounded_cross_session_evidence",
-            "summary_or_compression",
-            "shared_resource_or_skill",
-        ],
-    }
+    return memory_hierarchy_contract_from_recall_policy(recall_policy)
 
 
 def retrieval_session_identity_from_retrieve(pack: Json | None, *, session_id_source: str = "") -> Json:
