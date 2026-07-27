@@ -15,7 +15,7 @@ from pathlib import Path
 
 import matrixark_codex_hook
 from matrixark_mcp_context_pack import compact_context_pack_for_serving, compact_dropped_refs_for_context_pack, compact_refs_for_audit
-from matrixark_mcp_core import identity_hashes, packing_sort_key, select_token_budgeted_refs
+from matrixark_mcp_core import candidate_index_terms, identity_hashes, packing_sort_key, select_token_budgeted_refs
 from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget, memory_layer_pressure_summary, selected_ref_layer_budget
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 
@@ -304,6 +304,26 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("memory_scope:session", compression_index_names)
             self.assertIn("session_continuity:same_session", compression_index_names)
             self.assertIn("extraction_phase:final", compression_index_names)
+            index_terms_by_ref: dict[int, list[str]] = {}
+            index_terms_by_node: dict[int, list[str]] = {}
+            for record in adapter.read_all():
+                if record.get("record_type") != "context_index":
+                    continue
+                for ref_hash in record.get("ref_hashes", []):
+                    index_terms_by_ref.setdefault(ref_hash, []).append(record.get("index_name", ""))
+                if record.get("node_hash") is not None:
+                    index_terms_by_node.setdefault(record["node_hash"], []).append(record.get("index_name", ""))
+            compression_terms = candidate_index_terms(compression, {}, index_terms_by_node, index_terms_by_ref)
+            self.assertIn("context_class:compression", compression_terms)
+            self.assertIn("operator:time_compress", compression_terms)
+            self.assertIn("source_role:assistant", compression_terms)
+            self.assertIn("source_role:tool", compression_terms)
+            self.assertIn("hook_type:hook_boundary", compression_terms)
+            self.assertIn("codex_event:stop", compression_terms)
+            self.assertIn("codex_event:posttooluse", compression_terms)
+            self.assertIn("memory_scope:session", compression_terms)
+            self.assertIn("session_continuity:same_session", compression_terms)
+            self.assertIn("extraction_phase:final", compression_terms)
 
             budget = selected_ref_layer_budget(
                 [
