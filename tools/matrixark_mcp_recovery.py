@@ -447,6 +447,7 @@ def matrixark_local_recovery_report(
         record for record in records
         if record.get("record_type") == "matrixark_async_pipeline_task"
     ]
+    async_task_status_rank = {"pending": 0, "extraction_committed": 1, "summary_completed": 2}
     latest_async_task_by_hash: dict[int, Json] = {}
     for record in async_task_records:
         try:
@@ -454,9 +455,11 @@ def matrixark_local_recovery_report(
         except (TypeError, ValueError):
             continue
         current = latest_async_task_by_hash.get(task_hash)
-        if current is None or int(record.get("updated_at_ms") or record.get("created_at_ms") or 0) >= int(
-            current.get("updated_at_ms") or current.get("created_at_ms") or 0
-        ):
+        record_rank = async_task_status_rank.get(str(record.get("status") or ""), -1)
+        current_rank = async_task_status_rank.get(str(current.get("status") or ""), -1) if current else -1
+        record_time = int(record.get("updated_at_ms") or record.get("created_at_ms") or 0)
+        current_time = int(current.get("updated_at_ms") or current.get("created_at_ms") or 0) if current else -1
+        if current is None or (record_rank, record_time) >= (current_rank, current_time):
             latest_async_task_by_hash[task_hash] = record
     latest_async_task_records = list(latest_async_task_by_hash.values())
     async_task_status_counts = Counter(

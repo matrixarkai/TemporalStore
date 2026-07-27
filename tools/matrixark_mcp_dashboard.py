@@ -90,6 +90,24 @@ def dashboard_message_rows(records: list[Json], scope: Json) -> list[Json]:
     return rows
 
 
+def latest_async_pipeline_rows(rows: list[Json]) -> list[Json]:
+    status_rank = {"pending": 0, "extraction_committed": 1, "summary_completed": 2}
+    latest_by_task: dict[int, Json] = {}
+    for row in rows:
+        try:
+            task_hash = int(row.get("task_hash") or row.get("event_id_hash"))
+        except (TypeError, ValueError):
+            continue
+        current = latest_by_task.get(task_hash)
+        current_rank = status_rank.get(str(current.get("status") or ""), -1) if current else -1
+        row_rank = status_rank.get(str(row.get("status") or ""), -1)
+        current_time = int(current.get("updated_at_ms") or current.get("created_at_ms") or 0) if current else -1
+        row_time = int(row.get("updated_at_ms") or row.get("created_at_ms") or 0)
+        if current is None or (row_rank, row_time) >= (current_rank, current_time):
+            latest_by_task[task_hash] = row
+    return list(latest_by_task.values())
+
+
 def dashboard_rows_for_table(records: list[Json], table: str, scope: Json) -> list[Json]:
     rows: list[Json] = []
     if table == "messages":
@@ -312,6 +330,8 @@ def dashboard_rows_for_table(records: list[Json], table: str, scope: Json) -> li
                     "updated_at_ms": record.get("updated_at_ms", record.get("created_at_ms", 0)),
                 }
             )
+    if table == "async_pipeline":
+        rows = latest_async_pipeline_rows(rows)
     if table == "resources":
         priority = {"resource_manifest": 0, "resource_chunk": 1, "resource_import_task": 2}
         rows.sort(
