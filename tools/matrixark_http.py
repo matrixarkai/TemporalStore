@@ -125,6 +125,31 @@ def _agent_hook_metadata(body: Json, normalized: Json, raw_payload: Json) -> Jso
     }
 
 
+def _agent_hook_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _agent_hook_auto_batch_extract(body: Json, normalized: Json, event: str, text: str) -> bool:
+    explicit = normalized.get("auto_batch_extract", body.get("auto_batch_extract"))
+    if explicit is not None:
+        return _agent_hook_bool(explicit)
+    if _agent_hook_bool(normalized.get("should_commit")):
+        return False
+    if not text:
+        return False
+    if _agent_hook_bool(normalized.get("should_retrieve")):
+        return True
+    return event in {
+        "AssistantResponse",
+        "UserPromptSubmit",
+        "PostToolUse",
+        "PreToolUse",
+        "PermissionRequest",
+    }
+
+
 def _agent_hook_call(server: Any, body: Json) -> Json:
     normalized = body.get("normalized_event") if isinstance(body.get("normalized_event"), dict) else {}
     raw_payload = body.get("raw_payload") if isinstance(body.get("raw_payload"), dict) else {}
@@ -160,14 +185,21 @@ def _agent_hook_call(server: Any, body: Json) -> Json:
         "committed": {},
     }
     if text:
+        auto_batch_extract = _agent_hook_auto_batch_extract(body, normalized, event, text)
         ingest_args: Json = {
             **args_common,
             "messages": [{"role": role, "content": text}],
             "metadata": metadata,
             "agent_hook": agent_hook,
             "storage_options": storage_options,
-            "auto_batch_extract": bool(normalized.get("should_retrieve")),
+            "auto_batch_extract": auto_batch_extract,
         }
+        threshold = normalized.get("session_buffer_threshold", body.get("session_buffer_threshold"))
+        if threshold is not None:
+            ingest_args["session_buffer_threshold"] = int(threshold)
+        idle_timeout = normalized.get("idle_commit_timeout_ms", body.get("idle_commit_timeout_ms"))
+        if idle_timeout is not None:
+            ingest_args["idle_commit_timeout_ms"] = int(idle_timeout)
         result["ingested"] = server.call_tool("matrixark_ingest", ingest_args)
     if bool(normalized.get("should_retrieve")):
         retrieve_args: Json = {
