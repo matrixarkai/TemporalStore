@@ -58,6 +58,23 @@ def codex_session_identity_policy(session_id_source: str) -> Json:
     }
 
 
+def session_event_message_count(records: list[Json]) -> int:
+    return sum(len(messages_from_event_record(record)) for record in records)
+
+
+def session_events_by_message_limit(records: list[Json], limit: int | None) -> list[Json]:
+    if limit is None:
+        return records
+    selected: list[Json] = []
+    message_count = 0
+    for record in records:
+        selected.append(record)
+        message_count += max(1, len(messages_from_event_record(record)))
+        if message_count >= limit:
+            break
+    return selected
+
+
 def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
     record_type = str(record.get("record_type") or "")
     if record_type == "context_node":
@@ -903,6 +920,7 @@ class MatrixArkLocalAdapter:
             raise MatrixArkError("max_messages must be a positive integer")
         pending_all = self.pending_session_events(scope)
         pending_event_count = len(pending_all)
+        pending_message_count = session_event_message_count(pending_all)
         idle_elapsed_ms = 0
         idle_ready = False
         if pending_all and idle_timeout_ms is not None:
@@ -912,9 +930,10 @@ class MatrixArkLocalAdapter:
             )
             idle_elapsed_ms = max(0, now_ms() - latest_event_time)
             idle_ready = idle_elapsed_ms >= idle_timeout_ms
-        threshold_ready = pending_event_count >= threshold
+        threshold_ready = pending_event_count >= threshold or pending_message_count >= threshold
         trigger_evidence: Json = {
             "pending_event_count": pending_event_count,
+            "pending_message_count": pending_message_count,
             "threshold_messages": threshold,
             "threshold_ready": threshold_ready,
             "idle_timeout_ms": idle_timeout_ms,
@@ -927,6 +946,7 @@ class MatrixArkLocalAdapter:
             return {
                 "status": "deferred",
                 "pending_event_count": pending_event_count,
+                "pending_message_count": pending_message_count,
                 "threshold_messages": threshold,
                 "commit_reason": commit_reason,
                 "idle_timeout_ms": idle_timeout_ms,
@@ -943,7 +963,7 @@ class MatrixArkLocalAdapter:
             commit_limit = None
         else:
             commit_limit = threshold
-        pending = pending_all[:commit_limit] if commit_limit is not None else pending_all
+        pending = session_events_by_message_limit(pending_all, commit_limit)
         messages = []
         source_event_ids = []
         pending_source_roles: set[str] = set()
@@ -965,21 +985,23 @@ class MatrixArkLocalAdapter:
             for values in [event_metadata.get("source_codex_events")]:
                 if isinstance(values, list):
                     pending_source_codex_events.update(str(value).strip() for value in values if str(value or "").strip())
-            message = message_from_event_record(record)
-            if not message:
+            record_messages = messages_from_event_record(record)
+            if not record_messages:
                 continue
-            role = str(message.get("role") or "").strip()
-            if role:
-                pending_source_roles.add(role)
+            for message in record_messages:
+                role = str(message.get("role") or "").strip()
+                if role:
+                    pending_source_roles.add(role)
             for values in [event_metadata.get("source_roles")]:
                 if isinstance(values, list):
                     pending_source_roles.update(str(value).strip() for value in values if str(value or "").strip())
-            messages.append(message)
+            messages.extend(record_messages)
             source_event_ids.append(record["event_id_hash"])
         if not messages:
             return {
                 "status": "empty",
                 "pending_event_count": pending_event_count,
+                "pending_message_count": pending_message_count,
                 "threshold_messages": threshold,
                 "commit_reason": commit_reason,
                 "idle_timeout_ms": idle_timeout_ms,
@@ -1019,7 +1041,8 @@ class MatrixArkLocalAdapter:
         overlap_records = overlap_records[-overlap_limit:]
         extraction_context_messages = [
             message
-            for message in (message_from_event_record(record) for record in overlap_records)
+            for record in overlap_records
+            for message in messages_from_event_record(record)
             if message
         ]
         extraction_context_event_ids = [
@@ -2761,13 +2784,15 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
-            pending_event_count = len(self.pending_session_events(envelope["scope"]))
+            pending_events = self.pending_session_events(envelope["scope"])
+            pending_event_count = len(pending_events)
+            pending_message_count = session_event_message_count(pending_events)
             auto_batch_result: Json | None = None
             auto_batch_extract = auto_batch_extract_enabled(args, kind=envelope["kind"])
             session_buffer_threshold = args.get("session_buffer_threshold", 20)
             if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
                 raise MatrixArkError("session_buffer_threshold must be a positive integer")
-            threshold_ready = pending_event_count >= session_buffer_threshold
+            threshold_ready = pending_event_count >= session_buffer_threshold or pending_message_count >= session_buffer_threshold
             idle_ready = bool(
                 isinstance(idle_commit_result, dict)
                 and idle_commit_result.get("status") in {"accepted", "committed"}
@@ -2814,6 +2839,7 @@ class MatrixArkLocalAdapter:
                 "session_buffer": {
                     "buffer_key": list(session_buffer_key(envelope)),
                     "pending_event_count": pending_event_count,
+                    "pending_message_count": pending_message_count,
                     "threshold_messages": session_buffer_threshold,
                     "threshold_ready": threshold_ready,
                     "idle_ready": idle_ready,
@@ -3799,13 +3825,16 @@ class MatrixArkLocalAdapter:
                 source_hash_field="source_event_hash",
                 source_hash=event_id_hash,
             )
-        pending_event_count = len(self.pending_session_events(envelope["scope"]))
+        pending_events = self.pending_session_events(envelope["scope"])
+        pending_event_count = len(pending_events)
+        pending_message_count = session_event_message_count(pending_events)
         auto_batch_result: Json | None = None
         auto_batch_extract = auto_batch_extract_enabled(args, kind=envelope["kind"])
         session_buffer_threshold = args.get("session_buffer_threshold", 20)
         if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
             raise MatrixArkError("session_buffer_threshold must be a positive integer")
-        if auto_batch_extract and pending_event_count >= session_buffer_threshold:
+        threshold_ready = pending_event_count >= session_buffer_threshold or pending_message_count >= session_buffer_threshold
+        if auto_batch_extract and threshold_ready:
             auto_batch_result = self.session_commit(
                 {
                     "scope": hot_record_scope,
@@ -3896,7 +3925,9 @@ class MatrixArkLocalAdapter:
             "session_buffer": {
                 "buffer_key": list(session_buffer_key(envelope)),
                 "pending_event_count": pending_event_count,
+                "pending_message_count": pending_message_count,
                 "threshold_messages": session_buffer_threshold,
+                "threshold_ready": threshold_ready,
                 "auto_batch_extract": auto_batch_extract,
             },
             "idle_commit_result": idle_commit_result,

@@ -21,6 +21,7 @@ try:
     from tools.matrixark_codex_hook import (
         build_server,
         call_tool,
+        close_server_best_effort,
         default_hook_backend,
         first_string_at,
         generated_session_id,
@@ -32,6 +33,7 @@ try:
         retrieval_budget_summary_from_retrieve,
         retrieval_layer_summary_from_retrieve,
         retrieval_memory_hierarchy_contract_from_retrieve,
+        session_commit_summary,
         selected_ref_count_from_retrieve,
         used_context_tokens_from_retrieve,
         validate_hook_backend_policy,
@@ -40,6 +42,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_codex_hook import (  # type: ignore
         build_server,
         call_tool,
+        close_server_best_effort,
         default_hook_backend,
         first_string_at,
         generated_session_id,
@@ -51,6 +54,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         retrieval_budget_summary_from_retrieve,
         retrieval_layer_summary_from_retrieve,
         retrieval_memory_hierarchy_contract_from_retrieve,
+        session_commit_summary,
         selected_ref_count_from_retrieve,
         used_context_tokens_from_retrieve,
         validate_hook_backend_policy,
@@ -472,6 +476,50 @@ def retrieval_quality_warnings_from_retrieve(pack: Json | None) -> list[Any]:
     return warnings if isinstance(warnings, list) else []
 
 
+def hook_messages_from_payload(payload: Json, *, event: str, text: str) -> list[Json]:
+    raw_messages = payload.get("messages") if isinstance(payload, dict) else None
+    messages: list[Json] = []
+    if isinstance(raw_messages, list):
+        for item in raw_messages:
+            if isinstance(item, dict):
+                content = str(item.get("content") or item.get("text") or item.get("message") or "").strip()
+                if content:
+                    role = str(item.get("role") or role_for_agent_event(event)).strip() or role_for_agent_event(event)
+                    messages.append({"role": role, "content": content})
+            elif isinstance(item, str) and item.strip():
+                messages.append({"role": role_for_agent_event(event), "content": item.strip()})
+    if messages:
+        return messages
+    return [{"role": role_for_agent_event(event), "content": text}]
+
+
+def normalized_session_buffer_from_ingest(ingest: Json | None) -> Json:
+    if not isinstance(ingest, dict):
+        return {}
+    raw = ingest.get("session_buffer") if isinstance(ingest.get("session_buffer"), dict) else {}
+    summary = dict(raw)
+    try:
+        pending_event_count = int(summary.get("pending_event_count") or 0)
+    except (TypeError, ValueError):
+        pending_event_count = 0
+    try:
+        threshold_messages = int(summary.get("threshold_messages") or ingest.get("session_buffer_threshold") or 0)
+    except (TypeError, ValueError):
+        threshold_messages = 0
+    if "pending_event_count" not in summary:
+        summary["pending_event_count"] = pending_event_count
+    if threshold_messages > 0 and "threshold_messages" not in summary:
+        summary["threshold_messages"] = threshold_messages
+    if "threshold_ready" not in summary:
+        summary["threshold_ready"] = bool(threshold_messages > 0 and pending_event_count >= threshold_messages)
+    if "idle_ready" not in summary:
+        idle_result = ingest.get("idle_commit_result") if isinstance(ingest.get("idle_commit_result"), dict) else {}
+        summary["idle_ready"] = bool(idle_result.get("trigger_policy") == "idle_timeout")
+    if "auto_batch_extract" not in summary:
+        summary["auto_batch_extract"] = True
+    return summary
+
+
 def hook_storage_options() -> Json:
     return {"route": os.environ.get("MATRIXARK_HOOK_STORAGE_ROUTE", "shared_store_async")}
 
@@ -548,20 +596,20 @@ def main() -> int:
         }
         ingest = call_tool(server, "matrixark_ingest", ingest_args)
     elif text:
+        hook_messages = hook_messages_from_payload(payload, event=args.event, text=text)
         ingest_args = {
             **common,
-            "messages": [{"role": role_for_agent_event(args.event), "content": text}],
+            "messages": hook_messages,
             "understanding_provider": args.understanding_provider,
             "segment_provider": args.segment_provider,
             "metadata": base_metadata,
             "agent_hook": hook_meta,
             "storage_options": hook_storage_options(),
         }
-        if should_retrieve(args.event):
-            ingest_args["auto_batch_extract"] = True
-            ingest_args["session_buffer_threshold"] = args.session_commit_threshold
-            if args.idle_commit_timeout_ms > 0:
-                ingest_args["idle_commit_timeout_ms"] = args.idle_commit_timeout_ms
+        ingest_args["auto_batch_extract"] = True
+        ingest_args["session_buffer_threshold"] = args.session_commit_threshold
+        if args.idle_commit_timeout_ms > 0:
+            ingest_args["idle_commit_timeout_ms"] = args.idle_commit_timeout_ms
         ingest = call_tool(server, "matrixark_ingest", ingest_args)
 
     retrieve: Json = {}
@@ -614,6 +662,8 @@ def main() -> int:
             },
         )
 
+    ingest_session_buffer = normalized_session_buffer_from_ingest(ingest)
+    close_server_best_effort(server)
     print(
         json.dumps(
             {
@@ -625,6 +675,24 @@ def main() -> int:
                 "agent_context_refs": len(agent_context.get("local_context", [])),
                 "workspace_root": agent_context.get("workspace_root", ""),
                 "ingested": bool(ingest),
+                "ingest": {
+                    "status": ingest.get("status"),
+                    "event_id_hash": ingest.get("event_id_hash"),
+                    "extraction_mode": ingest.get("extraction_mode"),
+                    "session_buffer": ingest_session_buffer,
+                    "summary_refresh": ingest.get("summary_refresh", {}),
+                    "quality_warnings": ingest.get("quality_warnings", []),
+                } if ingest else {},
+                "auto_batch_extract": session_commit_summary(
+                    ingest.get("auto_batch_extract_result")
+                    if isinstance(ingest.get("auto_batch_extract_result"), dict)
+                    else {}
+                ) if ingest else {},
+                "idle_commit": session_commit_summary(
+                    ingest.get("idle_commit_result")
+                    if isinstance(ingest.get("idle_commit_result"), dict)
+                    else {}
+                ) if ingest else {},
                 "feedbacked": bool(feedback),
                 "resource_uri": raw_uri,
                 "resource_type": resource_type,
@@ -640,12 +708,7 @@ def main() -> int:
                     "quality_warnings": retrieval_quality_warnings_from_retrieve(retrieve),
                     "memory_hierarchy_contract": retrieval_memory_hierarchy_contract_from_retrieve(retrieve),
                 },
-                "committed": {
-                    "status": commit.get("status"),
-                    "commit_reason": commit.get("commit_reason"),
-                    "segments_written": commit.get("segments_written", 0),
-                    "entities_written": commit.get("entities_written", 0),
-                } if commit else {},
+                "committed": session_commit_summary(commit),
             },
             sort_keys=True,
         )

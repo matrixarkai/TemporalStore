@@ -1246,17 +1246,28 @@ def session_buffer_key(envelope: Json) -> tuple[str, str, str, str]:
     return session_buffer_key_from_scope(envelope.get("scope", {}))
 
 
-def message_from_event_record(record: Json) -> Json | None:
+def messages_from_event_record(record: Json) -> list[Json]:
     messages = record.get("envelope", {}).get("messages", [])
     if isinstance(messages, list) and messages:
-        message = messages[0]
-        if isinstance(message, dict) and "role" in message and "content" in message:
-            return dict(message)
+        normalized = [
+            {"role": str(message.get("role") or "user"), "content": str(message.get("content") or "")}
+            for message in messages
+            if isinstance(message, dict) and "role" in message and "content" in message and str(message.get("content") or "")
+        ]
+        if normalized:
+            return normalized
     text = str(record.get("text", ""))
     if ":" in text:
         role, content = text.split(":", 1)
         role = role.strip() or "user"
-        return {"role": role if role in {"user", "assistant", "tool", "system"} else "user", "content": content.strip()}
+        return [{"role": role if role in {"user", "assistant", "tool", "system"} else "user", "content": content.strip()}]
+    return []
+
+
+def message_from_event_record(record: Json) -> Json | None:
+    messages = messages_from_event_record(record)
+    if messages:
+        return messages[0]
     return None
 
 

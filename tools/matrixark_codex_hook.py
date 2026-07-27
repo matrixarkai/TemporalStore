@@ -413,6 +413,7 @@ def session_commit_summary(commit: Json | None) -> Json:
             key: trigger_evidence.get(key)
             for key in [
                 "pending_event_count",
+                "pending_message_count",
                 "threshold_messages",
                 "threshold_ready",
                 "idle_timeout_ms",
