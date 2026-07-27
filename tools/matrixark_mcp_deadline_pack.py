@@ -156,6 +156,26 @@ def deadline_fallback_pack(
             value = record.get(field, metadata.get(field))
             if isinstance(value, list) and value:
                 ref[field] = value[:16]
+        for field in [
+            "source_role_counts",
+            "source_hook_type_counts",
+            "source_codex_event_counts",
+        ]:
+            value = record.get(field, metadata.get(field))
+            if isinstance(value, dict) and value:
+                compact_counts: Json = {}
+                for key, count in value.items():
+                    count_key = str(key or "").strip()
+                    if not count_key:
+                        continue
+                    try:
+                        count_value = int(count or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if count_value > 0:
+                        compact_counts[count_key] = count_value
+                if compact_counts:
+                    ref[field] = compact_counts
         selected.append(ref)
         used_context_tokens += item_tokens
         if len(selected) >= 8:
