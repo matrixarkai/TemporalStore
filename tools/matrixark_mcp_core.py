@@ -4553,11 +4553,34 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     budget_ratio = float_arg(config, "budget_ratio", min(default_ratio, max_budget_ratio), minimum=0.0, maximum=max_budget_ratio)
     max_budget_default = DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS
     max_budget_tokens = integer_arg(config, "max_budget_tokens", max_budget_default, minimum=0)
-    computed_budget = int(remote_budget_tokens * budget_ratio)
-    if remote_budget_tokens >= 1200 and computed_budget > 0:
-        computed_budget = max(DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS, computed_budget)
-    budget_tokens = integer_arg(config, "budget_tokens", computed_budget, minimum=0) if "budget_tokens" in config else computed_budget
     ratio_budget_cap = int(remote_budget_tokens * max_budget_ratio) if max_budget_ratio > 0 else 0
+    max_budget_cap = max_budget_tokens if max_budget_tokens > 0 else remote_budget_tokens
+    computed_budget_before_floor = int(remote_budget_tokens * budget_ratio)
+    computed_budget = computed_budget_before_floor
+    budget_floor_tokens = DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS
+    budget_floor_applied = False
+    budget_floor_eligible = (
+        remote_budget_tokens >= 1200
+        and computed_budget > 0
+        and (ratio_budget_cap == 0 or ratio_budget_cap >= budget_floor_tokens)
+        and max_budget_cap >= budget_floor_tokens
+    )
+    if budget_floor_eligible:
+        computed_budget = max(DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS, computed_budget)
+        budget_floor_applied = computed_budget != computed_budget_before_floor
+    budget_floor_status = (
+        "floor_applied"
+        if budget_floor_applied
+        else (
+            "remote_budget_too_small_for_profile_floor"
+            if enabled
+            and remote_budget_tokens > 0
+            and computed_budget_before_floor < budget_floor_tokens
+            and not budget_floor_eligible
+            else "not_needed"
+        )
+    )
+    budget_tokens = integer_arg(config, "budget_tokens", computed_budget, minimum=0) if "budget_tokens" in config else computed_budget
     budget_tokens = min(
         remote_budget_tokens,
         budget_tokens,
@@ -4584,6 +4607,10 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
         "max_budget_ratio": round(max_budget_ratio, 6),
         "budget_tokens": budget_tokens if enabled else 0,
         "remote_budget_tokens": remote_budget_tokens,
+        "computed_budget_tokens": computed_budget_before_floor,
+        "budget_floor_tokens": budget_floor_tokens,
+        "budget_floor_applied": budget_floor_applied if enabled else False,
+        "budget_floor_status": budget_floor_status if enabled else "disabled",
         "max_budget_tokens": max_budget_tokens,
         "max_sessions": max_sessions if enabled else 0,
         "max_candidates": max_candidates if enabled else 0,

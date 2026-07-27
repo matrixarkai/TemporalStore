@@ -3953,6 +3953,33 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(cross_session["max_sessions"], 3)
         self.assertEqual(cross_session["parallelism"], 2)
 
+    def test_tiny_remote_budget_reports_profile_floor_unavailable(self) -> None:
+        policy = mcp_core.build_cross_session_policy(
+            {},
+            {},
+            question_type="current_state",
+            session_scope="prefer",
+            remote_budget_tokens=90,
+        )
+        self.assertTrue(policy["enabled"])
+        self.assertEqual(90, policy["remote_budget_tokens"])
+        self.assertEqual(18, policy["computed_budget_tokens"])
+        self.assertEqual(18, policy["budget_tokens"])
+        self.assertEqual(256, policy["budget_floor_tokens"])
+        self.assertFalse(policy["budget_floor_applied"])
+        self.assertEqual("remote_budget_too_small_for_profile_floor", policy["budget_floor_status"])
+
+        floored = mcp_core.build_cross_session_policy(
+            {},
+            {},
+            question_type="fact",
+            session_scope="prefer",
+            remote_budget_tokens=1280,
+        )
+        self.assertEqual(153, floored["computed_budget_tokens"])
+        self.assertEqual(256, floored["budget_tokens"])
+        self.assertTrue(floored["budget_floor_applied"])
+        self.assertEqual("floor_applied", floored["budget_floor_status"])
 
     def test_cross_session_budget_is_cap_and_raw_events_need_high_confidence(self) -> None:
         policy = mcp_core.build_cross_session_policy(
