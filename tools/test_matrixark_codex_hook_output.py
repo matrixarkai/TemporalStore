@@ -619,6 +619,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "source_roles": ["assistant", "user"],
                         "source_hook_types": ["before_llm", "after_llm"],
                         "source_codex_events": ["Stop", "UserPromptSubmit"],
+                        "source_role_counts": {"assistant": 1, "user": 1},
+                        "source_hook_type_counts": {"before_llm": 1, "after_llm": 1},
+                        "source_codex_event_counts": {"Stop": 1, "UserPromptSubmit": 1},
                         "profile_promotion_summary": [
                             {
                                 "profile_entity_hash": 801,
@@ -668,6 +671,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(["assistant", "user"], auto_batch["source_roles"])
         self.assertEqual(["before_llm", "after_llm"], auto_batch["source_hook_types"])
         self.assertEqual(["Stop", "UserPromptSubmit"], auto_batch["source_codex_events"])
+        self.assertEqual({"assistant": 1, "user": 1}, auto_batch["source_role_counts"])
+        self.assertEqual({"before_llm": 1, "after_llm": 1}, auto_batch["source_hook_type_counts"])
+        self.assertEqual({"Stop": 1, "UserPromptSubmit": 1}, auto_batch["source_codex_event_counts"])
         self.assertEqual(801, auto_batch["profile_promotion_summary"][0]["profile_entity_hash"])
         self.assertEqual(["codex-session-threshold"], auto_batch["profile_promotion_summary"][0]["source_session_ids"])
         self.assertEqual(1, auto_batch["segments_written"])
@@ -696,6 +702,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(["assistant", "user"], decision["source_roles"])
         self.assertEqual(["before_llm", "after_llm"], decision["source_hook_types"])
         self.assertEqual(["Stop", "UserPromptSubmit"], decision["source_codex_events"])
+        self.assertEqual({"assistant": 1, "user": 1}, decision["source_role_counts"])
+        self.assertEqual({"before_llm": 1, "after_llm": 1}, decision["source_hook_type_counts"])
+        self.assertEqual({"Stop": 1, "UserPromptSubmit": 1}, decision["source_codex_event_counts"])
         self.assertEqual(801, decision["profile_promotion_summary"][0]["profile_entity_hash"])
 
     def test_ingest_tool_call_trace_records_auto_batch_deferred_decision(self) -> None:
