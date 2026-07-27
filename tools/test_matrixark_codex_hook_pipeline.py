@@ -347,6 +347,23 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 for ref in dropped["refs"]
             )
         )
+        selected_budget = selected_ref_layer_budget(selected)
+        dropped_budget = dropped_ref_layer_budget(dropped)
+        pressure = memory_layer_pressure_summary(selected_budget, dropped_budget)
+        self.assertTrue(pressure["profile_memory_pressure"])
+        self.assertTrue(pressure["summary_memory_pressure"])
+        self.assertTrue(pressure["entity_memory_pressure"])
+        self.assertTrue(pressure["stale_current_state_pressure"])
+        self.assertTrue(pressure["profile_shadowed_current_state_pressure"])
+        self.assertEqual(1, dropped_budget["profile_shadowed_ref_count"])
+        self.assertEqual(
+            1,
+            pressure["by_dimension"]["by_profile_shadowed_reason"]["source_entity_lineage"]["dropped_refs"],
+        )
+        self.assertEqual(
+            1,
+            pressure["by_dimension"]["by_ref_type"]["summary"]["dropped_refs"],
+        )
 
     def test_memory_layer_pressure_summary_marks_dropped_profile_final_tool_layers(self) -> None:
         selected = {
