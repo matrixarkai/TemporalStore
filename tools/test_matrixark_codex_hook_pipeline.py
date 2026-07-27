@@ -16,7 +16,7 @@ from pathlib import Path
 import matrixark_codex_hook
 from matrixark_mcp_context_pack import compact_context_pack_for_serving, compact_refs_for_audit
 from matrixark_mcp_core import packing_sort_key
-from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget
+from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget, memory_layer_pressure_summary
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 
 
@@ -113,6 +113,35 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(9, budget["by_extraction_phase"]["final"]["tokens"])
         self.assertEqual(1, budget["final_ref_count"])
         self.assertEqual(1, budget["final_session_boundary_ref_count"])
+
+    def test_memory_layer_pressure_summary_marks_dropped_profile_final_tool_layers(self) -> None:
+        selected = {
+            "total_selected_refs": 2,
+            "total_selected_tokens": 14,
+            "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 9}},
+            "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 9}},
+            "by_extraction_phase": {"final": {"refs": 1, "tokens": 9}},
+            "by_source_role": {"assistant": {"refs": 1, "tokens": 9}},
+        }
+        dropped = {
+            "total_dropped_refs": 3,
+            "total_dropped_tokens": 21,
+            "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 8}},
+            "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 8}},
+            "by_extraction_phase": {"final": {"refs": 2, "tokens": 16}},
+            "by_source_role": {"assistant": {"refs": 1, "tokens": 8}, "tool": {"refs": 1, "tokens": 5}},
+        }
+        pressure = memory_layer_pressure_summary(selected, dropped)
+        self.assertEqual(2, pressure["selected_refs"])
+        self.assertEqual(3, pressure["dropped_refs"])
+        self.assertTrue(pressure["profile_memory_pressure"])
+        self.assertTrue(pressure["cross_session_pressure"])
+        self.assertTrue(pressure["final_memory_pressure"])
+        self.assertTrue(pressure["assistant_memory_pressure"])
+        self.assertTrue(pressure["tool_memory_pressure"])
+        self.assertIn("by_memory_scope", pressure["pressure_dimensions"])
+        self.assertEqual(1, pressure["by_dimension"]["by_memory_scope"]["user_profile"]["selected_refs"])
+        self.assertEqual(1, pressure["by_dimension"]["by_memory_scope"]["user_profile"]["dropped_refs"])
 
     def test_pending_async_events_are_demoted_for_budget_packing(self) -> None:
         pending_event = {
@@ -1650,6 +1679,15 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(dropped_budget["by_hook_type"]["hook_boundary"]["refs"], 1)
             self.assertGreaterEqual(dropped_budget["by_codex_event"]["Stop"]["refs"], 1)
             self.assertEqual(dropped_budget, current_metrics["dropped_memory_layer_budget"])
+            layer_pressure = current_metrics["memory_layer_pressure"]
+            self.assertEqual(current_pack["memory_layer_pressure"], layer_pressure)
+            self.assertGreaterEqual(layer_pressure["dropped_refs"], 1)
+            self.assertTrue(layer_pressure["session_memory_pressure"])
+            self.assertTrue(layer_pressure["same_session_pressure"])
+            self.assertTrue(layer_pressure["final_memory_pressure"])
+            self.assertTrue(layer_pressure["assistant_memory_pressure"])
+            self.assertIn("by_extraction_phase", layer_pressure["dropped_dimensions"])
+            self.assertGreaterEqual(layer_pressure["by_dimension"]["by_extraction_phase"]["final"]["dropped_refs"], 1)
             current_dashboard = adapter.ingestion_dashboard(
                 {"scope": {**base_scope, "session_id": "session_profile_update_2"}, "table": "context_packs", "page_size": 5}
             )
@@ -1665,6 +1703,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(current_metrics["dropped_ref_bucket_counts"]["stale"], current_row["dropped_ref_bucket_counts"]["stale"])
             self.assertGreaterEqual(current_row["memory_layer_budget"]["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertEqual(dropped_budget, current_row["dropped_memory_layer_budget"])
+            self.assertEqual(layer_pressure, current_row["memory_layer_pressure"])
             self.assertLessEqual(current_row["used_remote_context_tokens"], current_row["remote_context_budget_tokens"])
 
     def test_retrieval_flags_state_file_session_identity_fallback(self) -> None:

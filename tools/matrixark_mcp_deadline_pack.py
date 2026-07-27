@@ -49,9 +49,15 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 try:
-    from tools.matrixark_mcp_retrieve_pack_builder import selected_ref_layer_budget
+    from tools.matrixark_mcp_retrieve_pack_builder import (
+        memory_layer_pressure_summary,
+        selected_ref_layer_budget,
+    )
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_retrieve_pack_builder import selected_ref_layer_budget
+    from matrixark_mcp_retrieve_pack_builder import (
+        memory_layer_pressure_summary,
+        selected_ref_layer_budget,
+    )
 
 try:
     from tools.matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness
@@ -157,6 +163,7 @@ def deadline_fallback_pack(
     context_pack_id = str(stable_hash(f"deadline:{query}:{selected}:{now_ms()}"))
     serving_selected = compact_context_pack_refs(selected, include_debug=False)
     memory_layer_budget = selected_ref_layer_budget(selected)
+    memory_layer_pressure = memory_layer_pressure_summary(memory_layer_budget, {})
     async_readiness_scope = retrieval_scope if isinstance(retrieval_scope, dict) else {**scope, "_session_scope": "prefer"}
     async_pipeline_readiness = async_pipeline_retrieval_readiness(records, async_readiness_scope)
     quality_warnings = [
@@ -182,6 +189,7 @@ def deadline_fallback_pack(
             "partial_context_pack": True,
             "fallback_reason": reason,
             "memory_layer_budget": memory_layer_budget,
+            "memory_layer_pressure": memory_layer_pressure,
             "async_pipeline_readiness": async_pipeline_readiness,
             "session_continuity": {
                 "mode": "fallback_recent_context",
@@ -201,6 +209,7 @@ def deadline_fallback_pack(
         "requested_max_context_tokens": max_context_tokens,
         "retrieval_metrics": {
             "memory_layer_budget": memory_layer_budget,
+            "memory_layer_pressure": memory_layer_pressure,
             "async_pipeline_readiness": async_pipeline_readiness,
             "requested_max_context_tokens": max_context_tokens,
             "used_local_context_tokens": local_tokens,

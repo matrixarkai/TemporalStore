@@ -24,9 +24,15 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_session_policy import auto_batch_extract_enabled
 
 try:
-    from tools.matrixark_mcp_retrieve_pack_builder import selected_ref_layer_budget
+    from tools.matrixark_mcp_retrieve_pack_builder import (
+        memory_layer_pressure_summary,
+        selected_ref_layer_budget,
+    )
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_retrieve_pack_builder import selected_ref_layer_budget
+    from matrixark_mcp_retrieve_pack_builder import (
+        memory_layer_pressure_summary,
+        selected_ref_layer_budget,
+    )
 
 try:
     from tools.matrixark_mcp_summary_runtime import async_summary_progress_records
@@ -496,6 +502,18 @@ class MatrixArkLocalAdapter:
             if isinstance(recall_policy.get("dropped_memory_layer_budget"), dict)
             else {}
         )
+        memory_layer_pressure = (
+            retrieval_metrics.get("memory_layer_pressure")
+            if isinstance(retrieval_metrics.get("memory_layer_pressure"), dict)
+            else recall_policy.get("memory_layer_pressure")
+            if isinstance(recall_policy.get("memory_layer_pressure"), dict)
+            else {}
+        )
+        if not memory_layer_pressure:
+            memory_layer_pressure = memory_layer_pressure_summary(
+                memory_layer_budget,
+                dropped_memory_layer_budget,
+            )
         stage_budgets = recall_policy.get("stage_latency_budgets", {}) if isinstance(recall_policy.get("stage_latency_budgets"), dict) else {}
         async_pipeline_readiness = (
             retrieval_metrics.get("async_pipeline_readiness")
@@ -552,6 +570,7 @@ class MatrixArkLocalAdapter:
             "requested_max_context_tokens": pack.get("requested_max_context_tokens", 0),
             "memory_layer_budget": memory_layer_budget,
             "dropped_memory_layer_budget": dropped_memory_layer_budget,
+            "memory_layer_pressure": memory_layer_pressure,
             "async_pipeline_readiness": async_pipeline_readiness,
             "session_identity": session_identity,
             "quality_warnings": pack.get("quality_warnings", []) or [],
@@ -2409,6 +2428,16 @@ class MatrixArkLocalAdapter:
                         if isinstance(recall_policy.get("dropped_memory_layer_budget"), dict)
                         else {}
                     )
+                memory_layer_pressure = record.get("memory_layer_pressure")
+                if not isinstance(memory_layer_pressure, dict):
+                    recall_policy = record.get("recall_policy", {}) if isinstance(record.get("recall_policy"), dict) else {}
+                    memory_layer_pressure = (
+                        recall_policy.get("memory_layer_pressure", {})
+                        if isinstance(recall_policy.get("memory_layer_pressure"), dict)
+                        else {}
+                    )
+                if not memory_layer_pressure:
+                    memory_layer_pressure = memory_layer_pressure_summary(memory_layer_budget, dropped_memory_layer_budget)
                 async_pipeline_readiness = record.get("async_pipeline_readiness")
                 if not isinstance(async_pipeline_readiness, dict):
                     recall_policy = record.get("recall_policy", {}) if isinstance(record.get("recall_policy"), dict) else {}
@@ -2442,6 +2471,7 @@ class MatrixArkLocalAdapter:
                         "stale_dropped_refs": int(record.get("stale_dropped_refs") or dropped_ref_bucket_counts.get("stale", 0)),
                         "memory_layer_budget": memory_layer_budget,
                         "dropped_memory_layer_budget": dropped_memory_layer_budget,
+                        "memory_layer_pressure": memory_layer_pressure,
                         "async_pipeline_readiness": async_pipeline_readiness,
                         "session_identity": session_identity,
                         "retrieval_request_metadata": retrieval_request_metadata,
@@ -6602,6 +6632,7 @@ class MatrixArkLocalAdapter:
             total_ref_field="total_dropped_refs",
             total_token_field="total_dropped_tokens",
         )
+        memory_layer_pressure = memory_layer_pressure_summary(memory_layer_budget, dropped_memory_layer_budget)
         pack = {
             "context_pack_id": str(context_pack_id),
             "context_sources_order": ["local_context", "matrixark_remote_context"],
@@ -6633,6 +6664,7 @@ class MatrixArkLocalAdapter:
                 "session_identity": session_identity_policy,
                 "memory_layer_budget": memory_layer_budget,
                 "dropped_memory_layer_budget": dropped_memory_layer_budget,
+                "memory_layer_pressure": memory_layer_pressure,
                 "async_pipeline_readiness": async_pipeline_readiness,
                 "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
                 "shared_context": dropped_over_budget.get("shared_context_policy", shared_context_policy),
@@ -6770,6 +6802,7 @@ class MatrixArkLocalAdapter:
             "local_context_policy": pack["local_context_policy"],
             "memory_layer_budget": memory_layer_budget,
             "dropped_memory_layer_budget": dropped_memory_layer_budget,
+            "memory_layer_pressure": memory_layer_pressure,
             "async_pipeline_readiness": async_pipeline_readiness,
             "used_local_context_tokens": pack["used_local_context_tokens"],
             "used_remote_context_tokens": pack["used_remote_context_tokens"],
@@ -6859,6 +6892,7 @@ class MatrixArkLocalAdapter:
             "remote_is_additive_only_within_remaining_budget": True,
             "memory_layer_budget": memory_layer_budget,
             "dropped_memory_layer_budget": dropped_memory_layer_budget,
+            "memory_layer_pressure": memory_layer_pressure,
             "async_pipeline_readiness": async_pipeline_readiness,
             "scanned_records": int(retrieval_scan_stats.get("loaded_records") or retrieval_scan_stats.get("scanned_records") or len(records)) if isinstance(retrieval_scan_stats, dict) else len(records),
             "candidate_cache_hit": candidate_cache_hit,
