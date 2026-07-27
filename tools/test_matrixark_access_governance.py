@@ -490,6 +490,8 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
             metrics = post("/api/backend_metrics", {"arguments": {}})
             self.assertEqual("matrixark_backend_metrics", metrics["tool"])
             self.assertEqual("ok", metrics["status"])
+            tools = get("/api/tools", api_key)
+            self.assertIn("matrixark_agent_hook", tools["tools"])
             dashboard = get(
                 "/api/ingestion_dashboard?account_id=acct_http&tenant_id=tenant_http&user_id=portal_user&table=messages&page_size=5",
                 api_key,
@@ -658,6 +660,24 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
                 self.assertEqual("https://console.matrixark.test", origin)
 
                 status, body, origin = post("/api/management_portal", {"arguments": {}})
+                self.assertEqual(401, status)
+                self.assertEqual("https://console.matrixark.test", origin)
+                self.assertIn("requires bearer API key", body["error"])
+
+                status, body, origin = post(
+                    "/api/agent/hook",
+                    {
+                        "normalized_event": {
+                            "agent": "codex",
+                            "event": "UserPromptSubmit",
+                            "hook_type": "before_llm",
+                            "lifecycle_stage": "before_llm_retrieve",
+                            "should_retrieve": True,
+                            "role": "user",
+                            "text": "Cloud agent hook must require auth.",
+                        }
+                    },
+                )
                 self.assertEqual(401, status)
                 self.assertEqual("https://console.matrixark.test", origin)
                 self.assertIn("requires bearer API key", body["error"])
