@@ -38,6 +38,7 @@ from run_locomo_ingest_once import (  # noqa: E402
     answer_equivalent,
     adaptive_max_events_for_question,
     clamp_percent,
+    configure_retrieval_embedding_model,
     count_matched_refs,
     count_matched_terms,
     count_reader_context_terms,
@@ -95,6 +96,19 @@ def main() -> int:
         help="Diagnostic-only escape hatch for intentionally unfair local model or budget experiments.",
     )
     args = parser.parse_args()
+    try:
+        configure_retrieval_embedding_model(
+            args.embedding_model,
+            require_runtime=bool(args.require_shared_oss_models),
+        )
+    except RuntimeError as exc:
+        report = {
+            "benchmark_family": "locomo",
+            "baseline": "openviking_style_direct_source_retrieval",
+            "ready": False,
+            "blockers": [str(exc)],
+        }
+        return finish(report, args.report, time.time(), 2)
 
     started = time.time()
     report: dict[str, Any] = {
