@@ -5077,6 +5077,12 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
         value = ref.get(field, metadata.get(field))
         if isinstance(value, list) and value:
             item[field] = value[:8]
+    source_entity_hashes = ref.get("source_entity_hashes", metadata.get("source_entity_hashes"))
+    if isinstance(source_entity_hashes, list) and source_entity_hashes:
+        item["source_entity_count"] = len(source_entity_hashes)
+    source_entity_count = ref.get("source_entity_count", metadata.get("source_entity_count"))
+    if isinstance(source_entity_count, int) and source_entity_count > 0:
+        item["source_entity_count"] = source_entity_count
     return item
 
 

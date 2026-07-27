@@ -941,6 +941,102 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(dropped_budget, pack["retrieval_metrics"]["dropped_memory_layer_budget"])
 
+    def test_deadline_fallback_preserves_memory_layer_budget_and_lineage(self) -> None:
+        deadline_mod = importlib.import_module("tools.matrixark_mcp_deadline_pack")
+
+        class Adapter:
+            def __init__(self) -> None:
+                self.audit_records = []
+
+            def append_audit(self, record):
+                self.audit_records.append(record)
+
+        adapter = Adapter()
+        scope = {
+            "account_id": "acct_deadline",
+            "tenant_id": "tenant_deadline",
+            "user_id": "user_deadline",
+            "session_id": "session_now",
+        }
+        records = [
+            {
+                "record_type": "context_event",
+                "event_id_hash": 1001,
+                "scope": scope,
+                "text": "assistant decided to push the local recovery gate after tests passed.",
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+                "extraction_phase": "provisional",
+                "source_roles": ["assistant"],
+                "source_hook_types": ["hook_boundary"],
+                "source_codex_events": ["Stop"],
+            },
+            {
+                "record_type": "context_entity",
+                "entity_hash": 2002,
+                "scope": {
+                    "account_id": "acct_deadline",
+                    "tenant_id": "tenant_deadline",
+                    "user_id": "user_deadline",
+                },
+                "entity_type": "assistant_decision",
+                "entity_name": "local_recovery_gate",
+                "state": "The user wants recovery and retrieval gates to fail closed.",
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "extraction_phase": "final",
+                "final_session_boundary": True,
+                "source_roles": ["assistant"],
+                "source_hook_types": ["hook_boundary"],
+                "source_codex_events": ["Stop"],
+                "source_session_ids": ["session_old", "session_now"],
+                "source_entity_hashes": [10, 11],
+            },
+        ]
+
+        pack = deadline_mod.deadline_fallback_pack(
+            adapter,
+            query="what recovery gate did we decide?",
+            scope=scope,
+            question_type="current_state",
+            max_context_tokens=96,
+            local_budget={"items": [{"ref": "visible-buffer", "text": "local context"}], "token_estimate": 12, "safety_margin_tokens": 4},
+            deadline_ms=1,
+            elapsed_ms=2.0,
+            records=records,
+            reason="deadline_after_record_load",
+            budget_source="test",
+        )
+
+        self.assertTrue(pack["partial"])
+        self.assertLessEqual(pack["tokens"]["remote"], pack["tokens"]["remote_budget"])
+        self.assertEqual(80, pack["tokens"]["remote_budget"])
+        self.assertEqual(2, pack["counts"]["refs"]["entity"] + pack["counts"]["refs"]["event"])
+        self.assertEqual(1, pack["counts"]["session_continuity"]["cross_session"])
+        budget = pack["memory_layer_budget"]
+        self.assertEqual(1, budget["by_memory_scope"]["user_profile"]["refs"])
+        self.assertEqual(1, budget["by_session_continuity"]["cross_session"]["refs"])
+        self.assertEqual(1, budget["by_entity_type"]["assistant_decision"]["refs"])
+        self.assertEqual(2, budget["by_source_role"]["assistant"]["refs"])
+        self.assertEqual(2, budget["by_hook_type"]["hook_boundary"]["refs"])
+        self.assertEqual(2, budget["by_codex_event"]["Stop"]["refs"])
+        self.assertEqual(1, budget["final_session_boundary_ref_count"])
+        entity_group = next(group for group in pack["groups"] if group["type"] == "entity")
+        entity_item = entity_group["items"][0]
+        self.assertEqual("user_profile", entity_item["memory_scope"])
+        self.assertEqual("cross_session", entity_item["session_continuity"])
+        self.assertEqual(["session_old", "session_now"], entity_item["source_session_ids"])
+        self.assertEqual(2, entity_item["source_entity_count"])
+        self.assertEqual(1, len(adapter.audit_records))
+        self.assertEqual(budget, adapter.audit_records[0]["memory_layer_budget"])
+        self.assertEqual(
+            1,
+            adapter.audit_records[0]["recall_policy_summary"]["session_continuity"]["cross_session_selected_ref_count"],
+        )
+        self.assertTrue(adapter.audit_records[0]["partial_context_pack"])
+        self.assertEqual(1, adapter.audit_records[0]["selected_ref_counts"]["entity"])
+        self.assertIn("retrieval_deadline_exceeded:deadline_after_record_load", adapter.audit_records[0]["quality_warnings"])
+
 
 class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
     def _server(self):

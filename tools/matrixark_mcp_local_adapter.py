@@ -23,6 +23,11 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_session_policy import auto_batch_extract_enabled
 
+try:
+    from tools.matrixark_mcp_retrieve_pack_builder import selected_ref_layer_budget
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieve_pack_builder import selected_ref_layer_budget
+
 RETRIEVAL_HOT_RECORD_TYPES = {
     "context_compression_event",
     "context_embedding",
@@ -4790,6 +4795,7 @@ class MatrixArkLocalAdapter:
         remote_budget = max(0, max_context_tokens - local_tokens - safety_margin_tokens)
         for record in reversed(records):
             record_type = record.get("record_type")
+            metadata = record.get("metadata", {}) if isinstance(record.get("metadata"), dict) else {}
             record_scope = candidate_access_scope(record)
             if record_type not in {"context_summary", "context_entity", "context_event", "context_segment"}:
                 continue
@@ -4816,32 +4822,62 @@ class MatrixArkLocalAdapter:
             item_tokens = token_count(text)
             if used_context_tokens + item_tokens > remote_budget:
                 continue
-            selected.append(
-                {
-                    "ref_type": ref_type,
-                    "ref_hash": ref_hash,
-                    "node_hash": record.get("node_hash"),
-                    "node_path": record.get("node_path", []),
-                    "source_roles": record.get("source_roles", []),
-                    "source_hook_types": record.get("source_hook_types", []),
-                    "source_codex_events": record.get("source_codex_events", []),
-                    "score": 0.0,
-                    "recall_path": "deadline_fallback_recent_context",
-                    "updated_at_ms": record.get("updated_at_ms", record.get("envelope", {}).get("ingestion_time_ms", now_ms())),
-                    "text": clip_context_text(text),
-                }
-            )
+            ref = {
+                "ref_type": ref_type,
+                "ref_hash": ref_hash,
+                "node_hash": record.get("node_hash"),
+                "node_path": record.get("node_path", []),
+                "score": 0.0,
+                "recall_path": "deadline_fallback_recent_context",
+                "updated_at_ms": record.get("updated_at_ms", record.get("envelope", {}).get("ingestion_time_ms", now_ms())),
+                "text": clip_context_text(text),
+                "token_estimate": item_tokens,
+            }
+            for field in [
+                "memory_scope",
+                "session_continuity",
+                "extraction_phase",
+                "entity_type",
+                "entity_name",
+                "summary_type",
+                "profile_current_state_representative",
+                "current_state_policy",
+                "current_state_source_session_count",
+                "current_state_source_entity_count",
+                "source_final_session_boundary_count",
+            ]:
+                value = record.get(field, metadata.get(field))
+                if value not in (None, "", [], {}):
+                    ref[field] = value
+            if bool(record.get("final_session_boundary") or metadata.get("final_session_boundary")):
+                ref["final_session_boundary"] = True
+            for field in [
+                "source_roles",
+                "source_hook_types",
+                "source_codex_events",
+                "source_memory_scopes",
+                "source_session_continuities",
+                "source_extraction_phases",
+                "source_session_ids",
+                "source_entity_hashes",
+            ]:
+                value = record.get(field, metadata.get(field))
+                if isinstance(value, list) and value:
+                    ref[field] = value[:16]
+            selected.append(ref)
             used_context_tokens += item_tokens
             if len(selected) >= 8:
                 break
         context_pack_id = str(stable_hash(f"deadline:{query}:{selected}:{now_ms()}"))
         serving_selected = compact_context_pack_refs(selected, include_debug=False)
+        memory_layer_budget = selected_ref_layer_budget(selected)
         pack = {
             "context_pack_id": context_pack_id,
             "context_sources_order": ["local_context", "matrixark_remote_context"],
             "local_context_refs": local_context_refs_for_pack(local_budget),
             "selected_refs": serving_selected,
             "remote_context_refs": serving_selected,
+            "selected_ref_counts": selected_context_class_counts(selected),
             "layer_scores": [],
             "question_type": question_type,
             "packing_policy": f"deadline_fallback:{question_type}",
@@ -4853,6 +4889,14 @@ class MatrixArkLocalAdapter:
                 "elapsed_ms": elapsed_ms,
                 "partial_context_pack": True,
                 "fallback_reason": reason,
+                "memory_layer_budget": memory_layer_budget,
+                "session_continuity": {
+                    "mode": "fallback_recent_context",
+                    "policy": "deadline fallback preserves same-session/cross-session/profile lineage while staying within the remaining remote budget",
+                    "same_session_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "same_session"),
+                    "cross_session_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "cross_session"),
+                    "entity_bridge_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "cross_session" and item.get("ref_type") == "entity"),
+                },
             },
             "primary_candidate_count": 0,
             "auxiliary_candidate_count": 0,
@@ -4888,11 +4932,15 @@ class MatrixArkLocalAdapter:
                     "scope": scope,
                     "summary_text": summarize_text(" ".join(str(item.get("text", "")) for item in selected), limit=512),
                     "selected_refs": compact_refs_for_audit(selected),
+                    "selected_ref_counts": selected_context_class_counts(selected),
                     "local_context_refs": compact_local_context_refs(local_budget),
                     "context_sources_order": pack["context_sources_order"],
                     "question_type": question_type,
                     "packing_policy": pack["packing_policy"],
                     "recall_policy": pack["recall_policy"],
+                    "quality_warnings": pack["quality_warnings"],
+                    "partial_context_pack": True,
+                    "memory_layer_budget": memory_layer_budget,
                     "local_context_policy": pack["local_context_policy"],
                     "used_local_context_tokens": pack["used_local_context_tokens"],
                     "used_remote_context_tokens": pack["used_remote_context_tokens"],
