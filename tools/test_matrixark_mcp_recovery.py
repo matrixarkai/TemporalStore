@@ -107,6 +107,12 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                 "used_remote_context_tokens": 42,
                 "remote_context_budget_tokens": 512,
                 "memory_layer_budget": {"by_memory_scope": {"user_profile": {"refs": 1, "tokens": 12}}},
+                "session_identity": {
+                    "session_id_source": "payload_field",
+                    "strong_session_identity": True,
+                    "fallback_session_identity": False,
+                    "risk": "",
+                },
                 "retrieval_request_metadata": {
                     "retrieval_source": "codex_hook_retrieve",
                     "codex_event": "UserPromptSubmit",
@@ -162,6 +168,11 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
         self.assertEqual(["before_llm_retrieve"], report["retrieval_visibility"]["lifecycle_stages"])
         self.assertEqual(["pack-recover-1"], report["retrieval_visibility"]["context_pack_ids"])
         self.assertEqual(1, report["retrieval_visibility"]["memory_layer_budget_record_count"])
+        self.assertEqual(1, report["retrieval_visibility"]["session_identity_record_count"])
+        self.assertEqual(1, report["retrieval_visibility"]["strong_session_identity_count"])
+        self.assertEqual(0, report["retrieval_visibility"]["fallback_session_identity_count"])
+        self.assertEqual(["payload_field"], report["retrieval_visibility"]["session_id_sources"])
+        self.assertTrue(report["retrieval_visibility"]["session_identity_rebuildable_from_durable_log"])
         self.assertEqual(2, report["retrieval_visibility"]["selected_ref_count"])
         self.assertEqual(1, report["retrieval_visibility"]["dropped_ref_count"])
         self.assertEqual(512, report["retrieval_visibility"]["max_remote_context_budget_tokens"])

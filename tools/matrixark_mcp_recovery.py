@@ -292,6 +292,18 @@ def matrixark_local_recovery_report(
         if isinstance(record.get("retrieval_request_metadata"), dict)
         and str(record["retrieval_request_metadata"].get("retrieval_source") or record["retrieval_request_metadata"].get("source") or "") == "codex_hook_retrieve"
     ]
+    telemetry_session_identities = [
+        record.get("session_identity")
+        for record in telemetry_records
+        if isinstance(record.get("session_identity"), dict)
+    ]
+    telemetry_session_id_sources = sorted(
+        {
+            str(identity.get("session_id_source"))
+            for identity in telemetry_session_identities
+            if str(identity.get("session_id_source") or "")
+        }
+    )
     profile_dirty_summaries = [
         record for record in dirty_summaries
         if str(record.get("dirty_reason") or "") == "profile_entity_promoted"
@@ -391,6 +403,11 @@ def matrixark_local_recovery_report(
             ),
             "lifecycle_stages": telemetry_lifecycle_stages,
             "memory_layer_budget_record_count": sum(1 for record in telemetry_records if isinstance(record.get("memory_layer_budget"), dict)),
+            "session_identity_record_count": len(telemetry_session_identities),
+            "strong_session_identity_count": sum(1 for identity in telemetry_session_identities if bool(identity.get("strong_session_identity"))),
+            "fallback_session_identity_count": sum(1 for identity in telemetry_session_identities if bool(identity.get("fallback_session_identity"))),
+            "session_id_sources": telemetry_session_id_sources,
+            "session_identity_rebuildable_from_durable_log": bool(telemetry_session_identities) and not blockers,
             "selected_ref_count": sum(int(record.get("selected_ref_count") or 0) for record in telemetry_records),
             "dropped_ref_count": sum(int(record.get("dropped_ref_count") or 0) for record in telemetry_records),
             "max_remote_context_budget_tokens": max(
