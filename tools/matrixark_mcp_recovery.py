@@ -193,6 +193,50 @@ def _derived_view_readiness(
     }
 
 
+def _memory_scope_budget_counts(records: list[Json], field: str) -> Json:
+    counts: Counter[str] = Counter()
+    tokens: Counter[str] = Counter()
+    for record in records:
+        budget = record.get(field)
+        if not isinstance(budget, dict):
+            recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
+            budget = recall_policy.get(field)
+        if not isinstance(budget, dict):
+            continue
+        by_scope = budget.get("by_memory_scope")
+        if not isinstance(by_scope, dict):
+            continue
+        for scope_name, bucket in by_scope.items():
+            if not isinstance(bucket, dict):
+                continue
+            name = str(scope_name or "unscoped")
+            try:
+                counts[name] += int(bucket.get("refs") or 0)
+            except (TypeError, ValueError):
+                pass
+            try:
+                tokens[name] += int(bucket.get("tokens") or 0)
+            except (TypeError, ValueError):
+                pass
+    return {
+        name: {"refs": int(counts[name]), "tokens": int(tokens[name])}
+        for name in sorted(counts)
+        if counts[name] > 0 or tokens[name] > 0
+    }
+
+
+def _budget_record_count(records: list[Json], field: str) -> int:
+    count = 0
+    for record in records:
+        if isinstance(record.get(field), dict):
+            count += 1
+            continue
+        recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
+        if isinstance(recall_policy.get(field), dict):
+            count += 1
+    return count
+
+
 def matrixark_local_recovery_report(
     records: list[Json],
     *,
@@ -307,6 +351,23 @@ def matrixark_local_recovery_report(
             for identity in telemetry_session_identities
             if str(identity.get("session_id_source") or "")
         }
+    )
+    retrieval_visibility_records = telemetry_records + audit_records
+    memory_layer_budget_record_count = _budget_record_count(
+        retrieval_visibility_records,
+        "memory_layer_budget",
+    )
+    dropped_memory_layer_budget_record_count = _budget_record_count(
+        retrieval_visibility_records,
+        "dropped_memory_layer_budget",
+    )
+    selected_budget_by_memory_scope = _memory_scope_budget_counts(
+        retrieval_visibility_records,
+        "memory_layer_budget",
+    )
+    dropped_budget_by_memory_scope = _memory_scope_budget_counts(
+        retrieval_visibility_records,
+        "dropped_memory_layer_budget",
     )
     profile_dirty_summaries = [
         record for record in dirty_summaries
@@ -483,7 +544,13 @@ def matrixark_local_recovery_report(
                 }
             ),
             "lifecycle_stages": telemetry_lifecycle_stages,
-            "memory_layer_budget_record_count": sum(1 for record in telemetry_records if isinstance(record.get("memory_layer_budget"), dict)),
+            "memory_layer_budget_record_count": memory_layer_budget_record_count,
+            "dropped_memory_layer_budget_record_count": dropped_memory_layer_budget_record_count,
+            "selected_budget_by_memory_scope": selected_budget_by_memory_scope,
+            "dropped_budget_by_memory_scope": dropped_budget_by_memory_scope,
+            "retrieval_budget_pressure_rebuildable_from_durable_log": bool(
+                memory_layer_budget_record_count or dropped_memory_layer_budget_record_count
+            ) and not blockers,
             "session_identity_record_count": len(telemetry_session_identities),
             "strong_session_identity_count": sum(1 for identity in telemetry_session_identities if bool(identity.get("strong_session_identity"))),
             "fallback_session_identity_count": sum(1 for identity in telemetry_session_identities if bool(identity.get("fallback_session_identity"))),
