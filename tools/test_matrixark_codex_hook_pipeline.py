@@ -1470,6 +1470,138 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             memory_budget = pack["recall_policy"]["memory_layer_budget"]
             self.assertEqual({"assistant": 1}, memory_budget["source_message_counts_by_role"])
 
+    def test_stop_rollout_backfill_only_commits_previous_assistant_profile_memory(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            event_log = tmp / "matrixark-async-rollout-backfill.jsonl"
+            rollout = tmp / "rollout.jsonl"
+            rollout.write_text(
+                json.dumps(
+                    {
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": "Assistant decision: delayed rollout backfill commits profile memory.",
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cmd = [
+                sys.executable,
+                str(repo / "tools" / "matrixark_codex_hook.py"),
+                "--backend",
+                "local",
+                "--event-log",
+                str(event_log),
+                "--event",
+                "Stop",
+                "--rollout-backfill-only",
+                "--rollout-backfill-delay-ms",
+                "0",
+                "--account-id",
+                "acct_hook",
+                "--tenant-id",
+                "tenant_hook",
+                "--user-id",
+                "codex_user",
+                "--session-id",
+                "codex_session_1",
+                "--team",
+                "agent",
+                "--project",
+                "context",
+            ]
+            proc = subprocess.run(
+                cmd,
+                input=json.dumps({"transcript_path": str(rollout), "thread_id": "codex-async-backfill-thread"}),
+                text=True,
+                capture_output=True,
+                cwd=repo,
+                timeout=30,
+                env={**os.environ, "MATRIXARK_ALLOW_LOCAL_BACKEND": "1"},
+            )
+            if proc.returncode != 0:
+                raise AssertionError(f"async rollout backfill failed\nstdout={proc.stdout}\nstderr={proc.stderr}")
+
+            adapter = MatrixArkLocalAdapter(event_log)
+            records = adapter.read_all()
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_batch_commit"
+                    and record.get("commit_reason") == "async_rollout_backfill"
+                    and "PreviousAssistantBackfill" in record.get("source_codex_events", [])
+                    and "Stop:async_rollout_backfill" in record.get("source_codex_events", [])
+                    and record.get("memory_layers_written", {}).get("profile_entities", 0) >= 1
+                    for record in records
+                ),
+                records,
+            )
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_entity"
+                    and record.get("entity_type") == "assistant_decision"
+                    and record.get("memory_scope") == "user_profile"
+                    and record.get("session_continuity") == "cross_session"
+                    and "delayed rollout backfill" in str(record.get("state") or "")
+                    and "PreviousAssistantBackfill" in record.get("source_codex_events", [])
+                    and "Stop:async_rollout_backfill" in record.get("source_codex_events", [])
+                    for record in records
+                ),
+                records,
+            )
+            index_names = {
+                str(record.get("index_name") or "")
+                for record in records
+                if record.get("record_type") == "context_index"
+                and record.get("data_model") == "context_profile_entity"
+            }
+            self.assertIn("entity_type:assistant_decision", index_names)
+            self.assertIn("source_role:assistant", index_names)
+            self.assertIn("hook_type:after_llm", index_names)
+            self.assertIn("hook_type:session_commit", index_names)
+            self.assertIn("codex_event:PreviousAssistantBackfill", index_names)
+            self.assertIn("codex_event:Stop:async_rollout_backfill", index_names)
+
+            scope = {
+                "account_id": "acct_hook",
+                "tenant_id": "tenant_hook",
+                "user_id": "codex_user",
+                "session_id": "codex_session_2",
+            }
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "session_scope": "prefer",
+                    "query": "What assistant decision was recovered by delayed rollout backfill?",
+                    "max_context_tokens": 120,
+                    "source_role_budget_tokens": {"tool": 1},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "ranking": {"max_selected_refs": 3},
+                }
+            )
+            selected_decision = next(
+                ref
+                for ref in pack["selected_refs"]
+                if ref.get("ref_type") == "entity"
+                and ref.get("entity_type") == "assistant_decision"
+                and ref.get("memory_scope") == "user_profile"
+                and ref.get("session_continuity") == "cross_session"
+            )
+            self.assertIn("delayed rollout backfill", selected_decision["text"])
+            self.assertIn("PreviousAssistantBackfill", selected_decision["source_codex_events"])
+            self.assertIn("Stop:async_rollout_backfill", selected_decision["source_codex_events"])
+            self.assertEqual(["assistant"], selected_decision["budget_source_roles"])
+            self.assertEqual({"assistant": 1}, selected_decision["budget_source_role_counts"])
+            role_policy = pack["recall_policy"]["source_role_budget"]
+            self.assertEqual({"tool": 1}, role_policy["budget_tokens"])
+            self.assertEqual(0, role_policy["selected_tokens_by_role"]["tool"])
+            memory_budget = pack["recall_policy"]["memory_layer_budget"]
+            self.assertEqual({"assistant": 1}, memory_budget["source_message_counts_by_role"])
+
     def test_message_ingest_batches_hot_path_writes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             event_log = Path(tmp_dir) / "matrixark-message-batch.jsonl"
