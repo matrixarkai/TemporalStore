@@ -270,6 +270,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             "final_session_boundary_ref_count": 1,
                         },
                     },
+                    "async_pipeline_readiness": {
+                        "task_count": 2,
+                        "ready_for_retrieval": False,
+                        "remaining_stages": ["entity", "summary"],
+                        "freshness_warnings": ["async_pipeline_followup_pending"],
+                    },
                     "memory_hierarchy": {
                         "models": {
                             "profile_entity": {
@@ -384,6 +390,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             1,
             record["output_summary"]["retrieval_layers"]["memory_layer_budget"]["final_session_boundary_ref_count"],
         )
+        self.assertEqual(2, record["output_summary"]["async_pipeline_readiness"]["task_count"])
+        self.assertFalse(record["output_summary"]["async_pipeline_readiness"]["ready_for_retrieval"])
         self.assertEqual(37, record["output_summary"]["rendered_context_chars"])
         self.assertTrue(record["output_summary"]["strict_additional_context_emitted"])
         self.assertEqual("committed", record["output_summary"]["auto_batch_extract_status"])
@@ -445,7 +453,13 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                                 "final": {"refs": 1, "tokens": 3},
                             },
                             "final_session_boundary_ref_count": 1,
-                        }
+                        },
+                        "async_pipeline_readiness": {
+                            "task_count": 3,
+                            "ready_for_retrieval": False,
+                            "remaining_stages": ["entity", "secondary_index", "summary"],
+                            "freshness_warnings": ["entity_extraction_pending"],
+                        },
                     },
                     "recall_policy": {
                         "session_continuity": {
@@ -514,6 +528,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(
             1,
             item["result"]["retrieval_layers"]["memory_layer_budget"]["by_memory_scope"]["user_profile"]["refs"],
+        )
+        self.assertEqual(3, item["result"]["async_pipeline_readiness"]["task_count"])
+        self.assertEqual(
+            ["entity", "secondary_index", "summary"],
+            item["result"]["retrieval_layers"]["async_pipeline_readiness"]["remaining_stages"],
         )
         pressure = item["result"]["retrieval_budget_pressure"]
         self.assertTrue(pressure["budget_pressure"])
@@ -762,6 +781,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 },
                 "local_context_policy": {"local_context_count": 1},
                 "retrieval_metrics": {
+                    "async_pipeline_readiness": {
+                        "task_count": 4,
+                        "ready_for_retrieval": False,
+                        "remaining_stages": ["entity", "secondary_index", "summary"],
+                        "freshness_warnings": ["async_pipeline_followup_pending", "profile_summary_stale"],
+                    },
                     "memory_layer_budget": {
                         "by_memory_scope": {
                             "session": {"refs": 1, "tokens": 12},
@@ -826,6 +851,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("payload_field", output["retrieve"]["session_identity"]["session_id_source"])
         self.assertTrue(output["retrieve"]["session_identity"]["strong_session_identity"])
         self.assertFalse(output["retrieve"]["session_identity"]["fallback_session_identity"])
+        self.assertEqual(4, output["retrieve"]["async_pipeline_readiness"]["task_count"])
+        self.assertFalse(output["retrieve"]["async_pipeline_readiness"]["ready_for_retrieval"])
         self.assertEqual(
             "local_first_remote_fill_remaining",
             output["retrieve"]["budget"]["budget_contract"]["mode"],
@@ -868,6 +895,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("ref_type[entity=1/18t, summary=1/12t]", additional)
         self.assertIn("codex_event[PostToolUse=1/18t, Stop=1/12t]", additional)
         self.assertIn("final_boundary_refs=2", additional)
+        self.assertIn(
+            "async_pipeline[tasks=4; ready=false; remaining=entity,secondary_index,summary; warnings=async_pipeline_followup_pending,profile_summary_stale]",
+            additional,
+        )
         self.assertIn("Memory hierarchy:", additional)
         self.assertIn("user_profile/cross_session refs are long-term state", additional)
         self.assertIn("Budget pressure:", additional)

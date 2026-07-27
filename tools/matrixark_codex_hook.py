@@ -312,7 +312,22 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
         layer_summary["local_context_refs"] = 0
     if memory_layer_budget:
         layer_summary["memory_layer_budget"] = memory_layer_budget
+    async_readiness = retrieval_async_readiness_from_retrieve(pack)
+    if async_readiness:
+        layer_summary["async_pipeline_readiness"] = async_readiness
     return layer_summary
+
+
+def retrieval_async_readiness_from_retrieve(pack: Json | None) -> Json:
+    if not isinstance(pack, dict):
+        return {}
+    pack_view = _context_pack_view(pack)
+    for source_name in ["retrieval_metrics", "recall_policy"]:
+        source = pack_view.get(source_name)
+        if isinstance(source, dict) and isinstance(source.get("async_pipeline_readiness"), dict):
+            return source["async_pipeline_readiness"]
+    readiness = pack_view.get("async_pipeline_readiness")
+    return readiness if isinstance(readiness, dict) else {}
 
 
 def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:
@@ -680,7 +695,23 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
         final_boundary_refs = 0
     if final_boundary_refs > 0:
         budget_bits.append(f"final_boundary_refs={final_boundary_refs}")
-    if not count_bits and not continuity_bits and not budget_bits:
+    readiness = layer_summary.get("async_pipeline_readiness")
+    readiness_bits = []
+    if isinstance(readiness, dict):
+        try:
+            task_count = int(readiness.get("task_count") or 0)
+        except (TypeError, ValueError):
+            task_count = 0
+        readiness_bits.append(f"tasks={task_count}")
+        if "ready_for_retrieval" in readiness:
+            readiness_bits.append(f"ready={str(bool(readiness.get('ready_for_retrieval'))).lower()}")
+        remaining = readiness.get("remaining_stages")
+        if isinstance(remaining, list) and remaining:
+            readiness_bits.append("remaining=" + ",".join(str(item) for item in remaining[:4]))
+        warnings = readiness.get("freshness_warnings")
+        if isinstance(warnings, list) and warnings:
+            readiness_bits.append("warnings=" + ",".join(str(item) for item in warnings[:3]))
+    if not count_bits and not continuity_bits and not budget_bits and not readiness_bits:
         return ""
     details = []
     if count_bits:
@@ -689,6 +720,8 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
         details.append(", ".join(continuity_bits))
     if budget_bits:
         details.append("memory_layer_budget: " + "; ".join(budget_bits))
+    if readiness_bits:
+        details.append("async_pipeline[" + "; ".join(readiness_bits) + "]")
     return "Layer summary: " + "; ".join(details) + "."
 
 
@@ -984,6 +1017,7 @@ def codex_hook_output(
             "budget": retrieval_budget_summary_from_retrieve(retrieve),
             "budget_pressure": retrieval_budget_pressure_from_retrieve(retrieve),
             "layers": retrieval_layer_summary_from_retrieve(retrieve, emitted_refs),
+            "async_pipeline_readiness": retrieval_async_readiness_from_retrieve(retrieve),
             "session_identity": retrieval_session_identity_from_retrieve(retrieve, session_id_source=session_id_source),
             "memory_hierarchy": retrieval_memory_hierarchy_contract_from_retrieve(retrieve),
             "rendered_context_chars": len(rendered_context),
@@ -1140,6 +1174,7 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 "retrieval_budget": retrieval_budget_summary_from_retrieve(result),
                 "retrieval_budget_pressure": retrieval_budget_pressure_from_retrieve(result),
                 "retrieval_layers": retrieval_layer_summary_from_retrieve(result, emitted_refs),
+                "async_pipeline_readiness": retrieval_async_readiness_from_retrieve(result),
                 "session_identity": retrieval_session_identity_from_retrieve(
                     result,
                     session_id_source=str((args.get("metadata") if isinstance(args.get("metadata"), dict) else {}).get("session_id_source") or ""),
@@ -1240,6 +1275,7 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             "retrieval_budget": retrieve.get("budget"),
             "retrieval_budget_pressure": retrieve.get("budget_pressure"),
             "retrieval_layers": retrieve.get("layers"),
+            "async_pipeline_readiness": retrieve.get("async_pipeline_readiness"),
             "memory_hierarchy": retrieve.get("memory_hierarchy"),
             "rendered_context_chars": retrieve.get("rendered_context_chars"),
             "ingest_status": ingest.get("status"),
