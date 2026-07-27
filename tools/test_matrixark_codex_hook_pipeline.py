@@ -144,6 +144,109 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertLessEqual(pack["used_context_tokens"], 100)
             self.assertTrue(any(ref.get("ref_type") == "summary" for ref in pack["selected_refs"]))
 
+    def test_fast_hook_threshold_commit_persists_real_adapter_memory_layers(self) -> None:
+        original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
+        matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-threshold.jsonl")
+
+                class Server:
+                    def __init__(self) -> None:
+                        self.adapter = adapter
+
+                scope_args = {
+                    "event": "UserPromptSubmit",
+                    "account_id": "acct_fast_threshold",
+                    "tenant_id": "tenant_fast_threshold",
+                    "user_id": "user_fast_threshold",
+                    "session_id": "session_fast_threshold",
+                    "team": "codex",
+                    "project": "temporalstore",
+                    "session_commit_threshold": 2,
+                    "idle_commit_timeout_ms": 300000,
+                    "understanding_provider": "rules",
+                    "segment_provider": "deterministic",
+                }
+                server = Server()
+                first = matrixark_codex_hook.fast_async_hook_ingest(
+                    server,
+                    args=Namespace(**scope_args),
+                    text="User prompt: make live fast hook extraction fire on threshold.",
+                    role="user",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={
+                        "session_id_source": "payload_field",
+                        "thread_id": "thread-fast-threshold",
+                        "turn_id": "turn-fast-threshold-1",
+                    },
+                )
+                self.assertEqual("accepted", first["status"])
+                self.assertFalse(first["session_buffer"]["threshold_ready"])
+                self.assertFalse(first["auto_batch_extract_result"])
+
+                second = matrixark_codex_hook.fast_async_hook_ingest(
+                    server,
+                    args=Namespace(**scope_args),
+                    text="Assistant decision: threshold commits should extract session and profile memory now.",
+                    role="assistant",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={
+                        "session_id_source": "payload_field",
+                        "thread_id": "thread-fast-threshold",
+                        "turn_id": "turn-fast-threshold-2",
+                    },
+                )
+                commit = second["auto_batch_extract_result"]
+                self.assertEqual("committed", commit["status"])
+                self.assertEqual("threshold", commit["trigger_policy"])
+                self.assertEqual("provisional", commit["extraction_phase"])
+                self.assertFalse(commit["final_session_boundary"])
+                self.assertEqual(2, commit["committed_event_count"])
+                self.assertEqual(["assistant", "user"], commit["source_roles"])
+                self.assertTrue(second["session_buffer"]["threshold_ready"])
+                self.assertFalse(adapter.pending_session_events({
+                    "account_id": "acct_fast_threshold",
+                    "tenant_id": "tenant_fast_threshold",
+                    "user_id": "user_fast_threshold",
+                    "session_id": "session_fast_threshold",
+                }))
+
+                layers = commit["memory_layers_written"]
+                self.assertGreaterEqual(layers["segments"], 1)
+                self.assertGreaterEqual(layers["session_entities"], 1)
+                self.assertGreaterEqual(layers["profile_entities"], 1)
+                self.assertGreaterEqual(layers["secondary_indexes"], 1)
+                self.assertGreaterEqual(layers["summary_dirty_nodes"], 1)
+
+                records = adapter.read_all()
+                commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
+                self.assertEqual(1, len(commits))
+                self.assertEqual("threshold", commits[0]["trigger_policy"])
+                self.assertEqual(["assistant", "user"], commits[0]["source_roles"])
+                self.assertTrue(isinstance(commits[0].get("trigger_evidence"), dict))
+                self.assertTrue(commits[0]["trigger_evidence"]["threshold_ready"])
+                self.assertEqual(2, commits[0]["trigger_evidence"]["pending_event_count"])
+                self.assertTrue(any(record.get("record_type") == "context_segment" for record in records))
+                self.assertTrue(any(record.get("record_type") == "context_index" for record in records))
+                self.assertTrue(
+                    any(
+                        record.get("record_type") == "context_entity"
+                        and record.get("memory_scope") == "session"
+                        for record in records
+                    )
+                )
+                self.assertTrue(
+                    any(
+                        record.get("record_type") == "context_entity"
+                        and record.get("memory_scope") == "user_profile"
+                        and record.get("session_continuity") == "cross_session"
+                        for record in records
+                    )
+                )
+        finally:
+            matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+
     def test_retrieval_metrics_expose_shared_local_remote_budget(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-retrieval-budget.jsonl")
