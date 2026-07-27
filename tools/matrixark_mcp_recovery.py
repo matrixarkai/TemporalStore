@@ -253,6 +253,75 @@ def _memory_layer_pressure_records(records: list[Json]) -> list[Json]:
     return pressure_records
 
 
+def _memory_hierarchy_records(records: list[Json]) -> list[Json]:
+    hierarchy_records: list[Json] = []
+    for record in records:
+        hierarchy = record.get("memory_hierarchy")
+        if not isinstance(hierarchy, dict):
+            output_summary = record.get("output_summary")
+            if isinstance(output_summary, dict):
+                hierarchy = output_summary.get("memory_hierarchy")
+        if not isinstance(hierarchy, dict):
+            result = record.get("result")
+            if isinstance(result, dict):
+                hierarchy = result.get("memory_hierarchy")
+        if isinstance(hierarchy, dict):
+            hierarchy_records.append(hierarchy)
+    return hierarchy_records
+
+
+def _memory_hierarchy_model_count(records: list[Json], model_name: str) -> int:
+    count = 0
+    for record in records:
+        models = record.get("models")
+        if isinstance(models, dict) and isinstance(models.get(model_name), dict):
+            count += 1
+    return count
+
+
+def _memory_hierarchy_values(records: list[Json], field: str) -> list[str]:
+    return sorted(
+        {
+            str(record.get(field))
+            for record in records
+            if str(record.get(field) or "")
+        }
+    )
+
+
+def _memory_hierarchy_selected_ref_flow(records: list[Json]) -> list[str]:
+    stages: list[str] = []
+    seen: set[str] = set()
+    for record in records:
+        flow = record.get("selected_ref_flow")
+        if not isinstance(flow, list):
+            continue
+        for stage in flow:
+            stage_name = str(stage or "")
+            if stage_name and stage_name not in seen:
+                seen.add(stage_name)
+                stages.append(stage_name)
+    return stages
+
+
+def _memory_hierarchy_profile_bridge_count(records: list[Json]) -> int:
+    count = 0
+    for record in records:
+        models = record.get("models")
+        if not isinstance(models, dict):
+            continue
+        profile_entity = models.get("profile_entity")
+        if not isinstance(profile_entity, dict):
+            continue
+        if (
+            str(profile_entity.get("record_type") or "") == "context_entity"
+            and str(profile_entity.get("memory_scope") or "") == "user_profile"
+            and str(profile_entity.get("session_continuity") or "") == "cross_session"
+        ):
+            count += 1
+    return count
+
+
 def _sum_pressure_int(records: list[Json], field: str) -> int:
     total = 0
     for record in records:
@@ -403,6 +472,8 @@ def matrixark_local_recovery_report(
         "dropped_memory_layer_budget",
     )
     memory_layer_pressure_records = _memory_layer_pressure_records(retrieval_visibility_records)
+    retrieval_memory_hierarchy_records = _memory_hierarchy_records(retrieval_visibility_records)
+    profile_bridge_hierarchy_count = _memory_hierarchy_profile_bridge_count(retrieval_memory_hierarchy_records)
     selected_budget_by_memory_scope = _memory_scope_budget_counts(
         retrieval_visibility_records,
         "memory_layer_budget",
@@ -759,6 +830,31 @@ def matrixark_local_recovery_report(
             "lifecycle_stages": telemetry_lifecycle_stages,
             "memory_layer_budget_record_count": memory_layer_budget_record_count,
             "dropped_memory_layer_budget_record_count": dropped_memory_layer_budget_record_count,
+            "memory_hierarchy_record_count": len(retrieval_memory_hierarchy_records),
+            "memory_hierarchy_session_entity_model_count": _memory_hierarchy_model_count(
+                retrieval_memory_hierarchy_records,
+                "session_entity",
+            ),
+            "memory_hierarchy_profile_entity_model_count": _memory_hierarchy_model_count(
+                retrieval_memory_hierarchy_records,
+                "profile_entity",
+            ),
+            "memory_hierarchy_profile_index_model_count": _memory_hierarchy_model_count(
+                retrieval_memory_hierarchy_records,
+                "profile_index",
+            ),
+            "memory_hierarchy_profile_bridge_record_count": profile_bridge_hierarchy_count,
+            "memory_hierarchy_cross_session_budget_floor_statuses": _memory_hierarchy_values(
+                retrieval_memory_hierarchy_records,
+                "cross_session_budget_floor_status",
+            ),
+            "memory_hierarchy_selected_ref_flow": _memory_hierarchy_selected_ref_flow(
+                retrieval_memory_hierarchy_records,
+            ),
+            "retrieval_memory_hierarchy_rebuildable_from_durable_log": bool(
+                retrieval_memory_hierarchy_records
+                and profile_bridge_hierarchy_count
+            ) and not blockers,
             "memory_layer_pressure_record_count": len(memory_layer_pressure_records),
             "memory_layer_pressure_selected_refs": _sum_pressure_int(memory_layer_pressure_records, "selected_refs"),
             "memory_layer_pressure_selected_tokens": _sum_pressure_int(memory_layer_pressure_records, "selected_tokens"),
