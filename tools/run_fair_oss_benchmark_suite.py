@@ -25,7 +25,7 @@ def main() -> int:
     parser.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--reader-base-url", default="http://127.0.0.1:11434/v1")
     parser.add_argument("--reader-model", default="qwen2.5:1.5b")
-    parser.add_argument("--embedding-model", default="matrixark-hash-embedding-32")
+    parser.add_argument("--embedding-model", default="sentence-transformers/all-MiniLM-L6-v2")
     parser.add_argument(
         "--oss-reader-model",
         default="",
@@ -90,6 +90,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     apply_shared_oss_stack_aliases(args)
+    validate_shared_oss_stack(args)
 
     repo = Path(__file__).resolve().parents[1]
     out = Path(args.output_root)
@@ -467,6 +468,20 @@ def apply_shared_oss_stack_aliases(args: argparse.Namespace) -> None:
         args.reader_model = args.oss_reader_model
     if args.oss_encoding_model:
         args.embedding_model = args.oss_encoding_model
+
+
+def validate_shared_oss_stack(args: argparse.Namespace) -> None:
+    reader_model = str(args.reader_model or "").strip()
+    embedding_model = str(args.embedding_model or "").strip()
+    if not reader_model:
+        raise SystemExit("shared OSS reader model is required")
+    if not embedding_model:
+        raise SystemExit("shared OSS encoding/embedding model is required")
+    if embedding_model.startswith("matrixark-hash") or embedding_model.startswith("matrixark-local-hash"):
+        raise SystemExit(
+            "fair OSS comparisons require a real shared OSS encoder; "
+            "pass --oss-encoding-model sentence-transformers/all-MiniLM-L6-v2 or another OSS encoder"
+        )
 
 
 def reader_policy_flags(args: argparse.Namespace) -> list[str]:
