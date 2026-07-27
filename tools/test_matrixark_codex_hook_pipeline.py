@@ -560,6 +560,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("dirty_marked", threshold_layers["summary_refresh_status"])
             self.assertEqual(["assistant", "user"], threshold_layers["source_roles"])
             self.assertEqual(["assistant", "user"], second["auto_batch_extract_result"]["source_roles"])
+            self.assertEqual({"assistant": 1, "user": 1}, second["auto_batch_extract_result"]["source_role_counts"])
             threshold_refresh = second["auto_batch_extract_result"]["summary_refresh"]
             self.assertTrue(threshold_refresh["session_dirty_hashes"])
             self.assertTrue(threshold_refresh["profile_dirty_hashes"])
@@ -621,6 +622,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(["tool"], idle["source_roles"])
             self.assertEqual(["hook_boundary"], idle["source_hook_types"])
             self.assertEqual(["PostToolUse"], idle["source_codex_events"])
+            self.assertEqual({"tool": 1}, idle["source_role_counts"])
+            self.assertEqual({"hook_boundary": 1}, idle["source_hook_type_counts"])
+            self.assertEqual({"PostToolUse": 1}, idle["source_codex_event_counts"])
             idle_promotions = idle["profile_promotion_summary"]
             self.assertGreaterEqual(len(idle_promotions), 1)
             self.assertTrue(all(item.get("source_session_ids") == ["session_async"] for item in idle_promotions))

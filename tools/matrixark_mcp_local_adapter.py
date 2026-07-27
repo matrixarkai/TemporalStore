@@ -4308,6 +4308,14 @@ class MatrixArkLocalAdapter:
                 if isinstance(message, dict) and str(message.get("role") or "").strip()
             }
         )
+        source_lineage_count = len(source_event_ids) if source_event_ids else len(envelope.get("messages", []))
+        source_role_counts: Json = {}
+        for message in envelope.get("messages", []):
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "").strip().lower()
+            if role:
+                source_role_counts[role] = int(source_role_counts.get(role, 0)) + 1
         envelope_metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
         source_hook_type_values = [
             envelope.get("hook_type"),
@@ -4317,6 +4325,11 @@ class MatrixArkLocalAdapter:
         if isinstance(envelope_metadata.get("source_hook_types"), list):
             source_hook_type_values.extend(envelope_metadata["source_hook_types"])
         source_hook_types = sorted({str(value).strip() for value in source_hook_type_values if str(value or "").strip()})
+        source_hook_type_counts = {
+            hook_type: source_lineage_count
+            for hook_type in source_hook_types
+            if hook_type
+        }
         source_codex_event_values = [
             envelope.get("codex_event"),
             envelope_metadata.get("codex_event"),
@@ -4326,6 +4339,11 @@ class MatrixArkLocalAdapter:
         if isinstance(envelope_metadata.get("source_codex_events"), list):
             source_codex_event_values.extend(envelope_metadata["source_codex_events"])
         source_codex_events = sorted({str(value).strip() for value in source_codex_event_values if str(value or "").strip()})
+        source_codex_event_counts = {
+            codex_event: source_lineage_count
+            for codex_event in source_codex_events
+            if codex_event
+        }
         entity_hashes = []
         profile_entity_hashes = []
         entity_type_counts: Json = {}
@@ -4662,6 +4680,9 @@ class MatrixArkLocalAdapter:
                     "profile_entities": len(profile_entity_hashes),
                     "profile_promotion_summary": profile_promotion_summary[:16],
                     "entity_type_counts": entity_type_counts,
+                    "source_role_counts": source_role_counts,
+                    "source_hook_type_counts": source_hook_type_counts,
+                    "source_codex_event_counts": source_codex_event_counts,
                     "segments": len(segment_hashes),
                     "summaries": 1,
                     "indexes": len(batch_index_terms),
@@ -4719,6 +4740,9 @@ class MatrixArkLocalAdapter:
             "entities_written": len(entity_hashes),
             "profile_entities_written": len(profile_entity_hashes),
             "entity_type_counts": entity_type_counts,
+            "source_role_counts": source_role_counts,
+            "source_hook_type_counts": source_hook_type_counts,
+            "source_codex_event_counts": source_codex_event_counts,
             "profile_promotion_summary": profile_promotion_summary[:16],
             "segments_written": len(segment_hashes),
             "summary_hash": summary_hash,
