@@ -882,6 +882,21 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             "after_llm": {"refs": 1, "tokens": 22},
                         },
                     },
+                    "memory_layer_pressure": {
+                        "selected_refs": 3,
+                        "selected_tokens": 42,
+                        "dropped_refs": 5,
+                        "dropped_tokens": 76,
+                        "pressure_dimensions": ["by_memory_scope", "by_source_role"],
+                        "dropped_dimensions": ["by_memory_scope", "by_extraction_phase", "by_source_role"],
+                        "profile_memory_pressure": True,
+                        "cross_session_pressure": True,
+                        "final_memory_pressure": True,
+                        "assistant_memory_pressure": True,
+                        "tool_memory_pressure": True,
+                        "pressure_bucket_count": 2,
+                        "dropped_bucket_count": 5,
+                    },
                 },
                 "dropped_refs": {
                     "cross_session_budget": 2,
@@ -924,6 +939,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 "user_profile"
             ]["refs"],
         )
+        self.assertEqual(5, output["retrieve"]["layers"]["memory_layer_pressure"]["dropped_refs"])
+        self.assertTrue(output["retrieve"]["layers"]["memory_layer_pressure"]["assistant_memory_pressure"])
         self.assertEqual(58, output["retrieve"]["budget"]["remote_budget_remaining_tokens"])
         self.assertFalse(output["retrieve"]["budget"]["remote_budget_overrun"])
         self.assertEqual("payload_field", output["retrieve"]["session_identity"]["session_id_source"])
@@ -967,6 +984,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("entity_bridge_refs=1", additional)
         self.assertIn("local_context_refs=1", additional)
         self.assertIn("memory_layer_budget:", additional)
+        self.assertIn("memory_layer_pressure:", additional)
+        self.assertIn("selected=3", additional)
+        self.assertIn("dropped=5", additional)
+        self.assertIn("flags[profile,cross_session,final,assistant,tool]", additional)
+        self.assertIn("pressure_dimensions[by_memory_scope,by_source_role]", additional)
         self.assertIn("scope[session=1/12t, user_profile=2/30t]", additional)
         self.assertIn("continuity[cross_session=2/30t, same_session=1/12t]", additional)
         self.assertIn("phase[final=2/30t, provisional=1/12t]", additional)

@@ -324,10 +324,25 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
         layer_summary["local_context_refs"] = 0
     if memory_layer_budget:
         layer_summary["memory_layer_budget"] = memory_layer_budget
+    memory_layer_pressure = retrieval_memory_layer_pressure_from_retrieve(pack)
+    if memory_layer_pressure:
+        layer_summary["memory_layer_pressure"] = memory_layer_pressure
     async_readiness = retrieval_async_readiness_from_retrieve(pack)
     if async_readiness:
         layer_summary["async_pipeline_readiness"] = async_readiness
     return layer_summary
+
+
+def retrieval_memory_layer_pressure_from_retrieve(pack: Json | None) -> Json:
+    if not isinstance(pack, dict):
+        return {}
+    pack_view = _context_pack_view(pack)
+    for source_name in ["retrieval_metrics", "recall_policy"]:
+        source = pack_view.get(source_name)
+        if isinstance(source, dict) and isinstance(source.get("memory_layer_pressure"), dict):
+            return source["memory_layer_pressure"]
+    pressure = pack_view.get("memory_layer_pressure")
+    return pressure if isinstance(pressure, dict) else {}
 
 
 def retrieval_async_readiness_from_retrieve(pack: Json | None) -> Json:
@@ -692,6 +707,12 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
         final_boundary_refs = 0
     if final_boundary_refs > 0:
         budget_bits.append(f"final_boundary_refs={final_boundary_refs}")
+    memory_layer_pressure = (
+        layer_summary.get("memory_layer_pressure")
+        if isinstance(layer_summary.get("memory_layer_pressure"), dict)
+        else {}
+    )
+    pressure_bits = _format_memory_layer_pressure_bits(memory_layer_pressure)
     readiness = layer_summary.get("async_pipeline_readiness")
     readiness_bits = []
     if isinstance(readiness, dict):
@@ -736,7 +757,7 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
         warnings = readiness.get("freshness_warnings")
         if isinstance(warnings, list) and warnings:
             readiness_bits.append("warnings=" + ",".join(str(item) for item in warnings[:3]))
-    if not count_bits and not continuity_bits and not budget_bits and not readiness_bits:
+    if not count_bits and not continuity_bits and not budget_bits and not pressure_bits and not readiness_bits:
         return ""
     details = []
     if count_bits:
@@ -745,6 +766,8 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
         details.append(", ".join(continuity_bits))
     if budget_bits:
         details.append("memory_layer_budget: " + "; ".join(budget_bits))
+    if pressure_bits:
+        details.append("memory_layer_pressure: " + "; ".join(pressure_bits))
     if readiness_bits:
         details.append("async_pipeline[" + "; ".join(readiness_bits) + "]")
     return "Layer summary: " + "; ".join(details) + "."
@@ -782,6 +805,50 @@ def _format_memory_layer_budget_bits(memory_layer_budget: Json) -> list[str]:
         if bucket_bits:
             budget_bits.append(f"{label}[" + ", ".join(bucket_bits) + "]")
     return budget_bits
+
+
+def _format_memory_layer_pressure_bits(memory_layer_pressure: Json) -> list[str]:
+    if not isinstance(memory_layer_pressure, dict) or not memory_layer_pressure:
+        return []
+    pressure_bits = []
+    for label, field in [
+        ("selected", "selected_refs"),
+        ("selected_tokens", "selected_tokens"),
+        ("dropped", "dropped_refs"),
+        ("dropped_tokens", "dropped_tokens"),
+        ("pressure_buckets", "pressure_bucket_count"),
+        ("dropped_buckets", "dropped_bucket_count"),
+    ]:
+        try:
+            value = int(memory_layer_pressure.get(field) or 0)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            pressure_bits.append(f"{label}={value}")
+    flag_bits = []
+    for label, field in [
+        ("profile", "profile_memory_pressure"),
+        ("session", "session_memory_pressure"),
+        ("cross_session", "cross_session_pressure"),
+        ("same_session", "same_session_pressure"),
+        ("final", "final_memory_pressure"),
+        ("provisional", "provisional_memory_pressure"),
+        ("assistant", "assistant_memory_pressure"),
+        ("user", "user_memory_pressure"),
+        ("tool", "tool_memory_pressure"),
+    ]:
+        if bool(memory_layer_pressure.get(field)):
+            flag_bits.append(label)
+    if flag_bits:
+        pressure_bits.append("flags[" + ",".join(flag_bits) + "]")
+    for label, field in [
+        ("pressure_dimensions", "pressure_dimensions"),
+        ("dropped_dimensions", "dropped_dimensions"),
+    ]:
+        values = memory_layer_pressure.get(field)
+        if isinstance(values, list) and values:
+            pressure_bits.append(f"{label}[" + ",".join(str(value) for value in values[:8]) + "]")
+    return pressure_bits
 
 
 def normalized_event_name(event: str) -> str:
