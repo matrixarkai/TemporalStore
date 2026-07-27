@@ -5460,6 +5460,17 @@ def select_token_budgeted_refs(
             for role in candidate.get("source_roles", [])
             if str(role or "").strip()
         } if isinstance(candidate.get("source_roles"), list) else set()
+        entity_type = str(candidate.get("entity_type") or "").strip().lower()
+        role_specific_entity_types = {
+            "assistant_decision": "assistant",
+            "assistant_response": "assistant",
+            "tool_evidence": "tool",
+            "user_requirement": "user",
+            "user_preference": "user",
+        }
+        semantic_role = role_specific_entity_types.get(entity_type)
+        if semantic_role and semantic_role in role_names:
+            return {semantic_role}
         source_counts = candidate.get("source_role_counts") if isinstance(candidate.get("source_role_counts"), dict) else {}
         for role, count in source_counts.items():
             role_name = str(role or "").strip().lower()
@@ -5471,6 +5482,8 @@ def select_token_budgeted_refs(
                 source_count = 0
             if source_count > 0:
                 role_names.add(role_name)
+        if semantic_role and semantic_role in role_names:
+            return {semantic_role}
         return role_names
     selected_cross_sessions: set[str] = set()
     def cross_session_key(candidate: Json) -> str:
