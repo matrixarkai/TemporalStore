@@ -30,6 +30,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         session_props = tools_by_name["matrixark_session_commit"]["inputSchema"]["properties"]
         batch_props = tools_by_name["matrixark_batch_extract"]["inputSchema"]["properties"]
         retrieve_props = tools_by_name["matrixark_retrieve"]["inputSchema"]["properties"]
+        dashboard_table_enum = tools_by_name["matrixark_ingestion_dashboard"]["inputSchema"]["properties"]["table"]["enum"]
 
         self.assertEqual(["provisional", "final", "standalone"], session_props["extraction_phase"]["enum"])
         self.assertEqual(["provisional", "final", "standalone"], batch_props["extraction_phase"]["enum"])
@@ -39,6 +40,72 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("include_retrieval_debug", retrieve_props)
         self.assertIn("debug_context_pack", retrieve_props)
         self.assertIn("remote MatrixArk budget", retrieve_props["local_context_safety_margin_tokens"]["description"])
+        self.assertIn("summary_refresh", dashboard_table_enum)
+        self.assertIn("async_pipeline", dashboard_table_enum)
+
+    def test_dashboard_helper_exposes_async_pipeline_and_summary_refresh_tables(self) -> None:
+        dashboard_mod = importlib.import_module("tools.matrixark_mcp_dashboard")
+        scope = {
+            "account_id": "acct",
+            "tenant_id": "tenant",
+            "user_id": "user",
+            "session_id": "session",
+        }
+
+        class Adapter:
+            def read_all(self):
+                return [
+                    {
+                        "record_type": "context_batch_commit",
+                        "scope": scope,
+                        "commit_id_hash": 11,
+                        "batch_id_hash": 12,
+                        "trigger_policy": "threshold",
+                        "summary_refresh": {
+                            "status": "dirty_marked",
+                            "dirty_hashes": [21, 22],
+                            "session_dirty_hashes": [21],
+                            "profile_dirty_hashes": [22],
+                            "profile_summary_refresh_required": True,
+                        },
+                        "memory_layers_written": {"profile_entities": 1},
+                        "created_at_ms": 100,
+                    },
+                    {
+                        "record_type": "context_summary_dirty",
+                        "scope": scope,
+                        "dirty_node_hash": 22,
+                        "dirty_reason": "profile_entity_promoted",
+                        "updated_at_ms": 101,
+                    },
+                    {
+                        "record_type": "matrixark_async_pipeline_task",
+                        "scope": scope,
+                        "task_hash": 31,
+                        "event_id_hash": 41,
+                        "commit_id_hash": 11,
+                        "status": "extraction_committed",
+                        "completed_stages": ["extraction"],
+                        "remaining_stages": ["summary", "compression", "embedding"],
+                        "trigger_policy": "threshold",
+                        "summary_refresh_status": "dirty_marked",
+                        "memory_layers_written": {"profile_entities": 1},
+                        "updated_at_ms": 102,
+                    },
+                ]
+
+        summary = dashboard_mod.ingestion_dashboard(Adapter(), {"scope": scope, "table": "summary_refresh"})
+        self.assertEqual(2, summary["total"])
+        self.assertEqual("dirty_marked", summary["rows"][1]["summary_refresh_status"])
+        self.assertTrue(summary["rows"][1]["profile_summary_refresh_required"])
+        self.assertEqual(1, summary["totals"]["async_pipeline"])
+
+        pipeline = dashboard_mod.ingestion_dashboard(Adapter(), {"scope": scope, "table": "async_pipeline"})
+        self.assertEqual(1, pipeline["total"])
+        self.assertEqual("extraction_committed", pipeline["rows"][0]["status"])
+        self.assertTrue(pipeline["rows"][0]["summary_pending"])
+        self.assertTrue(pipeline["rows"][0]["compression_pending"])
+        self.assertTrue(pipeline["rows"][0]["embedding_pending"])
 
     def test_direct_tools_path_imports_still_work_for_script_launches(self) -> None:
         sys.path.insert(0, str(TOOLS_DIR))

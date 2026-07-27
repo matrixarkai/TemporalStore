@@ -268,7 +268,16 @@ TOOLS: list[Json] = [
                 "api_key": API_KEY_SCHEMA,
                 "table": {
                     "type": "string",
-                    "enum": ["messages", "resources", "skills", "events", "entities", "context_packs"],
+                    "enum": [
+                        "messages",
+                        "resources",
+                        "skills",
+                        "events",
+                        "entities",
+                        "context_packs",
+                        "summary_refresh",
+                        "async_pipeline",
+                    ],
                     "default": "messages",
                     "description": "Which dashboard table to page.",
                 },

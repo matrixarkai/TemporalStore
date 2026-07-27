@@ -218,6 +218,100 @@ def dashboard_rows_for_table(records: list[Json], table: str, scope: Json) -> li
                     "created_at_ms": record.get("created_at_ms", 0),
                 }
             )
+        elif table == "summary_refresh" and record_type in {"context_batch_commit", "context_summary_dirty"}:
+            if record_type == "context_batch_commit":
+                summary_refresh = record.get("summary_refresh", {})
+                if not isinstance(summary_refresh, dict):
+                    summary_refresh = {}
+                profile_promotion_summary = record.get("profile_promotion_summary", [])
+                rows.append(
+                    {
+                        "row_type": record_type,
+                        "commit_id_hash": record.get("commit_id_hash", 0),
+                        "batch_id_hash": record.get("batch_id_hash", 0),
+                        "node_hash": record.get("node_hash", 0),
+                        "node_path": record.get("node_path", []),
+                        "scope": candidate_access_scope(record),
+                        "commit_reason": record.get("commit_reason", ""),
+                        "trigger_policy": record.get("trigger_policy", ""),
+                        "extraction_phase": record.get("extraction_phase", ""),
+                        "final_session_boundary": bool(record.get("final_session_boundary", False)),
+                        "summary_refresh_status": summary_refresh.get("status", ""),
+                        "summary_dirty_hash_count": len(summary_refresh.get("dirty_hashes", []))
+                        if isinstance(summary_refresh.get("dirty_hashes"), list)
+                        else 0,
+                        "session_dirty_hash_count": len(summary_refresh.get("session_dirty_hashes", []))
+                        if isinstance(summary_refresh.get("session_dirty_hashes"), list)
+                        else 0,
+                        "profile_dirty_hash_count": len(summary_refresh.get("profile_dirty_hashes", []))
+                        if isinstance(summary_refresh.get("profile_dirty_hashes"), list)
+                        else 0,
+                        "profile_summary_refresh_required": bool(summary_refresh.get("profile_summary_refresh_required", False)),
+                        "profile_promotion_count": len(profile_promotion_summary)
+                        if isinstance(profile_promotion_summary, list)
+                        else 0,
+                        "memory_layers_written": record.get("memory_layers_written", {}),
+                        "source_roles": record.get("source_roles", []),
+                        "source_hook_types": record.get("source_hook_types", []),
+                        "source_codex_events": record.get("source_codex_events", []),
+                        "created_at_ms": record.get("created_at_ms", 0),
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "row_type": record_type,
+                        "dirty_node_hash": record.get("dirty_node_hash", record.get("node_hash", 0)),
+                        "node_hash": record.get("node_hash", 0),
+                        "node_path": record.get("node_path", []),
+                        "scope": candidate_access_scope(record),
+                        "dirty_reason": record.get("dirty_reason", ""),
+                        "source_ref_type": record.get("source_ref_type", ""),
+                        "source_batch_hash": record.get("source_batch_hash", 0),
+                        "source_entity_hash": record.get("source_entity_hash", 0),
+                        "updated_at_ms": record.get("updated_at_ms", record.get("created_at_ms", 0)),
+                    }
+                )
+        elif table == "async_pipeline" and record_type == "matrixark_async_pipeline_task":
+            memory_layers_written = record.get("memory_layers_written", {})
+            if not isinstance(memory_layers_written, dict):
+                memory_layers_written = {}
+            completed_stages = record.get("completed_stages", [])
+            if not isinstance(completed_stages, list):
+                completed_stages = []
+            remaining_stages = record.get("remaining_stages", [])
+            if not isinstance(remaining_stages, list):
+                remaining_stages = []
+            rows.append(
+                {
+                    "row_type": record_type,
+                    "task_hash": record.get("task_hash", 0),
+                    "event_id_hash": record.get("event_id_hash", 0),
+                    "commit_id_hash": record.get("commit_id_hash", 0),
+                    "batch_id_hash": record.get("batch_id_hash", 0),
+                    "node_hash": record.get("node_hash", 0),
+                    "node_path": record.get("node_path", []),
+                    "scope": candidate_access_scope(record),
+                    "status": record.get("status", ""),
+                    "stages": record.get("stages", []),
+                    "completed_stages": completed_stages,
+                    "remaining_stages": remaining_stages,
+                    "summary_pending": "summary" in remaining_stages,
+                    "compression_pending": "compression" in remaining_stages,
+                    "embedding_pending": "embedding" in remaining_stages,
+                    "trigger_policy": record.get("trigger_policy", ""),
+                    "extraction_phase": record.get("extraction_phase", ""),
+                    "final_session_boundary": bool(record.get("final_session_boundary", False)),
+                    "source_roles": record.get("source_roles", []),
+                    "source_hook_types": record.get("source_hook_types", []),
+                    "source_codex_events": record.get("source_codex_events", []),
+                    "memory_layers_written": memory_layers_written,
+                    "summary_refresh_status": record.get("summary_refresh_status", ""),
+                    "summary_dirty_nodes": record.get("summary_dirty_nodes", 0),
+                    "created_at_ms": record.get("created_at_ms", 0),
+                    "updated_at_ms": record.get("updated_at_ms", record.get("created_at_ms", 0)),
+                }
+            )
     if table == "resources":
         priority = {"resource_manifest": 0, "resource_chunk": 1, "resource_import_task": 2}
         rows.sort(
@@ -234,7 +328,16 @@ def dashboard_rows_for_table(records: list[Json], table: str, scope: Json) -> li
 def ingestion_dashboard(adapter: Any, args: Json) -> Json:
     scope = optional_object(args, "scope")
     table = optional_string(args, "table", "messages")
-    allowed_tables = {"messages", "resources", "skills", "events", "entities", "context_packs"}
+    allowed_tables = {
+        "messages",
+        "resources",
+        "skills",
+        "events",
+        "entities",
+        "context_packs",
+        "summary_refresh",
+        "async_pipeline",
+    }
     if table not in allowed_tables:
         raise MatrixArkError(f"table must be one of {sorted(allowed_tables)}")
     page_size = args.get("page_size", 25)

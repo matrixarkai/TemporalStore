@@ -143,6 +143,10 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertIn("matrixark_ingestion_dashboard", html)
         self.assertIn("Context Packs", html)
         self.assertIn("Resources", html)
+        self.assertIn("Summary Refresh", html)
+        self.assertIn("Async Pipeline", html)
+        self.assertIn("summary_refresh", html)
+        self.assertIn("async_pipeline", html)
 
 
     def test_management_portal_markup_contract(self) -> None:
@@ -227,6 +231,10 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             self.assertIn(heading, parser.headings)
 
         self.assertIn("matrixark_management_portal", html)
+        self.assertIn("Summary Refresh", html)
+        self.assertIn("Async Pipeline", html)
+        self.assertIn("summary_refresh", html)
+        self.assertIn("async_pipeline", html)
         self.assertIn("matrixark_admin_apply_api_key", html)
         self.assertIn("matrixark_auth_signup", html)
         self.assertIn("matrixark_auth_sso_callback", html)

@@ -290,7 +290,7 @@
 
       <section class="layout context-layout">
         <article class="panel panel-wide">
-          <div class="panel-head"><div><h2>Ingestion And Access History</h2><p>Paged tables for messages, resources, skills, events, entities, ContextPacks, users, keys, and audit records.</p></div></div>
+          <div class="panel-head"><div><h2>Ingestion And Access History</h2><p>Paged tables for messages, resources, skills, events, entities, ContextPacks, summary refresh, async pipeline, users, keys, and audit records.</p></div></div>
           <div id="portal-table-pager" class="metric-row"><span>Live paged table</span><strong>page 0</strong></div>
           <div class="toolbar mini" aria-label="Portal pagination controls">
             <button id="portal-prev-page" type="button">Previous Page</button>
@@ -303,6 +303,8 @@
             <button type="button" data-table="events">Events</button>
             <button type="button" data-table="entities">Entities</button>
             <button type="button" data-table="context_packs">Context Packs</button>
+            <button type="button" data-table="summary_refresh">Summary Refresh</button>
+            <button type="button" data-table="async_pipeline">Async Pipeline</button>
             <button type="button" data-table="users">Users</button>
             <button type="button" data-table="api_keys">API Keys</button>
             <button type="button" data-table="audit_logs">Audit</button>
@@ -474,6 +476,8 @@
           events: {total: 2, rows: [{event_type:'approval_confirmation', text:'Finance approved the GPU purchase.', source_ref:'gpu_policy.pdf#page=2'}]},
           entities: {total: 2, rows: [{entity_type:'owner', entity_name:'gpu_rollout', value:'Priya', status:'current'}]},
           context_packs: {total: 1, page_token: 0, page_size: 10, next_page_token: null, rows: [{context_pack_id:'pack-123', query:'what GPU approval is current?', used_context_tokens:174, selected_ref_count:4, dropped_ref_count:2}]},
+          summary_refresh: {total: 2, rows: [{row_type:'context_batch_commit', trigger_policy:'threshold', summary_refresh_status:'dirty_marked', profile_dirty_hash_count:2, profile_summary_refresh_required:true}, {row_type:'context_summary_dirty', dirty_reason:'profile_entity_promoted', dirty_node_hash:9102}]},
+          async_pipeline: {total: 1, rows: [{status:'extraction_committed', trigger_policy:'threshold', event_id_hash:3301, commit_id_hash:4401, completed_stages:['extraction'], remaining_stages:['summary','compression','embedding'], summary_pending:true}]},
           users: {total: 1, rows: []},
           api_keys: {total: 2, rows: []},
           audit_logs: {total: 3, rows: []}
@@ -501,7 +505,7 @@
       portalState.dashboard.users.rows = portalState.users;
       portalState.dashboard.api_keys.rows = portalState.api_keys;
       portalState.dashboard.audit_logs.rows = portalState.audit_logs;
-      const columns = {messages:['role','kind','content','event_type'], resources:['row_type','raw_uri','resource_type','chunk_count','source_ref','unit_kind','token_estimate','version','access'], skills:['row_type','name','status','triggers','allowed_tools'], events:['event_type','text','source_ref'], entities:['entity_type','entity_name','value','status'], context_packs:['context_pack_id','query','used_context_tokens','selected_ref_count'], users:['user_id','display_name','external_subject','status','role'], api_keys:['api_key_id','status','role','display_name','scopes','allowed_user_ids','allowed_session_ids','expires_at_ms','created_at_ms','last_used_at_ms','last_used_action','usage_count','redacted'], audit_logs:['action','status','api_key_id','actor']};
+      const columns = {messages:['role','kind','content','event_type'], resources:['row_type','raw_uri','resource_type','chunk_count','source_ref','unit_kind','token_estimate','version','access'], skills:['row_type','name','status','triggers','allowed_tools'], events:['event_type','text','source_ref'], entities:['entity_type','entity_name','value','status'], context_packs:['context_pack_id','query','used_context_tokens','selected_ref_count'], summary_refresh:['row_type','trigger_policy','summary_refresh_status','profile_dirty_hash_count','profile_summary_refresh_required','dirty_reason'], async_pipeline:['status','trigger_policy','event_id_hash','commit_id_hash','completed_stages','remaining_stages','summary_pending'], users:['user_id','display_name','external_subject','status','role'], api_keys:['api_key_id','status','role','display_name','scopes','allowed_user_ids','allowed_session_ids','expires_at_ms','created_at_ms','last_used_at_ms','last_used_action','usage_count','redacted'], audit_logs:['action','status','api_key_id','actor']};
       let selectedTable = 'messages';
       const get = id => document.getElementById(id).value.trim();
       function scope(){const s={account_id:get('portal-account'), tenant_id:get('portal-tenant'), user_id:get('portal-user'), agent_name:get('portal-agent')}; const session=get('portal-session'); if(session)s.session_id=session; return s;}
