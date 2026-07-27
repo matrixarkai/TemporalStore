@@ -1187,6 +1187,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(dropped_budget["by_session_continuity"]["same_session"]["refs"], 1)
             self.assertGreaterEqual(dropped_budget["by_ref_type"]["entity"]["refs"], 1)
             self.assertGreaterEqual(dropped_budget["by_entity_type"]["assistant_decision"]["refs"], 1)
+            self.assertGreaterEqual(dropped_budget["by_extraction_phase"]["final"]["refs"], 1)
+            self.assertGreaterEqual(dropped_budget["by_source_role"]["assistant"]["refs"], 1)
+            self.assertGreaterEqual(dropped_budget["by_hook_type"]["hook_boundary"]["refs"], 1)
+            self.assertGreaterEqual(dropped_budget["by_codex_event"]["Stop"]["refs"], 1)
             self.assertEqual(dropped_budget, current_metrics["dropped_memory_layer_budget"])
             current_dashboard = adapter.ingestion_dashboard(
                 {"scope": {**base_scope, "session_id": "session_profile_update_2"}, "table": "context_packs", "page_size": 5}
