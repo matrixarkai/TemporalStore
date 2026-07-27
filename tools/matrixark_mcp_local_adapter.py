@@ -707,6 +707,8 @@ class MatrixArkLocalAdapter:
                 audit_record["memory_layer_budget"] = telemetry["memory_layer_budget"]
             if isinstance(telemetry.get("dropped_memory_layer_budget"), dict) and "dropped_memory_layer_budget" not in audit_record:
                 audit_record["dropped_memory_layer_budget"] = telemetry["dropped_memory_layer_budget"]
+            if isinstance(telemetry.get("async_pipeline_readiness"), dict) and "async_pipeline_readiness" not in audit_record:
+                audit_record["async_pipeline_readiness"] = telemetry["async_pipeline_readiness"]
             if audit_mode == "full":
                 self.append_audit(audit_record)
             else:
@@ -2471,6 +2473,14 @@ class MatrixArkLocalAdapter:
                         if isinstance(recall_policy.get("dropped_memory_layer_budget"), dict)
                         else {}
                     )
+                async_pipeline_readiness = record.get("async_pipeline_readiness")
+                if not isinstance(async_pipeline_readiness, dict):
+                    recall_policy = record.get("recall_policy", {}) if isinstance(record.get("recall_policy"), dict) else {}
+                    async_pipeline_readiness = (
+                        recall_policy.get("async_pipeline_readiness", {})
+                        if isinstance(recall_policy.get("async_pipeline_readiness"), dict)
+                        else {}
+                    )
                 session_identity = record.get("session_identity")
                 if not isinstance(session_identity, dict):
                     recall_policy = record.get("recall_policy", {}) if isinstance(record.get("recall_policy"), dict) else {}
@@ -2496,6 +2506,7 @@ class MatrixArkLocalAdapter:
                         "stale_dropped_refs": int(record.get("stale_dropped_refs") or dropped_ref_bucket_counts.get("stale", 0)),
                         "memory_layer_budget": memory_layer_budget,
                         "dropped_memory_layer_budget": dropped_memory_layer_budget,
+                        "async_pipeline_readiness": async_pipeline_readiness,
                         "session_identity": session_identity,
                         "retrieval_request_metadata": retrieval_request_metadata,
                         "retrieval_source": retrieval_request_metadata.get("retrieval_source", retrieval_request_metadata.get("source", "")),
@@ -6905,6 +6916,8 @@ class MatrixArkLocalAdapter:
                             "total_prompt_context_tokens",
                             "remote_context_budget_tokens",
                             "memory_layer_budget",
+                            "dropped_memory_layer_budget",
+                            "async_pipeline_readiness",
                             "session_identity",
                             "retrieval_request_metadata",
                             "partial_context_pack",
