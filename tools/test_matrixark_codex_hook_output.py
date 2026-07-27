@@ -813,6 +813,18 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             "entity": {"refs": 1, "tokens": 18},
                             "summary": {"refs": 1, "tokens": 12},
                         },
+                        "by_entity_type": {
+                            "assistant_decision": {"refs": 1, "tokens": 14},
+                            "tool_evidence": {"refs": 1, "tokens": 16},
+                        },
+                        "by_source_role": {
+                            "assistant": {"refs": 1, "tokens": 14},
+                            "tool": {"refs": 1, "tokens": 16},
+                        },
+                        "by_hook_type": {
+                            "after_llm": {"refs": 1, "tokens": 14},
+                            "hook_boundary": {"refs": 1, "tokens": 16},
+                        },
                         "by_codex_event": {
                             "PostToolUse": {"refs": 1, "tokens": 18},
                             "Stop": {"refs": 1, "tokens": 12},
@@ -902,6 +914,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("continuity[cross_session=2/30t, same_session=1/12t]", additional)
         self.assertIn("phase[final=2/30t, provisional=1/12t]", additional)
         self.assertIn("ref_type[entity=1/18t, summary=1/12t]", additional)
+        self.assertIn("entity_type[assistant_decision=1/14t, tool_evidence=1/16t]", additional)
+        self.assertIn("source_role[assistant=1/14t, tool=1/16t]", additional)
+        self.assertIn("hook_type[after_llm=1/14t, hook_boundary=1/16t]", additional)
         self.assertIn("codex_event[PostToolUse=1/18t, Stop=1/12t]", additional)
         self.assertIn("final_boundary_refs=2", additional)
         self.assertIn(
@@ -936,9 +951,19 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "ref_type": "entity",
                         "memory_scope": "user_profile",
                         "session_continuity": "cross_session",
-                        "text": "profile decision",
+                        "entity_type": "assistant_decision",
+                        "source_roles": ["assistant"],
+                        "source_hook_types": ["after_llm"],
+                        "text": "assistant: keep cross-session profile decision",
                     },
-                    {"context_class": "summary", "text": "compressed profile summary"},
+                    {
+                        "context_class": "summary",
+                        "entity_type": "tool_evidence",
+                        "source_roles": ["tool"],
+                        "source_hook_types": ["tool_result"],
+                        "source_codex_events": ["PostToolUse"],
+                        "text": "tool: tests ran successfully",
+                    },
                 ],
             },
             query="memory layers",
@@ -960,6 +985,13 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("entity_bridge_refs=1", additional)
         self.assertIn("session_memory_refs=1", additional)
         self.assertIn("profile_memory_refs=1", additional)
+        self.assertIn("entity_type[assistant_decision=", additional)
+        self.assertIn("tool_evidence=", additional)
+        self.assertIn("source_role[assistant=", additional)
+        self.assertIn("tool=", additional)
+        self.assertIn("hook_type[after_llm=", additional)
+        self.assertIn("tool_result=", additional)
+        self.assertIn("codex_event[PostToolUse=", additional)
 
     def test_grouped_refs_count_and_format_as_additional_context(self) -> None:
         args = Namespace(session_id="codex-session-1")
