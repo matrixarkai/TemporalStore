@@ -5110,6 +5110,32 @@ class MatrixArkLocalAdapter:
                 "memory_scope": candidate.get("memory_scope") or record.get("memory_scope", ""),
                 "extraction_phase": candidate.get("extraction_phase") or record.get("extraction_phase", ""),
                 "final_session_boundary": bool(candidate.get("final_session_boundary", record.get("final_session_boundary", False))),
+                "source_roles": candidate.get("source_roles") if isinstance(candidate.get("source_roles"), list) else record.get("source_roles", []),
+                "source_hook_types": (
+                    candidate.get("source_hook_types")
+                    if isinstance(candidate.get("source_hook_types"), list)
+                    else record.get("source_hook_types", [])
+                ),
+                "source_codex_events": (
+                    candidate.get("source_codex_events")
+                    if isinstance(candidate.get("source_codex_events"), list)
+                    else record.get("source_codex_events", [])
+                ),
+                "source_memory_scopes": (
+                    candidate.get("source_memory_scopes")
+                    if isinstance(candidate.get("source_memory_scopes"), list)
+                    else record.get("source_memory_scopes", [])
+                ),
+                "source_session_continuities": (
+                    candidate.get("source_session_continuities")
+                    if isinstance(candidate.get("source_session_continuities"), list)
+                    else record.get("source_session_continuities", [])
+                ),
+                "source_extraction_phases": (
+                    candidate.get("source_extraction_phases")
+                    if isinstance(candidate.get("source_extraction_phases"), list)
+                    else record.get("source_extraction_phases", [])
+                ),
                 "question_type": question_type,
             }
 
