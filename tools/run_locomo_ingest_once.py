@@ -3384,6 +3384,10 @@ def extractive_reader_answer(question: str, blocks: list[dict[str, str]]) -> str
     if not blocks:
         return "not enough context"
     texts = [block.get("body", "") for block in blocks]
+    if question_kind(question) == "date":
+        answer = date_answer(question, texts)
+        if answer:
+            return with_reader_context(answer, texts)
     answer = context_benchmark_direct_answer(question, texts)
     if answer:
         return with_reader_context(answer, texts)
@@ -6892,9 +6896,6 @@ def matching_temporal_entries(anchor: str, entries: list[TemporalEntry]) -> list
 
 
 def date_answer(question: str, texts: list[str]) -> str:
-    ordered = temporal_ordering_answer(question, texts)
-    if ordered:
-        return ordered
     target_terms = answer_tokens(question) - {name.lower() for name in re.findall(r"\b[A-Z][a-z]+\b", question)}
     relative_candidates = []
     absolute_candidates = []
@@ -6902,17 +6903,31 @@ def date_answer(question: str, texts: list[str]) -> str:
         relative = relative_date_answer(text)
         overlap = len(target_terms & answer_tokens(text))
         if relative:
-            relative_candidates.append((overlap, -rank, f"{relative}. Evidence: {text}"))
+            relative_candidates.append((relative_answer_specificity(relative), overlap, -rank, f"{relative}. Evidence: {text}"))
         match = date_regex().search(text)
         if match:
             absolute_candidates.append((overlap, -rank, f"{match.group(0)}. Evidence: {text}"))
     if relative_candidates:
         relative_candidates.sort(reverse=True)
-        return relative_candidates[0][2]
+        return relative_candidates[0][3]
+    ordered = temporal_ordering_answer(question, texts)
+    if ordered:
+        return ordered
     if absolute_candidates:
         absolute_candidates.sort(reverse=True)
         return absolute_candidates[0][2]
     return ""
+
+
+def relative_answer_specificity(value: str) -> int:
+    lower = normalize_text(value)
+    if re.search(r"\b(week|weekend|month|before|after)\b", lower):
+        return 0
+    if date_regex().search(value):
+        return 3
+    if re.search(r"\b\d{4}\b", value):
+        return 2
+    return 1
 
 
 def relative_date_answer(text: str) -> str:
