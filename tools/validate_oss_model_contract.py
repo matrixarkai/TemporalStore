@@ -24,6 +24,7 @@ CONTRACT_KEYS = (
     "encoding_model",
     "max_events",
     "reader_max_context_chars",
+    "reader_max_tokens",
 )
 
 READER_POLICY_KEYS = (
@@ -122,7 +123,7 @@ def main() -> int:
         "rule": (
             "MatrixArk, OpenViking, VikingMem, and peer rows must use the same OSS "
             "reader model, embedding/encoding model, retrieved event budget, reader evidence policy, and "
-            "reader context budget before token-savings or reader-quality claims are comparable. "
+            "reader context/output-token budget before token-savings or reader-quality claims are comparable. "
             "Reader fallback, reader errors, diagnostic-only rows, and reader prompt-policy drift fail "
             "by default so MatrixArk and VikingMem/OpenViking use the same OSS encoder and reader setup."
         ),
@@ -170,6 +171,7 @@ def normalize_report(path: Path, label: str, errors: list[str]) -> dict[str, Any
         "reader_max_context_chars": to_int(
             contract.get(f"{prefix}_reader_max_context_chars") or data.get("reader_max_context_chars")
         ),
+        "reader_max_tokens": to_int(contract.get(f"{prefix}_reader_max_tokens") or data.get("reader_max_tokens")),
         "reader_include_extractive_hint": bool(data.get("reader_include_extractive_hint")),
         "reader_candidate_only": bool(data.get("reader_candidate_only")),
         "reader_candidate_first": bool(data.get("reader_candidate_first")),
