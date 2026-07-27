@@ -1196,6 +1196,22 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                     }
                 ],
                 "recall_policy": {
+                    "session_continuity": {
+                        "mode": "prefer",
+                        "policy": "same-session first, profile entity bridge second",
+                    },
+                    "cross_session": {
+                        "enabled": True,
+                        "budget_tokens": 64,
+                        "remote_budget_tokens": 100,
+                        "computed_budget_tokens": 64,
+                        "budget_floor_tokens": 256,
+                        "budget_floor_applied": False,
+                        "budget_floor_status": "remote_budget_too_small_for_profile_floor",
+                        "max_sessions": 3,
+                        "max_candidates": 24,
+                    },
+                    "shared_context": {"enabled": False},
                     "async_pipeline_readiness": {
                         "task_count": 2,
                         "ready_for_retrieval": False,
@@ -1219,6 +1235,22 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(["summary", "compression"], readiness["remaining_stages"])
         self.assertEqual(["profile_summary_stale"], readiness["freshness_warnings"])
         self.assertEqual({"user_profile": {"refs": 1, "tokens": 7}}, compact["memory_layer_budget"]["by_memory_scope"])
+        hierarchy = compact["memory_hierarchy"]
+        self.assertEqual("user_profile", hierarchy["models"]["profile_entity"]["memory_scope"])
+        self.assertEqual("context_profile_entity", hierarchy["models"]["profile_index"]["data_model"])
+        self.assertEqual("same-session first, profile entity bridge second", hierarchy["retrieval_strategy"])
+        self.assertEqual("prefer", hierarchy["session_scope_mode"])
+        self.assertTrue(hierarchy["cross_session_enabled"])
+        self.assertEqual(64, hierarchy["cross_session_budget_tokens"])
+        self.assertEqual(100, hierarchy["cross_session_remote_budget_tokens"])
+        self.assertEqual(256, hierarchy["cross_session_budget_floor_tokens"])
+        self.assertFalse(hierarchy["cross_session_budget_floor_applied"])
+        self.assertEqual(
+            "remote_budget_too_small_for_profile_floor",
+            hierarchy["cross_session_budget_floor_status"],
+        )
+        self.assertIn("profile_entity_bridge", hierarchy["selected_ref_flow"])
+        self.assertIn("summary_or_compression", hierarchy["selected_ref_flow"])
         self.assertNotIn("recall_policy", compact)
 
 
