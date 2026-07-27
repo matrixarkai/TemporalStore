@@ -2460,6 +2460,55 @@ class MatrixArkLocalAdapter:
                             "updated_at_ms": record.get("updated_at_ms", record.get("created_at_ms", 0)),
                         }
                     )
+            elif table == "async_pipeline" and record_type == "matrixark_async_pipeline_task":
+                memory_layers_written = record.get("memory_layers_written", {})
+                if not isinstance(memory_layers_written, dict):
+                    memory_layers_written = {}
+                completed_stages = record.get("completed_stages", [])
+                if not isinstance(completed_stages, list):
+                    completed_stages = []
+                remaining_stages = record.get("remaining_stages", [])
+                if not isinstance(remaining_stages, list):
+                    remaining_stages = []
+                source_roles = record.get("source_roles", [])
+                if not isinstance(source_roles, list):
+                    source_roles = []
+                source_hook_types = record.get("source_hook_types", [])
+                if not isinstance(source_hook_types, list):
+                    source_hook_types = []
+                source_codex_events = record.get("source_codex_events", [])
+                if not isinstance(source_codex_events, list):
+                    source_codex_events = []
+                rows.append(
+                    {
+                        "row_type": record_type,
+                        "task_hash": record.get("task_hash", 0),
+                        "event_id_hash": record.get("event_id_hash", 0),
+                        "commit_id_hash": record.get("commit_id_hash", 0),
+                        "batch_id_hash": record.get("batch_id_hash", 0),
+                        "node_hash": record.get("node_hash", 0),
+                        "node_path": record.get("node_path", []),
+                        "scope": candidate_access_scope(record),
+                        "status": record.get("status", ""),
+                        "stages": record.get("stages", []),
+                        "completed_stages": completed_stages,
+                        "remaining_stages": remaining_stages,
+                        "summary_pending": "summary" in remaining_stages,
+                        "compression_pending": "compression" in remaining_stages,
+                        "embedding_pending": "embedding" in remaining_stages,
+                        "trigger_policy": record.get("trigger_policy", ""),
+                        "extraction_phase": record.get("extraction_phase", ""),
+                        "final_session_boundary": bool(record.get("final_session_boundary", False)),
+                        "source_roles": source_roles,
+                        "source_hook_types": source_hook_types,
+                        "source_codex_events": source_codex_events,
+                        "memory_layers_written": memory_layers_written,
+                        "summary_refresh_status": record.get("summary_refresh_status", ""),
+                        "summary_dirty_nodes": record.get("summary_dirty_nodes", 0),
+                        "created_at_ms": record.get("created_at_ms", 0),
+                        "updated_at_ms": record.get("updated_at_ms", record.get("created_at_ms", 0)),
+                    }
+                )
         if table == "resources":
             priority = {"resource_manifest": 0, "resource_chunk": 1, "resource_import_task": 2}
             rows.sort(
@@ -2475,7 +2524,16 @@ class MatrixArkLocalAdapter:
     def ingestion_dashboard(self, args: Json) -> Json:
         scope = optional_object(args, "scope")
         table = optional_string(args, "table", "messages")
-        allowed_tables = {"messages", "resources", "skills", "events", "entities", "context_packs", "summary_refresh"}
+        allowed_tables = {
+            "messages",
+            "resources",
+            "skills",
+            "events",
+            "entities",
+            "context_packs",
+            "summary_refresh",
+            "async_pipeline",
+        }
         if table not in allowed_tables:
             raise MatrixArkError(f"table must be one of {sorted(allowed_tables)}")
         page_size = args.get("page_size", 25)

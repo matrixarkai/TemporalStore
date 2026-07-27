@@ -667,6 +667,39 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 ),
                 refresh_dashboard,
             )
+            pipeline_dashboard = adapter.ingestion_dashboard(
+                {"scope": scope, "table": "async_pipeline", "page_size": 20}
+            )
+            pipeline_rows = pipeline_dashboard["rows"]
+            extraction_tasks = [
+                row
+                for row in pipeline_rows
+                if row.get("row_type") == "matrixark_async_pipeline_task"
+                and row.get("status") == "extraction_committed"
+            ]
+            self.assertEqual(3, len(extraction_tasks), pipeline_dashboard)
+            self.assertEqual(
+                {
+                    int(event_id)
+                    for commit in commits
+                    for event_id in commit.get("source_event_ids", [])
+                },
+                {int(row.get("event_id_hash")) for row in extraction_tasks},
+            )
+            self.assertEqual(
+                {int(commit.get("commit_id_hash")) for commit in commits},
+                {int(row.get("commit_id_hash")) for row in extraction_tasks},
+            )
+            self.assertEqual(
+                {"threshold", "idle_timeout"},
+                {row.get("trigger_policy") for row in extraction_tasks},
+            )
+            self.assertTrue(all(row.get("completed_stages") == ["extraction"] for row in extraction_tasks))
+            self.assertTrue(all(row.get("summary_pending") for row in extraction_tasks))
+            self.assertTrue(all(row.get("compression_pending") for row in extraction_tasks))
+            self.assertTrue(all(row.get("embedding_pending") for row in extraction_tasks))
+            self.assertTrue(all(row.get("summary_refresh_status") == "dirty_marked" for row in extraction_tasks))
+            self.assertTrue(all(row.get("memory_layers_written", {}).get("profile_entities", 0) >= 1 for row in extraction_tasks))
             committed_ids = {
                 int(event_id)
                 for commit in commits
