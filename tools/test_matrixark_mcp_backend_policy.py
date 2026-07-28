@@ -2416,6 +2416,74 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 self.assertIn("vector", embedding)
                 self.assertNotIn("summary_text", embedding)
 
+    def test_user_directive_entities_promote_to_profile_on_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            scope = {
+                "account_id": "acct_local",
+                "tenant_id": "tenant_codex",
+                "user_id": "codex_user",
+                "session_id": "profile-promotion-session",
+            }
+            result = adapter.batch_extract(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Remember: use Ubuntu /root/src/github-services for all TemporalStore repos.",
+                        }
+                    ],
+                    "scope": scope,
+                    "skip_prior_context": True,
+                    "threshold_messages": 1,
+                }
+            )
+
+            self.assertEqual("accepted", result["status"])
+            self.assertEqual("always_when_profile_scope_available", result["profile_promotion_policy"])
+            self.assertTrue(result["profile_promotion_scope_available"])
+            self.assertGreaterEqual(result["entities_written"], 1)
+            self.assertEqual(result["entities_written"], result["profile_entities_written"])
+
+            records = adapter.read_all()
+            profile_entities = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+            ]
+            self.assertTrue(profile_entities)
+            profile_entity = profile_entities[0]
+            self.assertEqual("cross_session", profile_entity["session_continuity"])
+            self.assertEqual(["profile-promotion-session"], profile_entity["source_session_ids"])
+            self.assertEqual("acct_local", profile_entity["access_scope"]["account_id"])
+            self.assertEqual("tenant_codex", profile_entity["access_scope"]["tenant_id"])
+            self.assertEqual("codex_user", profile_entity["access_scope"]["user_id"])
+            self.assertNotIn("session_id", profile_entity["access_scope"])
+            self.assertIn("/root/src/github-services", profile_entity["state"])
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_embedding"
+                    and record.get("ref_hash") == profile_entity["entity_hash"]
+                    for record in records
+                )
+            )
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_index"
+                    and record.get("data_model") == "context_profile_entity"
+                    and profile_entity["entity_hash"] in record.get("ref_hashes", [])
+                    for record in records
+                )
+            )
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_summary_dirty"
+                    and record.get("dirty_reason") == "profile_entity_promoted"
+                    for record in records
+                )
+            )
+
     def test_context_node_topology_records_store_compact_scope_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
