@@ -567,6 +567,16 @@ def matrixark_local_recovery_report(
         "dropped_memory_layer_budget",
         "by_source_role",
     )
+    selected_budget_by_memory_selection_policy = _budget_counts(
+        retrieval_visibility_records,
+        "memory_layer_budget",
+        "by_memory_selection_policy",
+    )
+    dropped_budget_by_memory_selection_policy = _budget_counts(
+        retrieval_visibility_records,
+        "dropped_memory_layer_budget",
+        "by_memory_selection_policy",
+    )
     selected_budget_by_hook_type = _budget_counts(
         retrieval_visibility_records,
         "memory_layer_budget",
@@ -910,6 +920,10 @@ def matrixark_local_recovery_report(
                 "assistant": _pressure_flag_count(memory_layer_pressure_records, "assistant_memory_pressure"),
                 "user": _pressure_flag_count(memory_layer_pressure_records, "user_memory_pressure"),
                 "tool": _pressure_flag_count(memory_layer_pressure_records, "tool_memory_pressure"),
+                "memory_selection_policy": _pressure_flag_count(
+                    memory_layer_pressure_records,
+                    "memory_selection_policy_pressure",
+                ),
             },
             "selected_budget_by_memory_scope": selected_budget_by_memory_scope,
             "dropped_budget_by_memory_scope": dropped_budget_by_memory_scope,
@@ -923,6 +937,8 @@ def matrixark_local_recovery_report(
             "dropped_budget_by_entity_type": dropped_budget_by_entity_type,
             "selected_budget_by_source_role": selected_budget_by_source_role,
             "dropped_budget_by_source_role": dropped_budget_by_source_role,
+            "selected_budget_by_memory_selection_policy": selected_budget_by_memory_selection_policy,
+            "dropped_budget_by_memory_selection_policy": dropped_budget_by_memory_selection_policy,
             "selected_budget_by_hook_type": selected_budget_by_hook_type,
             "dropped_budget_by_hook_type": dropped_budget_by_hook_type,
             "selected_budget_by_codex_event": selected_budget_by_codex_event,

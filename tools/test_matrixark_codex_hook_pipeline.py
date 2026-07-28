@@ -31,6 +31,7 @@ from matrixark_mcp_core import (
     select_token_budgeted_refs,
 )
 from matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness
+from matrixark_mcp_recovery import matrixark_local_recovery_report
 from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget, memory_layer_pressure_summary, selected_ref_layer_budget
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 from matrixark_mcp_summary_runtime import build_node_summary_refresh_records
@@ -1048,6 +1049,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "source_role_counts": {"llm": 2},
                         "source_hook_type_counts": {"after_llm": 1},
                         "source_codex_event_counts": {"Stop": 1},
+                        "source_memory_selection_policies": ["selected_assistant_decision_outcome_only"],
                     },
                 }
             ]
@@ -1070,6 +1072,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                             "source_role_counts": {"tool_result": 1},
                             "source_hook_type_counts": {"PostToolUse": 1},
                             "source_codex_event_counts": {"PostToolUse": 1},
+                            "source_memory_selection_policies": ["selected_tool_evidence_only"],
                         },
                     }
                 ]
@@ -1085,6 +1088,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(2, selected_budget["source_message_counts_by_role"]["assistant"])
         self.assertEqual(1, selected_budget["source_hook_counts_by_type"]["after_llm"])
         self.assertEqual(1, selected_budget["source_codex_event_counts_by_event"]["Stop"])
+        self.assertEqual(
+            1,
+            selected_budget["by_memory_selection_policy"]["selected_assistant_decision_outcome_only"]["refs"],
+        )
 
         self.assertEqual(1, dropped_budget["by_memory_layer"]["same_session_entity"]["refs"])
         self.assertEqual(11, dropped_budget["by_drop_reason"]["profile_shadowed"]["tokens"])
@@ -1097,12 +1104,55 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(1, dropped_budget["source_message_counts_by_role"]["tool"])
         self.assertEqual(1, dropped_budget["source_hook_counts_by_type"]["PostToolUse"])
         self.assertEqual(1, dropped_budget["source_codex_event_counts_by_event"]["PostToolUse"])
+        self.assertEqual(
+            1,
+            dropped_budget["by_memory_selection_policy"]["selected_tool_evidence_only"]["refs"],
+        )
 
         pressure = memory_layer_pressure_summary(selected_budget, dropped_budget)
         self.assertTrue(pressure["profile_shadowed_current_state_pressure"])
         self.assertTrue(pressure["stale_current_state_pressure"])
         self.assertTrue(pressure["tool_source_message_pressure"])
         self.assertTrue(pressure["post_tool_use_source_pressure"])
+        self.assertTrue(pressure["memory_selection_policy_pressure"])
+        self.assertIn("by_memory_selection_policy", pressure["dropped_dimensions"])
+        self.assertEqual(
+            1,
+            pressure["by_dimension"]["by_memory_selection_policy"]["selected_tool_evidence_only"]["dropped_refs"],
+        )
+
+    def test_recovery_report_surfaces_memory_selection_policy_budget_pressure(self) -> None:
+        report = matrixark_local_recovery_report(
+            [
+                {
+                    "record_type": "context_pack_telemetry",
+                    "memory_layer_budget": {
+                        "by_memory_selection_policy": {
+                            "selected_assistant_decision_outcome_only": {"refs": 1, "tokens": 9},
+                        },
+                    },
+                    "dropped_memory_layer_budget": {
+                        "by_memory_selection_policy": {
+                            "selected_tool_evidence_only": {"refs": 2, "tokens": 17},
+                        },
+                    },
+                    "memory_layer_pressure": {
+                        "memory_selection_policy_pressure": True,
+                        "dropped_dimensions": ["by_memory_selection_policy"],
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": {"refs": 1, "tokens": 9}},
+            report["retrieval_visibility"]["selected_budget_by_memory_selection_policy"],
+        )
+        self.assertEqual(
+            {"selected_tool_evidence_only": {"refs": 2, "tokens": 17}},
+            report["retrieval_visibility"]["dropped_budget_by_memory_selection_policy"],
+        )
+        self.assertEqual(1, report["retrieval_visibility"]["memory_layer_pressure_flags"]["memory_selection_policy"])
 
     def test_candidate_index_terms_normalize_llm_role_aliases(self) -> None:
         summary_terms = candidate_index_terms(
