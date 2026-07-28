@@ -276,6 +276,51 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             pressure["by_dimension"]["source_message_counts_by_role"]["assistant"],
         )
 
+    def test_memory_layer_budget_derives_source_buckets_from_count_only_refs(self) -> None:
+        selected_budget = selected_ref_layer_budget(
+            [
+                {
+                    "ref_type": "entity",
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "source_role_counts": {"llm": 1, "model": 1, "tool": 2},
+                    "source_hook_type_counts": {"after_llm": 2, "hook_boundary": 2},
+                    "source_codex_event_counts": {"Stop": 2, "PostToolUse": 2},
+                    "token_estimate": 21,
+                }
+            ]
+        )
+        dropped_budget = dropped_ref_layer_budget(
+            {
+                "refs": [
+                    {
+                        "drop_reason": "cross_session_budget",
+                        "ref_type": "summary",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "budget_source_role_counts": {"model": 3, "tool": 1},
+                        "source_hook_type_counts": {"after_llm": 3, "hook_boundary": 1},
+                        "source_codex_event_counts": {"Stop": 3, "PostToolUse": 1},
+                        "token_estimate": 8,
+                    }
+                ]
+            }
+        )
+        pressure = memory_layer_pressure_summary(selected_budget, dropped_budget)
+
+        self.assertEqual({"assistant": {"refs": 1, "tokens": 21}, "tool": {"refs": 1, "tokens": 21}}, selected_budget["by_source_role"])
+        self.assertEqual({"after_llm": {"refs": 1, "tokens": 21}, "hook_boundary": {"refs": 1, "tokens": 21}}, selected_budget["by_hook_type"])
+        self.assertEqual({"PostToolUse": {"refs": 1, "tokens": 21}, "Stop": {"refs": 1, "tokens": 21}}, selected_budget["by_codex_event"])
+        self.assertEqual({"assistant": 2, "tool": 2}, selected_budget["source_message_counts_by_role"])
+        self.assertEqual({"assistant": {"refs": 1, "tokens": 8}, "tool": {"refs": 1, "tokens": 8}}, dropped_budget["by_source_role"])
+        self.assertEqual({"after_llm": {"refs": 1, "tokens": 8}, "hook_boundary": {"refs": 1, "tokens": 8}}, dropped_budget["by_hook_type"])
+        self.assertEqual({"PostToolUse": {"refs": 1, "tokens": 8}, "Stop": {"refs": 1, "tokens": 8}}, dropped_budget["by_codex_event"])
+        self.assertTrue(pressure["assistant_memory_pressure"])
+        self.assertTrue(pressure["tool_memory_pressure"])
+        self.assertTrue(pressure["hook_boundary_source_pressure"])
+        self.assertTrue(pressure["post_tool_use_source_pressure"])
+        self.assertTrue(pressure["stop_event_source_pressure"])
+
     def test_candidate_index_terms_normalize_llm_role_aliases(self) -> None:
         summary_terms = candidate_index_terms(
             {
