@@ -968,6 +968,7 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         if args.rust_temporalstore_report
         else Path(tempfile.gettempdir()) / f"temporalstore-rust-context-{input_path.stem}-{os.getpid()}.json"
     )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
     convert_command = [
         sys.executable,
         str(repo / "tools" / "convert_locomo_to_context_jsonl.py"),
@@ -986,7 +987,8 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
             "Rust TemporalStore benchmark conversion failed: "
             f"{converted.stderr.strip() or converted.stdout.strip()}"
         )
-    if int(args.rust_temporalstore_source_limit) > 0:
+    source_limit_applied = int(args.rust_temporalstore_source_limit) > 0
+    if source_limit_applied:
         limit_rust_temporalstore_sources(jsonl_path, int(args.rust_temporalstore_source_limit), args.max_events)
     source_pack_size = int(getattr(args, "rust_temporalstore_source_pack_size", 0) or 0)
     source_packing_report = {"enabled": False, "pack_size": source_pack_size}
@@ -995,7 +997,7 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
     python_subset_score = score_rust_temporalstore_jsonl_with_python(
         jsonl_path,
         args.max_events,
-        use_source_order=int(args.rust_temporalstore_source_limit) == 0,
+        use_source_order=source_limit_applied or int(args.rust_temporalstore_source_limit) == 0,
     )
     converted_case_count = int(python_subset_score.get("case_count") or 0)
     batch_size = int(getattr(args, "rust_temporalstore_batch_size", 0) or 0)
@@ -1013,6 +1015,9 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
             else "0",
             "TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING": "0",
             "TEMPORALSTORE_CONTEXT_BENCHMARK_COMPACT_SOURCE_REPLAY": "1",
+            "TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING": "1"
+            if source_limit_applied
+            else "0",
             "TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT": "128",
             "CARGO_TARGET_DIR": env.get(
                 "CARGO_TARGET_DIR",
