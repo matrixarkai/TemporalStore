@@ -581,7 +581,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "status": "committed",
                         "commit_reason": "threshold",
                         "trigger_policy": "threshold",
+                        "profile_promotion_policy": "always_when_profile_scope_available",
+                        "profile_promotion_blocker": "",
                         "memory_layers_written": {
+                            "profile_promotion_policy": "always_when_profile_scope_available",
                             "context_events": 2,
                             "session_entities": 3,
                             "profile_entities": 1,
@@ -598,7 +601,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             "profile_entities": 1,
                             "secondary_indexes": 5,
                             "summary_dirty_nodes": 2,
+                            "profile_promotion_policy": "always_when_profile_scope_available",
                         },
+                        "profile_promotion_policy": "always_when_profile_scope_available",
+                        "profile_promotion_blocker": "",
                         "summary_refresh": {
                             "status": "dirty_marked",
                             "dirty_hashes": [7, 8],
@@ -618,6 +624,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     "source_roles": ["tool"],
                     "source_hook_types": ["hook_boundary"],
                     "source_codex_events": ["PostToolUse"],
+                    "profile_promotion_policy": "always_when_profile_scope_available",
+                    "profile_promotion_blocker": "",
                     "profile_promotion_summary": [
                         {
                             "profile_entity_hash": 701,
@@ -683,11 +691,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("committed", record["output_summary"]["auto_batch_extract_status"])
         auto_batch = record["output_summary"]["auto_batch_extract"]
         self.assertEqual("threshold", auto_batch["trigger_policy"])
+        self.assertEqual("always_when_profile_scope_available", auto_batch["profile_promotion_policy"])
+        self.assertEqual("always_when_profile_scope_available", auto_batch["memory_layers_written"]["profile_promotion_policy"])
         self.assertEqual(3, auto_batch["memory_layers_written"]["session_entities"])
         auto_batch_decision = record["output_summary"]["auto_batch_extract_decision"]
         self.assertEqual("committed", auto_batch_decision["decision"])
         self.assertEqual("threshold", auto_batch_decision["reason"])
         self.assertEqual(1, auto_batch_decision["memory_layers_written"]["profile_entities"])
+        self.assertEqual("always_when_profile_scope_available", auto_batch_decision["profile_promotion_policy"])
+        self.assertEqual("always_when_profile_scope_available", auto_batch_decision["memory_layers_written"]["profile_promotion_policy"])
         self.assertTrue(auto_batch_decision["summary_refresh"]["profile_summary_refresh_required"])
         commit_summary = record["output_summary"]["session_commit"]
         self.assertEqual("idle_timeout", commit_summary["trigger_policy"])
@@ -698,6 +710,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(["tool"], commit_summary["source_roles"])
         self.assertEqual(["hook_boundary"], commit_summary["source_hook_types"])
         self.assertEqual(["PostToolUse"], commit_summary["source_codex_events"])
+        self.assertEqual("always_when_profile_scope_available", commit_summary["profile_promotion_policy"])
+        self.assertEqual("always_when_profile_scope_available", commit_summary["memory_layers_written"]["profile_promotion_policy"])
         self.assertEqual(701, commit_summary["profile_promotion_summary"][0]["profile_entity_hash"])
         self.assertEqual(["codex-session-1"], commit_summary["profile_promotion_summary"][0]["source_session_ids"])
         self.assertNotIn("memory_lineage", record["output_summary"])

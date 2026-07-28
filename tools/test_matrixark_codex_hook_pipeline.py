@@ -5116,6 +5116,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(["assistant", "user"], threshold_layers["source_roles"])
             self.assertEqual(["after_llm", "before_llm"], threshold_layers["source_hook_types"])
             self.assertEqual(["Stop", "UserPromptSubmit"], threshold_layers["source_codex_events"])
+            self.assertEqual("always_when_profile_scope_available", threshold_layers["profile_promotion_policy"])
             self.assertEqual(["assistant", "user"], second["auto_batch_extract_result"]["source_roles"])
             self.assertEqual({"assistant": 1, "user": 1}, second["auto_batch_extract_result"]["source_role_counts"])
             self.assertEqual({"after_llm": 1, "before_llm": 1}, second["auto_batch_extract_result"]["source_hook_type_counts"])
@@ -5151,6 +5152,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(second["auto_batch_extract_result"]["source_role_counts"], threshold_commit["source_role_counts"])
             self.assertEqual(second["auto_batch_extract_result"]["source_hook_type_counts"], threshold_commit["source_hook_type_counts"])
             self.assertEqual(second["auto_batch_extract_result"]["source_codex_event_counts"], threshold_commit["source_codex_event_counts"])
+            self.assertEqual("always_when_profile_scope_available", threshold_commit["profile_promotion_policy"])
+            self.assertEqual("always_when_profile_scope_available", threshold_commit["memory_layers_written"]["profile_promotion_policy"])
             threshold_tasks = [
                 record
                 for record in threshold_records
@@ -5169,6 +5172,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(len(threshold_promotions), 1)
             self.assertEqual(second["auto_batch_extract_result"]["entities_written"], len(threshold_promotions))
             self.assertEqual("always_when_profile_scope_available", second["auto_batch_extract_result"]["profile_promotion_policy"])
+            self.assertEqual("", second["auto_batch_extract_result"]["profile_promotion_blocker"])
             self.assertTrue(second["auto_batch_extract_result"]["profile_promotion_scope_available"])
             self.assertTrue(all(item.get("source_session_ids") == ["session_async"] for item in threshold_promotions))
             self.assertTrue(all(item.get("source_entity_count", 0) >= 1 for item in threshold_promotions))
@@ -5218,6 +5222,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(["tool"], idle_layers["source_roles"])
             self.assertEqual(["hook_boundary"], idle_layers["source_hook_types"])
             self.assertEqual(["PostToolUse"], idle_layers["source_codex_events"])
+            self.assertEqual("always_when_profile_scope_available", idle_layers["profile_promotion_policy"])
             idle_refresh = idle["summary_refresh"]
             self.assertTrue(idle_refresh["session_dirty_hashes"])
             self.assertTrue(idle_refresh["profile_dirty_hashes"])
@@ -5232,6 +5237,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(len(idle_promotions), 1)
             self.assertEqual(idle["entities_written"], len(idle_promotions))
             self.assertEqual("always_when_profile_scope_available", idle["profile_promotion_policy"])
+            self.assertEqual("", idle["profile_promotion_blocker"])
             self.assertTrue(idle["profile_promotion_scope_available"])
             self.assertTrue(all(item.get("source_session_ids") == ["session_async"] for item in idle_promotions))
             self.assertTrue(any("tool" in item.get("source_roles", []) for item in idle_promotions))
@@ -5252,6 +5258,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(commit.get("final_session_boundary") is False for commit in commits))
             self.assertTrue(all(isinstance(commit.get("trigger_evidence"), dict) for commit in commits))
             self.assertTrue(all(commit.get("profile_promotion_summary") for commit in commits))
+            self.assertTrue(all(commit.get("profile_promotion_policy") == "always_when_profile_scope_available" for commit in commits))
+            self.assertTrue(all(commit.get("memory_layers_written", {}).get("profile_promotion_policy") == "always_when_profile_scope_available" for commit in commits))
             self.assertTrue(all(commit.get("summary_refresh", {}).get("profile_summary_refresh_required") for commit in commits))
             self.assertTrue(all(commit.get("memory_layers_written", {}).get("session_entities", 0) >= 1 for commit in commits))
             self.assertTrue(all(commit.get("memory_layers_written", {}).get("profile_entities", 0) >= 1 for commit in commits))
