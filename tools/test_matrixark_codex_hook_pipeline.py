@@ -1787,6 +1787,108 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         dropped_budget = dropped_ref_layer_budget(dropped)
         self.assertEqual(1, dropped_budget["by_memory_layer"]["pending_async_event"]["refs"])
 
+    def test_fast_hook_pending_event_is_retrievable_before_batch_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-pending-retrieval.jsonl")
+
+            class Server:
+                def __init__(self) -> None:
+                    self.adapter = adapter
+
+            scope = {
+                "account_id": "acct_fast_pending_retrieval",
+                "tenant_id": "tenant_fast_pending_retrieval",
+                "user_id": "user_fast_pending_retrieval",
+                "session_id": "session_fast_pending_retrieval",
+            }
+            result = matrixark_codex_hook.fast_async_hook_ingest(
+                Server(),
+                args=Namespace(
+                    event="UserPromptSubmit",
+                    **scope,
+                    team="codex",
+                    project="temporalstore",
+                    session_commit_threshold=20,
+                    idle_commit_timeout_ms=300000,
+                    understanding_provider="rules",
+                    segment_provider="deterministic",
+                ),
+                text="Remember live provisional event retrieval before batch extraction marker phoenix quartz.",
+                role="user",
+                agent_context={"workspace_root": "/repo"},
+                hook={
+                    "session_id_source": "payload_field",
+                    "thread_id": "thread-fast-pending-retrieval",
+                    "turn_id": "turn-fast-pending-retrieval-1",
+                    "hook_type": "before_llm",
+                },
+            )
+            self.assertEqual("accepted", result["status"])
+            self.assertFalse(result["session_buffer"]["threshold_ready"])
+            self.assertFalse(result["auto_batch_extract_result"])
+
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "What marker proves live provisional event retrieval before batch extraction?",
+                    "max_context_tokens": 160,
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "ranking": {
+                        "max_selected_refs": 4,
+                        "min_similarity_score": 0.0,
+                        "budget_fill_policy": "force_fill",
+                    },
+                }
+            )
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "event"
+                    and ref.get("event_type") == "pending_async"
+                    and ref.get("memory_scope") == "session"
+                    and ref.get("session_continuity") == "same_session"
+                    and ref.get("extraction_phase") == "pending_async"
+                    and "phoenix quartz" in str(ref.get("text") or "")
+                    for ref in pack["selected_refs"]
+                ),
+                pack["selected_refs"],
+            )
+            pending_ref = next(
+                ref
+                for ref in pack["selected_refs"]
+                if ref.get("ref_type") == "event" and ref.get("event_type") == "pending_async"
+            )
+            self.assertEqual("pending_async_event", candidate_memory_layer_name(pending_ref))
+            budget = pack["recall_policy"]["memory_layer_budget"]
+            self.assertGreaterEqual(budget["by_memory_layer"]["pending_async_event"]["refs"], 1)
+            self.assertGreaterEqual(budget["by_extraction_phase"]["pending_async"]["refs"], 1)
+            coverage = pack["retrieval_metrics"]["retrieval_model_coverage"]
+            self.assertGreaterEqual(coverage["event_embedding_vectors"], 1)
+            self.assertGreaterEqual(coverage["index_terms_by_ref"], 1)
+
+            compact_pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "What marker proves live provisional event retrieval before batch extraction?",
+                    "max_context_tokens": 160,
+                    "audit_mode": "off",
+                    "ranking": {
+                        "max_selected_refs": 4,
+                        "min_similarity_score": 0.0,
+                        "budget_fill_policy": "force_fill",
+                    },
+                }
+            )
+            compact_ref = next(
+                ref
+                for ref in compact_pack["selected_refs"]
+                if ref.get("ref_type") == "event" and "phoenix quartz" in str(ref.get("text") or "")
+            )
+            self.assertEqual("pending_async", compact_ref["event_type"])
+            self.assertNotIn("matched_index_terms", compact_ref)
+            self.assertNotIn("metadata", compact_ref)
+            self.assertNotIn("scope", compact_ref)
+
     def test_fast_hook_dirty_markers_refresh_into_retrievable_summaries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-summary.jsonl")

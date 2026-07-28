@@ -1255,7 +1255,13 @@ class MatrixArkLocalAdapter:
                 if record_node_hash is not None and record_node_hash not in selected_nodes:
                     dropped_node += 1
                     continue
-            if record_type in {"context_embedding", "context_index", "context_summary", "resource_manifest", "skill_registry_update"}:
+            if (
+                record_type in {"context_embedding", "context_index", "context_summary", "resource_manifest", "skill_registry_update"}
+                or (
+                    record_type == "context_event"
+                    and str(record.get("event_type") or record.get("classification") or "").lower() == "pending_async"
+                )
+            ):
                 if not recovered_scope_matches(record, scope):
                     dropped_scope += 1
                     continue
@@ -7032,6 +7038,13 @@ class MatrixArkLocalAdapter:
                 and access_scope_matches_before_scoring(record, retrieval_scope)
             ]
             tree_candidate_records.extend(profile_summary_bridges)
+        extraction_committed_event_ids = {
+            int(record.get("event_id_hash") or 0)
+            for record in records
+            if record.get("record_type") == "matrixark_async_pipeline_task"
+            and record.get("status") == "extraction_committed"
+            and int(record.get("event_id_hash") or 0)
+        }
         raw_event_ids_by_node: dict[Any, set[int]] = {}
         raw_event_time_window_dropped_count = 0
         events_by_node: dict[Any, list[Json]] = {}
@@ -7196,6 +7209,11 @@ class MatrixArkLocalAdapter:
                 return deadline_fallback("deadline_during_event_scan", records)
             if record.get("record_type") != "context_event":
                 continue
+            if (
+                str(record.get("event_type") or record.get("classification") or "").lower() == "pending_async"
+                and int(record.get("event_id_hash") or 0) in extraction_committed_event_ids
+            ):
+                continue
             event_node_key: Any = record.get("node_hash")
             if event_node_key is None:
                 event_node_key = tuple(record.get("node_path", []))
@@ -7206,8 +7224,17 @@ class MatrixArkLocalAdapter:
             ):
                 continue
             envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else {}
-            record_scope = candidate_access_scope(record)
-            if not access_scope_matches_before_scoring(record, retrieval_scope):
+            is_pending_async_event = str(record.get("event_type") or record.get("classification") or "").lower() == "pending_async"
+            record_scope = (
+                recovered_scope_for_query(record, retrieval_scope)
+                if is_pending_async_event
+                else candidate_access_scope(record)
+            )
+            if not (
+                scope_matches(record_scope, retrieval_scope)
+                if is_pending_async_event
+                else access_scope_matches_before_scoring(record, retrieval_scope)
+            ):
                 continue
             if not selected_by_tree(record):
                 continue
@@ -7793,6 +7820,24 @@ class MatrixArkLocalAdapter:
             if len(deduped_selected) != len(selected):
                 selected = deduped_selected
                 used_context_tokens = max(0, used_context_tokens - removed_tokens)
+
+        if selected and any(candidate_memory_layer_name(item) != "pending_async_event" for item in selected):
+            extracted_preferred_selected: list[Json] = []
+            removed_tokens = 0
+            removed_pending_count = 0
+            for item in selected:
+                if candidate_memory_layer_name(item) == "pending_async_event":
+                    removed_pending_count += 1
+                    removed_tokens += int(item.get("token_estimate") or max(1, token_count(str(item.get("text") or ""))))
+                    continue
+                extracted_preferred_selected.append(item)
+            if removed_pending_count and extracted_preferred_selected:
+                selected = extracted_preferred_selected
+                used_context_tokens = max(0, used_context_tokens - removed_tokens)
+                dropped_over_budget["pending_async_event_superseded_by_extracted_refs"] = (
+                    int(dropped_over_budget.get("pending_async_event_superseded_by_extracted_refs") or 0)
+                    + removed_pending_count
+                )
 
         if (
             question_type == "broad_exploration"
