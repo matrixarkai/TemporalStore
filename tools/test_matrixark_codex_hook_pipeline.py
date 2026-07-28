@@ -5644,6 +5644,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertNotIn("source_codex_events", ref)
             self.assertNotIn("memory_layer_budget", pack)
             budget = pack["retrieval_metrics"]["memory_layer_budget"]
+            coverage = pack["retrieval_metrics"]["retrieval_model_coverage"]
+            self.assertTrue(coverage["compact_scope_recovery_enabled"])
+            self.assertGreaterEqual(coverage["node_scope_recovered_count"], 1)
+            self.assertGreaterEqual(coverage["event_embedding_vectors"], 1)
+            self.assertGreaterEqual(coverage["entity_embedding_vectors"], 1)
+            self.assertGreaterEqual(coverage["segment_embedding_vectors"], 1)
+            self.assertGreaterEqual(coverage["index_terms_by_ref"], 1)
+            self.assertGreaterEqual(coverage["index_terms_by_batch"], 1)
+            if "recall_policy" in pack:
+                self.assertEqual(coverage, pack["recall_policy"]["retrieval_model_coverage"])
             self.assertGreaterEqual(budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(budget["by_session_continuity"]["cross_session"]["refs"], 1)
             self.assertGreaterEqual(budget["by_extraction_phase"]["provisional"]["refs"], 1)

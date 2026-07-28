@@ -187,6 +187,33 @@ def add_entity_type_buckets(breakdown: Json, ref: Json, token_estimate: int) -> 
         add_ref_bucket(breakdown, "by_entity_type", entity_type, token_estimate)
 
 
+def source_count_identity_keys(ref: Json, aggregate_field: str, bucket_name: str, source_name: str, source_count: int) -> list[tuple[object, ...]]:
+    source_ids = []
+    if ref_value(ref, "ref_type") == "event" and ref_value(ref, "ref_hash") not in (None, "", [], {}):
+        source_ids.append(ref_value(ref, "ref_hash"))
+    source_ids.extend(ref_list(ref, "source_event_ids"))
+    normalized_ids: list[object] = []
+    seen_ids: set[object] = set()
+    for source_id in source_ids:
+        identity = str(source_id or "").strip()
+        if not identity or identity in seen_ids:
+            continue
+        seen_ids.add(identity)
+        normalized_ids.append(identity)
+    ref_identity = (
+        ref_value(ref, "ref_type", ""),
+        ref_value(ref, "ref_hash", ""),
+        ref_value(ref, "node_hash", ""),
+        ref_value(ref, "text", ""),
+    )
+    if normalized_ids:
+        keys: list[tuple[object, ...]] = [(aggregate_field, bucket_name, str(source_name or ""), source_id) for source_id in normalized_ids[:source_count]]
+        for index in range(max(0, source_count - len(keys))):
+            keys.append((aggregate_field, bucket_name, str(source_name or ""), ref_identity, "overflow", index))
+        return keys
+    return [(aggregate_field, bucket_name, str(source_name or ""), ref_identity, index) for index in range(max(1, source_count))]
+
+
 def selected_ref_layer_budget(refs: list[Json]) -> Json:
     breakdown: Json = {
         "by_memory_layer": {},
@@ -209,6 +236,7 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
         "total_selected_refs": len(refs),
         "total_selected_tokens": 0,
     }
+    seen_source_count_keys: set[tuple[object, ...]] = set()
     for ref in refs:
         try:
             token_estimate = max(0, int(ref_value(ref, "token_estimate", 0) or 0))
@@ -251,7 +279,14 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
                 except (TypeError, ValueError):
                     source_count = 0
                 if source_count:
-                    breakdown[aggregate_field][bucket_name] = int(breakdown[aggregate_field].get(bucket_name, 0)) + source_count
+                    added_count = 0
+                    for identity_key in source_count_identity_keys(ref, aggregate_field, bucket_name, str(name or ""), source_count):
+                        if identity_key in seen_source_count_keys:
+                            continue
+                        seen_source_count_keys.add(identity_key)
+                        added_count += 1
+                    if added_count:
+                        breakdown[aggregate_field][bucket_name] = int(breakdown[aggregate_field].get(bucket_name, 0)) + added_count
         if bool(ref_value(ref, "final_session_boundary")):
             breakdown["final_session_boundary_ref_count"] += 1
         if any(phase == "provisional" for phase in source_extraction_phases):
@@ -303,6 +338,7 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
         }
         if compact_estimated:
             breakdown["estimated_tokens_by_reason"] = compact_estimated
+    seen_source_count_keys: set[tuple[object, ...]] = set()
     for ref in refs:
         if not isinstance(ref, dict):
             continue
@@ -352,7 +388,14 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
                 except (TypeError, ValueError):
                     source_count = 0
                 if source_count:
-                    breakdown[aggregate_field][bucket_name] = int(breakdown[aggregate_field].get(bucket_name, 0)) + source_count
+                    added_count = 0
+                    for identity_key in source_count_identity_keys(ref, aggregate_field, bucket_name, str(name or ""), source_count):
+                        if identity_key in seen_source_count_keys:
+                            continue
+                        seen_source_count_keys.add(identity_key)
+                        added_count += 1
+                    if added_count:
+                        breakdown[aggregate_field][bucket_name] = int(breakdown[aggregate_field].get(bucket_name, 0)) + added_count
         if bool(ref_value(ref, "final_session_boundary")):
             breakdown["final_session_boundary_ref_count"] += 1
         if any(phase == "provisional" for phase in source_extraction_phases):
