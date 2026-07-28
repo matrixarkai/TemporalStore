@@ -2893,14 +2893,23 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("auto", role_policy["mode"])
             self.assertTrue(role_policy["derived"])
             self.assertEqual(114, role_policy["remote_budget_tokens"])
+            self.assertEqual("independent_per_role_caps_under_global_remote_budget", role_policy["budget_semantics"])
+            self.assertTrue(role_policy["independent_caps"])
+            self.assertTrue(role_policy["global_remote_budget_enforced"])
             self.assertEqual({"assistant": 51, "tool": 39, "user": 68}, role_policy["budget_tokens"])
+            self.assertGreater(sum(role_policy["budget_tokens"].values()), role_policy["remote_budget_tokens"])
             layer_policy = pack["recall_policy"]["memory_layer_budget_policy"]
             self.assertTrue(layer_policy["enabled"])
             self.assertEqual("auto", layer_policy["mode"])
             self.assertTrue(layer_policy["derived"])
             self.assertEqual(114, layer_policy["remote_budget_tokens"])
+            self.assertEqual("independent_per_layer_caps_under_global_remote_budget", layer_policy["budget_semantics"])
+            self.assertTrue(layer_policy["independent_caps"])
+            self.assertTrue(layer_policy["global_remote_budget_enforced"])
             self.assertEqual(34, layer_policy["budget_tokens"]["summary"])
             self.assertEqual(45, layer_policy["budget_tokens"]["profile_entity"])
+            self.assertGreater(sum(layer_policy["budget_tokens"].values()), layer_policy["remote_budget_tokens"])
+            self.assertLessEqual(pack["used_remote_context_tokens"], pack["remote_context_budget_tokens"])
 
     def test_codex_hook_pre_retrieval_summary_refresh_is_explicit_opt_in(self) -> None:
         repo = Path(__file__).resolve().parents[1]

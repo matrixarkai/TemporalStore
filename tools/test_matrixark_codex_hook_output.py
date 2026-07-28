@@ -815,6 +815,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             "shared_context": {"enabled": False},
             "source_role_budget": {
                 "enabled": True,
+                "mode": "auto",
+                "remote_budget_tokens": 100,
+                "budget_semantics": "independent_per_role_caps_under_global_remote_budget",
+                "independent_caps": True,
+                "global_remote_budget_enforced": True,
                 "budget_tokens": {"llm": 10, "model": 22, "tool": 24, "user": 40},
                 "selected_tokens_by_role": {"llm": 7, "model": 15, "tool": 18},
                 "selected_ref_count_by_role": {"model": 1, "tool": 1},
@@ -822,6 +827,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             "memory_layer_budget_policy": {
                 "enabled": True,
                 "mode": "auto",
+                "remote_budget_tokens": 100,
+                "budget_semantics": "independent_per_layer_caps_under_global_remote_budget",
+                "independent_caps": True,
+                "global_remote_budget_enforced": True,
                 "budget_tokens": {"summary": 30, "profile_entity": 40},
                 "selected_tokens_by_layer": {"summary": 12, "profile_entity": 18},
                 "selected_ref_count_by_layer": {"summary": 1, "profile_entity": 1},
@@ -830,11 +839,20 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
 
         contract = hook.retrieval_memory_hierarchy_contract_from_retrieve({"recall_policy": recall_policy})
         self.assertEqual(memory_hierarchy_contract_from_recall_policy(recall_policy), contract)
+        self.assertEqual("auto", contract["source_role_budget_mode"])
+        self.assertEqual(100, contract["source_role_remote_budget_tokens"])
+        self.assertEqual("independent_per_role_caps_under_global_remote_budget", contract["source_role_budget_semantics"])
+        self.assertTrue(contract["source_role_independent_caps"])
+        self.assertTrue(contract["source_role_global_remote_budget_enforced"])
         self.assertEqual({"assistant": 32, "tool": 24, "user": 40}, contract["source_role_budget_tokens"])
         self.assertEqual({"assistant": 22, "tool": 18}, contract["source_role_selected_tokens_by_role"])
         self.assertEqual({"assistant": 1, "tool": 1}, contract["source_role_selected_ref_count_by_role"])
         self.assertTrue(contract["memory_layer_budget_enabled"])
         self.assertEqual("auto", contract["memory_layer_budget_mode"])
+        self.assertEqual(100, contract["memory_layer_remote_budget_tokens"])
+        self.assertEqual("independent_per_layer_caps_under_global_remote_budget", contract["memory_layer_budget_semantics"])
+        self.assertTrue(contract["memory_layer_independent_caps"])
+        self.assertTrue(contract["memory_layer_global_remote_budget_enforced"])
         self.assertEqual({"summary": 30, "profile_entity": 40}, contract["memory_layer_budget_tokens"])
         self.assertEqual({"summary": 12, "profile_entity": 18}, contract["memory_layer_selected_tokens_by_layer"])
         self.assertEqual({"summary": 1, "profile_entity": 1}, contract["memory_layer_selected_ref_count_by_layer"])

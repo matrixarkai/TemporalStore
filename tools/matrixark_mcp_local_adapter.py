@@ -7289,6 +7289,9 @@ class MatrixArkLocalAdapter:
                     "mode": source_role_budget_mode or ("explicit" if source_role_budget_tokens else "disabled"),
                     "remote_budget_tokens": remote_context_budget_tokens,
                     "derived": source_role_budget_mode in {"auto", "balanced", "codex_auto"},
+                    "budget_semantics": "independent_per_role_caps_under_global_remote_budget",
+                    "independent_caps": True,
+                    "global_remote_budget_enforced": True,
                 },
                 "memory_layer_budget_policy": {
                     **(dropped_over_budget.get("memory_layer_budget_policy", {"enabled": False}) if isinstance(dropped_over_budget.get("memory_layer_budget_policy"), dict) else {"enabled": False}),
@@ -7300,6 +7303,9 @@ class MatrixArkLocalAdapter:
                         "codex_auto",
                         "pre_retrieval_summary_refresh_balanced",
                     },
+                    "budget_semantics": "independent_per_layer_caps_under_global_remote_budget",
+                    "independent_caps": True,
+                    "global_remote_budget_enforced": True,
                 },
                 "backend_retrieval_pushdown": retrieval_scan_stats,
                 "ranking": {
