@@ -20,6 +20,10 @@ try:
         _mcp_debug_log,
         canonical_account_id,
         canonical_tenant_id,
+        candidate_index_terms,
+        context_index_posting_record,
+        embedding_for_text,
+        embedding_model_name,
         memory_hierarchy_contract_from_recall_policy,
         messages_from_event_record,
         normalize_message_role,
@@ -34,6 +38,10 @@ except ModuleNotFoundError:
         _mcp_debug_log,
         canonical_account_id,
         canonical_tenant_id,
+        candidate_index_terms,
+        context_index_posting_record,
+        embedding_for_text,
+        embedding_model_name,
         memory_hierarchy_contract_from_recall_policy,
         messages_from_event_record,
         normalize_message_role,
@@ -3235,6 +3243,45 @@ def fast_hook_summary_dirty_records(
     return records
 
 
+def fast_hook_event_projection_records(*, event_record: Json, updated_at_ms: int) -> list[Json]:
+    text = str(event_record.get("text") or event_record.get("summary_text") or "")
+    event_id_hash = int(event_record.get("event_id_hash") or 0)
+    node_hash = int(event_record.get("node_hash") or 0)
+    node_path = event_record.get("node_path", []) if isinstance(event_record.get("node_path"), list) else []
+    scope = event_record.get("scope", {}) if isinstance(event_record.get("scope"), dict) else {}
+    vector = embedding_for_text(text)
+    records: list[Json] = [
+        {
+            "record_type": "context_embedding",
+            "embedding_type": "event_text",
+            "ref_type": "event",
+            "ref_hash": event_id_hash,
+            "node_hash": node_hash,
+            "node_path": node_path,
+            "dim": len(vector),
+            "model": embedding_model_name(),
+            "vector": vector,
+            "scope": scope,
+            "projection_phase": "fast_hook_pending_async",
+            "updated_at_ms": updated_at_ms,
+        }
+    ]
+    for index_name in sorted(candidate_index_terms(event_record, {}, {})):
+        index_record = context_index_posting_record(
+            index_name=index_name,
+            data_model="context_event",
+            ref_type="event",
+            ref_hashes=[event_id_hash],
+            node_hash=node_hash,
+            scope=scope,
+            updated_at_ms=updated_at_ms,
+        )
+        index_record["access_scope"] = scope
+        index_record["projection_phase"] = "fast_hook_pending_async"
+        records.append(index_record)
+    return records
+
+
 def pending_session_message_count(records: list[Json]) -> int:
     return sum(len(messages_from_event_record(record)) for record in records)
 
@@ -3307,12 +3354,25 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "status": "pending",
         "source_kind": "message",
         "source_role": role,
+        "source_roles": [role] if role else [],
+        "source_role_counts": {role: 1} if role else {},
         "hook_type": hook_type,
+        "source_hook_types": [hook_type] if hook_type else [],
+        "source_hook_type_counts": {hook_type: 1} if hook_type else {},
         "codex_event": args.event,
+        "source_codex_events": [args.event] if args.event else [],
+        "source_codex_event_counts": {args.event: 1} if args.event else {},
+        "source_memory_scopes": ["session"],
+        "source_session_continuities": ["same_session"],
+        "source_extraction_phases": ["pending_async"],
         "scope": scope,
         "tenant_id": tenant_id,
         "user_id": user_id,
         "session_id": session_id,
+        "memory_scope": "session",
+        "session_continuity": "same_session",
+        "extraction_phase": "pending_async",
+        "final_session_boundary": False,
         **lineage,
         "metadata": metadata,
         "envelope": {
@@ -3341,6 +3401,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "updated_at_ms": now,
         **retention,
     }
+    projection_records = fast_hook_event_projection_records(event_record=record, updated_at_ms=now)
     pipeline_task: Json = {
         "record_type": "matrixark_async_pipeline_task",
         "task_hash": stable_int_hash(f"async_pipeline:{event_id_hash}"),
@@ -3445,7 +3506,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         if callable(append_raw):
             append_raw([raw_record])
             raw_ingestion_status = "accepted"
-    serving_records = [record, pipeline_task, *summary_dirty_records]
+    serving_records = [record, pipeline_task, *projection_records, *summary_dirty_records]
     enqueue(serving_records)
     append_session_buffer = getattr(adapter, "append_session_buffer_event", None)
     if callable(append_session_buffer):

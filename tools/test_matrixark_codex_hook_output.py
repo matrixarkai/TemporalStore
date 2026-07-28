@@ -2144,13 +2144,26 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("accepted", result["status"])
         self.assertEqual("accepted", result["raw_ingestion_status"])
         self.assertEqual("accepted", result["serving_projection_status"])
-        self.assertEqual(6, result["serving_projection_record_count"])
         self.assertEqual(1, len(server.adapter.raw_records))
-        self.assertEqual(6, len(server.adapter.serving_records))
+        self.assertEqual(len(server.adapter.serving_records), result["serving_projection_record_count"])
         raw = server.adapter.raw_records[0]
         serving = server.adapter.serving_records[0]
         task = server.adapter.serving_records[1]
-        dirty_records = server.adapter.serving_records[2:]
+        embedding_records = [
+            record
+            for record in server.adapter.serving_records
+            if record.get("record_type") == "context_embedding"
+        ]
+        index_records = [
+            record
+            for record in server.adapter.serving_records
+            if record.get("record_type") == "context_index"
+        ]
+        dirty_records = [
+            record
+            for record in server.adapter.serving_records
+            if record.get("record_type") == "context_summary_dirty"
+        ]
         self.assertEqual("agent_message", raw["record_type"])
         self.assertEqual("raw_agent_message", raw["raw_record_type"])
         self.assertEqual("backfill_only", raw["raw_ingestion_visibility"])
@@ -2171,9 +2184,23 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("PENDING_ASYNC_EXTRACTION", serving["classification"])
         self.assertEqual("pending_async", serving["event_type"])
         self.assertEqual("pending", serving["status"])
+        self.assertEqual("session", serving["memory_scope"])
+        self.assertEqual("same_session", serving["session_continuity"])
+        self.assertEqual("pending_async", serving["extraction_phase"])
         self.assertEqual("async_pending", serving["internal_extraction"]["mode"])
         self.assertIn("real hooked Codex message", serving["summary_text"])
         self.assertIn("real hooked Codex message", serving["text"])
+        self.assertEqual(1, len(embedding_records))
+        self.assertEqual("event_text", embedding_records[0]["embedding_type"])
+        self.assertEqual(serving["event_id_hash"], embedding_records[0]["ref_hash"])
+        self.assertEqual("fast_hook_pending_async", embedding_records[0]["projection_phase"])
+        self.assertTrue(index_records)
+        self.assertTrue(all(record["ref_hash"] == serving["event_id_hash"] for record in index_records))
+        self.assertTrue(all(record["data_model"] == "context_event" for record in index_records))
+        self.assertTrue(all(record["projection_phase"] == "fast_hook_pending_async" for record in index_records))
+        self.assertIn("event_type:pending_async", {record["index_name"] for record in index_records})
+        self.assertIn("source_role:user", {record["index_name"] for record in index_records})
+        self.assertIn("codex_event:userpromptsubmit", {record["index_name"] for record in index_records})
         self.assertEqual("matrixark_async_pipeline_task", task["record_type"])
         self.assertEqual(serving["event_id_hash"], task["event_id_hash"])
         self.assertEqual("thread-fast-1", task["thread_id"])
@@ -2240,7 +2267,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("accepted", result["raw_ingestion_status"])
         self.assertEqual("accepted", result["serving_projection_status"])
         self.assertEqual(1, len(server.adapter.raw_records))
-        self.assertEqual(6, len(server.adapter.serving_records))
+        self.assertEqual(len(server.adapter.serving_records), result["serving_projection_record_count"])
+        self.assertTrue(any(record.get("record_type") == "context_embedding" for record in server.adapter.serving_records))
+        self.assertTrue(any(record.get("record_type") == "context_index" for record in server.adapter.serving_records))
 
     def test_fast_async_hook_ingest_runs_threshold_batch_commit(self) -> None:
         original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT
