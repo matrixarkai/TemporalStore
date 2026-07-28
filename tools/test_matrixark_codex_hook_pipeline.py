@@ -518,6 +518,31 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "enabled": True,
                     "budget_tokens": 64,
                 },
+                "dropped_memory_layer_budget": {
+                    "total_dropped_refs": 1,
+                    "profile_shadowed_ref_count": 1,
+                    "by_profile_shadowed_reason": {
+                        "source_entity_lineage": {"refs": 1, "tokens": 6},
+                    },
+                    "by_memory_scope": {"session": {"refs": 1, "tokens": 6}},
+                    "by_source_role": {"assistant": {"refs": 1, "tokens": 6}},
+                },
+                "memory_layer_pressure": {
+                    "dropped_refs": 1,
+                    "dropped_dimensions": [
+                        "by_profile_shadowed_reason",
+                        "by_memory_scope",
+                        "by_source_role",
+                    ],
+                    "by_dimension": {
+                        "by_profile_shadowed_reason": {
+                            "source_entity_lineage": {"dropped_refs": 1},
+                        },
+                        "by_memory_scope": {"session": {"dropped_refs": 1}},
+                        "by_source_role": {"assistant": {"dropped_refs": 1}},
+                    },
+                    "assistant_source_message_pressure": True,
+                },
             },
         }
 
@@ -528,6 +553,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(2, readiness["task_count"])
         self.assertEqual({"summary": 1, "embedding": 1}, readiness["remaining_stage_counts"])
         self.assertEqual({"user_profile": 1}, readiness["pending_memory_scopes"])
+        dropped_budget = default_serving["dropped_memory_layer_budget"]
+        self.assertNotIn("by_source_role", dropped_budget)
+        self.assertNotIn("source_entity_lineage", dropped_budget.get("by_profile_shadowed_reason", {}))
+        self.assertNotIn("by_profile_shadowed_reason", dropped_budget)
+        pressure = default_serving["memory_layer_pressure"]
+        self.assertNotIn("by_source_role", pressure.get("by_dimension", {}))
+        self.assertNotIn("by_profile_shadowed_reason", pressure.get("by_dimension", {}))
+        self.assertNotIn("by_profile_shadowed_reason", pressure.get("dropped_dimensions", []))
 
         debug_serving = compact_context_pack_for_serving_flat(pack, include_debug=True)
         self.assertIn("memory_hierarchy", debug_serving)
@@ -536,6 +569,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual({"assistant": 2, "tool": 1}, debug_readiness["pending_source_roles"])
         self.assertEqual({"after_llm": 1}, debug_readiness["pending_source_hook_types"])
         self.assertEqual({"Stop": 1}, debug_readiness["pending_source_codex_events"])
+        self.assertEqual(
+            {"refs": 1, "tokens": 6},
+            debug_serving["dropped_memory_layer_budget"]["by_profile_shadowed_reason"]["source_entity_lineage"],
+        )
+        self.assertEqual(
+            {"dropped_refs": 1},
+            debug_serving["memory_layer_pressure"]["by_dimension"]["by_profile_shadowed_reason"]["source_entity_lineage"],
+        )
 
     def test_context_pack_audit_hides_memory_hierarchy_by_default(self) -> None:
         audit = {
@@ -5126,7 +5167,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(layer_pressure["profile_shadowed_current_state_pressure"])
             self.assertNotIn("assistant_memory_pressure", layer_pressure)
             self.assertNotIn("assistant_source_message_pressure", layer_pressure)
-            self.assertIn("by_profile_shadowed_reason", layer_pressure["dropped_dimensions"])
+            self.assertNotIn("by_profile_shadowed_reason", layer_pressure["dropped_dimensions"])
             self.assertIn("by_extraction_phase", layer_pressure["dropped_dimensions"])
             self.assertNotIn("source_message_counts_by_role", layer_pressure["dropped_dimensions"])
             self.assertNotIn(
