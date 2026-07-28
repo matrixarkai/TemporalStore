@@ -207,6 +207,7 @@ RESOURCE_EVENTS = {
 def selected_ref_count_from_retrieve(pack: Json | None) -> int:
     if not isinstance(pack, dict):
         return 0
+    pack = _context_pack_view(pack)
     refs = pack.get("selected_refs")
     if isinstance(refs, list):
         return len(refs)
@@ -241,6 +242,7 @@ def selected_ref_count_from_retrieve(pack: Json | None) -> int:
 def used_context_tokens_from_retrieve(pack: Json | None) -> int:
     if not isinstance(pack, dict):
         return 0
+    pack = _context_pack_view(pack)
     tokens = pack.get("tokens")
     if isinstance(tokens, dict):
         try:
@@ -263,12 +265,13 @@ def _int_field(payload: Json, field: str) -> int:
 def retrieval_budget_summary_from_retrieve(pack: Json | None) -> Json:
     if not isinstance(pack, dict):
         return {}
-    used_remote_tokens = used_context_tokens_from_retrieve(pack)
-    remote_budget_tokens = _int_field(pack, "remote_context_budget_tokens")
-    requested_max_context_tokens = _int_field(pack, "requested_max_context_tokens")
-    used_local_tokens = _int_field(pack, "used_local_context_tokens")
-    total_prompt_tokens = _int_field(pack, "total_prompt_context_tokens") or used_remote_tokens + used_local_tokens
-    safety_margin_tokens = _int_field(pack, "local_context_safety_margin_tokens")
+    pack_view = _context_pack_view(pack)
+    used_remote_tokens = used_context_tokens_from_retrieve(pack_view)
+    remote_budget_tokens = _int_field(pack_view, "remote_context_budget_tokens")
+    requested_max_context_tokens = _int_field(pack_view, "requested_max_context_tokens")
+    used_local_tokens = _int_field(pack_view, "used_local_context_tokens")
+    total_prompt_tokens = _int_field(pack_view, "total_prompt_context_tokens") or used_remote_tokens + used_local_tokens
+    safety_margin_tokens = _int_field(pack_view, "local_context_safety_margin_tokens")
     budget: Json = {
         "used_remote_context_tokens": used_remote_tokens,
         "remote_context_budget_tokens": remote_budget_tokens,
@@ -276,7 +279,7 @@ def retrieval_budget_summary_from_retrieve(pack: Json | None) -> Json:
         "used_local_context_tokens": used_local_tokens,
         "total_prompt_context_tokens": total_prompt_tokens,
         "local_context_safety_margin_tokens": safety_margin_tokens,
-        "budget_source": str(pack.get("budget_source") or ""),
+        "budget_source": str(pack_view.get("budget_source") or ""),
     }
     if remote_budget_tokens:
         budget["remote_budget_remaining_tokens"] = max(0, remote_budget_tokens - used_remote_tokens)
@@ -1407,6 +1410,13 @@ def _context_pack_view(pack: Json | None) -> Json:
     return pack
 
 
+def context_pack_id_from_retrieve(pack: Json | None) -> str:
+    if not isinstance(pack, dict):
+        return ""
+    pack_view = _context_pack_view(pack)
+    return str(pack_view.get("context_pack_id") or pack_view.get("pack_id") or pack.get("context_pack_id") or pack.get("pack_id") or "")
+
+
 def _selected_refs_from_retrieve(pack: Json | None) -> list[Json]:
     if not isinstance(pack, dict):
         return []
@@ -1503,7 +1513,7 @@ def additional_context_from_retrieve(
         ),
         (
             "Retrieval summary: "
-            f"context_pack_id={pack.get('context_pack_id') or pack.get('pack_id') or ''}, "
+            f"context_pack_id={context_pack_id_from_retrieve(pack)}, "
             f"selected_refs={len(refs)}, "
             f"used_context_tokens={used_context_tokens_from_retrieve(pack)}, "
             f"local_context_refs_seen={local_context_count}."
@@ -1697,7 +1707,7 @@ def codex_hook_output(
     ]
     rendered_context = sanitized_rendered_context_from_retrieve(retrieve)
     retrieve_summary: Json = {
-        "context_pack_id": retrieve.get("context_pack_id") or retrieve.get("pack_id"),
+        "context_pack_id": context_pack_id_from_retrieve(retrieve),
         "selected_ref_count": len(emitted_refs),
         "used_context_tokens": used_context_tokens_from_retrieve(retrieve),
         "budget": retrieval_budget_summary_from_retrieve(retrieve),
@@ -1882,7 +1892,7 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 ref for ref in _selected_refs_from_retrieve(result) if not _ref_is_codex_hook_heartbeat(ref)
             ]
             retrieve_result = {
-                "context_pack_id": result.get("context_pack_id") or result.get("pack_id"),
+                "context_pack_id": context_pack_id_from_retrieve(result),
                 "selected_ref_count": len(emitted_refs),
                 "used_context_tokens": used_context_tokens_from_retrieve(result),
                 "retrieval_budget": retrieval_budget_summary_from_retrieve(result),

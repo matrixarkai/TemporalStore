@@ -60,6 +60,63 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertTrue(result["memory_layer_pressure"]["profile_memory_pressure"])
         self.assertTrue(result["memory_layer_pressure"]["hook_boundary_source_pressure"])
 
+    def test_retrieve_budget_summary_reads_nested_context_pack_wrapper(self) -> None:
+        wrapped = {
+            "ok": True,
+            "used_context_tokens": 0,
+            "extra": {
+                "context_pack": {
+                    "context_pack_id": "pack-rust-nested",
+                    "used_context_tokens": 42,
+                    "remote_context_budget_tokens": 100,
+                    "requested_max_context_tokens": 128,
+                    "used_local_context_tokens": 10,
+                    "total_prompt_context_tokens": 52,
+                    "local_context_safety_margin_tokens": 8,
+                    "budget_source": "rust_proxy_context_pack",
+                    "selected_refs": [
+                        {
+                            "ref_type": "entity",
+                            "memory_scope": "user_profile",
+                            "session_continuity": "cross_session",
+                            "text": "profile decision from nested Rust proxy pack",
+                            "token_estimate": 9,
+                        }
+                    ],
+                    "retrieval_metrics": {
+                        "memory_layer_budget": {
+                            "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 9}},
+                            "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 9}},
+                        }
+                    },
+                }
+            },
+        }
+
+        self.assertEqual(1, hook.selected_ref_count_from_retrieve(wrapped))
+        self.assertEqual(42, hook.used_context_tokens_from_retrieve(wrapped))
+        budget = hook.retrieval_budget_summary_from_retrieve(wrapped)
+        self.assertEqual(42, budget["used_remote_context_tokens"])
+        self.assertEqual(100, budget["remote_context_budget_tokens"])
+        self.assertEqual(58, budget["remote_budget_remaining_tokens"])
+        self.assertEqual(128, budget["requested_max_context_tokens"])
+        self.assertEqual(52, budget["total_prompt_context_tokens"])
+        self.assertEqual("rust_proxy_context_pack", budget["budget_source"])
+        self.assertEqual(110, budget["budget_contract"]["computed_remote_context_budget_tokens"])
+        self.assertTrue(budget["budget_contract"]["contract_holds"])
+
+        context = hook.additional_context_from_retrieve(
+            wrapped,
+            query="profile decision",
+            local_context_count=0,
+        )
+        self.assertIn("context_pack_id=pack-rust-nested", context)
+        self.assertIn("used_context_tokens=42", context)
+        self.assertIn("remote_budget=100", context)
+        self.assertIn("remote_remaining=58", context)
+        self.assertIn("budget_source=rust_proxy_context_pack", context)
+        self.assertIn("profile decision from nested Rust proxy pack", context)
+
     def test_layer_pressure_flags_include_source_message_pressure_aliases(self) -> None:
         pressure = {
             "selected_refs": 2,
