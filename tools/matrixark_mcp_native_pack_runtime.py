@@ -304,12 +304,9 @@ def try_native_context_pack(target: Any, args: Json) -> Json | None:
     if bool(args.get("debug_context_pack")) or bool(args.get("include_retrieval_debug")):
         self._direct_context_pack_response_cache_put(cache_key, pack)
         return pack
-    if isinstance(selected_refs, list) and selected_refs:
-        result = compact_context_pack_for_serving(pack)
-        self._direct_context_pack_response_cache_put(cache_key, result)
-        return result
-    self._direct_context_pack_response_cache_put(cache_key, pack)
-    return pack
+    result = compact_context_pack_for_serving(pack)
+    self._direct_context_pack_response_cache_put(cache_key, result)
+    return result
 
 def native_context_pack(target: Any, request: Json) -> Json | None:
     retriever = getattr(getattr(target, "_client", None), "matrixark_retrieve_context_pack", None)

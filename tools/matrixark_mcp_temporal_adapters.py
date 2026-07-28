@@ -3309,9 +3309,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         pack["operational_visibility_policy"] = visibility_decision
         if bool(args.get("debug_context_pack")) or bool(args.get("include_retrieval_debug")):
             return pack
-        if isinstance(selected_refs, list) and selected_refs:
-            return compact_context_pack_for_serving(pack)
-        return pack
+        return compact_context_pack_for_serving(pack)
 
     def retrieve(self, args: Json) -> Json:
         native_pack = self._try_native_context_pack(args)
