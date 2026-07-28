@@ -79,6 +79,24 @@ def context_text_hashes(text: str) -> set[int]:
     return {stable_hash(variant) for variant in variants if variant}
 
 
+def normalize_message_role(role: Any) -> str:
+    role_name = str(role or "").strip().lower()
+    role_aliases = {
+        "human": "user",
+        "prompt": "user",
+        "assistant_response": "assistant",
+        "agent": "assistant",
+        "ai": "assistant",
+        "bot": "assistant",
+        "llm": "assistant",
+        "model": "assistant",
+        "tool_result": "tool",
+        "tool_output": "tool",
+        "function": "tool",
+    }
+    return role_aliases.get(role_name, role_name)
+
+
 def entity_current_state_key(candidate: Json) -> tuple[str, str] | None:
     if str(candidate.get("ref_type") or "") != "entity":
         return None
@@ -153,6 +171,46 @@ def is_stale_or_superseded_candidate(candidate: Json) -> bool:
         return True
     version_state = str(candidate.get("version_state") or candidate.get("current_state_policy") or "").strip().lower()
     return version_state in {"stale", "superseded", "historical_superseded"}
+
+
+def candidate_memory_layer_name(candidate: Json) -> str:
+    ref_type = str(candidate.get("ref_type") or "")
+    context_class = str(candidate.get("context_class") or ref_type)
+    memory_scope = str(candidate.get("memory_scope") or "")
+    session_continuity = str(candidate.get("session_continuity") or "")
+    if context_class == "resource_entity_fact":
+        return "resource_entity_fact"
+    if context_class == "resource_fact":
+        return "resource_fact"
+    if ref_type == "resource_chunk":
+        return "resource_chunk"
+    if ref_type == "skill_section":
+        return "skill_section"
+    if ref_type == "compression" or context_class == "compression":
+        return "compression"
+    if ref_type == "summary" or context_class == "summary":
+        return "summary"
+    if ref_type == "segment":
+        if session_continuity == "same_session":
+            return "same_session_segment"
+        if session_continuity == "cross_session":
+            return "cross_session_segment"
+        return "session_neutral_segment"
+    if ref_type == "event":
+        if session_continuity == "same_session":
+            return "same_session_event"
+        if session_continuity == "cross_session":
+            return "cross_session_event"
+        return "session_neutral_event"
+    if ref_type == "entity":
+        if memory_scope == "user_profile":
+            return "profile_entity"
+        if session_continuity == "same_session":
+            return "same_session_entity"
+        if session_continuity == "cross_session":
+            return "cross_session_entity"
+        return "session_entity"
+    return context_class or ref_type or "unknown"
 
 
 def local_context_budget(args: Json) -> Json:
@@ -277,6 +335,8 @@ def select_token_budgeted_refs(
     deadline_reason: str = "deadline_during_pack",
     cross_session_policy: Json | None = None,
     shared_context_policy: Json | None = None,
+    source_role_budget_tokens: Json | None = None,
+    memory_layer_budget_tokens: Json | None = None,
 ) -> tuple[list[Json], int, Json]:
     duplicate_text_hashes = duplicate_text_hashes or set()
     remote_budget = max(0, max_context_tokens - max(0, reserved_tokens))
@@ -318,6 +378,113 @@ def select_token_budgeted_refs(
     shared_skill_used_tokens = 0
     shared_resource_selected_ref_count = 0
     shared_skill_selected_ref_count = 0
+    source_role_budget_tokens = source_role_budget_tokens if isinstance(source_role_budget_tokens, dict) else {}
+    normalized_source_role_budget_tokens: Json = {}
+    for role, budget in source_role_budget_tokens.items():
+        role_name = normalize_message_role(role)
+        if not role_name:
+            continue
+        try:
+            budget_tokens = max(0, int(budget or 0))
+        except (TypeError, ValueError):
+            budget_tokens = 0
+        if budget_tokens:
+            normalized_source_role_budget_tokens[role_name] = budget_tokens
+    source_role_used_tokens: Json = {role: 0 for role in normalized_source_role_budget_tokens}
+    source_role_selected_ref_counts: Json = {role: 0 for role in normalized_source_role_budget_tokens}
+    memory_layer_budget_tokens = memory_layer_budget_tokens if isinstance(memory_layer_budget_tokens, dict) else {}
+    normalized_memory_layer_budget_tokens: Json = {}
+    for layer, budget in memory_layer_budget_tokens.items():
+        layer_name = str(layer or "").strip().lower()
+        if not layer_name:
+            continue
+        try:
+            budget_tokens = max(0, int(budget or 0))
+        except (TypeError, ValueError):
+            budget_tokens = 0
+        if budget_tokens:
+            normalized_memory_layer_budget_tokens[layer_name] = budget_tokens
+    memory_layer_used_tokens: Json = {layer: 0 for layer in normalized_memory_layer_budget_tokens}
+    memory_layer_selected_ref_counts: Json = {layer: 0 for layer in normalized_memory_layer_budget_tokens}
+    profile_entity_floor_enabled = bool(
+        normalized_memory_layer_budget_tokens.get("profile_entity")
+        and normalized_memory_layer_budget_tokens.get("summary")
+    )
+
+    def profile_entity_floor_satisfied() -> bool:
+        return int(memory_layer_selected_ref_counts.get("profile_entity", 0) or 0) > 0
+
+    def remaining_profile_entity_candidate_exists(start_index: int) -> bool:
+        for remaining in candidates[start_index:]:
+            if candidate_memory_layer_name(remaining) != "profile_entity":
+                continue
+            try:
+                remaining_score = float(remaining.get("score", 0.0))
+            except (TypeError, ValueError):
+                remaining_score = 0.0
+            if remaining_score < min_score:
+                continue
+            if question_type in {"current_state", "latest"} and is_stale_or_superseded_candidate(remaining):
+                continue
+            remaining_tokens = max(1, token_count(str(remaining.get("text", ""))))
+            if remote_budget <= 0 or (selected and used_tokens + remaining_tokens > remote_budget):
+                continue
+            if remaining.get("session_continuity") == "cross_session" and not cross_enabled:
+                continue
+            return True
+        return False
+
+    def candidate_source_role_names(candidate: Json) -> set[str]:
+        role_names = {
+            normalize_message_role(role)
+            for role in candidate.get("source_roles", [])
+            if normalize_message_role(role)
+        } if isinstance(candidate.get("source_roles"), list) else set()
+        entity_type = str(candidate.get("entity_type") or "").strip().lower()
+        role_specific_entity_types = {
+            "assistant_decision": "assistant",
+            "assistant_response": "assistant",
+            "tool_evidence": "tool",
+            "user_requirement": "user",
+            "user_preference": "user",
+        }
+        semantic_role = role_specific_entity_types.get(entity_type)
+        if semantic_role and semantic_role in role_names:
+            return {semantic_role}
+        source_counts = candidate.get("source_role_counts") if isinstance(candidate.get("source_role_counts"), dict) else {}
+        for role, count in source_counts.items():
+            role_name = normalize_message_role(role)
+            if not role_name:
+                continue
+            try:
+                source_count = int(count or 0)
+            except (TypeError, ValueError):
+                source_count = 0
+            if source_count > 0:
+                role_names.add(role_name)
+        if semantic_role and semantic_role in role_names:
+            return {semantic_role}
+        return role_names
+
+    def candidate_budget_source_role_counts(candidate: Json, role_names: set[str]) -> Json:
+        source_counts = candidate.get("source_role_counts") if isinstance(candidate.get("source_role_counts"), dict) else {}
+        normalized_source_counts: Json = {}
+        for role, count in source_counts.items():
+            role_name = normalize_message_role(role)
+            if not role_name:
+                continue
+            try:
+                normalized_source_counts[role_name] = int(normalized_source_counts.get(role_name, 0)) + max(0, int(count or 0))
+            except (TypeError, ValueError):
+                continue
+        result: Json = {}
+        for role in sorted(role_names):
+            try:
+                source_count = max(0, int(normalized_source_counts.get(role, 0) or 0))
+            except (TypeError, ValueError):
+                source_count = 0
+            result[role] = source_count if source_count > 0 else 1
+        return result
     selected_cross_sessions: set[str] = set()
     def cross_session_key(candidate: Json) -> str:
         for source in [candidate, candidate.get("access_scope", {}), candidate.get("scope", {}), candidate.get("metadata", {}).get("access_scope", {}) if isinstance(candidate.get("metadata"), dict) else {}]:
@@ -341,6 +508,9 @@ def select_token_budgeted_refs(
         "entity_bridge_slot_reserved": 0,
         "shared_resource_budget": 0,
         "shared_skill_budget": 0,
+        "source_role_budget": 0,
+        "memory_layer_budget": 0,
+        "memory_layer_floor": 0,
         "deadline": 0,
         "max_selected_refs": 0,
         "estimated_tokens": {
@@ -356,6 +526,9 @@ def select_token_budgeted_refs(
             "entity_bridge_slot_reserved": 0,
             "shared_resource_budget": 0,
             "shared_skill_budget": 0,
+            "source_role_budget": 0,
+            "memory_layer_budget": 0,
+            "memory_layer_floor": 0,
             "deadline": 0,
             "max_selected_refs": 0,
         },
@@ -372,6 +545,9 @@ def select_token_budgeted_refs(
             "entity_bridge_slot_reserved": "candidate was skipped to preserve a minimum cross-session entity bridge slot",
             "shared_resource_budget": "shared resource candidate exceeded the configured shared-resource token budget",
             "shared_skill_budget": "shared skill candidate exceeded the configured shared-skill token budget",
+            "source_role_budget": "candidate exceeded a configured source-role token budget",
+            "memory_layer_budget": "candidate exceeded a configured memory-layer token budget",
+            "memory_layer_floor": "candidate was deferred so a required lower-layer entity could be selected first",
             "deadline": "candidate was not packed because the hard retrieval deadline was reached",
             "max_selected_refs": "candidate was relevant but dropped because max_selected_refs was reached",
         },
@@ -521,6 +697,67 @@ def select_token_budgeted_refs(
             dropped["estimated_tokens"]["shared_skill_budget"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="shared_skill_budget", token_estimate=ref_tokens)
             continue
+        candidate_memory_layer = candidate_memory_layer_name(candidate)
+        if (
+            profile_entity_floor_enabled
+            and candidate_memory_layer == "summary"
+            and not profile_entity_floor_satisfied()
+            and remaining_profile_entity_candidate_exists(index + 1)
+        ):
+            dropped["memory_layer_floor"] += 1
+            dropped["estimated_tokens"]["memory_layer_floor"] += ref_tokens
+            record_dropped_candidate(
+                dropped,
+                {
+                    **candidate,
+                    "budget_memory_layer": candidate_memory_layer,
+                    "memory_layer_budget_capped_layer": candidate_memory_layer,
+                    "memory_layer_floor_reserved_layer": "profile_entity",
+                },
+                reason="memory_layer_floor",
+                token_estimate=ref_tokens,
+            )
+            continue
+        if (
+            candidate_memory_layer in normalized_memory_layer_budget_tokens
+            and int(memory_layer_used_tokens.get(candidate_memory_layer, 0)) + ref_tokens
+            > int(normalized_memory_layer_budget_tokens[candidate_memory_layer])
+        ):
+            dropped["memory_layer_budget"] += 1
+            dropped["estimated_tokens"]["memory_layer_budget"] += ref_tokens
+            record_dropped_candidate(
+                dropped,
+                {
+                    **candidate,
+                    "budget_memory_layer": candidate_memory_layer,
+                    "memory_layer_budget_capped_layer": candidate_memory_layer,
+                },
+                reason="memory_layer_budget",
+                token_estimate=ref_tokens,
+            )
+            continue
+        candidate_source_roles = candidate_source_role_names(candidate)
+        capped_roles = [
+            role
+            for role in sorted(candidate_source_roles)
+            if role in normalized_source_role_budget_tokens
+            and int(source_role_used_tokens.get(role, 0)) + ref_tokens > int(normalized_source_role_budget_tokens[role])
+        ]
+        if capped_roles:
+            dropped["source_role_budget"] += 1
+            dropped["estimated_tokens"]["source_role_budget"] += ref_tokens
+            record_dropped_candidate(
+                dropped,
+                {
+                    **candidate,
+                    "budget_source_roles": sorted(candidate_source_roles),
+                    "budget_source_role_counts": candidate_budget_source_role_counts(candidate, candidate_source_roles),
+                    "source_role_budget_capped_roles": capped_roles,
+                },
+                reason="source_role_budget",
+                token_estimate=ref_tokens,
+            )
+            continue
         seen_text_hashes.add(text_hash)
         selected.append(
             {
@@ -528,6 +765,9 @@ def select_token_budgeted_refs(
                 "token_estimate": ref_tokens,
                 "packing_score": round(packing_sort_key(candidate, question_type)[0], 6),
                 "packing_policy": question_type,
+                "budget_memory_layer": candidate_memory_layer,
+                "budget_source_roles": sorted(candidate_source_roles),
+                "budget_source_role_counts": candidate_budget_source_role_counts(candidate, candidate_source_roles),
             }
         )
         used_tokens += ref_tokens
@@ -543,6 +783,13 @@ def select_token_budgeted_refs(
         if is_shared_skill_candidate(candidate):
             shared_skill_used_tokens += ref_tokens
             shared_skill_selected_ref_count += 1
+        if candidate_memory_layer in normalized_memory_layer_budget_tokens:
+            memory_layer_used_tokens[candidate_memory_layer] = int(memory_layer_used_tokens.get(candidate_memory_layer, 0)) + ref_tokens
+            memory_layer_selected_ref_counts[candidate_memory_layer] = int(memory_layer_selected_ref_counts.get(candidate_memory_layer, 0)) + 1
+        for role in candidate_source_roles:
+            if role in normalized_source_role_budget_tokens:
+                source_role_used_tokens[role] = int(source_role_used_tokens.get(role, 0)) + ref_tokens
+                source_role_selected_ref_counts[role] = int(source_role_selected_ref_counts.get(role, 0)) + 1
         if used_tokens >= remote_budget:
             break
     dropped["cross_session_policy"] = {
@@ -559,20 +806,70 @@ def select_token_budgeted_refs(
         "resource_selected_ref_count": shared_resource_selected_ref_count,
         "skill_selected_ref_count": shared_skill_selected_ref_count,
     }
+    dropped["source_role_budget_policy"] = {
+        "enabled": bool(normalized_source_role_budget_tokens),
+        "budget_tokens": normalized_source_role_budget_tokens,
+        "selected_tokens_by_role": source_role_used_tokens,
+        "selected_ref_count_by_role": source_role_selected_ref_counts,
+    }
+    dropped["memory_layer_budget_policy"] = {
+        "enabled": bool(normalized_memory_layer_budget_tokens),
+        "budget_tokens": normalized_memory_layer_budget_tokens,
+        "selected_tokens_by_layer": memory_layer_used_tokens,
+        "selected_ref_count_by_layer": memory_layer_selected_ref_counts,
+    }
     if not selected and candidates and remote_budget > 0 and budget_fill_policy != "quality_first":
-        first = next(
-            (
-                candidate
-                for candidate in candidates
-                if not context_text_hashes(str(candidate.get("text", ""))).intersection(duplicate_text_hashes)
-            ),
-            None,
-        )
+        first: Json | None = None
+        first_source_roles: set[str] = set()
+        first_memory_layer = ""
+        first_clipped_words: list[str] = []
+        for candidate in candidates:
+            if context_text_hashes(str(candidate.get("text", ""))).intersection(duplicate_text_hashes):
+                continue
+            clipped_words_for_candidate = tokens(str(candidate.get("text", "")))[:remote_budget]
+            fallback_tokens = len(clipped_words_for_candidate)
+            if fallback_tokens <= 0:
+                continue
+            candidate_memory_layer = candidate_memory_layer_name(candidate)
+            if (
+                candidate_memory_layer in normalized_memory_layer_budget_tokens
+                and int(memory_layer_used_tokens.get(candidate_memory_layer, 0)) + fallback_tokens
+                > int(normalized_memory_layer_budget_tokens[candidate_memory_layer])
+            ):
+                continue
+            candidate_source_roles = candidate_source_role_names(candidate)
+            if any(
+                role in normalized_source_role_budget_tokens
+                and int(source_role_used_tokens.get(role, 0)) + fallback_tokens > int(normalized_source_role_budget_tokens[role])
+                for role in candidate_source_roles
+            ):
+                continue
+            first = candidate
+            first_source_roles = candidate_source_roles
+            first_memory_layer = candidate_memory_layer
+            first_clipped_words = clipped_words_for_candidate
+            break
         if first is None:
             return selected, used_tokens, dropped
-        clipped_words = tokens(str(first.get("text", "")))[:remote_budget]
-        selected = [{**first, "text": " ".join(clipped_words), "token_estimate": len(clipped_words)}]
+        clipped_words = first_clipped_words
+        selected = [
+            {
+                **first,
+                "text": " ".join(clipped_words),
+                "token_estimate": len(clipped_words),
+                "budget_memory_layer": first_memory_layer,
+                "budget_source_roles": sorted(first_source_roles),
+                "budget_source_role_counts": candidate_budget_source_role_counts(first, first_source_roles),
+            }
+        ]
         used_tokens = len(clipped_words)
+        for role in first_source_roles:
+            if role in normalized_source_role_budget_tokens:
+                source_role_used_tokens[role] = int(source_role_used_tokens.get(role, 0)) + used_tokens
+                source_role_selected_ref_counts[role] = int(source_role_selected_ref_counts.get(role, 0)) + 1
+        if first_memory_layer in normalized_memory_layer_budget_tokens:
+            memory_layer_used_tokens[first_memory_layer] = int(memory_layer_used_tokens.get(first_memory_layer, 0)) + used_tokens
+            memory_layer_selected_ref_counts[first_memory_layer] = int(memory_layer_selected_ref_counts.get(first_memory_layer, 0)) + 1
         dropped["over_budget"] = max(0, len(candidates) - 1)
         for candidate in candidates[1:]:
             record_dropped_candidate(
