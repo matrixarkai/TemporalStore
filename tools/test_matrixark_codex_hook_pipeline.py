@@ -4949,7 +4949,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertFalse(second["auto_batch_extract_result"]["final_session_boundary"])
             self.assertEqual(2, second["auto_batch_extract_result"]["committed_event_count"])
             threshold_layers = second["auto_batch_extract_result"]["memory_layers_written"]
-            self.assertEqual(0, threshold_layers["context_events"])
+            self.assertEqual(2, threshold_layers["context_events"])
             self.assertGreaterEqual(threshold_layers["segments"], 1)
             self.assertGreaterEqual(threshold_layers["session_entities"], 1)
             self.assertGreaterEqual(threshold_layers["profile_entities"], 1)
@@ -4964,6 +4964,27 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({"after_llm": 1, "before_llm": 1}, second["auto_batch_extract_result"]["source_hook_type_counts"])
             self.assertEqual({"Stop": 1, "UserPromptSubmit": 1}, second["auto_batch_extract_result"]["source_codex_event_counts"])
             threshold_records = adapter.read_all()
+            threshold_committed_events = [
+                record
+                for record in threshold_records
+                if record.get("record_type") == "context_event"
+                and record.get("batch_id_hash") == second["auto_batch_extract_result"]["batch_id_hash"]
+                and record.get("status") == "extraction_committed"
+            ]
+            self.assertEqual(2, len(threshold_committed_events))
+            threshold_committed_event_hashes = {record.get("event_id_hash") for record in threshold_committed_events}
+            self.assertEqual(
+                {int(event_id) for event_id in second["auto_batch_extract_result"]["source_event_ids"]},
+                threshold_committed_event_hashes,
+            )
+            threshold_event_embeddings = [
+                record
+                for record in threshold_records
+                if record.get("record_type") == "context_embedding"
+                and record.get("embedding_type") == "event_text"
+                and record.get("ref_hash") in threshold_committed_event_hashes
+            ]
+            self.assertGreaterEqual(len(threshold_event_embeddings), 2)
             threshold_commit = next(
                 record
                 for record in threshold_records
@@ -5027,7 +5048,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(1, idle["committed_event_count"])
             self.assertEqual(2, idle["extraction_context_event_count"])
             idle_layers = idle["memory_layers_written"]
-            self.assertEqual(2, idle_layers["context_events"])
+            self.assertEqual(1, idle_layers["context_events"])
             self.assertGreaterEqual(idle_layers["segments"], 1)
             self.assertGreaterEqual(idle_layers["session_entities"], 1)
             self.assertGreaterEqual(idle_layers["profile_entities"], 1)

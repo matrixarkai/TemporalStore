@@ -62,6 +62,10 @@ def row(record: dict[str, Any], sequence: int) -> dict[str, Any]:
         "record_type": record.get("record_type") or record.get("type") or "unknown",
         "role": role or "",
         "session_id": record.get("session_id") or (record.get("scope") or {}).get("session_id", ""),
+        "memory_scope": record.get("memory_scope") or "",
+        "session_continuity": record.get("session_continuity") or "",
+        "data_model": record.get("data_model") or "",
+        "node_path": record.get("node_path") if isinstance(record.get("node_path"), list) else [],
         "thread_id": record.get("thread_id") or "",
         "turn_id": record.get("turn_id") or "",
         "codex_api_event": record.get("codex_api_event") or hook.get("trigger") or "",
@@ -71,6 +75,28 @@ def row(record: dict[str, Any], sequence: int) -> dict[str, Any]:
         "synthetic": bool(record.get("synthetic", False)),
         "text": short(message_text(record)),
         "write_path": ((record.get("matrixark_write_debug") or {}).get("write_path") if isinstance(record.get("matrixark_write_debug"), dict) else ""),
+    }
+
+
+def is_profile_record(item: dict[str, Any]) -> bool:
+    node_path = item.get("node_path") if isinstance(item.get("node_path"), list) else []
+    return (
+        item.get("memory_scope") == "user_profile"
+        or item.get("data_model") == "context_profile_entity"
+        or "profile:long_term_memory" in node_path
+    )
+
+
+def is_resource_or_skill_record(item: dict[str, Any]) -> bool:
+    record_type = str(item.get("record_type") or "")
+    return record_type in {
+        "resource_chunk",
+        "resource_manifest",
+        "resource_registry",
+        "skill_section",
+        "skill_manifest",
+        "skill_registry",
+        "skill_registry_update",
     }
 
 
@@ -161,6 +187,9 @@ def summarize_backend(name: str, prefix: str, raw_count: int, raw_hot_count: int
     entities = [item for item in raw_records + serving_records if item["record_type"] in {"context_entity", "context_entity_update_audit"}]
     summaries = [item for item in raw_records + serving_records if item["record_type"] in {"context_summary", "context_summary_dirty", "context_batch_commit"}]
     context_events = [item for item in serving_records if item["record_type"] == "context_event"]
+    context_embeddings = [item for item in serving_records if item["record_type"] == "context_embedding"]
+    profile_records = [item for item in serving_records if is_profile_record(item)]
+    resource_skill_records = [item for item in serving_records if is_resource_or_skill_record(item)]
     return {
         "backend": name,
         "prefix": prefix,
@@ -174,6 +203,13 @@ def summarize_backend(name: str, prefix: str, raw_count: int, raw_hot_count: int
         "recent_serving_type_counts": dict(serving_types),
         "recent_real_user_prompts": user_prompts[:8],
         "recent_context_events": context_events[:8],
+        "recent_context_embeddings": context_embeddings[:8],
+        "recent_profile_records": profile_records[:8],
+        "recent_resource_skill_records": resource_skill_records[:8],
+        "recent_context_event_count": len(context_events),
+        "recent_context_embedding_count": len(context_embeddings),
+        "recent_profile_record_count": len(profile_records),
+        "recent_resource_skill_record_count": len(resource_skill_records),
         "recent_entities": entities[:8],
         "recent_summaries": summaries[:8],
         "recent_raw_records": raw_records[:12],
@@ -222,8 +258,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         "## Backend Counts",
         "",
         render_table(
-            ["Backend", "Prefix", "Compact hot raw", "Compact hot serving", "Physical raw", "Physical serving", "Recent raw types", "Recent serving types"],
-            [[b["backend"], b["prefix"], b["raw_count"], b["serving_count"], b["physical_raw_count"], b["physical_serving_count"], json.dumps(b["recent_raw_type_counts"], sort_keys=True), json.dumps(b["recent_serving_type_counts"], sort_keys=True)] for b in report["backends"]],
+            ["Backend", "Prefix", "Compact hot raw", "Compact hot serving", "Physical raw", "Physical serving", "Events", "Embeddings", "Profile", "Resource/skill", "Recent raw types", "Recent serving types"],
+            [[b["backend"], b["prefix"], b["raw_count"], b["serving_count"], b["physical_raw_count"], b["physical_serving_count"], b["recent_context_event_count"], b["recent_context_embedding_count"], b["recent_profile_record_count"], b["recent_resource_skill_record_count"], json.dumps(b["recent_raw_type_counts"], sort_keys=True), json.dumps(b["recent_serving_type_counts"], sort_keys=True)] for b in report["backends"]],
         ),
     ]
     for backend in report["backends"]:
@@ -231,6 +267,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.append(render_table(["Seq", "Event", "Session", "Turn", "Hook", "Text"], [[r["sequence"], r["codex_api_event"], r["session_id"], r["turn_id"], r["hook_id"] if "hook_id" in r else r["hook_type"], r["text"]] for r in backend["recent_real_user_prompts"]]))
         lines.extend(["", f"## {backend['backend']} Context Events", ""])
         lines.append(render_table(["Seq", "Event", "Session", "Text"], [[r["sequence"], r["codex_api_event"], r["session_id"], r["text"]] for r in backend["recent_context_events"]]))
+        lines.extend(["", f"## {backend['backend']} Embeddings/Profile/Resources", ""])
+        rows = [
+            [r["sequence"], r["record_type"], r["memory_scope"], r["session_continuity"], r["data_model"], r["text"]]
+            for r in backend["recent_context_embeddings"] + backend["recent_profile_records"] + backend["recent_resource_skill_records"]
+        ]
+        lines.append(render_table(["Seq", "Type", "Memory", "Continuity", "Model", "Text"], rows))
         lines.extend(["", f"## {backend['backend']} Entities And Summaries", ""])
         rows = [[r["sequence"], r["record_type"], r["session_id"], r["text"]] for r in backend["recent_entities"] + backend["recent_summaries"]]
         lines.append(render_table(["Seq", "Type", "Session", "Text"], rows))

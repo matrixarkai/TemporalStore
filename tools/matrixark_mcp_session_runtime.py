@@ -78,7 +78,7 @@ def session_commit_memory_layers_written(
     summary_refresh = batch_result.get("summary_refresh") if isinstance(batch_result.get("summary_refresh"), dict) else {}
     summary_dirty_hashes = summary_refresh.get("dirty_hashes") if isinstance(summary_refresh.get("dirty_hashes"), list) else []
     layers: Json = {
-        "context_events": int(batch_result.get("extraction_context_event_count") or 0),
+        "context_events": int(batch_result.get("events_written") or 0),
         "segments": int(batch_result.get("segments_written") or 0),
         "session_entities": entities_written,
         "profile_entities": profile_entities_written,

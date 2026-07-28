@@ -209,6 +209,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
 
     event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
     records_to_append: list[Json] = []
+    event_records_to_append: list[Json] = []
     event_rows: list[tuple[int, Json, str, int]] = []
     segment_hash_by_position: dict[int, int] = {}
     segment_hashes_by_position: dict[int, list[int]] = {}
@@ -219,15 +220,22 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 continue
             segment_hashes_by_position.setdefault(message_index, []).append(segment_hash)
             segment_hash_by_position.setdefault(message_index, segment_hash)
-    if not derive_from_existing_events:
+    if derive_from_existing_events:
+        for index, message in enumerate(envelope["messages"]):
+            if index >= len(source_event_ids):
+                continue
+            event_text = f"{message['role']}: {message['content']}"
+            event_rows.append((index, message, event_text, int(source_event_ids[index])))
+    else:
         for index, message in enumerate(envelope["messages"]):
             event_text = f"{message['role']}: {message['content']}"
             event_id_hash = stable_hash(f"{batch_id_hash}:event:{index}:{event_text}")
             event_hashes.append(event_id_hash)
             event_rows.append((index, message, event_text, event_id_hash))
+    if event_rows:
         event_vectors = embeddings_for_texts([event_text for _index, _message, event_text, _event_id_hash in event_rows])
         for (_index, message, event_text, event_id_hash), event_vector in zip(event_rows, event_vectors):
-            records_to_append.append(
+            event_records_to_append.append(
                 {
                     "record_type": "context_event",
                     "event_id_hash": event_id_hash,
@@ -240,7 +248,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "summary_text": summarize_text(event_text),
                     "classification": extraction["classification"],
                     "event_type": extraction["event_type"],
-                    "status": "observed",
+                    "status": "extraction_committed" if derive_from_existing_events else "observed",
                     "source_kind": envelope.get("kind", "message"),
                     "envelope": {
                         **envelope,
@@ -268,7 +276,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
-            records_to_append.append(
+            event_records_to_append.append(
                 {
                     "record_type": "context_embedding",
                     "embedding_type": "event_text",
@@ -633,7 +641,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             "message_count": extraction["message_count"],
             "token_count_estimate": extraction["token_count_estimate"],
             "outputs": {
-                "events": 0 if derive_from_existing_events else len(envelope["messages"]),
+                "events": len(event_rows),
                 "source_events": len(event_hashes),
                 "entities": len(entity_hashes),
                 "profile_entities": len(profile_entity_hashes),
@@ -670,6 +678,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
     )
     all_dirty_hashes = ordered_unique_any(list(dirty_hashes) + profile_dirty_hashes)
     records_to_append.extend(dirty_records)
+    records_to_append.extend(event_records_to_append)
     self.append_many(records_to_append)
     summary_refresh = {
         "status": "dirty_marked",
@@ -694,7 +703,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         "embedding_fallback_used": embedding_fallback_used(),
         "message_count": extraction["message_count"],
         "token_count_estimate": extraction["token_count_estimate"],
-        "events_written": 0 if derive_from_existing_events else len(envelope["messages"]),
+        "events_written": len(event_rows),
         "source_event_count": len(event_hashes),
         "extraction_context_event_count": len(extraction_context_event_ids),
         "raw_events_duplicated": not derive_from_existing_events,
