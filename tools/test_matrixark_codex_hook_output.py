@@ -2089,6 +2089,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         task = server.adapter.serving_records[1]
         dirty_records = server.adapter.serving_records[2:]
         self.assertEqual("agent_message", raw["record_type"])
+        self.assertEqual("raw_agent_message", raw["raw_record_type"])
+        self.assertEqual("backfill_only", raw["raw_ingestion_visibility"])
+        self.assertFalse(raw["serving_visible"])
+        self.assertEqual("metadata_only_for_backfill_batching", raw["session_binding"])
         self.assertEqual("real hooked Codex message", raw["messages"][0]["content"])
         self.assertEqual("codex-cpp-session-1", raw["scope"]["session_id"])
         self.assertEqual("thread-fast-1", raw["thread_id"])

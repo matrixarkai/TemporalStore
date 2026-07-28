@@ -2023,6 +2023,37 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertNotIn("selected_ref_count", policy)
         self.assertNotIn("selected_tokens", policy)
 
+    def test_context_pack_serving_exposes_compact_retrieval_decision(self) -> None:
+        compact = mcp_context_pack.compact_context_pack_for_serving(
+            {
+                "context_pack_id": "pack-policy",
+                "selected_refs": [],
+                "recall_policy": {
+                    "query_plan": {"query_type": "current_state"},
+                    "cross_session": {
+                        "enabled": True,
+                        "mode": "prefer",
+                        "decision": "always_consider_same_user_cross_session_when_session_scope_prefer",
+                        "question_type": "current_state",
+                        "question_budget_reason": "current_state_or_latest_queries_need_prior entity state and stale blockers",
+                        "budget_ratio": 0.2,
+                        "budget_tokens": 400,
+                        "max_budget_tokens": 8192,
+                        "strategy": "same_session_first_entity_bridge_then_bounded_cross_session",
+                        "budget_floor_status": "not_needed",
+                    },
+                },
+            }
+        )
+
+        decision = compact["retrieval_decision"]
+        self.assertEqual("current_state", decision["query_type"])
+        self.assertEqual("current_latest_multi_hop_or_date_20_percent", decision["cross_session"]["budget_class"])
+        self.assertEqual("prefer", decision["cross_session"]["mode"])
+        self.assertIn("question_budget_reason", decision["cross_session"])
+        self.assertNotIn("budget_ratio", decision["cross_session"])
+        self.assertNotIn("budget_tokens", decision["cross_session"])
+
     def test_replay_returns_compact_context_pack_scope_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
@@ -4735,6 +4766,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "dropped_memory_layer_budget",
             "source_role_budget_policy",
             "memory_layer_budget_policy",
+            "retrieval_decision",
+            "CrossSessionBudgetClass",
             "bound_large_assistant_and_tool_outputs_before_context_pack_injection",
             "bound_session_profile_summary_and_raw_event_layers_before_context_pack_injection",
         ]:

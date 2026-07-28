@@ -673,6 +673,35 @@ CrossSessionPolicy ParseCrossSessionPolicy(const rapidjson::Value& request, cons
     return policy;
 }
 
+const char* CrossSessionBudgetClass(const CrossSessionPolicy& policy) {
+    if (!policy.enabled) {
+        return "disabled";
+    }
+    if (std::abs(policy.budget_ratio - 0.12) < 0.0001) {
+        return "normal_12_percent";
+    }
+    if (std::abs(policy.budget_ratio - 0.15) < 0.0001) {
+        return "broad_or_evidence_15_percent";
+    }
+    if (std::abs(policy.budget_ratio - 0.20) < 0.0001) {
+        return "current_latest_multi_hop_or_date_20_percent";
+    }
+    return "custom";
+}
+
+const char* CrossSessionQuestionBudgetReason(const std::string& question_type) {
+    if (question_type == "current_state" || question_type == "latest") {
+        return "current_state_or_latest_queries_need_prior_entity_state_and_stale_blockers";
+    }
+    if (question_type == "multi_hop" || question_type == "date") {
+        return "multi_hop_or_date_queries_often_need_multiple_sessions";
+    }
+    if (question_type == "broad_exploration" || question_type == "evidence") {
+        return "broad_or_evidence_queries_get_extra_cross_session_exploration";
+    }
+    return "normal_queries_keep_cross_session_small_so_current_session_resources_skills_dominate";
+}
+
 bool ScopeMatches(const rapidjson::Value& record, const rapidjson::Value* scope) {
     if (scope == nullptr || !scope->IsObject()) {
         return true;
@@ -1656,6 +1685,17 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     pack.AddMember("used_remote_context_tokens", used_tokens, alloc);
     pack.AddMember("remote_context_budget_tokens", remote_budget, alloc);
     pack.AddMember("context_pack_assembly", "native_cpp_direct", alloc);
+    rapidjson::Value retrieval_decision(rapidjson::kObjectType);
+    retrieval_decision.AddMember("query_type", rapidjson::Value(question_type.c_str(), alloc), alloc);
+    rapidjson::Value retrieval_cross(rapidjson::kObjectType);
+    retrieval_cross.AddMember("enabled", cross_policy.enabled, alloc);
+    retrieval_cross.AddMember("mode", rapidjson::Value(cross_policy.enabled ? "prefer" : "disabled", alloc), alloc);
+    retrieval_cross.AddMember("budget_class", rapidjson::Value(CrossSessionBudgetClass(cross_policy), alloc), alloc);
+    retrieval_cross.AddMember("decision", rapidjson::Value(cross_policy.enabled ? "always_consider_same_user_cross_session_when_session_scope_prefer" : "disabled_by_session_scope_or_budget", alloc), alloc);
+    retrieval_cross.AddMember("question_budget_reason", rapidjson::Value(CrossSessionQuestionBudgetReason(question_type), alloc), alloc);
+    retrieval_cross.AddMember("strategy", "same_session_first_entity_bridge_then_bounded_cross_session", alloc);
+    retrieval_decision.AddMember("cross_session", retrieval_cross, alloc);
+    pack.AddMember("retrieval_decision", retrieval_decision, alloc);
     if (debug_context_pack) {
         pack.AddMember("requested_max_context_tokens", JsonUintMember(request, "max_context_tokens", remote_budget), alloc);
         pack.AddMember("packing_policy", "native_cpp_question_type_aware", alloc);

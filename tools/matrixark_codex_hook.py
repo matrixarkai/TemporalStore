@@ -3185,6 +3185,10 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
     retention = hook_retention_fields(text=text, role=role, now_ms=now)
     raw_record: Json = {
         "record_type": "agent_message",
+        "raw_record_type": "raw_agent_message",
+        "raw_ingestion_visibility": "backfill_only",
+        "serving_visible": False,
+        "session_binding": "metadata_only_for_backfill_batching",
         "source_kind": "message",
         "source_role": role,
         "hook_type": hook_type,
