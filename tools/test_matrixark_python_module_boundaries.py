@@ -59,6 +59,64 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("summary_refresh", dashboard_table_enum)
         self.assertIn("async_pipeline", dashboard_table_enum)
 
+    def test_recent_ingestion_report_tracks_serving_visibility_gaps(self) -> None:
+        report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
+        raw_rows = [
+            {
+                "sequence": 0,
+                "record": {
+                    "record_type": "resource_chunk",
+                    "text": "resource content was ingested",
+                },
+            }
+        ]
+        broken = report_mod.summarize_backend(
+            "test",
+            "matrixark:test",
+            1,
+            0,
+            raw_rows,
+            4,
+            0,
+            [
+                {"sequence": 10, "record": {"record_type": "context_entity", "memory_scope": "session"}},
+                {"sequence": 11, "record": {"record_type": "context_index"}},
+                {"sequence": 12, "record": {"record_type": "context_segment"}},
+                {"sequence": 13, "record": {"record_type": "context_summary"}},
+            ],
+        )
+
+        self.assertEqual("gap", broken["serving_visibility_status"])
+        self.assertIn("context_event_missing_while_derived_memory_present", broken["serving_visibility_gaps"])
+        self.assertIn("context_embedding_missing_while_derived_memory_present", broken["serving_visibility_gaps"])
+        self.assertIn("profile_records_missing_from_recent_serving_window", broken["serving_visibility_gaps"])
+        self.assertIn("resource_skill_records_missing_from_recent_serving_window", broken["serving_visibility_gaps"])
+
+        healthy = report_mod.summarize_backend(
+            "test",
+            "matrixark:test",
+            1,
+            0,
+            raw_rows,
+            8,
+            0,
+            [
+                {"sequence": 20, "record": {"record_type": "context_entity", "memory_scope": "session"}},
+                {"sequence": 21, "record": {"record_type": "context_index", "data_model": "context_profile_entity"}},
+                {"sequence": 22, "record": {"record_type": "context_event", "text": "user: hello"}},
+                {"sequence": 23, "record": {"record_type": "context_embedding", "embedding_type": "event_text"}},
+                {"sequence": 24, "record": {"record_type": "context_entity", "memory_scope": "user_profile"}},
+                {"sequence": 25, "record": {"record_type": "resource_chunk", "text": "resource content"}},
+            ],
+        )
+
+        self.assertEqual("ok", healthy["serving_visibility_status"])
+        self.assertEqual([], healthy["serving_visibility_gaps"])
+        self.assertEqual(1, healthy["recent_context_event_count"])
+        self.assertEqual(1, healthy["recent_context_embedding_count"])
+        self.assertGreaterEqual(healthy["recent_profile_record_count"], 1)
+        self.assertEqual(1, healthy["recent_resource_skill_record_count"])
+
     def test_moduleized_request_runs_pre_retrieval_refresh_and_derives_budgets(self) -> None:
         request_mod = importlib.import_module("tools.matrixark_mcp_retrieve_request")
 
