@@ -135,7 +135,7 @@ def auto_source_role_budget_tokens(args: Json, ranking: Json, *, remote_budget_t
     return budgets, mode
 
 
-def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_tokens: int) -> tuple[Json, str]:
+def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_tokens: int, question_type: str = "fact") -> tuple[Json, str]:
     mode = str(
         args.get("memory_layer_budget_mode")
         or ranking.get("memory_layer_budget_mode")
@@ -159,6 +159,43 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         "cross_session_segment": 0.25,
         "profile_entity": 0.40,
     }
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    if normalized_question_type in {"current_state", "latest"}:
+        defaults.update(
+            {
+                "summary": 0.25,
+                "compression": 0.20,
+                "same_session_event": 0.35,
+                "cross_session_event": 0.30,
+                "same_session_segment": 0.30,
+                "cross_session_segment": 0.30,
+                "profile_entity": 0.55,
+            }
+        )
+    elif normalized_question_type in {"multi_hop", "date"}:
+        defaults.update(
+            {
+                "summary": 0.35,
+                "compression": 0.30,
+                "same_session_event": 0.40,
+                "cross_session_event": 0.35,
+                "same_session_segment": 0.35,
+                "cross_session_segment": 0.35,
+                "profile_entity": 0.45,
+            }
+        )
+    elif normalized_question_type in {"broad_exploration", "evidence"}:
+        defaults.update(
+            {
+                "summary": 0.35,
+                "compression": 0.30,
+                "same_session_event": 0.45,
+                "cross_session_event": 0.30,
+                "same_session_segment": 0.40,
+                "cross_session_segment": 0.30,
+                "profile_entity": 0.45,
+            }
+        )
     budgets: Json = {}
     for layer, default_fraction in defaults.items():
         raw_fraction = fractions.get(layer, default_fraction) if isinstance(fractions, dict) else default_fraction
@@ -5983,6 +6020,7 @@ class MatrixArkLocalAdapter:
                 args,
                 ranking,
                 remote_budget_tokens=remote_context_budget_tokens,
+                question_type=question_type,
             )
         if pre_retrieval_summary_refresh["enabled"] and not memory_layer_budget_tokens:
             memory_layer_budget_tokens, memory_layer_budget_mode = pre_retrieval_summary_refresh_memory_layer_budget_tokens(
