@@ -5015,28 +5015,39 @@ class MatrixArkLocalAdapter:
                 )
                 session_summary_text = summarize_text(session_summary_source, limit=512)
                 session_summary_hash = stable_hash("session:" + "/".join(session_key_parts))
-                self.append(
-                    {
-                        "record_type": "context_summary",
-                        "summary_type": "session_l0",
-                        "summary_hash": session_summary_hash,
-                        "summary_identity": "stable_per_session_node",
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "context_node_key": session_key_parts,
-                        "summary_text": session_summary_text,
-                        "source_event_hash": event_id_hash,
-                        **source_lineage,
-                        "source_memory_scopes": source_lineage.get("source_memory_scopes", ["session"]),
-                        "source_session_continuities": source_lineage.get("source_session_continuities", ["same_session"]),
-                        "source_extraction_phases": source_lineage.get("source_extraction_phases", ["hot_path"]),
-                        "extraction_phase": "hot_path",
-                        "memory_scope": "session",
-                        "session_continuity": "same_session",
-                        "scope": hot_record_scope,
-                        "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
-                )
+                session_summary_record = {
+                    "record_type": "context_summary",
+                    "summary_type": "session_l0",
+                    "summary_hash": session_summary_hash,
+                    "summary_identity": "stable_per_session_node",
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "context_node_key": session_key_parts,
+                    "summary_text": session_summary_text,
+                    "source_event_hash": event_id_hash,
+                    **source_lineage,
+                    "source_memory_scopes": source_lineage.get("source_memory_scopes", ["session"]),
+                    "source_session_continuities": source_lineage.get("source_session_continuities", ["same_session"]),
+                    "source_extraction_phases": source_lineage.get("source_extraction_phases", ["hot_path"]),
+                    "extraction_phase": "hot_path",
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "scope": hot_record_scope,
+                    "updated_at_ms": envelope["ingestion_time_ms"],
+                }
+                self.append(session_summary_record)
+                for index_name in candidate_index_terms(session_summary_record, {}, {}):
+                    session_summary_index = context_index_posting_record(
+                        index_name=index_name,
+                        data_model="context_summary",
+                        ref_type="summary",
+                        ref_hashes=[session_summary_hash],
+                        node_hash=node_hash,
+                        scope=hot_record_scope,
+                        updated_at_ms=envelope["ingestion_time_ms"],
+                    )
+                    session_summary_index["access_scope"] = hot_record_scope
+                    self.append(session_summary_index)
                 self.append(
                     {
                         "record_type": "context_embedding",
@@ -5561,6 +5572,7 @@ class MatrixArkLocalAdapter:
         profile_promotion_summary: list[Json] = []
         profile_dirty_hashes: list[int] = []
         entity_index_write_count = 0
+        summary_index_write_count = 0
         for entity in extraction["entities"]:
             entity_hash = stable_hash(
                 f"{node_hash}:{entity['entity_type']}:{entity['entity_name']}"
@@ -5898,33 +5910,52 @@ class MatrixArkLocalAdapter:
             )
 
         summary_hash = stable_hash(f"batch_summary:{batch_id_hash}")
-        records_to_append.append(
-            {
-                "record_type": "context_summary",
-                "summary_type": "batch_l0",
-                "summary_hash": summary_hash,
-                "batch_id_hash": batch_id_hash,
-                "node_hash": node_hash,
-                "node_path": node_path,
-                "summary_text": batch_summary,
-                "source_entity_hashes": entity_hashes,
-                "source_segment_hashes": segment_hashes,
-                "source_event_ids": event_hashes,
-                "source_roles": source_roles,
-                "source_role_counts": source_role_counts,
-                "source_hook_types": source_hook_types,
-                "source_hook_type_counts": source_hook_type_counts,
-                "source_codex_events": source_codex_events,
-                "source_codex_event_counts": source_codex_event_counts,
-                "source_memory_selection_policies": source_memory_selection_policies,
-                "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
-                "scope": envelope["scope"],
-                "extraction_phase": extraction_phase,
-                "final_session_boundary": final_session_boundary,
-                "extraction_context_event_ids": extraction_context_event_ids,
-                "updated_at_ms": envelope["ingestion_time_ms"],
-            }
-        )
+        batch_summary_record = {
+            "record_type": "context_summary",
+            "summary_type": "batch_l0",
+            "summary_hash": summary_hash,
+            "batch_id_hash": batch_id_hash,
+            "node_hash": node_hash,
+            "node_path": node_path,
+            "summary_text": batch_summary,
+            "source_entity_hashes": entity_hashes,
+            "source_segment_hashes": segment_hashes,
+            "source_event_ids": event_hashes,
+            "source_roles": source_roles,
+            "source_role_counts": source_role_counts,
+            "source_hook_types": source_hook_types,
+            "source_hook_type_counts": source_hook_type_counts,
+            "source_codex_events": source_codex_events,
+            "source_codex_event_counts": source_codex_event_counts,
+            "source_memory_selection_policies": source_memory_selection_policies,
+            "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            "source_memory_scopes": ["session"],
+            "source_session_continuities": ["same_session"],
+            "source_extraction_phases": [extraction_phase],
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "scope": envelope["scope"],
+            "extraction_phase": extraction_phase,
+            "final_session_boundary": final_session_boundary,
+            "extraction_context_event_ids": extraction_context_event_ids,
+            "updated_at_ms": envelope["ingestion_time_ms"],
+        }
+        records_to_append.append(batch_summary_record)
+        for index_name in candidate_index_terms(batch_summary_record, {}, {}):
+            summary_index = context_index_posting_record(
+                index_name=index_name,
+                data_model="context_summary",
+                ref_type="summary",
+                ref_hashes=[summary_hash],
+                batch_id_hash=batch_id_hash,
+                node_hash=node_hash,
+                scope=envelope["scope"],
+                updated_at_ms=envelope["ingestion_time_ms"],
+            )
+            summary_index["access_scope"] = envelope["scope"]
+            summary_index.pop("index_hash", None)
+            records_to_append.append(summary_index)
+            summary_index_write_count += 1
         summary_embedding_text = " ".join(node_path + [batch_summary])
         summary_vector = embedding_for_text(summary_embedding_text)
         records_to_append.append(
@@ -5980,8 +6011,9 @@ class MatrixArkLocalAdapter:
                     "source_codex_event_counts": source_codex_event_counts,
                     "segments": len(segment_hashes),
                     "summaries": 1,
-                    "indexes": len(batch_index_terms) + entity_index_write_count,
+                    "indexes": len(batch_index_terms) + entity_index_write_count + summary_index_write_count,
                     "entity_indexes": entity_index_write_count,
+                    "summary_indexes": summary_index_write_count,
                     **secondary_index_budget_summary(secondary_index_budget),
                 },
                 "mode": extraction["mode"],
@@ -6071,8 +6103,9 @@ class MatrixArkLocalAdapter:
             "summary_hash": summary_hash,
             "summary_refresh": summary_refresh,
             "node_materialization": node_materialization,
-            "indexes_written": len(batch_index_terms) + entity_index_write_count,
+            "indexes_written": len(batch_index_terms) + entity_index_write_count + summary_index_write_count,
             "entity_indexes_written": entity_index_write_count,
+            "summary_indexes_written": summary_index_write_count,
             **secondary_index_budget_summary(secondary_index_budget),
             "one_pass": True,
             "threshold_messages": threshold,

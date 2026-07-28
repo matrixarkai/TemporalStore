@@ -2468,9 +2468,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertEqual(1, len(extraction_audits))
                 audit_outputs = extraction_audits[0]["outputs"]
                 self.assertEqual("always_when_profile_scope_available", audit_outputs["profile_promotion_policy"])
+                self.assertFalse(audit_outputs["profile_promotion_importance_gate"])
                 self.assertTrue(audit_outputs["profile_promotion_scope_available"])
                 self.assertEqual(audit_outputs["entities"], audit_outputs["profile_entities"])
                 self.assertGreaterEqual(audit_outputs["indexes"], audit_outputs["entity_indexes"])
+                self.assertGreaterEqual(audit_outputs["summary_indexes"], 1)
+                self.assertGreaterEqual(commits[0]["memory_layers_written"]["secondary_indexes"], audit_outputs["summary_indexes"])
                 self.assertTrue(
                     any(
                         record.get("record_type") == "context_entity"
@@ -2735,6 +2738,20 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "entity_type:assistant_decision",
                     {str(record.get("index_name") or "") for record in records if record.get("record_type") == "context_index"},
                 )
+                summary_indexes = [
+                    record
+                    for record in records
+                    if record.get("record_type") == "context_index"
+                    and record.get("data_model") == "context_summary"
+                    and record.get("ref_type") == "summary"
+                ]
+                summary_index_names = {str(record.get("index_name") or "") for record in summary_indexes}
+                self.assertIn("summary_type:batch_l0", summary_index_names)
+                self.assertIn("memory_scope:session", summary_index_names)
+                self.assertIn("session_continuity:same_session", summary_index_names)
+                self.assertIn("memory_selection_policy:selected_user_prompt", summary_index_names)
+                self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", summary_index_names)
+                self.assertIn("memory_selection_policy:selected_tool_evidence_only", summary_index_names)
 
                 pack = adapter.retrieve(
                     {
