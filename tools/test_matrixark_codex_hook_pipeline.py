@@ -734,6 +734,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "source_hook_type_counts": {"hook_boundary": 4},
                     "source_codex_events": ["Stop"],
                     "source_codex_event_counts": {"Stop": 4},
+                    "profile_promotion_policy": "always_when_profile_scope_available",
                     "token_estimate": 11,
                 }
             ]
@@ -755,6 +756,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "source_hook_type_counts": {"hook_boundary": 3},
                         "source_codex_events": ["Stop"],
                         "source_codex_event_counts": {"Stop": 3},
+                        "profile_promotion_policy": "always_when_profile_scope_available",
+                        "profile_promotion_blocker": "profile_scope_missing",
                         "token_estimate": 13,
                     }
                 ]
@@ -770,6 +773,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(1, selected_budget["by_session_continuity"]["cross_session"]["refs"])
         self.assertEqual(1, selected_budget["by_extraction_phase"]["final"]["refs"])
         self.assertEqual(1, selected_budget["by_extraction_phase"]["provisional"]["refs"])
+        self.assertEqual(1, selected_budget["by_profile_promotion_policy"]["always_when_profile_scope_available"]["refs"])
         self.assertEqual(1, selected_budget["final_ref_count"])
         self.assertEqual(1, selected_budget["provisional_ref_count"])
         self.assertEqual(1, dropped_budget["by_memory_layer"]["profile_summary"]["refs"])
@@ -780,6 +784,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(1, dropped_budget["by_session_continuity"]["cross_session"]["refs"])
         self.assertEqual(1, dropped_budget["by_extraction_phase"]["final"]["refs"])
         self.assertEqual(1, dropped_budget["by_extraction_phase"]["provisional"]["refs"])
+        self.assertEqual(1, dropped_budget["by_profile_promotion_policy"]["always_when_profile_scope_available"]["refs"])
+        self.assertEqual(1, dropped_budget["by_profile_promotion_blocker"]["profile_scope_missing"]["refs"])
         self.assertEqual(1, dropped_budget["final_ref_count"])
         self.assertEqual(1, dropped_budget["provisional_ref_count"])
         self.assertEqual(
@@ -792,6 +798,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         )
         self.assertTrue(pressure["summary_layer_pressure"])
         self.assertFalse(pressure["profile_entity_pressure"])
+        self.assertTrue(pressure["profile_promotion_policy_pressure"])
+        self.assertTrue(pressure["profile_promotion_blocker_pressure"])
         self.assertEqual({"assistant": 3, "user": 1}, selected_budget["source_message_counts_by_role"])
         self.assertEqual({"assistant": 2, "tool": 1}, dropped_budget["source_message_counts_by_role"])
         self.assertEqual({"hook_boundary": 4}, selected_budget["source_hook_counts_by_type"])
@@ -6036,6 +6044,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 if "scope" in profile_entity:
                     self.assertNotIn(key, profile_entity["scope"])
             self.assertEqual(["session_codex_1"], profile_entity["source_session_ids"])
+            self.assertEqual("always_when_profile_scope_available", profile_entity["profile_promotion_policy"])
+            self.assertEqual("", profile_entity["profile_promotion_blocker"])
             self.assertTrue(profile_entity["source_entity_hashes"])
             self.assertTrue(profile_entity["source_refs"])
             self.assertIn("assistant", profile_entity["source_roles"])
@@ -6113,6 +6123,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(layer_budget["by_session_continuity"]["cross_session"]["refs"], 1)
             self.assertGreaterEqual(layer_budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(layer_budget["by_extraction_phase"]["final"]["refs"], 1)
+            self.assertGreaterEqual(layer_budget["by_profile_promotion_policy"]["always_when_profile_scope_available"]["refs"], 1)
             self.assertGreaterEqual(layer_budget["by_entity_type"]["tool_evidence"]["refs"], 1)
             self.assertNotIn("by_source_role", layer_budget)
             self.assertNotIn("by_hook_type", layer_budget)
@@ -6135,6 +6146,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             for key in ["session_id", "session_hash", "scope_key"]:
                 self.assertNotIn(key, retrieved_tool_profile_ref)
             self.assertNotIn("source_session_ids", retrieved_tool_profile_ref)
+            self.assertEqual("always_when_profile_scope_available", retrieved_tool_profile_ref["profile_promotion_policy"])
+            self.assertNotIn("profile_promotion_blocker", retrieved_tool_profile_ref)
             decision_pack = adapter.retrieve(
                 {
                     "scope": {
@@ -6169,6 +6182,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             for key in ["session_id", "session_hash", "scope_key"]:
                 self.assertNotIn(key, retrieved_decision_profile_ref)
             self.assertNotIn("source_session_ids", retrieved_decision_profile_ref)
+            self.assertEqual("always_when_profile_scope_available", retrieved_decision_profile_ref["profile_promotion_policy"])
+            self.assertNotIn("profile_promotion_blocker", retrieved_decision_profile_ref)
             session_only_pack = adapter.retrieve(
                 {
                     "scope": {
