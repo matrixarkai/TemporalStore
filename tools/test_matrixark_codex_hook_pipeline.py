@@ -5755,6 +5755,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
 
             self.assertGreaterEqual(result.get("entities_written", 0), 1)
             self.assertEqual(result.get("entities_written"), result.get("profile_entities_written"))
+            self.assertEqual("always_when_profile_scope_available", result["profile_promotion_policy"])
+            self.assertTrue(result["profile_promotion_scope_available"])
             promotion_summary = result["profile_promotion_summary"]
             self.assertEqual(result.get("profile_entities_written"), len(promotion_summary))
             self.assertTrue(all(item.get("source_session_ids") == ["session_codex_1"] for item in promotion_summary))
@@ -5792,6 +5794,15 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertEqual({"assistant": 1, "tool": 1, "user": 1}, record["source_role_counts"])
                 self.assertEqual({"hook_boundary": 3}, record["source_hook_type_counts"])
                 self.assertEqual({"Stop": 3}, record["source_codex_event_counts"])
+            extraction_audits = [
+                record for record in durable_records if record.get("record_type") == "context_extraction_audit"
+            ]
+            self.assertTrue(extraction_audits)
+            self.assertEqual(
+                "always_when_profile_scope_available",
+                extraction_audits[0]["outputs"]["profile_promotion_policy"],
+            )
+            self.assertTrue(extraction_audits[0]["outputs"]["profile_promotion_scope_available"])
             event_counts_by_role = {
                 record["source_role"]: record["source_role_counts"]
                 for record in durable_records

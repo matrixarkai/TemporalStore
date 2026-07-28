@@ -3350,13 +3350,17 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
                     "memory_layers_written": memory_layers_written,
                 }
 
+    raw_ingestion_status = "unavailable"
     if callable(enqueue_raw):
         enqueue_raw([raw_record])
+        raw_ingestion_status = "accepted"
     else:
         append_raw = getattr(adapter, "_append_raw_ingestion_records", None)
         if callable(append_raw):
             append_raw([raw_record])
-    enqueue([record, pipeline_task, *summary_dirty_records])
+            raw_ingestion_status = "accepted"
+    serving_records = [record, pipeline_task, *summary_dirty_records]
+    enqueue(serving_records)
     append_session_buffer = getattr(adapter, "append_session_buffer_event", None)
     if callable(append_session_buffer):
         append_session_buffer(
@@ -3431,7 +3435,9 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
     return {
         "status": "accepted",
         "sync_write_mode": "hook_fast_async_direct_queue",
-        "raw_ingestion_status": "accepted" if callable(enqueue_raw) else "unavailable",
+        "raw_ingestion_status": raw_ingestion_status,
+        "serving_projection_status": "accepted",
+        "serving_projection_record_count": len(serving_records),
         "async_processing": True,
         "async_pipeline_status": "pending",
         "async_pipeline_task_hash": pipeline_task["task_hash"],
