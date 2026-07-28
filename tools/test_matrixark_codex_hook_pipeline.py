@@ -5450,10 +5450,23 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(row.get("memory_layers_written", {}).get("session_entities", 0) >= 1 for row in refresh_commits))
             self.assertTrue(all(row.get("memory_layers_written", {}).get("profile_entities", 0) >= 1 for row in refresh_commits))
             self.assertTrue(all(row.get("memory_layers_written", {}).get("secondary_indexes", 0) >= 1 for row in refresh_commits))
+            self.assertTrue(any(row.get("source_role_counts", {}).get("assistant", 0) >= 1 for row in refresh_commits))
+            self.assertTrue(any(row.get("source_hook_type_counts", {}).get("after_llm", 0) >= 1 for row in refresh_commits))
+            self.assertTrue(any(row.get("source_codex_event_counts", {}).get("Stop", 0) >= 1 for row in refresh_commits))
             self.assertTrue(
                 any(
                     row.get("row_type") == "context_summary_dirty"
                     and row.get("dirty_reason") == "profile_entity_promoted"
+                    and row.get("source_role_counts", {}).get("assistant", 0) >= 1
+                    for row in refresh_rows
+                ),
+                refresh_dashboard,
+            )
+            self.assertTrue(
+                any(
+                    row.get("row_type") == "context_summary_dirty"
+                    and row.get("dirty_reason") == "new_event"
+                    and row.get("source_hook_type_counts", {}).get("before_llm", 0) >= 1
                     for row in refresh_rows
                 ),
                 refresh_dashboard,
@@ -5486,6 +5499,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 {row.get("trigger_policy") for row in extraction_tasks},
             )
             self.assertTrue(all(row.get("completed_stages") == ["extraction"] for row in extraction_tasks))
+            self.assertTrue(any(row.get("source_role_counts", {}).get("assistant", 0) >= 1 for row in extraction_tasks))
+            self.assertTrue(any(row.get("source_role_counts", {}).get("tool", 0) >= 1 for row in extraction_tasks))
+            self.assertTrue(any(row.get("source_hook_type_counts", {}).get("hook_boundary", 0) >= 1 for row in extraction_tasks))
+            self.assertTrue(any(row.get("source_codex_event_counts", {}).get("PostToolUse", 0) >= 1 for row in extraction_tasks))
             self.assertTrue(all(row.get("summary_pending") for row in extraction_tasks))
             self.assertTrue(all(row.get("compression_pending") for row in extraction_tasks))
             self.assertTrue(all(row.get("embedding_pending") for row in extraction_tasks))
@@ -5714,8 +5731,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(not row.get("remaining_stages", []) for row in completed_pipeline_rows_by_event.values()))
             completed_pipeline_values = list(completed_pipeline_rows_by_event.values())
             self.assertTrue(any("tool" in row.get("source_roles", []) for row in completed_pipeline_values))
+            self.assertTrue(any(row.get("source_role_counts", {}).get("tool", 0) >= 1 for row in completed_pipeline_values))
             self.assertTrue(any("hook_boundary" in row.get("source_hook_types", []) for row in completed_pipeline_values))
+            self.assertTrue(any(row.get("source_hook_type_counts", {}).get("hook_boundary", 0) >= 1 for row in completed_pipeline_values))
             self.assertTrue(any("PostToolUse" in row.get("source_codex_events", []) for row in completed_pipeline_values))
+            self.assertTrue(any(row.get("source_codex_event_counts", {}).get("PostToolUse", 0) >= 1 for row in completed_pipeline_values))
             self.assertTrue(all("session" in row.get("source_memory_scopes", []) for row in completed_pipeline_values))
             self.assertTrue(all("user_profile" in row.get("source_memory_scopes", []) for row in completed_pipeline_values))
             self.assertTrue(all("same_session" in row.get("source_session_continuities", []) for row in completed_pipeline_values))
