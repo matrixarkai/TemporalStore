@@ -19,6 +19,7 @@ try:
         embedding_fallback_used,
         embedding_model_name,
         local_context_refs_for_pack,
+        normalize_message_role,
         now_ms,
         scope_matches,
         stable_hash,
@@ -40,6 +41,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         embedding_fallback_used,
         embedding_model_name,
         local_context_refs_for_pack,
+        normalize_message_role,
         now_ms,
         scope_matches,
         stable_hash,
@@ -165,7 +167,7 @@ def deadline_fallback_pack(
             if isinstance(value, dict) and value:
                 compact_counts: Json = {}
                 for key, count in value.items():
-                    count_key = str(key or "").strip()
+                    count_key = normalize_message_role(key) if field == "source_role_counts" else str(key or "").strip()
                     if not count_key:
                         continue
                     try:
@@ -173,7 +175,7 @@ def deadline_fallback_pack(
                     except (TypeError, ValueError):
                         continue
                     if count_value > 0:
-                        compact_counts[count_key] = count_value
+                        compact_counts[count_key] = int(compact_counts.get(count_key, 0)) + count_value
                 if compact_counts:
                     ref[field] = compact_counts
         selected.append(ref)

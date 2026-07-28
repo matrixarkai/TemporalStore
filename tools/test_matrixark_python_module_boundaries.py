@@ -1145,8 +1145,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "memory_scope": "session",
                 "session_continuity": "same_session",
                 "extraction_phase": "provisional",
-                "source_roles": ["assistant"],
-                "source_role_counts": {"assistant": 1},
+                "source_roles": ["llm"],
+                "source_role_counts": {"llm": 1},
                 "source_hook_types": ["hook_boundary"],
                 "source_hook_type_counts": {"hook_boundary": 1},
                 "source_codex_events": ["Stop"],
@@ -1167,8 +1167,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "session_continuity": "cross_session",
                 "extraction_phase": "final",
                 "final_session_boundary": True,
-                "source_roles": ["assistant"],
-                "source_role_counts": {"assistant": 3},
+                "source_roles": ["model", "assistant"],
+                "source_role_counts": {"model": 2, "assistant": 1},
                 "source_hook_types": ["hook_boundary"],
                 "source_hook_type_counts": {"hook_boundary": 3},
                 "source_codex_events": ["Stop"],
@@ -1220,6 +1220,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(2, budget["by_hook_type"]["hook_boundary"]["refs"])
         self.assertEqual(2, budget["by_codex_event"]["Stop"]["refs"])
         self.assertEqual(4, budget["source_message_counts_by_role"]["assistant"])
+        self.assertNotIn("llm", budget["source_message_counts_by_role"])
+        self.assertNotIn("model", budget["by_source_role"])
         self.assertEqual(4, budget["source_hook_counts_by_type"]["hook_boundary"])
         self.assertEqual(4, budget["source_codex_event_counts_by_event"]["Stop"])
         self.assertEqual(1, budget["final_session_boundary_ref_count"])
@@ -1259,6 +1261,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("cross_session", entity_item["session_continuity"])
         self.assertEqual(["session_old", "session_now"], entity_item["source_session_ids"])
         self.assertEqual(2, entity_item["source_entity_count"])
+        self.assertEqual(["assistant"], entity_item["source_roles"])
         self.assertEqual({"assistant": 3}, entity_item["source_role_counts"])
         self.assertEqual({"hook_boundary": 3}, entity_item["source_hook_type_counts"])
         self.assertEqual({"Stop": 3}, entity_item["source_codex_event_counts"])
