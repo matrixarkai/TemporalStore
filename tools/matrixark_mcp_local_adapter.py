@@ -7251,6 +7251,9 @@ class MatrixArkLocalAdapter:
             if isinstance(value, int) and key != "deadline_exceeded" and int(value) > 0
         }
         dropped_ref_count = sum(dropped_ref_bucket_counts.values())
+        serving_memory_layer_budget_value = serving_memory_layer_budget(memory_layer_budget)
+        serving_dropped_memory_layer_budget_value = serving_memory_layer_budget(dropped_memory_layer_budget)
+        serving_memory_layer_pressure_value = serving_memory_layer_pressure(memory_layer_pressure)
         pack["retrieval_metrics"] = {
             "query_plan_ms": round(float(stage_latencies_ms.get("query_understanding", 0.0)), 3),
             "node_traversal_ms": round(float(stage_latencies_ms.get("node_traversal", 0.0)), 3),
@@ -7273,9 +7276,9 @@ class MatrixArkLocalAdapter:
             "local_context_safety_margin_tokens": safety_margin_tokens,
             "local_context_count": len(local_budget["items"]),
             "remote_is_additive_only_within_remaining_budget": True,
-            "memory_layer_budget": memory_layer_budget,
-            "dropped_memory_layer_budget": dropped_memory_layer_budget,
-            "memory_layer_pressure": memory_layer_pressure,
+            "memory_layer_budget": serving_memory_layer_budget_value,
+            "dropped_memory_layer_budget": serving_dropped_memory_layer_budget_value,
+            "memory_layer_pressure": serving_memory_layer_pressure_value,
             "async_pipeline_readiness": async_pipeline_readiness,
             "scanned_records": int(retrieval_scan_stats.get("loaded_records") or retrieval_scan_stats.get("scanned_records") or len(records)) if isinstance(retrieval_scan_stats, dict) else len(records),
             "candidate_cache_hit": candidate_cache_hit,
