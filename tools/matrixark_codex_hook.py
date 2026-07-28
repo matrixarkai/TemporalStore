@@ -444,7 +444,7 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
                 selected_ref_counts[str(key)] = count
     if not selected_ref_counts:
         for ref in refs:
-            ref_class = str(ref.get("context_class") or ref.get("ref_type") or ref.get("type") or "ref")
+            ref_class = str(_ref_value(ref, "context_class", _ref_value(ref, "ref_type", _ref_value(ref, "type", "ref"))) or "ref")
             selected_ref_counts[ref_class] = int(selected_ref_counts.get(ref_class, 0)) + 1
     continuity = recall_policy.get("session_continuity") if isinstance(recall_policy.get("session_continuity"), dict) else {}
     local_policy = pack_view.get("local_context_policy") if isinstance(pack_view.get("local_context_policy"), dict) else {}
@@ -459,16 +459,16 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
         except (TypeError, ValueError):
             layer_summary[output_key] = 0
     if not any(int(layer_summary.get(key) or 0) for key in ["same_session_refs", "cross_session_refs", "entity_bridge_refs"]):
-        layer_summary["same_session_refs"] = sum(1 for ref in refs if ref.get("session_continuity") == "same_session")
-        layer_summary["cross_session_refs"] = sum(1 for ref in refs if ref.get("session_continuity") == "cross_session")
+        layer_summary["same_session_refs"] = sum(1 for ref in refs if _ref_value(ref, "session_continuity") == "same_session")
+        layer_summary["cross_session_refs"] = sum(1 for ref in refs if _ref_value(ref, "session_continuity") == "cross_session")
         layer_summary["entity_bridge_refs"] = sum(
             1
             for ref in refs
-            if ref.get("session_continuity") == "cross_session"
-            and str(ref.get("ref_type") or ref.get("context_class") or "") == "entity"
+            if _ref_value(ref, "session_continuity") == "cross_session"
+            and str(_ref_value(ref, "ref_type", _ref_value(ref, "context_class", "")) or "") == "entity"
         )
-    layer_summary["session_memory_refs"] = sum(1 for ref in refs if ref.get("memory_scope") == "session")
-    layer_summary["profile_memory_refs"] = sum(1 for ref in refs if ref.get("memory_scope") == "user_profile")
+    layer_summary["session_memory_refs"] = sum(1 for ref in refs if _ref_value(ref, "memory_scope") == "session")
+    layer_summary["profile_memory_refs"] = sum(1 for ref in refs if _ref_value(ref, "memory_scope") == "user_profile")
     try:
         layer_summary["local_context_refs"] = int(local_policy.get("local_context_count") or 0)
     except (TypeError, ValueError):
@@ -583,8 +583,8 @@ def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:
                 budget[bucket_name][label] = int(budget[bucket_name].get(label, 0)) + 1
 
     def source_list(ref: Json, source_key: str, fallback: str) -> list[str]:
-        values = ref.get(source_key)
-        if isinstance(values, list):
+        values = _ref_list(ref, source_key)
+        if values:
             labels = [str(value or "").strip() for value in values if str(value or "").strip()]
             if labels:
                 return labels
@@ -593,17 +593,17 @@ def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:
     for ref in refs:
         text = _ref_text(ref).lstrip().lower()
         try:
-            token_estimate = max(0, int(ref.get("token_estimate") or 0))
+            token_estimate = max(0, int(_ref_value(ref, "token_estimate", 0) or 0))
         except (TypeError, ValueError):
             token_estimate = 0
         if token_estimate == 0:
             token_estimate = max(1, (len(_ref_text(ref)) + 3) // 4)
         budget["total_selected_tokens"] += token_estimate
-        ref_type = str(ref.get("ref_type") or ref.get("context_class") or "ref")
+        ref_type = str(_ref_value(ref, "ref_type", _ref_value(ref, "context_class", "ref")) or "ref")
         add("by_ref_type", ref_type, token_estimate)
-        memory_scope = str(ref.get("memory_scope") or "session")
-        continuity = str(ref.get("session_continuity") or "same_session")
-        extraction_phase = str(ref.get("extraction_phase") or "provisional")
+        memory_scope = str(_ref_value(ref, "memory_scope", "session") or "session")
+        continuity = str(_ref_value(ref, "session_continuity", "same_session") or "same_session")
+        extraction_phase = str(_ref_value(ref, "extraction_phase", "provisional") or "provisional")
         source_memory_scopes = source_list(ref, "source_memory_scopes", memory_scope)
         source_session_continuities = source_list(ref, "source_session_continuities", continuity)
         source_extraction_phases = source_list(ref, "source_extraction_phases", extraction_phase)
@@ -617,10 +617,10 @@ def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:
             budget["final_ref_count"] += 1
         if any(phase != "final" for phase in source_extraction_phases):
             budget["provisional_ref_count"] += 1
-        entity_type = str(ref.get("entity_type") or "")
-        source_roles = normalized_role_list(ref.get("source_roles"))
-        hook_types = ref.get("source_hook_types") if isinstance(ref.get("source_hook_types"), list) else []
-        codex_events = ref.get("source_codex_events") if isinstance(ref.get("source_codex_events"), list) else []
+        entity_type = str(_ref_value(ref, "entity_type") or "")
+        source_roles = normalized_role_list(_ref_list(ref, "source_roles"))
+        hook_types = _ref_list(ref, "source_hook_types")
+        codex_events = _ref_list(ref, "source_codex_events")
         tool_evidence_terms = (
             "tool:",
             "exit code:",
@@ -647,23 +647,25 @@ def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:
             add("by_hook_type", str(hook_type or ""), token_estimate)
         for codex_event in codex_events:
             add("by_codex_event", str(codex_event or ""), token_estimate)
-        add_source_counts("source_message_counts_by_role", ref.get("source_role_counts"), source_roles, normalize_roles=True)
-        add_source_counts("source_hook_counts_by_type", ref.get("source_hook_type_counts"), hook_types)
-        add_source_counts("source_codex_event_counts_by_event", ref.get("source_codex_event_counts"), codex_events)
+        add_source_counts("source_message_counts_by_role", _ref_dict(ref, "source_role_counts"), source_roles, normalize_roles=True)
+        add_source_counts("source_hook_counts_by_type", _ref_dict(ref, "source_hook_type_counts"), hook_types)
+        add_source_counts("source_codex_event_counts_by_event", _ref_dict(ref, "source_codex_event_counts"), codex_events)
     return budget
 
 
 def retrieval_memory_hierarchy_contract_from_retrieve(pack: Json | None) -> Json:
     if not isinstance(pack, dict):
         return {}
-    recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
+    pack_view = _context_pack_view(pack)
+    recall_policy = pack_view.get("recall_policy") if isinstance(pack_view.get("recall_policy"), dict) else {}
     return memory_hierarchy_contract_from_recall_policy(recall_policy)
 
 
 def retrieval_session_identity_from_retrieve(pack: Json | None, *, session_id_source: str = "") -> Json:
     source = str(session_id_source or "").strip()
     if isinstance(pack, dict):
-        recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
+        pack_view = _context_pack_view(pack)
+        recall_policy = pack_view.get("recall_policy") if isinstance(pack_view.get("recall_policy"), dict) else {}
         session_identity = recall_policy.get("session_identity") if isinstance(recall_policy.get("session_identity"), dict) else {}
         if isinstance(session_identity, dict) and session_identity.get("session_id_source"):
             return session_identity
@@ -1455,6 +1457,32 @@ def _ref_text(ref: Json) -> str:
             "entity_state",
         ],
     )
+
+
+def _ref_metadata(ref: Json) -> Json:
+    metadata = ref.get("metadata") if isinstance(ref, dict) else {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _ref_value(ref: Json, key: str, default: object = "") -> object:
+    value = ref.get(key) if isinstance(ref, dict) else None
+    if value not in (None, "", [], {}):
+        return value
+    return _ref_metadata(ref).get(key, default)
+
+
+def _ref_list(ref: Json, key: str) -> list[Any]:
+    value = ref.get(key) if isinstance(ref, dict) else None
+    if not isinstance(value, list):
+        value = _ref_metadata(ref).get(key)
+    return value if isinstance(value, list) else []
+
+
+def _ref_dict(ref: Json, key: str) -> Json:
+    value = ref.get(key) if isinstance(ref, dict) else None
+    if not isinstance(value, dict):
+        value = _ref_metadata(ref).get(key)
+    return value if isinstance(value, dict) else {}
 
 
 def _ref_citation(ref: Json) -> str:

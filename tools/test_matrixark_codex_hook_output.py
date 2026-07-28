@@ -117,6 +117,67 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("budget_source=rust_proxy_context_pack", context)
         self.assertIn("profile decision from nested Rust proxy pack", context)
 
+    def test_retrieve_layer_summary_infers_metadata_backed_nested_refs_without_metrics(self) -> None:
+        wrapped = {
+            "ok": True,
+            "extra": {
+                "context_pack": {
+                    "context_pack_id": "pack-metadata-only",
+                    "selected_refs": [
+                        {
+                            "text": "assistant: decided to keep profile entity memory compact",
+                            "metadata": {
+                                "ref_type": "entity",
+                                "context_class": "entity",
+                                "memory_scope": "user_profile",
+                                "session_continuity": "cross_session",
+                                "extraction_phase": "final",
+                                "entity_type": "assistant_decision",
+                                "token_estimate": 13,
+                                "source_role_counts": {"llm": 2},
+                                "source_hook_type_counts": {"after_llm": 1},
+                                "source_codex_event_counts": {"Stop": 1},
+                            },
+                        }
+                    ],
+                    "recall_policy": {
+                        "session_identity": {
+                            "session_id_source": "payload_field",
+                            "strong_session_identity": True,
+                            "fallback_session_identity": False,
+                        },
+                        "cross_session": {
+                            "enabled": True,
+                            "budget_tokens": 64,
+                        },
+                    },
+                }
+            },
+        }
+
+        summary = hook.retrieval_layer_summary_from_retrieve(wrapped)
+        self.assertEqual({"entity": 1}, summary["selected_ref_counts"])
+        self.assertEqual(1, summary["cross_session_refs"])
+        self.assertEqual(1, summary["entity_bridge_refs"])
+        self.assertEqual(1, summary["profile_memory_refs"])
+        budget = summary["memory_layer_budget"]
+        self.assertEqual(1, budget["by_memory_scope"]["user_profile"]["refs"])
+        self.assertEqual(13, budget["by_memory_scope"]["user_profile"]["tokens"])
+        self.assertEqual(1, budget["by_session_continuity"]["cross_session"]["refs"])
+        self.assertEqual(1, budget["by_extraction_phase"]["final"]["refs"])
+        self.assertEqual(1, budget["by_entity_type"]["assistant_decision"]["refs"])
+        self.assertEqual(2, budget["source_message_counts_by_role"]["assistant"])
+        self.assertEqual(1, budget["source_hook_counts_by_type"]["after_llm"])
+        self.assertEqual(1, budget["source_codex_event_counts_by_event"]["Stop"])
+        self.assertEqual(13, budget["total_selected_tokens"])
+
+        identity = hook.retrieval_session_identity_from_retrieve(wrapped)
+        self.assertEqual("payload_field", identity["session_id_source"])
+        self.assertTrue(identity["strong_session_identity"])
+        hierarchy = hook.retrieval_memory_hierarchy_contract_from_retrieve(wrapped)
+        self.assertTrue(hierarchy["cross_session_enabled"])
+        self.assertEqual(64, hierarchy["cross_session_budget_tokens"])
+
     def test_layer_pressure_flags_include_source_message_pressure_aliases(self) -> None:
         pressure = {
             "selected_refs": 2,
