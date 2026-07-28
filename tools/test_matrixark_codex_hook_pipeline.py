@@ -363,6 +363,49 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertNotIn("raw_source_ids", json.dumps(debug_serving))
         self.assertNotIn("selected_refs", debug_serving)
 
+    def test_prebuilt_context_pack_groups_never_expose_raw_debug_payloads(self) -> None:
+        pack = {
+            "context_pack_id": "pack-prebuilt-group-debug",
+            "groups": [
+                {
+                    "type": "entity",
+                    "class": "entity",
+                    "n": 1,
+                    "debug_payload": {"raw": "hidden group debug"},
+                    "lineage": {"raw_source_ids": ["hidden-group-source"]},
+                    "items": [
+                        {
+                            "text": "assistant decision from a native prebuilt group",
+                            "entity_type": "assistant_decision",
+                            "source_roles": ["llm", "model", "assistant"],
+                            "source_role_counts": {"llm": 2, "model": 3},
+                            "source_hook_type_counts": {"after_llm": 2},
+                            "source_codex_event_counts": {"Stop": 1},
+                            "source_session_ids": [f"session-{index}" for index in range(12)],
+                            "source_entity_hashes": ["aaa", "bbb", "ccc"],
+                            "debug_payload": {"raw": "hidden item debug"},
+                            "lineage": {"raw_source_ids": ["hidden-item-source"]},
+                        }
+                    ],
+                }
+            ],
+        }
+
+        default_serving = core_compact_context_pack_for_serving(pack)
+        self.assert_no_default_context_pack_debug_lineage(default_serving)
+
+        debug_serving = core_compact_context_pack_for_serving(pack, include_debug=True)
+        serialized = json.dumps(debug_serving)
+        self.assertNotIn("debug_payload", serialized)
+        self.assertNotIn("raw_source_ids", serialized)
+        item = debug_serving["groups"][0]["items"][0]
+        self.assertEqual(["assistant"], item["source_roles"])
+        self.assertEqual({"assistant": 5}, item["source_role_counts"])
+        self.assertEqual({"after_llm": 2}, item["source_hook_type_counts"])
+        self.assertEqual({"Stop": 1}, item["source_codex_event_counts"])
+        self.assertEqual(8, len(item["source_session_ids"]))
+        self.assertEqual(3, item["source_entity_count"])
+
     def test_flat_context_pack_serving_hides_async_source_readiness_by_default(self) -> None:
         pack = {
             "context_pack_id": "pack-flat-readiness-default",
