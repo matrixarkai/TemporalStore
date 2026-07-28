@@ -296,6 +296,27 @@ def require_retrieval_memory_coverage(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on", "required", "require"}
 
 
+def strict_memory_gate_summary(report: dict[str, Any]) -> dict[str, Any]:
+    serving = report.get("serving_visibility") or serving_visibility_summary(report)
+    extraction = report.get("extraction_input_coverage") or extraction_input_coverage_summary(report)
+    retrieval = report.get("retrieval_memory_coverage") or retrieval_memory_coverage_summary(report)
+    gates = {
+        "serving_visibility": bool(serving.get("serving_visibility_pass")),
+        "extraction_input_coverage": bool(extraction.get("extraction_input_coverage_pass")),
+        "retrieval_memory_coverage": bool(retrieval.get("retrieval_memory_coverage_pass")),
+    }
+    failed = [name for name, passed in gates.items() if not passed]
+    return {
+        "strict_memory_gate_pass": not failed,
+        "strict_memory_gate_failed": failed,
+        "strict_memory_gate_status": "pass" if not failed else "gap",
+    }
+
+
+def require_all_memory_gates(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "required", "require", "strict"}
+
+
 def row_source_roles(item: dict[str, Any]) -> list[str]:
     roles = set()
     role = str(item.get("role") or "").strip()
@@ -622,10 +643,16 @@ def render_markdown(report: dict[str, Any]) -> str:
     visibility = report.get("serving_visibility") or serving_visibility_summary(report)
     extraction_coverage = report.get("extraction_input_coverage") or extraction_input_coverage_summary(report)
     retrieval_coverage = report.get("retrieval_memory_coverage") or retrieval_memory_coverage_summary(report)
+    strict_gate = report.get("strict_memory_gate") or strict_memory_gate_summary(report)
     lines = [
         "# Recent Codex Hook Ingestion Workflow",
         "",
         f"Generated at `{report['generated_at_ms']}`.",
+        "",
+        "## Strict Memory Gate",
+        "",
+        f"- Status: `{strict_gate['strict_memory_gate_status']}`",
+        f"- Failed gates: `{json.dumps(strict_gate['strict_memory_gate_failed'], sort_keys=True)}`",
         "",
         "## Serving Visibility Gate",
         "",
@@ -778,6 +805,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Exit nonzero when recent context-pack audits lack selected session/profile retrieval evidence.",
     )
+    parser.add_argument(
+        "--require-all-memory-gates",
+        action="store_true",
+        help="Exit nonzero unless serving visibility, extraction input coverage, and retrieval memory coverage all pass.",
+    )
     return parser.parse_args(argv)
 
 
@@ -801,6 +833,7 @@ def main(argv: list[str] | None = None) -> None:
     report["serving_visibility"] = serving_visibility_summary(report)
     report["extraction_input_coverage"] = extraction_input_coverage_summary(report)
     report["retrieval_memory_coverage"] = retrieval_memory_coverage_summary(report)
+    report["strict_memory_gate"] = strict_memory_gate_summary(report)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     OUT_JSON.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     md = render_markdown(report)
@@ -813,6 +846,7 @@ def main(argv: list[str] | None = None) -> None:
         **report["serving_visibility"],
         **report["extraction_input_coverage"],
         **report["retrieval_memory_coverage"],
+        **report["strict_memory_gate"],
     }
     print(json.dumps(result, indent=2))
     if (
@@ -830,6 +864,11 @@ def main(argv: list[str] | None = None) -> None:
         or require_retrieval_memory_coverage(os.environ.get("MATRIXARK_REQUIRE_RETRIEVAL_MEMORY_COVERAGE"))
     ) and not report["retrieval_memory_coverage"]["retrieval_memory_coverage_pass"]:
         raise SystemExit(4)
+    if (
+        args.require_all_memory_gates
+        or require_all_memory_gates(os.environ.get("MATRIXARK_REQUIRE_ALL_MEMORY_GATES"))
+    ) and not report["strict_memory_gate"]["strict_memory_gate_pass"]:
+        raise SystemExit(5)
 
 
 if __name__ == "__main__":
