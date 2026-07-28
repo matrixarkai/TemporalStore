@@ -3311,6 +3311,135 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("Ran 160 tests", selected_evidence["text"])
             self.assertNotIn("source_codex_events", selected_evidence)
 
+    def test_user_prompt_cli_idle_preflushes_previous_user_preference(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            event_log = tmp / "matrixark-cli-user-idle-preflush.jsonl"
+            env = {
+                "MATRIXARK_SESSION_COMMIT_THRESHOLD": "20",
+                "MATRIXARK_IDLE_COMMIT_TIMEOUT_MS": "1",
+            }
+
+            first = self.run_hook(
+                repo,
+                event_log,
+                event="UserPromptSubmit",
+                payload={
+                    "prompt": "User preference: prefer threshold or idle extraction for Codex long-term memory; marker user-idle-pref-314.",
+                    "thread_id": "codex-cli-user-idle-thread",
+                },
+                extra_env=env,
+            )
+            self.assertEqual("ok", first["status"])
+            self.assertFalse(first["ingest"]["session_buffer"]["threshold_ready"])
+            self.assertFalse(first["ingest"]["session_buffer"]["idle_ready"])
+            self.assertEqual("deferred", first["ingest"]["idle_commit_result"]["status"])
+            self.assertFalse(first["ingest"]["auto_batch_extract_result"])
+
+            time.sleep(0.01)
+            second = self.run_hook(
+                repo,
+                event_log,
+                event="UserPromptSubmit",
+                payload={
+                    "prompt": "User prompt after idle should preflush the older user preference before this new prompt enters the buffer.",
+                    "thread_id": "codex-cli-user-idle-thread",
+                },
+                extra_env=env,
+            )
+            self.assertEqual("ok", second["status"])
+            idle_commit = second["ingest"]["idle_commit_result"]
+            self.assertEqual("committed", idle_commit["status"])
+            self.assertEqual("idle_timeout", idle_commit["trigger_policy"])
+            self.assertEqual("provisional", idle_commit["extraction_phase"])
+            self.assertFalse(idle_commit["final_session_boundary"])
+            self.assertEqual(1, idle_commit["committed_event_count"])
+            self.assertEqual(["user"], idle_commit["source_roles"])
+            self.assertIn("UserPromptSubmit", idle_commit["source_codex_events"])
+            self.assertTrue(second["ingest"]["session_buffer"]["idle_ready"])
+            self.assertEqual(idle_commit, second["ingest"]["auto_batch_extract_result"])
+
+            adapter = MatrixArkLocalAdapter(event_log)
+            scope = {
+                "account_id": "acct_hook",
+                "tenant_id": "tenant_hook",
+                "user_id": "codex_user",
+                "session_id": "codex_session_1",
+            }
+            pending = adapter.pending_session_events(scope)
+            self.assertEqual(1, len(pending))
+            self.assertIn("User prompt after idle", pending[0]["text"])
+
+            records = adapter.read_all()
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_entity"
+                    and record.get("entity_type") == "preference"
+                    and record.get("memory_scope") == "user_profile"
+                    and record.get("session_continuity") == "cross_session"
+                    and "threshold or idle extraction" in str(record.get("state") or "")
+                    and "user" in record.get("source_roles", [])
+                    for record in records
+                ),
+                records,
+            )
+            index_names = {
+                str(record.get("index_name") or "")
+                for record in records
+                if record.get("record_type") == "context_index"
+                and record.get("data_model") == "context_profile_entity"
+            }
+            self.assertIn("entity_type:preference", index_names)
+            self.assertIn("source_role:user", index_names)
+            self.assertIn("codex_event:userpromptsubmit", index_names)
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "codex_session_2"},
+                    "session_scope": "prefer",
+                    "query": "What does the user prefer for Codex long-term memory extraction?",
+                    "max_context_tokens": 120,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 3},
+                }
+            )
+            self.assert_no_default_context_pack_debug_lineage(pack)
+            selected_preference = next(
+                ref
+                for ref in pack["selected_refs"]
+                if ref.get("ref_type") == "entity"
+                and ref.get("entity_type") == "preference"
+                and ref.get("memory_scope") == "user_profile"
+                and ref.get("session_continuity") == "cross_session"
+            )
+            self.assertIn("threshold or idle extraction", selected_preference["text"])
+            self.assertNotIn("source_codex_events", selected_preference)
+
+            debug_pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "codex_session_2"},
+                    "session_scope": "prefer",
+                    "query": "What does the user prefer for Codex long-term memory extraction?",
+                    "max_context_tokens": 120,
+                    "audit_mode": "off",
+                    "include_retrieval_debug": True,
+                    "include_debug_refs": True,
+                    "ranking": {"max_selected_refs": 3},
+                }
+            )
+            debug_selected_preference = next(
+                ref
+                for ref in debug_pack["selected_refs"]
+                if ref.get("ref_type") == "entity"
+                and ref.get("entity_type") == "preference"
+                and ref.get("memory_scope") == "user_profile"
+                and ref.get("session_continuity") == "cross_session"
+            )
+            self.assertEqual(["UserPromptSubmit"], debug_selected_preference["source_codex_events"])
+            memory_budget = debug_pack["recall_policy"]["memory_layer_budget"]
+            self.assertEqual({"user": 1}, memory_budget["source_message_counts_by_role"])
+
     def test_user_prompt_fast_async_still_backfills_previous_assistant_rollout(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp_dir:
