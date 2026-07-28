@@ -18,6 +18,7 @@ from matrixark_mcp_context_pack import compact_context_pack_for_serving, compact
 from matrixark_mcp_core import (
     candidate_index_terms,
     compact_context_pack_for_serving as core_compact_context_pack_for_serving,
+    compact_context_pack_for_serving_flat,
     identity_hashes,
     packing_sort_key,
     select_token_budgeted_refs,
@@ -109,6 +110,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "source_message_counts_by_role",
             "source_hook_counts_by_type",
             "source_codex_event_counts_by_event",
+            "pending_source_roles",
+            "pending_source_hook_types",
+            "pending_source_codex_events",
             "by_source_role",
             "by_hook_type",
             "by_codex_event",
@@ -173,6 +177,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "by_source_role": {"assistant": {"refs": 1, "tokens": 10}},
                     "source_message_counts_by_role": {"assistant": 2},
                 },
+                "async_pipeline_readiness": {
+                    "task_count": 3,
+                    "remaining_stage_counts": {"summary": 1},
+                    "pending_source_roles": {"assistant": 2, "tool": 1},
+                    "pending_source_hook_types": {"after_llm": 2},
+                    "pending_source_codex_events": {"Stop": 1},
+                    "pending_memory_scopes": {"user_profile": 1},
+                },
                 "memory_layer_pressure": {
                     "dropped_dimensions": ["by_source_role", "by_memory_scope"],
                     "by_dimension": {
@@ -195,6 +207,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual("assistant_decision", serving["groups"][0]["items"][0]["entity_type"])
         self.assertIn("by_memory_scope", serving["memory_layer_budget"])
         self.assertNotIn("by_source_role", serving["memory_layer_budget"])
+        self.assertEqual(3, serving["async_pipeline_readiness"]["task_count"])
+        self.assertEqual({"summary": 1}, serving["async_pipeline_readiness"]["remaining_stage_counts"])
+        self.assertEqual({"user_profile": 1}, serving["async_pipeline_readiness"]["pending_memory_scopes"])
 
     def test_context_pack_serving_includes_debug_lineage_with_flag(self) -> None:
         pack = {
@@ -233,6 +248,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "source_role_counts": {"assistant": 2},
                     "source_hook_type_counts": {"after_llm": 1},
                     "source_codex_event_counts": {"Stop": 1},
+                    "pending_source_roles": {"assistant": 2},
+                    "pending_source_hook_types": {"after_llm": 1},
+                    "pending_source_codex_events": {"Stop": 1},
                     "source_entity_hashes": ["aaa", "bbb", "ccc"],
                     "debug_payload": {"raw": "must stay out of ContextPack"},
                     "lineage": {"raw_source_ids": ["hidden"]},
@@ -244,6 +262,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             ],
             "debug_payload": {"raw": "pack hidden"},
             "memory_lineage": {"raw": "pack hidden"},
+            "retrieval_metrics": {
+                "async_pipeline_readiness": {
+                    "task_count": 1,
+                    "pending_source_roles": {"assistant": 2},
+                    "pending_source_hook_types": {"after_llm": 1},
+                    "pending_source_codex_events": {"Stop": 1},
+                }
+            },
         }
 
         default_serving = core_compact_context_pack_for_serving(pack)
@@ -255,9 +281,57 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual({"after_llm": 1}, item["source_hook_type_counts"])
         self.assertEqual({"Stop": 1}, item["source_codex_event_counts"])
         self.assertEqual(3, item["source_entity_count"])
+        self.assertEqual(
+            {"assistant": 2},
+            debug_serving["async_pipeline_readiness"]["pending_source_roles"],
+        )
+        self.assertEqual(
+            {"after_llm": 1},
+            debug_serving["async_pipeline_readiness"]["pending_source_hook_types"],
+        )
+        self.assertEqual(
+            {"Stop": 1},
+            debug_serving["async_pipeline_readiness"]["pending_source_codex_events"],
+        )
         self.assertNotIn("debug_payload", json.dumps(debug_serving))
         self.assertNotIn("raw_source_ids", json.dumps(debug_serving))
         self.assertNotIn("selected_refs", debug_serving)
+
+    def test_flat_context_pack_serving_hides_async_source_readiness_by_default(self) -> None:
+        pack = {
+            "context_pack_id": "pack-flat-readiness-default",
+            "selected_refs": [
+                {
+                    "ref_type": "entity",
+                    "text": "assistant decision default flat readiness should stay lean",
+                    "entity_type": "assistant_decision",
+                    "source_role_counts": {"assistant": 2},
+                }
+            ],
+            "recall_policy": {
+                "async_pipeline_readiness": {
+                    "task_count": 2,
+                    "remaining_stage_counts": {"summary": 1, "embedding": 1},
+                    "pending_source_roles": {"assistant": 2, "tool": 1},
+                    "pending_source_hook_types": {"after_llm": 1},
+                    "pending_source_codex_events": {"Stop": 1},
+                    "pending_memory_scopes": {"user_profile": 1},
+                }
+            },
+        }
+
+        default_serving = compact_context_pack_for_serving_flat(pack)
+        self.assert_no_default_context_pack_debug_lineage(default_serving)
+        readiness = default_serving["async_pipeline_readiness"]
+        self.assertEqual(2, readiness["task_count"])
+        self.assertEqual({"summary": 1, "embedding": 1}, readiness["remaining_stage_counts"])
+        self.assertEqual({"user_profile": 1}, readiness["pending_memory_scopes"])
+
+        debug_serving = compact_context_pack_for_serving_flat(pack, include_debug=True)
+        debug_readiness = debug_serving["async_pipeline_readiness"]
+        self.assertEqual({"assistant": 2, "tool": 1}, debug_readiness["pending_source_roles"])
+        self.assertEqual({"after_llm": 1}, debug_readiness["pending_source_hook_types"])
+        self.assertEqual({"Stop": 1}, debug_readiness["pending_source_codex_events"])
 
     def test_context_pack_audit_refs_preserve_memory_layer_lineage(self) -> None:
         refs = compact_refs_for_audit(
@@ -3152,11 +3226,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(3, readiness["remaining_stage_counts"]["summary"])
             self.assertEqual(3, readiness["remaining_stage_counts"]["compression"])
             self.assertEqual(3, readiness["remaining_stage_counts"]["embedding"])
-            self.assertEqual(2, readiness["pending_source_roles"]["assistant"])
-            self.assertEqual(2, readiness["pending_source_roles"]["user"])
-            self.assertEqual(1, readiness["pending_source_roles"]["tool"])
-            self.assertEqual(1, readiness["pending_source_hook_types"]["hook_boundary"])
-            self.assertEqual(1, readiness["pending_source_codex_events"]["PostToolUse"])
+            self.assertNotIn("pending_source_roles", readiness)
+            self.assertNotIn("pending_source_hook_types", readiness)
+            self.assertNotIn("pending_source_codex_events", readiness)
             self.assertEqual(3, readiness["pending_memory_scopes"]["session"])
             self.assertEqual(3, readiness["pending_memory_scopes"]["user_profile"])
             self.assertEqual(3, readiness["pending_session_continuities"]["same_session"])
@@ -3180,6 +3252,23 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 any(str(warning).startswith("async_pipeline_remaining_stages:") for warning in pack.get("quality_warnings", [])),
                 pack,
             )
+            debug_pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "later_async_session"},
+                    "session_scope": "prefer",
+                    "query": "What source roles are still pending in async threshold extraction?",
+                    "max_context_tokens": 240,
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "ranking": {"max_selected_refs": 4},
+                }
+            )
+            debug_readiness = debug_pack["retrieval_metrics"]["async_pipeline_readiness"]
+            self.assertEqual(2, debug_readiness["pending_source_roles"]["assistant"])
+            self.assertEqual(2, debug_readiness["pending_source_roles"]["user"])
+            self.assertEqual(1, debug_readiness["pending_source_roles"]["tool"])
+            self.assertEqual(1, debug_readiness["pending_source_hook_types"]["hook_boundary"])
+            self.assertEqual(1, debug_readiness["pending_source_codex_events"]["PostToolUse"])
             telemetry_rows = [
                 record
                 for record in adapter.read_all()
@@ -3188,17 +3277,22 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             ]
             self.assertTrue(telemetry_rows)
             telemetry_readiness = telemetry_rows[-1]["async_pipeline_readiness"]
-            self.assertEqual(readiness, telemetry_readiness)
+            self.assertEqual(readiness["task_count"], telemetry_readiness["task_count"])
+            self.assertEqual(readiness["remaining_stage_counts"], telemetry_readiness["remaining_stage_counts"])
+            self.assertEqual(readiness["pending_memory_scopes"], telemetry_readiness["pending_memory_scopes"])
+            self.assertEqual(2, telemetry_readiness["pending_source_roles"]["assistant"])
+            self.assertEqual(1, telemetry_readiness["pending_source_hook_types"]["hook_boundary"])
+            self.assertEqual(1, telemetry_readiness["pending_source_codex_events"]["PostToolUse"])
             replay = adapter.replay({"context_pack_id": pack["pack_id"], "enable_replay": True})
             replay_telemetry = [
                 row for row in replay["events"] if row.get("record_type") == "context_pack_telemetry"
             ]
             self.assertTrue(replay_telemetry, replay)
-            self.assertEqual(readiness, replay_telemetry[-1]["async_pipeline_readiness"])
+            self.assertEqual(telemetry_readiness, replay_telemetry[-1]["async_pipeline_readiness"])
             pack_dashboard = adapter.ingestion_dashboard({"scope": scope, "table": "context_packs", "page_size": 10})
             pack_rows = [row for row in pack_dashboard["rows"] if row.get("context_pack_id") == pack["pack_id"]]
             self.assertTrue(pack_rows, pack_dashboard)
-            self.assertEqual(readiness, pack_rows[-1]["async_pipeline_readiness"])
+            self.assertEqual(telemetry_readiness, pack_rows[-1]["async_pipeline_readiness"])
 
             refresh = adapter.refresh_summaries(
                 {
@@ -3315,9 +3409,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(summary_readiness["ready_for_retrieval"])
             self.assertEqual([], summary_readiness["remaining_stages"])
             self.assertEqual({}, summary_readiness["remaining_stage_counts"])
-            self.assertEqual({}, summary_readiness["pending_source_roles"])
-            self.assertEqual({}, summary_readiness["pending_source_hook_types"])
-            self.assertEqual({}, summary_readiness["pending_source_codex_events"])
+            self.assertNotIn("pending_source_roles", summary_readiness)
+            self.assertNotIn("pending_source_hook_types", summary_readiness)
+            self.assertNotIn("pending_source_codex_events", summary_readiness)
             self.assertEqual({}, summary_readiness["pending_memory_scopes"])
             self.assertEqual({}, summary_readiness["pending_session_continuities"])
             self.assertEqual({}, summary_readiness["pending_extraction_phases"])

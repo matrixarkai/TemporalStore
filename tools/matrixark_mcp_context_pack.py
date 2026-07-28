@@ -35,6 +35,9 @@ DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS = {
     "source_message_counts_by_role",
     "source_hook_counts_by_type",
     "source_codex_event_counts_by_event",
+    "pending_source_roles",
+    "pending_source_hook_types",
+    "pending_source_codex_events",
     "by_source_role",
     "by_hook_type",
     "by_codex_event",
@@ -57,6 +60,8 @@ def debug_lineage_enabled(*, include_debug: bool = False) -> bool:
 
 def _is_default_hidden_debug_lineage_key(key: Any) -> bool:
     name = str(key or "").strip()
+    if name in {"source_entity_lineage"}:
+        return False
     if name in DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS:
         return True
     lowered = name.lower()

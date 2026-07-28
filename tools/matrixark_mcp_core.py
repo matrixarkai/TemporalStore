@@ -6331,7 +6331,14 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
         "embedding_fallback_used",
     ]:
         compact.pop(field, None)
-    return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
+    compact = {key: value for key, value in compact.items() if value not in (None, "", [], {})}
+    if include_debug:
+        return compact
+    try:
+        from tools.matrixark_mcp_context_pack import strip_default_debug_lineage_fields
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_context_pack import strip_default_debug_lineage_fields
+    return strip_default_debug_lineage_fields(compact)
 
 
 def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False) -> Json:
