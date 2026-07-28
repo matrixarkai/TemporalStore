@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import queue as thread_queue
+from typing import Any
 
 try:
     from tools.matrixark_mcp_core import *
@@ -72,7 +73,20 @@ RETRIEVAL_HOT_RECORD_TYPES = {
 RESOURCE_IMPORT_IGNORE_DIRS = {".git", "node_modules", "target", "build", "dist", ".venv", "__pycache__"}
 LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").strip().lower() not in {"0", "false", "no"}
 PRE_RETRIEVAL_SUMMARY_REFRESH = os.environ.get("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH", "0").strip().lower() in {"1", "true", "yes"}
-PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT = max(1, int(os.environ.get("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT", "2")))
+
+
+def positive_int_value(value: Any, default: int) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return max(1, int(default))
+
+
+def positive_int_env(name: str, default: int) -> int:
+    return positive_int_value(os.environ.get(name, str(default)), default)
+
+
+PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT = positive_int_env("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT", 2)
 
 _LOCAL_READ_CACHE_LOCK = threading.RLock()
 _LOCAL_READ_CACHE: dict[str, tuple[int, int, list[Json]]] = {}
@@ -156,6 +170,28 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         if amount:
             budgets[layer] = amount
     return budgets, mode
+
+
+def pre_retrieval_summary_refresh_memory_layer_budget_tokens(*, remote_budget_tokens: int) -> tuple[Json, str]:
+    try:
+        remote_budget = max(0, int(remote_budget_tokens or 0))
+    except (TypeError, ValueError):
+        remote_budget = 0
+    if remote_budget <= 0:
+        return {}, "pre_retrieval_summary_refresh_balanced"
+    fractions = {
+        "summary": 0.25,
+        "compression": 0.20,
+        "same_session_event": 0.45,
+        "cross_session_event": 0.25,
+        "same_session_segment": 0.30,
+        "cross_session_segment": 0.25,
+        "profile_entity": 0.45,
+    }
+    return {
+        layer: max(1, int(remote_budget * fraction))
+        for layer, fraction in fractions.items()
+    }, "pre_retrieval_summary_refresh_balanced"
 
 
 def pre_retrieval_summary_refresh_enabled(args: Json, ranking: Json) -> bool:
@@ -5887,6 +5923,10 @@ class MatrixArkLocalAdapter:
                 ranking,
                 remote_budget_tokens=remote_context_budget_tokens,
             )
+        if pre_retrieval_summary_refresh["enabled"] and not memory_layer_budget_tokens:
+            memory_layer_budget_tokens, memory_layer_budget_mode = pre_retrieval_summary_refresh_memory_layer_budget_tokens(
+                remote_budget_tokens=remote_context_budget_tokens,
+            )
         query_terms = {term for term in tokens(query) if len(term) > 2}
         raw_reference_time_ms = args.get("reference_time_ms", now_ms())
         if not isinstance(raw_reference_time_ms, int):
@@ -7228,7 +7268,12 @@ class MatrixArkLocalAdapter:
                     **(dropped_over_budget.get("memory_layer_budget_policy", {"enabled": False}) if isinstance(dropped_over_budget.get("memory_layer_budget_policy"), dict) else {"enabled": False}),
                     "mode": memory_layer_budget_mode or ("explicit" if memory_layer_budget_tokens else "disabled"),
                     "remote_budget_tokens": remote_context_budget_tokens,
-                    "derived": memory_layer_budget_mode in {"auto", "balanced", "codex_auto"},
+                    "derived": memory_layer_budget_mode in {
+                        "auto",
+                        "balanced",
+                        "codex_auto",
+                        "pre_retrieval_summary_refresh_balanced",
+                    },
                 },
                 "backend_retrieval_pushdown": retrieval_scan_stats,
                 "ranking": {
