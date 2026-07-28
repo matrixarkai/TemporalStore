@@ -5026,6 +5026,13 @@ class MatrixArkLocalAdapter:
                         "context_node_key": session_key_parts,
                         "summary_text": session_summary_text,
                         "source_event_hash": event_id_hash,
+                        **source_lineage,
+                        "source_memory_scopes": source_lineage.get("source_memory_scopes", ["session"]),
+                        "source_session_continuities": source_lineage.get("source_session_continuities", ["same_session"]),
+                        "source_extraction_phases": source_lineage.get("source_extraction_phases", ["hot_path"]),
+                        "extraction_phase": "hot_path",
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
                         "scope": hot_record_scope,
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }

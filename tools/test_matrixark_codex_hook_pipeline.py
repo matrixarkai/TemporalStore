@@ -5756,6 +5756,19 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(isinstance(record.get("ref_hashes"), list) for record in index_records))
             self.assertTrue(all(isinstance(record.get("index_hash"), int) for record in index_records))
             self.assertEqual(len(index_records), len({record.get("index_hash") for record in index_records}))
+            hot_summaries = [
+                record
+                for record in records
+                if record.get("record_type") == "context_summary"
+                and record.get("summary_type") == "session_l0"
+            ]
+            self.assertTrue(hot_summaries)
+            self.assertTrue(all(record.get("source_roles") == ["user"] for record in hot_summaries))
+            self.assertTrue(all(record.get("source_role_counts") == {"user": 1} for record in hot_summaries))
+            self.assertTrue(all(record.get("source_memory_selection_policies") == ["selected_user_prompt"] for record in hot_summaries))
+            self.assertTrue(all(record.get("source_memory_selection_policy_counts") == {"selected_user_prompt": 1} for record in hot_summaries))
+            self.assertTrue(all(record.get("memory_scope") == "session" for record in hot_summaries))
+            self.assertTrue(all(record.get("session_continuity") == "same_session" for record in hot_summaries))
 
     def test_lightweight_async_ingest_promotes_profile_with_local_tenant_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
