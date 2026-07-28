@@ -753,6 +753,8 @@ def session_commit_memory_layers_written(commit: Json | None) -> Json:
         "source_roles": commit.get("source_roles"),
         "source_hook_types": commit.get("source_hook_types"),
         "source_codex_events": commit.get("source_codex_events"),
+        "profile_promotion_policy": commit.get("profile_promotion_policy"),
+        "profile_promotion_blocker": commit.get("profile_promotion_blocker"),
     }
     return {
         key: value
@@ -781,6 +783,8 @@ def session_commit_summary(commit: Json | None) -> Json:
         "source_hook_types": commit.get("source_hook_types"),
         "source_codex_events": commit.get("source_codex_events"),
         "profile_promotion_summary": commit.get("profile_promotion_summary"),
+        "profile_promotion_policy": commit.get("profile_promotion_policy"),
+        "profile_promotion_blocker": commit.get("profile_promotion_blocker"),
         "entity_type_counts": commit.get("entity_type_counts"),
         "source_role_counts": commit.get("source_role_counts"),
         "source_hook_type_counts": commit.get("source_hook_type_counts"),
@@ -983,6 +987,8 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
             "indexes_written",
             "extraction_phase",
             "final_session_boundary",
+            "profile_promotion_policy",
+            "profile_promotion_blocker",
         ]:
             value = source.get(field)
             if value not in (None, "", [], {}):

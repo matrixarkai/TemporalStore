@@ -1613,6 +1613,8 @@ class MatrixArkLocalAdapter:
             "source_roles": source_roles,
             "source_hook_types": source_hook_types,
             "source_codex_events": source_codex_events,
+            "profile_promotion_policy": batch_result.get("profile_promotion_policy"),
+            "profile_promotion_blocker": batch_result.get("profile_promotion_blocker"),
         }
         memory_layers_written = {
             key: value
@@ -1646,6 +1648,8 @@ class MatrixArkLocalAdapter:
                 "source_codex_events": source_codex_events,
                 "source_codex_event_counts": source_codex_event_counts,
                 "profile_promotion_summary": batch_result.get("profile_promotion_summary", []),
+                "profile_promotion_policy": batch_result.get("profile_promotion_policy"),
+                "profile_promotion_blocker": batch_result.get("profile_promotion_blocker"),
                 "summary_refresh": batch_result.get("summary_refresh", {}),
                 "memory_layers_written": memory_layers_written,
                 "idle_timeout_ms": idle_timeout_ms,
