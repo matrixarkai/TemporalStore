@@ -142,6 +142,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "source_hook_type_counts": {"after_llm": 1},
                     "source_codex_events": ["Stop"],
                     "source_codex_event_counts": {"Stop": 1},
+                    "source_memory_scopes": ["session", "user_profile"],
+                    "source_session_continuities": ["same_session", "cross_session"],
                     "memory_scope": "user_profile",
                     "session_continuity": "cross_session",
                     "extraction_phase": "final",
@@ -181,8 +183,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual({"after_llm": 2, "before_llm": 1, "tool_result": 2}, summary["source_hook_type_counts"])
         self.assertEqual(["PostToolUse", "Stop", "UserPromptSubmit"], summary["source_codex_events"])
         self.assertEqual({"PostToolUse": 2, "Stop": 2, "UserPromptSubmit": 1}, summary["source_codex_event_counts"])
-        self.assertEqual(["user_profile"], summary["source_memory_scopes"])
-        self.assertEqual(["cross_session"], summary["source_session_continuities"])
+        self.assertEqual(["session", "user_profile"], summary["source_memory_scopes"])
+        self.assertEqual(["cross_session", "same_session"], summary["source_session_continuities"])
         self.assertEqual("user_profile", summary["memory_scope"])
         self.assertEqual("cross_session", summary["session_continuity"])
         self.assertEqual(summary["source_role_counts"], result["source_role_counts"])
@@ -5522,6 +5524,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     for record in profile_entities
                 )
             )
+            self.assertTrue(all("session" in record.get("source_memory_scopes", []) for record in profile_entities))
+            self.assertTrue(all("user_profile" in record.get("source_memory_scopes", []) for record in profile_entities))
+            self.assertTrue(
+                all("same_session" in record.get("source_session_continuities", []) for record in profile_entities)
+            )
+            self.assertTrue(
+                all("cross_session" in record.get("source_session_continuities", []) for record in profile_entities)
+            )
             self.assertTrue(
                 any(
                     record.get("record_type") == "context_node"
@@ -6189,7 +6199,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(any("PostToolUse" in item.get("source_codex_events", []) for item in profile_summaries))
             self.assertTrue(any(item.get("source_codex_event_counts", {}).get("PostToolUse", 0) >= 1 for item in profile_summaries))
             self.assertTrue(any("user_profile" in item.get("source_memory_scopes", []) for item in profile_summaries))
+            self.assertTrue(any("session" in item.get("source_memory_scopes", []) for item in profile_summaries))
             self.assertTrue(any("cross_session" in item.get("source_session_continuities", []) for item in profile_summaries))
+            self.assertTrue(any("same_session" in item.get("source_session_continuities", []) for item in profile_summaries))
             self.assertTrue(any(item.get("async_summary_progress_count", 0) >= 1 for item in profile_summaries))
             summary_progress = [
                 record
