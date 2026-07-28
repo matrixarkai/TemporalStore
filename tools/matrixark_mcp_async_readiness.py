@@ -188,7 +188,15 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
                 add_count(pending_session_continuities, "same_session")
             if int(layers.get("cross_session_entities") or 0) > 0:
                 add_count(pending_session_continuities, "cross_session")
+            if not layers:
+                for memory_scope in row.get("source_memory_scopes") if isinstance(row.get("source_memory_scopes"), list) else []:
+                    add_count(pending_memory_scopes, memory_scope)
+                for session_continuity in row.get("source_session_continuities") if isinstance(row.get("source_session_continuities"), list) else []:
+                    add_count(pending_session_continuities, session_continuity)
             add_count(pending_extraction_phases, row.get("extraction_phase"))
+            if not str(row.get("extraction_phase") or "").strip():
+                for extraction_phase in row.get("source_extraction_phases") if isinstance(row.get("source_extraction_phases"), list) else []:
+                    add_count(pending_extraction_phases, extraction_phase)
             if bool(row.get("final_session_boundary")):
                 pending_final_session_boundary_count += 1
     warnings: list[str] = []
