@@ -61,17 +61,25 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertTrue(result["memory_layer_pressure"]["hook_boundary_source_pressure"])
 
     def test_layer_pressure_flags_include_source_message_pressure_aliases(self) -> None:
-        bits = hook._format_memory_layer_pressure_bits(
-            {
-                "selected_refs": 2,
-                "assistant_source_message_pressure": True,
-                "user_source_message_pressure": True,
-                "tool_source_message_pressure": True,
-            }
-        )
+        pressure = {
+            "selected_refs": 2,
+            "assistant_source_message_pressure": True,
+            "user_source_message_pressure": True,
+            "tool_source_message_pressure": True,
+        }
+        bits = hook._format_memory_layer_pressure_bits(pressure)
 
         self.assertIn("selected=2", bits)
-        self.assertIn("flags[assistant,user,tool]", bits)
+        self.assertNotIn("flags[assistant,user,tool]", bits)
+
+        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
+        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
+        try:
+            debug_bits = hook._format_memory_layer_pressure_bits(pressure)
+        finally:
+            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
+
+        self.assertIn("flags[assistant,user,tool]", debug_bits)
 
     def test_budget_pressure_uses_native_layer_metrics_without_dropped_refs(self) -> None:
         pressure = hook.retrieval_budget_pressure_from_retrieve(
@@ -1339,28 +1347,29 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("selected=3", additional)
         self.assertIn("dropped=5", additional)
         self.assertIn(
-            "flags[profile,cross_session,final,assistant,tool,hook_boundary_source,after_llm_source,stop_event_source,post_tool_use_source]",
+            "flags[profile,cross_session,final]",
             additional,
         )
         self.assertIn(
             "summary_refresh[enabled=true; status=refreshed; limit=2; refreshed=1; compression=1; elapsed_ms=3.25]",
             additional,
         )
-        self.assertIn("pressure_dimensions[by_memory_scope,by_source_role]", additional)
+        self.assertIn("pressure_dimensions[by_memory_scope]", additional)
+        self.assertNotIn("pressure_dimensions[by_memory_scope,by_source_role]", additional)
         self.assertIn("scope[session=1/12t, user_profile=2/30t]", additional)
         self.assertIn("continuity[cross_session=2/30t, same_session=1/12t]", additional)
         self.assertIn("phase[final=2/30t, provisional=1/12t]", additional)
         self.assertIn("ref_type[entity=1/18t, summary=1/12t]", additional)
         self.assertIn("entity_type[assistant_decision=1/14t, tool_evidence=1/16t]", additional)
-        self.assertIn("source_role[assistant=2/14t, tool=1/16t]", additional)
-        self.assertIn("hook_type[after_llm=1/14t, hook_boundary=1/16t]", additional)
-        self.assertIn("codex_event[PostToolUse=1/18t, Stop=1/12t]", additional)
-        self.assertIn("source_messages[assistant=3, tool=1]", additional)
-        self.assertIn("source_hooks[after_llm=2, hook_boundary=1]", additional)
-        self.assertIn("source_codex_events[PostToolUse=1, Stop=2]", additional)
+        self.assertNotIn("source_role[assistant=2/14t, tool=1/16t]", additional)
+        self.assertNotIn("hook_type[after_llm=1/14t, hook_boundary=1/16t]", additional)
+        self.assertNotIn("codex_event[PostToolUse=1/18t, Stop=1/12t]", additional)
+        self.assertNotIn("source_messages[assistant=3, tool=1]", additional)
+        self.assertNotIn("source_hooks[after_llm=2, hook_boundary=1]", additional)
+        self.assertNotIn("source_codex_events[PostToolUse=1, Stop=2]", additional)
         self.assertIn("final_boundary_refs=2", additional)
         self.assertIn(
-            "async_pipeline[tasks=4; ready=false; remaining=entity,secondary_index,summary; memory_layers_ready=false; blocked_layers[session,user_profile,same_session,cross_session,summary]; ready_layers[compression,embedding]; layer_pending[cross_session=2,same_session=3,session=3,summary=2:summary,user_profile=2]; stage_counts[entity=1,secondary_index=1,summary=2]; pending_roles[assistant=2,tool=1,user=1]; pending_hooks[after_llm=2,hook_boundary=1]; pending_codex_events[PostToolUse=1,Stop=1]; pending_scopes[session=3,user_profile=2]; pending_continuity[cross_session=2,same_session=3]; pending_phases[final=1,provisional=3]; pending_final_boundary=1; warnings=async_pipeline_followup_pending,profile_summary_stale]",
+            "async_pipeline[tasks=4; ready=false; remaining=entity,secondary_index,summary; memory_layers_ready=false; blocked_layers[session,user_profile,same_session,cross_session,summary]; ready_layers[compression,embedding]; layer_pending[cross_session=2,same_session=3,session=3,summary=2:summary,user_profile=2]; stage_counts[entity=1,secondary_index=1,summary=2]; pending_scopes[session=3,user_profile=2]; pending_continuity[cross_session=2,same_session=3]; pending_phases[final=1,provisional=3]; pending_final_boundary=1; warnings=async_pipeline_followup_pending,profile_summary_stale]",
             additional,
         )
         self.assertIn("Memory hierarchy:", additional)
@@ -1380,15 +1389,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         )
         self.assertIn("Budget pressure:", additional)
         self.assertIn("cross_session_budget=2", additional)
-        self.assertIn("source_role_budget=1", additional)
+        self.assertNotIn("source_role_budget=1", additional)
         self.assertIn("max_selected_refs=3", additional)
         self.assertIn("budget_fill_policy=quality_first", additional)
         self.assertIn("dropped_memory_layer_budget:", additional)
         self.assertIn("scope[user_profile=1/22t]", additional)
         self.assertIn("continuity[cross_session=1/22t]", additional)
         self.assertIn("entity_type[assistant_decision=1/22t]", additional)
-        self.assertIn("source_role[assistant=1/22t]", additional)
-        self.assertIn("hook_type[after_llm=1/22t]", additional)
+        self.assertNotIn("source_role[assistant=1/22t]", additional)
+        self.assertNotIn("hook_type[after_llm=1/22t]", additional)
 
     def test_additional_context_layer_summary_falls_back_to_serving_refs(self) -> None:
         args = Namespace(session_id="codex-session-1")
@@ -1461,54 +1470,57 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("provisional=3/", additional)
         self.assertIn("entity_type[assistant_decision=", additional)
         self.assertIn("tool_evidence=", additional)
-        self.assertIn("source_role[assistant=", additional)
-        self.assertIn("tool=", additional)
-        self.assertIn("hook_type[after_llm=", additional)
-        self.assertIn("tool_result=", additional)
-        self.assertIn("codex_event[PostToolUse=", additional)
-        self.assertIn("source_messages[assistant=6, tool=3, user=1]", additional)
+        self.assertNotIn("source_role[", additional)
+        self.assertNotIn("hook_type[", additional)
+        self.assertNotIn("codex_event[", additional)
+        self.assertNotIn("source_messages[", additional)
         self.assertNotIn("source_messages[llm=", additional)
         self.assertNotIn("source_messages[model=", additional)
-        self.assertIn("source_hooks[after_llm=2, tool_result=2]", additional)
-        self.assertIn("source_codex_events[PostToolUse=2]", additional)
-        self.assertIn("Retrieved memory lineage:", additional)
-        self.assertIn("roles[assistant=6,tool=3,user=1]", additional)
-        self.assertIn("hooks[after_llm=2,tool_result=2]", additional)
-        self.assertIn("codex_events[PostToolUse=2]", additional)
-        self.assertIn("captured[user_prompt,assistant_response,tool_evidence]", additional)
+        self.assertNotIn("source_hooks[", additional)
+        self.assertNotIn("source_codex_events[", additional)
+        self.assertNotIn("Retrieved memory lineage:", additional)
+        self.assertNotIn("roles[assistant=6,tool=3,user=1]", additional)
+        self.assertNotIn("hooks[after_llm=2,tool_result=2]", additional)
+        self.assertNotIn("codex_events[PostToolUse=2]", additional)
+        self.assertNotIn("captured[user_prompt,assistant_response,tool_evidence]", additional)
 
     def test_additional_context_lineage_uses_budget_roles_and_entity_type_fallback(self) -> None:
-        args = Namespace(session_id="codex-session-lineage-fallback")
-        output = hook.codex_hook_output(
-            args=args,
-            status="ok",
-            event="UserPromptSubmit",
-            session_id_source="explicit",
-            agent_context={"local_context": [], "workspace_root": "/repo"},
-            retrieve={
-                "pack_id": "pack-lineage-fallback",
-                "selected_refs": [
-                    {
-                        "ref_type": "entity",
-                        "entity_type": "assistant_decision",
-                        "text": "assistant decided to keep profile extraction enabled",
-                    },
-                    {
-                        "ref_type": "entity",
-                        "entity_type": "tool_evidence",
-                        "budget_source_role_counts": {"tool": 2},
-                        "text": "tests passed after hook extraction",
-                    },
-                    {
-                        "ref_type": "entity",
-                        "entity_type": "user_requirement",
-                        "budget_source_roles": ["user"],
-                        "text": "user requested threshold and idle extraction",
-                    },
-                ],
-            },
-            query="which memory sources were retrieved?",
-        )
+        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
+        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
+        try:
+            args = Namespace(session_id="codex-session-lineage-fallback")
+            output = hook.codex_hook_output(
+                args=args,
+                status="ok",
+                event="UserPromptSubmit",
+                session_id_source="explicit",
+                agent_context={"local_context": [], "workspace_root": "/repo"},
+                retrieve={
+                    "pack_id": "pack-lineage-fallback",
+                    "selected_refs": [
+                        {
+                            "ref_type": "entity",
+                            "entity_type": "assistant_decision",
+                            "text": "assistant decided to keep profile extraction enabled",
+                        },
+                        {
+                            "ref_type": "entity",
+                            "entity_type": "tool_evidence",
+                            "budget_source_role_counts": {"tool": 2},
+                            "text": "tests passed after hook extraction",
+                        },
+                        {
+                            "ref_type": "entity",
+                            "entity_type": "user_requirement",
+                            "budget_source_roles": ["user"],
+                            "text": "user requested threshold and idle extraction",
+                        },
+                    ],
+                },
+                query="which memory sources were retrieved?",
+            )
+        finally:
+            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
 
         additional = output["hookSpecificOutput"]["additionalContext"]
         self.assertIn("Retrieved memory lineage:", additional)

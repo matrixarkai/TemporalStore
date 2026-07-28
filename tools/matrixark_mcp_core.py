@@ -6282,7 +6282,16 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
     if isinstance(pre_retrieval_summary_refresh, dict) and pre_retrieval_summary_refresh.get("enabled"):
         compact["pre_retrieval_summary_refresh"] = {
             field: pre_retrieval_summary_refresh.get(field)
-            for field in ["enabled", "status", "requested_limit", "refreshed_count", "compression_created_count", "elapsed_ms"]
+            for field in [
+                "enabled",
+                "status",
+                "requested_limit",
+                "refreshed_count",
+                "compression_created_count",
+                "skipped_dirty_count",
+                "skipped_dirty_reasons",
+                "elapsed_ms",
+            ]
             if pre_retrieval_summary_refresh.get(field) not in (None, "", [], {})
         }
     memory_hierarchy = memory_hierarchy_contract_from_recall_policy(compact.get("recall_policy", {}))
