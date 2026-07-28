@@ -6281,8 +6281,6 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     Adapter-direct callers that need the historical selected_refs list should
     call compact_context_pack_for_serving_flat.
     """
-    if include_debug:
-        return pack
     try:
         from tools.matrixark_mcp_context_pack import compact_context_pack_for_serving as grouped_compactor
     except ModuleNotFoundError:  # Direct script execution from tools/.
