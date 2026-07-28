@@ -2201,6 +2201,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertFalse(raw["serving_visible"])
         self.assertEqual("metadata_only_for_backfill_batching", raw["session_binding"])
         self.assertEqual("real hooked Codex message", raw["messages"][0]["content"])
+        self.assertEqual(["selected_user_prompt"], raw["source_memory_selection_policies"])
+        self.assertEqual({"selected_user_prompt": 1}, raw["source_memory_selection_policy_counts"])
+        self.assertEqual("selected_user_prompt", raw["codex_memory_selection"]["policy"])
         self.assertEqual("codex-cpp-session-1", raw["scope"]["session_id"])
         self.assertEqual("thread-fast-1", raw["thread_id"])
         self.assertEqual("turn-fast-1", raw["turn_id"])
@@ -2212,6 +2215,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("conversation-fast-1", serving["metadata"]["conversation_id"])
         self.assertEqual("turn-fast-1", serving["envelope"]["turn_id"])
         self.assertEqual("UserPromptSubmit", serving["metadata"]["codex_event"])
+        self.assertEqual(["selected_user_prompt"], serving["source_memory_selection_policies"])
+        self.assertEqual({"selected_user_prompt": 1}, serving["source_memory_selection_policy_counts"])
+        self.assertEqual("selected_user_prompt", serving["codex_memory_selection"]["policy"])
+        self.assertEqual(["selected_user_prompt"], serving["envelope"]["source_memory_selection_policies"])
         self.assertEqual("PENDING_ASYNC_EXTRACTION", serving["classification"])
         self.assertEqual("pending_async", serving["event_type"])
         self.assertEqual("pending", serving["status"])
@@ -2223,6 +2230,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("real hooked Codex message", serving["text"])
         self.assertEqual(1, len(embedding_records))
         self.assertEqual("event_text", embedding_records[0]["embedding_type"])
+        self.assertEqual(["selected_user_prompt"], task["source_memory_selection_policies"])
+        self.assertEqual({"selected_user_prompt": 1}, task["source_memory_selection_policy_counts"])
+        self.assertTrue(
+            any(record.get("index_name") == "memory_selection_policy:selected_user_prompt" for record in index_records),
+            index_records,
+        )
         self.assertEqual(serving["event_id_hash"], embedding_records[0]["ref_hash"])
         self.assertEqual("fast_hook_pending_async", embedding_records[0]["projection_phase"])
         self.assertTrue(index_records)
