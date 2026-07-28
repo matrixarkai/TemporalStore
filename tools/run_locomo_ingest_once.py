@@ -552,6 +552,17 @@ def main() -> int:
             or record.get("id")
             or f"conversation_{record_index + 1}"
         )
+        questions = record_questions(record)
+        scoreable_question_count = count_scoreable_questions(questions)
+        if args.question_limit and total >= args.question_limit:
+            break
+        if (
+            args.question_offset
+            and scoreable_question_count
+            and supported_question_index + scoreable_question_count <= args.question_offset
+        ):
+            supported_question_index += scoreable_question_count
+            continue
         sources = record_sources(record, conversation_id)
         if not sources:
             continue
@@ -560,7 +571,6 @@ def main() -> int:
         prep_started = time.perf_counter()
         warm_source_ranking_caches(sources)
         source_ranking_cache_prep_ms += elapsed_ms(prep_started)
-        questions = record_questions(record)
         for question_index, qa in enumerate(questions):
             question = str(qa.get("question") or "").strip()
             answers = normalize_answers(qa.get("answer") or qa.get("answers"))
@@ -577,26 +587,9 @@ def main() -> int:
                 if args.evidence_window is not None and refs
                 else refs
             )
-            source_tokens = sum(estimated_tokens(source.get("body", "")) for source in query_sources)
-            retrieval_started = time.perf_counter()
-            effective_max_events = adaptive_max_events_for_question(question, args)
-            blocks = rank_sources(question, query_sources, effective_max_events, retrieval_budget)
-            retrieval_ms = elapsed_ms(retrieval_started)
-            reader_started = time.perf_counter()
-            reader_answer = reader.answer(question, blocks)
-            reader_ms = elapsed_ms(reader_started)
-            rank = first_hit_rank(blocks, answers, scored_refs)
-            matched_terms = count_matched_terms(blocks, answers)
-            matched_context_terms = count_reader_context_terms(question, blocks, answers, reader.config)
-            matched_ref_count = count_matched_refs(blocks, scored_refs)
-            reader_hit = any(answer_equivalent(reader_answer, answer) for answer in answers)
-            reader_matched_terms = sum(1 for answer in answers if answer_equivalent(reader_answer, answer))
             case_category = normalize_category(
                 qa.get("category") or qa.get("question_type") or qa.get("reasoning_type") or qa.get("ability")
             )
-            retrieved_tokens = sum(estimated_tokens(block.get("body", "")) for block in blocks)
-            retrieved_source_groups = distinct_source_group_count(blocks)
-            budget_counts = retrieval_budget_counts(blocks)
             query_id = f"{conversation_id}-q{question_index + 1}"
             unsupported_reason = unsupported_benchmark_reason(
                 answers,
@@ -624,6 +617,23 @@ def main() -> int:
                 break
 
             supported_question_index += 1
+            source_tokens = sum(estimated_tokens(source.get("body", "")) for source in query_sources)
+            retrieval_started = time.perf_counter()
+            effective_max_events = adaptive_max_events_for_question(question, args)
+            blocks = rank_sources(question, query_sources, effective_max_events, retrieval_budget)
+            retrieval_ms = elapsed_ms(retrieval_started)
+            reader_started = time.perf_counter()
+            reader_answer = reader.answer(question, blocks)
+            reader_ms = elapsed_ms(reader_started)
+            rank = first_hit_rank(blocks, answers, scored_refs)
+            matched_terms = count_matched_terms(blocks, answers)
+            matched_context_terms = count_reader_context_terms(question, blocks, answers, reader.config)
+            matched_ref_count = count_matched_refs(blocks, scored_refs)
+            reader_hit = any(answer_equivalent(reader_answer, answer) for answer in answers)
+            reader_matched_terms = sum(1 for answer in answers if answer_equivalent(reader_answer, answer))
+            retrieved_tokens = sum(estimated_tokens(block.get("body", "")) for block in blocks)
+            retrieved_source_groups = distinct_source_group_count(blocks)
+            budget_counts = retrieval_budget_counts(blocks)
             total += 1
             total_source_tokens += source_tokens
             total_retrieved_tokens += retrieved_tokens
@@ -964,6 +974,16 @@ def main() -> int:
     return 0 if report["passed"] else 1
 
 
+def count_scoreable_questions(questions: list[dict[str, Any]]) -> int:
+    total = 0
+    for qa in questions:
+        question = str(qa.get("question") or "").strip()
+        answers = normalize_answers(qa.get("answer") or qa.get("answers"))
+        if question and answers:
+            total += 1
+    return total
+
+
 def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
     repo = Path(__file__).resolve().parents[1]
     input_path = Path(args.input)
@@ -989,6 +1009,8 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         convert_command.extend(["--dataset-name", args.dataset_name])
     if max_cases:
         convert_command.extend(["--max-questions", str(max_cases)])
+    if args.question_offset:
+        convert_command.extend(["--question-offset", str(args.question_offset)])
     if args.evidence_window is not None:
         convert_command.extend(["--evidence-window", str(args.evidence_window)])
     converted = subprocess.run(convert_command, cwd=repo, text=True, capture_output=True, check=False)
