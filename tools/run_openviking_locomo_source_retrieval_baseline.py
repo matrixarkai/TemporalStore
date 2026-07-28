@@ -530,6 +530,9 @@ def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict
         "adaptive_policy_match": adaptive_policy_match,
         "retrieval_budget_match": retrieval_budget_match,
         "shared_oss_model_contract_required": True,
+        "shared_oss_models_forced": bool(args.require_shared_oss_models),
+        "same_oss_reader_model_forced": bool(args.require_shared_oss_models),
+        "same_oss_encoding_model_forced": bool(args.require_shared_oss_models),
         "shared_oss_model_contract_passed": (
             normalized_model_name(matrixark_reader) == normalized_model_name(baseline_reader)
             and normalized_model_name(matrixark_embedding) == normalized_model_name(baseline_embedding)
