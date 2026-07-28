@@ -51,6 +51,63 @@ def auto_source_role_budget_tokens(args: Json, ranking: Json, *, remote_budget_t
     return budgets, mode
 
 
+def auto_memory_selection_policy_budget_tokens(
+    args: Json,
+    ranking: Json,
+    *,
+    remote_budget_tokens: int,
+    question_type: str = "fact",
+) -> tuple[Json, str]:
+    mode = str(
+        args.get("memory_selection_policy_budget_mode")
+        or ranking.get("memory_selection_policy_budget_mode")
+        or ""
+    ).strip().lower()
+    if mode not in {"auto", "balanced", "codex_auto"}:
+        return {}, ""
+    try:
+        remote_budget = max(0, int(remote_budget_tokens or 0))
+    except (TypeError, ValueError):
+        remote_budget = 0
+    if remote_budget <= 0:
+        return {}, mode
+    fractions = (
+        optional_object(args, "memory_selection_policy_budget_fractions")
+        or optional_object(ranking, "memory_selection_policy_budget_fractions")
+    )
+    defaults = {
+        "selected_user_prompt": 0.45,
+        "selected_assistant_decision_outcome_only": 0.30,
+        "selected_tool_evidence_only": 0.30,
+    }
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    if normalized_question_type in {"current_state", "latest"}:
+        defaults.update(
+            {
+                "selected_user_prompt": 0.40,
+                "selected_assistant_decision_outcome_only": 0.45,
+                "selected_tool_evidence_only": 0.30,
+            }
+        )
+    elif normalized_question_type in {"multi_hop", "date", "broad_exploration", "evidence"}:
+        defaults.update(
+            {
+                "selected_user_prompt": 0.45,
+                "selected_assistant_decision_outcome_only": 0.35,
+                "selected_tool_evidence_only": 0.40,
+            }
+        )
+    budgets: Json = {}
+    for policy, default_fraction in defaults.items():
+        raw_fraction = fractions.get(policy, default_fraction) if isinstance(fractions, dict) else default_fraction
+        try:
+            fraction = max(0.0, min(1.0, float(raw_fraction)))
+        except (TypeError, ValueError):
+            fraction = default_fraction
+        budgets[policy] = max(1, int(remote_budget * fraction))
+    return budgets, mode
+
+
 def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_tokens: int) -> tuple[Json, str]:
     mode = str(args.get("memory_layer_budget_mode") or ranking.get("memory_layer_budget_mode") or "").strip().lower()
     if mode not in {"auto", "balanced", "codex_auto"}:

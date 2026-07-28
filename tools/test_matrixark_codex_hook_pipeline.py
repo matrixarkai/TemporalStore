@@ -3367,7 +3367,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "scope": scope,
                     "query": "Codex role budget",
                     "max_context_tokens": 100,
-                    "ranking": {"source_role_budget_mode": "auto", "memory_layer_budget_mode": "auto"},
+                    "ranking": {
+                        "source_role_budget_mode": "auto",
+                        "memory_layer_budget_mode": "auto",
+                        "memory_selection_policy_budget_mode": "auto",
+                    },
                     "audit_mode": "off",
                     "debug_context_pack": True,
                 }
@@ -3394,6 +3398,15 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 request["memory_layer_budget_tokens"],
             )
             self.assertEqual("auto", request["memory_layer_budget_mode"])
+            self.assertEqual(
+                {
+                    "selected_user_prompt": 42,
+                    "selected_assistant_decision_outcome_only": 28,
+                    "selected_tool_evidence_only": 28,
+                },
+                request["memory_selection_policy_budget_tokens"],
+            )
+            self.assertEqual("auto", request["memory_selection_policy_budget_mode"])
 
     def test_auto_memory_layer_budget_expands_profile_for_current_state_queries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -3570,6 +3583,52 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
 
             self.assertFalse(first.get("context_pack_cache_hit", False))
             self.assertFalse(second.get("context_pack_cache_hit", False))
+
+    def test_context_pack_cache_key_includes_auto_memory_selection_policy_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-selection-policy-auto-cache.jsonl")
+            scope = {
+                "account_id": "acct_selection_policy_auto_cache",
+                "tenant_id": "tenant_selection_policy_auto_cache",
+                "user_id": "user_selection_policy_auto_cache",
+                "session_id": "session_selection_policy_auto_cache",
+            }
+
+            first = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "assistant decision budget",
+                    "max_context_tokens": 256,
+                    "ranking": {
+                        "max_selected_refs": 4,
+                        "min_similarity_score": 0.0,
+                        "memory_selection_policy_budget_mode": "auto",
+                    },
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+            second = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "assistant decision budget",
+                    "max_context_tokens": 256,
+                    "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertFalse(first.get("context_pack_cache_hit", False))
+            self.assertFalse(second.get("context_pack_cache_hit", False))
+            self.assertEqual(
+                "auto",
+                first["recall_policy"]["memory_selection_policy_budget_policy"]["mode"],
+            )
+            self.assertEqual(
+                "disabled",
+                second["recall_policy"]["memory_selection_policy_budget_policy"]["mode"],
+            )
 
     def test_context_pack_cache_key_includes_memory_selection_policy_budget_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
