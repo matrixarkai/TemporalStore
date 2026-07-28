@@ -14,7 +14,12 @@ from unittest import mock
 from pathlib import Path
 
 import matrixark_codex_hook
-from matrixark_mcp_context_pack import compact_context_pack_for_serving, compact_dropped_refs_for_context_pack, compact_refs_for_audit
+from matrixark_mcp_context_pack import (
+    compact_context_pack_audit_record,
+    compact_context_pack_for_serving,
+    compact_dropped_refs_for_context_pack,
+    compact_refs_for_audit,
+)
 from matrixark_mcp_core import (
     candidate_index_terms,
     compact_context_pack_for_serving as core_compact_context_pack_for_serving,
@@ -381,6 +386,48 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual({"assistant": 2, "tool": 1}, debug_readiness["pending_source_roles"])
         self.assertEqual({"after_llm": 1}, debug_readiness["pending_source_hook_types"])
         self.assertEqual({"Stop": 1}, debug_readiness["pending_source_codex_events"])
+
+    def test_context_pack_audit_hides_memory_hierarchy_by_default(self) -> None:
+        audit = {
+            "record_type": "context_pack_audit",
+            "context_pack_id": "audit-hierarchy-default",
+            "query": "profile hierarchy debug",
+            "selected_refs": [
+                {
+                    "ref_type": "entity",
+                    "text": "assistant decision audit hierarchy",
+                    "entity_type": "assistant_decision",
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                }
+            ],
+            "recall_policy": {
+                "session_continuity": {"mode": "prefer"},
+                "cross_session": {
+                    "enabled": True,
+                    "budget_tokens": 64,
+                    "budget_floor_status": "remote_budget_too_small_for_profile_floor",
+                },
+                "memory_layer_budget_policy": {
+                    "enabled": True,
+                    "mode": "auto",
+                    "budget_tokens": {"profile_entity": 40},
+                },
+            },
+            "memory_hierarchy": {
+                "cross_session_enabled": True,
+                "cross_session_budget_tokens": 64,
+            },
+        }
+
+        compact = compact_context_pack_audit_record(audit)
+        self.assertNotIn("memory_hierarchy", compact)
+        self.assertEqual("compact_audit", compact["payload_policy"]["mode"])
+
+        debug_compact = compact_context_pack_audit_record(audit, include_debug=True)
+        self.assertIn("memory_hierarchy", debug_compact)
+        self.assertTrue(debug_compact["memory_hierarchy"]["cross_session_enabled"])
+        self.assertEqual(64, debug_compact["memory_hierarchy"]["cross_session_budget_tokens"])
 
     def test_context_pack_audit_refs_preserve_memory_layer_lineage(self) -> None:
         refs = compact_refs_for_audit(
