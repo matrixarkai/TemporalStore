@@ -100,6 +100,33 @@ def is_resource_or_skill_record(item: dict[str, Any]) -> bool:
     }
 
 
+def serving_visibility_gaps(
+    *,
+    serving_types: collections.Counter[str],
+    context_events: list[dict[str, Any]],
+    context_embeddings: list[dict[str, Any]],
+    profile_records: list[dict[str, Any]],
+    resource_skill_records: list[dict[str, Any]],
+    raw_records: list[dict[str, Any]],
+) -> list[str]:
+    gaps: list[str] = []
+    derived_count = sum(
+        serving_types.get(record_type, 0)
+        for record_type in ("context_entity", "context_index", "context_segment", "context_summary")
+    )
+    if derived_count:
+        if not context_events:
+            gaps.append("context_event_missing_while_derived_memory_present")
+        if not context_embeddings:
+            gaps.append("context_embedding_missing_while_derived_memory_present")
+    if serving_types.get("context_index", 0) and not profile_records:
+        gaps.append("profile_records_missing_from_recent_serving_window")
+    raw_resource_or_skill = any(is_resource_or_skill_record(item) for item in raw_records)
+    if raw_resource_or_skill and not resource_skill_records:
+        gaps.append("resource_skill_records_missing_from_recent_serving_window")
+    return gaps
+
+
 def rust_exec(command: dict[str, Any]) -> dict[str, Any]:
     body = json.dumps({"shard_id": 1, "command": command}).encode("utf-8")
     req = urllib.request.Request("http://127.0.0.1:17100/execute", data=body, headers={"content-type": "application/json"})
@@ -190,6 +217,14 @@ def summarize_backend(name: str, prefix: str, raw_count: int, raw_hot_count: int
     context_embeddings = [item for item in serving_records if item["record_type"] == "context_embedding"]
     profile_records = [item for item in serving_records if is_profile_record(item)]
     resource_skill_records = [item for item in serving_records if is_resource_or_skill_record(item)]
+    visibility_gaps = serving_visibility_gaps(
+        serving_types=serving_types,
+        context_events=context_events,
+        context_embeddings=context_embeddings,
+        profile_records=profile_records,
+        resource_skill_records=resource_skill_records,
+        raw_records=raw_records,
+    )
     return {
         "backend": name,
         "prefix": prefix,
@@ -210,6 +245,8 @@ def summarize_backend(name: str, prefix: str, raw_count: int, raw_hot_count: int
         "recent_context_embedding_count": len(context_embeddings),
         "recent_profile_record_count": len(profile_records),
         "recent_resource_skill_record_count": len(resource_skill_records),
+        "serving_visibility_status": "gap" if visibility_gaps else "ok",
+        "serving_visibility_gaps": visibility_gaps,
         "recent_entities": entities[:8],
         "recent_summaries": summaries[:8],
         "recent_raw_records": raw_records[:12],
@@ -258,8 +295,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         "## Backend Counts",
         "",
         render_table(
-            ["Backend", "Prefix", "Compact hot raw", "Compact hot serving", "Physical raw", "Physical serving", "Events", "Embeddings", "Profile", "Resource/skill", "Recent raw types", "Recent serving types"],
-            [[b["backend"], b["prefix"], b["raw_count"], b["serving_count"], b["physical_raw_count"], b["physical_serving_count"], b["recent_context_event_count"], b["recent_context_embedding_count"], b["recent_profile_record_count"], b["recent_resource_skill_record_count"], json.dumps(b["recent_raw_type_counts"], sort_keys=True), json.dumps(b["recent_serving_type_counts"], sort_keys=True)] for b in report["backends"]],
+            ["Backend", "Prefix", "Compact hot raw", "Compact hot serving", "Physical raw", "Physical serving", "Events", "Embeddings", "Profile", "Resource/skill", "Visibility", "Gaps", "Recent raw types", "Recent serving types"],
+            [[b["backend"], b["prefix"], b["raw_count"], b["serving_count"], b["physical_raw_count"], b["physical_serving_count"], b["recent_context_event_count"], b["recent_context_embedding_count"], b["recent_profile_record_count"], b["recent_resource_skill_record_count"], b["serving_visibility_status"], ",".join(b["serving_visibility_gaps"]), json.dumps(b["recent_raw_type_counts"], sort_keys=True), json.dumps(b["recent_serving_type_counts"], sort_keys=True)] for b in report["backends"]],
         ),
     ]
     for backend in report["backends"]:
