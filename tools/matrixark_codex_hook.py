@@ -155,6 +155,8 @@ HOOK_TOOL_CALL_TIMEOUT_MS = _env_int("MATRIXARK_HOOK_TOOL_CALL_TIMEOUT_MS", 8000
 HOOK_RETRIEVE_TIMEOUT_MS = _env_int("MATRIXARK_HOOK_RETRIEVE_TIMEOUT_MS", 5000, minimum=0)
 HOOK_AUTO_BATCH_EXTRACT = _env_bool("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", True)
 HOOK_FAST_ASYNC_INGEST = _env_bool("MATRIXARK_HOOK_FAST_ASYNC_INGEST", True)
+HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH = _env_bool("MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH", False)
+HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT = _env_int("MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT", 2, minimum=1)
 HOOK_COMPACT_HOT_PREFIX_ONLY = os.environ.get("MATRIXARK_HOOK_COMPACT_HOT_PREFIX_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
 
 RESOURCE_TYPE_BY_SUFFIX = {
@@ -3577,6 +3579,14 @@ def main() -> int:
                     "max_context_tokens": args.max_context_tokens,
                     "audit_mode": "telemetry_only",
                     "audit_sample_rate": 0.0,
+                    **(
+                        {
+                            "pre_retrieval_summary_refresh": True,
+                            "pre_retrieval_summary_refresh_limit": HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT,
+                        }
+                        if HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH and args.event == "UserPromptSubmit"
+                        else {}
+                    ),
                     "ranking": {
                         "source_role_budget_mode": "auto",
                         "memory_layer_budget_mode": "auto",
