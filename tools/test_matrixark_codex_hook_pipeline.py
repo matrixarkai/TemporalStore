@@ -2833,6 +2833,52 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertEqual("auto", request["memory_layer_budget_mode"])
 
+    def test_auto_memory_layer_budget_expands_profile_for_current_state_queries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-current-budget.jsonl")
+            scope = {
+                "account_id": "acct_native_current_budget",
+                "tenant_id": "tenant_native_current_budget",
+                "user_id": "user_native_current_budget",
+                "session_id": "session_native_current_budget",
+            }
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "What is the latest Codex profile preference?",
+                    "max_context_tokens": 100,
+                    "ranking": {"memory_layer_budget_mode": "auto"},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertEqual("local-native-pack", pack["pack_id"])
+            self.assertEqual(1, len(adapter.native_requests))
+            request = adapter.native_requests[0]
+            self.assertEqual("current_state", request["question_type"])
+            self.assertEqual("auto", request["memory_layer_budget_mode"])
+            self.assertEqual(
+                {
+                    "summary": 23,
+                    "compression": 19,
+                    "same_session_event": 33,
+                    "cross_session_event": 28,
+                    "same_session_segment": 28,
+                    "cross_session_segment": 28,
+                    "profile_entity": 52,
+                },
+                request["memory_layer_budget_tokens"],
+            )
+            self.assertGreater(
+                request["memory_layer_budget_tokens"]["profile_entity"],
+                request["memory_layer_budget_tokens"]["same_session_event"],
+            )
+            self.assertGreater(
+                request["memory_layer_budget_tokens"]["cross_session_event"],
+                23,
+            )
+
     def test_invalid_pre_retrieval_summary_refresh_limit_env_does_not_break_import(self) -> None:
         env = os.environ.copy()
         env["PYTHONPATH"] = "tools"
@@ -3188,8 +3234,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("independent_per_layer_caps_under_global_remote_budget", layer_policy["budget_semantics"])
             self.assertTrue(layer_policy["independent_caps"])
             self.assertTrue(layer_policy["global_remote_budget_enforced"])
-            self.assertEqual(34, layer_policy["budget_tokens"]["summary"])
-            self.assertEqual(45, layer_policy["budget_tokens"]["profile_entity"])
+            self.assertEqual(39, layer_policy["budget_tokens"]["summary"])
+            self.assertEqual(34, layer_policy["budget_tokens"]["cross_session_event"])
+            self.assertEqual(51, layer_policy["budget_tokens"]["profile_entity"])
             self.assertGreater(sum(layer_policy["budget_tokens"].values()), layer_policy["remote_budget_tokens"])
             self.assertLessEqual(pack["used_remote_context_tokens"], pack["remote_context_budget_tokens"])
 
