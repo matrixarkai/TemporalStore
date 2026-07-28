@@ -14,6 +14,7 @@ import matrixark_codex_hook as hook
 import matrixark_http
 from matrixark_mcp_core import memory_hierarchy_contract_from_recall_policy
 from matrixark_codex_hook_payload import decode_payload, extract_identity, extract_prompt
+from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
 
 
 class MatrixArkCodexHookOutputTest(unittest.TestCase):
@@ -3074,8 +3075,29 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         script = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_dual_hook.sh").read_text()
 
         self.assertIn('f"{prefix}:raw_ingestion:records", raw_record', script)
-        self.assertNotIn('for extracted_record in rust_live_extraction_records()', script)
-        self.assertNotIn('for extracted_record in cpp_live_extraction_records()', script)
+        self.assertIn("for record in rust_live_extraction_records():", script)
+        self.assertIn("for record in cpp_live_extraction_records():", script)
+        self.assertIn('MATRIXARK_CPP_FULL_HOOK_PREFIX:-matrixark:mcp:codex', script)
+        self.assertIn('MATRIXARK_RUST_FULL_HOOK_PREFIX:-matrixark:mcp:codex', script)
+
+    def test_entity_dashboard_projects_state_as_value(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            adapter = MatrixArkLocalAdapter(Path(temporary_directory) / "events.jsonl")
+            adapter.append(
+                {
+                    "record_type": "context_entity",
+                    "entity_hash": 7,
+                    "entity_type": "preference",
+                    "entity_name": "build_preference",
+                    "state": "Reuse the shared TemporalStore build.",
+                    "updated_at_ms": 123,
+                }
+            )
+
+            dashboard = adapter.ingestion_dashboard({"table": "entities"})
+
+        self.assertEqual(1, dashboard["total"])
+        self.assertEqual("Reuse the shared TemporalStore build.", dashboard["rows"][0]["value"])
 
 
     def test_codex_hook_messages_both_skips_local_proxy_debug_reader(self) -> None:

@@ -51,7 +51,7 @@ run_cpp_hook() {
     export MATRIXARK_MCP_BACKEND=temporalstore-direct
     export MATRIXARK_TEMPORALSTORE_METASERVER="${MATRIXARK_CPP_TEMPORALSTORE_METASERVER:-127.0.0.1:18000}"
     CPP_HOT_PREFIX="${MATRIXARK_CPP_TEMPORALSTORE_PREFIX:-matrixark:codex-hook:cpp-live-v2}"
-    export MATRIXARK_TEMPORALSTORE_PREFIX="${MATRIXARK_CPP_FULL_HOOK_PREFIX:-${CPP_HOT_PREFIX}:debug}"
+    export MATRIXARK_TEMPORALSTORE_PREFIX="${MATRIXARK_CPP_FULL_HOOK_PREFIX:-matrixark:mcp:codex}"
     export MATRIXARK_HOOK_AUTOSTART_CPP="${MATRIXARK_HOOK_AUTOSTART_CPP:-1}"
     export MATRIXARK_CPP_DEPLOY_DIR="${MATRIXARK_CPP_DEPLOY_DIR:-$ROOT/.local/runtime/matrixark-cpp-live}"
     export MATRIXARK_HOOK_FAIL_OPEN=1
@@ -82,7 +82,7 @@ run_rust_hook() {
   export MATRIXARK_RUST_SERVICE_DATANODE_ADDR="${MATRIXARK_RUST_SERVICE_DATANODE_ADDR:-127.0.0.1:17102}"
   export MATRIXARK_RUST_SERVICE_PROXY_ADDR="${MATRIXARK_RUST_SERVICE_PROXY_ADDR:-127.0.0.1:17100}"
   export MATRIXARK_TEMPORALSTORE_METASERVER="${MATRIXARK_RUST_SERVICE_PROXY_ADDR}"
-  export MATRIXARK_TEMPORALSTORE_PREFIX="${MATRIXARK_RUST_TEMPORALSTORE_PREFIX:-matrixark:codex-hook:rust-live-v2}"
+  export MATRIXARK_TEMPORALSTORE_PREFIX="${MATRIXARK_RUST_FULL_HOOK_PREFIX:-matrixark:mcp:codex}"
   export MATRIXARK_TEMPORALSTORE_RUST_PROXY="${MATRIXARK_TEMPORALSTORE_RUST_PROXY:-$ROOT/target/release/matrixark_rust_proxy}"
   export MATRIXARK_TEMPORALSTORE_RUST_CLI="${MATRIXARK_TEMPORALSTORE_RUST_CLI:-$ROOT/target/release/matrixark_rust_proxy}"
   export MATRIXARK_HOOK_AUTOSTART_CPP=0
@@ -363,6 +363,7 @@ now_ms = int(time.time() * 1000)
 namespace = os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns")
 table = os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table")
 prefix = os.environ.get("MATRIXARK_RUST_TEMPORALSTORE_PREFIX", "matrixark:codex-hook:rust-live-v2")
+profile_prefix = os.environ.get("MATRIXARK_CODEX_PROFILE_PREFIX", "matrixark:mcp:codex").rstrip(":")
 base = "http://" + os.environ.get("MATRIXARK_RUST_SERVICE_PROXY_ADDR", "127.0.0.1:17100")
 meta = "http://" + os.environ.get("MATRIXARK_RUST_SERVICE_META_ADDR", "127.0.0.1:17101")
 session_id = identity.get("session_id") or os.environ.get("MATRIXARK_HOOK_SESSION_ID") or "codex-live-active-hook"
@@ -605,13 +606,13 @@ def rust_live_extraction_records():
     ]
     topics = live_topic_entities(prompt)
     for topic in topics:
-        entity_id = hashlib.sha256(f"entity\n{session_id}\n{topic}".encode("utf-8")).hexdigest()[:16]
+        entity_hash = int(hashlib.sha256(f"entity\n{session_id}\n{topic}".encode("utf-8")).hexdigest()[:16], 16) & ((1 << 63) - 1)
         records.append(
             {
                 "record_type": "context_entity",
-                "entity_id": entity_id,
+                "entity_hash": entity_hash,
                 "entity_type": "topic",
-                "name": topic,
+                "entity_name": topic,
                 "state": compact_text(f"{topic}: {prompt}", 700),
                 **common_extracted,
             }
@@ -621,7 +622,7 @@ def rust_live_extraction_records():
                 "record_type": "context_index",
                 "index_name": f"entity_type:{topic}",
                 "ref_type": "context_entity",
-                "ref_id": entity_id,
+                "ref_hash": entity_hash,
                 **common_extracted,
             }
         )
@@ -652,6 +653,21 @@ for count_key, records_prefix, record in (
             published_raw = True
     except Exception as exc:
         print(f"publish {records_prefix} failed: {exc}", file=__import__("sys").stderr)
+
+for record in rust_live_extraction_records():
+    for destination_prefix in dict.fromkeys((prefix, profile_prefix)):
+        try:
+            append_record(
+                f"{destination_prefix}:record_count",
+                f"{destination_prefix}:records",
+                record,
+                f"{destination_prefix}:hot_record_count",
+            )
+        except Exception as exc:
+            print(
+                f"publish extracted Rust record to {destination_prefix} failed: {exc}",
+                file=__import__("sys").stderr,
+            )
 
 if event_name == "UserPromptSubmit" and published_raw:
     try:
@@ -917,6 +933,7 @@ now_ms = int(time.time() * 1000)
 namespace = os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns")
 table = os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table")
 prefix = os.environ.get("MATRIXARK_CPP_TEMPORALSTORE_PREFIX", "matrixark:codex-hook:cpp-live-v2")
+profile_prefix = os.environ.get("MATRIXARK_CODEX_PROFILE_PREFIX", "matrixark:mcp:codex").rstrip(":")
 session_id = identity.get("session_id") or os.environ.get("MATRIXARK_HOOK_SESSION_ID") or "codex-live-active-hook"
 session_id = f"codex:{session_id}" if not str(session_id).startswith("codex:") else str(session_id)
 event_name = os.environ.get("EVENT", "UserPromptSubmit")
@@ -1049,12 +1066,12 @@ def cpp_live_extraction_records():
         }
     ]
     for topic in live_topic_entities(prompt):
-        entity_id = hashlib.sha256(f"entity\n{session_id}\n{topic}".encode("utf-8")).hexdigest()[:16]
+        entity_hash = int(hashlib.sha256(f"entity\n{session_id}\n{topic}".encode("utf-8")).hexdigest()[:16], 16) & ((1 << 63) - 1)
         records.append({
             "record_type": "context_entity",
-            "entity_id": entity_id,
+            "entity_hash": entity_hash,
             "entity_type": "topic",
-            "name": topic,
+            "entity_name": topic,
             "state": compact_text(f"{topic}: {prompt}", 700),
             **common_extracted,
         })
@@ -1062,7 +1079,7 @@ def cpp_live_extraction_records():
             "record_type": "context_index",
             "index_name": f"entity_type:{topic}",
             "ref_type": "context_entity",
-            "ref_id": entity_id,
+            "ref_hash": entity_hash,
             **common_extracted,
         })
     summary_id = hashlib.sha256(f"summary\n{session_id}\n{record_hash}".encode("utf-8")).hexdigest()[:16]
@@ -1131,6 +1148,18 @@ for count_key, records_prefix, record in (
             published_raw = True
     except Exception as exc:
         print(f"publish {records_prefix} failed: {exc}", file=sys.stderr)
+
+for record in cpp_live_extraction_records():
+    for destination_prefix in dict.fromkeys((prefix, profile_prefix)):
+        try:
+            append_record(
+                f"{destination_prefix}:record_count",
+                f"{destination_prefix}:records",
+                record,
+                f"{destination_prefix}:hot_record_count",
+            )
+        except Exception as exc:
+            print(f"publish extracted C++ record to {destination_prefix} failed: {exc}", file=sys.stderr)
 
 if event_name == "UserPromptSubmit" and published_raw:
     try:
