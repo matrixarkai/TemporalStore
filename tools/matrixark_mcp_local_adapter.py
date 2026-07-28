@@ -361,6 +361,7 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
     target_memory_scopes: list[str] = []
     target_session_continuities: list[str] = []
     target_extraction_phases: list[str] = []
+    memory_selection_policy_counts: Json = {}
     profile_promotion_policies: list[str] = []
     profile_promotion_blockers: list[str] = []
     final_session_boundary_count = 0
@@ -446,6 +447,36 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
             for codex_event in ordered_unique_any(codex_values):
                 add_count(codex_event_counts, codex_event, 1)
 
+        existing_selection_counts = (
+            record.get("source_memory_selection_policy_counts")
+            if isinstance(record.get("source_memory_selection_policy_counts"), dict)
+            else {}
+        )
+        if existing_selection_counts:
+            for policy, count in existing_selection_counts.items():
+                add_count(memory_selection_policy_counts, policy, count)
+        else:
+            selection_values: list[str] = []
+            add_values(selection_values, record.get("source_memory_selection_policies"))
+            envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
+            metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
+            selection = record.get("codex_memory_selection") if isinstance(record.get("codex_memory_selection"), dict) else {}
+            envelope_selection = (
+                envelope.get("codex_memory_selection")
+                if isinstance(envelope.get("codex_memory_selection"), dict)
+                else {}
+            )
+            metadata_selection = (
+                metadata.get("codex_memory_selection")
+                if isinstance(metadata.get("codex_memory_selection"), dict)
+                else {}
+            )
+            add_values(selection_values, selection.get("policy"))
+            add_values(selection_values, envelope_selection.get("policy"))
+            add_values(selection_values, metadata_selection.get("policy"))
+            for policy in ordered_unique_any(selection_values):
+                add_count(memory_selection_policy_counts, policy, 1)
+
         add_values(memory_scopes, record.get("source_memory_scopes"))
         add_values(memory_scopes, record.get("memory_scope"))
         add_values(session_continuities, record.get("source_session_continuities"))
@@ -472,6 +503,7 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
     source_memory_scopes = ordered_unique_any(memory_scopes)
     source_session_continuities = ordered_unique_any(session_continuities)
     source_extraction_phases = ordered_unique_any(extraction_phases)
+    source_memory_selection_policies = sorted(memory_selection_policy_counts)
     explicit_memory_scopes = ordered_unique_any(target_memory_scopes)
     explicit_session_continuities = ordered_unique_any(target_session_continuities)
     explicit_extraction_phases = ordered_unique_any(target_extraction_phases)
@@ -517,6 +549,8 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
         "source_hook_type_counts": hook_type_counts,
         "source_codex_events": source_codex_events,
         "source_codex_event_counts": codex_event_counts,
+        "source_memory_selection_policies": source_memory_selection_policies,
+        "source_memory_selection_policy_counts": memory_selection_policy_counts,
         "source_memory_scopes": source_memory_scopes,
         "source_session_continuities": source_session_continuities,
         "source_extraction_phases": source_extraction_phases,
@@ -1652,6 +1686,8 @@ class MatrixArkLocalAdapter:
         source_role_counts = source_lineage.get("source_role_counts", {})
         source_hook_type_counts = source_lineage.get("source_hook_type_counts", {})
         source_codex_event_counts = source_lineage.get("source_codex_event_counts", {})
+        source_memory_selection_policies = source_lineage.get("source_memory_selection_policies", [])
+        source_memory_selection_policy_counts = source_lineage.get("source_memory_selection_policy_counts", {})
         if source_roles:
             metadata = {**metadata, "source_roles": source_roles, "source_role_counts": source_role_counts}
         if pending_source_hook_types:
@@ -1662,6 +1698,12 @@ class MatrixArkLocalAdapter:
             metadata = {**metadata, "source_codex_events": source_codex_events, "source_codex_event_counts": source_codex_event_counts}
             if "codex_event" not in metadata and len(pending_source_codex_events) == 1:
                 metadata["codex_event"] = next(iter(pending_source_codex_events))
+        if source_memory_selection_policies:
+            metadata = {
+                **metadata,
+                "source_memory_selection_policies": source_memory_selection_policies,
+                "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            }
         storage_options = normalize_storage_options(args, metadata)
         if "node_path" not in metadata:
             metadata = {**metadata, "node_path": self.default_session_node_path(scope)}
@@ -1706,6 +1748,7 @@ class MatrixArkLocalAdapter:
             "source_roles": source_roles,
             "source_hook_types": source_hook_types,
             "source_codex_events": source_codex_events,
+            "source_memory_selection_policies": source_memory_selection_policies,
             "profile_promotion_policy": batch_result.get("profile_promotion_policy"),
             "profile_promotion_importance_gate": bool(batch_result.get("profile_promotion_importance_gate", False)),
             "profile_promotion_blocker": batch_result.get("profile_promotion_blocker"),
@@ -1742,6 +1785,8 @@ class MatrixArkLocalAdapter:
                 "source_hook_type_counts": source_hook_type_counts,
                 "source_codex_events": source_codex_events,
                 "source_codex_event_counts": source_codex_event_counts,
+                "source_memory_selection_policies": source_memory_selection_policies,
+                "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                 "profile_promotion_summary": batch_result.get("profile_promotion_summary", []),
                 "profile_promotion_policy": batch_result.get("profile_promotion_policy"),
                 "profile_promotion_importance_gate": bool(batch_result.get("profile_promotion_importance_gate", False)),
@@ -1781,6 +1826,8 @@ class MatrixArkLocalAdapter:
                     "source_hook_type_counts": source_hook_type_counts,
                     "source_codex_events": source_codex_events,
                     "source_codex_event_counts": source_codex_event_counts,
+                    "source_memory_selection_policies": source_memory_selection_policies,
+                    "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                     "summary_refresh_status": memory_layers_written.get("summary_refresh_status"),
                     "summary_dirty_nodes": memory_layers_written.get("summary_dirty_nodes", 0),
                     "memory_layers_written": memory_layers_written,
@@ -1807,6 +1854,8 @@ class MatrixArkLocalAdapter:
             "source_hook_type_counts": source_hook_type_counts,
             "source_codex_events": source_codex_events,
             "source_codex_event_counts": source_codex_event_counts,
+            "source_memory_selection_policies": source_memory_selection_policies,
+            "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
             "profile_promotion_summary": batch_result.get("profile_promotion_summary", []),
             "commit_reason": commit_reason,
             "trigger_policy": trigger_policy,
@@ -2260,6 +2309,8 @@ class MatrixArkLocalAdapter:
                 "source_hook_type_counts",
                 "source_codex_events",
                 "source_codex_event_counts",
+                "source_memory_selection_policies",
+                "source_memory_selection_policy_counts",
                 "source_memory_scopes",
                 "source_session_continuities",
                 "source_extraction_phases",
@@ -2566,6 +2617,36 @@ class MatrixArkLocalAdapter:
                         event_name = str(codex_event or "").strip()
                         if event_name:
                             source_codex_event_counts[event_name] = int(source_codex_event_counts.get(event_name, 0)) + 1
+            source_memory_selection_policy_counts: Json = {}
+            for record in events + entity_states + child_summaries:
+                counts = (
+                    record.get("source_memory_selection_policy_counts")
+                    if isinstance(record.get("source_memory_selection_policy_counts"), dict)
+                    else {}
+                )
+                for policy, count in counts.items():
+                    policy_name = str(policy or "").strip()
+                    if not policy_name:
+                        continue
+                    try:
+                        source_memory_selection_policy_counts[policy_name] = int(
+                            source_memory_selection_policy_counts.get(policy_name, 0)
+                        ) + max(0, int(count or 0))
+                    except (TypeError, ValueError):
+                        continue
+                if not counts:
+                    values = (
+                        record.get("source_memory_selection_policies")
+                        if isinstance(record.get("source_memory_selection_policies"), list)
+                        else []
+                    )
+                    for policy in values:
+                        policy_name = str(policy or "").strip()
+                        if policy_name:
+                            source_memory_selection_policy_counts[policy_name] = int(
+                                source_memory_selection_policy_counts.get(policy_name, 0)
+                            ) + 1
+            source_memory_selection_policies = sorted(source_memory_selection_policy_counts)
             def source_layer_values(list_field: str, fallback_field: str) -> list[str]:
                 values: set[str] = set()
                 for record in events + entity_states + child_summaries:
@@ -2675,6 +2756,8 @@ class MatrixArkLocalAdapter:
                     "source_hook_type_counts": source_hook_type_counts,
                     "source_codex_events": source_codex_events,
                     "source_codex_event_counts": source_codex_event_counts,
+                    "source_memory_selection_policies": source_memory_selection_policies,
+                    "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                     "source_memory_scopes": source_memory_scopes,
                     "source_session_continuities": source_session_continuities,
                     "source_extraction_phases": source_extraction_phases,
@@ -2767,6 +2850,8 @@ class MatrixArkLocalAdapter:
                         "source_hook_type_counts": source_hook_type_counts,
                         "source_codex_events": source_codex_events,
                         "source_codex_event_counts": source_codex_event_counts,
+                        "source_memory_selection_policies": source_memory_selection_policies,
+                        "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                         "source_memory_scopes": source_memory_scopes,
                         "source_session_continuities": source_session_continuities,
                         "source_extraction_phases": source_extraction_phases,
@@ -2821,6 +2906,8 @@ class MatrixArkLocalAdapter:
                     "source_hook_type_counts": source_hook_type_counts,
                     "source_codex_events": source_codex_events,
                     "source_codex_event_counts": source_codex_event_counts,
+                    "source_memory_selection_policies": source_memory_selection_policies,
+                    "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                     "source_memory_scopes": source_memory_scopes,
                     "source_session_continuities": source_session_continuities,
                     "source_extraction_phases": source_extraction_phases,
@@ -5168,6 +5255,40 @@ class MatrixArkLocalAdapter:
                     continue
                 if amount:
                     source_codex_event_counts[event_name] = int(source_codex_event_counts.get(event_name, 0)) + amount
+        source_memory_selection_policy_counts: Json = {}
+        metadata_selection_counts = (
+            envelope_metadata.get("source_memory_selection_policy_counts")
+            if isinstance(envelope_metadata.get("source_memory_selection_policy_counts"), dict)
+            else {}
+        )
+        if metadata_selection_counts:
+            for policy, count in metadata_selection_counts.items():
+                policy_name = str(policy or "").strip()
+                if not policy_name:
+                    continue
+                try:
+                    amount = max(0, int(count or 0))
+                except (TypeError, ValueError):
+                    continue
+                if amount:
+                    source_memory_selection_policy_counts[policy_name] = int(
+                        source_memory_selection_policy_counts.get(policy_name, 0)
+                    ) + amount
+        else:
+            selection_values: list[str] = []
+            if isinstance(envelope_metadata.get("source_memory_selection_policies"), list):
+                selection_values.extend(envelope_metadata["source_memory_selection_policies"])
+            selection = (
+                envelope_metadata.get("codex_memory_selection")
+                if isinstance(envelope_metadata.get("codex_memory_selection"), dict)
+                else {}
+            )
+            selection_policy = str(selection.get("policy") or "").strip()
+            if selection_policy:
+                selection_values.append(selection_policy)
+            for policy_name in ordered_unique_any(selection_values):
+                source_memory_selection_policy_counts[policy_name] = source_lineage_count
+        source_memory_selection_policies = sorted(source_memory_selection_policy_counts)
 
         event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
         records_to_append: list[Json] = []
@@ -5241,6 +5362,8 @@ class MatrixArkLocalAdapter:
                         "source_hook_type_counts": source_hook_type_counts,
                         "source_codex_events": source_codex_events,
                         "source_codex_event_counts": source_codex_event_counts,
+                        "source_memory_selection_policies": source_memory_selection_policies,
+                        "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                         "storage_options": envelope.get("storage_options", {}),
                         "updated_at_ms": envelope["ingestion_time_ms"],
                         "memory_scope": "session",
@@ -5339,6 +5462,8 @@ class MatrixArkLocalAdapter:
                 "source_hook_type_counts": source_hook_type_counts,
                 "source_codex_events": source_codex_events,
                 "source_codex_event_counts": source_codex_event_counts,
+                "source_memory_selection_policies": source_memory_selection_policies,
+                "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                 "extraction_context_event_ids": extraction_context_event_ids,
                 "field_patches": updated_entity.get("field_patches", []),
                 "patch_results": updated_entity.get("patch_results", []),
@@ -5450,6 +5575,17 @@ class MatrixArkLocalAdapter:
                 profile_source_codex_event_counts: Json = dict(previous_profile.get("source_codex_event_counts", {}))
                 for codex_event, count in source_codex_event_counts.items():
                     profile_source_codex_event_counts[codex_event] = int(profile_source_codex_event_counts.get(codex_event, 0)) + int(count)
+                profile_source_memory_selection_policies = ordered_unique_any(
+                    list(previous_profile.get("source_memory_selection_policies", []))
+                    + source_memory_selection_policies
+                )
+                profile_source_memory_selection_policy_counts: Json = dict(
+                    previous_profile.get("source_memory_selection_policy_counts", {})
+                )
+                for policy, count in source_memory_selection_policy_counts.items():
+                    profile_source_memory_selection_policy_counts[policy] = int(
+                        profile_source_memory_selection_policy_counts.get(policy, 0)
+                    ) + int(count)
                 profile_source_memory_scopes = ordered_unique_any(
                     list(previous_profile.get("source_memory_scopes", []))
                     + [previous_profile.get("memory_scope"), "session", "user_profile"]
@@ -5475,6 +5611,8 @@ class MatrixArkLocalAdapter:
                         "source_hook_type_counts": profile_source_hook_type_counts,
                         "source_codex_events": profile_source_codex_events,
                         "source_codex_event_counts": profile_source_codex_event_counts,
+                        "source_memory_selection_policies": profile_source_memory_selection_policies,
+                        "source_memory_selection_policy_counts": profile_source_memory_selection_policy_counts,
                         "source_memory_scopes": profile_source_memory_scopes,
                         "source_session_continuities": profile_source_session_continuities,
                     }
@@ -5503,6 +5641,8 @@ class MatrixArkLocalAdapter:
                     "source_hook_type_counts": profile_source_hook_type_counts,
                     "source_codex_events": profile_source_codex_events,
                     "source_codex_event_counts": profile_source_codex_event_counts,
+                    "source_memory_selection_policies": profile_source_memory_selection_policies,
+                    "source_memory_selection_policy_counts": profile_source_memory_selection_policy_counts,
                     "source_memory_scopes": profile_source_memory_scopes,
                     "source_session_continuities": profile_source_session_continuities,
                     "source_batch_id_hash": batch_id_hash,
@@ -5589,6 +5729,8 @@ class MatrixArkLocalAdapter:
                     "source_hook_type_counts": source_hook_type_counts,
                     "source_codex_events": source_codex_events,
                     "source_codex_event_counts": source_codex_event_counts,
+                    "source_memory_selection_policies": source_memory_selection_policies,
+                    "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                     "source_memory_scopes": ["session"],
                     "source_session_continuities": ["same_session"],
                     "source_extraction_phases": [extraction_phase],
@@ -5641,6 +5783,8 @@ class MatrixArkLocalAdapter:
                 "source_hook_type_counts": source_hook_type_counts,
                 "source_codex_events": source_codex_events,
                 "source_codex_event_counts": source_codex_event_counts,
+                "source_memory_selection_policies": source_memory_selection_policies,
+                "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                 "scope": envelope["scope"],
                 "extraction_phase": extraction_phase,
                 "final_session_boundary": final_session_boundary,
@@ -6516,6 +6660,16 @@ class MatrixArkLocalAdapter:
                     candidate.get("source_codex_event_counts")
                     if isinstance(candidate.get("source_codex_event_counts"), dict)
                     else record.get("source_codex_event_counts", {})
+                ),
+                "source_memory_selection_policies": (
+                    candidate.get("source_memory_selection_policies")
+                    if isinstance(candidate.get("source_memory_selection_policies"), list)
+                    else record.get("source_memory_selection_policies", [])
+                ),
+                "source_memory_selection_policy_counts": (
+                    candidate.get("source_memory_selection_policy_counts")
+                    if isinstance(candidate.get("source_memory_selection_policy_counts"), dict)
+                    else record.get("source_memory_selection_policy_counts", {})
                 ),
                 "source_memory_scopes": (
                     candidate.get("source_memory_scopes")

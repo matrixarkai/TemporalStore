@@ -26,6 +26,7 @@ DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS = {
     "budget_source_roles",
     "source_hook_types",
     "source_codex_events",
+    "source_memory_selection_policies",
     "source_memory_scopes",
     "source_session_continuities",
     "source_extraction_phases",
@@ -36,6 +37,7 @@ DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS = {
     "budget_source_role_counts",
     "source_hook_type_counts",
     "source_codex_event_counts",
+    "source_memory_selection_policy_counts",
     "source_message_counts_by_role",
     "source_hook_counts_by_type",
     "source_codex_event_counts_by_event",
@@ -50,6 +52,7 @@ DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS = {
     "by_source_role",
     "by_hook_type",
     "by_codex_event",
+    "by_memory_selection_policy",
     "source_entity_types",
     "source_entity_hashes",
     "source_entity_count",
@@ -200,6 +203,7 @@ def serving_memory_layer_budget(value: Any) -> Json:
         "by_source_role",
         "by_hook_type",
         "by_codex_event",
+        "by_memory_selection_policy",
         "source_message_counts_by_role",
         "source_hook_counts_by_type",
         "source_codex_event_counts_by_event",
@@ -392,6 +396,7 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         "budget_source_roles",
         "source_hook_types",
         "source_codex_events",
+        "source_memory_selection_policies",
         "source_memory_scopes",
         "source_session_continuities",
         "source_extraction_phases",
@@ -403,6 +408,7 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         "budget_source_role_counts",
         "source_hook_type_counts",
         "source_codex_event_counts",
+        "source_memory_selection_policy_counts",
     ] if debug_lineage_enabled(include_debug=include_debug) else []
     for field in flat_debug_lineage_fields:
         value = ref.get(field)
@@ -797,6 +803,8 @@ def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> lis
         "source_hook_type_counts",
         "source_codex_events",
         "source_codex_event_counts",
+        "source_memory_selection_policies",
+        "source_memory_selection_policy_counts",
         "source_memory_scopes",
         "source_session_continuities",
         "source_extraction_phases",
@@ -939,6 +947,7 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         "source_roles",
         "source_hook_types",
         "source_codex_events",
+        "source_memory_selection_policies",
         "source_memory_scopes",
         "source_session_continuities",
         "source_extraction_phases",
@@ -949,6 +958,7 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         "source_role_counts",
         "source_hook_type_counts",
         "source_codex_event_counts",
+        "source_memory_selection_policy_counts",
     ] if debug_lineage_enabled(include_debug=include_debug) else []
     for field in debug_lineage_fields:
         value = ref.get(field, metadata.get(field))
@@ -1046,6 +1056,7 @@ def _bound_prebuilt_serving_lineage_item(item: Json) -> Json:
         "source_session_ids",
         "source_hook_types",
         "source_codex_events",
+        "source_memory_selection_policies",
         "source_memory_scopes",
         "source_session_continuities",
         "source_extraction_phases",

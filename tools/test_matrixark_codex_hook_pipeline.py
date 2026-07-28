@@ -120,6 +120,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "source_role_counts": {"user": 1},
                     "source_hook_type_counts": {"before_llm": 1},
                     "source_codex_event_counts": {"UserPromptSubmit": 1},
+                    "source_memory_selection_policies": ["selected_user_prompt"],
+                    "source_memory_selection_policy_counts": {"selected_user_prompt": 1},
                     "extraction_phase": "provisional",
                 },
                 {
@@ -129,6 +131,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "source_roles": ["tool"],
                     "source_hook_types": ["tool_result"],
                     "source_codex_events": ["PostToolUse"],
+                    "source_memory_selection_policies": ["selected_tool_evidence_only"],
+                    "source_memory_selection_policy_counts": {"selected_tool_evidence_only": 1},
                 },
             ],
             child_summaries=[
@@ -142,6 +146,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "source_hook_type_counts": {"after_llm": 1},
                     "source_codex_events": ["Stop"],
                     "source_codex_event_counts": {"Stop": 1},
+                    "source_memory_selection_policies": ["selected_assistant_decision_outcome_only"],
+                    "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 1},
                     "source_memory_scopes": ["session", "user_profile"],
                     "source_session_continuities": ["same_session", "cross_session"],
                     "memory_scope": "user_profile",
@@ -163,6 +169,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "source_hook_type_counts": {"after_llm": 1, "tool_result": 1},
                     "source_codex_events": ["Stop", "PostToolUse"],
                     "source_codex_event_counts": {"Stop": 1, "PostToolUse": 1},
+                    "source_memory_selection_policies": ["selected_assistant_decision_outcome_only", "selected_tool_evidence_only"],
+                    "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 1, "selected_tool_evidence_only": 1},
                     "memory_scope": "user_profile",
                     "session_continuity": "cross_session",
                     "extraction_phase": "provisional",
@@ -183,6 +191,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual({"after_llm": 2, "before_llm": 1, "tool_result": 2}, summary["source_hook_type_counts"])
         self.assertEqual(["PostToolUse", "Stop", "UserPromptSubmit"], summary["source_codex_events"])
         self.assertEqual({"PostToolUse": 2, "Stop": 2, "UserPromptSubmit": 1}, summary["source_codex_event_counts"])
+        self.assertEqual(["selected_assistant_decision_outcome_only", "selected_tool_evidence_only", "selected_user_prompt"], summary["source_memory_selection_policies"])
+        self.assertEqual({"selected_assistant_decision_outcome_only": 2, "selected_tool_evidence_only": 2, "selected_user_prompt": 1}, summary["source_memory_selection_policy_counts"])
         self.assertEqual(["session", "user_profile"], summary["source_memory_scopes"])
         self.assertEqual(["cross_session", "same_session"], summary["source_session_continuities"])
         self.assertEqual("user_profile", summary["memory_scope"])
@@ -213,6 +223,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "source_message_counts_by_role",
             "source_hook_counts_by_type",
             "source_codex_event_counts_by_event",
+            "source_memory_selection_policies",
+            "source_memory_selection_policy_counts",
+            "by_memory_selection_policy",
             "pending_source_roles",
             "pending_source_hook_types",
             "pending_source_codex_events",
@@ -2543,6 +2556,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertEqual("threshold", commit["trigger_policy"])
                 self.assertEqual(3, commit["committed_event_count"])
                 self.assertEqual(["assistant", "tool", "user"], commit["source_roles"])
+                self.assertEqual(
+                    ["selected_assistant_decision_outcome_only", "selected_tool_evidence_only"],
+                    commit["source_memory_selection_policies"],
+                )
+                self.assertEqual(
+                    {"selected_assistant_decision_outcome_only": 1, "selected_tool_evidence_only": 1},
+                    commit["source_memory_selection_policy_counts"],
+                )
                 self.assertGreaterEqual(commit["memory_layers_written"]["profile_entities"], 1)
                 self.assertGreaterEqual(commit["memory_layers_written"]["secondary_indexes"], 1)
 
@@ -2612,12 +2633,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 )
                 self.assertNotIn("budget_source_roles", selected_tool_ref)
                 self.assertNotIn("budget_source_role_counts", selected_tool_ref)
+                self.assertNotIn("source_memory_selection_policies", selected_tool_ref)
+                self.assertNotIn("source_memory_selection_policy_counts", selected_tool_ref)
                 tool_role_policy = pack["recall_policy"]["source_role_budget"]
                 self.assertTrue(tool_role_policy["enabled"])
                 self.assertEqual({"assistant": 1}, tool_role_policy["budget_tokens"])
                 self.assertEqual(0, tool_role_policy["selected_tokens_by_role"]["assistant"])
                 tool_layer_budget = pack["recall_policy"]["memory_layer_budget"]
                 self.assertEqual({"tool": 1}, tool_layer_budget["source_message_counts_by_role"])
+                self.assertIn("selected_tool_evidence_only", tool_layer_budget["by_memory_selection_policy"])
+                self.assertGreaterEqual(tool_layer_budget["by_memory_selection_policy"]["selected_tool_evidence_only"]["refs"], 1)
 
                 assistant_pack = adapter.retrieve(
                     {
@@ -2655,12 +2680,19 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 )
                 self.assertNotIn("budget_source_roles", selected_assistant_ref)
                 self.assertNotIn("budget_source_role_counts", selected_assistant_ref)
+                self.assertNotIn("source_memory_selection_policies", selected_assistant_ref)
+                self.assertNotIn("source_memory_selection_policy_counts", selected_assistant_ref)
                 assistant_role_policy = assistant_pack["recall_policy"]["source_role_budget"]
                 self.assertTrue(assistant_role_policy["enabled"])
                 self.assertEqual({"tool": 1}, assistant_role_policy["budget_tokens"])
                 self.assertEqual(0, assistant_role_policy["selected_tokens_by_role"]["tool"])
                 assistant_layer_budget = assistant_pack["recall_policy"]["memory_layer_budget"]
                 self.assertEqual({"assistant": 1}, assistant_layer_budget["source_message_counts_by_role"])
+                self.assertIn("selected_assistant_decision_outcome_only", assistant_layer_budget["by_memory_selection_policy"])
+                self.assertGreaterEqual(
+                    assistant_layer_budget["by_memory_selection_policy"]["selected_assistant_decision_outcome_only"]["refs"],
+                    1,
+                )
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
@@ -7181,6 +7213,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertNotIn("source_roles", item)
                 self.assertNotIn("source_hook_types", item)
                 self.assertNotIn("source_codex_events", item)
+                self.assertNotIn("source_memory_selection_policies", item)
+                self.assertNotIn("source_memory_selection_policy_counts", item)
             self.assertTrue(any(item.get("final_session_boundary") is True for item in summary_items))
 
     def test_batch_extract_reports_profile_scope_missing_without_importance_gate(self) -> None:
