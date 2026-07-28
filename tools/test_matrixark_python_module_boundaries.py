@@ -458,6 +458,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
 
         self.assertEqual(1, result["entities_written"])
         self.assertEqual(1, result["profile_entities_written"])
+        self.assertGreaterEqual(result["entity_indexes_written"], 14)
+        self.assertGreaterEqual(result["indexes_written"], result["entity_indexes_written"] + 1)
         self.assertIn("summary_refresh", result)
         self.assertGreaterEqual(len(result["summary_refresh"]["dirty_hashes"]), 2)
         self.assertTrue(result["summary_refresh"]["session_dirty_hashes"])
@@ -499,8 +501,28 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             if record.get("record_type") == "context_index"
             and record.get("data_model") == "context_profile_entity"
         ]
-        self.assertTrue(any(record.get("index_name") == "memory_scope:user_profile" for record in profile_indexes))
-        self.assertTrue(any(record.get("index_name") == "session_continuity:cross_session" for record in profile_indexes))
+        session_indexes = [
+            record
+            for record in adapter.records
+            if record.get("record_type") == "context_index"
+            and record.get("data_model") == "context_entity"
+        ]
+        session_index_names = {str(record.get("index_name") or "") for record in session_indexes}
+        profile_index_names = {str(record.get("index_name") or "") for record in profile_indexes}
+        for index_names, memory_scope, session_continuity in [
+            (session_index_names, "memory_scope:session", "session_continuity:same_session"),
+            (profile_index_names, "memory_scope:user_profile", "session_continuity:cross_session"),
+        ]:
+            self.assertIn("entity_type:assistant_decision", index_names)
+            self.assertIn(memory_scope, index_names)
+            self.assertIn(session_continuity, index_names)
+            self.assertIn("extraction_phase:final", index_names)
+            self.assertIn("source_role:assistant", index_names)
+            self.assertIn("source_role:tool", index_names)
+            self.assertIn("hook_type:after_llm", index_names)
+            self.assertIn("hook_type:hook_boundary", index_names)
+            self.assertIn("codex_event:posttooluse", index_names)
+            self.assertIn("codex_event:stop", index_names)
         dirty_records = [record for record in adapter.records if record.get("record_type") == "context_summary_dirty"]
         self.assertTrue(any(record.get("dirty_reason") == "new_event" for record in dirty_records))
         profile_dirty = [

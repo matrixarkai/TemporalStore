@@ -61,8 +61,6 @@ def debug_lineage_enabled(*, include_debug: bool = False) -> bool:
 
 def _is_default_hidden_debug_lineage_key(key: Any) -> bool:
     name = str(key or "").strip()
-    if name in {"source_entity_lineage"}:
-        return False
     if name in DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS:
         return True
     lowered = name.lower()
@@ -196,6 +194,10 @@ def serving_memory_layer_budget(value: Any) -> Json:
         "source_codex_event_counts_by_event",
     ]:
         compact.pop(field, None)
+    compact = strip_default_debug_lineage_fields(compact)
+    for field in list(compact):
+        if isinstance(compact.get(field), dict) and not compact[field]:
+            compact.pop(field, None)
     return compact
 
 
@@ -236,6 +238,25 @@ def serving_memory_layer_pressure(value: Any) -> Json:
         "post_tool_use_source_pressure",
     ]:
         compact.pop(field, None)
+    compact = strip_default_debug_lineage_fields(compact)
+    by_dimension = compact.get("by_dimension")
+    if isinstance(by_dimension, dict):
+        compact["by_dimension"] = {
+            str(key): value
+            for key, value in by_dimension.items()
+            if not (isinstance(value, dict) and not value)
+        }
+        valid_dimensions = set(compact["by_dimension"])
+        for list_field in ["pressure_dimensions", "dropped_dimensions"]:
+            values = compact.get(list_field)
+            if isinstance(values, list):
+                compact[list_field] = [
+                    value
+                    for value in values
+                    if not (str(value).startswith("by_") and str(value) not in valid_dimensions)
+                ]
+        if not compact["by_dimension"]:
+            compact.pop("by_dimension", None)
     return compact
 
 

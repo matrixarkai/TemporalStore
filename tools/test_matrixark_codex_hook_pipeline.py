@@ -126,6 +126,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "by_codex_event",
             "source_entity_hashes",
             "source_entity_count",
+            "source_entity_lineage",
             "current_state_source_session_count",
             "current_state_source_entity_count",
         }
@@ -204,6 +205,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "by_dimension": {
                         "by_source_role": {"assistant": {"dropped_refs": 1}},
                         "by_memory_scope": {"session": {"dropped_refs": 1}},
+                        "by_profile_shadowed_reason": {
+                            "source_entity_lineage": {"dropped_refs": 1},
+                        },
                     },
                     "assistant_source_message_pressure": True,
                 },
@@ -251,6 +255,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         )
         self.assertNotIn(
             "by_source_role",
+            metrics_serving["retrieval_metrics"]["memory_layer_pressure"].get("by_dimension", {}),
+        )
+        self.assertNotIn(
+            "by_profile_shadowed_reason",
             metrics_serving["retrieval_metrics"]["memory_layer_pressure"].get("by_dimension", {}),
         )
         self.assertEqual(
@@ -3257,7 +3265,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             }
             self.assertIn("entity_type:assistant_decision", index_names)
             self.assertIn("source_role:assistant", index_names)
-            self.assertIn("codex_event:PreviousAssistantBackfill", index_names)
+            self.assertIn("codex_event:previousassistantbackfill", index_names)
 
             pack = adapter.retrieve(
                 {
@@ -3381,8 +3389,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("source_role:assistant", index_names)
             self.assertIn("hook_type:after_llm", index_names)
             self.assertIn("hook_type:session_commit", index_names)
-            self.assertIn("codex_event:PreviousAssistantBackfill", index_names)
-            self.assertIn("codex_event:Stop:async_rollout_backfill", index_names)
+            self.assertIn("codex_event:previousassistantbackfill", index_names)
+            self.assertIn("codex_event:stop:async_rollout_backfill", index_names)
 
             scope = {
                 "account_id": "acct_hook",
@@ -3511,8 +3519,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("source_role:tool", index_names)
             self.assertIn("hook_type:tool_result", index_names)
             self.assertIn("hook_type:session_commit", index_names)
-            self.assertIn("codex_event:PreviousToolOutputBackfill", index_names)
-            self.assertIn("codex_event:PostToolUse:async_rollout_backfill", index_names)
+            self.assertIn("codex_event:previoustooloutputbackfill", index_names)
+            self.assertIn("codex_event:posttooluse:async_rollout_backfill", index_names)
 
             scope = {
                 "account_id": "acct_hook",
@@ -4503,7 +4511,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("source_role:assistant", index_names)
             self.assertIn("source_role:tool", index_names)
             self.assertIn("hook_type:hook_boundary", index_names)
-            self.assertIn("codex_event:Stop", index_names)
+            self.assertIn("codex_event:stop", index_names)
             self.assertTrue(any(str(name).startswith("entity_type:") for name in index_names))
             self.assertIn("entity_type:assistant_decision", index_names)
             self.assertIn("entity_type:tool_evidence", index_names)
@@ -5106,7 +5114,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("by_codex_event", dropped_budget)
             self.assertNotIn("source_codex_event_counts_by_event", dropped_budget)
             self.assertGreaterEqual(dropped_budget["profile_shadowed_ref_count"], 1)
-            self.assertGreaterEqual(dropped_budget["by_profile_shadowed_reason"]["source_entity_lineage"]["refs"], 1)
+            self.assertNotIn("source_entity_lineage", dropped_budget.get("by_profile_shadowed_reason", {}))
             self.assertEqual(dropped_budget, current_metrics["dropped_memory_layer_budget"])
             layer_pressure = current_metrics["memory_layer_pressure"]
             self.assertEqual(current_pack["memory_layer_pressure"], layer_pressure)
@@ -5121,9 +5129,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("by_profile_shadowed_reason", layer_pressure["dropped_dimensions"])
             self.assertIn("by_extraction_phase", layer_pressure["dropped_dimensions"])
             self.assertNotIn("source_message_counts_by_role", layer_pressure["dropped_dimensions"])
-            self.assertGreaterEqual(
-                layer_pressure["by_dimension"]["by_profile_shadowed_reason"]["source_entity_lineage"]["dropped_refs"],
-                1,
+            self.assertNotIn(
+                "source_entity_lineage",
+                layer_pressure["by_dimension"].get("by_profile_shadowed_reason", {}),
             )
             self.assertGreaterEqual(layer_pressure["by_dimension"]["by_extraction_phase"]["final"]["dropped_refs"], 1)
             self.assertNotIn("source_message_counts_by_role", layer_pressure["by_dimension"])

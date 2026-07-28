@@ -11,6 +11,7 @@ try:
         MAX_PRIOR_MESSAGES,
         Json,
         apply_entity_patches,
+        candidate_index_terms,
         collect_prior_context,
         context_index_posting_record,
         embedding_execution_mode_name,
@@ -35,6 +36,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         MAX_PRIOR_MESSAGES,
         Json,
         apply_entity_patches,
+        candidate_index_terms,
         collect_prior_context,
         context_index_posting_record,
         embedding_execution_mode_name,
@@ -285,6 +287,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
     entity_hashes = []
     profile_entity_hashes = []
     profile_dirty_hashes: list[int] = []
+    entity_index_write_count = 0
     for entity in extraction["entities"]:
         entity_hash = stable_hash(
             f"{node_hash}:{entity['entity_type']}:{entity['entity_name']}"
@@ -296,39 +299,54 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         )
         updated_entity = apply_entity_patches(previous_entity, entity)
         entity_hashes.append(entity_hash)
-        records_to_append.append(
-            {
-                "record_type": "context_entity",
-                "entity_hash": entity_hash,
-                "batch_id_hash": batch_id_hash,
-                "node_hash": node_hash,
-                "node_path": node_path,
-                "scope": envelope["scope"],
-                "entity_type": updated_entity["entity_type"],
-                "entity_name": updated_entity["entity_name"],
-                "state": updated_entity["state"],
-                "previous_state": updated_entity.get("previous_state", ""),
-                "confidence": updated_entity["confidence"],
-                "operator": updated_entity["operator"],
-                "source_refs": updated_entity["source_refs"],
-                "source_event_ids": source_event_ids,
-                "source_roles": source_roles,
-                "source_role_counts": source_role_counts,
-                "source_hook_types": source_hook_types,
-                "source_hook_type_counts": source_hook_type_counts,
-                "source_codex_events": source_codex_events,
-                "source_codex_event_counts": source_codex_event_counts,
-                "field_patches": updated_entity.get("field_patches", []),
-                "patch_results": updated_entity.get("patch_results", []),
-                "update_mode": updated_entity.get("update_mode", ""),
-                "memory_scope": "session",
-                "session_continuity": "same_session",
-                "extraction_phase": extraction_phase,
-                "final_session_boundary": final_session_boundary,
-                "extraction_context_event_ids": extraction_context_event_ids,
-                "updated_at_ms": envelope["ingestion_time_ms"],
-            }
-        )
+        session_entity_record = {
+            "record_type": "context_entity",
+            "entity_hash": entity_hash,
+            "batch_id_hash": batch_id_hash,
+            "node_hash": node_hash,
+            "node_path": node_path,
+            "scope": envelope["scope"],
+            "access_scope": envelope["scope"],
+            "entity_type": updated_entity["entity_type"],
+            "entity_name": updated_entity["entity_name"],
+            "state": updated_entity["state"],
+            "previous_state": updated_entity.get("previous_state", ""),
+            "confidence": updated_entity["confidence"],
+            "operator": updated_entity["operator"],
+            "source_refs": updated_entity["source_refs"],
+            "source_event_ids": source_event_ids,
+            "source_roles": source_roles,
+            "source_role_counts": source_role_counts,
+            "source_hook_types": source_hook_types,
+            "source_hook_type_counts": source_hook_type_counts,
+            "source_codex_events": source_codex_events,
+            "source_codex_event_counts": source_codex_event_counts,
+            "field_patches": updated_entity.get("field_patches", []),
+            "patch_results": updated_entity.get("patch_results", []),
+            "update_mode": updated_entity.get("update_mode", ""),
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "extraction_phase": extraction_phase,
+            "final_session_boundary": final_session_boundary,
+            "extraction_context_event_ids": extraction_context_event_ids,
+            "updated_at_ms": envelope["ingestion_time_ms"],
+        }
+        records_to_append.append(session_entity_record)
+        for index_name in candidate_index_terms(session_entity_record, {}, {}):
+            session_index = context_index_posting_record(
+                index_name=index_name,
+                data_model="context_entity",
+                ref_type="entity",
+                ref_hashes=[entity_hash],
+                batch_id_hash=batch_id_hash,
+                node_hash=node_hash,
+                scope=envelope["scope"],
+                updated_at_ms=envelope["ingestion_time_ms"],
+            )
+            session_index["access_scope"] = envelope["scope"]
+            session_index.pop("index_hash", None)
+            records_to_append.append(session_index)
+            entity_index_write_count += 1
         if updated_entity.get("patch_results"):
             records_to_append.append(
                 {
@@ -415,44 +433,43 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             for codex_event, count in source_codex_event_counts.items():
                 profile_source_codex_event_counts[codex_event] = int(profile_source_codex_event_counts.get(codex_event, 0)) + int(count)
             profile_entity_hashes.append(profile_entity_hash)
-            records_to_append.append(
-                {
-                    "record_type": "context_entity",
-                    "entity_hash": profile_entity_hash,
-                    "batch_id_hash": batch_id_hash,
-                    "node_hash": profile_node_hash,
-                    "node_path": profile_node_path,
-                    "scope": profile_scope,
-                    "access_scope": profile_scope,
-                    "entity_type": promoted_entity["entity_type"],
-                    "entity_name": promoted_entity["entity_name"],
-                    "state": promoted_entity["state"],
-                    "previous_state": promoted_entity.get("previous_state", ""),
-                    "confidence": promoted_entity["confidence"],
-                    "operator": promoted_entity["operator"],
-                    "source_refs": profile_source_refs,
-                    "source_event_ids": profile_source_event_ids,
-                    "source_session_ids": profile_source_session_ids,
-                    "source_entity_hashes": profile_source_entity_hashes,
-                    "source_roles": profile_source_roles,
-                    "source_role_counts": profile_source_role_counts,
-                    "source_hook_types": profile_source_hook_types,
-                    "source_hook_type_counts": profile_source_hook_type_counts,
-                    "source_codex_events": profile_source_codex_events,
-                    "source_codex_event_counts": profile_source_codex_event_counts,
-                    "source_batch_id_hash": batch_id_hash,
-                    "extraction_context_event_ids": extraction_context_event_ids,
-                    "field_patches": promoted_entity.get("field_patches", []),
-                    "patch_results": promoted_entity.get("patch_results", []),
-                    "update_mode": promoted_entity.get("update_mode", ""),
-                    "memory_scope": "user_profile",
-                    "session_continuity": "cross_session",
-                    "promoted_from_memory_scope": "session",
-                    "extraction_phase": extraction_phase,
-                    "final_session_boundary": final_session_boundary,
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
-            )
+            profile_entity_record = {
+                "record_type": "context_entity",
+                "entity_hash": profile_entity_hash,
+                "batch_id_hash": batch_id_hash,
+                "node_hash": profile_node_hash,
+                "node_path": profile_node_path,
+                "scope": profile_scope,
+                "access_scope": profile_scope,
+                "entity_type": promoted_entity["entity_type"],
+                "entity_name": promoted_entity["entity_name"],
+                "state": promoted_entity["state"],
+                "previous_state": promoted_entity.get("previous_state", ""),
+                "confidence": promoted_entity["confidence"],
+                "operator": promoted_entity["operator"],
+                "source_refs": profile_source_refs,
+                "source_event_ids": profile_source_event_ids,
+                "source_session_ids": profile_source_session_ids,
+                "source_entity_hashes": profile_source_entity_hashes,
+                "source_roles": profile_source_roles,
+                "source_role_counts": profile_source_role_counts,
+                "source_hook_types": profile_source_hook_types,
+                "source_hook_type_counts": profile_source_hook_type_counts,
+                "source_codex_events": profile_source_codex_events,
+                "source_codex_event_counts": profile_source_codex_event_counts,
+                "source_batch_id_hash": batch_id_hash,
+                "extraction_context_event_ids": extraction_context_event_ids,
+                "field_patches": promoted_entity.get("field_patches", []),
+                "patch_results": promoted_entity.get("patch_results", []),
+                "update_mode": promoted_entity.get("update_mode", ""),
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "promoted_from_memory_scope": "session",
+                "extraction_phase": extraction_phase,
+                "final_session_boundary": final_session_boundary,
+                "updated_at_ms": envelope["ingestion_time_ms"],
+            }
+            records_to_append.append(profile_entity_record)
             profile_entity_embedding_text = promoted_entity["entity_type"] + " " + promoted_entity["state"]
             profile_entity_vector = embedding_for_text(profile_entity_embedding_text)
             records_to_append.append(
@@ -470,14 +487,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
-            for index_name in (
-                f"entity_type:{promoted_entity['entity_type']}",
-                "memory_scope:user_profile",
-                "session_continuity:cross_session",
-                *[f"source_role:{role}" for role in source_roles],
-                *[f"hook_type:{hook_type}" for hook_type in source_hook_types],
-                *[f"codex_event:{codex_event}" for codex_event in source_codex_events],
-            ):
+            for index_name in candidate_index_terms(profile_entity_record, {}, {}):
                 profile_index = context_index_posting_record(
                     index_name=index_name,
                     data_model="context_profile_entity",
@@ -491,6 +501,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 profile_index["access_scope"] = profile_scope
                 profile_index.pop("index_hash", None)
                 records_to_append.append(profile_index)
+                entity_index_write_count += 1
             new_profile_dirty_hashes, profile_dirty_records = self.node_summary_dirty_records(
                 node_path=profile_node_path,
                 scope=profile_scope,
@@ -628,7 +639,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "profile_entities": len(profile_entity_hashes),
                 "segments": len(segment_hashes),
                 "summaries": 1,
-                "indexes": len(batch_index_terms),
+                "indexes": len(batch_index_terms) + entity_index_write_count,
+                "entity_indexes": entity_index_write_count,
                 **secondary_index_budget_summary(secondary_index_budget),
             },
             "mode": extraction["mode"],
@@ -692,7 +704,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         "summary_hash": summary_hash,
         "summary_refresh": summary_refresh,
         "node_materialization": node_materialization,
-        "indexes_written": len(batch_index_terms),
+        "indexes_written": len(batch_index_terms) + entity_index_write_count,
+        "entity_indexes_written": entity_index_write_count,
         **secondary_index_budget_summary(secondary_index_budget),
         "one_pass": True,
         "threshold_messages": threshold,
