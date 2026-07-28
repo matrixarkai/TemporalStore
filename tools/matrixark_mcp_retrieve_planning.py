@@ -61,6 +61,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         tokens,
     )
 
+try:
+    from tools import matrixark_mcp_retrieve_pre_refresh as pre_refresh_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_pre_refresh as pre_refresh_helpers
 
 RETRIEVAL_STAGE_NAMES = ["query_understanding", "candidate_fetch", "node_traversal", "rerank_score", "pack", "audit"]
 
@@ -248,6 +252,26 @@ def retrieval_query_budget_plan(
         ranking,
         remote_budget_tokens=remote_context_budget_tokens,
     )
+    source_role_budget_tokens = optional_object(args, "source_role_budget_tokens") or optional_object(ranking, "source_role_budget_tokens")
+    source_role_budget_mode = "explicit" if source_role_budget_tokens else ""
+    if not source_role_budget_tokens:
+        source_role_budget_tokens, source_role_budget_mode = pre_refresh_helpers.auto_source_role_budget_tokens(
+            args,
+            ranking,
+            remote_budget_tokens=remote_context_budget_tokens,
+        )
+    memory_layer_budget_tokens = optional_object(args, "memory_layer_budget_tokens") or optional_object(ranking, "memory_layer_budget_tokens")
+    memory_layer_budget_mode = "explicit" if memory_layer_budget_tokens else ""
+    if not memory_layer_budget_tokens:
+        memory_layer_budget_tokens, memory_layer_budget_mode = pre_refresh_helpers.auto_memory_layer_budget_tokens(
+            args,
+            ranking,
+            remote_budget_tokens=remote_context_budget_tokens,
+        )
+    if pre_refresh_helpers.pre_retrieval_summary_refresh_enabled(args, ranking) and not memory_layer_budget_tokens:
+        memory_layer_budget_tokens, memory_layer_budget_mode = pre_refresh_helpers.pre_retrieval_summary_refresh_memory_layer_budget_tokens(
+            remote_budget_tokens=remote_context_budget_tokens,
+        )
     raw_reference_time_ms = args.get("reference_time_ms", now_ms())
     if not isinstance(raw_reference_time_ms, int):
         raise MatrixArkError("reference_time_ms must be an integer")
@@ -271,6 +295,10 @@ def retrieval_query_budget_plan(
         "remote_context_budget_tokens": remote_context_budget_tokens,
         "cross_session_policy": cross_session_policy,
         "shared_context_policy": shared_context_policy,
+        "source_role_budget_tokens": source_role_budget_tokens,
+        "source_role_budget_mode": source_role_budget_mode,
+        "memory_layer_budget_tokens": memory_layer_budget_tokens,
+        "memory_layer_budget_mode": memory_layer_budget_mode,
         "query_terms": {term for term in tokens(query) if len(term) > 2},
         "reference_time_ms": reference_time_ms,
         "query_plan": query_plan,

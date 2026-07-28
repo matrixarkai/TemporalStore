@@ -4722,6 +4722,24 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             self.assertIn("entity_bridge_selected_ref_count", source)
             self.assertIn("same_session_first_entity_bridge_then_bounded_cross_session", source)
 
+    def test_cpp_native_pack_enforces_source_role_and_memory_layer_budgets(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        source = (repo / "src/client/temporalstore_c_client.cc").read_text()
+
+        for token in [
+            "CandidateSourceRoles",
+            "NormalizeSourceRole",
+            "source_role_budget_tokens",
+            "memory_layer_budget_tokens",
+            "dropped_source_role_budget",
+            "dropped_memory_layer_budget",
+            "source_role_budget_policy",
+            "memory_layer_budget_policy",
+            "bound_large_assistant_and_tool_outputs_before_context_pack_injection",
+            "bound_session_profile_summary_and_raw_event_layers_before_context_pack_injection",
+        ]:
+            self.assertIn(token, source)
+
     def test_proxy_contract_exposes_matrixark_native_hot_path(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         openapi = (repo / "sdk/proxy/openapi.yaml").read_text()
