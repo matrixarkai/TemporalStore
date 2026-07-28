@@ -5,10 +5,50 @@ from __future__ import annotations
 
 import unittest
 
-from run_locomo_ingest_once import extractive_reader_hint
+from run_locomo_ingest_once import extractive_reader_hint, hybrid_reader_answer
 
 
 class LocomoReaderHintTest(unittest.TestCase):
+    def test_hybrid_reader_uses_candidate_when_model_rambles(self) -> None:
+        answer = hybrid_reader_answer(
+            "What does Melanie do to destress?",
+            "running and pottery",
+            (
+                "Melanie mentioned that she has been running more to destress and clear her mind. "
+                "Caroline and Melanie had a conversation at 4:33 pm on 12 July, 2023. "
+                "They also discussed several unrelated plans and follow-up activities."
+            ),
+        )
+
+        self.assertEqual("running and pottery", answer)
+
+    def test_hybrid_reader_keeps_clean_oss_answer(self) -> None:
+        answer = hybrid_reader_answer(
+            "What books has Melanie read?",
+            "Charlotte's Web",
+            "Nothing is Impossible and Charlotte's Web",
+        )
+
+        self.assertEqual("Nothing is Impossible and Charlotte's Web", answer)
+
+    def test_hybrid_reader_uses_candidate_when_dates_conflict(self) -> None:
+        answer = hybrid_reader_answer(
+            "When did Caroline go to the LGBTQ support group?",
+            "7 May 2023",
+            "1:56 pm on 8 May, 2023.",
+        )
+
+        self.assertEqual("7 May 2023", answer)
+
+    def test_hybrid_reader_uses_candidate_for_color_question_with_timestamp_answer(self) -> None:
+        answer = hybrid_reader_answer(
+            "What color did I repaint my bedroom walls?",
+            "a lighter shade of gray",
+            "2023/05/27 (Sat) 19:51.",
+        )
+
+        self.assertEqual("a lighter shade of gray", answer)
+
     def test_yesterday_relative_date_beats_vague_ordering(self) -> None:
         blocks = [
             {
