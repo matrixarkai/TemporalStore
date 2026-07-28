@@ -2637,12 +2637,53 @@ def selected_tool_evidence_text(text: str, *, max_chars: int = 4096, max_lines: 
     return evidence
 
 
+ASSISTANT_MEMORY_LINE_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"\b(?:decision|decided|recommendation|next|todo|follow[- ]?up)\b",
+        r"\b(?:done|fixed|implemented|added|removed|changed|updated|validated|verified)\b",
+        r"\b(?:commit|pushed|push|rebased|origin/main|refs/heads/main|branch)\b",
+        r"\b(?:test|tests|passed|failed|blocked|missing|gap|risk|warning)\b",
+        r"\b(?:temporalstore|matrixark|codex|context|profile|cross[- ]session|memory)\b",
+    ]
+]
+
+
+def selected_assistant_memory_text(text: str, *, max_chars: int = 4096, max_lines: int = 48) -> str:
+    """Keep decision/outcome lines from assistant responses without storing large answers verbatim."""
+    compact = str(text or "").strip()
+    if not compact:
+        return ""
+    lines = [" ".join(line.split()) for line in compact.splitlines()]
+    selected: list[str] = []
+    in_code_block = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        if any(pattern.search(stripped) for pattern in ASSISTANT_MEMORY_LINE_PATTERNS):
+            selected.append(stripped[:420])
+        if len(selected) >= max_lines:
+            break
+    if not selected:
+        selected = [line[:420] for line in lines[: min(len(lines), 8)] if line]
+    evidence = "\n".join(selected).strip()
+    if len(evidence) > max_chars:
+        evidence = evidence[:max_chars].rstrip() + "\n[assistant memory truncated]"
+    return evidence
+
+
 
 def latest_codex_assistant_message_from_rollout(payload: Json) -> str:
     for path in _latest_rollout_files(payload):
         text = _extract_assistant_text_from_rollout(path)
         if text:
-            return text
+            return selected_assistant_memory_text(text)
     return ""
 
 
@@ -3624,7 +3665,7 @@ def main() -> int:
                 break
             time.sleep(0.2)
         if not text:
-            text = fallback_text
+            text = selected_assistant_memory_text(fallback_text)
     if is_codex_hook_heartbeat_text(text):
         trace = begin_hook_trace(args=args, payload=payload, text=text, session_id_source=session_id_source)
         output = {"status": "skipped", "reason": "codex_hook_heartbeat_not_user_context", "event": args.event}

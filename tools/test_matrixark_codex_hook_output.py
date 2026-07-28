@@ -1987,6 +1987,53 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertNotIn("noise line 0", evidence)
         self.assertLess(len(evidence), 1000)
 
+    def test_selected_assistant_memory_filters_large_response(self) -> None:
+        raw = "\n".join(
+            [f"background explanation line {index}" for index in range(40)]
+            + [
+                "```",
+                "large code block should not become long-term memory",
+                "```",
+                "Decision: keep assistant memory bounded to outcomes.",
+                "Done. Tests passed and origin/main was pushed.",
+                "Next: use profile entities for cross-session retrieval.",
+                "another verbose paragraph " * 200,
+            ]
+        )
+        evidence = hook.selected_assistant_memory_text(raw, max_chars=1000)
+        self.assertIn("Decision: keep assistant memory bounded", evidence)
+        self.assertIn("Tests passed and origin/main was pushed", evidence)
+        self.assertIn("profile entities for cross-session retrieval", evidence)
+        self.assertNotIn("background explanation line 0", evidence)
+        self.assertNotIn("large code block", evidence)
+        self.assertLess(len(evidence), 1000)
+
+    def test_latest_assistant_rollout_returns_bounded_memory_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            rollout = Path(tmp_dir) / "rollout-test.jsonl"
+            rollout.write_text(
+                json.dumps(
+                    {
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {"type": "output_text", "text": "background detail\n" * 80},
+                                {"type": "text", "text": "Decision: bounded assistant memory is enabled."},
+                                {"type": "text", "text": "Done. Profile retrieval tests should stay focused."},
+                            ],
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            evidence = hook.latest_codex_assistant_message_from_rollout({"transcript_path": str(rollout)})
+            self.assertIn("Decision: bounded assistant memory is enabled.", evidence)
+            self.assertIn("Profile retrieval tests should stay focused.", evidence)
+            self.assertNotIn("background detail", evidence)
+
     def test_strict_codex_stdout_removes_rich_audit_fields(self) -> None:
         prompt_output = {
             "status": "ok",
