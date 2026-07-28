@@ -505,6 +505,43 @@ class _NativeEnvelopeContextPackClient:
         }
 
 
+class _EmptyNativeEnvelopeContextPackClient:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def matrixark_retrieve_context_pack(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "native_pack_assembly": True,
+            "raw_records_returned": False,
+            "python_hot_path_records": 0,
+            "context_pack": {
+                "context_pack_id": "native-empty-pack",
+                "selected_refs": [],
+                "used_context_tokens": 0,
+                "retrieval_metrics": {
+                    "memory_layer_budget": {
+                        "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 3}},
+                        "by_source_role": {"assistant": {"refs": 1, "tokens": 3}},
+                        "source_message_counts_by_role": {"assistant": 2},
+                    },
+                    "async_pipeline_readiness": {
+                        "ready_for_retrieval": False,
+                        "pending_source_roles": {"assistant": 1},
+                        "pending_memory_scopes": {"user_profile": 1},
+                    },
+                },
+                "recall_policy": {
+                    "memory_layer_budget": {
+                        "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 3}},
+                        "by_source_role": {"assistant": {"refs": 1, "tokens": 3}},
+                        "source_message_counts_by_role": {"assistant": 2},
+                    },
+                },
+            },
+        }
+
+
 class _BadNativeContextPackClient:
     def matrixark_retrieve_context_pack(self, **kwargs):
         return {
@@ -4068,6 +4105,46 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(cross_session["raw_evidence_min_score"], 0.45)
         self.assertEqual(cross_session["max_sessions"], 3)
         self.assertEqual(cross_session["parallelism"], 2)
+
+    def test_direct_native_empty_context_pack_is_compacted_by_default(self) -> None:
+        mcp.MATRIXARK_MCP_PROFILE = "production"
+        mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""
+        client = _EmptyNativeEnvelopeContextPackClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._count_key = "matrixark:test:record_count"
+        adapter._record_hash_key = "matrixark:test:records"
+        adapter._shard_size = 128
+        adapter._backend_label = lambda: "temporalstore-direct"
+        adapter._context_pack_cache_max_entries = 0
+        adapter._context_pack_cache_ttl_s = 0
+        adapter._context_pack_cache_lock = threading.RLock()
+        adapter._context_pack_cache = {}
+        adapter._retrieval_records_cache_generation = 0
+        adapter._observe_model_latency = lambda *args, **kwargs: None
+        adapter.native_context_pack_required = lambda: True
+
+        pack = adapter.retrieve({
+            "query": "What memory is available?",
+            "scope": {"account_id": "acct"},
+            "max_context_tokens": 1000,
+            "audit_mode": "off",
+            "include_retrieval_metrics": True,
+        })
+
+        self.assertEqual("native-empty-pack", pack["pack_id"])
+        self.assertNotIn("context_pack_id", pack)
+        self.assertNotIn("recall_policy", pack)
+        self.assertNotIn("memory_layer_budget", pack)
+        self.assertIn("retrieval_metrics", pack)
+        serialized = json.dumps(pack, sort_keys=True)
+        for field in [
+            "by_source_role",
+            "source_message_counts_by_role",
+            "pending_source_roles",
+            "pending_memory_scopes",
+        ]:
+            self.assertNotIn(field, serialized)
 
     def test_tiny_remote_budget_reports_profile_floor_unavailable(self) -> None:
         policy = mcp_core.build_cross_session_policy(
