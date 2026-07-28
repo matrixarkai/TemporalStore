@@ -52,6 +52,12 @@ def memory_layer_name(ref: Json) -> str:
     if ref_type == "compression" or context_class == "compression":
         return "compression"
     if ref_type == "summary" or context_class == "summary":
+        if memory_scope == "user_profile" and session_continuity == "cross_session":
+            return "profile_summary"
+        if session_continuity == "same_session":
+            return "same_session_summary"
+        if session_continuity == "cross_session":
+            return "cross_session_summary"
         return "summary"
     if ref_type == "segment":
         if session_continuity == "same_session":
@@ -435,10 +441,11 @@ def memory_layer_pressure_summary(selected_budget: Json, dropped_budget: Json) -
         return int(dimension_data.get(dimension, {}).get(bucket, {}).get("dropped_refs", 0))
     def dropped_count_in(dimension: str, bucket: str) -> int:
         return int(dimension_data.get(dimension, {}).get(bucket, {}).get("dropped_count", 0))
+    summary_layer_names = ["summary", "profile_summary", "same_session_summary", "cross_session_summary"]
     summary["profile_entity_pressure"] = dropped_in("by_memory_layer", "profile_entity") > 0
     summary["same_session_event_pressure"] = dropped_in("by_memory_layer", "same_session_event") > 0
     summary["cross_session_event_pressure"] = dropped_in("by_memory_layer", "cross_session_event") > 0
-    summary["summary_layer_pressure"] = dropped_in("by_memory_layer", "summary") > 0
+    summary["summary_layer_pressure"] = any(dropped_in("by_memory_layer", layer) > 0 for layer in summary_layer_names)
     summary["compression_layer_pressure"] = dropped_in("by_memory_layer", "compression") > 0
     summary["resource_layer_pressure"] = (
         dropped_in("by_memory_layer", "resource_fact") > 0
