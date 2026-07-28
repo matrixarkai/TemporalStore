@@ -4408,6 +4408,47 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(floored["budget_floor_applied"])
         self.assertEqual("floor_applied", floored["budget_floor_status"])
 
+    def test_cross_session_budget_defaults_by_query_type(self) -> None:
+        expected = {
+            "fact": (120, "normal_queries_keep_cross_session_small"),
+            "specific_fact": (120, "normal_queries_keep_cross_session_small"),
+            "broad_exploration": (150, "broad_or_evidence_queries_get_extra"),
+            "evidence": (150, "broad_or_evidence_queries_get_extra"),
+            "current_state": (200, "current_state_or_latest_queries_need_prior"),
+            "latest": (200, "current_state_or_latest_queries_need_prior"),
+            "multi_hop": (200, "multi_hop_or_date_queries_often_need_multiple"),
+            "date": (200, "multi_hop_or_date_queries_often_need_multiple"),
+        }
+        for question_type, (budget_tokens, reason_prefix) in expected.items():
+            with self.subTest(question_type=question_type):
+                policy = mcp_core.build_cross_session_policy(
+                    {},
+                    {},
+                    question_type=question_type,
+                    session_scope="prefer",
+                    remote_budget_tokens=1000,
+                )
+                self.assertTrue(policy["enabled"])
+                self.assertEqual(budget_tokens, policy["computed_budget_tokens"])
+                self.assertEqual(budget_tokens, policy["budget_tokens"])
+                self.assertEqual("remote_budget_too_small_for_profile_floor", policy["budget_floor_status"])
+                self.assertTrue(policy["question_budget_reason"].startswith(reason_prefix))
+                self.assertEqual(2, policy["min_entity_bridge_refs"])
+                self.assertEqual(["entity", "summary", "compression"], policy["preferred_ref_types"])
+
+        session_only = mcp_core.build_cross_session_policy(
+            {},
+            {},
+            question_type="current_state",
+            session_scope="only",
+            remote_budget_tokens=1000,
+        )
+        self.assertFalse(session_only["enabled"])
+        self.assertEqual(0, session_only["budget_tokens"])
+        self.assertEqual(0, session_only["min_entity_bridge_refs"])
+        self.assertEqual([], session_only["preferred_ref_types"])
+        self.assertEqual("disabled", session_only["budget_floor_status"])
+
     def test_cross_session_budget_is_cap_and_raw_events_need_high_confidence(self) -> None:
         policy = mcp_core.build_cross_session_policy(
             {"cross_session": {"budget_tokens": 900, "raw_evidence_min_score": 0.45}},
