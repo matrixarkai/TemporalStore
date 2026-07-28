@@ -59,6 +59,73 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("summary_refresh", dashboard_table_enum)
         self.assertIn("async_pipeline", dashboard_table_enum)
 
+    def test_moduleized_summary_candidate_preserves_profile_memory_fields(self) -> None:
+        builders = importlib.import_module("tools.matrixark_mcp_retrieve_candidate_builders")
+        continuity = importlib.import_module("tools.matrixark_mcp_retrieve_continuity")
+        record = {
+            "record_type": "context_summary",
+            "summary_hash": 101,
+            "node_hash": 202,
+            "node_path": ["tenant:tenant", "user:user", "profile:long_term_memory"],
+            "summary_text": "assistant_decision: delayed rollout backfill commits profile memory",
+            "summary_type": "node_l0",
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "extraction_phase": "final",
+            "final_session_boundary": True,
+            "source_roles": ["assistant"],
+            "source_role_counts": {"assistant": 2},
+            "source_hook_types": ["session_commit"],
+            "source_hook_type_counts": {"session_commit": 1},
+            "source_codex_events": ["PreviousAssistantBackfill"],
+            "source_codex_event_counts": {"PreviousAssistantBackfill": 1},
+            "source_memory_scopes": ["user_profile"],
+            "source_session_continuities": ["cross_session"],
+            "source_extraction_phases": ["final"],
+            "source_final_session_boundary_count": 1,
+            "scope": {
+                "account_id": "acct",
+                "tenant_id": "tenant",
+                "user_id": "user",
+                "session_id": "current_session",
+            },
+            "updated_at_ms": 123,
+        }
+        candidate = builders.summary_candidate(
+            record,
+            summary_type="node_l0",
+            index_terms={"entity_type:assistant_decision"},
+            origin_score=0.9,
+            keyword_score=2,
+            sparse_score=0.5,
+            embedding_score=0.4,
+            node_score=0.3,
+            text=record["summary_text"],
+        )
+        annotated = continuity.annotate_session_continuity(
+            candidate,
+            record,
+            retrieval_scope={
+                "account_id": "acct",
+                "tenant_id": "tenant",
+                "user_id": "user",
+                "session_id": "current_session",
+                "_session_scope": "prefer",
+            },
+            question_type="broad_exploration",
+        )
+
+        self.assertEqual("summary", annotated["ref_type"])
+        self.assertEqual("user_profile", annotated["memory_scope"])
+        self.assertEqual("cross_session", annotated["session_continuity"])
+        self.assertTrue(annotated["final_session_boundary"])
+        self.assertEqual(["assistant"], annotated["source_roles"])
+        self.assertEqual({"assistant": 2}, annotated["source_role_counts"])
+        self.assertEqual(["PreviousAssistantBackfill"], annotated["source_codex_events"])
+        self.assertEqual({"PreviousAssistantBackfill": 1}, annotated["source_codex_event_counts"])
+        self.assertEqual(1, annotated["source_final_session_boundary_count"])
+
+
     def test_python_and_rust_retrieval_drop_reasons_stay_in_parity(self) -> None:
         python_source = (TOOLS_DIR / "matrixark_mcp_budget_pack.py").read_text(encoding="utf-8")
         rust_telemetry_source = (
