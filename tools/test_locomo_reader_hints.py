@@ -115,6 +115,39 @@ class LocomoReaderHintTest(unittest.TestCase):
 
         self.assertEqual("7 pm", hint)
 
+    def test_clock_time_question_prefers_home_time_over_date_prefix(self) -> None:
+        blocks = [
+            {
+                "title": "conversation_55 answer_f442ccbe turn 2",
+                "body": (
+                    "2023/05/23 (Tue) 18:30. user: I usually get home from work "
+                    "around 6:30 pm on weeknights."
+                ),
+            }
+        ]
+
+        hint = extractive_reader_hint("What time do I usually get home from work on weeknights?", blocks)
+
+        self.assertEqual("6:30 pm", hint)
+
+    def test_social_media_platform_question_prefers_platform_over_date_prefix(self) -> None:
+        blocks = [
+            {
+                "title": "conversation_96 answer_203bf3fa turn 1",
+                "body": (
+                    "2023/05/29 (Mon) 10:12. My TikTok gained 1200 followers this month, "
+                    "while Twitter gained 250 followers."
+                ),
+            }
+        ]
+
+        hint = extractive_reader_hint(
+            "Which social media platform did I gain the most followers on over the past month?",
+            blocks,
+        )
+
+        self.assertEqual("TikTok", hint)
+
     def test_yesterday_relative_date_beats_vague_ordering(self) -> None:
         blocks = [
             {
