@@ -1295,6 +1295,48 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("cross_session", layer_readiness["blocked_layers"])
         self.assertIn("summary", layer_readiness["blocked_layers"])
 
+    def test_async_readiness_uses_source_count_maps_before_list_fallback(self) -> None:
+        readiness_mod = importlib.import_module("tools.matrixark_mcp_async_readiness")
+        scope = {
+            "account_id": "acct_count_readiness",
+            "tenant_id": "tenant_count_readiness",
+            "user_id": "user_count_readiness",
+            "session_id": "session_count_readiness",
+        }
+        readiness = readiness_mod.async_pipeline_retrieval_readiness(
+            [
+                {
+                    "record_type": "matrixark_async_pipeline_task",
+                    "task_hash": 1,
+                    "scope": scope,
+                    "status": "extraction_committed",
+                    "remaining_stages": ["summary"],
+                    "source_role_counts": {"llm": 2, "model": 1, "assistant": 1, "tool": 2, "": 10},
+                    "source_roles": ["user"],
+                    "source_hook_type_counts": {"after_llm": 3, "hook_boundary": 1},
+                    "source_hook_types": ["prompt_submit"],
+                    "source_codex_event_counts": {"Stop": 2, "PostToolUse": 1},
+                    "source_codex_events": ["UserPromptSubmit"],
+                    "memory_layers_written": {
+                        "session_entities": 1,
+                        "profile_entities": 1,
+                        "same_session_entities": 1,
+                        "cross_session_entities": 1,
+                    },
+                }
+            ],
+            {**scope, "_session_scope": "prefer"},
+        )
+
+        self.assertEqual({"assistant": 4, "tool": 2}, readiness["pending_source_roles"])
+        self.assertNotIn("user", readiness["pending_source_roles"])
+        self.assertNotIn("llm", readiness["pending_source_roles"])
+        self.assertNotIn("model", readiness["pending_source_roles"])
+        self.assertEqual({"after_llm": 3, "hook_boundary": 1}, readiness["pending_source_hook_types"])
+        self.assertNotIn("prompt_submit", readiness["pending_source_hook_types"])
+        self.assertEqual({"PostToolUse": 1, "Stop": 2}, readiness["pending_source_codex_events"])
+        self.assertNotIn("UserPromptSubmit", readiness["pending_source_codex_events"])
+
     def test_compact_serving_pack_exposes_async_summary_readiness(self) -> None:
         core_mod = importlib.import_module("tools.matrixark_mcp_core")
         pack = {

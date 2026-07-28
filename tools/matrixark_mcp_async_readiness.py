@@ -113,6 +113,24 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
         if value:
             bucket[value] = bucket.get(value, 0) + 1
 
+    def add_count_map(bucket: dict[str, int], counts: object, *, normalize_roles: bool = False) -> bool:
+        if not isinstance(counts, dict):
+            return False
+        added = False
+        for key, raw_count in counts.items():
+            value = normalize_message_role(key) if normalize_roles else str(key or "").strip()
+            if not value:
+                continue
+            try:
+                count = int(raw_count or 0)
+            except (TypeError, ValueError):
+                continue
+            if count <= 0:
+                continue
+            bucket[value] = bucket.get(value, 0) + count
+            added = True
+        return added
+
     for row in latest_rows:
         status = str(row.get("status") or "unknown")
         status_counts[status] = status_counts.get(status, 0) + 1
@@ -130,12 +148,15 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
             if stage_name:
                 completed_stages.add(stage_name)
         if row_remaining_stages or status in {"pending", "extraction_committed"}:
-            for role in row.get("source_roles") if isinstance(row.get("source_roles"), list) else []:
-                add_count(pending_source_roles, normalize_message_role(role))
-            for hook_type in row.get("source_hook_types") if isinstance(row.get("source_hook_types"), list) else []:
-                add_count(pending_source_hook_types, hook_type)
-            for codex_event in row.get("source_codex_events") if isinstance(row.get("source_codex_events"), list) else []:
-                add_count(pending_source_codex_events, codex_event)
+            if not add_count_map(pending_source_roles, row.get("source_role_counts"), normalize_roles=True):
+                for role in row.get("source_roles") if isinstance(row.get("source_roles"), list) else []:
+                    add_count(pending_source_roles, normalize_message_role(role))
+            if not add_count_map(pending_source_hook_types, row.get("source_hook_type_counts")):
+                for hook_type in row.get("source_hook_types") if isinstance(row.get("source_hook_types"), list) else []:
+                    add_count(pending_source_hook_types, hook_type)
+            if not add_count_map(pending_source_codex_events, row.get("source_codex_event_counts")):
+                for codex_event in row.get("source_codex_events") if isinstance(row.get("source_codex_events"), list) else []:
+                    add_count(pending_source_codex_events, codex_event)
             layers = row.get("memory_layers_written") if isinstance(row.get("memory_layers_written"), dict) else {}
             if int(layers.get("session_entities") or 0) > 0:
                 add_count(pending_memory_scopes, "session")
