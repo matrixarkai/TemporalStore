@@ -308,7 +308,7 @@ def serving_retrieval_metrics(value: Any, *, include_debug: bool = False) -> Jso
             include_debug=include_debug,
         )
     pre_retrieval_summary_refresh = value.get("pre_retrieval_summary_refresh")
-    if isinstance(pre_retrieval_summary_refresh, dict):
+    if debug_lineage_enabled(include_debug=include_debug) and isinstance(pre_retrieval_summary_refresh, dict):
         compact["pre_retrieval_summary_refresh"] = {
             field: pre_retrieval_summary_refresh.get(field)
             for field in [
