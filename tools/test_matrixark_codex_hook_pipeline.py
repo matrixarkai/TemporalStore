@@ -15,7 +15,13 @@ from pathlib import Path
 
 import matrixark_codex_hook
 from matrixark_mcp_context_pack import compact_context_pack_for_serving, compact_dropped_refs_for_context_pack, compact_refs_for_audit
-from matrixark_mcp_core import candidate_index_terms, identity_hashes, packing_sort_key, select_token_budgeted_refs
+from matrixark_mcp_core import (
+    candidate_index_terms,
+    compact_context_pack_for_serving as core_compact_context_pack_for_serving,
+    identity_hashes,
+    packing_sort_key,
+    select_token_budgeted_refs,
+)
 from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget, memory_layer_pressure_summary, selected_ref_layer_budget
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 
@@ -208,6 +214,43 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual({"Stop": 2}, item["source_codex_event_counts"])
         self.assertEqual(2, item["source_entity_count"])
         self.assertEqual(2, item["current_state_source_session_count"])
+
+    def test_core_context_pack_debug_flag_exposes_only_bounded_lineage(self) -> None:
+        pack = {
+            "context_pack_id": "pack-core-debug-enabled",
+            "selected_refs": [
+                {
+                    "ref_type": "entity",
+                    "text": "assistant decision with compact debug lineage",
+                    "entity_type": "assistant_decision",
+                    "source_role_counts": {"assistant": 2},
+                    "source_hook_type_counts": {"after_llm": 1},
+                    "source_codex_event_counts": {"Stop": 1},
+                    "source_entity_hashes": ["aaa", "bbb", "ccc"],
+                    "debug_payload": {"raw": "must stay out of ContextPack"},
+                    "lineage": {"raw_source_ids": ["hidden"]},
+                    "metadata": {
+                        "debug_payload": {"raw": "metadata hidden"},
+                        "lineage": {"raw_source_ids": ["metadata hidden"]},
+                    },
+                }
+            ],
+            "debug_payload": {"raw": "pack hidden"},
+            "memory_lineage": {"raw": "pack hidden"},
+        }
+
+        default_serving = core_compact_context_pack_for_serving(pack)
+        self.assert_no_default_context_pack_debug_lineage(default_serving)
+
+        debug_serving = core_compact_context_pack_for_serving(pack, include_debug=True)
+        item = debug_serving["groups"][0]["items"][0]
+        self.assertEqual({"assistant": 2}, item["source_role_counts"])
+        self.assertEqual({"after_llm": 1}, item["source_hook_type_counts"])
+        self.assertEqual({"Stop": 1}, item["source_codex_event_counts"])
+        self.assertEqual(3, item["source_entity_count"])
+        self.assertNotIn("debug_payload", json.dumps(debug_serving))
+        self.assertNotIn("raw_source_ids", json.dumps(debug_serving))
+        self.assertNotIn("selected_refs", debug_serving)
 
     def test_context_pack_audit_refs_preserve_memory_layer_lineage(self) -> None:
         refs = compact_refs_for_audit(
