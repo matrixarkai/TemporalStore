@@ -3541,6 +3541,14 @@ def extractive_reader_answer(question: str, blocks: list[dict[str, str]]) -> str
         return "not enough context"
     texts = [block.get("body", "") for block in blocks]
     normalized_question = normalize_text(question)
+    if re.search(r"\bwhat time\b", normalized_question):
+        answer = clock_time_answer_from_texts(question, texts)
+        if answer:
+            return with_reader_context(answer, texts)
+    if "social media platform" in normalized_question:
+        answer = social_platform_answer(question, texts)
+        if answer:
+            return with_reader_context(answer, texts)
     if re.search(r"\b(certification|certificate|credential)\b", normalized_question) or (
         re.search(r"\bwhat time\b", normalized_question)
         and re.search(r"\b(stop|stopped|stops|checking|email|messages?)\b", normalized_question)
@@ -7975,6 +7983,64 @@ def clock_time_answer(text: str) -> str:
     return ""
 
 
+def clock_time_answer_from_texts(question: str, texts: list[str]) -> str:
+    q_tokens = answer_tokens(question)
+    scored_sentences: list[tuple[int, str]] = []
+    for text in texts:
+        for sentence in split_reader_sentences(text):
+            if not re.search(r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b", sentence, re.I):
+                continue
+            score = sum(1 for token in q_tokens if token in answer_tokens(sentence))
+            if re.search(r"\b(timestamp|conversation timestamp|2023[/.-]\d{2}[/.-]\d{2})\b", sentence, re.I):
+                score -= 4
+            if re.search(r"\b(usually|home|work|weeknight|stop|checking|email|messages?)\b", sentence, re.I):
+                score += 6
+            scored_sentences.append((score, sentence))
+    if not scored_sentences:
+        return clock_time_answer("\n".join(texts))
+    scored_sentences.sort(key=lambda row: row[0], reverse=True)
+    return clock_time_answer(scored_sentences[0][1])
+
+
+def social_platform_answer(question: str, texts: list[str]) -> str:
+    q = normalize_text(question)
+    if "social media platform" not in q:
+        return ""
+    platforms = [
+        ("TikTok", r"\btik\s*tok\b|\btiktok\b"),
+        ("Instagram", r"\binstagram\b"),
+        ("Twitter", r"\btwitter\b|\bx\b"),
+        ("Facebook", r"\bfacebook\b"),
+        ("YouTube", r"\byoutube\b"),
+        ("LinkedIn", r"\blinkedin\b"),
+        ("Snapchat", r"\bsnapchat\b"),
+        ("Pinterest", r"\bpinterest\b"),
+        ("Reddit", r"\breddit\b"),
+    ]
+    blob = "\n".join(texts)
+    normalized_blob = normalize_text(blob)
+    if "most followers" in q:
+        best_name = ""
+        best_delta = -1.0
+        for name, pattern in platforms:
+            for match in re.finditer(pattern, normalized_blob):
+                window = normalized_blob[max(0, match.start() - 120) : match.end() + 160]
+                if not re.search(r"\bfollowers?\b", window):
+                    continue
+                numbers = [number_value(raw) for raw in re.findall(r"\b(\d+(?:,\d{3})*(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)\b", window)]
+                if numbers:
+                    delta = max(numbers)
+                    if delta > best_delta:
+                        best_name = name
+                        best_delta = delta
+        if best_name:
+            return best_name
+    for name, pattern in platforms:
+        if re.search(pattern, normalized_blob):
+            return name
+    return ""
+
+
 def append_present(values: list[str], blob: str, candidates: list[str]) -> None:
     normalized_blob = normalize_text(blob)
     for candidate in candidates:
@@ -8123,6 +8189,10 @@ def split_reader_sentences(text: str) -> list[str]:
 
 def has_answer_shaped_span(question: str, sentence: str) -> bool:
     q = normalize_text(question)
+    if re.search(r"\bwhat time\b", q):
+        return bool(re.search(r"\b(?:[01]?\d|2[0-3])(?::[0-5]\d)?\s*(?:am|pm)\b", sentence, re.I))
+    if "social media platform" in q:
+        return bool(re.search(r"\b(TikTok|Instagram|Twitter|X|Facebook|YouTube|LinkedIn|Snapchat|Pinterest|Reddit)\b", sentence, re.I))
     if re.search(r"\b(when|date|year|month|day)\b", q):
         return bool(date_regex().search(sentence) or re.search(r"\b(?:yesterday|last year|last week|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b", sentence, re.I))
     if re.search(r"\bbreed\b", q):
