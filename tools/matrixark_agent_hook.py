@@ -224,6 +224,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--understanding-provider", default=os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "rules"))
     parser.add_argument("--segment-provider", default=os.environ.get("MATRIXARK_SEGMENT_PROVIDER", "deterministic"))
     parser.add_argument("--repo-root", type=Path, default=root)
+    parser.add_argument(
+        "--require-retrieval-memory-coverage",
+        action="store_true",
+        help="Exit nonzero when retrieval runs but no session/profile memory layer is selected.",
+    )
     return parser.parse_args()
 
 
@@ -549,6 +554,10 @@ def hook_storage_options() -> Json:
     return {"route": os.environ.get("MATRIXARK_HOOK_STORAGE_ROUTE", "shared_store_async")}
 
 
+def require_retrieval_memory_coverage(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "required", "require"}
+
+
 def retrieval_memory_coverage_summary(layer_summary: Json, *, selected_ref_count: int) -> Json:
     gaps: list[str] = []
     memory_layer_budget = layer_summary.get("memory_layer_budget")
@@ -767,45 +776,52 @@ def main() -> int:
 
     ingest_session_buffer = normalized_session_buffer_from_ingest(ingest)
     close_server_best_effort(server)
-    print(
-        json.dumps(
-            {
-                "status": "ok",
-                "agent": args.agent,
-                "event": args.event,
-                "session_id": args.session_id,
-                "session_id_source": session_id_source,
-                "agent_context_refs": len(agent_context.get("local_context", [])),
-                "workspace_root": agent_context.get("workspace_root", ""),
-                "ingested": bool(ingest),
-                "ingest": {
-                    "status": ingest.get("status"),
-                    "event_id_hash": ingest.get("event_id_hash"),
-                    "extraction_mode": ingest.get("extraction_mode"),
-                    "session_buffer": ingest_session_buffer,
-                    "summary_refresh": ingest.get("summary_refresh", {}),
-                    "quality_warnings": ingest.get("quality_warnings", []),
-                } if ingest else {},
-                "auto_batch_extract": session_commit_summary(
-                    ingest.get("auto_batch_extract_result")
-                    if isinstance(ingest.get("auto_batch_extract_result"), dict)
-                    else {}
-                ) if ingest else {},
-                "auto_batch_extract_decision": auto_batch_decision_summary(ingest) if ingest else {},
-                "idle_commit": session_commit_summary(
-                    ingest.get("idle_commit_result")
-                    if isinstance(ingest.get("idle_commit_result"), dict)
-                    else {}
-                ) if ingest else {},
-                "feedbacked": bool(feedback),
-                "resource_uri": raw_uri,
-                "resource_type": resource_type,
-                "retrieved": agent_retrieval_summary(retrieve, session_id_source=session_id_source),
-                "committed": session_commit_summary(commit),
-            },
-            sort_keys=True,
-        )
+    retrieved_summary = agent_retrieval_summary(retrieve, session_id_source=session_id_source)
+    output = {
+        "status": "ok",
+        "agent": args.agent,
+        "event": args.event,
+        "session_id": args.session_id,
+        "session_id_source": session_id_source,
+        "agent_context_refs": len(agent_context.get("local_context", [])),
+        "workspace_root": agent_context.get("workspace_root", ""),
+        "ingested": bool(ingest),
+        "ingest": {
+            "status": ingest.get("status"),
+            "event_id_hash": ingest.get("event_id_hash"),
+            "extraction_mode": ingest.get("extraction_mode"),
+            "session_buffer": ingest_session_buffer,
+            "summary_refresh": ingest.get("summary_refresh", {}),
+            "quality_warnings": ingest.get("quality_warnings", []),
+        } if ingest else {},
+        "auto_batch_extract": session_commit_summary(
+            ingest.get("auto_batch_extract_result")
+            if isinstance(ingest.get("auto_batch_extract_result"), dict)
+            else {}
+        ) if ingest else {},
+        "auto_batch_extract_decision": auto_batch_decision_summary(ingest) if ingest else {},
+        "idle_commit": session_commit_summary(
+            ingest.get("idle_commit_result")
+            if isinstance(ingest.get("idle_commit_result"), dict)
+            else {}
+        ) if ingest else {},
+        "feedbacked": bool(feedback),
+        "resource_uri": raw_uri,
+        "resource_type": resource_type,
+        "retrieved": retrieved_summary,
+        "committed": session_commit_summary(commit),
+    }
+    require_retrieval_coverage = args.require_retrieval_memory_coverage or require_retrieval_memory_coverage(
+        os.environ.get("MATRIXARK_REQUIRE_RETRIEVAL_MEMORY_COVERAGE")
     )
+    if require_retrieval_coverage and (should_retrieve(args.event) or args.query):
+        coverage = retrieved_summary.get("memory_layer_coverage")
+        if isinstance(coverage, dict) and coverage.get("status") == "gap":
+            output["status"] = "retrieval_memory_coverage_gap"
+            output["retrieval_memory_coverage_required"] = True
+            print(json.dumps(output, sort_keys=True))
+            return 3
+    print(json.dumps(output, sort_keys=True))
     return 0
 
 

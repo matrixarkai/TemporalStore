@@ -215,6 +215,77 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         self.assertIn("retrieval:no_session_continuity_refs_selected", coverage["gaps"])
         self.assertIn("retrieval:memory_layer_budget_missing_selected_refs", coverage["gaps"])
 
+    def test_generic_hook_can_fail_closed_on_retrieval_memory_coverage_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = Path(__file__).resolve().parents[1]
+            rust_root = Path(tmp_dir) / "rust-store"
+            cmd = [
+                sys.executable,
+                str(repo / "tools" / "matrixark_agent_hook.py"),
+                "--agent",
+                "codex",
+                "--event",
+                "UserPromptSubmit",
+                "--backend",
+                "temporalstore-rust",
+                "--metaserver",
+                "local",
+                "--namespace",
+                "deploy_ns",
+                "--table",
+                "deploy_table",
+                "--rust-proxy",
+                os.environ.get(
+                    "MATRIXARK_TEST_RUST_PROXY",
+                    "/root/src/github-services/TemporalStore/target/release/matrixark_rust_proxy",
+                ),
+                "--storage-prefix",
+                "matrixark:test-retrieval-coverage-gap",
+                "--account-id",
+                "acct_agents",
+                "--tenant-id",
+                "tenant_agents",
+                "--user-id",
+                "agent_user",
+                "--require-retrieval-memory-coverage",
+            ]
+            env = dict(os.environ)
+            env.update(
+                {
+                    "MATRIXARK_MCP_BACKEND": "temporalstore-rust",
+                    "MATRIXARK_LOCAL_MODE": "no-metaserver",
+                    "MATRIXARK_TEMPORALSTORE_METASERVER": "local",
+                    "MATRIXARK_TEMPORALSTORE_RUST_ROOT": str(rust_root),
+                    "MATRIXARK_RUST_PROXY_ASYNC_STORAGE": "true",
+                    "MATRIXARK_HOOK_STORAGE_ROUTE": "shared_store_async",
+                }
+            )
+
+            proc = subprocess.run(
+                cmd,
+                input=json.dumps(
+                    {
+                        "prompt": "Query should fail closed when no session/profile memory is retrievable.",
+                        "conversation_id": "codex-empty-retrieval",
+                    }
+                ),
+                text=True,
+                capture_output=True,
+                cwd=repo,
+                env=env,
+                timeout=30,
+            )
+
+        self.assertEqual(3, proc.returncode, proc.stderr)
+        output = json.loads(proc.stdout)
+        self.assertEqual("retrieval_memory_coverage_gap", output["status"])
+        self.assertTrue(output["retrieval_memory_coverage_required"])
+        self.assertEqual("gap", output["retrieved"]["memory_layer_coverage"]["status"])
+        self.assertIn(
+            "retrieval:no_session_or_profile_memory_selected",
+            output["retrieved"]["memory_layer_coverage"]["gaps"],
+        )
+
     def test_generic_hook_idle_commit_is_reported_as_auto_batch_decision(self) -> None:
         ingest = {
             "session_buffer": {
