@@ -695,16 +695,17 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             "shared_context": {"enabled": False},
             "source_role_budget": {
                 "enabled": True,
-                "budget_tokens": {"assistant": 32, "tool": 24, "user": 40},
-                "selected_tokens_by_role": {"assistant": 22, "tool": 18},
-                "selected_ref_count_by_role": {"assistant": 1, "tool": 1},
+                "budget_tokens": {"llm": 10, "model": 22, "tool": 24, "user": 40},
+                "selected_tokens_by_role": {"llm": 7, "model": 15, "tool": 18},
+                "selected_ref_count_by_role": {"model": 1, "tool": 1},
             },
         }
 
-        self.assertEqual(
-            memory_hierarchy_contract_from_recall_policy(recall_policy),
-            hook.retrieval_memory_hierarchy_contract_from_retrieve({"recall_policy": recall_policy}),
-        )
+        contract = hook.retrieval_memory_hierarchy_contract_from_retrieve({"recall_policy": recall_policy})
+        self.assertEqual(memory_hierarchy_contract_from_recall_policy(recall_policy), contract)
+        self.assertEqual({"assistant": 32, "tool": 24, "user": 40}, contract["source_role_budget_tokens"])
+        self.assertEqual({"assistant": 22, "tool": 18}, contract["source_role_selected_tokens_by_role"])
+        self.assertEqual({"assistant": 1, "tool": 1}, contract["source_role_selected_ref_count_by_role"])
 
     def test_session_commit_tool_call_trace_records_trigger_evidence(self) -> None:
         class Server:
@@ -966,9 +967,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                     "shared_context": {"enabled": False},
                     "source_role_budget": {
                         "enabled": True,
-                        "budget_tokens": {"assistant": 32, "tool": 24, "user": 40},
-                        "selected_tokens_by_role": {"assistant": 22, "tool": 18},
-                        "selected_ref_count_by_role": {"assistant": 1, "tool": 1},
+                        "budget_tokens": {"llm": 10, "model": 22, "tool": 24, "user": 40},
+                        "selected_tokens_by_role": {"llm": 7, "model": 15, "tool": 18},
+                        "selected_ref_count_by_role": {"model": 1, "tool": 1},
                     },
                 },
                 "local_context_policy": {"local_context_count": 1},
@@ -1053,7 +1054,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             "tool_evidence": {"refs": 1, "tokens": 16},
                         },
                         "by_source_role": {
-                            "assistant": {"refs": 1, "tokens": 14},
+                            "llm": {"refs": 1, "tokens": 6},
+                            "model": {"refs": 1, "tokens": 8},
                             "tool": {"refs": 1, "tokens": 16},
                         },
                         "by_hook_type": {
@@ -1065,7 +1067,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             "Stop": {"refs": 1, "tokens": 12},
                         },
                         "source_message_counts_by_role": {
-                            "assistant": 3,
+                            "llm": 1,
+                            "model": 2,
                             "tool": 1,
                         },
                         "source_hook_counts_by_type": {
@@ -1092,7 +1095,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             "assistant_decision": {"refs": 1, "tokens": 22},
                         },
                         "by_source_role": {
-                            "assistant": {"refs": 1, "tokens": 22},
+                            "model": {"refs": 1, "tokens": 22},
                         },
                         "by_hook_type": {
                             "after_llm": {"refs": 1, "tokens": 22},
@@ -1161,6 +1164,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             {"assistant": 22, "tool": 18},
             output["retrieve"]["memory_hierarchy"]["source_role_selected_tokens_by_role"],
         )
+        self.assertEqual(
+            {"assistant": 1, "tool": 1},
+            output["retrieve"]["memory_hierarchy"]["source_role_selected_ref_count_by_role"],
+        )
         self.assertIn(
             "source_role_budget_gate",
             output["retrieve"]["memory_hierarchy"]["selected_ref_flow"],
@@ -1178,6 +1185,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             ]["refs"],
         )
         self.assertEqual(5, output["retrieve"]["layers"]["memory_layer_pressure"]["dropped_refs"])
+        self.assertEqual(
+            {"refs": 2, "tokens": 14},
+            output["retrieve"]["layers"]["memory_layer_budget"]["by_source_role"]["assistant"],
+        )
+        self.assertEqual(3, output["retrieve"]["layers"]["memory_layer_budget"]["source_message_counts_by_role"]["assistant"])
         self.assertTrue(output["retrieve"]["layers"]["memory_layer_pressure"]["assistant_memory_pressure"])
         self.assertEqual(58, output["retrieve"]["budget"]["remote_budget_remaining_tokens"])
         self.assertFalse(output["retrieve"]["budget"]["remote_budget_overrun"])
@@ -1239,7 +1251,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("phase[final=2/30t, provisional=1/12t]", additional)
         self.assertIn("ref_type[entity=1/18t, summary=1/12t]", additional)
         self.assertIn("entity_type[assistant_decision=1/14t, tool_evidence=1/16t]", additional)
-        self.assertIn("source_role[assistant=1/14t, tool=1/16t]", additional)
+        self.assertIn("source_role[assistant=2/14t, tool=1/16t]", additional)
         self.assertIn("hook_type[after_llm=1/14t, hook_boundary=1/16t]", additional)
         self.assertIn("codex_event[PostToolUse=1/18t, Stop=1/12t]", additional)
         self.assertIn("source_messages[assistant=3, tool=1]", additional)
