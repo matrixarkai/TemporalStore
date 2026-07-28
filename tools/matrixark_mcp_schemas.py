@@ -527,8 +527,9 @@ TOOLS: list[Json] = [
             "type": "object",
             "description": (
                 "Compact prompt-facing ContextPack. Normal retrieval output includes selected refs plus "
-                "memory hierarchy, async freshness/readiness, and memory-layer budget/pressure evidence so "
-                "agents can reason over same-session, cross-session/profile, summary, and shared context layers."
+                "async freshness/readiness and bounded memory-layer budget/pressure summaries so agents can "
+                "reason over same-session, cross-session/profile, summary, and shared context layers. debug-only "
+                "hierarchy and lineage buckets are exposed only when include_retrieval_debug/debug_context_pack is enabled."
             ),
             "properties": {
                 "selected_refs": {
@@ -572,7 +573,8 @@ TOOLS: list[Json] = [
                     "type": "object",
                     "description": (
                         "Async extraction/summary/compression/embedding freshness state. If ready_for_retrieval is false, "
-                        "freshness_warnings and remaining_stages explain stale profile summaries or pending follow-up work."
+                        "freshness_warnings and remaining_stages explain stale profile summaries or pending follow-up work. "
+                        "Pending source/layer lineage buckets are debug-only and omitted from default ContextPack output."
                     ),
                     "properties": {
                         "task_count": {"type": "integer"},
@@ -585,7 +587,7 @@ TOOLS: list[Json] = [
                 },
                 "memory_layer_budget": {
                     "type": "object",
-                    "description": "Selected ref/token budget grouped by memory scope, session continuity, ref type, source role, hook type, and related memory dimensions.",
+                    "description": "Selected ref/token budget grouped by public memory dimensions such as memory scope, session continuity, ref type, and entity type. Source role/hook/codex lineage buckets are debug-only.",
                     "additionalProperties": True,
                 },
                 "dropped_memory_layer_budget": {
