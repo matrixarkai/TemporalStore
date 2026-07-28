@@ -1768,6 +1768,68 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
         self.assertEqual(["session-debug-1"], item["source_session_ids"])
         self.assertEqual(2, item["source_entity_count"])
 
+    def test_debug_lineage_serving_pack_still_omits_raw_candidate_fields(self) -> None:
+        context_pack_mod = importlib.import_module("tools.matrixark_mcp_context_pack")
+        pack = context_pack_mod.compact_context_pack_for_serving(
+            {
+                "context_pack_id": "debug-lineage-pack",
+                "selected_refs": [
+                    {
+                        "ref_type": "entity",
+                        "text": "debug profile decision",
+                        "ref_hash": 123,
+                        "node_hash": 456,
+                        "matched_index_terms": ["entity:debug"],
+                        "score": 0.91,
+                        "token_estimate": 7,
+                        "memory_scope": "user_profile",
+                        "source_roles": ["llm", "tool"],
+                        "source_role_counts": {"llm": 2, "tool": 1},
+                        "source_hook_type_counts": {"hook_boundary": 3},
+                        "source_codex_event_counts": {"Stop": 3},
+                    }
+                ],
+                "used_context_tokens": 3,
+            },
+            include_debug=True,
+        )
+
+        item = pack["groups"][0]["items"][0]
+        self.assertEqual({"assistant": 2, "tool": 1}, item["source_role_counts"])
+        for field in ["ref_hash", "node_hash", "matched_index_terms", "score", "token_estimate"]:
+            self.assertNotIn(field, item)
+
+    def test_flat_debug_lineage_serving_pack_still_omits_raw_candidate_fields(self) -> None:
+        core_mod = importlib.import_module("tools.matrixark_mcp_core")
+        pack = core_mod.compact_context_pack_for_serving_flat(
+            {
+                "context_pack_id": "flat-debug-lineage-pack",
+                "selected_refs": [
+                    {
+                        "ref_type": "entity",
+                        "text": "debug profile decision",
+                        "ref_hash": 123,
+                        "node_hash": 456,
+                        "matched_index_terms": ["entity:debug"],
+                        "score": 0.91,
+                        "token_estimate": 7,
+                        "memory_scope": "user_profile",
+                        "source_roles": ["llm", "tool"],
+                        "source_role_counts": {"llm": 2, "tool": 1},
+                        "source_hook_type_counts": {"hook_boundary": 3},
+                        "source_codex_event_counts": {"Stop": 3},
+                    }
+                ],
+                "used_context_tokens": 3,
+            },
+            include_debug=True,
+        )
+
+        item = pack["selected_refs"][0]
+        self.assertEqual({"assistant": 2, "tool": 1}, item["source_role_counts"])
+        for field in ["ref_hash", "node_hash", "matched_index_terms", "score", "token_estimate"]:
+            self.assertNotIn(field, item)
+
 
 
 if __name__ == "__main__":

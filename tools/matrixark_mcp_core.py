@@ -5905,7 +5905,7 @@ def selected_context_class_counts(refs: list[Json]) -> Json:
     return counts
 
 
-def compact_context_pack_ref(ref: Json) -> Json:
+def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
     """Return the prompt-facing ContextPack ref shape.
 
     Audit records keep hashes, matched indexes, provider/debug fields, score
@@ -5943,7 +5943,7 @@ def compact_context_pack_ref(ref: Json) -> Json:
                     item[field] = role_counts
             else:
                 item[field] = value
-    if CONTEXT_PACK_DEBUG_LINEAGE:
+    if CONTEXT_PACK_DEBUG_LINEAGE or include_debug:
         for field in [
             "current_state_policy",
             "source_roles",
@@ -5960,15 +5960,23 @@ def compact_context_pack_ref(ref: Json) -> Json:
             "source_codex_event_counts",
         ]:
             value = ref.get(field)
-            if not isinstance(value, dict) or not value:
-                continue
-            if field in {"source_role_counts", "budget_source_role_counts"}:
-                role_counts = normalized_role_int_map(value)
-                if role_counts:
-                    item[field] = role_counts
-            else:
+            if isinstance(value, list) and value:
+                if field in {"source_roles", "budget_source_roles"}:
+                    roles = ordered_normalized_role_list(value)
+                    if roles:
+                        item[field] = roles[:8]
+                else:
+                    item[field] = value[:8]
+            elif isinstance(value, dict) and value:
+                if field in {"source_role_counts", "budget_source_role_counts"}:
+                    role_counts = normalized_role_int_map(value)
+                    if role_counts:
+                        item[field] = role_counts
+                else:
+                    item[field] = value
+            elif isinstance(value, int) and value > 0:
                 item[field] = value
-    if CONTEXT_PACK_DEBUG_LINEAGE:
+    if CONTEXT_PACK_DEBUG_LINEAGE or include_debug:
         value = ref.get("source_session_ids")
         if isinstance(value, list) and value:
             item["source_session_ids"] = value[:8]
@@ -6020,15 +6028,11 @@ def compact_context_pack_ref(ref: Json) -> Json:
 
 
 def compact_context_pack_refs(refs: list[Json], *, include_debug: bool = False) -> list[Json]:
-    if include_debug:
-        return refs
-    return [compact_context_pack_ref(ref) for ref in refs]
+    return [compact_context_pack_ref(ref, include_debug=include_debug) for ref in refs]
 
 
 def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = False) -> Json:
     """Strip non-answer-bearing routing details from normal ContextPack output."""
-    if include_debug:
-        return pack
     compact = dict(pack)
     serving_aliases = {
         "context_pack_id": "pack_id",
@@ -6037,8 +6041,8 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
         if compact.get(source) not in (None, "", [], {}):
             compact[target] = compact.get(source)
         compact.pop(source, None)
-    compact["selected_refs"] = compact_context_pack_refs(list(compact.get("selected_refs", [])), include_debug=False)
-    remote_refs = compact_context_pack_refs(list(compact.get("remote_context_refs", compact.get("selected_refs", []))), include_debug=False)
+    compact["selected_refs"] = compact_context_pack_refs(list(compact.get("selected_refs", [])), include_debug=include_debug)
+    remote_refs = compact_context_pack_refs(list(compact.get("remote_context_refs", compact.get("selected_refs", []))), include_debug=include_debug)
     if remote_refs and remote_refs != compact["selected_refs"]:
         compact["remote_context_refs"] = remote_refs
     else:
