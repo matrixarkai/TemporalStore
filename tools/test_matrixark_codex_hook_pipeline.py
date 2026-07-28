@@ -112,6 +112,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "source_memory_scopes",
             "source_session_continuities",
             "source_extraction_phases",
+            "source_profile_promotion_policies",
+            "source_profile_promotion_blockers",
             "source_final_session_boundary_count",
             "source_role_counts",
             "budget_source_role_counts",
@@ -164,6 +166,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "source_hook_type_counts": {"after_llm": 2},
                     "source_codex_events": ["Stop"],
                     "source_codex_event_counts": {"Stop": 2},
+                    "source_profile_promotion_policies": ["always_when_profile_scope_available"],
+                    "source_profile_promotion_blockers": ["profile_scope_missing"],
                     "source_session_ids": ["session-a", "session-b"],
                     "source_entity_hashes": ["aaa", "bbb"],
                     "current_state_source_session_count": 2,
@@ -283,6 +287,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "source_role_counts": {"assistant": 2},
                     "source_hook_type_counts": {"after_llm": 2},
                     "source_codex_event_counts": {"Stop": 2},
+                    "source_profile_promotion_policies": ["always_when_profile_scope_available"],
+                    "source_profile_promotion_blockers": ["profile_scope_missing"],
                     "source_entity_hashes": ["aaa", "bbb"],
                     "current_state_source_session_count": 2,
                 }
@@ -307,6 +313,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual({"assistant": 2}, item["source_role_counts"])
         self.assertEqual({"after_llm": 2}, item["source_hook_type_counts"])
         self.assertEqual({"Stop": 2}, item["source_codex_event_counts"])
+        self.assertEqual(["always_when_profile_scope_available"], item["source_profile_promotion_policies"])
+        self.assertEqual(["profile_scope_missing"], item["source_profile_promotion_blockers"])
         self.assertEqual(2, item["source_entity_count"])
         self.assertEqual(2, item["current_state_source_session_count"])
         self.assertIn("retrieval_metrics", serving)
@@ -328,6 +336,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "source_role_counts": {"assistant": 2},
                     "source_hook_type_counts": {"after_llm": 1},
                     "source_codex_event_counts": {"Stop": 1},
+                    "source_profile_promotion_policies": ["always_when_profile_scope_available"],
+                    "source_profile_promotion_blockers": ["profile_scope_missing"],
                     "pending_source_roles": {"assistant": 2},
                     "pending_source_hook_types": {"after_llm": 1},
                     "pending_source_codex_events": {"Stop": 1},
@@ -367,6 +377,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual({"assistant": 2}, item["source_role_counts"])
         self.assertEqual({"after_llm": 1}, item["source_hook_type_counts"])
         self.assertEqual({"Stop": 1}, item["source_codex_event_counts"])
+        self.assertEqual(["always_when_profile_scope_available"], item["source_profile_promotion_policies"])
+        self.assertEqual(["profile_scope_missing"], item["source_profile_promotion_blockers"])
         self.assertEqual(3, item["source_entity_count"])
         self.assertEqual(
             {"assistant": 2},
