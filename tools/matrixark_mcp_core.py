@@ -5249,6 +5249,8 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
         "source_memory_scopes",
         "source_session_continuities",
         "source_extraction_phases",
+        "source_profile_promotion_policies",
+        "source_profile_promotion_blockers",
         "source_final_session_boundary_count",
     ] if CONTEXT_PACK_DEBUG_LINEAGE else []
     for field in lineage_fields:
@@ -6206,6 +6208,8 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
             "source_memory_scopes",
             "source_session_continuities",
             "source_extraction_phases",
+            "source_profile_promotion_policies",
+            "source_profile_promotion_blockers",
             "source_final_session_boundary_count",
             "source_role_counts",
             "budget_source_role_counts",
