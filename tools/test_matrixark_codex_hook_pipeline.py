@@ -921,6 +921,75 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("source_role:llm", terms)
             self.assertNotIn("source_role:model", terms)
 
+    def test_candidate_index_terms_include_count_only_live_memory_lineage(self) -> None:
+        entity_terms = candidate_index_terms(
+            {
+                "record_type": "context_entity",
+                "entity_type": "assistant_decision",
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "extraction_phase": "final",
+                "source_role_counts": {"llm": 2, "tool_result": 1, "bad": "n/a"},
+                "source_hook_type_counts": {"hook_boundary": 2},
+                "source_codex_event_counts": {"Stop": 2},
+            },
+            {},
+            {},
+            {},
+        )
+        summary_terms = candidate_index_terms(
+            {
+                "record_type": "context_summary",
+                "summary_type": "node_l1",
+                "source_role_counts": {"model": 3},
+                "source_memory_scopes": ["user_profile"],
+                "source_session_continuities": ["cross_session"],
+                "source_extraction_phases": ["final"],
+            },
+            {},
+            {},
+            {},
+        )
+        compression_terms = candidate_index_terms(
+            {
+                "record_type": "context_compression_event",
+                "compression_id_hash": 902,
+                "source_role_counts": {"assistant_response": 1},
+                "source_hook_type_counts": {"PostToolUse": 1},
+            },
+            {},
+            {},
+            {},
+        )
+        event_terms = candidate_index_terms(
+            {
+                "record_type": "context_event",
+                "event_type": "dialogue_batch",
+                "source_role_counts": {"tool_output": 1},
+                "source_codex_event_counts": {"PostToolUse": 1},
+            },
+            {},
+            {},
+            {},
+        )
+
+        self.assertIn("entity_type:assistant_decision", entity_terms)
+        self.assertIn("source_role:assistant", entity_terms)
+        self.assertIn("source_role:tool", entity_terms)
+        self.assertIn("hook_type:hook_boundary", entity_terms)
+        self.assertIn("codex_event:stop", entity_terms)
+        self.assertIn("memory_scope:user_profile", entity_terms)
+        self.assertIn("session_continuity:cross_session", entity_terms)
+        self.assertIn("extraction_phase:final", entity_terms)
+        self.assertIn("source_role:assistant", summary_terms)
+        self.assertIn("memory_scope:user_profile", summary_terms)
+        self.assertIn("session_continuity:cross_session", summary_terms)
+        self.assertIn("extraction_phase:final", summary_terms)
+        self.assertIn("source_role:assistant", compression_terms)
+        self.assertIn("hook_type:posttooluse", compression_terms)
+        self.assertIn("source_role:tool", event_terms)
+        self.assertIn("codex_event:posttooluse", event_terms)
+
     def test_time_compression_preserves_source_lineage_for_budgeting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-compression-lineage.jsonl")
