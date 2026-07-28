@@ -238,30 +238,51 @@ def build_node_summary_refresh_records(
             if str(record.get("entity_type") or "").strip()
         }
     )
-    source_roles = sorted(
-        {
-            str(role).strip()
-            for record in entity_states
-            for role in (record.get("source_roles") if isinstance(record.get("source_roles"), list) else [])
-            if str(role or "").strip()
-        }
-    )
-    source_hook_types = sorted(
-        {
-            str(hook_type).strip()
-            for record in entity_states
-            for hook_type in (record.get("source_hook_types") if isinstance(record.get("source_hook_types"), list) else [])
-            if str(hook_type or "").strip()
-        }
-    )
-    source_codex_events = sorted(
-        {
-            str(codex_event).strip()
-            for record in entity_states
-            for codex_event in (record.get("source_codex_events") if isinstance(record.get("source_codex_events"), list) else [])
-            if str(codex_event or "").strip()
-        }
-    )
+    source_records = events + entity_states + child_summaries
+
+    def source_values(list_field: str, fallback_field: str = "") -> list[str]:
+        values: set[str] = set()
+        for record in source_records:
+            raw_values = record.get(list_field) if isinstance(record.get(list_field), list) else []
+            for value in raw_values:
+                text = str(value or "").strip()
+                if text:
+                    values.add(text)
+            fallback = str(record.get(fallback_field) or "").strip() if fallback_field else ""
+            if fallback:
+                values.add(fallback)
+        return sorted(values)
+
+    def source_count_map(count_field: str, list_field: str, fallback_field: str = "") -> Json:
+        counts: Json = {}
+        for record in source_records:
+            raw_counts = record.get(count_field) if isinstance(record.get(count_field), dict) else {}
+            if raw_counts:
+                for key, raw_count in raw_counts.items():
+                    text = str(key or "").strip()
+                    if not text:
+                        continue
+                    try:
+                        count = int(raw_count or 0)
+                    except (TypeError, ValueError):
+                        count = 0
+                    if count > 0:
+                        counts[text] = int(counts.get(text, 0)) + count
+                continue
+            raw_values = record.get(list_field) if isinstance(record.get(list_field), list) else []
+            fallback_values = [record.get(fallback_field)] if fallback_field else []
+            for value in list(raw_values) + fallback_values:
+                text = str(value or "").strip()
+                if text:
+                    counts[text] = int(counts.get(text, 0)) + 1
+        return dict(sorted(counts.items()))
+
+    source_roles = source_values("source_roles", "source_role")
+    source_role_counts = source_count_map("source_role_counts", "source_roles", "source_role")
+    source_hook_types = source_values("source_hook_types", "hook_type")
+    source_hook_type_counts = source_count_map("source_hook_type_counts", "source_hook_types", "hook_type")
+    source_codex_events = source_values("source_codex_events", "codex_event")
+    source_codex_event_counts = source_count_map("source_codex_event_counts", "source_codex_events", "codex_event")
     source_memory_scopes = sorted(
         {
             str(record.get("memory_scope") or "").strip()
@@ -341,8 +362,11 @@ def build_node_summary_refresh_records(
                 "source_entity_hashes": source_entity_hashes,
                 "source_entity_types": source_entity_types,
                 "source_roles": source_roles,
+                "source_role_counts": source_role_counts,
                 "source_hook_types": source_hook_types,
+                "source_hook_type_counts": source_hook_type_counts,
                 "source_codex_events": source_codex_events,
+                "source_codex_event_counts": source_codex_event_counts,
                 "source_memory_scopes": source_memory_scopes,
                 "source_session_continuities": source_session_continuities,
                 "source_extraction_phases": source_extraction_phases,
@@ -384,8 +408,11 @@ def build_node_summary_refresh_records(
         "source_entity_types": source_entity_types,
         "source_operator_hashes": source_operator_hashes,
         "source_roles": source_roles,
+        "source_role_counts": source_role_counts,
         "source_hook_types": source_hook_types,
+        "source_hook_type_counts": source_hook_type_counts,
         "source_codex_events": source_codex_events,
+        "source_codex_event_counts": source_codex_event_counts,
         "source_memory_scopes": source_memory_scopes,
         "source_session_continuities": source_session_continuities,
         "source_extraction_phases": source_extraction_phases,

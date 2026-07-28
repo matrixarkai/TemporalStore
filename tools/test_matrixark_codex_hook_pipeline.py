@@ -33,6 +33,7 @@ from matrixark_mcp_core import (
 from matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness
 from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget, memory_layer_pressure_summary, selected_ref_layer_budget
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
+from matrixark_mcp_summary_runtime import build_node_summary_refresh_records
 
 
 class CountingLocalAdapter(MatrixArkLocalAdapter):
@@ -99,6 +100,93 @@ class NativeCaptureLocalAdapter(MatrixArkLocalAdapter):
 
 
 class MatrixArkCodexHookPipelineTest(unittest.TestCase):
+    def test_summary_runtime_preserves_event_child_and_entity_lineage_counts(self) -> None:
+        result = build_node_summary_refresh_records(
+            node_path=["tenant:tenant_runtime", "user:user_runtime", "profile:long_term_memory"],
+            node_hash=424242,
+            scope={
+                "account_id": "acct_runtime",
+                "tenant_id": "tenant_runtime",
+                "user_id": "user_runtime",
+            },
+            events=[
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 101,
+                    "text": "user: remember summary runtime lineage",
+                    "source_role": "user",
+                    "hook_type": "before_llm",
+                    "codex_event": "UserPromptSubmit",
+                    "source_role_counts": {"user": 1},
+                    "source_hook_type_counts": {"before_llm": 1},
+                    "source_codex_event_counts": {"UserPromptSubmit": 1},
+                    "extraction_phase": "provisional",
+                },
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 102,
+                    "text": "tool: Exit code 0 proves summary runtime lineage",
+                    "source_roles": ["tool"],
+                    "source_hook_types": ["tool_result"],
+                    "source_codex_events": ["PostToolUse"],
+                },
+            ],
+            child_summaries=[
+                {
+                    "record_type": "context_summary",
+                    "summary_hash": 201,
+                    "summary_text": "assistant decision summary",
+                    "source_roles": ["assistant"],
+                    "source_role_counts": {"assistant": 2},
+                    "source_hook_types": ["after_llm"],
+                    "source_hook_type_counts": {"after_llm": 1},
+                    "source_codex_events": ["Stop"],
+                    "source_codex_event_counts": {"Stop": 1},
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "extraction_phase": "final",
+                    "final_session_boundary": True,
+                }
+            ],
+            entity_states=[
+                {
+                    "record_type": "context_entity",
+                    "entity_hash": 301,
+                    "entity_type": "assistant_decision",
+                    "entity_name": "summary_runtime",
+                    "state": "preserve assistant/tool/user lineage in summaries",
+                    "source_roles": ["assistant", "tool"],
+                    "source_role_counts": {"assistant": 1, "tool": 1},
+                    "source_hook_types": ["after_llm", "tool_result"],
+                    "source_hook_type_counts": {"after_llm": 1, "tool_result": 1},
+                    "source_codex_events": ["Stop", "PostToolUse"],
+                    "source_codex_event_counts": {"Stop": 1, "PostToolUse": 1},
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "extraction_phase": "provisional",
+                }
+            ],
+            operator_states=[],
+            summary_source_policy={},
+            dirty_hash=909,
+            refreshed_at_ms=1780000000000,
+        )
+
+        summaries = [record for record in result["records"] if record.get("record_type") == "context_summary"]
+        self.assertTrue(summaries)
+        summary = summaries[0]
+        self.assertEqual(["assistant", "tool", "user"], summary["source_roles"])
+        self.assertEqual({"assistant": 3, "tool": 2, "user": 1}, summary["source_role_counts"])
+        self.assertEqual(["after_llm", "before_llm", "tool_result"], summary["source_hook_types"])
+        self.assertEqual({"after_llm": 2, "before_llm": 1, "tool_result": 2}, summary["source_hook_type_counts"])
+        self.assertEqual(["PostToolUse", "Stop", "UserPromptSubmit"], summary["source_codex_events"])
+        self.assertEqual({"PostToolUse": 2, "Stop": 2, "UserPromptSubmit": 1}, summary["source_codex_event_counts"])
+        self.assertEqual(["user_profile"], summary["source_memory_scopes"])
+        self.assertEqual(["cross_session"], summary["source_session_continuities"])
+        self.assertEqual("user_profile", summary["memory_scope"])
+        self.assertEqual("cross_session", summary["session_continuity"])
+        self.assertEqual(summary["source_role_counts"], result["source_role_counts"])
+
     def assert_no_default_context_pack_debug_lineage(self, value: object) -> None:
         hidden_keys = {
             "debug_payload",
