@@ -2265,6 +2265,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertTrue(all(record["source_memory_scopes"] == ["session", "user_profile"] for record in dirty_records))
         self.assertTrue(all(record["source_session_continuities"] == ["same_session", "cross_session"] for record in dirty_records))
         self.assertTrue(all(record["source_extraction_phases"] == ["pending_async"] for record in dirty_records))
+        self.assertTrue(all(record["source_memory_selection_policies"] == ["selected_user_prompt"] for record in dirty_records))
+        self.assertTrue(all(record["source_memory_selection_policy_counts"] == {"selected_user_prompt": 1} for record in dirty_records))
         self.assertEqual([1, 2, 3, 4], [record["depth"] for record in dirty_records])
         self.assertEqual(1, len(server.adapter.session_buffer_records))
         self.assertEqual("turn-fast-1", server.adapter.session_buffer_records[0]["hook"]["turn_id"])

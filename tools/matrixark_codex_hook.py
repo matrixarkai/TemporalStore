@@ -3241,6 +3241,8 @@ def fast_hook_summary_dirty_records(
     source_role: str = "",
     hook_type: str = "",
     codex_event: str = "",
+    source_memory_selection_policies: list[str] | None = None,
+    source_memory_selection_policy_counts: Json | None = None,
     source_lineage: Json | None = None,
 ) -> list[Json]:
     records: list[Json] = []
@@ -3248,6 +3250,22 @@ def fast_hook_summary_dirty_records(
     source_roles = [source_role] if source_role else []
     source_hook_types = [hook_type] if hook_type else []
     source_codex_events = [codex_event] if codex_event else []
+    selection_policies = [
+        str(policy)
+        for policy in (source_memory_selection_policies or [])
+        if str(policy or "").strip()
+    ]
+    selection_policy_counts: Json = {}
+    for policy, count in (source_memory_selection_policy_counts or {}).items():
+        policy_name = str(policy or "").strip()
+        if not policy_name:
+            continue
+        try:
+            amount = int(count or 0)
+        except (TypeError, ValueError):
+            continue
+        if amount > 0:
+            selection_policy_counts[policy_name] = amount
     source_memory_scopes, source_session_continuities = pending_extraction_memory_layer_intent(scope)
     for depth in range(1, len(node_path) + 1):
         prefix = node_path[:depth]
@@ -3273,6 +3291,8 @@ def fast_hook_summary_dirty_records(
                 "source_memory_scopes": source_memory_scopes,
                 "source_session_continuities": source_session_continuities,
                 "source_extraction_phases": ["pending_async"],
+                "source_memory_selection_policies": selection_policies,
+                "source_memory_selection_policy_counts": selection_policy_counts,
                 "changed_ref_count": 1,
                 "propagate_depth": len(node_path),
                 "scope": scope,
@@ -3500,6 +3520,8 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         source_role=role,
         hook_type=hook_type,
         codex_event=args.event,
+        source_memory_selection_policies=source_memory_selection_policies,
+        source_memory_selection_policy_counts=source_memory_selection_policy_counts,
         source_lineage=lineage,
     )
     enqueue_raw = getattr(adapter, "enqueue_raw_ingestion_records", None)

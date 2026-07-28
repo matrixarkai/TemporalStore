@@ -5971,6 +5971,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(record.get("source_role_counts") == {"user": 1} for record in first_dirty))
             self.assertTrue(all(record.get("source_hook_type_counts") == {"before_llm": 1} for record in first_dirty))
             self.assertTrue(all(record.get("source_codex_event_counts") == {"UserPromptSubmit": 1} for record in first_dirty))
+            self.assertTrue(all(record.get("source_memory_selection_policies") == ["selected_user_prompt"] for record in first_dirty))
+            self.assertTrue(all(record.get("source_memory_selection_policy_counts") == {"selected_user_prompt": 1} for record in first_dirty))
             first_tasks = [record for record in first_records if record.get("record_type") == "matrixark_async_pipeline_task"]
             self.assertEqual(1, len(first_tasks))
             self.assertEqual(["user"], first_tasks[0]["source_roles"])
@@ -5979,6 +5981,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({"user": 1}, first_tasks[0]["source_role_counts"])
             self.assertEqual({"before_llm": 1}, first_tasks[0]["source_hook_type_counts"])
             self.assertEqual({"UserPromptSubmit": 1}, first_tasks[0]["source_codex_event_counts"])
+            self.assertEqual(["selected_user_prompt"], first_tasks[0]["source_memory_selection_policies"])
+            self.assertEqual({"selected_user_prompt": 1}, first_tasks[0]["source_memory_selection_policy_counts"])
             self.assertEqual(["session", "user_profile"], first_tasks[0]["source_memory_scopes"])
             self.assertEqual(["same_session", "cross_session"], first_tasks[0]["source_session_continuities"])
 

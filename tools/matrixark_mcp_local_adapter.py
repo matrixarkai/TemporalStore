@@ -374,15 +374,31 @@ def session_events_by_message_limit(records: list[Json], limit: int | None) -> l
 
 def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
     metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
-    roles = {
-        normalize_message_role(message.get("role"))
-        for message in envelope.get("messages", [])
-        if isinstance(message, dict) and normalize_message_role(message.get("role"))
-    }
+    role_counts: Json = {}
+    for message in envelope.get("messages", []):
+        if not isinstance(message, dict):
+            continue
+        role = normalize_message_role(message.get("role"))
+        if role:
+            role_counts[role] = int(role_counts.get(role, 0)) + 1
+    roles = set(role_counts)
     for value in metadata.get("source_roles", []) if isinstance(metadata.get("source_roles"), list) else []:
         role = normalize_message_role(value)
         if role:
             roles.add(role)
+            role_counts[role] = max(1, int(role_counts.get(role, 0)))
+    if isinstance(metadata.get("source_role_counts"), dict):
+        for value, count in metadata["source_role_counts"].items():
+            role = normalize_message_role(value)
+            if not role:
+                continue
+            try:
+                amount = max(0, int(count or 0))
+            except (TypeError, ValueError):
+                amount = 0
+            if amount:
+                roles.add(role)
+                role_counts[role] = max(int(role_counts.get(role, 0)), amount)
     hook_types = set()
     hook_type = str(metadata.get("hook_type") or "").strip()
     if hook_type:
@@ -407,6 +423,40 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
         trigger = str(hook.get("trigger") or "").strip()
         if trigger:
             codex_events.add(trigger)
+    memory_selection_policy_counts: Json = {}
+    explicit_policy_counts = (
+        metadata.get("source_memory_selection_policy_counts")
+        if isinstance(metadata.get("source_memory_selection_policy_counts"), dict)
+        else {}
+    )
+    for policy, count in explicit_policy_counts.items():
+        policy_name = str(policy or "").strip()
+        if not policy_name:
+            continue
+        try:
+            amount = max(0, int(count or 0))
+        except (TypeError, ValueError):
+            amount = 0
+        if amount:
+            memory_selection_policy_counts[policy_name] = int(memory_selection_policy_counts.get(policy_name, 0)) + amount
+    for policy in metadata.get("source_memory_selection_policies", []) if isinstance(metadata.get("source_memory_selection_policies"), list) else []:
+        policy_name = str(policy or "").strip()
+        if policy_name and policy_name not in memory_selection_policy_counts:
+            memory_selection_policy_counts[policy_name] = 1
+    selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
+    selection_policy = str(selection.get("policy") or "").strip()
+    if selection_policy and selection_policy not in memory_selection_policy_counts:
+        memory_selection_policy_counts[selection_policy] = 1
+    inferred_policy_by_role = {
+        "assistant": "selected_assistant_decision_outcome_only",
+        "tool": "selected_tool_evidence_only",
+        "user": "selected_user_prompt",
+    }
+    for role, count in role_counts.items():
+        policy = inferred_policy_by_role.get(role)
+        if not policy or policy in memory_selection_policy_counts:
+            continue
+        memory_selection_policy_counts[policy] = max(1, int(count or 0))
     entity_type = ""
     if "tool" in roles:
         entity_type = "tool_evidence"
@@ -417,8 +467,11 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
         "session_continuity": "same_session",
         **({"entity_type": entity_type} if entity_type else {}),
         "source_roles": sorted(roles),
+        "source_role_counts": {role: int(role_counts.get(role, 0)) for role in sorted(roles) if int(role_counts.get(role, 0)) > 0},
         "source_hook_types": sorted(hook_types),
         "source_codex_events": sorted(codex_events),
+        "source_memory_selection_policies": sorted(memory_selection_policy_counts),
+        "source_memory_selection_policy_counts": memory_selection_policy_counts,
     }
 
 
