@@ -1870,8 +1870,19 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({"session": 1}, readiness["pending_memory_scopes"])
             self.assertEqual({"same_session": 1}, readiness["pending_session_continuities"])
             self.assertEqual({"pending_async": 1}, readiness["pending_extraction_phases"])
+            self.assertEqual(
+                {"compression": 1, "embedding": 1, "extraction": 1, "summary": 1},
+                readiness["remaining_stage_counts"],
+            )
+            self.assertIn(
+                "async_pipeline_remaining_stages:compression,embedding,extraction,summary",
+                readiness["freshness_warnings"],
+            )
             self.assertIn("session", readiness["memory_layer_readiness"]["blocked_layers"])
             self.assertIn("same_session", readiness["memory_layer_readiness"]["blocked_layers"])
+            self.assertIn("summary", readiness["memory_layer_readiness"]["blocked_layers"])
+            self.assertIn("compression", readiness["memory_layer_readiness"]["blocked_layers"])
+            self.assertIn("embedding", readiness["memory_layer_readiness"]["blocked_layers"])
             coverage = pack["retrieval_metrics"]["retrieval_model_coverage"]
             self.assertGreaterEqual(coverage["event_embedding_vectors"], 1)
             self.assertGreaterEqual(coverage["index_terms_by_ref"], 1)
