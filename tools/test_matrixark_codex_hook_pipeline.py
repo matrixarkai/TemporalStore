@@ -6399,13 +6399,27 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     },
                     "session_scope": "prefer",
                     "question_type": "broad_exploration",
-                    "query": "Summarize long term memory about assistant decisions and tool evidence.",
-                    "max_context_tokens": 90,
+                    "query": (
+                        "user_profile cross_session profile long_term_memory "
+                        "assistant_decision tool_evidence always_when_profile_scope_available"
+                    ),
+                    "max_context_tokens": 200,
                     "audit_mode": "off",
-                    "ranking": {"max_selected_refs": 3},
+                    "debug_context_pack": True,
+                    "include_debug_refs": True,
+                    "ranking": {"max_selected_refs": 5},
                 }
             )
-            self.assertLessEqual(summary_pack["used_context_tokens"], 90)
+            self.assertLessEqual(summary_pack["used_context_tokens"], 200)
+            selected_summary_refs = [ref for ref in summary_pack["selected_refs"] if ref.get("ref_type") == "summary"]
+            self.assertTrue(selected_summary_refs, summary_pack["selected_refs"])
+            self.assertTrue(
+                any(
+                    "always_when_profile_scope_available" in ref.get("source_profile_promotion_policies", [])
+                    for ref in selected_summary_refs
+                ),
+                selected_summary_refs,
+            )
             summary_layer_budget = summary_pack["retrieval_metrics"]["memory_layer_budget"]
             self.assertGreaterEqual(summary_layer_budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(summary_layer_budget["by_session_continuity"]["cross_session"]["refs"], 1)
@@ -6450,6 +6464,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                             "source_memory_scopes": record.get("source_memory_scopes", []),
                             "source_session_continuities": record.get("source_session_continuities", []),
                             "source_extraction_phases": record.get("source_extraction_phases", []),
+                            "source_profile_promotion_policies": record.get("source_profile_promotion_policies", []),
+                            "source_profile_promotion_blockers": record.get("source_profile_promotion_blockers", []),
                             "source_final_session_boundary_count": record.get("source_final_session_boundary_count", 0),
                             "source_roles": record.get("source_roles", []),
                             "source_hook_types": record.get("source_hook_types", []),
@@ -6470,6 +6486,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertNotIn("source_memory_scopes", item)
                 self.assertNotIn("source_session_continuities", item)
                 self.assertNotIn("source_extraction_phases", item)
+                self.assertNotIn("source_profile_promotion_policies", item)
+                self.assertNotIn("source_profile_promotion_blockers", item)
                 self.assertNotIn("source_roles", item)
                 self.assertNotIn("source_hook_types", item)
                 self.assertNotIn("source_codex_events", item)

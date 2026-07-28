@@ -6273,6 +6273,21 @@ class MatrixArkLocalAdapter:
                     if isinstance(candidate.get("source_extraction_phases"), list)
                     else record.get("source_extraction_phases", [])
                 ),
+                "source_profile_promotion_policies": (
+                    candidate.get("source_profile_promotion_policies")
+                    if isinstance(candidate.get("source_profile_promotion_policies"), list)
+                    else record.get("source_profile_promotion_policies", [])
+                ),
+                "source_profile_promotion_blockers": (
+                    candidate.get("source_profile_promotion_blockers")
+                    if isinstance(candidate.get("source_profile_promotion_blockers"), list)
+                    else record.get("source_profile_promotion_blockers", [])
+                ),
+                "source_entity_types": (
+                    candidate.get("source_entity_types")
+                    if isinstance(candidate.get("source_entity_types"), list)
+                    else record.get("source_entity_types", [])
+                ),
                 "question_type": question_type,
             }
 
@@ -6837,6 +6852,8 @@ class MatrixArkLocalAdapter:
                         *[str(value) for value in record.get("source_codex_events", []) if str(value or "")],
                         *[str(value) for value in record.get("source_memory_scopes", []) if str(value or "")],
                         *[str(value) for value in record.get("source_session_continuities", []) if str(value or "")],
+                        *[str(value) for value in record.get("source_profile_promotion_policies", []) if str(value or "")],
+                        *[str(value) for value in record.get("source_profile_promotion_blockers", []) if str(value or "")],
                         *[str(value) for value in record.get("source_entity_types", []) if str(value or "")],
                         *[str(value).replace("_", " ") for value in record.get("source_entity_types", []) if str(value or "")],
                         *sorted(index_terms),
@@ -6884,6 +6901,9 @@ class MatrixArkLocalAdapter:
                             "source_memory_scopes": record.get("source_memory_scopes", []),
                             "source_session_continuities": record.get("source_session_continuities", []),
                             "source_extraction_phases": record.get("source_extraction_phases", []),
+                            "source_profile_promotion_policies": record.get("source_profile_promotion_policies", []),
+                            "source_profile_promotion_blockers": record.get("source_profile_promotion_blockers", []),
+                            "source_entity_types": record.get("source_entity_types", []),
                             "source_final_session_boundary_count": record.get("source_final_session_boundary_count", 0),
                             "memory_scope": record.get("memory_scope", ""),
                             "session_continuity": record.get("session_continuity", ""),
