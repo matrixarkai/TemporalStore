@@ -969,6 +969,57 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertFalse(decision["trigger_evidence"]["idle_ready"])
         self.assertNotIn("batch me into entities", json.dumps(decision))
 
+    def test_hook_output_memory_lineage_requires_debug_lineage(self) -> None:
+        args = Namespace(session_id="codex-session-lineage")
+        auto_batch_extract = {
+            "status": "committed",
+            "trigger_policy": "threshold",
+            "source_roles": ["user", "assistant"],
+            "source_role_counts": {"user": 1, "assistant": 2},
+            "source_hook_type_counts": {"before_llm": 1, "after_llm": 1},
+            "source_codex_event_counts": {"UserPromptSubmit": 1, "Stop": 1},
+        }
+        ingest = {
+            "status": "accepted",
+            "auto_batch_extract": auto_batch_extract,
+            "auto_batch_extract_result": auto_batch_extract,
+        }
+        output = hook.codex_hook_output(
+            args=args,
+            status="ok",
+            event="UserPromptSubmit",
+            session_id_source="payload_field",
+            agent_context={"local_context": [], "workspace_root": "/repo"},
+            ingest=ingest,
+            retrieve={},
+            query="lineage default",
+        )
+        self.assertNotIn("memory_lineage", output)
+
+        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
+        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
+        try:
+            debug_output = hook.codex_hook_output(
+                args=args,
+                status="ok",
+                event="UserPromptSubmit",
+                session_id_source="payload_field",
+                agent_context={"local_context": [], "workspace_root": "/repo"},
+                ingest=ingest,
+                retrieve={},
+                query="lineage debug",
+            )
+        finally:
+            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
+
+        lineage = debug_output["memory_lineage"]
+        self.assertTrue(lineage["user_prompt_captured"])
+        self.assertTrue(lineage["assistant_response_captured"])
+        self.assertFalse(lineage["tool_evidence_captured"])
+        self.assertEqual({"assistant": 2, "user": 1}, lineage["source_role_counts"])
+        self.assertEqual({"after_llm": 1, "before_llm": 1}, lineage["source_hook_type_counts"])
+        self.assertEqual({"Stop": 1, "UserPromptSubmit": 1}, lineage["source_codex_event_counts"])
+
     def test_user_prompt_emit_codex_additional_context_from_selected_refs(self) -> None:
         args = Namespace(session_id="codex-session-1")
         output = hook.codex_hook_output(
