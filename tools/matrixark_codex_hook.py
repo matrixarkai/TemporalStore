@@ -445,9 +445,17 @@ def retrieval_async_readiness_from_retrieve(pack: Json | None) -> Json:
     for source_name in ["retrieval_metrics", "recall_policy"]:
         source = pack_view.get(source_name)
         if isinstance(source, dict) and isinstance(source.get("async_pipeline_readiness"), dict):
-            return source["async_pipeline_readiness"]
+            return normalize_async_readiness_roles(source["async_pipeline_readiness"])
     readiness = pack_view.get("async_pipeline_readiness")
-    return readiness if isinstance(readiness, dict) else {}
+    return normalize_async_readiness_roles(readiness) if isinstance(readiness, dict) else {}
+
+
+def normalize_async_readiness_roles(readiness: Json) -> Json:
+    normalized = dict(readiness)
+    pending_roles = normalized_role_counts(normalized.get("pending_source_roles"))
+    if pending_roles:
+        normalized["pending_source_roles"] = pending_roles
+    return normalized
 
 
 def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:

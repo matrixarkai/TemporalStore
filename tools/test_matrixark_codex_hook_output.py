@@ -983,7 +983,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                             "summary": 2,
                         },
                         "pending_source_roles": {
-                            "assistant": 2,
+                            "llm": 1,
+                            "model": 1,
                             "tool": 1,
                             "user": 1,
                         },
@@ -1185,6 +1186,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertFalse(output["retrieve"]["session_identity"]["fallback_session_identity"])
         self.assertEqual(4, output["retrieve"]["async_pipeline_readiness"]["task_count"])
         self.assertFalse(output["retrieve"]["async_pipeline_readiness"]["ready_for_retrieval"])
+        self.assertEqual(
+            {"assistant": 2, "tool": 1, "user": 1},
+            output["retrieve"]["async_pipeline_readiness"]["pending_source_roles"],
+        )
         self.assertEqual(
             "local_first_remote_fill_remaining",
             output["retrieve"]["budget"]["budget_contract"]["mode"],
