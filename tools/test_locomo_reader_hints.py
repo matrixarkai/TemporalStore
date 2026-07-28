@@ -271,6 +271,23 @@ class LocomoReaderHintTest(unittest.TestCase):
         self.assertIn("participating in an art show", hint)
         self.assertIn("mentoring program", hint)
 
+
+    def test_valentines_day_event_beats_conversation_timestamp(self) -> None:
+        blocks = [
+            {
+                "title": "conversation_9 answer_59547700 turn 9",
+                "body": (
+                    "2023/04/02 (Sun) 22:15. user: I had a great experience with similar events "
+                    "in the past, like the Love is in the Air fundraising dinner I volunteered "
+                    "at back on Valentine's Day."
+                ),
+            },
+        ]
+
+        hint = extractive_reader_hint("When did I volunteer at the local animal shelter's fundraising dinner?", blocks)
+
+        self.assertEqual("February 14th", hint)
+
     def test_adoption_plan_answer_is_compact(self) -> None:
         blocks = [
             {
