@@ -87,9 +87,21 @@ def positive_int_env(name: str, default: int) -> int:
 
 
 PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT = positive_int_env("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT", 2)
+PROFILE_PROMOTION_POLICY_ALWAYS = "always_when_profile_scope_available"
+PROFILE_PROMOTION_SCOPE_MISSING_BLOCKER = "profile_scope_missing"
 
 _LOCAL_READ_CACHE_LOCK = threading.RLock()
 _LOCAL_READ_CACHE: dict[str, tuple[int, int, list[Json]]] = {}
+
+
+def profile_promotion_decision(profile_node_hash: int) -> Json:
+    scope_available = bool(profile_node_hash)
+    return {
+        "policy": PROFILE_PROMOTION_POLICY_ALWAYS,
+        "importance_gate": False,
+        "scope_available": scope_available,
+        "blocker": "" if scope_available else PROFILE_PROMOTION_SCOPE_MISSING_BLOCKER,
+    }
 
 
 def codex_session_identity_policy(session_id_source: str) -> Json:
@@ -5418,9 +5430,11 @@ class MatrixArkLocalAdapter:
                 updated_at_ms=envelope["ingestion_time_ms"],
             )
         profile_node_hash = stable_hash("/".join(profile_node_path)) if profile_node_path else 0
-        profile_promotion_policy = "always_when_profile_scope_available"
-        profile_promotion_importance_gate = False
-        profile_promotion_blocker = "" if profile_node_hash else "profile_scope_missing"
+        profile_promotion = profile_promotion_decision(profile_node_hash)
+        profile_promotion_policy = str(profile_promotion["policy"])
+        profile_promotion_importance_gate = bool(profile_promotion["importance_gate"])
+        profile_promotion_scope_available = bool(profile_promotion["scope_available"])
+        profile_promotion_blocker = str(profile_promotion["blocker"])
         source_session_id = str(envelope["scope"].get("session_id") or "")
         entity_hashes = []
         profile_entity_hashes = []
@@ -5839,7 +5853,7 @@ class MatrixArkLocalAdapter:
                     "profile_promotion_summary": profile_promotion_summary[:16],
                     "profile_promotion_policy": profile_promotion_policy,
                     "profile_promotion_importance_gate": profile_promotion_importance_gate,
-                    "profile_promotion_scope_available": bool(profile_node_hash),
+                    "profile_promotion_scope_available": profile_promotion_scope_available,
                     "profile_promotion_blocker": profile_promotion_blocker,
                     "entity_type_counts": entity_type_counts,
                     "source_role_counts": source_role_counts,
@@ -5927,7 +5941,7 @@ class MatrixArkLocalAdapter:
             "profile_entities_written": len(profile_entity_hashes),
             "profile_promotion_policy": profile_promotion_policy,
             "profile_promotion_importance_gate": profile_promotion_importance_gate,
-            "profile_promotion_scope_available": bool(profile_node_hash),
+            "profile_promotion_scope_available": profile_promotion_scope_available,
             "profile_promotion_blocker": profile_promotion_blocker,
             "entity_type_counts": entity_type_counts,
             "source_role_counts": source_role_counts,
