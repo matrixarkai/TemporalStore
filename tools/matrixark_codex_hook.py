@@ -907,8 +907,12 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
     if auto_batch:
         auto_batch = normalize_role_lineage_fields(auto_batch)
         summary["auto_batch_extract_status"] = auto_batch.get("status")
-        summary["decision"] = "committed" if auto_batch.get("status") in {"accepted", "committed"} else "attempted"
-        summary["reason"] = auto_batch.get("reason") or auto_batch.get("commit_reason")
+        auto_batch_reason = auto_batch.get("reason") or auto_batch.get("commit_reason") or auto_batch.get("trigger_policy")
+        if auto_batch_reason == "idle_timeout":
+            summary["decision"] = "idle_commit"
+        else:
+            summary["decision"] = "committed" if auto_batch.get("status") in {"accepted", "committed"} else "attempted"
+        summary["reason"] = auto_batch_reason
         summary["source_roles"] = auto_batch.get("source_roles")
         summary["source_hook_types"] = auto_batch.get("source_hook_types")
         summary["source_codex_events"] = auto_batch.get("source_codex_events")
@@ -3082,6 +3086,13 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
                     **session_commit_result,
                     "memory_layers_written": memory_layers_written,
                 }
+    auto_batch_extract_result: Json = {}
+    if should_threshold_commit:
+        auto_batch_extract_result = session_commit_result
+    elif should_pre_ingest_idle_commit:
+        auto_batch_extract_result = pre_ingest_idle_commit_result
+    elif should_idle_commit:
+        auto_batch_extract_result = session_commit_result
     return {
         "status": "accepted",
         "sync_write_mode": "hook_fast_async_direct_queue",
@@ -3108,7 +3119,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
             "boundary_commit_requested": should_boundary_commit,
         },
         "idle_commit_result": pre_ingest_idle_commit_result,
-        "auto_batch_extract_result": session_commit_result if should_threshold_commit else {},
+        "auto_batch_extract_result": auto_batch_extract_result,
         "session_commit": session_commit_result if should_boundary_commit else {},
         "storage_options": storage_options,
         "hook_captured": hook is not None,

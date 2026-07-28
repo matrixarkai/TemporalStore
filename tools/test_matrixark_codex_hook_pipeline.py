@@ -1329,7 +1329,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertEqual(["tool"], idle_commit["source_roles"])
                 self.assertTrue(second["session_buffer"]["pre_ingest_idle_ready"])
                 self.assertGreaterEqual(second["session_buffer"]["pre_ingest_idle_elapsed_ms"], 1)
-                self.assertEqual({}, second["auto_batch_extract_result"])
+                self.assertEqual(idle_commit, second["auto_batch_extract_result"])
 
                 layers = idle_commit["memory_layers_written"]
                 self.assertGreaterEqual(layers["session_entities"], 1)
@@ -2656,6 +2656,53 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(summary_layer_readiness["layers"]["cross_session"]["ready"])
             self.assertTrue(summary_layer_readiness["layers"]["summary"]["ready"])
             self.assertEqual([], summary_readiness["freshness_warnings"])
+
+    def test_lightweight_async_ingest_reports_idle_commit_as_auto_batch_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-async-idle-auto.jsonl")
+            scope = {
+                "account_id": "acct_async_idle",
+                "tenant_id": "tenant_async_idle",
+                "user_id": "user_async_idle",
+                "session_id": "session_async_idle",
+            }
+            base_args = {
+                "scope": scope,
+                "async_processing": True,
+                "auto_batch_extract": True,
+                "session_buffer_threshold": 20,
+                "skip_prior_context": True,
+            }
+            first = adapter.ingest(
+                {
+                    **base_args,
+                    "messages": [{"role": "assistant", "content": "Decision: idle commits should be visible as auto extraction."}],
+                    "metadata": {"hook_type": "after_llm", "codex_event": "Stop"},
+                }
+            )
+            self.assertEqual("accepted", first["status"])
+            self.assertIsNone(first["auto_batch_extract_result"])
+            time.sleep(0.01)
+
+            second = adapter.ingest(
+                {
+                    **base_args,
+                    "idle_commit_timeout_ms": 1,
+                    "messages": [{"role": "user", "content": "New prompt after idle should start a fresh batch."}],
+                    "metadata": {"hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
+                }
+            )
+
+            idle_commit = second["idle_commit_result"]
+            self.assertEqual("committed", idle_commit["status"])
+            self.assertEqual("idle_timeout", idle_commit["trigger_policy"])
+            self.assertEqual("provisional", idle_commit["extraction_phase"])
+            self.assertEqual(idle_commit, second["auto_batch_extract_result"])
+            self.assertTrue(second["session_buffer"]["idle_ready"])
+            self.assertFalse(second["session_buffer"]["threshold_ready"])
+            self.assertEqual(1, idle_commit["committed_event_count"])
+            self.assertGreaterEqual(idle_commit["memory_layers_written"]["session_entities"], 1)
+            self.assertGreaterEqual(idle_commit["memory_layers_written"]["profile_entities"], 1)
 
     def test_lightweight_async_ingest_threshold_defaults_to_auto_batch_for_messages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
