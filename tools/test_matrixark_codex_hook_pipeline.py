@@ -5388,6 +5388,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 }
             )
             self.assertEqual("accepted", first["status"])
+            first_tasks = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") == "matrixark_async_pipeline_task"
+            ]
+            self.assertEqual(1, len(first_tasks))
+            self.assertEqual(["session", "user_profile"], first_tasks[0]["source_memory_scopes"])
+            self.assertEqual(["same_session", "cross_session"], first_tasks[0]["source_session_continuities"])
             second = adapter.ingest(
                 {
                     **base_args,
