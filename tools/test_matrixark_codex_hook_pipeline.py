@@ -22,6 +22,7 @@ from matrixark_mcp_context_pack import (
 )
 from matrixark_mcp_core import (
     candidate_index_terms,
+    compact_context_pack_audit_record as core_compact_context_pack_audit_record,
     compact_context_pack_for_serving as core_compact_context_pack_for_serving,
     compact_context_pack_for_serving_flat,
     identity_hashes,
@@ -237,6 +238,24 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertTrue(metrics_serving["include_retrieval_metrics"])
         self.assertIn("retrieval_metrics", metrics_serving)
         self.assertIn("memory_layer_budget", metrics_serving["retrieval_metrics"])
+        self.assert_no_default_context_pack_debug_lineage(metrics_serving["retrieval_metrics"])
+        self.assertNotIn("by_source_role", metrics_serving["retrieval_metrics"]["memory_layer_budget"])
+        self.assertNotIn(
+            "source_message_counts_by_role",
+            metrics_serving["retrieval_metrics"]["memory_layer_budget"],
+        )
+        self.assertNotIn(
+            "pending_source_roles",
+            metrics_serving["retrieval_metrics"]["async_pipeline_readiness"],
+        )
+        self.assertNotIn(
+            "by_source_role",
+            metrics_serving["retrieval_metrics"]["memory_layer_pressure"].get("by_dimension", {}),
+        )
+        self.assertEqual(
+            {"by_memory_scope"},
+            set(metrics_serving["retrieval_metrics"]["memory_layer_pressure"]["dropped_dimensions"]),
+        )
 
     def test_context_pack_serving_includes_debug_lineage_with_flag(self) -> None:
         pack = {
@@ -423,6 +442,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         compact = compact_context_pack_audit_record(audit)
         self.assertNotIn("memory_hierarchy", compact)
         self.assertEqual("compact_audit", compact["payload_policy"]["mode"])
+        core_compact = core_compact_context_pack_audit_record(audit)
+        self.assertNotIn("memory_hierarchy", core_compact)
 
         debug_compact = compact_context_pack_audit_record(audit, include_debug=True)
         self.assertIn("memory_hierarchy", debug_compact)
