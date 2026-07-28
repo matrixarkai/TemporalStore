@@ -2007,6 +2007,29 @@ fn pack_ref_from_record(
     })
 }
 
+fn context_pack_debug_lineage_enabled() -> bool {
+    env::var("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE")
+        .ok()
+        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
+fn native_serving_ref(mut item: Value) -> Value {
+    if context_pack_debug_lineage_enabled() {
+        return item;
+    }
+    if let Some(object) = item.as_object_mut() {
+        object.remove("source_role_counts");
+        object.remove("source_hook_type_counts");
+        object.remove("source_codex_event_counts");
+    }
+    item
+}
+
+fn native_serving_refs(refs: &[Value]) -> Vec<Value> {
+    refs.iter().cloned().map(native_serving_ref).collect()
+}
+
 fn increment_layer_bucket(breakdown: &mut Value, bucket_name: &str, key: &str, tokens: u64) {
     let Some(bucket_map) = breakdown
         .get_mut(bucket_name)
@@ -3392,6 +3415,7 @@ fn retrieve_context_pack_native(
         "source_role_budget_dropped": source_role_budget_dropped_class_counts
     });
     let memory_layer_budget = selected_ref_layer_budget(&selected);
+    let serving_selected_refs = native_serving_refs(&selected);
     let source_role_budget_policy = json!({
         "enabled": !source_role_budget_tokens.is_empty(),
         "budget_tokens": json_u64_map(&source_role_budget_tokens),
@@ -3433,8 +3457,8 @@ fn retrieve_context_pack_native(
         "query": query,
         "question_type": question_type,
         "selected_ref_counts": selected_counts,
-        "remote_context_refs": selected,
-        "selected_refs": selected,
+        "remote_context_refs": serving_selected_refs,
+        "selected_refs": serving_selected_refs,
         "dropped_refs": {
             "over_budget": dropped_over_budget,
             "cross_session_budget": dropped_cross_budget,
@@ -5792,10 +5816,20 @@ mod tests {
             .extra
             .get("context_pack")
             .expect("wrapped context pack from proxy op");
-        let selected_hashes: BTreeSet<_> = pack
+        let selected_refs = pack
             .get("selected_refs")
             .and_then(Value::as_array)
-            .expect("selected refs")
+            .expect("selected refs");
+        assert!(selected_refs
+            .iter()
+            .all(|value| value.get("source_role_counts").is_none()));
+        assert!(selected_refs
+            .iter()
+            .all(|value| value.get("source_hook_type_counts").is_none()));
+        assert!(selected_refs
+            .iter()
+            .all(|value| value.get("source_codex_event_counts").is_none()));
+        let selected_hashes: BTreeSet<_> = selected_refs
             .iter()
             .filter_map(|value| {
                 value
@@ -5897,6 +5931,41 @@ mod tests {
                 .and_then(Value::as_str),
             Some("assistant")
         );
+
+        env::set_var("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", "1");
+        let mut debug_retrieve = request("matrixark_retrieve_context_pack_full_scan");
+        debug_retrieve.storage_prefix = storage_prefix.to_string();
+        debug_retrieve.count_key = Some(format!("{storage_prefix}:record_count"));
+        debug_retrieve.record_hash_key = Some(format!("{storage_prefix}:records"));
+        debug_retrieve.record = Some(json!({
+            "query": "gpu debug lineage",
+            "max_context_tokens": 64,
+            "source_role_budget_tokens": {"assistant": 1},
+            "ranking": {
+                "max_selected_refs": 4,
+                "min_similarity_score": 0.0
+            }
+        }));
+        let debug_output = execute_record_log_request(&engine, debug_retrieve, root)
+            .expect("native retrieve with debug lineage");
+        let debug_pack = debug_output
+            .extra
+            .get("context_pack")
+            .expect("debug context pack");
+        let debug_selected_refs = debug_pack
+            .get("selected_refs")
+            .and_then(Value::as_array)
+            .expect("debug selected refs");
+        assert!(debug_selected_refs
+            .iter()
+            .any(|value| value.get("source_role_counts").is_some()));
+        assert!(debug_selected_refs
+            .iter()
+            .any(|value| value.get("source_hook_type_counts").is_some()));
+        assert!(debug_selected_refs
+            .iter()
+            .any(|value| value.get("source_codex_event_counts").is_some()));
+        env::remove_var("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE");
 
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
     }
