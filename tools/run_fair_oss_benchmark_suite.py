@@ -57,7 +57,7 @@ def main() -> int:
     parser.add_argument("--longmem-question-limit", type=int, default=0, help="0 means all LongMemEval_s records.")
     parser.add_argument("--locomo-max-events", type=int, default=192)
     parser.add_argument("--locomo-adaptive-base-max-events", type=int, default=128)
-    parser.add_argument("--longmem-max-events", type=int, default=64)
+    parser.add_argument("--longmem-max-events", type=int, default=32)
     parser.add_argument("--locomo-reader-context-chars", type=int, default=12000)
     parser.add_argument("--longmem-reader-context-chars", type=int, default=4000)
     parser.add_argument("--same-session-percent", type=float, default=0.70)
