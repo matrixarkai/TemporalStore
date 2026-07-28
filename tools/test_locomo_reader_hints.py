@@ -49,6 +49,36 @@ class LocomoReaderHintTest(unittest.TestCase):
 
         self.assertEqual("a lighter shade of gray", answer)
 
+    def test_certification_question_prefers_named_certificate_over_date(self) -> None:
+        blocks = [
+            {
+                "title": "conversation_22 answer_8ad8a34f turn 3",
+                "body": (
+                    "I completed my Data Science certification last month. "
+                    "The conversation timestamp was 2023/05/01."
+                ),
+            }
+        ]
+
+        hint = extractive_reader_hint("What certification did I complete last month?", blocks)
+
+        self.assertEqual("Data Science", hint)
+
+    def test_clock_time_question_prefers_cutoff_time_over_timestamp(self) -> None:
+        blocks = [
+            {
+                "title": "conversation_39 answer_0dd4d99a turn 5",
+                "body": (
+                    "I stop checking work emails and messages at 7 pm. "
+                    "The conversation timestamp was 2023/05/29."
+                ),
+            }
+        ]
+
+        hint = extractive_reader_hint("What time do I stop checking work emails and messages?", blocks)
+
+        self.assertEqual("7 pm", hint)
+
     def test_yesterday_relative_date_beats_vague_ordering(self) -> None:
         blocks = [
             {
