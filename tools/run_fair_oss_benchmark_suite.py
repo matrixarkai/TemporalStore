@@ -322,6 +322,11 @@ def locomo_matrixark_command(repo: Path, args: argparse.Namespace, report: Path,
 
 
 def longmem_matrixark_command(repo: Path, args: argparse.Namespace, report: Path, misses: Path) -> list[str]:
+    min_case_count = (
+        str(args.longmem_question_limit)
+        if args.longmem_question_limit > 0
+        else smoke_or(args, "1", "500")
+    )
     command = [
         sys.executable,
         str(repo / "tools" / "run_longmemeval_s_full_path.py"),
@@ -334,7 +339,7 @@ def longmem_matrixark_command(repo: Path, args: argparse.Namespace, report: Path
         "--threshold-profile",
         smoke_or(args, "custom", "longmemeval_full"),
         "--min-case-count",
-        smoke_or(args, "1", "500"),
+        min_case_count,
         "--min-hit-rate",
         smoke_or(args, "0.0", "0.90"),
         "--min-reader-hit-rate",
