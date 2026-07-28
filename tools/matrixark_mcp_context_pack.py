@@ -34,6 +34,84 @@ def _compact_count_map(value: Any, *, limit: int = 8) -> Json:
     return compact
 
 
+def _normalize_message_role(role: Any) -> str:
+    role_name = str(role or "").strip().lower()
+    return {
+        "human": "user",
+        "prompt": "user",
+        "assistant_response": "assistant",
+        "agent": "assistant",
+        "ai": "assistant",
+        "bot": "assistant",
+        "llm": "assistant",
+        "model": "assistant",
+        "tool_result": "tool",
+        "tool_output": "tool",
+    }.get(role_name, role_name)
+
+
+def _ordered_normalized_roles(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    roles: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        role = _normalize_message_role(item)
+        if role and role not in seen:
+            roles.append(role)
+            seen.add(role)
+    return roles
+
+
+def _compact_role_count_map(value: Any, *, limit: int = 8, include_zero: bool = False) -> Json:
+    if not isinstance(value, dict):
+        return {}
+    compact: Json = {}
+    for key, count in list(value.items())[:limit]:
+        name = _normalize_message_role(key)
+        if not name:
+            continue
+        try:
+            compact_count = int(count or 0)
+        except (TypeError, ValueError):
+            continue
+        if compact_count or include_zero:
+            compact[name] = int(compact.get(name, 0)) + compact_count
+    return compact
+
+
+def _compact_role_bucket_map(value: Any) -> Json:
+    if not isinstance(value, dict):
+        return {}
+    compact: Json = {}
+    for key, bucket in value.items():
+        role = _normalize_message_role(key)
+        if not role or not isinstance(bucket, dict):
+            continue
+        target = compact.setdefault(role, {})
+        for metric in ["refs", "tokens", "selected_refs", "selected_tokens", "dropped_refs", "dropped_tokens"]:
+            try:
+                amount = int(bucket.get(metric) or 0)
+            except (TypeError, ValueError):
+                amount = 0
+            if amount:
+                target[metric] = int(target.get(metric, 0)) + amount
+    return compact
+
+
+def compact_memory_layer_budget_roles(value: Any) -> Json:
+    if not isinstance(value, dict):
+        return {}
+    compact = dict(value)
+    role_counts = _compact_role_count_map(compact.get("source_message_counts_by_role"))
+    if role_counts:
+        compact["source_message_counts_by_role"] = role_counts
+    role_buckets = _compact_role_bucket_map(compact.get("by_source_role"))
+    if role_buckets:
+        compact["by_source_role"] = role_buckets
+    return compact
+
+
 def selected_context_class_counts(refs: list[Json]) -> Json:
     counts: Json = {
         "event": 0,
@@ -100,9 +178,18 @@ def compact_context_pack_ref(ref: Json) -> Json:
     ]:
         value = ref.get(field)
         if isinstance(value, list) and value:
-            item[field] = value[:8]
+            if field in {"source_roles", "budget_source_roles"}:
+                normalized_roles = _ordered_normalized_roles(value)
+                if normalized_roles:
+                    item[field] = normalized_roles[:8]
+            else:
+                item[field] = value[:8]
         elif isinstance(value, dict):
-            compact_counts = _compact_count_map(value)
+            compact_counts = (
+                _compact_role_count_map(value)
+                if field in {"source_role_counts", "budget_source_role_counts"}
+                else _compact_count_map(value)
+            )
             if compact_counts:
                 item[field] = compact_counts
     value = ref.get("source_entity_hashes")
@@ -195,7 +282,7 @@ def compact_context_pack_policy(policy: Any) -> Json:
     ]:
         value = policy.get(field)
         if isinstance(value, dict) and value:
-            compact[field] = value
+            compact[field] = _compact_role_count_map(value, include_zero=True)
     return compact
 
 
@@ -282,10 +369,10 @@ def compact_recall_policy_for_audit(recall_policy: Json) -> Json:
         }
     memory_layer_budget = recall_policy.get("memory_layer_budget")
     if isinstance(memory_layer_budget, dict):
-        compact["memory_layer_budget"] = memory_layer_budget
+        compact["memory_layer_budget"] = compact_memory_layer_budget_roles(memory_layer_budget)
     dropped_memory_layer_budget = recall_policy.get("dropped_memory_layer_budget")
     if isinstance(dropped_memory_layer_budget, dict):
-        compact["dropped_memory_layer_budget"] = dropped_memory_layer_budget
+        compact["dropped_memory_layer_budget"] = compact_memory_layer_budget_roles(dropped_memory_layer_budget)
     memory_layer_pressure = recall_policy.get("memory_layer_pressure")
     if isinstance(memory_layer_pressure, dict):
         compact["memory_layer_pressure"] = memory_layer_pressure
@@ -356,13 +443,13 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
         recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
         memory_layer_budget = recall_policy.get("memory_layer_budget")
     if isinstance(memory_layer_budget, dict):
-        compact["memory_layer_budget"] = memory_layer_budget
+        compact["memory_layer_budget"] = compact_memory_layer_budget_roles(memory_layer_budget)
     dropped_memory_layer_budget = record.get("dropped_memory_layer_budget")
     if not isinstance(dropped_memory_layer_budget, dict):
         recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
         dropped_memory_layer_budget = recall_policy.get("dropped_memory_layer_budget")
     if isinstance(dropped_memory_layer_budget, dict):
-        compact["dropped_memory_layer_budget"] = dropped_memory_layer_budget
+        compact["dropped_memory_layer_budget"] = compact_memory_layer_budget_roles(dropped_memory_layer_budget)
     memory_layer_pressure = record.get("memory_layer_pressure")
     if not isinstance(memory_layer_pressure, dict):
         recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
@@ -476,6 +563,17 @@ def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> lis
     ]
     for ref in refs:
         item = {field: ref[field] for field in keep_fields if field in ref}
+        for field in ["source_roles"]:
+            value = item.get(field)
+            if isinstance(value, list):
+                roles = _ordered_normalized_roles(value)
+                if roles:
+                    item[field] = roles
+        for field in ["source_role_counts"]:
+            value = item.get(field)
+            role_counts = _compact_role_count_map(value)
+            if role_counts:
+                item[field] = role_counts
         metadata = ref.get("metadata", {})
         if isinstance(metadata, dict):
             compact_metadata = {field: metadata[field] for field in metadata_keep_fields if field in metadata}
@@ -537,9 +635,14 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
     ]:
         value = ref.get(field, metadata.get(field))
         if isinstance(value, list) and value:
-            item[field] = value[:8]
+            if field == "source_roles":
+                roles = _ordered_normalized_roles(value)
+                if roles:
+                    item[field] = roles[:8]
+            else:
+                item[field] = value[:8]
         elif isinstance(value, dict):
-            compact_counts = _compact_count_map(value)
+            compact_counts = _compact_role_count_map(value) if field == "source_role_counts" else _compact_count_map(value)
             if compact_counts:
                 item[field] = compact_counts
     value = ref.get("source_entity_hashes", metadata.get("source_entity_hashes"))
@@ -694,7 +797,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         else {}
     )
     if isinstance(memory_layer_budget, dict) and memory_layer_budget:
-        compact["memory_layer_budget"] = memory_layer_budget
+        compact["memory_layer_budget"] = compact_memory_layer_budget_roles(memory_layer_budget)
     dropped_memory_layer_budget = (
         retrieval_metrics.get("dropped_memory_layer_budget")
         if isinstance(retrieval_metrics.get("dropped_memory_layer_budget"), dict)
@@ -703,7 +806,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         else {}
     )
     if isinstance(dropped_memory_layer_budget, dict) and dropped_memory_layer_budget:
-        compact["dropped_memory_layer_budget"] = dropped_memory_layer_budget
+        compact["dropped_memory_layer_budget"] = compact_memory_layer_budget_roles(dropped_memory_layer_budget)
     memory_layer_pressure = (
         retrieval_metrics.get("memory_layer_pressure")
         if isinstance(retrieval_metrics.get("memory_layer_pressure"), dict)
