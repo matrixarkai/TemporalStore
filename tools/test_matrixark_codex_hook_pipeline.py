@@ -5246,6 +5246,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             commit = second["auto_batch_extract_result"]
             self.assertEqual("committed", commit["status"])
             self.assertEqual("always_when_profile_scope_available", commit["profile_promotion_policy"])
+            self.assertFalse(commit["profile_promotion_importance_gate"])
             self.assertEqual("", commit["profile_promotion_blocker"])
             self.assertTrue(commit["profile_promotion_scope_available"])
             self.assertGreaterEqual(commit["profile_entities_written"], 1)
@@ -5268,6 +5269,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     and (record.get("scope") or record.get("access_scope") or {}).get("user_id") == "user_local_profile"
                     and not (record.get("scope") or record.get("access_scope") or {}).get("session_id")
                     and record.get("profile_promotion_policy") == "always_when_profile_scope_available"
+                    and record.get("profile_promotion_importance_gate") is False
                     and record.get("profile_promotion_blocker") == ""
                     for record in profile_entities
                 )
@@ -5413,7 +5415,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(second["auto_batch_extract_result"]["source_hook_type_counts"], threshold_commit["source_hook_type_counts"])
             self.assertEqual(second["auto_batch_extract_result"]["source_codex_event_counts"], threshold_commit["source_codex_event_counts"])
             self.assertEqual("always_when_profile_scope_available", threshold_commit["profile_promotion_policy"])
+            self.assertFalse(threshold_commit["profile_promotion_importance_gate"])
             self.assertEqual("always_when_profile_scope_available", threshold_commit["memory_layers_written"]["profile_promotion_policy"])
+            self.assertFalse(threshold_commit["memory_layers_written"]["profile_promotion_importance_gate"])
             threshold_pending_tasks = [
                 record
                 for record in threshold_records
