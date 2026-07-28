@@ -5584,7 +5584,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             first = adapter.ingest(
                 {
                     **base_args,
-                    "messages": [{"role": "user", "content": "First live hook prompt defaults into session buffer."}],
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Remember: use Ubuntu /root/src/github-services for TemporalStore work.",
+                        }
+                    ],
                 }
             )
             self.assertTrue(first["session_buffer"]["auto_batch_extract"])
@@ -5631,6 +5636,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 any(
                     record.get("entity_type") == "assistant_decision"
                     and "threshold commit" in str(record.get("state") or "")
+                    for record in profile_entities
+                )
+            )
+            self.assertTrue(
+                any(
+                    record.get("entity_type") == "preference"
+                    and "/root/src/github-services" in str(record.get("state") or "")
                     for record in profile_entities
                 )
             )
