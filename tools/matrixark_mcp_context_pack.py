@@ -113,6 +113,62 @@ def compact_memory_layer_budget_roles(value: Any) -> Json:
     return compact
 
 
+def serving_memory_layer_budget(value: Any) -> Json:
+    compact = compact_memory_layer_budget_roles(value)
+    if DEBUG_LINEAGE_PAYLOAD:
+        return compact
+    for field in [
+        "by_source_role",
+        "by_hook_type",
+        "by_codex_event",
+        "source_message_counts_by_role",
+        "source_hook_counts_by_type",
+        "source_codex_event_counts_by_event",
+    ]:
+        compact.pop(field, None)
+    return compact
+
+
+def serving_memory_layer_pressure(value: Any) -> Json:
+    if not isinstance(value, dict):
+        return {}
+    compact = dict(value)
+    if DEBUG_LINEAGE_PAYLOAD:
+        return compact
+    lineage_dimensions = {
+        "by_source_role",
+        "by_hook_type",
+        "by_codex_event",
+        "source_message_counts_by_role",
+        "source_hook_counts_by_type",
+        "source_codex_event_counts_by_event",
+    }
+    for list_field in ["pressure_dimensions", "dropped_dimensions"]:
+        values = compact.get(list_field)
+        if isinstance(values, list):
+            compact[list_field] = [value for value in values if str(value) not in lineage_dimensions]
+    by_dimension = compact.get("by_dimension")
+    if isinstance(by_dimension, dict):
+        compact["by_dimension"] = {
+            str(key): value for key, value in by_dimension.items() if str(key) not in lineage_dimensions
+        }
+    for field in [
+        "assistant_memory_pressure",
+        "user_memory_pressure",
+        "tool_memory_pressure",
+        "assistant_source_message_pressure",
+        "user_source_message_pressure",
+        "tool_source_message_pressure",
+        "hook_boundary_source_pressure",
+        "after_llm_source_pressure",
+        "tool_result_source_pressure",
+        "stop_event_source_pressure",
+        "post_tool_use_source_pressure",
+    ]:
+        compact.pop(field, None)
+    return compact
+
+
 def selected_context_class_counts(refs: list[Json]) -> Json:
     counts: Json = {
         "event": 0,
@@ -371,13 +427,13 @@ def compact_recall_policy_for_audit(recall_policy: Json) -> Json:
         }
     memory_layer_budget = recall_policy.get("memory_layer_budget")
     if isinstance(memory_layer_budget, dict):
-        compact["memory_layer_budget"] = compact_memory_layer_budget_roles(memory_layer_budget)
+        compact["memory_layer_budget"] = serving_memory_layer_budget(memory_layer_budget)
     dropped_memory_layer_budget = recall_policy.get("dropped_memory_layer_budget")
     if isinstance(dropped_memory_layer_budget, dict):
-        compact["dropped_memory_layer_budget"] = compact_memory_layer_budget_roles(dropped_memory_layer_budget)
+        compact["dropped_memory_layer_budget"] = serving_memory_layer_budget(dropped_memory_layer_budget)
     memory_layer_pressure = recall_policy.get("memory_layer_pressure")
     if isinstance(memory_layer_pressure, dict):
-        compact["memory_layer_pressure"] = memory_layer_pressure
+        compact["memory_layer_pressure"] = serving_memory_layer_pressure(memory_layer_pressure)
     async_pipeline_readiness = recall_policy.get("async_pipeline_readiness")
     if isinstance(async_pipeline_readiness, dict):
         compact["async_pipeline_readiness"] = async_pipeline_readiness
@@ -445,19 +501,19 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
         recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
         memory_layer_budget = recall_policy.get("memory_layer_budget")
     if isinstance(memory_layer_budget, dict):
-        compact["memory_layer_budget"] = compact_memory_layer_budget_roles(memory_layer_budget)
+        compact["memory_layer_budget"] = serving_memory_layer_budget(memory_layer_budget)
     dropped_memory_layer_budget = record.get("dropped_memory_layer_budget")
     if not isinstance(dropped_memory_layer_budget, dict):
         recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
         dropped_memory_layer_budget = recall_policy.get("dropped_memory_layer_budget")
     if isinstance(dropped_memory_layer_budget, dict):
-        compact["dropped_memory_layer_budget"] = compact_memory_layer_budget_roles(dropped_memory_layer_budget)
+        compact["dropped_memory_layer_budget"] = serving_memory_layer_budget(dropped_memory_layer_budget)
     memory_layer_pressure = record.get("memory_layer_pressure")
     if not isinstance(memory_layer_pressure, dict):
         recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
         memory_layer_pressure = recall_policy.get("memory_layer_pressure")
     if isinstance(memory_layer_pressure, dict):
-        compact["memory_layer_pressure"] = memory_layer_pressure
+        compact["memory_layer_pressure"] = serving_memory_layer_pressure(memory_layer_pressure)
     async_pipeline_readiness = record.get("async_pipeline_readiness")
     if not isinstance(async_pipeline_readiness, dict):
         recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
@@ -866,7 +922,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         else {}
     )
     if isinstance(memory_layer_budget, dict) and memory_layer_budget:
-        compact["memory_layer_budget"] = compact_memory_layer_budget_roles(memory_layer_budget)
+        compact["memory_layer_budget"] = serving_memory_layer_budget(memory_layer_budget)
     dropped_memory_layer_budget = (
         retrieval_metrics.get("dropped_memory_layer_budget")
         if isinstance(retrieval_metrics.get("dropped_memory_layer_budget"), dict)
@@ -875,7 +931,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         else {}
     )
     if isinstance(dropped_memory_layer_budget, dict) and dropped_memory_layer_budget:
-        compact["dropped_memory_layer_budget"] = compact_memory_layer_budget_roles(dropped_memory_layer_budget)
+        compact["dropped_memory_layer_budget"] = serving_memory_layer_budget(dropped_memory_layer_budget)
     memory_layer_pressure = (
         retrieval_metrics.get("memory_layer_pressure")
         if isinstance(retrieval_metrics.get("memory_layer_pressure"), dict)
@@ -884,7 +940,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         else {}
     )
     if isinstance(memory_layer_pressure, dict) and memory_layer_pressure:
-        compact["memory_layer_pressure"] = memory_layer_pressure
+        compact["memory_layer_pressure"] = serving_memory_layer_pressure(memory_layer_pressure)
     async_pipeline_readiness = (
         retrieval_metrics.get("async_pipeline_readiness")
         if isinstance(retrieval_metrics.get("async_pipeline_readiness"), dict)

@@ -982,8 +982,17 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             dropped_over_budget={},
             records=[],
         )
-        self.assertEqual(layer_budget, pack["retrieval_metrics"]["memory_layer_budget"])
-        self.assertEqual(layer_pressure, pack["retrieval_metrics"]["memory_layer_pressure"])
+        metrics_budget = pack["retrieval_metrics"]["memory_layer_budget"]
+        self.assertEqual(1, metrics_budget["by_memory_scope"]["user_profile"]["refs"])
+        self.assertEqual(1, metrics_budget["by_entity_type"]["tool_evidence"]["refs"])
+        self.assertNotIn("by_source_role", metrics_budget)
+        self.assertNotIn("by_hook_type", metrics_budget)
+        self.assertNotIn("by_codex_event", metrics_budget)
+        self.assertNotIn("source_message_counts_by_role", metrics_budget)
+        metrics_pressure = pack["retrieval_metrics"]["memory_layer_pressure"]
+        self.assertEqual(1, metrics_pressure["selected_refs"])
+        self.assertNotIn("by_source_role", metrics_pressure.get("by_dimension", {}))
+        self.assertNotIn("tool_source_message_pressure", metrics_pressure)
 
     def test_shared_pack_builder_reports_profile_shadowed_dropped_budget(self) -> None:
         builder_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pack_builder")
@@ -1132,10 +1141,18 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             dropped_over_budget=serving_dropped,
             records=[],
         )
-        self.assertEqual(dropped_budget, pack["retrieval_metrics"]["dropped_memory_layer_budget"])
-        self.assertEqual(pressure, pack["retrieval_metrics"]["memory_layer_pressure"])
+        metrics_dropped_budget = pack["retrieval_metrics"]["dropped_memory_layer_budget"]
+        self.assertEqual(1, metrics_dropped_budget["by_memory_scope"]["session"]["refs"])
+        self.assertEqual(1, metrics_dropped_budget["by_profile_shadowed_reason"]["source_entity_lineage"]["refs"])
+        self.assertNotIn("by_source_role", metrics_dropped_budget)
+        self.assertNotIn("by_hook_type", metrics_dropped_budget)
+        self.assertNotIn("by_codex_event", metrics_dropped_budget)
+        metrics_pressure = pack["retrieval_metrics"]["memory_layer_pressure"]
+        self.assertEqual(1, metrics_pressure["dropped_refs"])
+        self.assertNotIn("by_source_role", metrics_pressure.get("by_dimension", {}))
+        self.assertNotIn("tool_source_message_pressure", metrics_pressure)
 
-    def test_deadline_fallback_preserves_memory_layer_budget_and_lineage(self) -> None:
+    def test_deadline_fallback_hides_memory_layer_lineage_by_default(self) -> None:
         deadline_mod = importlib.import_module("tools.matrixark_mcp_deadline_pack")
 
         class Adapter:
@@ -1232,14 +1249,15 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(1, budget["by_memory_scope"]["user_profile"]["refs"])
         self.assertEqual(1, budget["by_session_continuity"]["cross_session"]["refs"])
         self.assertEqual(1, budget["by_entity_type"]["assistant_decision"]["refs"])
-        self.assertEqual(2, budget["by_source_role"]["assistant"]["refs"])
-        self.assertEqual(2, budget["by_hook_type"]["hook_boundary"]["refs"])
-        self.assertEqual(2, budget["by_codex_event"]["Stop"]["refs"])
-        self.assertEqual(4, budget["source_message_counts_by_role"]["assistant"])
-        self.assertNotIn("llm", budget["source_message_counts_by_role"])
-        self.assertNotIn("model", budget["by_source_role"])
-        self.assertEqual(4, budget["source_hook_counts_by_type"]["hook_boundary"])
-        self.assertEqual(4, budget["source_codex_event_counts_by_event"]["Stop"])
+        for field in [
+            "by_source_role",
+            "by_hook_type",
+            "by_codex_event",
+            "source_message_counts_by_role",
+            "source_hook_counts_by_type",
+            "source_codex_event_counts_by_event",
+        ]:
+            self.assertNotIn(field, budget)
         self.assertEqual(1, budget["final_session_boundary_ref_count"])
         pressure = pack["memory_layer_pressure"]
         self.assertEqual(2, pressure["selected_refs"])
@@ -1248,6 +1266,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertFalse(pressure["profile_memory_pressure"])
         self.assertFalse(pressure["cross_session_pressure"])
         self.assertEqual(1, pressure["by_dimension"]["by_memory_scope"]["user_profile"]["selected_refs"])
+        self.assertNotIn("by_source_role", pressure["by_dimension"])
+        self.assertNotIn("assistant_source_message_pressure", pressure)
         self.assertEqual(1, pressure["by_dimension"]["by_session_continuity"]["cross_session"]["selected_refs"])
         readiness = pack["async_pipeline_readiness"]
         self.assertFalse(readiness["ready_for_retrieval"])
@@ -1463,16 +1483,19 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(["summary", "compression"], readiness["remaining_stages"])
         self.assertEqual(["profile_summary_stale"], readiness["freshness_warnings"])
         self.assertEqual({"user_profile": {"refs": 1, "tokens": 7}}, compact["memory_layer_budget"]["by_memory_scope"])
-        self.assertEqual({"assistant": 2, "tool": 1}, compact["memory_layer_budget"]["source_message_counts_by_role"])
-        self.assertEqual(
-            {"refs": 2, "tokens": 7},
-            compact["memory_layer_budget"]["by_source_role"]["assistant"],
-        )
-        self.assertNotIn("llm", compact["memory_layer_budget"]["source_message_counts_by_role"])
-        self.assertNotIn("model", compact["memory_layer_budget"]["by_source_role"])
         self.assertTrue(compact["memory_layer_pressure"]["profile_memory_pressure"])
         self.assertTrue(compact["memory_layer_pressure"]["cross_session_pressure"])
-        self.assertTrue(compact["memory_layer_pressure"]["assistant_source_message_pressure"])
+        for field in [
+            "by_source_role",
+            "by_hook_type",
+            "by_codex_event",
+            "source_message_counts_by_role",
+            "source_hook_counts_by_type",
+            "source_codex_event_counts_by_event",
+        ]:
+            self.assertNotIn(field, compact["memory_layer_budget"])
+            self.assertNotIn(field, compact["memory_layer_pressure"].get("by_dimension", {}))
+        self.assertNotIn("assistant_source_message_pressure", compact["memory_layer_pressure"])
         flat_item = compact["selected_refs"][0]
         for field in [
             "source_roles",
@@ -1484,10 +1507,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         ]:
             self.assertNotIn(field, flat_item)
         self.assertEqual({"user_profile": {"refs": 1, "tokens": 7}}, grouped_compact["memory_layer_budget"]["by_memory_scope"])
-        self.assertEqual(
-            {"assistant": 2, "tool": 1},
-            grouped_compact["memory_layer_budget"]["source_message_counts_by_role"],
-        )
+        self.assertNotIn("source_message_counts_by_role", grouped_compact["memory_layer_budget"])
+        self.assertNotIn("by_source_role", grouped_compact["memory_layer_budget"])
         self.assertTrue(grouped_compact["memory_layer_pressure"]["profile_memory_pressure"])
         self.assertTrue(grouped_compact["memory_layer_pressure"]["cross_session_pressure"])
         entity_item = grouped_compact["groups"][0]["items"][0]
