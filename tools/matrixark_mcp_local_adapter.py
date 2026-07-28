@@ -2845,7 +2845,9 @@ class MatrixArkLocalAdapter:
 
     def _dashboard_record_scope(self, record: Json) -> Json:
         scope = candidate_access_scope(record)
-        access_scope = candidate_access_scope(record)
+        envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else {}
+        envelope_scope = envelope.get("scope", {}) if isinstance(envelope.get("scope"), dict) else {}
+        access_scope = envelope_scope if record.get("record_type") == "context_event" and envelope_scope else candidate_access_scope(record)
         if isinstance(scope, dict) and isinstance(access_scope, dict):
             merged = {**scope, **access_scope}
             if scope.get("agent_name") and not merged.get("agent_name"):
@@ -2967,6 +2969,17 @@ class MatrixArkLocalAdapter:
                         "node_hash": record.get("node_hash", 0),
                         "node_path": record.get("node_path", []),
                         "scope": record.get("envelope", {}).get("scope", record.get("scope", {})),
+                        "memory_scope": record.get("memory_scope", ""),
+                        "session_continuity": record.get("session_continuity", ""),
+                        "extraction_phase": record.get("extraction_phase", ""),
+                        "final_session_boundary": bool(record.get("final_session_boundary", False)),
+                        "source_role": record.get("source_role", ""),
+                        "source_roles": record.get("source_roles", []),
+                        "source_role_counts": record.get("source_role_counts", {}),
+                        "source_hook_types": record.get("source_hook_types", []),
+                        "source_hook_type_counts": record.get("source_hook_type_counts", {}),
+                        "source_codex_events": record.get("source_codex_events", []),
+                        "source_codex_event_counts": record.get("source_codex_event_counts", {}),
                         "updated_at_ms": record.get("envelope", {}).get("ingestion_time_ms", record.get("updated_at_ms", 0)),
                     }
                 )
@@ -2986,6 +2999,22 @@ class MatrixArkLocalAdapter:
                         "node_hash": record.get("node_hash", 0),
                         "node_path": record.get("node_path", []),
                         "scope": candidate_access_scope(record),
+                        "memory_scope": record.get("memory_scope", ""),
+                        "session_continuity": record.get("session_continuity", ""),
+                        "promoted_from_memory_scope": record.get("promoted_from_memory_scope", ""),
+                        "profile_promotion_policy": record.get("profile_promotion_policy", ""),
+                        "profile_promotion_blocker": record.get("profile_promotion_blocker", ""),
+                        "source_session_ids": record.get("source_session_ids", [])[:8] if isinstance(record.get("source_session_ids"), list) else [],
+                        "source_session_count": len(record.get("source_session_ids", [])) if isinstance(record.get("source_session_ids"), list) else 0,
+                        "source_entity_count": len(record.get("source_entity_hashes", [])) if isinstance(record.get("source_entity_hashes"), list) else 0,
+                        "source_roles": record.get("source_roles", []),
+                        "source_role_counts": record.get("source_role_counts", {}),
+                        "source_hook_types": record.get("source_hook_types", []),
+                        "source_hook_type_counts": record.get("source_hook_type_counts", {}),
+                        "source_codex_events": record.get("source_codex_events", []),
+                        "source_codex_event_counts": record.get("source_codex_event_counts", {}),
+                        "extraction_phase": record.get("extraction_phase", ""),
+                        "final_session_boundary": bool(record.get("final_session_boundary", False)),
                         "updated_at_ms": record.get("updated_at_ms", 0),
                     }
                 )
@@ -5015,6 +5044,8 @@ class MatrixArkLocalAdapter:
                         "parent_segment_hashes": segment_hashes_by_position.get(_index, []),
                         "node_hash": node_hash,
                         "node_path": node_path,
+                        "scope": envelope["scope"],
+                        "access_scope": envelope["scope"],
                         "text": event_text,
                         "summary_text": summarize_text(event_text),
                         "classification": extraction["classification"],
@@ -5044,6 +5075,8 @@ class MatrixArkLocalAdapter:
                         "source_codex_event_counts": source_codex_event_counts,
                         "storage_options": envelope.get("storage_options", {}),
                         "updated_at_ms": envelope["ingestion_time_ms"],
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
                         "extraction_phase": extraction_phase,
                         "final_session_boundary": final_session_boundary,
                         "extraction_context_event_ids": extraction_context_event_ids,

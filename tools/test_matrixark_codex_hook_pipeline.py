@@ -5508,6 +5508,42 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(row.get("embedding_pending") for row in extraction_tasks))
             self.assertTrue(all(row.get("summary_refresh_status") == "dirty_marked" for row in extraction_tasks))
             self.assertTrue(all(row.get("memory_layers_written", {}).get("profile_entities", 0) >= 1 for row in extraction_tasks))
+            events_dashboard = adapter.ingestion_dashboard(
+                {"scope": scope, "table": "events", "page_size": 20}
+            )
+            event_rows = [row for row in events_dashboard["rows"] if row.get("row_type") == "context_event"]
+            self.assertGreaterEqual(len(event_rows), 3, events_dashboard)
+            self.assertTrue(all(row.get("memory_scope") == "session" for row in event_rows), events_dashboard)
+            self.assertTrue(all(row.get("session_continuity") == "same_session" for row in event_rows), events_dashboard)
+            self.assertTrue(any(row.get("source_role_counts", {}).get("assistant", 0) >= 1 for row in event_rows), events_dashboard)
+            self.assertTrue(any(row.get("source_role_counts", {}).get("tool", 0) >= 1 for row in event_rows), events_dashboard)
+            self.assertTrue(any(row.get("source_hook_type_counts", {}).get("hook_boundary", 0) >= 1 for row in event_rows), events_dashboard)
+            self.assertTrue(any(row.get("source_codex_event_counts", {}).get("PostToolUse", 0) >= 1 for row in event_rows), events_dashboard)
+            entities_dashboard = adapter.ingestion_dashboard(
+                {"scope": scope, "table": "entities", "page_size": 50}
+            )
+            entity_rows = [row for row in entities_dashboard["rows"] if row.get("row_type") == "context_entity"]
+            self.assertTrue(any(row.get("memory_scope") == "session" for row in entity_rows), entities_dashboard)
+            profile_entity_rows = [
+                row
+                for row in entity_rows
+                if row.get("memory_scope") == "user_profile"
+                and row.get("session_continuity") == "cross_session"
+            ]
+            self.assertTrue(profile_entity_rows, entities_dashboard)
+            self.assertTrue(
+                all(
+                    row.get("profile_promotion_policy") == "always_when_profile_scope_available"
+                    and row.get("profile_promotion_blocker") == ""
+                    for row in profile_entity_rows
+                ),
+                entities_dashboard,
+            )
+            self.assertTrue(any("session_async" in row.get("source_session_ids", []) for row in profile_entity_rows), entities_dashboard)
+            self.assertTrue(any(row.get("source_role_counts", {}).get("assistant", 0) >= 1 for row in profile_entity_rows), entities_dashboard)
+            self.assertTrue(any(row.get("source_role_counts", {}).get("tool", 0) >= 1 for row in profile_entity_rows), entities_dashboard)
+            self.assertTrue(any(row.get("source_hook_type_counts", {}).get("hook_boundary", 0) >= 1 for row in profile_entity_rows), entities_dashboard)
+            self.assertTrue(any(row.get("source_codex_event_counts", {}).get("PostToolUse", 0) >= 1 for row in profile_entity_rows), entities_dashboard)
             committed_ids = {
                 int(event_id)
                 for commit in commits
