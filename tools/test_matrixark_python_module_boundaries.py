@@ -26,6 +26,27 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(hasattr(server_mod, "MatrixArkLocalAdapter"))
         self.assertGreaterEqual(len(schemas_mod.TOOLS), 10)
 
+    def test_one_pass_memory_extraction_falls_back_to_single_segment_for_nonempty_batch(self) -> None:
+        core_mod = importlib.import_module("tools.matrixark_mcp_core")
+        result = core_mod.one_pass_memory_extraction(
+            {
+                "kind": "message",
+                "scope": {"tenant_id": "tenant", "user_id": "user", "session_id": "session"},
+                "metadata": {},
+                "messages": [{"role": "tool", "content": "ok"}],
+                "ingestion_time_ms": 123,
+                "segment_provider": "deterministic",
+            },
+            prior_context={"level": "", "refs": [], "messages": []},
+        )
+
+        self.assertEqual(1, len(result["segments"]))
+        segment = result["segments"][0]
+        self.assertEqual([0], segment["message_indexes"])
+        self.assertEqual([[0, 0]], segment["coordinate_tuples"])
+        self.assertTrue(result["segment_provider"]["fallback_used"])
+        self.assertEqual("empty_segment_output", result["segment_provider"]["fallback_reason"])
+
     def test_memory_phase_and_retrieval_budget_fields_are_public_schema(self) -> None:
         schemas_mod = importlib.import_module("tools.matrixark_mcp_schemas")
         tools_by_name = {tool["name"]: tool for tool in schemas_mod.TOOLS}
