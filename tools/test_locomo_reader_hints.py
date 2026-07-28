@@ -5,7 +5,13 @@ from __future__ import annotations
 
 import unittest
 
-from run_locomo_ingest_once import extractive_reader_hint, hybrid_reader_answer
+from run_locomo_ingest_once import (
+    direct_relevance_score,
+    extractive_reader_hint,
+    hybrid_reader_answer,
+    locomo_short_fact_answer,
+    normalize_text,
+)
 
 
 class LocomoReaderHintTest(unittest.TestCase):
@@ -39,6 +45,36 @@ class LocomoReaderHintTest(unittest.TestCase):
         )
 
         self.assertEqual("7 May 2023", answer)
+
+    def test_help_children_event_question_extracts_both_events(self) -> None:
+        context = normalize_text(
+            "Caroline joined a mentoring program to help children. "
+            "She also felt powerful giving my talk and said the audience became better allies."
+        )
+
+        answer = locomo_short_fact_answer(
+            "What events has Caroline participated in to help children?",
+            context,
+        )
+
+        self.assertEqual("Mentoring program, school speech", answer)
+
+    def test_political_leaning_prefers_raw_source_ref_evidence(self) -> None:
+        question = "What would Caroline's political leaning likely be?"
+        raw_source = (
+            "1:50 pm on 17 August, 2023. D12:1 Caroline: I ran into a group of "
+            "religious conservatives. It made me think how much work we still have "
+            "to do for LGBTQ rights and people who accept and support me."
+        )
+        derived_observation = (
+            "1:50 pm on 17 August, 2023. Caroline had a not-so-great experience "
+            "on a hike where she ran into a group of religious conservatives."
+        )
+
+        self.assertGreater(
+            direct_relevance_score(question, raw_source),
+            direct_relevance_score(question, derived_observation),
+        )
 
     def test_hybrid_reader_uses_candidate_for_color_question_with_timestamp_answer(self) -> None:
         answer = hybrid_reader_answer(
