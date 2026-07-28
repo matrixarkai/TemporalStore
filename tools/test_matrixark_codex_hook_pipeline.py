@@ -746,7 +746,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "source_hook_type_counts": {"hook_boundary": 4},
                     "source_codex_events": ["Stop"],
                     "source_codex_event_counts": {"Stop": 4},
-                    "profile_promotion_policy": "always_when_profile_scope_available",
+                    "source_profile_promotion_policies": ["always_when_profile_scope_available"],
                     "token_estimate": 11,
                 }
             ]
@@ -768,8 +768,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "source_hook_type_counts": {"hook_boundary": 3},
                         "source_codex_events": ["Stop"],
                         "source_codex_event_counts": {"Stop": 3},
-                        "profile_promotion_policy": "always_when_profile_scope_available",
-                        "profile_promotion_blocker": "profile_scope_missing",
+                        "source_profile_promotion_policies": ["always_when_profile_scope_available"],
+                        "source_profile_promotion_blockers": ["profile_scope_missing"],
                         "token_estimate": 13,
                     }
                 ]
@@ -6410,6 +6410,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(summary_layer_budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(summary_layer_budget["by_session_continuity"]["cross_session"]["refs"], 1)
             self.assertGreaterEqual(summary_layer_budget["by_extraction_phase"]["final"]["refs"], 1)
+            self.assertGreaterEqual(
+                summary_layer_budget["by_profile_promotion_policy"]["always_when_profile_scope_available"]["refs"],
+                1,
+            )
             self.assertGreaterEqual(summary_layer_budget["by_entity_type"]["assistant_decision"]["refs"], 1)
             for field in [
                 "by_source_role",
