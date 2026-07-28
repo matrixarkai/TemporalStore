@@ -532,6 +532,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "enabled": True,
                     "budget_tokens": 64,
                 },
+                "memory_layer_budget_policy": {
+                    "enabled": True,
+                    "mode": "auto",
+                    "question_type": "current_state",
+                    "question_budget_reason": "current_state_or_latest_queries_prioritize_profile_entity and cross-session current state",
+                    "budget_tokens": {"profile_entity": 40},
+                },
                 "dropped_memory_layer_budget": {
                     "total_dropped_refs": 1,
                     "profile_shadowed_ref_count": 1,
@@ -574,6 +581,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         debug_serving = compact_context_pack_for_serving_flat(pack, include_debug=True)
         self.assertIn("memory_hierarchy", debug_serving)
         self.assertTrue(debug_serving["memory_hierarchy"]["cross_session_enabled"])
+        self.assertEqual("current_state", debug_serving["memory_hierarchy"]["memory_layer_budget_question_type"])
+        self.assertIn(
+            "prioritize_profile_entity",
+            debug_serving["memory_hierarchy"]["memory_layer_budget_question_reason"],
+        )
         debug_readiness = debug_serving["async_pipeline_readiness"]
         self.assertEqual({"assistant": 2, "tool": 1}, debug_readiness["pending_source_roles"])
         self.assertEqual({"after_llm": 1}, debug_readiness["pending_source_hook_types"])
@@ -611,12 +623,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "memory_layer_budget_policy": {
                     "enabled": True,
                     "mode": "auto",
+                    "question_type": "current_state",
+                    "question_budget_reason": "current_state_or_latest_queries_prioritize_profile_entity and cross-session current state",
                     "budget_tokens": {"profile_entity": 40},
                 },
             },
             "memory_hierarchy": {
                 "cross_session_enabled": True,
                 "cross_session_budget_tokens": 64,
+                "memory_layer_budget_question_type": "current_state",
+                "memory_layer_budget_question_reason": "current_state_or_latest_queries_prioritize_profile_entity and cross-session current state",
             },
         }
 
@@ -630,6 +646,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("memory_hierarchy", debug_compact)
         self.assertTrue(debug_compact["memory_hierarchy"]["cross_session_enabled"])
         self.assertEqual(64, debug_compact["memory_hierarchy"]["cross_session_budget_tokens"])
+        self.assertEqual("current_state", debug_compact["memory_hierarchy"]["memory_layer_budget_question_type"])
 
     def test_context_pack_audit_refs_preserve_memory_layer_lineage(self) -> None:
         refs = compact_refs_for_audit(
