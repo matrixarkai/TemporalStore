@@ -1180,6 +1180,19 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         and case_count_on_par
         and zero_hit_queries_no_regression
     )
+    per_query_delta = compare_rust_python_per_query(
+        python_subset_score.get("per_query") or [],
+        harness.get("external_benchmark_per_query") or [],
+    )
+    selected_source_ids_match = (
+        int(per_query_delta.get("selected_source_id_delta_count") or 0) == 0
+    )
+    backend_quality_ready = (
+        hit_at_k_regression_delta <= effective_tolerance
+        and case_count_on_par
+        and zero_hit_queries_no_regression
+        and bool(per_query_delta.get("no_regression"))
+    )
     report["rust_vs_python_subset_score"] = {
         "python_hit_at_k": python_hit_at_k,
         "rust_hit_at_k": rust_hit_at_k,
@@ -1202,15 +1215,14 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         "rust_zero_hit_queries": rust_zero_hit_queries,
         "zero_hit_queries_on_par": zero_hit_queries_on_par,
         "zero_hit_queries_no_regression": zero_hit_queries_no_regression,
-        "per_query_delta": compare_rust_python_per_query(
-            python_subset_score.get("per_query") or [],
-            harness.get("external_benchmark_per_query") or [],
-        ),
+        "selected_source_ids_match": selected_source_ids_match,
+        "backend_quality_ready": backend_quality_ready,
+        "per_query_delta": per_query_delta,
     }
     report["rust_temporalstore_backend_ready"] = (
         rust_case_count > 0
         and rust_hit_at_k > 0.0
-        and report["rust_vs_python_subset_score"]["no_regression"]
+        and backend_quality_ready
         and context_event_ingest_ready
         and not direct_source_scoring
         and ingested_source_sets > 0
