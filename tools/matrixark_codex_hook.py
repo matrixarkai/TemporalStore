@@ -3190,8 +3190,16 @@ def fast_hook_summary_dirty_records(
     scope: Json,
     event_id_hash: int,
     updated_at_ms: int,
+    source_role: str = "",
+    hook_type: str = "",
+    codex_event: str = "",
+    source_lineage: Json | None = None,
 ) -> list[Json]:
     records: list[Json] = []
+    lineage = source_lineage if isinstance(source_lineage, dict) else {}
+    source_roles = [source_role] if source_role else []
+    source_hook_types = [hook_type] if hook_type else []
+    source_codex_events = [codex_event] if codex_event else []
     for depth in range(1, len(node_path) + 1):
         prefix = node_path[:depth]
         prefix_hash = stable_int_hash("/".join(prefix))
@@ -3206,6 +3214,16 @@ def fast_hook_summary_dirty_records(
                 "dirty_reason": "new_event",
                 "source_ref_type": "event",
                 "source_event_hash": event_id_hash,
+                **lineage,
+                "source_roles": source_roles,
+                "source_role_counts": {source_role: 1} if source_role else {},
+                "source_hook_types": source_hook_types,
+                "source_hook_type_counts": {hook_type: 1} if hook_type else {},
+                "source_codex_events": source_codex_events,
+                "source_codex_event_counts": {codex_event: 1} if codex_event else {},
+                "source_memory_scopes": ["session"],
+                "source_session_continuities": ["same_session"],
+                "source_extraction_phases": ["pending_async"],
                 "changed_ref_count": 1,
                 "propagate_depth": len(node_path),
                 "scope": scope,
@@ -3344,6 +3362,10 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         scope=scope,
         event_id_hash=event_id_hash,
         updated_at_ms=now,
+        source_role=role,
+        hook_type=hook_type,
+        codex_event=args.event,
+        source_lineage=lineage,
     )
     enqueue_raw = getattr(adapter, "enqueue_raw_ingestion_records", None)
     session_commit_result: Json = {}
