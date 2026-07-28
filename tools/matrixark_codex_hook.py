@@ -1540,7 +1540,7 @@ def additional_context_from_retrieve(
             "user_profile/cross_session refs are long-term state and may supersede older session-local entity copies",
         ]
         hierarchy = retrieval_memory_hierarchy_contract_from_retrieve(pack)
-        if isinstance(hierarchy, dict):
+        if CONTEXT_PACK_DEBUG_LINEAGE and isinstance(hierarchy, dict):
             floor_status = hierarchy.get("cross_session_budget_floor_status")
             if floor_status:
                 hierarchy_bits.append(f"cross_session_budget_floor_status={floor_status}")
