@@ -97,6 +97,7 @@ def prepare_retrieval_request(target: Any, args: Json, *, started_perf: float) -
         **ranking,
         "_source_role_budget_tokens": retrieval_plan["source_role_budget_tokens"],
         "_memory_layer_budget_tokens": retrieval_plan["memory_layer_budget_tokens"],
+        "_memory_selection_policy_budget_tokens": retrieval_plan["memory_selection_policy_budget_tokens"],
         "_pre_retrieval_summary_refresh": {
             "enabled": bool(pre_retrieval_summary_refresh.get("enabled")),
             "requested_limit": int(pre_retrieval_summary_refresh.get("requested_limit") or 0),
@@ -149,6 +150,8 @@ def prepare_retrieval_request(target: Any, args: Json, *, started_perf: float) -
         "source_role_budget_mode": retrieval_plan["source_role_budget_mode"],
         "memory_layer_budget_tokens": retrieval_plan["memory_layer_budget_tokens"],
         "memory_layer_budget_mode": retrieval_plan["memory_layer_budget_mode"],
+        "memory_selection_policy_budget_tokens": retrieval_plan["memory_selection_policy_budget_tokens"],
+        "memory_selection_policy_budget_mode": retrieval_plan["memory_selection_policy_budget_mode"],
         "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
         "pre_retrieval_refreshed_records": pre_retrieval_refreshed_records,
         "query_terms": retrieval_plan["query_terms"],

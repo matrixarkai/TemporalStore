@@ -5462,6 +5462,8 @@ def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate:
         "budget_source_roles",
         "budget_source_role_counts",
         "budget_memory_layer",
+        "budget_memory_selection_policies",
+        "memory_selection_policy_budget_capped_policies",
         "memory_layer_budget_capped_layer",
         "memory_layer_floor_reserved_layer",
         "source_hook_types",
@@ -5625,6 +5627,7 @@ def select_token_budgeted_refs(
     shared_context_policy: Json | None = None,
     source_role_budget_tokens: Json | None = None,
     memory_layer_budget_tokens: Json | None = None,
+    memory_selection_policy_budget_tokens: Json | None = None,
 ) -> tuple[list[Json], int, Json]:
     duplicate_text_hashes = duplicate_text_hashes or set()
     remote_budget = max(0, max_context_tokens - max(0, reserved_tokens))
@@ -5694,6 +5697,26 @@ def select_token_budgeted_refs(
             normalized_memory_layer_budget_tokens[layer_name] = budget_tokens
     memory_layer_used_tokens: Json = {layer: 0 for layer in normalized_memory_layer_budget_tokens}
     memory_layer_selected_ref_counts: Json = {layer: 0 for layer in normalized_memory_layer_budget_tokens}
+    memory_selection_policy_budget_tokens = (
+        memory_selection_policy_budget_tokens if isinstance(memory_selection_policy_budget_tokens, dict) else {}
+    )
+    normalized_memory_selection_policy_budget_tokens: Json = {}
+    for policy, budget in memory_selection_policy_budget_tokens.items():
+        policy_name = str(policy or "").strip()
+        if not policy_name:
+            continue
+        try:
+            budget_tokens = max(0, int(budget or 0))
+        except (TypeError, ValueError):
+            budget_tokens = 0
+        if budget_tokens:
+            normalized_memory_selection_policy_budget_tokens[policy_name] = budget_tokens
+    memory_selection_policy_used_tokens: Json = {
+        policy: 0 for policy in normalized_memory_selection_policy_budget_tokens
+    }
+    memory_selection_policy_selected_ref_counts: Json = {
+        policy: 0 for policy in normalized_memory_selection_policy_budget_tokens
+    }
     profile_entity_floor_enabled = bool(
         normalized_memory_layer_budget_tokens.get("profile_entity")
         and any(
@@ -5776,6 +5799,29 @@ def select_token_budgeted_refs(
                 source_count = 0
             result[role] = source_count if source_count > 0 else 1
         return result
+
+    def candidate_memory_selection_policy_names(candidate: Json) -> set[str]:
+        policy_names = {
+            str(policy or "").strip()
+            for policy in candidate.get("source_memory_selection_policies", [])
+            if str(policy or "").strip()
+        } if isinstance(candidate.get("source_memory_selection_policies"), list) else set()
+        policy_counts = (
+            candidate.get("source_memory_selection_policy_counts")
+            if isinstance(candidate.get("source_memory_selection_policy_counts"), dict)
+            else {}
+        )
+        for policy, count in policy_counts.items():
+            policy_name = str(policy or "").strip()
+            if not policy_name:
+                continue
+            try:
+                source_count = int(count or 0)
+            except (TypeError, ValueError):
+                source_count = 0
+            if source_count > 0:
+                policy_names.add(policy_name)
+        return policy_names
     selected_cross_sessions: set[str] = set()
     def cross_session_key(candidate: Json) -> str:
         for source in [candidate, candidate.get("access_scope", {}), candidate.get("scope", {}), candidate.get("metadata", {}).get("access_scope", {}) if isinstance(candidate.get("metadata"), dict) else {}]:
@@ -5800,6 +5846,7 @@ def select_token_budgeted_refs(
         "shared_skill_budget": 0,
         "source_role_budget": 0,
         "memory_layer_budget": 0,
+        "memory_selection_policy_budget": 0,
         "memory_layer_floor": 0,
         "deadline": 0,
         "max_selected_refs": 0,
@@ -5817,6 +5864,7 @@ def select_token_budgeted_refs(
             "shared_skill_budget": 0,
             "source_role_budget": 0,
             "memory_layer_budget": 0,
+            "memory_selection_policy_budget": 0,
             "memory_layer_floor": 0,
             "deadline": 0,
             "max_selected_refs": 0,
@@ -5835,6 +5883,7 @@ def select_token_budgeted_refs(
             "shared_skill_budget": "shared skill candidate exceeded the configured shared-skill token budget",
             "source_role_budget": "candidate exceeded a configured source-role token budget",
             "memory_layer_budget": "candidate exceeded a configured memory-layer token budget",
+            "memory_selection_policy_budget": "candidate exceeded a configured memory-selection-policy token budget",
             "memory_layer_floor": "candidate was deferred so a required lower-layer entity could be selected first",
             "deadline": "candidate was not packed because the hard retrieval deadline was reached",
             "max_selected_refs": "candidate was relevant but dropped because max_selected_refs was reached",
@@ -6018,6 +6067,28 @@ def select_token_budgeted_refs(
                 token_estimate=ref_tokens,
             )
             continue
+        candidate_memory_selection_policies = candidate_memory_selection_policy_names(candidate)
+        capped_memory_selection_policies = [
+            policy
+            for policy in sorted(candidate_memory_selection_policies)
+            if policy in normalized_memory_selection_policy_budget_tokens
+            and int(memory_selection_policy_used_tokens.get(policy, 0)) + ref_tokens
+            > int(normalized_memory_selection_policy_budget_tokens[policy])
+        ]
+        if capped_memory_selection_policies:
+            dropped["memory_selection_policy_budget"] += 1
+            dropped["estimated_tokens"]["memory_selection_policy_budget"] += ref_tokens
+            record_dropped_candidate(
+                dropped,
+                {
+                    **candidate,
+                    "budget_memory_selection_policies": sorted(candidate_memory_selection_policies),
+                    "memory_selection_policy_budget_capped_policies": capped_memory_selection_policies,
+                },
+                reason="memory_selection_policy_budget",
+                token_estimate=ref_tokens,
+            )
+            continue
         seen_text_hashes.add(text_hash)
         selected.append(
             {
@@ -6028,6 +6099,7 @@ def select_token_budgeted_refs(
                 "budget_memory_layer": candidate_memory_layer,
                 "budget_source_roles": sorted(candidate_source_roles),
                 "budget_source_role_counts": candidate_budget_source_role_counts(candidate, candidate_source_roles),
+                "budget_memory_selection_policies": sorted(candidate_memory_selection_policies),
             }
         )
         used_tokens += ref_tokens
@@ -6050,6 +6122,12 @@ def select_token_budgeted_refs(
             if role in normalized_source_role_budget_tokens:
                 source_role_used_tokens[role] = int(source_role_used_tokens.get(role, 0)) + ref_tokens
                 source_role_selected_ref_counts[role] = int(source_role_selected_ref_counts.get(role, 0)) + 1
+        for policy in candidate_memory_selection_policies:
+            if policy in normalized_memory_selection_policy_budget_tokens:
+                memory_selection_policy_used_tokens[policy] = int(memory_selection_policy_used_tokens.get(policy, 0)) + ref_tokens
+                memory_selection_policy_selected_ref_counts[policy] = int(
+                    memory_selection_policy_selected_ref_counts.get(policy, 0)
+                ) + 1
         if used_tokens >= remote_budget:
             break
     dropped["cross_session_policy"] = {
@@ -6078,9 +6156,16 @@ def select_token_budgeted_refs(
         "selected_tokens_by_layer": memory_layer_used_tokens,
         "selected_ref_count_by_layer": memory_layer_selected_ref_counts,
     }
+    dropped["memory_selection_policy_budget_policy"] = {
+        "enabled": bool(normalized_memory_selection_policy_budget_tokens),
+        "budget_tokens": normalized_memory_selection_policy_budget_tokens,
+        "selected_tokens_by_policy": memory_selection_policy_used_tokens,
+        "selected_ref_count_by_policy": memory_selection_policy_selected_ref_counts,
+    }
     if not selected and candidates and remote_budget > 0 and budget_fill_policy != "quality_first":
         first: Json | None = None
         first_source_roles: set[str] = set()
+        first_memory_selection_policies: set[str] = set()
         first_memory_layer = ""
         first_clipped_words: list[str] = []
         for candidate in candidates:
@@ -6104,8 +6189,17 @@ def select_token_budgeted_refs(
                 for role in candidate_source_roles
             ):
                 continue
+            candidate_memory_selection_policies = candidate_memory_selection_policy_names(candidate)
+            if any(
+                policy in normalized_memory_selection_policy_budget_tokens
+                and int(memory_selection_policy_used_tokens.get(policy, 0)) + fallback_tokens
+                > int(normalized_memory_selection_policy_budget_tokens[policy])
+                for policy in candidate_memory_selection_policies
+            ):
+                continue
             first = candidate
             first_source_roles = candidate_source_roles
+            first_memory_selection_policies = candidate_memory_selection_policies
             first_memory_layer = candidate_memory_layer
             first_clipped_words = clipped_words_for_candidate
             break
@@ -6120,6 +6214,7 @@ def select_token_budgeted_refs(
                 "budget_memory_layer": first_memory_layer,
                 "budget_source_roles": sorted(first_source_roles),
                 "budget_source_role_counts": candidate_budget_source_role_counts(first, first_source_roles),
+                "budget_memory_selection_policies": sorted(first_memory_selection_policies),
             }
         ]
         used_tokens = len(clipped_words)
@@ -6147,6 +6242,18 @@ def select_token_budgeted_refs(
         if first_memory_layer in normalized_memory_layer_budget_tokens:
             memory_layer_used_tokens[first_memory_layer] = int(memory_layer_used_tokens.get(first_memory_layer, 0)) + used_tokens
             memory_layer_selected_ref_counts[first_memory_layer] = int(memory_layer_selected_ref_counts.get(first_memory_layer, 0)) + 1
+        for policy in first_memory_selection_policies:
+            if policy in normalized_memory_selection_policy_budget_tokens:
+                memory_selection_policy_used_tokens[policy] = int(memory_selection_policy_used_tokens.get(policy, 0)) + used_tokens
+                memory_selection_policy_selected_ref_counts[policy] = int(
+                    memory_selection_policy_selected_ref_counts.get(policy, 0)
+                ) + 1
+        dropped["memory_selection_policy_budget_policy"] = {
+            "enabled": bool(normalized_memory_selection_policy_budget_tokens),
+            "budget_tokens": normalized_memory_selection_policy_budget_tokens,
+            "selected_tokens_by_policy": memory_selection_policy_used_tokens,
+            "selected_ref_count_by_policy": memory_selection_policy_selected_ref_counts,
+        }
         dropped["over_budget"] = max(0, len(candidates) - 1)
         for candidate in candidates[1:]:
             record_dropped_candidate(
@@ -6671,7 +6778,12 @@ def compact_context_pack_policy(policy: Any) -> Json:
         for field in keep_fields
         if policy.get(field) not in (None, "", [], {})
     }
-    is_layer_policy = isinstance(policy.get("selected_tokens_by_layer"), dict) or isinstance(policy.get("selected_ref_count_by_layer"), dict)
+    is_layer_policy = (
+        isinstance(policy.get("selected_tokens_by_layer"), dict)
+        or isinstance(policy.get("selected_ref_count_by_layer"), dict)
+        or isinstance(policy.get("selected_tokens_by_policy"), dict)
+        or isinstance(policy.get("selected_ref_count_by_policy"), dict)
+    )
     for field in [
         "selected_ref_count",
         "selected_session_count",
@@ -6711,6 +6823,17 @@ def compact_context_pack_policy(policy: Any) -> Json:
                 for key, amount in value.items()
                 if str(key or "").strip() and isinstance(amount, int) and amount
             }
+    for field in [
+        "selected_tokens_by_policy",
+        "selected_ref_count_by_policy",
+    ]:
+        value = policy.get(field)
+        if isinstance(value, dict) and value:
+            compact[field] = {
+                str(key): int(amount)
+                for key, amount in value.items()
+                if str(key or "").strip() and isinstance(amount, int)
+            }
     return compact
 
 
@@ -6736,7 +6859,13 @@ def compact_dropped_refs_for_context_pack(dropped: Json, *, include_debug: bool 
         value = dropped.get(field)
         if value not in (None, "", [], {}):
             compact[field] = value
-    for field in ["cross_session_policy", "shared_context_policy", "source_role_budget_policy", "memory_layer_budget_policy"]:
+    for field in [
+        "cross_session_policy",
+        "shared_context_policy",
+        "source_role_budget_policy",
+        "memory_layer_budget_policy",
+        "memory_selection_policy_budget_policy",
+    ]:
         value = compact_context_pack_policy(dropped.get(field))
         if value:
             compact[field] = value
@@ -6754,6 +6883,11 @@ def memory_hierarchy_contract_from_recall_policy(recall_policy: Json) -> Json:
     shared_context = recall_policy.get("shared_context") if isinstance(recall_policy.get("shared_context"), dict) else {}
     source_role_budget = recall_policy.get("source_role_budget") if isinstance(recall_policy.get("source_role_budget"), dict) else {}
     memory_layer_budget = recall_policy.get("memory_layer_budget_policy") if isinstance(recall_policy.get("memory_layer_budget_policy"), dict) else {}
+    memory_selection_policy_budget = (
+        recall_policy.get("memory_selection_policy_budget_policy")
+        if isinstance(recall_policy.get("memory_selection_policy_budget_policy"), dict)
+        else {}
+    )
     return {
         "models": {
             "session_entity": {
@@ -6807,6 +6941,15 @@ def memory_hierarchy_contract_from_recall_policy(recall_policy: Json) -> Json:
         "memory_layer_budget_tokens": normalized_string_int_map(memory_layer_budget.get("budget_tokens")),
         "memory_layer_selected_tokens_by_layer": normalized_string_int_map(memory_layer_budget.get("selected_tokens_by_layer")),
         "memory_layer_selected_ref_count_by_layer": normalized_string_int_map(memory_layer_budget.get("selected_ref_count_by_layer")),
+        "memory_selection_policy_budget_enabled": memory_selection_policy_budget.get("enabled"),
+        "memory_selection_policy_budget_mode": memory_selection_policy_budget.get("mode"),
+        "memory_selection_policy_budget_semantics": memory_selection_policy_budget.get("budget_semantics"),
+        "memory_selection_policy_independent_caps": memory_selection_policy_budget.get("independent_caps"),
+        "memory_selection_policy_global_remote_budget_enforced": memory_selection_policy_budget.get("global_remote_budget_enforced"),
+        "memory_selection_policy_remote_budget_tokens": memory_selection_policy_budget.get("remote_budget_tokens"),
+        "memory_selection_policy_budget_tokens": normalized_string_int_map(memory_selection_policy_budget.get("budget_tokens")),
+        "memory_selection_policy_selected_tokens_by_policy": normalized_string_int_map(memory_selection_policy_budget.get("selected_tokens_by_policy")),
+        "memory_selection_policy_selected_ref_count_by_policy": normalized_string_int_map(memory_selection_policy_budget.get("selected_ref_count_by_policy")),
         "selected_ref_flow": [
             "local_context_budget",
             "same_session_memory",
@@ -6814,6 +6957,7 @@ def memory_hierarchy_contract_from_recall_policy(recall_policy: Json) -> Json:
             "bounded_cross_session_evidence",
             "source_role_budget_gate",
             "memory_layer_budget_gate",
+            "memory_selection_policy_budget_gate",
             "summary_or_compression",
             "shared_resource_or_skill",
         ],

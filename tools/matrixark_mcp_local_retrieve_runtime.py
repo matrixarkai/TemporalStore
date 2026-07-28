@@ -226,6 +226,8 @@ def retrieve(target: Any, args: Json) -> Json:
     source_role_budget_mode = retrieval_request["source_role_budget_mode"]
     memory_layer_budget_tokens = retrieval_request["memory_layer_budget_tokens"]
     memory_layer_budget_mode = retrieval_request["memory_layer_budget_mode"]
+    memory_selection_policy_budget_tokens = retrieval_request["memory_selection_policy_budget_tokens"]
+    memory_selection_policy_budget_mode = retrieval_request["memory_selection_policy_budget_mode"]
     pre_retrieval_summary_refresh = retrieval_request["pre_retrieval_summary_refresh"]
     pre_retrieval_refreshed_records = retrieval_request["pre_retrieval_refreshed_records"]
     query_terms = retrieval_request["query_terms"]
@@ -614,6 +616,7 @@ def retrieve(target: Any, args: Json) -> Json:
         shared_context_policy=shared_context_policy,
         source_role_budget_tokens=source_role_budget_tokens,
         memory_layer_budget_tokens=memory_layer_budget_tokens,
+        memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
     )
     partial_context_pack = bool(dropped_over_budget.get("deadline_exceeded"))
     quality_warnings = []
@@ -708,6 +711,8 @@ def retrieve(target: Any, args: Json) -> Json:
         source_role_budget_mode=source_role_budget_mode,
         memory_layer_budget_tokens=memory_layer_budget_tokens,
         memory_layer_budget_mode=memory_layer_budget_mode,
+        memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
+        memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
         pre_retrieval_summary_refresh=pre_retrieval_summary_refresh,
         debug_refs=debug_refs,
     )

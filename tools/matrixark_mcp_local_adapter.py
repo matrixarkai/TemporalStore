@@ -6560,6 +6560,11 @@ class MatrixArkLocalAdapter:
                 remote_budget_tokens=remote_context_budget_tokens,
             )
         memory_layer_budget_reason = memory_layer_budget_question_reason(question_type)
+        memory_selection_policy_budget_tokens = (
+            optional_object(args, "memory_selection_policy_budget_tokens")
+            or optional_object(ranking, "memory_selection_policy_budget_tokens")
+        )
+        memory_selection_policy_budget_mode = "explicit" if memory_selection_policy_budget_tokens else ""
         query_terms = {term for term in tokens(query) if len(term) > 2}
         raw_reference_time_ms = args.get("reference_time_ms", now_ms())
         if not isinstance(raw_reference_time_ms, int):
@@ -6592,6 +6597,7 @@ class MatrixArkLocalAdapter:
             json.dumps(shared_context_policy, sort_keys=True, separators=(",", ":")),
             json.dumps(source_role_budget_tokens, sort_keys=True, separators=(",", ":")),
             json.dumps(memory_layer_budget_tokens, sort_keys=True, separators=(",", ":")),
+            json.dumps(memory_selection_policy_budget_tokens, sort_keys=True, separators=(",", ":")),
             json.dumps(
                 {
                     "enabled": bool(pre_retrieval_summary_refresh.get("enabled")),
@@ -6738,6 +6744,10 @@ class MatrixArkLocalAdapter:
             "source_role_budget_mode": source_role_budget_mode or ("explicit" if source_role_budget_tokens else "disabled"),
             "memory_layer_budget_tokens": memory_layer_budget_tokens,
             "memory_layer_budget_mode": memory_layer_budget_mode or ("explicit" if memory_layer_budget_tokens else "disabled"),
+            "memory_selection_policy_budget_tokens": memory_selection_policy_budget_tokens,
+            "memory_selection_policy_budget_mode": memory_selection_policy_budget_mode or (
+                "explicit" if memory_selection_policy_budget_tokens else "disabled"
+            ),
             "memory_layer_budget_question_type": question_type,
             "memory_layer_budget_question_reason": memory_layer_budget_reason,
             "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
@@ -7974,6 +7984,7 @@ class MatrixArkLocalAdapter:
             shared_context_policy=shared_context_policy,
             source_role_budget_tokens=source_role_budget_tokens,
             memory_layer_budget_tokens=memory_layer_budget_tokens,
+            memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
         )
         profile_entity_texts_by_role: dict[str, list[str]] = {}
         for item in selected:
@@ -8309,6 +8320,20 @@ class MatrixArkLocalAdapter:
                         "pre_retrieval_summary_refresh_balanced",
                     },
                     "budget_semantics": "independent_per_layer_caps_under_global_remote_budget",
+                    "independent_caps": True,
+                    "global_remote_budget_enforced": True,
+                },
+                "memory_selection_policy_budget_policy": {
+                    **(
+                        dropped_over_budget.get("memory_selection_policy_budget_policy", {"enabled": False})
+                        if isinstance(dropped_over_budget.get("memory_selection_policy_budget_policy"), dict)
+                        else {"enabled": False}
+                    ),
+                    "mode": memory_selection_policy_budget_mode or (
+                        "explicit" if memory_selection_policy_budget_tokens else "disabled"
+                    ),
+                    "remote_budget_tokens": remote_context_budget_tokens,
+                    "budget_semantics": "independent_per_memory_selection_policy_caps_under_global_remote_budget",
                     "independent_caps": True,
                     "global_remote_budget_enforced": True,
                 },
