@@ -1867,8 +1867,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({"user": 1}, readiness["pending_source_roles"])
             self.assertEqual({"before_llm": 1}, readiness["pending_source_hook_types"])
             self.assertEqual({"UserPromptSubmit": 1}, readiness["pending_source_codex_events"])
-            self.assertEqual({"session": 1}, readiness["pending_memory_scopes"])
-            self.assertEqual({"same_session": 1}, readiness["pending_session_continuities"])
+            self.assertEqual({"session": 1, "user_profile": 1}, readiness["pending_memory_scopes"])
+            self.assertEqual({"cross_session": 1, "same_session": 1}, readiness["pending_session_continuities"])
             self.assertEqual({"pending_async": 1}, readiness["pending_extraction_phases"])
             self.assertEqual(
                 {"compression": 1, "embedding": 1, "extraction": 1, "summary": 1},
@@ -1878,8 +1878,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "async_pipeline_remaining_stages:compression,embedding,extraction,summary",
                 readiness["freshness_warnings"],
             )
+            self.assertIn("profile_memory_stale", readiness["freshness_warnings"])
+            self.assertIn("cross_session_memory_stale", readiness["freshness_warnings"])
             self.assertIn("session", readiness["memory_layer_readiness"]["blocked_layers"])
+            self.assertIn("user_profile", readiness["memory_layer_readiness"]["blocked_layers"])
             self.assertIn("same_session", readiness["memory_layer_readiness"]["blocked_layers"])
+            self.assertIn("cross_session", readiness["memory_layer_readiness"]["blocked_layers"])
             self.assertIn("summary", readiness["memory_layer_readiness"]["blocked_layers"])
             self.assertIn("compression", readiness["memory_layer_readiness"]["blocked_layers"])
             self.assertIn("embedding", readiness["memory_layer_readiness"]["blocked_layers"])
@@ -5567,6 +5571,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({"user": 1}, first_tasks[0]["source_role_counts"])
             self.assertEqual({"before_llm": 1}, first_tasks[0]["source_hook_type_counts"])
             self.assertEqual({"UserPromptSubmit": 1}, first_tasks[0]["source_codex_event_counts"])
+            self.assertEqual(["session", "user_profile"], first_tasks[0]["source_memory_scopes"])
+            self.assertEqual(["same_session", "cross_session"], first_tasks[0]["source_session_continuities"])
 
             second = adapter.ingest(
                 {

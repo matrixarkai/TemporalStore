@@ -42,6 +42,16 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 Json = dict[str, Any]
 
 
+def pending_extraction_memory_layer_intent(scope: Json) -> tuple[list[str], list[str]]:
+    has_profile_scope = bool(
+        str(scope.get("tenant_id") or "").strip()
+        and str(scope.get("user_id") or "").strip()
+    )
+    if has_profile_scope:
+        return ["session", "user_profile"], ["same_session", "cross_session"]
+    return ["session"], ["same_session"]
+
+
 def _mcp_debug_log(message: str) -> None:
     path = os.environ.get("MATRIXARK_MCP_DEBUG_LOG")
     if not path:

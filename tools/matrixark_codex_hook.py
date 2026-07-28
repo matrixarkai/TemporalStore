@@ -27,6 +27,7 @@ try:
         memory_hierarchy_contract_from_recall_policy,
         messages_from_event_record,
         normalize_message_role,
+        pending_extraction_memory_layer_intent,
         serving_memory_layer_budget,
         serving_memory_layer_pressure,
     )
@@ -45,6 +46,7 @@ except ModuleNotFoundError:
         memory_hierarchy_contract_from_recall_policy,
         messages_from_event_record,
         normalize_message_role,
+        pending_extraction_memory_layer_intent,
         serving_memory_layer_budget,
         serving_memory_layer_pressure,
     )
@@ -3308,6 +3310,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
     messages = [{"role": role, "content": text}]
     hook_type = hook_type_for_event(args.event)
     lineage = hook_lineage_fields(hook)
+    source_memory_scopes, source_session_continuities = pending_extraction_memory_layer_intent(scope)
     metadata: Json = {
         "source": "codex_hook_fast_async",
         "codex_event": args.event,
@@ -3362,8 +3365,8 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "codex_event": args.event,
         "source_codex_events": [args.event] if args.event else [],
         "source_codex_event_counts": {args.event: 1} if args.event else {},
-        "source_memory_scopes": ["session"],
-        "source_session_continuities": ["same_session"],
+        "source_memory_scopes": source_memory_scopes,
+        "source_session_continuities": source_session_continuities,
         "source_extraction_phases": ["pending_async"],
         "scope": scope,
         "tenant_id": tenant_id,
@@ -3418,8 +3421,8 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "source_hook_type_counts": {hook_type: 1} if hook_type else {},
         "source_codex_events": [args.event] if args.event else [],
         "source_codex_event_counts": {args.event: 1} if args.event else {},
-        "source_memory_scopes": ["session"],
-        "source_session_continuities": ["same_session"],
+        "source_memory_scopes": source_memory_scopes,
+        "source_session_continuities": source_session_continuities,
         "source_extraction_phases": ["pending_async"],
         "memory_scope": "session",
         "session_continuity": "same_session",
