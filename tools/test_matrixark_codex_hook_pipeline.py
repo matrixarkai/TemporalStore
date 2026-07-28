@@ -772,8 +772,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(1, selected_budget["by_extraction_phase"]["provisional"]["refs"])
         self.assertEqual(1, selected_budget["final_ref_count"])
         self.assertEqual(1, selected_budget["provisional_ref_count"])
-        self.assertEqual(1, dropped_budget["by_memory_layer"]["summary"]["refs"])
-        self.assertEqual(13, dropped_budget["by_memory_layer"]["summary"]["tokens"])
+        self.assertEqual(1, dropped_budget["by_memory_layer"]["profile_summary"]["refs"])
+        self.assertEqual(13, dropped_budget["by_memory_layer"]["profile_summary"]["tokens"])
         self.assertEqual(1, dropped_budget["by_memory_scope"]["session"]["refs"])
         self.assertEqual(1, dropped_budget["by_memory_scope"]["user_profile"]["refs"])
         self.assertEqual(1, dropped_budget["by_session_continuity"]["same_session"]["refs"])
@@ -788,7 +788,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         )
         self.assertEqual(
             {"selected_refs": 0, "selected_tokens": 0, "dropped_refs": 1, "dropped_tokens": 13, "selected_and_dropped": False},
-            pressure["by_dimension"]["by_memory_layer"]["summary"],
+            pressure["by_dimension"]["by_memory_layer"]["profile_summary"],
         )
         self.assertTrue(pressure["summary_layer_pressure"])
         self.assertFalse(pressure["profile_entity_pressure"])
@@ -1442,7 +1442,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         dropped_budget = dropped_ref_layer_budget(dropped)
         pressure = memory_layer_pressure_summary(selected_budget, dropped_budget)
         self.assertEqual(1, selected_budget["by_memory_layer"]["profile_entity"]["refs"])
-        self.assertEqual(1, dropped_budget["by_memory_layer"]["summary"]["refs"])
+        self.assertEqual(1, dropped_budget["by_memory_layer"]["profile_summary"]["refs"])
         self.assertEqual({"tool": 1}, selected_budget["source_message_counts_by_role"])
         self.assertEqual({"assistant": 2, "tool": 1}, dropped_budget["source_message_counts_by_role"])
         self.assertTrue(pressure["summary_layer_pressure"])
@@ -1455,7 +1455,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 {
                     "ref_type": "summary",
                     "ref_hash": 161,
-                    "text": "assistant summary says tests passed and commit was pushed",
+                    "text": "assistant summary pushed",
                     "score": 0.99,
                     "memory_scope": "user_profile",
                     "session_continuity": "cross_session",
@@ -1496,26 +1496,26 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "max_candidates": 4,
                 "min_entity_bridge_refs": 0,
             },
-            memory_layer_budget_tokens={"summary": 8},
+            memory_layer_budget_tokens={"profile_summary": 6},
         )
 
         selected_hashes = [ref["ref_hash"] for ref in selected]
         self.assertEqual(2, len(selected_hashes))
-        self.assertIn(selected_hashes[0], {161, 162})
+        self.assertEqual(161, selected_hashes[0])
         self.assertEqual(163, selected_hashes[1])
-        self.assertEqual(13, used_tokens)
-        self.assertEqual("summary", selected[0]["budget_memory_layer"])
+        self.assertEqual(9, used_tokens)
+        self.assertEqual("profile_summary", selected[0]["budget_memory_layer"])
         self.assertEqual("profile_entity", selected[1]["budget_memory_layer"])
         self.assertEqual(1, dropped["memory_layer_budget"])
-        self.assertEqual({"summary": 8}, dropped["memory_layer_budget_policy"]["budget_tokens"])
-        self.assertEqual({"summary": 7}, dropped["memory_layer_budget_policy"]["selected_tokens_by_layer"])
-        self.assertEqual({"summary": 1}, dropped["memory_layer_budget_policy"]["selected_ref_count_by_layer"])
-        dropped_summary_hash = 161 if selected_hashes[0] == 162 else 162
+        self.assertEqual({"profile_summary": 6}, dropped["memory_layer_budget_policy"]["budget_tokens"])
+        self.assertEqual({"profile_summary": 3}, dropped["memory_layer_budget_policy"]["selected_tokens_by_layer"])
+        self.assertEqual({"profile_summary": 1}, dropped["memory_layer_budget_policy"]["selected_ref_count_by_layer"])
+        dropped_summary_hash = 162
         self.assertTrue(
             any(
                 ref.get("ref_hash") == dropped_summary_hash
                 and ref.get("drop_reason") == "memory_layer_budget"
-                and ref.get("memory_layer_budget_capped_layer") == "summary"
+                and ref.get("memory_layer_budget_capped_layer") == "profile_summary"
                 for ref in dropped["refs"]
             ),
             dropped["refs"],
@@ -1523,7 +1523,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         compact_dropped = compact_dropped_refs_for_context_pack(dropped)
         self.assertEqual(1, compact_dropped["memory_layer_budget"])
         self.assertEqual(
-            {"summary": 7},
+            {"profile_summary": 3},
             compact_dropped["memory_layer_budget_policy"]["selected_tokens_by_layer"],
         )
 
@@ -1564,7 +1564,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "max_candidates": 4,
                 "min_entity_bridge_refs": 0,
             },
-            memory_layer_budget_tokens={"summary": 32, "profile_entity": 32},
+            memory_layer_budget_tokens={"profile_summary": 32, "profile_entity": 32},
         )
 
         self.assertEqual([172], [ref["ref_hash"] for ref in selected])
@@ -2840,7 +2840,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("auto", request["source_role_budget_mode"])
             self.assertEqual(
                 {
-                    "summary": 28,
+                    "summary": 19,
+                    "profile_summary": 28,
+                    "same_session_summary": 19,
+                    "cross_session_summary": 19,
                     "compression": 23,
                     "same_session_event": 42,
                     "cross_session_event": 23,
@@ -2881,7 +2884,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("prioritize_profile_entity", request["memory_layer_budget_question_reason"])
             self.assertEqual(
                 {
-                    "summary": 23,
+                    "summary": 14,
+                    "profile_summary": 19,
+                    "same_session_summary": 14,
+                    "cross_session_summary": 14,
                     "compression": 19,
                     "same_session_event": 33,
                     "cross_session_event": 28,
@@ -2945,7 +2951,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "pre_retrieval_summary_refresh_balanced",
                 request["memory_layer_budget_mode"],
             )
-            self.assertEqual(23, request["memory_layer_budget_tokens"]["summary"])
+            self.assertEqual(14, request["memory_layer_budget_tokens"]["summary"])
+            self.assertEqual(28, request["memory_layer_budget_tokens"]["profile_summary"])
             self.assertEqual(42, request["memory_layer_budget_tokens"]["profile_entity"])
             self.assertGreater(
                 request["memory_layer_budget_tokens"]["profile_entity"],
@@ -3257,7 +3264,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("independent_per_layer_caps_under_global_remote_budget", layer_policy["budget_semantics"])
             self.assertTrue(layer_policy["independent_caps"])
             self.assertTrue(layer_policy["global_remote_budget_enforced"])
-            self.assertEqual(39, layer_policy["budget_tokens"]["summary"])
+            self.assertEqual(22, layer_policy["budget_tokens"]["summary"])
+            self.assertEqual(39, layer_policy["budget_tokens"]["profile_summary"])
             self.assertEqual(34, layer_policy["budget_tokens"]["cross_session_event"])
             self.assertEqual(51, layer_policy["budget_tokens"]["profile_entity"])
             self.assertGreater(sum(layer_policy["budget_tokens"].values()), layer_policy["remote_budget_tokens"])
@@ -4120,7 +4128,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             debug_budget = debug_pack["retrieval_metrics"]["memory_layer_budget"]
             debug_recall_budget = debug_pack["recall_policy"]["memory_layer_budget"]
-            self.assertGreaterEqual(debug_budget["by_memory_layer"]["summary"]["refs"], 1)
+            self.assertGreaterEqual(debug_budget["by_memory_layer"]["profile_summary"]["refs"], 1)
             self.assertGreaterEqual(debug_budget["by_memory_layer"]["profile_entity"]["refs"], 1)
             self.assertGreaterEqual(debug_budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(debug_budget["by_session_continuity"]["cross_session"]["refs"], 1)
@@ -5558,6 +5566,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertNotIn("source_codex_event_counts", ref)
             summary_budget = summary_pack["retrieval_metrics"]["memory_layer_budget"]
             self.assertGreaterEqual(summary_budget["by_ref_type"]["summary"]["refs"], 1)
+            self.assertGreaterEqual(summary_budget["by_memory_layer"]["profile_summary"]["refs"], 1)
             self.assertGreaterEqual(summary_budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(summary_budget["by_session_continuity"]["cross_session"]["refs"], 1)
             for field in [

@@ -162,7 +162,10 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         return {}, mode
     fractions = optional_object(args, "memory_layer_budget_fractions") or optional_object(ranking, "memory_layer_budget_fractions")
     defaults = {
-        "summary": 0.30,
+        "summary": 0.20,
+        "profile_summary": 0.30,
+        "same_session_summary": 0.20,
+        "cross_session_summary": 0.20,
         "compression": 0.25,
         "same_session_event": 0.45,
         "cross_session_event": 0.25,
@@ -174,7 +177,10 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
     if normalized_question_type in {"current_state", "latest"}:
         defaults.update(
             {
-                "summary": 0.25,
+                "summary": 0.15,
+                "profile_summary": 0.20,
+                "same_session_summary": 0.15,
+                "cross_session_summary": 0.15,
                 "compression": 0.20,
                 "same_session_event": 0.35,
                 "cross_session_event": 0.30,
@@ -186,7 +192,10 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
     elif normalized_question_type in {"multi_hop", "date"}:
         defaults.update(
             {
-                "summary": 0.35,
+                "summary": 0.20,
+                "profile_summary": 0.35,
+                "same_session_summary": 0.20,
+                "cross_session_summary": 0.35,
                 "compression": 0.30,
                 "same_session_event": 0.40,
                 "cross_session_event": 0.35,
@@ -198,7 +207,10 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
     elif normalized_question_type in {"broad_exploration", "evidence"}:
         defaults.update(
             {
-                "summary": 0.35,
+                "summary": 0.20,
+                "profile_summary": 0.35,
+                "same_session_summary": 0.25,
+                "cross_session_summary": 0.30,
                 "compression": 0.30,
                 "same_session_event": 0.45,
                 "cross_session_event": 0.30,
@@ -228,7 +240,10 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(*, remote_budget_to
     if remote_budget <= 0:
         return {}, "pre_retrieval_summary_refresh_balanced"
     fractions = {
-        "summary": 0.25,
+        "summary": 0.15,
+        "profile_summary": 0.30,
+        "same_session_summary": 0.20,
+        "cross_session_summary": 0.25,
         "compression": 0.20,
         "same_session_event": 0.45,
         "cross_session_event": 0.25,

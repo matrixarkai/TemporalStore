@@ -189,6 +189,12 @@ def candidate_memory_layer_name(candidate: Json) -> str:
     if ref_type == "compression" or context_class == "compression":
         return "compression"
     if ref_type == "summary" or context_class == "summary":
+        if memory_scope == "user_profile" and session_continuity == "cross_session":
+            return "profile_summary"
+        if session_continuity == "same_session":
+            return "same_session_summary"
+        if session_continuity == "cross_session":
+            return "cross_session_summary"
         return "summary"
     if ref_type == "segment":
         if session_continuity == "same_session":
@@ -408,7 +414,10 @@ def select_token_budgeted_refs(
     memory_layer_selected_ref_counts: Json = {layer: 0 for layer in normalized_memory_layer_budget_tokens}
     profile_entity_floor_enabled = bool(
         normalized_memory_layer_budget_tokens.get("profile_entity")
-        and normalized_memory_layer_budget_tokens.get("summary")
+        and any(
+            normalized_memory_layer_budget_tokens.get(layer)
+            for layer in ["summary", "profile_summary", "same_session_summary", "cross_session_summary"]
+        )
     )
 
     def profile_entity_floor_satisfied() -> bool:
@@ -700,7 +709,7 @@ def select_token_budgeted_refs(
         candidate_memory_layer = candidate_memory_layer_name(candidate)
         if (
             profile_entity_floor_enabled
-            and candidate_memory_layer == "summary"
+            and candidate_memory_layer in {"summary", "profile_summary", "same_session_summary", "cross_session_summary"}
             and not profile_entity_floor_satisfied()
             and remaining_profile_entity_candidate_exists(index + 1)
         ):
