@@ -185,6 +185,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "pending_source_codex_events": {"Stop": 1},
                     "pending_memory_scopes": {"user_profile": 1},
                 },
+                "pre_retrieval_summary_refresh": {
+                    "enabled": False,
+                    "status": "disabled",
+                    "requested_limit": 2,
+                    "elapsed_ms": 0.0,
+                },
                 "memory_layer_pressure": {
                     "dropped_dimensions": ["by_source_role", "by_memory_scope"],
                     "by_dimension": {
@@ -205,11 +211,21 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assert_no_default_context_pack_debug_lineage(serving)
         self.assertEqual("pack-debug-default", serving["context_pack_id"])
         self.assertEqual("assistant_decision", serving["groups"][0]["items"][0]["entity_type"])
+        self.assertNotIn("retrieval_metrics", serving)
         self.assertIn("by_memory_scope", serving["memory_layer_budget"])
         self.assertNotIn("by_source_role", serving["memory_layer_budget"])
         self.assertEqual(3, serving["async_pipeline_readiness"]["task_count"])
         self.assertEqual({"summary": 1}, serving["async_pipeline_readiness"]["remaining_stage_counts"])
         self.assertEqual({"user_profile": 1}, serving["async_pipeline_readiness"]["pending_memory_scopes"])
+        self.assertEqual(
+            {"enabled": False, "status": "disabled", "requested_limit": 2, "elapsed_ms": 0.0},
+            serving["pre_retrieval_summary_refresh"],
+        )
+
+        metrics_serving = compact_context_pack_for_serving({**pack, "include_retrieval_metrics": True})
+        self.assertTrue(metrics_serving["include_retrieval_metrics"])
+        self.assertIn("retrieval_metrics", metrics_serving)
+        self.assertIn("memory_layer_budget", metrics_serving["retrieval_metrics"])
 
     def test_context_pack_serving_includes_debug_lineage_with_flag(self) -> None:
         pack = {
@@ -227,6 +243,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "current_state_source_session_count": 2,
                 }
             ],
+            "retrieval_metrics": {
+                "memory_layer_budget": {
+                    "by_source_role": {"assistant": {"refs": 1}},
+                    "source_message_counts_by_role": {"assistant": 2},
+                }
+            },
         }
         serving = compact_context_pack_for_serving(pack, include_debug=True)
         item = serving["groups"][0]["items"][0]
@@ -236,6 +258,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual({"Stop": 2}, item["source_codex_event_counts"])
         self.assertEqual(2, item["source_entity_count"])
         self.assertEqual(2, item["current_state_source_session_count"])
+        self.assertIn("retrieval_metrics", serving)
+        self.assertEqual(
+            {"assistant": 2},
+            serving["retrieval_metrics"]["memory_layer_budget"]["source_message_counts_by_role"],
+        )
 
     def test_core_context_pack_debug_flag_exposes_only_bounded_lineage(self) -> None:
         pack = {

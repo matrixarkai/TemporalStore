@@ -998,7 +998,10 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         compact["insufficient_context"] = True
     if pack.get("include_retrieval_metrics"):
         compact["include_retrieval_metrics"] = True
-    if isinstance(pack.get("retrieval_metrics"), dict):
+    if (
+        isinstance(pack.get("retrieval_metrics"), dict)
+        and (pack.get("include_retrieval_metrics") or include_debug or DEBUG_LINEAGE_PAYLOAD)
+    ):
         compact["retrieval_metrics"] = pack["retrieval_metrics"]
     retrieval_metrics = pack.get("retrieval_metrics") if isinstance(pack.get("retrieval_metrics"), dict) else {}
     recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
@@ -1038,6 +1041,28 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     )
     if isinstance(async_pipeline_readiness, dict) and async_pipeline_readiness:
         compact["async_pipeline_readiness"] = async_pipeline_readiness
+    pre_retrieval_summary_refresh = (
+        retrieval_metrics.get("pre_retrieval_summary_refresh")
+        if isinstance(retrieval_metrics.get("pre_retrieval_summary_refresh"), dict)
+        else recall_policy.get("pre_retrieval_summary_refresh")
+        if isinstance(recall_policy.get("pre_retrieval_summary_refresh"), dict)
+        else {}
+    )
+    if isinstance(pre_retrieval_summary_refresh, dict) and pre_retrieval_summary_refresh:
+        compact["pre_retrieval_summary_refresh"] = {
+            field: pre_retrieval_summary_refresh.get(field)
+            for field in [
+                "enabled",
+                "status",
+                "requested_limit",
+                "refreshed_count",
+                "compression_created_count",
+                "skipped_dirty_count",
+                "skipped_dirty_reasons",
+                "elapsed_ms",
+            ]
+            if pre_retrieval_summary_refresh.get(field) not in (None, "", [], {})
+        }
     if recall_policy:
         try:
             from tools.matrixark_mcp_core import memory_hierarchy_contract_from_recall_policy
