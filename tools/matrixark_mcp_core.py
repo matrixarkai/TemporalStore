@@ -6295,7 +6295,7 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
             if pre_retrieval_summary_refresh.get(field) not in (None, "", [], {})
         }
     memory_hierarchy = memory_hierarchy_contract_from_recall_policy(compact.get("recall_policy", {}))
-    if memory_hierarchy:
+    if memory_hierarchy and (include_debug or CONTEXT_PACK_DEBUG_LINEAGE):
         compact["memory_hierarchy"] = memory_hierarchy
     compact.pop("recall_policy", None)
 

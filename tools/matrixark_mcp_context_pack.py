@@ -18,6 +18,7 @@ DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS = {
     "debug_record",
     "metadata_debug",
     "memory_lineage",
+    "memory_hierarchy",
     "lineage",
     "source_session_ids",
     "source_roles",
@@ -580,7 +581,7 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
         except ModuleNotFoundError:  # Direct script execution from tools/.
             from matrixark_mcp_core import memory_hierarchy_contract_from_recall_policy
         memory_hierarchy = memory_hierarchy_contract_from_recall_policy(recall_policy)
-        if memory_hierarchy:
+        if memory_hierarchy and (include_debug or DEBUG_LINEAGE_PAYLOAD):
             compact["memory_hierarchy"] = memory_hierarchy
     memory_layer_budget = record.get("memory_layer_budget")
     if not isinstance(memory_layer_budget, dict):
@@ -1069,7 +1070,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         except ModuleNotFoundError:  # Direct script execution from tools/.
             from matrixark_mcp_core import memory_hierarchy_contract_from_recall_policy
         memory_hierarchy = memory_hierarchy_contract_from_recall_policy(recall_policy)
-        if memory_hierarchy:
+        if memory_hierarchy and (include_debug or DEBUG_LINEAGE_PAYLOAD):
             compact["memory_hierarchy"] = memory_hierarchy
     if include_debug or DEBUG_LINEAGE_PAYLOAD:
         return compact

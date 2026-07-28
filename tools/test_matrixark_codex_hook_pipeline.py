@@ -94,6 +94,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "debug_payload",
             "lineage",
             "memory_lineage",
+            "memory_hierarchy",
             "source_session_ids",
             "source_roles",
             "budget_source_roles",
@@ -201,6 +202,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 },
             },
             "recall_policy": {
+                "cross_session": {
+                    "enabled": True,
+                    "budget_tokens": 64,
+                    "budget_floor_status": "remote_budget_too_small_for_profile_floor",
+                },
                 "memory_layer_budget": {
                     "by_source_role": {"assistant": {"refs": 1}},
                     "source_message_counts_by_role": {"assistant": 2},
@@ -249,6 +255,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "source_message_counts_by_role": {"assistant": 2},
                 }
             },
+            "recall_policy": {
+                "cross_session": {
+                    "enabled": True,
+                    "budget_tokens": 64,
+                    "budget_floor_status": "remote_budget_too_small_for_profile_floor",
+                },
+            },
         }
         serving = compact_context_pack_for_serving(pack, include_debug=True)
         item = serving["groups"][0]["items"][0]
@@ -263,6 +276,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             {"assistant": 2},
             serving["retrieval_metrics"]["memory_layer_budget"]["source_message_counts_by_role"],
         )
+        self.assertIn("memory_hierarchy", serving)
+        self.assertTrue(serving["memory_hierarchy"]["cross_session_enabled"])
 
     def test_core_context_pack_debug_flag_exposes_only_bounded_lineage(self) -> None:
         pack = {
@@ -343,18 +358,25 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "pending_source_hook_types": {"after_llm": 1},
                     "pending_source_codex_events": {"Stop": 1},
                     "pending_memory_scopes": {"user_profile": 1},
-                }
+                },
+                "cross_session": {
+                    "enabled": True,
+                    "budget_tokens": 64,
+                },
             },
         }
 
         default_serving = compact_context_pack_for_serving_flat(pack)
         self.assert_no_default_context_pack_debug_lineage(default_serving)
+        self.assertNotIn("memory_hierarchy", default_serving)
         readiness = default_serving["async_pipeline_readiness"]
         self.assertEqual(2, readiness["task_count"])
         self.assertEqual({"summary": 1, "embedding": 1}, readiness["remaining_stage_counts"])
         self.assertEqual({"user_profile": 1}, readiness["pending_memory_scopes"])
 
         debug_serving = compact_context_pack_for_serving_flat(pack, include_debug=True)
+        self.assertIn("memory_hierarchy", debug_serving)
+        self.assertTrue(debug_serving["memory_hierarchy"]["cross_session_enabled"])
         debug_readiness = debug_serving["async_pipeline_readiness"]
         self.assertEqual({"assistant": 2, "tool": 1}, debug_readiness["pending_source_roles"])
         self.assertEqual({"after_llm": 1}, debug_readiness["pending_source_hook_types"])
