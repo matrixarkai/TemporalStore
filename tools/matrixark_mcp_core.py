@@ -6293,6 +6293,22 @@ def normalized_role_int_map(raw: Any) -> Json:
     return normalized
 
 
+def normalized_string_int_map(raw: Any) -> Json:
+    if not isinstance(raw, dict):
+        return {}
+    normalized: Json = {}
+    for key, value in raw.items():
+        key_name = str(key or "").strip().lower()
+        if not key_name:
+            continue
+        try:
+            amount = int(value or 0)
+        except (TypeError, ValueError):
+            continue
+        normalized[key_name] = int(normalized.get(key_name, 0)) + amount
+    return normalized
+
+
 def ordered_normalized_role_list(raw: Any) -> list[str]:
     if not isinstance(raw, list):
         return []
@@ -6491,6 +6507,7 @@ def memory_hierarchy_contract_from_recall_policy(recall_policy: Json) -> Json:
     cross_session = recall_policy.get("cross_session") if isinstance(recall_policy.get("cross_session"), dict) else {}
     shared_context = recall_policy.get("shared_context") if isinstance(recall_policy.get("shared_context"), dict) else {}
     source_role_budget = recall_policy.get("source_role_budget") if isinstance(recall_policy.get("source_role_budget"), dict) else {}
+    memory_layer_budget = recall_policy.get("memory_layer_budget_policy") if isinstance(recall_policy.get("memory_layer_budget_policy"), dict) else {}
     return {
         "models": {
             "session_entity": {
@@ -6528,12 +6545,18 @@ def memory_hierarchy_contract_from_recall_policy(recall_policy: Json) -> Json:
         "source_role_budget_tokens": normalized_role_int_map(source_role_budget.get("budget_tokens")),
         "source_role_selected_tokens_by_role": normalized_role_int_map(source_role_budget.get("selected_tokens_by_role")),
         "source_role_selected_ref_count_by_role": normalized_role_int_map(source_role_budget.get("selected_ref_count_by_role")),
+        "memory_layer_budget_enabled": memory_layer_budget.get("enabled"),
+        "memory_layer_budget_mode": memory_layer_budget.get("mode"),
+        "memory_layer_budget_tokens": normalized_string_int_map(memory_layer_budget.get("budget_tokens")),
+        "memory_layer_selected_tokens_by_layer": normalized_string_int_map(memory_layer_budget.get("selected_tokens_by_layer")),
+        "memory_layer_selected_ref_count_by_layer": normalized_string_int_map(memory_layer_budget.get("selected_ref_count_by_layer")),
         "selected_ref_flow": [
             "local_context_budget",
             "same_session_memory",
             "profile_entity_bridge",
             "bounded_cross_session_evidence",
             "source_role_budget_gate",
+            "memory_layer_budget_gate",
             "summary_or_compression",
             "shared_resource_or_skill",
         ],
