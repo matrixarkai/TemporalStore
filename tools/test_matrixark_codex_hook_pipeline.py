@@ -5336,6 +5336,71 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(coverage["compact_scope_recovery_enabled"])
             self.assertGreaterEqual(coverage["entity_embedding_vectors"], 1)
 
+    def test_batch_extract_promotes_every_entity_when_profile_scope_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-promote-all.jsonl")
+            result = adapter.batch_extract(
+                {
+                    "scope": {
+                        "account_id": "acct_promote_all",
+                        "tenant_id": "tenant_promote_all",
+                        "user_id": "user_promote_all",
+                        "session_id": "session_promote_all",
+                    },
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Plain low-signal note without a durable preference keyword.",
+                        }
+                    ],
+                    "metadata": {
+                        "hook_type": "before_llm",
+                        "codex_event": "UserPromptSubmit",
+                        "importance": 0.01,
+                    },
+                    "threshold_messages": 1,
+                    "skip_prior_context": True,
+                }
+            )
+
+            self.assertEqual("accepted", result["status"])
+            self.assertEqual("always_when_profile_scope_available", result["profile_promotion_policy"])
+            self.assertFalse(result["profile_promotion_importance_gate"])
+            self.assertEqual("", result["profile_promotion_blocker"])
+            self.assertTrue(result["profile_promotion_scope_available"])
+            self.assertGreaterEqual(result["entities_written"], 1)
+            self.assertEqual(result["entities_written"], result["profile_entities_written"])
+            self.assertEqual(result["entities_written"], len(result["profile_promotion_summary"]))
+
+            records = adapter.read_all()
+            session_entities = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("batch_id_hash") == result["batch_id_hash"]
+                and record.get("memory_scope") == "session"
+            ]
+            profile_entities = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("batch_id_hash") == result["batch_id_hash"]
+                and record.get("memory_scope") == "user_profile"
+            ]
+            self.assertEqual(len(session_entities), len(profile_entities))
+            self.assertTrue(all(float(record.get("confidence") or 0.0) <= 0.6 for record in session_entities))
+            self.assertTrue(
+                all(
+                    record.get("session_continuity") == "cross_session"
+                    and record.get("promoted_from_memory_scope") == "session"
+                    and record.get("profile_promotion_policy") == "always_when_profile_scope_available"
+                    and record.get("profile_promotion_importance_gate") is False
+                    and record.get("profile_promotion_blocker") == ""
+                    for record in profile_entities
+                )
+            )
+            self.assertTrue(result["summary_refresh"]["profile_dirty_hashes"])
+
 
     def test_lightweight_async_ingest_threshold_and_idle_commit_flush_session_buffer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
