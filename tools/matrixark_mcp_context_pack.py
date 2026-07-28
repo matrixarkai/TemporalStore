@@ -1008,19 +1008,24 @@ def _bound_prebuilt_serving_lineage_item(item: Json) -> Json:
             compact[field] = compact_counts
         else:
             compact.pop(field, None)
+    value = compact.get("source_entity_hashes")
+    if isinstance(value, list) and value:
+        compact["source_entity_count"] = len(value)
+        compact.pop("source_entity_hashes", None)
     return compact
 
 
 def compact_prebuilt_serving_groups(groups: list[Json], *, include_debug: bool = False) -> list[Json]:
+    include_lineage = debug_lineage_enabled(include_debug=include_debug)
     compact_groups: list[Json] = []
     for group in groups:
         if not isinstance(group, dict):
             continue
-        compact_group = _bound_prebuilt_serving_lineage_item(group) if include_debug else strip_default_debug_lineage_fields(group)
+        compact_group = _bound_prebuilt_serving_lineage_item(group) if include_lineage else strip_default_debug_lineage_fields(group)
         items = group.get("items")
         if isinstance(items, list):
             compact_group["items"] = [
-                _bound_prebuilt_serving_lineage_item(item) if include_debug else strip_default_debug_lineage_fields(item)
+                _bound_prebuilt_serving_lineage_item(item) if include_lineage else strip_default_debug_lineage_fields(item)
                 for item in items
                 if isinstance(item, dict)
             ]
