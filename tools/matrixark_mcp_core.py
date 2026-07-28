@@ -6309,8 +6309,6 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         "extraction_phase",
         "final_session_boundary",
         "profile_current_state_representative",
-        "profile_promotion_policy",
-        "profile_promotion_blocker",
     ]:
         value = ref.get(field)
         if value not in (None, "", [], {}):
