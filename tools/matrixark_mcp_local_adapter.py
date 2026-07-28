@@ -7904,7 +7904,12 @@ class MatrixArkLocalAdapter:
                         "token_estimate": ref_tokens,
                         "packing_score": round(packing_sort_key(candidate, question_type)[0], 6),
                         "packing_policy": question_type,
-                        "budget_memory_layer": "summary",
+                        "budget_memory_layer": (
+                            "profile_summary"
+                            if candidate.get("memory_scope") == "user_profile"
+                            and candidate.get("session_continuity") == "cross_session"
+                            else "summary"
+                        ),
                     }
                 )
                 used_context_tokens += ref_tokens

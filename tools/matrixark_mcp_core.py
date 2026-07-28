@@ -5392,6 +5392,8 @@ def candidate_memory_layer_name(candidate: Json) -> str:
             return "cross_session_segment"
         return "session_neutral_segment"
     if ref_type == "event":
+        if is_pending_async_candidate(candidate):
+            return "pending_async_event"
         if session_continuity == "same_session":
             return "same_session_event"
         if session_continuity == "cross_session":
@@ -5440,6 +5442,10 @@ def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate:
         "extraction_phase",
         "entity_type",
         "entity_name",
+        "event_type",
+        "classification",
+        "extraction_status",
+        "extraction_mode",
         "source_roles",
         "source_role_counts",
         "budget_source_roles",
