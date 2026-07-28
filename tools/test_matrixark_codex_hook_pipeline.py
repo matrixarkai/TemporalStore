@@ -6227,6 +6227,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(record.get("session_continuity") == "cross_session" for record in profile_dirty_records))
             self.assertTrue(all("user_profile" in record.get("source_memory_scopes", []) for record in profile_dirty_records))
             self.assertTrue(all("cross_session" in record.get("source_session_continuities", []) for record in profile_dirty_records))
+            self.assertTrue(
+                all(
+                    "always_when_profile_scope_available" in record.get("source_profile_promotion_policies", [])
+                    for record in profile_dirty_records
+                )
+            )
+            self.assertTrue(all(not record.get("source_profile_promotion_blockers") for record in profile_dirty_records))
             self.assertTrue(any(record.get("source_role_counts", {}).get("assistant", 0) >= 1 for record in profile_dirty_records))
             self.assertTrue(any(record.get("source_role_counts", {}).get("tool", 0) >= 1 for record in profile_dirty_records))
             self.assertTrue(any(record.get("source_hook_type_counts", {}).get("hook_boundary", 0) >= 1 for record in profile_dirty_records))
@@ -6272,6 +6279,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("user_profile", refreshed_profile["source_memory_scopes"])
             self.assertIn("cross_session", refreshed_profile["source_session_continuities"])
             self.assertIn("final", refreshed_profile["source_extraction_phases"])
+            self.assertIn("always_when_profile_scope_available", refreshed_profile["source_profile_promotion_policies"])
+            self.assertEqual([], refreshed_profile["source_profile_promotion_blockers"])
             self.assertGreaterEqual(refreshed_profile["source_final_session_boundary_count"], 1)
             records = adapter.read_all()
             profile_summaries = [
@@ -6293,6 +6302,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(any("user_profile" in record.get("source_memory_scopes", []) for record in profile_summaries))
             self.assertTrue(any("cross_session" in record.get("source_session_continuities", []) for record in profile_summaries))
             self.assertTrue(any("final" in record.get("source_extraction_phases", []) for record in profile_summaries))
+            self.assertTrue(
+                any(
+                    "always_when_profile_scope_available" in record.get("source_profile_promotion_policies", [])
+                    for record in profile_summaries
+                )
+            )
+            self.assertTrue(all(not record.get("source_profile_promotion_blockers") for record in profile_summaries))
             self.assertTrue(any(record.get("source_final_session_boundary_count", 0) >= 1 for record in profile_summaries))
             summary_index_names = {
                 str(record.get("index_name") or "")
@@ -6310,6 +6326,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("memory_scope:user_profile", summary_index_names)
             self.assertIn("session_continuity:cross_session", summary_index_names)
             self.assertIn("extraction_phase:final", summary_index_names)
+            self.assertIn("profile_promotion_policy:always_when_profile_scope_available", summary_index_names)
             self.assertIn("entity_type:assistant_decision", summary_index_names)
             self.assertIn("entity_type:tool_evidence", summary_index_names)
             profile_entity_hashes_by_type = {

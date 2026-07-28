@@ -4441,6 +4441,8 @@ def candidate_index_terms(
             ("source_memory_scopes", "memory_scope"),
             ("source_session_continuities", "session_continuity"),
             ("source_extraction_phases", "extraction_phase"),
+            ("source_profile_promotion_policies", "profile_promotion_policy"),
+            ("source_profile_promotion_blockers", "profile_promotion_blocker"),
         ]:
             for value in record.get(field, [])[:16] if isinstance(record.get(field), list) else []:
                 terms.add(context_index_name(prefix, value))
