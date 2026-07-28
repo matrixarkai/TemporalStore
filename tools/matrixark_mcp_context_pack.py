@@ -322,6 +322,7 @@ def compact_context_pack_policy(policy: Any) -> Json:
         for field in keep_fields
         if policy.get(field) not in (None, "", [], {})
     }
+    is_layer_policy = isinstance(policy.get("selected_tokens_by_layer"), dict) or isinstance(policy.get("selected_ref_count_by_layer"), dict)
     for field in [
         "selected_ref_count",
         "selected_session_count",
@@ -342,7 +343,25 @@ def compact_context_pack_policy(policy: Any) -> Json:
     ]:
         value = policy.get(field)
         if isinstance(value, dict) and value:
-            compact[field] = _compact_role_count_map(value, include_zero=True)
+            if field == "budget_tokens" and is_layer_policy:
+                compact[field] = {
+                    str(key): int(amount)
+                    for key, amount in value.items()
+                    if str(key or "").strip() and isinstance(amount, int)
+                }
+            else:
+                compact[field] = _compact_role_count_map(value, include_zero=True)
+    for field in [
+        "selected_tokens_by_layer",
+        "selected_ref_count_by_layer",
+    ]:
+        value = policy.get(field)
+        if isinstance(value, dict) and value:
+            compact[field] = {
+                str(key): int(amount)
+                for key, amount in value.items()
+                if str(key or "").strip() and isinstance(amount, int)
+            }
     return compact
 
 
@@ -368,7 +387,7 @@ def compact_dropped_refs_for_context_pack(dropped: Json, *, include_debug: bool 
         value = dropped.get(field)
         if value not in (None, "", [], {}):
             compact[field] = value
-    for field in ["cross_session_policy", "shared_context_policy", "source_role_budget_policy"]:
+    for field in ["cross_session_policy", "shared_context_policy", "source_role_budget_policy", "memory_layer_budget_policy"]:
         value = compact_context_pack_policy(dropped.get(field))
         if value:
             compact[field] = value

@@ -5271,6 +5271,46 @@ def is_resource_or_skill_candidate(candidate: Json) -> bool:
     return ref_type in {"resource_chunk", "skill_section"} or context_class in {"resource_fact", "resource_entity_fact"}
 
 
+def candidate_memory_layer_name(candidate: Json) -> str:
+    ref_type = str(candidate.get("ref_type") or "")
+    context_class = str(candidate.get("context_class") or ref_type)
+    memory_scope = str(candidate.get("memory_scope") or "")
+    session_continuity = str(candidate.get("session_continuity") or "")
+    if context_class == "resource_entity_fact":
+        return "resource_entity_fact"
+    if context_class == "resource_fact":
+        return "resource_fact"
+    if ref_type == "resource_chunk":
+        return "resource_chunk"
+    if ref_type == "skill_section":
+        return "skill_section"
+    if ref_type == "compression" or context_class == "compression":
+        return "compression"
+    if ref_type == "summary" or context_class == "summary":
+        return "summary"
+    if ref_type == "segment":
+        if session_continuity == "same_session":
+            return "same_session_segment"
+        if session_continuity == "cross_session":
+            return "cross_session_segment"
+        return "session_neutral_segment"
+    if ref_type == "event":
+        if session_continuity == "same_session":
+            return "same_session_event"
+        if session_continuity == "cross_session":
+            return "cross_session_event"
+        return "session_neutral_event"
+    if ref_type == "entity":
+        if memory_scope == "user_profile":
+            return "profile_entity"
+        if session_continuity == "same_session":
+            return "same_session_entity"
+        if session_continuity == "cross_session":
+            return "cross_session_entity"
+        return "session_entity"
+    return context_class or ref_type or "unknown"
+
+
 def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate: int) -> Json:
     metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
     audit_ref = {
@@ -5307,6 +5347,8 @@ def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate:
         "source_role_counts",
         "budget_source_roles",
         "budget_source_role_counts",
+        "budget_memory_layer",
+        "memory_layer_budget_capped_layer",
         "source_hook_types",
         "source_hook_type_counts",
         "source_codex_events",
@@ -5467,6 +5509,7 @@ def select_token_budgeted_refs(
     cross_session_policy: Json | None = None,
     shared_context_policy: Json | None = None,
     source_role_budget_tokens: Json | None = None,
+    memory_layer_budget_tokens: Json | None = None,
 ) -> tuple[list[Json], int, Json]:
     duplicate_text_hashes = duplicate_text_hashes or set()
     remote_budget = max(0, max_context_tokens - max(0, reserved_tokens))
@@ -5522,6 +5565,21 @@ def select_token_budgeted_refs(
             normalized_source_role_budget_tokens[role_name] = budget_tokens
     source_role_used_tokens: Json = {role: 0 for role in normalized_source_role_budget_tokens}
     source_role_selected_ref_counts: Json = {role: 0 for role in normalized_source_role_budget_tokens}
+    memory_layer_budget_tokens = memory_layer_budget_tokens if isinstance(memory_layer_budget_tokens, dict) else {}
+    normalized_memory_layer_budget_tokens: Json = {}
+    for layer, budget in memory_layer_budget_tokens.items():
+        layer_name = str(layer or "").strip().lower()
+        if not layer_name:
+            continue
+        try:
+            budget_tokens = max(0, int(budget or 0))
+        except (TypeError, ValueError):
+            budget_tokens = 0
+        if budget_tokens:
+            normalized_memory_layer_budget_tokens[layer_name] = budget_tokens
+    memory_layer_used_tokens: Json = {layer: 0 for layer in normalized_memory_layer_budget_tokens}
+    memory_layer_selected_ref_counts: Json = {layer: 0 for layer in normalized_memory_layer_budget_tokens}
+
     def candidate_source_role_names(candidate: Json) -> set[str]:
         role_names = {
             normalize_message_role(role)
@@ -5596,6 +5654,7 @@ def select_token_budgeted_refs(
         "shared_resource_budget": 0,
         "shared_skill_budget": 0,
         "source_role_budget": 0,
+        "memory_layer_budget": 0,
         "deadline": 0,
         "max_selected_refs": 0,
         "estimated_tokens": {
@@ -5611,6 +5670,7 @@ def select_token_budgeted_refs(
             "shared_resource_budget": 0,
             "shared_skill_budget": 0,
             "source_role_budget": 0,
+            "memory_layer_budget": 0,
             "deadline": 0,
             "max_selected_refs": 0,
         },
@@ -5627,6 +5687,7 @@ def select_token_budgeted_refs(
             "shared_resource_budget": "shared resource candidate exceeded the configured shared-resource token budget",
             "shared_skill_budget": "shared skill candidate exceeded the configured shared-skill token budget",
             "source_role_budget": "candidate exceeded a configured source-role token budget",
+            "memory_layer_budget": "candidate exceeded a configured memory-layer token budget",
             "deadline": "candidate was not packed because the hard retrieval deadline was reached",
             "max_selected_refs": "candidate was relevant but dropped because max_selected_refs was reached",
         },
@@ -5748,6 +5809,25 @@ def select_token_budgeted_refs(
             dropped["estimated_tokens"]["shared_skill_budget"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="shared_skill_budget", token_estimate=ref_tokens)
             continue
+        candidate_memory_layer = candidate_memory_layer_name(candidate)
+        if (
+            candidate_memory_layer in normalized_memory_layer_budget_tokens
+            and int(memory_layer_used_tokens.get(candidate_memory_layer, 0)) + ref_tokens
+            > int(normalized_memory_layer_budget_tokens[candidate_memory_layer])
+        ):
+            dropped["memory_layer_budget"] += 1
+            dropped["estimated_tokens"]["memory_layer_budget"] += ref_tokens
+            record_dropped_candidate(
+                dropped,
+                {
+                    **candidate,
+                    "budget_memory_layer": candidate_memory_layer,
+                    "memory_layer_budget_capped_layer": candidate_memory_layer,
+                },
+                reason="memory_layer_budget",
+                token_estimate=ref_tokens,
+            )
+            continue
         candidate_source_roles = candidate_source_role_names(candidate)
         capped_roles = [
             role
@@ -5777,6 +5857,7 @@ def select_token_budgeted_refs(
                 "token_estimate": ref_tokens,
                 "packing_score": round(packing_sort_key(candidate, question_type)[0], 6),
                 "packing_policy": question_type,
+                "budget_memory_layer": candidate_memory_layer,
                 "budget_source_roles": sorted(candidate_source_roles),
                 "budget_source_role_counts": candidate_budget_source_role_counts(candidate, candidate_source_roles),
             }
@@ -5794,6 +5875,9 @@ def select_token_budgeted_refs(
         if is_shared_skill_candidate(candidate):
             shared_skill_used_tokens += ref_tokens
             shared_skill_selected_ref_count += 1
+        if candidate_memory_layer in normalized_memory_layer_budget_tokens:
+            memory_layer_used_tokens[candidate_memory_layer] = int(memory_layer_used_tokens.get(candidate_memory_layer, 0)) + ref_tokens
+            memory_layer_selected_ref_counts[candidate_memory_layer] = int(memory_layer_selected_ref_counts.get(candidate_memory_layer, 0)) + 1
         for role in candidate_source_roles:
             if role in normalized_source_role_budget_tokens:
                 source_role_used_tokens[role] = int(source_role_used_tokens.get(role, 0)) + ref_tokens
@@ -5820,9 +5904,16 @@ def select_token_budgeted_refs(
         "selected_tokens_by_role": source_role_used_tokens,
         "selected_ref_count_by_role": source_role_selected_ref_counts,
     }
+    dropped["memory_layer_budget_policy"] = {
+        "enabled": bool(normalized_memory_layer_budget_tokens),
+        "budget_tokens": normalized_memory_layer_budget_tokens,
+        "selected_tokens_by_layer": memory_layer_used_tokens,
+        "selected_ref_count_by_layer": memory_layer_selected_ref_counts,
+    }
     if not selected and candidates and remote_budget > 0 and budget_fill_policy != "quality_first":
         first: Json | None = None
         first_source_roles: set[str] = set()
+        first_memory_layer = ""
         first_clipped_words: list[str] = []
         for candidate in candidates:
             if context_text_hashes(str(candidate.get("text", ""))).intersection(duplicate_text_hashes):
@@ -5830,6 +5921,13 @@ def select_token_budgeted_refs(
             clipped_words_for_candidate = tokens(str(candidate.get("text", "")))[:remote_budget]
             fallback_tokens = len(clipped_words_for_candidate)
             if fallback_tokens <= 0:
+                continue
+            candidate_memory_layer = candidate_memory_layer_name(candidate)
+            if (
+                candidate_memory_layer in normalized_memory_layer_budget_tokens
+                and int(memory_layer_used_tokens.get(candidate_memory_layer, 0)) + fallback_tokens
+                > int(normalized_memory_layer_budget_tokens[candidate_memory_layer])
+            ):
                 continue
             candidate_source_roles = candidate_source_role_names(candidate)
             if any(
@@ -5840,6 +5938,7 @@ def select_token_budgeted_refs(
                 continue
             first = candidate
             first_source_roles = candidate_source_roles
+            first_memory_layer = candidate_memory_layer
             first_clipped_words = clipped_words_for_candidate
             break
         if first is None:
@@ -5850,6 +5949,7 @@ def select_token_budgeted_refs(
                 **first,
                 "text": " ".join(clipped_words),
                 "token_estimate": len(clipped_words),
+                "budget_memory_layer": first_memory_layer,
                 "budget_source_roles": sorted(first_source_roles),
                 "budget_source_role_counts": candidate_budget_source_role_counts(first, first_source_roles),
             }
@@ -5876,6 +5976,9 @@ def select_token_budgeted_refs(
             if role in normalized_source_role_budget_tokens:
                 source_role_used_tokens[role] = int(source_role_used_tokens.get(role, 0)) + used_tokens
                 source_role_selected_ref_counts[role] = int(source_role_selected_ref_counts.get(role, 0)) + 1
+        if first_memory_layer in normalized_memory_layer_budget_tokens:
+            memory_layer_used_tokens[first_memory_layer] = int(memory_layer_used_tokens.get(first_memory_layer, 0)) + used_tokens
+            memory_layer_selected_ref_counts[first_memory_layer] = int(memory_layer_selected_ref_counts.get(first_memory_layer, 0)) + 1
         dropped["over_budget"] = max(0, len(candidates) - 1)
         for candidate in candidates[1:]:
             record_dropped_candidate(
@@ -6306,6 +6409,7 @@ def compact_context_pack_policy(policy: Any) -> Json:
         for field in keep_fields
         if policy.get(field) not in (None, "", [], {})
     }
+    is_layer_policy = isinstance(policy.get("selected_tokens_by_layer"), dict) or isinstance(policy.get("selected_ref_count_by_layer"), dict)
     for field in [
         "selected_ref_count",
         "selected_session_count",
@@ -6326,7 +6430,25 @@ def compact_context_pack_policy(policy: Any) -> Json:
     ]:
         value = policy.get(field)
         if isinstance(value, dict) and value:
-            compact[field] = normalized_role_int_map(value)
+            if field == "budget_tokens" and is_layer_policy:
+                compact[field] = {
+                    str(key): int(amount)
+                    for key, amount in value.items()
+                    if str(key or "").strip() and isinstance(amount, int) and amount
+                }
+            else:
+                compact[field] = normalized_role_int_map(value)
+    for field in [
+        "selected_tokens_by_layer",
+        "selected_ref_count_by_layer",
+    ]:
+        value = policy.get(field)
+        if isinstance(value, dict) and value:
+            compact[field] = {
+                str(key): int(amount)
+                for key, amount in value.items()
+                if str(key or "").strip() and isinstance(amount, int) and amount
+            }
     return compact
 
 
@@ -6352,7 +6474,7 @@ def compact_dropped_refs_for_context_pack(dropped: Json, *, include_debug: bool 
         value = dropped.get(field)
         if value not in (None, "", [], {}):
             compact[field] = value
-    for field in ["cross_session_policy", "shared_context_policy", "source_role_budget_policy"]:
+    for field in ["cross_session_policy", "shared_context_policy", "source_role_budget_policy", "memory_layer_budget_policy"]:
         value = compact_context_pack_policy(dropped.get(field))
         if value:
             compact[field] = value

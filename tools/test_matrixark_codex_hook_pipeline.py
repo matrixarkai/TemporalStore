@@ -65,6 +65,10 @@ class NativeCaptureLocalAdapter(MatrixArkLocalAdapter):
                 "source_role_budget": {
                     "enabled": bool(request.get("source_role_budget_tokens")),
                     "budget_tokens": request.get("source_role_budget_tokens", {}),
+                },
+                "memory_layer_budget_policy": {
+                    "enabled": bool(request.get("memory_layer_budget_tokens")),
+                    "budget_tokens": request.get("memory_layer_budget_tokens", {}),
                 }
             },
         }
@@ -731,6 +735,84 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertTrue(pressure["summary_layer_pressure"])
         self.assertTrue(pressure["summary_memory_pressure"])
         self.assertTrue(pressure["assistant_source_message_pressure"])
+
+    def test_memory_layer_budget_caps_summary_without_blocking_profile_entity(self) -> None:
+        selected, used_tokens, dropped = select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "summary",
+                    "ref_hash": 161,
+                    "text": "assistant summary says tests passed and commit was pushed",
+                    "score": 0.99,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "summary_type": "node_l0",
+                    "source_roles": ["assistant"],
+                },
+                {
+                    "ref_type": "summary",
+                    "ref_hash": 162,
+                    "text": "assistant summary contains another pushed commit decision",
+                    "score": 0.98,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "summary_type": "node_l0",
+                    "source_roles": ["assistant"],
+                },
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 163,
+                    "text": "assistant_decision: keep profile entity retrieval available",
+                    "score": 0.72,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "entity_type": "assistant_decision",
+                    "source_roles": ["assistant"],
+                },
+            ],
+            [],
+            max_context_tokens=40,
+            auxiliary_quota=0,
+            question_type="broad_exploration",
+            min_score=0.0,
+            max_selected_refs=3,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 40,
+                "max_sessions": 4,
+                "max_candidates": 4,
+                "min_entity_bridge_refs": 0,
+            },
+            memory_layer_budget_tokens={"summary": 8},
+        )
+
+        selected_hashes = [ref["ref_hash"] for ref in selected]
+        self.assertEqual(2, len(selected_hashes))
+        self.assertIn(selected_hashes[0], {161, 162})
+        self.assertEqual(163, selected_hashes[1])
+        self.assertEqual(13, used_tokens)
+        self.assertEqual("summary", selected[0]["budget_memory_layer"])
+        self.assertEqual("profile_entity", selected[1]["budget_memory_layer"])
+        self.assertEqual(1, dropped["memory_layer_budget"])
+        self.assertEqual({"summary": 8}, dropped["memory_layer_budget_policy"]["budget_tokens"])
+        self.assertEqual({"summary": 7}, dropped["memory_layer_budget_policy"]["selected_tokens_by_layer"])
+        self.assertEqual({"summary": 1}, dropped["memory_layer_budget_policy"]["selected_ref_count_by_layer"])
+        dropped_summary_hash = 161 if selected_hashes[0] == 162 else 162
+        self.assertTrue(
+            any(
+                ref.get("ref_hash") == dropped_summary_hash
+                and ref.get("drop_reason") == "memory_layer_budget"
+                and ref.get("memory_layer_budget_capped_layer") == "summary"
+                for ref in dropped["refs"]
+            ),
+            dropped["refs"],
+        )
+        compact_dropped = compact_dropped_refs_for_context_pack(dropped)
+        self.assertEqual(1, compact_dropped["memory_layer_budget"])
+        self.assertEqual(
+            {"summary": 7},
+            compact_dropped["memory_layer_budget_policy"]["selected_tokens_by_layer"],
+        )
 
     def test_current_state_retrieval_prefers_profile_entity_over_stale_session_and_summary(self) -> None:
         session_entity = {
@@ -1498,7 +1580,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "scope": scope,
                     "query": "Codex role budget",
                     "max_context_tokens": 100,
-                    "ranking": {"source_role_budget_mode": "auto"},
+                    "ranking": {"source_role_budget_mode": "auto", "memory_layer_budget_mode": "auto"},
                     "audit_mode": "off",
                     "debug_context_pack": True,
                 }
@@ -1509,6 +1591,19 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             request = adapter.native_requests[0]
             self.assertEqual({"assistant": 42, "tool": 33, "user": 57}, request["source_role_budget_tokens"])
             self.assertEqual("auto", request["source_role_budget_mode"])
+            self.assertEqual(
+                {
+                    "summary": 28,
+                    "compression": 23,
+                    "same_session_event": 42,
+                    "cross_session_event": 23,
+                    "same_session_segment": 33,
+                    "cross_session_segment": 23,
+                    "profile_entity": 38,
+                },
+                request["memory_layer_budget_tokens"],
+            )
+            self.assertEqual("auto", request["memory_layer_budget_mode"])
 
     def test_context_pack_cache_key_includes_source_role_budget_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1537,6 +1632,42 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "query": "GPU budget",
                     "max_context_tokens": 256,
                     "source_role_budget_tokens": {"assistant": 1},
+                    "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertFalse(first.get("context_pack_cache_hit", False))
+            self.assertFalse(second.get("context_pack_cache_hit", False))
+
+    def test_context_pack_cache_key_includes_memory_layer_budget_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-memory-layer-cache.jsonl")
+            scope = {
+                "account_id": "acct_memory_layer_cache",
+                "tenant_id": "tenant_memory_layer_cache",
+                "user_id": "user_memory_layer_cache",
+                "session_id": "session_memory_layer_cache",
+            }
+
+            first = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "summary budget",
+                    "max_context_tokens": 256,
+                    "memory_layer_budget_tokens": {"summary": 128},
+                    "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+            second = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "summary budget",
+                    "max_context_tokens": 256,
+                    "memory_layer_budget_tokens": {"summary": 1},
                     "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
                     "audit_mode": "off",
                     "debug_context_pack": True,
@@ -1750,7 +1881,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "session_scope": "prefer",
                     "query": "What extraction and test evidence should be remembered?",
                     "max_context_tokens": 120,
-                    "ranking": {"max_selected_refs": 5, "min_similarity_score": 0.0, "source_role_budget_mode": "auto"},
+                    "ranking": {
+                        "max_selected_refs": 5,
+                        "min_similarity_score": 0.0,
+                        "source_role_budget_mode": "auto",
+                        "memory_layer_budget_mode": "auto",
+                    },
                     "audit_mode": "off",
                     "debug_context_pack": True,
                 }
@@ -1762,6 +1898,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(role_policy["derived"])
             self.assertEqual(114, role_policy["remote_budget_tokens"])
             self.assertEqual({"assistant": 51, "tool": 39, "user": 68}, role_policy["budget_tokens"])
+            layer_policy = pack["recall_policy"]["memory_layer_budget_policy"]
+            self.assertTrue(layer_policy["enabled"])
+            self.assertEqual("auto", layer_policy["mode"])
+            self.assertTrue(layer_policy["derived"])
+            self.assertEqual(114, layer_policy["remote_budget_tokens"])
+            self.assertEqual(34, layer_policy["budget_tokens"]["summary"])
+            self.assertEqual(45, layer_policy["budget_tokens"]["profile_entity"])
 
     def run_hook(self, repo: Path, event_log: Path, *, event: str, payload: dict, query: str = "") -> dict:
         cmd = [

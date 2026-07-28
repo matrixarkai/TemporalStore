@@ -3494,6 +3494,7 @@ def main() -> int:
                     "audit_sample_rate": 0.0,
                     "ranking": {
                         "source_role_budget_mode": "auto",
+                        "memory_layer_budget_mode": "auto",
                     },
                     "metadata": {
                         "retrieval_source": "codex_hook_retrieve",
