@@ -75,6 +75,13 @@ class NativeCaptureLocalAdapter(MatrixArkLocalAdapter):
                 "memory_layer_budget_policy": {
                     "enabled": bool(request.get("memory_layer_budget_tokens")),
                     "budget_tokens": request.get("memory_layer_budget_tokens", {}),
+                    "mode": request.get("memory_layer_budget_mode"),
+                    "derived": request.get("memory_layer_budget_mode") in {
+                        "auto",
+                        "balanced",
+                        "codex_auto",
+                        "pre_retrieval_summary_refresh_balanced",
+                    },
                 }
             },
         }
@@ -1838,6 +1845,58 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 request["memory_layer_budget_tokens"],
             )
             self.assertEqual("auto", request["memory_layer_budget_mode"])
+
+    def test_invalid_pre_retrieval_summary_refresh_limit_env_does_not_break_import(self) -> None:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = "tools"
+        env["MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT"] = "not-an-int"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import matrixark_mcp_local_adapter as m; print(m.PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT)",
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            env=env,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual("2", result.stdout.strip())
+
+    def test_pre_retrieval_summary_refresh_derives_balanced_layer_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-pre-refresh-budget.jsonl")
+            scope = {
+                "account_id": "acct_native_pre_refresh_budget",
+                "tenant_id": "tenant_native_pre_refresh_budget",
+                "user_id": "user_native_pre_refresh_budget",
+                "session_id": "session_native_pre_refresh_budget",
+            }
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "pre refresh summary budget",
+                    "max_context_tokens": 100,
+                    "pre_retrieval_summary_refresh": True,
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertEqual("local-native-pack", pack["pack_id"])
+            self.assertEqual(1, len(adapter.native_requests))
+            request = adapter.native_requests[0]
+            self.assertEqual(
+                "pre_retrieval_summary_refresh_balanced",
+                request["memory_layer_budget_mode"],
+            )
+            self.assertEqual(23, request["memory_layer_budget_tokens"]["summary"])
+            self.assertEqual(42, request["memory_layer_budget_tokens"]["profile_entity"])
+            self.assertGreater(
+                request["memory_layer_budget_tokens"]["profile_entity"],
+                request["memory_layer_budget_tokens"]["summary"],
+            )
 
     def test_context_pack_cache_key_includes_source_role_budget_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
