@@ -1279,6 +1279,65 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertLessEqual(pack["used_context_tokens"], 100)
             self.assertTrue(any(ref.get("ref_type") == "summary" for ref in pack["selected_refs"]))
 
+    def test_pre_retrieval_refresh_can_skip_pending_new_event_dirty_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-skip-new-event-summary.jsonl")
+
+            class Server:
+                def __init__(self) -> None:
+                    self.adapter = adapter
+
+            args = Namespace(
+                event="UserPromptSubmit",
+                account_id="acct_fast_skip",
+                tenant_id="tenant_fast_skip",
+                user_id="user_fast_skip",
+                session_id="session_fast_skip_summary",
+                team="codex",
+                project="temporalstore",
+                session_commit_threshold=20,
+                idle_commit_timeout_ms=0,
+                understanding_provider="rules",
+                segment_provider="deterministic",
+            )
+            result = matrixark_codex_hook.fast_async_hook_ingest(
+                Server(),
+                args=args,
+                text="Remember that pre-retrieval summary refresh must not summarize pending current-turn raw events.",
+                role="user",
+                agent_context={"workspace_root": "/repo"},
+                hook={"session_id_source": "payload_field"},
+            )
+            self.assertGreaterEqual(result["summary_dirty_count"], 1)
+
+            skipped = adapter.refresh_summaries(
+                {
+                    "scope": {
+                        "account_id": "acct_fast_skip",
+                        "tenant_id": "tenant_fast_skip",
+                        "user_id": "user_fast_skip",
+                        "session_id": "session_fast_skip_summary",
+                    },
+                    "limit": 16,
+                    "skip_dirty_reasons": ["new_event"],
+                }
+            )
+            self.assertEqual(0, skipped.get("refreshed_count", 0))
+            self.assertFalse(any(record.get("record_type") == "context_summary" for record in adapter.read_all()))
+
+            refreshed = adapter.refresh_summaries(
+                {
+                    "scope": {
+                        "account_id": "acct_fast_skip",
+                        "tenant_id": "tenant_fast_skip",
+                        "user_id": "user_fast_skip",
+                        "session_id": "session_fast_skip_summary",
+                    },
+                    "limit": 16,
+                }
+            )
+            self.assertGreaterEqual(refreshed.get("refreshed_count", 0), 1)
+
     def test_retrieve_can_pre_refresh_dirty_summaries_before_serving(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-pre-retrieve-summary.jsonl")
@@ -2290,7 +2349,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             opt_in_refresh = opt_in_msg["retrieve"]["pre_retrieval_summary_refresh"]
             self.assertTrue(opt_in_refresh["enabled"])
             self.assertEqual(3, opt_in_refresh["requested_limit"])
-            self.assertIn(opt_in_refresh["status"], {"refreshed", "no_dirty_nodes"})
+            self.assertEqual("no_dirty_nodes", opt_in_refresh["status"])
+            self.assertEqual(0, opt_in_refresh["refreshed_count"])
             self.assertEqual(
                 opt_in_msg["retrieve"]["pre_retrieval_summary_refresh"],
                 opt_in_msg["retrieve"]["layers"]["pre_retrieval_summary_refresh"],

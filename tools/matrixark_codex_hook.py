@@ -3583,6 +3583,7 @@ def main() -> int:
                         {
                             "pre_retrieval_summary_refresh": True,
                             "pre_retrieval_summary_refresh_limit": HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT,
+                            "pre_retrieval_summary_refresh_skip_dirty_reasons": ["new_event"],
                         }
                         if HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH and args.event == "UserPromptSubmit"
                         else {}

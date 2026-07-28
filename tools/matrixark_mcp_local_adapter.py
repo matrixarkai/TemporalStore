@@ -2127,8 +2127,10 @@ class MatrixArkLocalAdapter:
         max_compression_windows_per_node: int = TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH,
         min_compression_event_age_ms: int = TIME_COMPRESSION_MIN_EVENT_AGE_MS,
         raw_event_ttl_after_compression_ms: int = TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
+        skip_dirty_reasons: set[str] | None = None,
     ) -> Json:
         refreshed_at_ms = refreshed_at_ms or now_ms()
+        skip_dirty_reasons = skip_dirty_reasons or set()
         records = self.read_all()
         completed_dirty_hashes = {
             int(record.get("dirty_hash"))
@@ -2149,6 +2151,9 @@ class MatrixArkLocalAdapter:
             except (TypeError, ValueError):
                 continue
             if dirty_hash in completed_dirty_hashes:
+                continue
+            dirty_reason = str(record.get("dirty_reason") or "").strip()
+            if dirty_reason in skip_dirty_reasons:
                 continue
             current = pending_by_node.get(node_hash)
             if current is None or int(record.get("updated_at_ms") or 0) >= int(current.get("updated_at_ms") or 0):
@@ -2644,6 +2649,11 @@ class MatrixArkLocalAdapter:
         refreshed_at_ms = args.get("refreshed_at_ms")
         if refreshed_at_ms is not None and not isinstance(refreshed_at_ms, int):
             raise MatrixArkError("refreshed_at_ms must be an integer")
+        skip_dirty_reasons = {
+            str(reason or "").strip()
+            for reason in args.get("skip_dirty_reasons", [])
+            if str(reason or "").strip()
+        } if isinstance(args.get("skip_dirty_reasons"), list) else set()
         return self.refresh_dirty_node_summaries(
             scope=scope,
             limit=limit,
@@ -2669,6 +2679,7 @@ class MatrixArkLocalAdapter:
                 TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
                 minimum=0,
             ),
+            skip_dirty_reasons=skip_dirty_reasons,
         )
 
     def latest_skill_controls(self, records: list[Json] | None = None) -> dict[int, Json]:
@@ -5867,6 +5878,11 @@ class MatrixArkLocalAdapter:
                         "scope": scope,
                         "limit": int(pre_retrieval_summary_refresh["requested_limit"]),
                         "refreshed_at_ms": now_ms(),
+                        **(
+                            {"skip_dirty_reasons": args.get("pre_retrieval_summary_refresh_skip_dirty_reasons")}
+                            if isinstance(args.get("pre_retrieval_summary_refresh_skip_dirty_reasons"), list)
+                            else {}
+                        ),
                     }
                 )
                 refreshed_count = int(refresh_result.get("refreshed_count") or 0)
