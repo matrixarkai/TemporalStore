@@ -97,11 +97,20 @@ def int_value(value: Any) -> int:
         return 0
 
 
+def bool_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def row(record: dict[str, Any], sequence: int) -> dict[str, Any]:
     hook = record.get("agent_hook") if isinstance(record.get("agent_hook"), dict) else {}
     metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
     retrieval_metrics = nested_dict(record, "retrieval_metrics")
     recall_policy = nested_dict(record, "recall_policy")
+    outputs = nested_dict(record, "outputs")
     messages = record.get("messages") if isinstance(record.get("messages"), list) else []
     role = record.get("role")
     if not role and messages and isinstance(messages[0], dict):
@@ -130,6 +139,14 @@ def row(record: dict[str, Any], sequence: int) -> dict[str, Any]:
         "source_role_counts": compact_count_map(record.get("source_role_counts") or metadata.get("source_role_counts")),
         "source_hook_type_counts": compact_count_map(record.get("source_hook_type_counts") or metadata.get("source_hook_type_counts")),
         "source_codex_event_counts": compact_count_map(record.get("source_codex_event_counts") or metadata.get("source_codex_event_counts")),
+        "profile_promotion_policy": record.get("profile_promotion_policy") or outputs.get("profile_promotion_policy") or "",
+        "profile_promotion_scope_available": bool_value(
+            record.get("profile_promotion_scope_available")
+            if "profile_promotion_scope_available" in record
+            else outputs.get("profile_promotion_scope_available")
+        ),
+        "entities_written": int_value(record.get("entities_written") or outputs.get("entities")),
+        "profile_entities_written": int_value(record.get("profile_entities_written") or outputs.get("profile_entities")),
         "selected_ref_count": int_value(
             record.get("selected_ref_count")
             or record.get("selected_refs_count")
@@ -217,6 +234,37 @@ def serving_visibility_gaps(
     return gaps
 
 
+def profile_promotion_policy_gaps(serving_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    gaps: list[dict[str, Any]] = []
+    for item in serving_records:
+        if item.get("record_type") != "context_extraction_audit":
+            continue
+        entity_count = int_value(item.get("entities_written"))
+        profile_entity_count = int_value(item.get("profile_entities_written"))
+        if entity_count <= 0:
+            continue
+        item_gaps: list[str] = []
+        if item.get("profile_promotion_scope_available"):
+            if item.get("profile_promotion_policy") != "always_when_profile_scope_available":
+                item_gaps.append("profile_promotion:policy_not_always")
+            if profile_entity_count < entity_count:
+                item_gaps.append("profile_promotion:profile_entities_less_than_session_entities")
+        elif profile_entity_count > 0:
+            item_gaps.append("profile_promotion:profile_entities_written_without_scope")
+        if item_gaps:
+            gaps.append(
+                {
+                    "sequence": item.get("sequence"),
+                    "gaps": item_gaps,
+                    "entities_written": entity_count,
+                    "profile_entities_written": profile_entity_count,
+                    "profile_promotion_policy": item.get("profile_promotion_policy") or "",
+                    "profile_promotion_scope_available": bool(item.get("profile_promotion_scope_available")),
+                }
+            )
+    return gaps
+
+
 def serving_visibility_summary(report: dict[str, Any]) -> dict[str, Any]:
     gap_backends = []
     for backend in report.get("backends", []):
@@ -292,7 +340,35 @@ def retrieval_memory_coverage_summary(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def profile_promotion_policy_summary(report: dict[str, Any]) -> dict[str, Any]:
+    gap_backends = []
+    for backend in report.get("backends", []):
+        gaps = backend.get("profile_promotion_policy_gaps") or []
+        if gaps:
+            gap_backends.append(
+                {
+                    "backend": backend.get("backend", ""),
+                    "prefix": backend.get("prefix", ""),
+                    "gaps": list(gaps),
+                }
+            )
+    return {
+        "profile_promotion_policy_pass": not gap_backends,
+        "profile_promotion_policy_gap_count": sum(
+            len(gap.get("gaps", []))
+            for backend in gap_backends
+            for gap in backend["gaps"]
+            if isinstance(gap, dict)
+        ),
+        "profile_promotion_policy_gap_backends": gap_backends,
+    }
+
+
 def require_retrieval_memory_coverage(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "required", "require"}
+
+
+def require_profile_promotion_policy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on", "required", "require"}
 
 
@@ -300,10 +376,12 @@ def strict_memory_gate_summary(report: dict[str, Any]) -> dict[str, Any]:
     serving = report.get("serving_visibility") or serving_visibility_summary(report)
     extraction = report.get("extraction_input_coverage") or extraction_input_coverage_summary(report)
     retrieval = report.get("retrieval_memory_coverage") or retrieval_memory_coverage_summary(report)
+    profile_promotion = report.get("profile_promotion_policy") or profile_promotion_policy_summary(report)
     gates = {
         "serving_visibility": bool(serving.get("serving_visibility_pass")),
         "extraction_input_coverage": bool(extraction.get("extraction_input_coverage_pass")),
         "retrieval_memory_coverage": bool(retrieval.get("retrieval_memory_coverage_pass")),
+        "profile_promotion_policy": bool(profile_promotion.get("profile_promotion_policy_pass")),
     }
     failed = [name for name, passed in gates.items() if not passed]
     return {
@@ -589,6 +667,7 @@ def summarize_backend(name: str, prefix: str, raw_count: int, raw_hot_count: int
         for batch in extraction_batches
         if batch["source_role_coverage_gaps"]
     ]
+    promotion_policy_gaps = profile_promotion_policy_gaps(serving_records)
     visibility_gaps = serving_visibility_gaps(
         serving_types=serving_types,
         context_events=context_events,
@@ -619,6 +698,8 @@ def summarize_backend(name: str, prefix: str, raw_count: int, raw_hot_count: int
         "recent_retrieval_memory_coverages": retrieval_coverages[:8],
         "retrieval_memory_coverage_status": "gap" if retrieval_memory_coverage_gaps else "ok",
         "retrieval_memory_coverage_gaps": retrieval_memory_coverage_gaps,
+        "profile_promotion_policy_status": "gap" if promotion_policy_gaps else "ok",
+        "profile_promotion_policy_gaps": promotion_policy_gaps,
         "recent_context_event_count": len(context_events),
         "recent_context_embedding_count": len(context_embeddings),
         "recent_profile_record_count": len(profile_records),
@@ -643,6 +724,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     visibility = report.get("serving_visibility") or serving_visibility_summary(report)
     extraction_coverage = report.get("extraction_input_coverage") or extraction_input_coverage_summary(report)
     retrieval_coverage = report.get("retrieval_memory_coverage") or retrieval_memory_coverage_summary(report)
+    profile_promotion = report.get("profile_promotion_policy") or profile_promotion_policy_summary(report)
     strict_gate = report.get("strict_memory_gate") or strict_memory_gate_summary(report)
     lines = [
         "# Recent Codex Hook Ingestion Workflow",
@@ -671,6 +753,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Status: `{'pass' if retrieval_coverage['retrieval_memory_coverage_pass'] else 'gap'}`",
         f"- Gap count: `{retrieval_coverage['retrieval_memory_coverage_gap_count']}`",
         f"- Gap backends: `{json.dumps(retrieval_coverage['retrieval_memory_coverage_gap_backends'], sort_keys=True)}`",
+        "",
+        "## Profile Promotion Policy Gate",
+        "",
+        f"- Status: `{'pass' if profile_promotion['profile_promotion_policy_pass'] else 'gap'}`",
+        f"- Gap count: `{profile_promotion['profile_promotion_policy_gap_count']}`",
+        f"- Gap backends: `{json.dumps(profile_promotion['profile_promotion_policy_gap_backends'], sort_keys=True)}`",
         "",
         "## What This Report Proves",
         "",
@@ -806,9 +894,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Exit nonzero when recent context-pack audits lack selected session/profile retrieval evidence.",
     )
     parser.add_argument(
+        "--require-profile-promotion-policy",
+        action="store_true",
+        help="Exit nonzero when extraction audits do not prove always-promote profile memory behavior.",
+    )
+    parser.add_argument(
         "--require-all-memory-gates",
         action="store_true",
-        help="Exit nonzero unless serving visibility, extraction input coverage, and retrieval memory coverage all pass.",
+        help="Exit nonzero unless serving visibility, extraction input, profile promotion, and retrieval gates all pass.",
     )
     return parser.parse_args(argv)
 
@@ -833,6 +926,7 @@ def main(argv: list[str] | None = None) -> None:
     report["serving_visibility"] = serving_visibility_summary(report)
     report["extraction_input_coverage"] = extraction_input_coverage_summary(report)
     report["retrieval_memory_coverage"] = retrieval_memory_coverage_summary(report)
+    report["profile_promotion_policy"] = profile_promotion_policy_summary(report)
     report["strict_memory_gate"] = strict_memory_gate_summary(report)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     OUT_JSON.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -846,6 +940,7 @@ def main(argv: list[str] | None = None) -> None:
         **report["serving_visibility"],
         **report["extraction_input_coverage"],
         **report["retrieval_memory_coverage"],
+        **report["profile_promotion_policy"],
         **report["strict_memory_gate"],
     }
     print(json.dumps(result, indent=2))
@@ -864,6 +959,11 @@ def main(argv: list[str] | None = None) -> None:
         or require_retrieval_memory_coverage(os.environ.get("MATRIXARK_REQUIRE_RETRIEVAL_MEMORY_COVERAGE"))
     ) and not report["retrieval_memory_coverage"]["retrieval_memory_coverage_pass"]:
         raise SystemExit(4)
+    if (
+        args.require_profile_promotion_policy
+        or require_profile_promotion_policy(os.environ.get("MATRIXARK_REQUIRE_PROFILE_PROMOTION_POLICY"))
+    ) and not report["profile_promotion_policy"]["profile_promotion_policy_pass"]:
+        raise SystemExit(6)
     if (
         args.require_all_memory_gates
         or require_all_memory_gates(os.environ.get("MATRIXARK_REQUIRE_ALL_MEMORY_GATES"))

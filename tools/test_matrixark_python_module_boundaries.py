@@ -208,12 +208,85 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         )
         self.assertFalse(report_mod.parse_args([]).require_extraction_input_coverage)
 
+    def test_recent_ingestion_report_tracks_profile_promotion_policy_gaps(self) -> None:
+        report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
+        broken = report_mod.summarize_backend(
+            "test",
+            "matrixark:test",
+            0,
+            0,
+            [],
+            1,
+            0,
+            [
+                {
+                    "sequence": 9,
+                    "record": {
+                        "record_type": "context_extraction_audit",
+                        "outputs": {
+                            "entities": 2,
+                            "profile_entities": 1,
+                            "profile_promotion_policy": "important_enough",
+                            "profile_promotion_scope_available": True,
+                        },
+                    },
+                }
+            ],
+        )
+
+        self.assertEqual("gap", broken["profile_promotion_policy_status"])
+        self.assertEqual(1, len(broken["profile_promotion_policy_gaps"]))
+        self.assertIn("profile_promotion:policy_not_always", broken["profile_promotion_policy_gaps"][0]["gaps"])
+        self.assertIn(
+            "profile_promotion:profile_entities_less_than_session_entities",
+            broken["profile_promotion_policy_gaps"][0]["gaps"],
+        )
+
+        healthy = report_mod.summarize_backend(
+            "test",
+            "matrixark:test",
+            0,
+            0,
+            [],
+            1,
+            0,
+            [
+                {
+                    "sequence": 10,
+                    "record": {
+                        "record_type": "context_extraction_audit",
+                        "outputs": {
+                            "entities": 2,
+                            "profile_entities": 2,
+                            "profile_promotion_policy": "always_when_profile_scope_available",
+                            "profile_promotion_scope_available": True,
+                        },
+                    },
+                }
+            ],
+        )
+        self.assertEqual("ok", healthy["profile_promotion_policy_status"])
+        self.assertEqual([], healthy["profile_promotion_policy_gaps"])
+
+    def test_recent_ingestion_report_profile_promotion_policy_requirement_flags(self) -> None:
+        report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
+
+        self.assertTrue(report_mod.require_profile_promotion_policy("1"))
+        self.assertTrue(report_mod.require_profile_promotion_policy("required"))
+        self.assertFalse(report_mod.require_profile_promotion_policy(""))
+        self.assertFalse(report_mod.require_profile_promotion_policy("false"))
+        self.assertTrue(
+            report_mod.parse_args(["--require-profile-promotion-policy"]).require_profile_promotion_policy
+        )
+        self.assertFalse(report_mod.parse_args([]).require_profile_promotion_policy)
+
     def test_recent_ingestion_report_summarizes_strict_memory_gate(self) -> None:
         report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
         healthy = {
             "serving_visibility": {"serving_visibility_pass": True},
             "extraction_input_coverage": {"extraction_input_coverage_pass": True},
             "retrieval_memory_coverage": {"retrieval_memory_coverage_pass": True},
+            "profile_promotion_policy": {"profile_promotion_policy_pass": True},
         }
 
         self.assertEqual(
@@ -229,11 +302,15 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "serving_visibility": {"serving_visibility_pass": False},
             "extraction_input_coverage": {"extraction_input_coverage_pass": True},
             "retrieval_memory_coverage": {"retrieval_memory_coverage_pass": False},
+            "profile_promotion_policy": {"profile_promotion_policy_pass": False},
         }
         summary = report_mod.strict_memory_gate_summary(broken)
 
         self.assertFalse(summary["strict_memory_gate_pass"])
-        self.assertEqual(["serving_visibility", "retrieval_memory_coverage"], summary["strict_memory_gate_failed"])
+        self.assertEqual(
+            ["serving_visibility", "retrieval_memory_coverage", "profile_promotion_policy"],
+            summary["strict_memory_gate_failed"],
+        )
         self.assertEqual("gap", summary["strict_memory_gate_status"])
 
     def test_recent_ingestion_report_strict_memory_gate_requirement_flags(self) -> None:
