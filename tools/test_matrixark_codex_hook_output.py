@@ -1374,16 +1374,16 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         )
         self.assertIn("Memory hierarchy:", additional)
         self.assertIn("user_profile/cross_session refs are long-term state", additional)
-        self.assertIn("cross_session_budget_floor_status=remote_budget_too_small_for_profile_floor", additional)
-        self.assertIn("cross_session_budget=64", additional)
-        self.assertIn("computed=64", additional)
-        self.assertIn("floor=256", additional)
-        self.assertIn("floor_applied=false", additional)
-        self.assertIn(
+        self.assertNotIn("cross_session_budget_floor_status=remote_budget_too_small_for_profile_floor", additional)
+        self.assertNotIn("cross_session_budget=64", additional)
+        self.assertNotIn("computed=64", additional)
+        self.assertNotIn("floor=256", additional)
+        self.assertNotIn("floor_applied=false", additional)
+        self.assertNotIn(
             "memory_layer_budget[summary=30,compression=25,profile_entity=40,same_session_event=45,cross_session_event=25]",
             additional,
         )
-        self.assertIn(
+        self.assertNotIn(
             "memory_layer_selected_tokens[profile_entity=18,same_session_event=12,summary=12]",
             additional,
         )
@@ -1398,6 +1398,66 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("entity_type[assistant_decision=1/22t]", additional)
         self.assertNotIn("source_role[assistant=1/22t]", additional)
         self.assertNotIn("hook_type[after_llm=1/22t]", additional)
+
+    def test_additional_context_memory_hierarchy_details_require_debug_lineage(self) -> None:
+        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
+        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
+        try:
+            additional = hook.additional_context_from_retrieve(
+                {
+                    "context_pack_id": "pack-debug-hierarchy",
+                    "used_context_tokens": 24,
+                    "recall_policy": {
+                        "cross_session": {
+                            "budget_tokens": 64,
+                            "computed_budget_tokens": 64,
+                            "budget_floor_tokens": 256,
+                            "budget_floor_applied": False,
+                            "budget_floor_status": "remote_budget_too_small_for_profile_floor",
+                        },
+                        "memory_layer_budget_policy": {
+                            "budget_tokens": {
+                                "summary": 30,
+                                "profile_entity": 40,
+                            },
+                            "selected_tokens_by_layer": {
+                                "profile_entity": 12,
+                            },
+                        },
+                        "memory_layer_budget": {
+                            "by_memory_scope": {
+                                "user_profile": {"refs": 1, "tokens": 12},
+                            },
+                            "by_session_continuity": {
+                                "cross_session": {"refs": 1, "tokens": 12},
+                            },
+                        }
+                    },
+                    "selected_refs": [
+                        {
+                            "ref_type": "entity",
+                            "memory_scope": "user_profile",
+                            "session_continuity": "cross_session",
+                            "text": "profile entity bridge",
+                            "token_estimate": 12,
+                        }
+                    ],
+                },
+                query="debug profile hierarchy",
+                local_context_count=0,
+                session_id_source="payload_field",
+            )
+        finally:
+            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
+
+        self.assertIn("Memory hierarchy:", additional)
+        self.assertIn("cross_session_budget_floor_status=remote_budget_too_small_for_profile_floor", additional)
+        self.assertIn("cross_session_budget=64", additional)
+        self.assertIn("computed=64", additional)
+        self.assertIn("floor=256", additional)
+        self.assertIn("floor_applied=false", additional)
+        self.assertIn("memory_layer_budget[summary=30,profile_entity=40]", additional)
+        self.assertIn("memory_layer_selected_tokens[profile_entity=12]", additional)
 
     def test_additional_context_layer_summary_falls_back_to_serving_refs(self) -> None:
         args = Namespace(session_id="codex-session-1")
