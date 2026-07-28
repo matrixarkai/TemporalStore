@@ -5101,7 +5101,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(2, threshold_layers["context_events"])
             self.assertGreaterEqual(threshold_layers["segments"], 1)
             self.assertGreaterEqual(threshold_layers["session_entities"], 1)
-            self.assertGreaterEqual(threshold_layers["profile_entities"], 1)
+            self.assertEqual(threshold_layers["session_entities"], threshold_layers["profile_entities"])
             self.assertGreaterEqual(threshold_layers["secondary_indexes"], 1)
             self.assertGreaterEqual(threshold_layers["summary_dirty_nodes"], 1)
             self.assertEqual("dirty_marked", threshold_layers["summary_refresh_status"])
@@ -5159,6 +5159,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(threshold_refresh["profile_summary_refresh_required"])
             threshold_promotions = second["auto_batch_extract_result"]["profile_promotion_summary"]
             self.assertGreaterEqual(len(threshold_promotions), 1)
+            self.assertEqual(second["auto_batch_extract_result"]["entities_written"], len(threshold_promotions))
+            self.assertEqual("always_when_profile_scope_available", second["auto_batch_extract_result"]["profile_promotion_policy"])
+            self.assertTrue(second["auto_batch_extract_result"]["profile_promotion_scope_available"])
             self.assertTrue(all(item.get("source_session_ids") == ["session_async"] for item in threshold_promotions))
             self.assertTrue(all(item.get("source_entity_count", 0) >= 1 for item in threshold_promotions))
             self.assertTrue(second["session_buffer"]["threshold_ready"])
@@ -5200,7 +5203,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(1, idle_layers["context_events"])
             self.assertGreaterEqual(idle_layers["segments"], 1)
             self.assertGreaterEqual(idle_layers["session_entities"], 1)
-            self.assertGreaterEqual(idle_layers["profile_entities"], 1)
+            self.assertEqual(idle_layers["session_entities"], idle_layers["profile_entities"])
             self.assertGreaterEqual(idle_layers["secondary_indexes"], 1)
             self.assertGreaterEqual(idle_layers["summary_dirty_nodes"], 1)
             self.assertEqual("dirty_marked", idle_layers["summary_refresh_status"])
@@ -5219,6 +5222,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({"PostToolUse": 1}, idle["source_codex_event_counts"])
             idle_promotions = idle["profile_promotion_summary"]
             self.assertGreaterEqual(len(idle_promotions), 1)
+            self.assertEqual(idle["entities_written"], len(idle_promotions))
+            self.assertEqual("always_when_profile_scope_available", idle["profile_promotion_policy"])
+            self.assertTrue(idle["profile_promotion_scope_available"])
             self.assertTrue(all(item.get("source_session_ids") == ["session_async"] for item in idle_promotions))
             self.assertTrue(any("tool" in item.get("source_roles", []) for item in idle_promotions))
             self.assertEqual(
@@ -5685,7 +5691,15 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("threshold", commits[0]["trigger_policy"])
             self.assertEqual("provisional", commits[0]["extraction_phase"])
             self.assertGreaterEqual(second["auto_batch_extract_result"].get("entities_written", 0), 1)
-            self.assertGreaterEqual(second["auto_batch_extract_result"].get("profile_entities_written", 0), 1)
+            self.assertEqual(
+                second["auto_batch_extract_result"].get("entities_written"),
+                second["auto_batch_extract_result"].get("profile_entities_written"),
+            )
+            self.assertEqual(
+                "always_when_profile_scope_available",
+                second["auto_batch_extract_result"]["profile_promotion_policy"],
+            )
+            self.assertTrue(second["auto_batch_extract_result"]["profile_promotion_scope_available"])
             session_entities = [
                 record
                 for record in records
