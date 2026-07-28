@@ -277,6 +277,15 @@ def retrieval_query_budget_plan(
         or optional_object(ranking, "memory_selection_policy_budget_tokens")
     )
     memory_selection_policy_budget_mode = "explicit" if memory_selection_policy_budget_tokens else ""
+    if not memory_selection_policy_budget_tokens:
+        memory_selection_policy_budget_tokens, memory_selection_policy_budget_mode = (
+            pre_refresh_helpers.auto_memory_selection_policy_budget_tokens(
+                args,
+                ranking,
+                remote_budget_tokens=remote_context_budget_tokens,
+                question_type=question_type,
+            )
+        )
     raw_reference_time_ms = args.get("reference_time_ms", now_ms())
     if not isinstance(raw_reference_time_ms, int):
         raise MatrixArkError("reference_time_ms must be an integer")

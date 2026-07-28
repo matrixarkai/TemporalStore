@@ -588,6 +588,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "pre_retrieval_summary_refresh_limit": 3,
                 "ranking": {
                     "source_role_budget_mode": "auto",
+                    "memory_selection_policy_budget_mode": "auto",
                 },
             },
             started_perf=0.0,
@@ -600,6 +601,15 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("assistant", request["source_role_budget_tokens"])
         self.assertEqual("pre_retrieval_summary_refresh_balanced", request["memory_layer_budget_mode"])
         self.assertIn("profile_entity", request["memory_layer_budget_tokens"])
+        self.assertEqual("auto", request["memory_selection_policy_budget_mode"])
+        self.assertEqual(
+            {
+                "selected_user_prompt": 760,
+                "selected_assistant_decision_outcome_only": 855,
+                "selected_tool_evidence_only": 570,
+            },
+            request["memory_selection_policy_budget_tokens"],
+        )
         self.assertEqual(1, len(request["pre_retrieval_refreshed_records"]))
 
     def test_moduleized_runtime_merges_pre_refreshed_summaries(self) -> None:
