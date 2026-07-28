@@ -2688,11 +2688,19 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertEqual(3, commit["committed_event_count"])
                 self.assertEqual(["assistant", "tool", "user"], commit["source_roles"])
                 self.assertEqual(
-                    ["selected_assistant_decision_outcome_only", "selected_tool_evidence_only"],
+                    [
+                        "selected_assistant_decision_outcome_only",
+                        "selected_tool_evidence_only",
+                        "selected_user_prompt",
+                    ],
                     commit["source_memory_selection_policies"],
                 )
                 self.assertEqual(
-                    {"selected_assistant_decision_outcome_only": 1, "selected_tool_evidence_only": 1},
+                    {
+                        "selected_assistant_decision_outcome_only": 1,
+                        "selected_tool_evidence_only": 1,
+                        "selected_user_prompt": 1,
+                    },
                     commit["source_memory_selection_policy_counts"],
                 )
                 self.assertGreaterEqual(commit["memory_layers_written"]["profile_entities"], 1)

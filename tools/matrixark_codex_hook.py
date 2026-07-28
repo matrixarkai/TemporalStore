@@ -2694,7 +2694,7 @@ def selected_assistant_memory_text(text: str, *, max_chars: int = 4096, max_line
 
 def codex_memory_selection_metadata(*, role: str, event: str, text: str) -> Json:
     normalized_role = normalize_message_role(role)
-    if normalized_role not in {"assistant", "tool"}:
+    if normalized_role not in {"assistant", "tool", "user"}:
         return {}
     selected_text = str(text or "")
     line_count = len([line for line in selected_text.splitlines() if line.strip()])
@@ -2703,11 +2703,16 @@ def codex_memory_selection_metadata(*, role: str, event: str, text: str) -> Json
         truncation_marker = "[tool evidence truncated]"
         max_chars = 4096
         max_lines = 80
-    else:
+    elif normalized_role == "assistant":
         policy = "selected_assistant_decision_outcome_only"
         truncation_marker = "[assistant memory truncated]"
         max_chars = 4096
         max_lines = 48
+    else:
+        policy = "selected_user_prompt"
+        truncation_marker = "[user prompt truncated]"
+        max_chars = 4096
+        max_lines = 64
     return {
         "policy": policy,
         "source_role": normalized_role,
@@ -3346,6 +3351,10 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
     lineage = hook_lineage_fields(hook)
     source_memory_scopes, source_session_continuities = pending_extraction_memory_layer_intent(scope)
     selection_metadata = codex_memory_selection_metadata(role=role, event=args.event, text=text)
+    source_memory_selection_policies = [str(selection_metadata["policy"])] if selection_metadata.get("policy") else []
+    source_memory_selection_policy_counts = {
+        str(selection_metadata["policy"]): 1,
+    } if selection_metadata.get("policy") else {}
     metadata: Json = {
         "source": "codex_hook_fast_async",
         "codex_event": args.event,
@@ -3373,6 +3382,8 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "user_id": user_id,
         "session_id": session_id,
         **lineage,
+        "source_memory_selection_policies": source_memory_selection_policies,
+        "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
         "metadata": metadata,
         "agent_hook": hook,
         "ingestion_time_ms": now,
@@ -3405,6 +3416,8 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "source_memory_scopes": source_memory_scopes,
         "source_session_continuities": source_session_continuities,
         "source_extraction_phases": ["pending_async"],
+        "source_memory_selection_policies": source_memory_selection_policies,
+        "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
         "scope": scope,
         "tenant_id": tenant_id,
         "user_id": user_id,
@@ -3425,6 +3438,8 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
             "metadata": metadata,
             "ingestion_time_ms": now,
             "storage_options": storage_options,
+            "source_memory_selection_policies": source_memory_selection_policies,
+            "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
             **lineage,
         },
         "internal_extraction": {
@@ -3465,6 +3480,8 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "source_memory_scopes": source_memory_scopes,
         "source_session_continuities": source_session_continuities,
         "source_extraction_phases": ["pending_async"],
+        "source_memory_selection_policies": source_memory_selection_policies,
+        "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
         "memory_scope": "session",
         "session_continuity": "same_session",
         "extraction_phase": "pending_async",
