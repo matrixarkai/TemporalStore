@@ -1020,6 +1020,7 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
             f"{converted.stderr.strip() or converted.stdout.strip()}"
         )
     source_limit_applied = int(args.rust_temporalstore_source_limit) > 0
+    rust_source_order_ranking = source_limit_applied or int(args.rust_temporalstore_source_limit) == 0
     if source_limit_applied:
         limit_rust_temporalstore_sources(jsonl_path, int(args.rust_temporalstore_source_limit), args.max_events)
     source_pack_size = int(getattr(args, "rust_temporalstore_source_pack_size", 0) or 0)
@@ -1029,7 +1030,7 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
     python_subset_score = score_rust_temporalstore_jsonl_with_python(
         jsonl_path,
         args.max_events,
-        use_source_order=source_limit_applied or int(args.rust_temporalstore_source_limit) == 0,
+        use_source_order=rust_source_order_ranking,
     )
     converted_case_count = int(python_subset_score.get("case_count") or 0)
     batch_size = int(getattr(args, "rust_temporalstore_batch_size", 0) or 0)
@@ -1048,7 +1049,7 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
             "TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING": "0",
             "TEMPORALSTORE_CONTEXT_BENCHMARK_COMPACT_SOURCE_REPLAY": "1",
             "TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING": "1"
-            if source_limit_applied
+            if rust_source_order_ranking
             else "0",
             "TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT": "128",
             "CARGO_TARGET_DIR": env.get(
