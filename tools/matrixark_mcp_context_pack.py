@@ -12,6 +12,10 @@ AUDIT_DEBUG_PAYLOAD = os.environ.get("MATRIXARK_AUDIT_DEBUG_PAYLOAD", "0").strip
 DEBUG_LINEAGE_PAYLOAD = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", "0").strip().lower() in {"1", "true", "yes"}
 
 
+def debug_lineage_enabled(*, include_debug: bool = False) -> bool:
+    return bool(include_debug or DEBUG_LINEAGE_PAYLOAD)
+
+
 def _clip_context_text(text: str, *, max_chars: int = 160) -> str:
     if len(text) <= max_chars:
         return text
@@ -187,7 +191,7 @@ def selected_context_class_counts(refs: list[Json]) -> Json:
     return counts
 
 
-def compact_context_pack_ref(ref: Json) -> Json:
+def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
     """Return the prompt-facing ContextPack ref shape.
 
     Audit records keep hashes, matched indexes, provider/debug fields, score
@@ -231,7 +235,7 @@ def compact_context_pack_ref(ref: Json) -> Json:
         "budget_source_role_counts",
         "source_hook_type_counts",
         "source_codex_event_counts",
-    ] if DEBUG_LINEAGE_PAYLOAD else []
+    ] if debug_lineage_enabled(include_debug=include_debug) else []
     for field in flat_debug_lineage_fields:
         value = ref.get(field)
         if isinstance(value, list) and value:
@@ -249,7 +253,7 @@ def compact_context_pack_ref(ref: Json) -> Json:
             )
             if compact_counts:
                 item[field] = compact_counts
-    if DEBUG_LINEAGE_PAYLOAD:
+    if debug_lineage_enabled(include_debug=include_debug):
         value = ref.get("source_entity_hashes")
         if isinstance(value, list) and value:
             item["source_entity_count"] = len(value)
@@ -298,9 +302,7 @@ def compact_context_pack_ref(ref: Json) -> Json:
 
 
 def compact_context_pack_refs(refs: list[Json], *, include_debug: bool = False) -> list[Json]:
-    if include_debug:
-        return refs
-    return [compact_context_pack_ref(ref) for ref in refs]
+    return [compact_context_pack_ref(ref, include_debug=include_debug) for ref in refs]
 
 
 def compact_context_pack_policy(policy: Any) -> Json:
@@ -687,7 +689,7 @@ def _default_memory_layer_for_pack(refs: list[Json]) -> str:
     return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
 
 
-def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", default_memory_layer: str = "") -> Json:
+def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", default_memory_layer: str = "", include_debug: bool = False) -> Json:
     """Return only answer-bearing fields for the serving ContextPack payload."""
     metadata = ref.get("metadata", {}) if isinstance(ref.get("metadata"), dict) else {}
     item: Json = {
@@ -735,7 +737,7 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         "source_role_counts",
         "source_hook_type_counts",
         "source_codex_event_counts",
-    ] if DEBUG_LINEAGE_PAYLOAD else []
+    ] if debug_lineage_enabled(include_debug=include_debug) else []
     for field in debug_lineage_fields:
         value = ref.get(field, metadata.get(field))
         if isinstance(value, list) and value:
@@ -749,7 +751,7 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
             compact_counts = _compact_role_count_map(value) if field == "source_role_counts" else _compact_count_map(value)
             if compact_counts:
                 item[field] = compact_counts
-    if DEBUG_LINEAGE_PAYLOAD:
+    if debug_lineage_enabled(include_debug=include_debug):
         value = ref.get("source_entity_hashes", metadata.get("source_entity_hashes"))
         if isinstance(value, list) and value:
             item["source_entity_count"] = len(value)
@@ -783,18 +785,19 @@ def default_session_continuity_for_pack(refs: list[Json]) -> str:
     return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
 
 
-def serving_refs_for_pack(refs: list[Json], *, default_session_continuity: str = "", default_memory_layer: str = "") -> list[Json]:
+def serving_refs_for_pack(refs: list[Json], *, default_session_continuity: str = "", default_memory_layer: str = "", include_debug: bool = False) -> list[Json]:
     return [
         serving_ref_for_pack(
             ref,
             default_session_continuity=default_session_continuity,
             default_memory_layer=default_memory_layer,
+            include_debug=include_debug,
         )
         for ref in refs
     ]
 
 
-def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity: str = "", default_memory_layer: str = "") -> list[Json]:
+def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity: str = "", default_memory_layer: str = "", include_debug: bool = False) -> list[Json]:
     groups: dict[tuple[str, str], Json] = {}
     order: list[tuple[str, str]] = []
     for ref in refs:
@@ -812,6 +815,7 @@ def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity:
             ref,
             default_session_continuity=default_session_continuity,
             default_memory_layer=default_memory_layer,
+            include_debug=include_debug,
         )
         groups[key]["items"].append(item)
         groups[key]["n"] += 1
@@ -851,7 +855,6 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     telemetry records when enabled. The serving pack should spend tokens on
     evidence and citations.
     """
-    _ = include_debug
     compact: Json = {"context_pack_id": pack.get("context_pack_id") or pack.get("pack_id") or ""}
     selected_refs = pack.get("selected_refs", [])
     if isinstance(selected_refs, list) and (selected_refs or not isinstance(pack.get("groups"), list)):
@@ -861,6 +864,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
             selected_refs,
             default_session_continuity=default_session_continuity,
             default_memory_layer=default_memory_layer,
+            include_debug=include_debug,
         )
         if pack.get("selected_ref_counts"):
             compact.setdefault("counts", {})["refs"] = pack.get("selected_ref_counts", {})
