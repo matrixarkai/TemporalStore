@@ -6182,13 +6182,35 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             if session_only_cross_policy:
                 self.assertEqual(0, session_only_cross_policy["budget_tokens"])
                 self.assertFalse(session_only_cross_policy["enabled"])
-            self.assertTrue(
-                any(
-                    record.get("record_type") == "context_summary_dirty"
-                    and record.get("dirty_reason") == "profile_entity_promoted"
-                    for record in records
-                )
-            )
+            profile_dirty_records = [
+                record
+                for record in records
+                if record.get("record_type") == "context_summary_dirty"
+                and record.get("dirty_reason") == "profile_entity_promoted"
+            ]
+            self.assertTrue(profile_dirty_records)
+            self.assertTrue(all(record.get("memory_scope") == "user_profile" for record in profile_dirty_records))
+            self.assertTrue(all(record.get("session_continuity") == "cross_session" for record in profile_dirty_records))
+            self.assertTrue(all("user_profile" in record.get("source_memory_scopes", []) for record in profile_dirty_records))
+            self.assertTrue(all("cross_session" in record.get("source_session_continuities", []) for record in profile_dirty_records))
+            self.assertTrue(any(record.get("source_role_counts", {}).get("assistant", 0) >= 1 for record in profile_dirty_records))
+            self.assertTrue(any(record.get("source_role_counts", {}).get("tool", 0) >= 1 for record in profile_dirty_records))
+            self.assertTrue(any(record.get("source_hook_type_counts", {}).get("hook_boundary", 0) >= 1 for record in profile_dirty_records))
+            self.assertTrue(any(record.get("source_codex_event_counts", {}).get("Stop", 0) >= 1 for record in profile_dirty_records))
+            session_dirty_records = [
+                record
+                for record in records
+                if record.get("record_type") == "context_summary_dirty"
+                and record.get("dirty_reason") == "new_event"
+                and record.get("source_ref_type") == "batch"
+                and record.get("source_batch_hash") == result["batch_id_hash"]
+            ]
+            self.assertTrue(session_dirty_records)
+            self.assertTrue(all(record.get("memory_scope") == "session" for record in session_dirty_records))
+            self.assertTrue(all(record.get("session_continuity") == "same_session" for record in session_dirty_records))
+            self.assertTrue(all(record.get("source_role_counts") == {"assistant": 1, "tool": 1, "user": 1} for record in session_dirty_records))
+            self.assertTrue(all(record.get("source_hook_type_counts") == {"hook_boundary": 3} for record in session_dirty_records))
+            self.assertTrue(all(record.get("source_codex_event_counts") == {"Stop": 3} for record in session_dirty_records))
             self.assertFalse(
                 any(
                     record.get("record_type") == "context_summary"
