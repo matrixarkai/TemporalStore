@@ -163,6 +163,25 @@ def add_source_layer_buckets(breakdown: Json, ref: Json, token_estimate: int) ->
     return source_memory_scopes, source_session_continuities, source_extraction_phases
 
 
+def add_profile_promotion_buckets(breakdown: Json, ref: Json, token_estimate: int) -> None:
+    policy_values = source_layer_values(
+        ref,
+        "source_profile_promotion_policies",
+        "profile_promotion_policy",
+        "",
+    )
+    blocker_values = source_layer_values(
+        ref,
+        "source_profile_promotion_blockers",
+        "profile_promotion_blocker",
+        "",
+    )
+    for value in policy_values:
+        add_ref_bucket(breakdown, "by_profile_promotion_policy", value, token_estimate)
+    for value in blocker_values:
+        add_ref_bucket(breakdown, "by_profile_promotion_blocker", value, token_estimate)
+
+
 def selected_ref_layer_budget(refs: list[Json]) -> Json:
     breakdown: Json = {
         "by_memory_layer": {},
@@ -213,12 +232,7 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
             add_ref_bucket(breakdown, "by_hook_type", hook_name, token_estimate)
         for event_name in source_bucket_names(ref, "source_codex_events", "source_codex_event_counts"):
             add_ref_bucket(breakdown, "by_codex_event", event_name, token_estimate)
-        promotion_policy = str(ref_value(ref, "profile_promotion_policy") or "").strip()
-        if promotion_policy:
-            add_ref_bucket(breakdown, "by_profile_promotion_policy", promotion_policy, token_estimate)
-        promotion_blocker = str(ref_value(ref, "profile_promotion_blocker") or "").strip()
-        if promotion_blocker:
-            add_ref_bucket(breakdown, "by_profile_promotion_blocker", promotion_blocker, token_estimate)
+        add_profile_promotion_buckets(breakdown, ref, token_estimate)
         for source_field, aggregate_field in [
             ("budget_source_role_counts", "source_message_counts_by_role"),
             ("source_hook_type_counts", "source_hook_counts_by_type"),
@@ -323,12 +337,7 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
             add_ref_bucket(breakdown, "by_hook_type", hook_name, token_estimate)
         for event_name in source_bucket_names(ref, "source_codex_events", "source_codex_event_counts"):
             add_ref_bucket(breakdown, "by_codex_event", event_name, token_estimate)
-        promotion_policy = str(ref_value(ref, "profile_promotion_policy") or "").strip()
-        if promotion_policy:
-            add_ref_bucket(breakdown, "by_profile_promotion_policy", promotion_policy, token_estimate)
-        promotion_blocker = str(ref_value(ref, "profile_promotion_blocker") or "").strip()
-        if promotion_blocker:
-            add_ref_bucket(breakdown, "by_profile_promotion_blocker", promotion_blocker, token_estimate)
+        add_profile_promotion_buckets(breakdown, ref, token_estimate)
         for source_field, aggregate_field in [
             ("budget_source_role_counts", "source_message_counts_by_role"),
             ("source_hook_type_counts", "source_hook_counts_by_type"),
