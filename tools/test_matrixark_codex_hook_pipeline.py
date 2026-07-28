@@ -3311,6 +3311,141 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("Ran 160 tests", selected_evidence["text"])
             self.assertNotIn("source_codex_events", selected_evidence)
 
+    def test_user_prompt_cli_idle_tool_memory_pre_refreshes_profile_summaries(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            event_log = tmp / "matrixark-cli-tool-summary-refresh.jsonl"
+            env = {
+                "MATRIXARK_SESSION_COMMIT_THRESHOLD": "20",
+                "MATRIXARK_IDLE_COMMIT_TIMEOUT_MS": "1",
+            }
+
+            first = self.run_hook(
+                repo,
+                event_log,
+                event="PostToolUse",
+                payload={
+                    "output": (
+                        "Exit code: 0\n"
+                        "Ran 164 tests in 8.40s\n"
+                        "OK\n"
+                        "tool-summary-refresh-evidence"
+                    ),
+                    "thread_id": "codex-cli-tool-summary-thread",
+                },
+                extra_env=env,
+            )
+            self.assertEqual("ok", first["status"])
+            self.assertEqual("deferred", first["ingest"]["idle_commit_result"]["status"])
+
+            time.sleep(0.01)
+            second = self.run_hook(
+                repo,
+                event_log,
+                event="UserPromptSubmit",
+                payload={
+                    "prompt": "User prompt should idle-flush prior tool evidence before profile summary retrieval.",
+                    "thread_id": "codex-cli-tool-summary-thread",
+                },
+                extra_env=env,
+            )
+            self.assertEqual("ok", second["status"])
+            idle_commit = second["ingest"]["idle_commit_result"]
+            self.assertEqual("committed", idle_commit["status"])
+            self.assertEqual("idle_timeout", idle_commit["trigger_policy"])
+            self.assertEqual(["tool"], idle_commit["source_roles"])
+            self.assertIn("PostToolUse", idle_commit["source_codex_events"])
+            self.assertEqual(idle_commit, second["ingest"]["auto_batch_extract_result"])
+
+            adapter = MatrixArkLocalAdapter(event_log)
+            scope = {
+                "account_id": "acct_hook",
+                "tenant_id": "tenant_hook",
+                "user_id": "codex_user",
+                "session_id": "codex_session_1",
+            }
+            before_refresh_records = adapter.read_all()
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_entity"
+                    and record.get("entity_type") == "tool_evidence"
+                    and record.get("memory_scope") == "user_profile"
+                    and record.get("session_continuity") == "cross_session"
+                    and "Ran 164 tests" in str(record.get("state") or "")
+                    and "tool" in record.get("source_roles", [])
+                    and "PostToolUse" in record.get("source_codex_events", [])
+                    for record in before_refresh_records
+                ),
+                before_refresh_records,
+            )
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_summary_dirty"
+                    and record.get("dirty_reason") == "profile_entity_promoted"
+                    for record in before_refresh_records
+                ),
+                before_refresh_records,
+            )
+            self.assertFalse(
+                any(
+                    record.get("record_type") == "context_summary"
+                    and record.get("node_path") == ["tenant:tenant_hook", "user:codex_user", "profile:long_term_memory"]
+                    for record in before_refresh_records
+                ),
+                before_refresh_records,
+            )
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "codex_session_2"},
+                    "session_scope": "prefer",
+                    "query": "Summarize the tool evidence that proved profile summary refresh.",
+                    "max_context_tokens": 160,
+                    "audit_mode": "off",
+                    "ranking": {
+                        "max_selected_refs": 4,
+                        "min_similarity_score": 0.0,
+                        "budget_fill_policy": "force_fill",
+                        "pre_retrieval_summary_refresh": True,
+                        "pre_retrieval_summary_refresh_limit": 8,
+                    },
+                }
+            )
+            self.assert_no_default_context_pack_debug_lineage(pack)
+            refresh = pack["pre_retrieval_summary_refresh"]
+            self.assertTrue(refresh["enabled"])
+            self.assertEqual("refreshed", refresh["status"])
+            self.assertGreaterEqual(refresh["refreshed_count"], 1)
+            self.assertLessEqual(pack["used_context_tokens"], 160)
+            self.assertTrue(any(ref.get("ref_type") == "summary" for ref in pack["selected_refs"]), pack["selected_refs"])
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "entity"
+                    and ref.get("entity_type") == "tool_evidence"
+                    and ref.get("memory_scope") == "user_profile"
+                    and "Ran 164 tests" in str(ref.get("text") or "")
+                    for ref in pack["selected_refs"]
+                ),
+                pack["selected_refs"],
+            )
+
+            records = adapter.read_all()
+            profile_summaries = [
+                record
+                for record in records
+                if record.get("record_type") == "context_summary"
+                and record.get("node_path") == ["tenant:tenant_hook", "user:codex_user", "profile:long_term_memory"]
+            ]
+            self.assertTrue(profile_summaries, records)
+            self.assertTrue(any(record.get("summary_type") == "node_l0" for record in profile_summaries))
+            self.assertTrue(any("tool" in record.get("source_roles", []) for record in profile_summaries))
+            self.assertTrue(any(record.get("source_role_counts", {}).get("tool", 0) >= 1 for record in profile_summaries))
+            self.assertTrue(any("PostToolUse" in record.get("source_codex_events", []) for record in profile_summaries))
+            self.assertTrue(any("user_profile" in record.get("source_memory_scopes", []) for record in profile_summaries))
+            self.assertTrue(any("cross_session" in record.get("source_session_continuities", []) for record in profile_summaries))
+            self.assertTrue(any("tool_evidence" in record.get("source_entity_types", []) for record in profile_summaries))
+
     def test_user_prompt_cli_idle_preflushes_previous_user_preference(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp_dir:
