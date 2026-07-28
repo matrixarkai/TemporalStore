@@ -19,6 +19,7 @@ try:
     from tools.matrixark_mcp_core import (
         _mcp_debug_log,
         memory_hierarchy_contract_from_recall_policy,
+        messages_from_event_record,
         normalize_message_role,
         serving_memory_layer_budget,
         serving_memory_layer_pressure,
@@ -30,6 +31,7 @@ except ModuleNotFoundError:
     from matrixark_mcp_core import (
         _mcp_debug_log,
         memory_hierarchy_contract_from_recall_policy,
+        messages_from_event_record,
         normalize_message_role,
         serving_memory_layer_budget,
         serving_memory_layer_pressure,
@@ -919,6 +921,7 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
     idle_commit = result.get("idle_commit_result") if isinstance(result.get("idle_commit_result"), dict) else {}
     summary: Json = {
         "pending_event_count": session_buffer.get("pending_event_count"),
+        "pending_message_count": session_buffer.get("pending_message_count"),
         "threshold_messages": session_buffer.get("threshold_messages"),
         "threshold_ready": session_buffer.get("threshold_ready"),
         "idle_timeout_ms": session_buffer.get("idle_commit_timeout_ms"),
@@ -926,7 +929,9 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         "pre_ingest_idle_ready": session_buffer.get("pre_ingest_idle_ready"),
         "pre_ingest_idle_elapsed_ms": session_buffer.get("pre_ingest_idle_elapsed_ms"),
         "pending_before_ingest_count": session_buffer.get("pending_before_ingest_count"),
+        "pending_before_ingest_message_count": session_buffer.get("pending_before_ingest_message_count"),
         "pending_after_ingest_count": session_buffer.get("pending_after_ingest_count"),
+        "pending_after_ingest_message_count": session_buffer.get("pending_after_ingest_message_count"),
         "commit_after_current_ingest": session_buffer.get("commit_after_current_ingest"),
         "auto_batch_extract": session_buffer.get("auto_batch_extract"),
         "boundary_commit_requested": session_buffer.get("boundary_commit_requested"),
@@ -3165,6 +3170,10 @@ def fast_hook_summary_dirty_records(
     return records
 
 
+def pending_session_message_count(records: list[Json]) -> int:
+    return sum(len(messages_from_event_record(record)) for record in records)
+
+
 def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, role: str, agent_context: Json, hook: Json | None) -> Json:
     adapter = getattr(server, "adapter", None)
     enqueue = getattr(adapter, "_enqueue_direct_write", None)
@@ -3297,12 +3306,14 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
     idle_timeout_ms = int(getattr(args, "idle_commit_timeout_ms", 0) or 0)
     pending_session_events = getattr(adapter, "pending_session_events", None)
     pending_before_ingest: list[Json] = []
+    pending_before_ingest_message_count = 0
     idle_elapsed_before_ingest_ms = 0
     if callable(pending_session_events):
         try:
             pending_before_ingest = list(pending_session_events(scope))
         except Exception:
             pending_before_ingest = []
+    pending_before_ingest_message_count = pending_session_message_count(pending_before_ingest)
     if pending_before_ingest and idle_timeout_ms > 0:
         latest_event_time = max(
             int(record.get("envelope", {}).get("ingestion_time_ms") or record.get("updated_at_ms") or 0)
@@ -3377,16 +3388,20 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
             hook=hook,
         )
     pending_event_count = 0
+    pending_message_count = 0
     if callable(pending_session_events):
         try:
-            pending_event_count = len(pending_session_events(scope))
+            pending_after_ingest = list(pending_session_events(scope))
+            pending_event_count = len(pending_after_ingest)
+            pending_message_count = pending_session_message_count(pending_after_ingest)
         except Exception:
             pending_event_count = 0
+            pending_message_count = 0
     should_boundary_commit = should_commit_session(args.event)
     should_threshold_commit = (
         not should_boundary_commit
         and auto_batch_extract_on_ingest
-        and pending_event_count >= threshold
+        and (pending_event_count >= threshold or pending_message_count >= threshold)
     )
     should_idle_commit = should_boundary_commit and commit_reason_for_event(args.event) == "idle_timeout"
     if callable(session_commit) and (should_threshold_commit or should_boundary_commit):
@@ -3453,8 +3468,11 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "session_buffer": {
             "registered": callable(append_session_buffer),
             "pending_event_count": pending_event_count,
+            "pending_message_count": pending_message_count,
             "pending_before_ingest_count": len(pending_before_ingest),
+            "pending_before_ingest_message_count": pending_before_ingest_message_count,
             "pending_after_ingest_count": pending_event_count,
+            "pending_after_ingest_message_count": pending_message_count,
             "threshold_messages": threshold,
             "threshold_ready": should_threshold_commit,
             "idle_commit_timeout_ms": idle_timeout_ms,

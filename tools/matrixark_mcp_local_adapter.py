@@ -381,8 +381,12 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
     for record in records:
         if not isinstance(record, dict):
             continue
+        record_messages = messages_from_event_record(record)
         existing_role_counts = record.get("source_role_counts") if isinstance(record.get("source_role_counts"), dict) else {}
-        if existing_role_counts:
+        if len(record_messages) > 1:
+            for message in record_messages:
+                add_count(role_counts, message.get("role"), 1)
+        elif existing_role_counts:
             for role, count in existing_role_counts.items():
                 add_count(role_counts, role, count)
         else:
@@ -395,7 +399,7 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
                 if event_role:
                     add_count(role_counts, event_role, 1)
                 else:
-                    for message in messages_from_event_record(record):
+                    for message in record_messages:
                         add_count(role_counts, message.get("role"), 1)
 
         existing_hook_counts = record.get("source_hook_type_counts") if isinstance(record.get("source_hook_type_counts"), dict) else {}
@@ -1648,6 +1652,7 @@ class MatrixArkLocalAdapter:
                 "extraction_phase": extraction_phase,
                 "final_session_boundary": final_session_boundary,
                 "pending_event_count_before_commit": pending_event_count,
+                "pending_message_count_before_commit": pending_message_count,
                 "committed_event_count": len(source_event_ids),
                 "extraction_context_event_ids": extraction_context_event_ids,
                 "extraction_context_event_count": len(extraction_context_event_ids),
@@ -1688,6 +1693,7 @@ class MatrixArkLocalAdapter:
                     "trigger_policy": trigger_policy,
                     "extraction_phase": extraction_phase,
                     "final_session_boundary": final_session_boundary,
+                    "pending_message_count_before_commit": pending_message_count,
                     "source_roles": source_roles,
                     "source_role_counts": source_role_counts,
                     "source_hook_types": source_hook_types,
@@ -1709,6 +1715,7 @@ class MatrixArkLocalAdapter:
             "storage_options": storage_options,
             "storage_route": canonical_storage_route(storage_options),
             "pending_event_count": pending_event_count,
+            "pending_message_count": pending_message_count,
             "committed_event_count": len(source_event_ids),
             "source_event_ids": source_event_ids,
             "extraction_context_event_ids": extraction_context_event_ids,
