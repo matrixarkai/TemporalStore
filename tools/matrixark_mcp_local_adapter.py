@@ -3116,8 +3116,11 @@ class MatrixArkLocalAdapter:
                             else 0,
                             "memory_layers_written": record.get("memory_layers_written", {}),
                             "source_roles": record.get("source_roles", []),
+                            "source_role_counts": record.get("source_role_counts", {}),
                             "source_hook_types": record.get("source_hook_types", []),
+                            "source_hook_type_counts": record.get("source_hook_type_counts", {}),
                             "source_codex_events": record.get("source_codex_events", []),
+                            "source_codex_event_counts": record.get("source_codex_event_counts", {}),
                             "created_at_ms": record.get("created_at_ms", 0),
                         }
                     )
@@ -3133,6 +3136,16 @@ class MatrixArkLocalAdapter:
                             "source_ref_type": record.get("source_ref_type", ""),
                             "source_batch_hash": record.get("source_batch_hash", 0),
                             "source_entity_hash": record.get("source_entity_hash", 0),
+                            "source_event_hash": record.get("source_event_hash", 0),
+                            "source_roles": record.get("source_roles", []),
+                            "source_role_counts": record.get("source_role_counts", {}),
+                            "source_hook_types": record.get("source_hook_types", []),
+                            "source_hook_type_counts": record.get("source_hook_type_counts", {}),
+                            "source_codex_events": record.get("source_codex_events", []),
+                            "source_codex_event_counts": record.get("source_codex_event_counts", {}),
+                            "source_memory_scopes": record.get("source_memory_scopes", []),
+                            "source_session_continuities": record.get("source_session_continuities", []),
+                            "source_extraction_phases": record.get("source_extraction_phases", []),
                             "updated_at_ms": record.get("updated_at_ms", record.get("created_at_ms", 0)),
                         }
                     )
@@ -3160,16 +3173,22 @@ class MatrixArkLocalAdapter:
                         return int(memory_layers_written.get(name, 0) or 0)
                     except (TypeError, ValueError):
                         return 0
-                source_memory_scopes = []
-                if layer_count("session_entities") > 0:
-                    source_memory_scopes.append("session")
-                if layer_count("profile_entities") > 0:
-                    source_memory_scopes.append("user_profile")
-                source_session_continuities = []
-                if layer_count("same_session_entities") > 0:
-                    source_session_continuities.append("same_session")
-                if layer_count("cross_session_entities") > 0:
-                    source_session_continuities.append("cross_session")
+                source_memory_scopes = record.get("source_memory_scopes", [])
+                if not isinstance(source_memory_scopes, list):
+                    source_memory_scopes = []
+                if not source_memory_scopes:
+                    if layer_count("session_entities") > 0:
+                        source_memory_scopes.append("session")
+                    if layer_count("profile_entities") > 0:
+                        source_memory_scopes.append("user_profile")
+                source_session_continuities = record.get("source_session_continuities", [])
+                if not isinstance(source_session_continuities, list):
+                    source_session_continuities = []
+                if not source_session_continuities:
+                    if layer_count("same_session_entities") > 0:
+                        source_session_continuities.append("same_session")
+                    if layer_count("cross_session_entities") > 0:
+                        source_session_continuities.append("cross_session")
                 rows.append(
                     {
                         "row_type": record_type,
@@ -3191,8 +3210,11 @@ class MatrixArkLocalAdapter:
                         "extraction_phase": record.get("extraction_phase", ""),
                         "final_session_boundary": bool(record.get("final_session_boundary", False)),
                         "source_roles": source_roles,
+                        "source_role_counts": record.get("source_role_counts", {}),
                         "source_hook_types": source_hook_types,
+                        "source_hook_type_counts": record.get("source_hook_type_counts", {}),
                         "source_codex_events": source_codex_events,
+                        "source_codex_event_counts": record.get("source_codex_event_counts", {}),
                         "memory_layers_written": memory_layers_written,
                         "source_memory_scopes": source_memory_scopes,
                         "source_session_continuities": source_session_continuities,
