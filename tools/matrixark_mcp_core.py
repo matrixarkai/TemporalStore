@@ -4445,6 +4445,7 @@ def candidate_index_terms(
         for field, prefix in [
             ("source_hook_types", "hook_type"),
             ("source_codex_events", "codex_event"),
+            ("source_memory_selection_policies", "memory_selection_policy"),
             ("source_memory_scopes", "memory_scope"),
             ("source_session_continuities", "session_continuity"),
             ("source_extraction_phases", "extraction_phase"),
@@ -4456,6 +4457,7 @@ def candidate_index_terms(
         for field, prefix in [
             ("source_hook_type_counts", "hook_type"),
             ("source_codex_event_counts", "codex_event"),
+            ("source_memory_selection_policy_counts", "memory_selection_policy"),
         ]:
             counts = record.get(field)
             if not isinstance(counts, dict):
