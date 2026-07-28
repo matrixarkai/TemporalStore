@@ -1209,7 +1209,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         if isinstance(recall_policy.get("memory_layer_budget"), dict)
         else {}
     )
-    if isinstance(memory_layer_budget, dict) and memory_layer_budget:
+    if debug_lineage_enabled(include_debug=include_debug) and isinstance(memory_layer_budget, dict) and memory_layer_budget:
         compact["memory_layer_budget"] = serving_memory_layer_budget(memory_layer_budget)
     dropped_memory_layer_budget = (
         retrieval_metrics.get("dropped_memory_layer_budget")
@@ -1218,7 +1218,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         if isinstance(recall_policy.get("dropped_memory_layer_budget"), dict)
         else {}
     )
-    if isinstance(dropped_memory_layer_budget, dict) and dropped_memory_layer_budget:
+    if debug_lineage_enabled(include_debug=include_debug) and isinstance(dropped_memory_layer_budget, dict) and dropped_memory_layer_budget:
         compact["dropped_memory_layer_budget"] = serving_memory_layer_budget(dropped_memory_layer_budget)
     memory_layer_pressure = (
         retrieval_metrics.get("memory_layer_pressure")
@@ -1227,7 +1227,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         if isinstance(recall_policy.get("memory_layer_pressure"), dict)
         else {}
     )
-    if isinstance(memory_layer_pressure, dict) and memory_layer_pressure:
+    if debug_lineage_enabled(include_debug=include_debug) and isinstance(memory_layer_pressure, dict) and memory_layer_pressure:
         compact["memory_layer_pressure"] = serving_memory_layer_pressure(memory_layer_pressure)
     async_pipeline_readiness = (
         retrieval_metrics.get("async_pipeline_readiness")
@@ -1236,7 +1236,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         if isinstance(recall_policy.get("async_pipeline_readiness"), dict)
         else {}
     )
-    if isinstance(async_pipeline_readiness, dict) and async_pipeline_readiness:
+    if debug_lineage_enabled(include_debug=include_debug) and isinstance(async_pipeline_readiness, dict) and async_pipeline_readiness:
         compact["async_pipeline_readiness"] = serving_async_pipeline_readiness(
             async_pipeline_readiness,
             include_debug=include_debug,
@@ -1248,7 +1248,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         if isinstance(recall_policy.get("pre_retrieval_summary_refresh"), dict)
         else {}
     )
-    if isinstance(pre_retrieval_summary_refresh, dict) and pre_retrieval_summary_refresh:
+    if debug_lineage_enabled(include_debug=include_debug) and isinstance(pre_retrieval_summary_refresh, dict) and pre_retrieval_summary_refresh:
         compact["pre_retrieval_summary_refresh"] = {
             field: pre_retrieval_summary_refresh.get(field)
             for field in [

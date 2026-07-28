@@ -1783,12 +1783,16 @@ def codex_hook_output(
         "budget": retrieval_budget_summary_from_retrieve(retrieve),
         "budget_pressure": retrieval_budget_pressure_from_retrieve(retrieve),
         "layers": retrieval_layer_summary_from_retrieve(retrieve, emitted_refs),
-        "pre_retrieval_summary_refresh": retrieval_pre_summary_refresh_from_retrieve(retrieve),
-        "async_pipeline_readiness": retrieval_async_readiness_from_retrieve(retrieve),
         "session_identity": retrieval_session_identity_from_retrieve(retrieve, session_id_source=session_id_source),
         "rendered_context_chars": len(rendered_context),
         "additional_context_emitted": False,
     }
+    pre_retrieval_summary_refresh = retrieval_pre_summary_refresh_from_retrieve(retrieve)
+    if pre_retrieval_summary_refresh:
+        retrieve_summary["pre_retrieval_summary_refresh"] = pre_retrieval_summary_refresh
+    async_pipeline_readiness = retrieval_async_readiness_from_retrieve(retrieve)
+    if async_pipeline_readiness:
+        retrieve_summary["async_pipeline_readiness"] = async_pipeline_readiness
     if CONTEXT_PACK_DEBUG_LINEAGE:
         retrieve_summary["memory_hierarchy"] = retrieval_memory_hierarchy_contract_from_retrieve(retrieve)
     output: Json = {
@@ -1968,14 +1972,18 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 "retrieval_budget": retrieval_budget_summary_from_retrieve(result),
                 "retrieval_budget_pressure": retrieval_budget_pressure_from_retrieve(result),
                 "retrieval_layers": retrieval_layer_summary_from_retrieve(result, emitted_refs),
-                "pre_retrieval_summary_refresh": retrieval_pre_summary_refresh_from_retrieve(result),
-                "async_pipeline_readiness": retrieval_async_readiness_from_retrieve(result),
                 "session_identity": retrieval_session_identity_from_retrieve(
                     result,
                     session_id_source=str((args.get("metadata") if isinstance(args.get("metadata"), dict) else {}).get("session_id_source") or ""),
                 ),
                 "rendered_context_chars": len(sanitized_rendered_context_from_retrieve(result)),
             }
+            pre_retrieval_summary_refresh = retrieval_pre_summary_refresh_from_retrieve(result)
+            if pre_retrieval_summary_refresh:
+                retrieve_result["pre_retrieval_summary_refresh"] = pre_retrieval_summary_refresh
+            async_pipeline_readiness = retrieval_async_readiness_from_retrieve(result)
+            if async_pipeline_readiness:
+                retrieve_result["async_pipeline_readiness"] = async_pipeline_readiness
             if CONTEXT_PACK_DEBUG_LINEAGE:
                 retrieve_result["memory_hierarchy"] = retrieval_memory_hierarchy_contract_from_retrieve(result)
             item["result"] = retrieve_result
@@ -2073,8 +2081,6 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             "retrieval_budget": retrieve.get("budget"),
             "retrieval_budget_pressure": retrieve.get("budget_pressure"),
             "retrieval_layers": retrieve.get("layers"),
-            "pre_retrieval_summary_refresh": retrieve.get("pre_retrieval_summary_refresh"),
-            "async_pipeline_readiness": retrieve.get("async_pipeline_readiness"),
             "rendered_context_chars": retrieve.get("rendered_context_chars"),
             "ingest_status": ingest.get("status"),
             "auto_batch_extract_status": ingest.get("auto_batch_extract_status"),
@@ -2085,6 +2091,10 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             "commit_status": commit.get("status"),
             "session_commit": session_commit_summary(commit),
         }
+        if retrieve.get("pre_retrieval_summary_refresh"):
+            output_summary["pre_retrieval_summary_refresh"] = retrieve.get("pre_retrieval_summary_refresh")
+        if retrieve.get("async_pipeline_readiness"):
+            output_summary["async_pipeline_readiness"] = retrieve.get("async_pipeline_readiness")
         if CONTEXT_PACK_DEBUG_LINEAGE and memory_lineage:
             output_summary["memory_lineage"] = memory_lineage
         if CONTEXT_PACK_DEBUG_LINEAGE and retrieve.get("memory_hierarchy"):

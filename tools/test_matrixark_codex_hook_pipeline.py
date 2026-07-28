@@ -233,15 +233,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual("pack-debug-default", serving["context_pack_id"])
         self.assertEqual("assistant_decision", serving["groups"][0]["items"][0]["entity_type"])
         self.assertNotIn("retrieval_metrics", serving)
-        self.assertIn("by_memory_scope", serving["memory_layer_budget"])
-        self.assertNotIn("by_source_role", serving["memory_layer_budget"])
-        self.assertEqual(3, serving["async_pipeline_readiness"]["task_count"])
-        self.assertEqual({"summary": 1}, serving["async_pipeline_readiness"]["remaining_stage_counts"])
-        self.assertNotIn("pending_memory_scopes", serving["async_pipeline_readiness"])
-        self.assertEqual(
-            {"enabled": False, "status": "disabled", "requested_limit": 2, "elapsed_ms": 0.0},
-            serving["pre_retrieval_summary_refresh"],
-        )
+        for field in [
+            "memory_layer_budget",
+            "dropped_memory_layer_budget",
+            "memory_layer_pressure",
+            "async_pipeline_readiness",
+            "pre_retrieval_summary_refresh",
+        ]:
+            self.assertNotIn(field, serving)
 
         metrics_serving = compact_context_pack_for_serving({**pack, "include_retrieval_metrics": True})
         self.assertTrue(metrics_serving["include_retrieval_metrics"])
@@ -553,18 +552,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         default_serving = compact_context_pack_for_serving_flat(pack)
         self.assert_no_default_context_pack_debug_lineage(default_serving)
         self.assertNotIn("memory_hierarchy", default_serving)
-        readiness = default_serving["async_pipeline_readiness"]
-        self.assertEqual(2, readiness["task_count"])
-        self.assertEqual({"summary": 1, "embedding": 1}, readiness["remaining_stage_counts"])
-        self.assertNotIn("pending_memory_scopes", readiness)
-        dropped_budget = default_serving["dropped_memory_layer_budget"]
-        self.assertNotIn("by_source_role", dropped_budget)
-        self.assertNotIn("source_entity_lineage", dropped_budget.get("by_profile_shadowed_reason", {}))
-        self.assertNotIn("by_profile_shadowed_reason", dropped_budget)
-        pressure = default_serving["memory_layer_pressure"]
-        self.assertNotIn("by_source_role", pressure.get("by_dimension", {}))
-        self.assertNotIn("by_profile_shadowed_reason", pressure.get("by_dimension", {}))
-        self.assertNotIn("by_profile_shadowed_reason", pressure.get("dropped_dimensions", []))
+        for field in [
+            "async_pipeline_readiness",
+            "dropped_memory_layer_budget",
+            "memory_layer_pressure",
+            "memory_layer_budget",
+        ]:
+            self.assertNotIn(field, default_serving)
 
         debug_serving = compact_context_pack_for_serving_flat(pack, include_debug=True)
         self.assertIn("memory_hierarchy", debug_serving)
@@ -2965,8 +2959,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             budget = pack["retrieval_metrics"]["memory_layer_budget"]
             self.assertEqual(1, budget["by_memory_scope"]["user_profile"]["refs"])
             self.assertEqual(1, budget["by_entity_type"]["tool_evidence"]["refs"])
-            top_level_budget = pack["memory_layer_budget"]
-            self.assertEqual(budget, top_level_budget)
+            self.assertNotIn("memory_layer_budget", pack)
             for field in [
                 "by_source_role",
                 "by_hook_type",
@@ -2976,7 +2969,6 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "source_codex_event_counts_by_event",
             ]:
                 self.assertNotIn(field, budget)
-                self.assertNotIn(field, top_level_budget)
 
     def test_retrieve_source_role_budget_uses_entity_semantics_for_mixed_profile_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -3129,9 +3121,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "thread_id": "codex-refresh-default-thread",
                 },
             )
-            default_refresh = default_msg["retrieve"]["pre_retrieval_summary_refresh"]
-            self.assertFalse(default_refresh["enabled"])
-            self.assertEqual("disabled", default_refresh["status"])
+            self.assertNotIn("pre_retrieval_summary_refresh", default_msg["retrieve"])
 
             opt_in_msg = self.run_hook(
                 repo,
@@ -3146,7 +3136,23 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT": "3",
                 },
             )
-            opt_in_refresh = opt_in_msg["retrieve"]["pre_retrieval_summary_refresh"]
+            self.assertNotIn("pre_retrieval_summary_refresh", opt_in_msg["retrieve"])
+
+            debug_msg = self.run_hook(
+                repo,
+                opt_in_log,
+                event="UserPromptSubmit",
+                payload={
+                    "prompt": "User prompt: show refresh diagnostics only when debug lineage is enabled.",
+                    "thread_id": "codex-refresh-debug-thread",
+                },
+                extra_env={
+                    "MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH": "1",
+                    "MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT": "3",
+                    "MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE": "1",
+                },
+            )
+            opt_in_refresh = debug_msg["retrieve"]["pre_retrieval_summary_refresh"]
             self.assertTrue(opt_in_refresh["enabled"])
             self.assertEqual(3, opt_in_refresh["requested_limit"])
             self.assertEqual("no_dirty_nodes", opt_in_refresh["status"])
@@ -3154,14 +3160,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(opt_in_refresh["skipped_dirty_count"], 1)
             self.assertGreaterEqual(opt_in_refresh["skipped_dirty_reasons"]["new_event"], 1)
             self.assertEqual(
-                opt_in_msg["retrieve"]["pre_retrieval_summary_refresh"],
-                opt_in_msg["retrieve"]["layers"]["pre_retrieval_summary_refresh"],
+                debug_msg["retrieve"]["pre_retrieval_summary_refresh"],
+                debug_msg["retrieve"]["layers"]["pre_retrieval_summary_refresh"],
             )
             self.assertIn(
                 "summary_refresh[enabled=true",
-                opt_in_msg["hookSpecificOutput"]["additionalContext"],
+                debug_msg["hookSpecificOutput"]["additionalContext"],
             )
-            self.assertIn("skipped_reasons[new_event=", opt_in_msg["hookSpecificOutput"]["additionalContext"])
+            self.assertIn("skipped_reasons[new_event=", debug_msg["hookSpecificOutput"]["additionalContext"])
 
     def run_hook(self, repo: Path, event_log: Path, *, event: str, payload: dict, query: str = "", extra_env: dict | None = None) -> dict:
         cmd = [
@@ -3927,7 +3933,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertNotIn("source_roles", ref)
                 self.assertNotIn("source_hook_types", ref)
                 self.assertNotIn("source_codex_events", ref)
-            budget = pack["memory_layer_budget"]
+            self.assertNotIn("memory_layer_budget", pack)
+            budget = pack["retrieval_metrics"]["memory_layer_budget"]
             self.assertGreaterEqual(budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(budget["by_session_continuity"]["cross_session"]["refs"], 1)
             self.assertGreaterEqual(budget["by_extraction_phase"]["provisional"]["refs"], 1)
@@ -5108,7 +5115,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("source_hook_type_counts", recovered_decision)
             self.assertNotIn("source_codex_event_counts", recovered_decision)
             self.assertIn("bbb222", recovered_decision["text"])
-            recovered_budget = recovered_pack["memory_layer_budget"]
+            self.assertNotIn("memory_layer_budget", recovered_pack)
+            recovered_budget = recovered_pack["retrieval_metrics"]["memory_layer_budget"]
             self.assertGreaterEqual(recovered_budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(recovered_budget["by_session_continuity"]["cross_session"]["refs"], 1)
             self.assertNotIn("source_message_counts_by_role", recovered_budget)
@@ -5149,7 +5157,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 current_metrics["stale_dropped_refs"],
                 current_metrics["dropped_ref_bucket_counts"]["stale"],
             )
-            dropped_budget = current_pack["dropped_memory_layer_budget"]
+            self.assertNotIn("dropped_memory_layer_budget", current_pack)
+            dropped_budget = current_metrics["dropped_memory_layer_budget"]
             self.assertGreaterEqual(dropped_budget["total_dropped_refs"], 1)
             self.assertGreaterEqual(dropped_budget["by_memory_scope"]["session"]["refs"], 1)
             self.assertGreaterEqual(dropped_budget["by_session_continuity"]["same_session"]["refs"], 1)
@@ -5167,7 +5176,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("source_entity_lineage", dropped_budget.get("by_profile_shadowed_reason", {}))
             self.assertEqual(dropped_budget, current_metrics["dropped_memory_layer_budget"])
             layer_pressure = current_metrics["memory_layer_pressure"]
-            self.assertEqual(current_pack["memory_layer_pressure"], layer_pressure)
+            self.assertNotIn("memory_layer_pressure", current_pack)
             self.assertGreaterEqual(layer_pressure["dropped_refs"], 1)
             self.assertTrue(layer_pressure["session_memory_pressure"])
             self.assertTrue(layer_pressure["same_session_pressure"])
