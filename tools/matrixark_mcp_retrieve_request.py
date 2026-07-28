@@ -47,6 +47,11 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_planning as retrieve_planning_helpers
 
+try:
+    from tools import matrixark_mcp_retrieve_pre_refresh as pre_refresh_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_pre_refresh as pre_refresh_helpers
+
 
 def prepare_retrieval_request(target: Any, args: Json, *, started_perf: float) -> Json:
     query = require_string(args, "query")
@@ -81,7 +86,24 @@ def prepare_retrieval_request(target: Any, args: Json, *, started_perf: float) -
     retrieval_scope = retrieval_plan["retrieval_scope"]
     local_budget = retrieval_plan["local_budget"]
     max_context_tokens = int(retrieval_plan["max_context_tokens"])
+    pre_retrieval_summary_refresh, pre_retrieval_refreshed_records = pre_refresh_helpers.run_pre_retrieval_summary_refresh(
+        target,
+        args,
+        ranking,
+        scope=scope,
+    )
     debug_refs = bool(args.get("include_debug_refs") or ranking.get("include_debug_refs") or CONTEXT_PACK_DEBUG_REFS)
+    cache_ranking = {
+        **ranking,
+        "_source_role_budget_tokens": retrieval_plan["source_role_budget_tokens"],
+        "_memory_layer_budget_tokens": retrieval_plan["memory_layer_budget_tokens"],
+        "_pre_retrieval_summary_refresh": {
+            "enabled": bool(pre_retrieval_summary_refresh.get("enabled")),
+            "requested_limit": int(pre_retrieval_summary_refresh.get("requested_limit") or 0),
+            "status": pre_retrieval_summary_refresh.get("status"),
+            "refreshed_count": int(pre_retrieval_summary_refresh.get("refreshed_count") or 0),
+        },
+    }
     pack_cache_key = retrieve_cache_helpers.context_pack_cache_key(
         target,
         scope=scope,
@@ -90,7 +112,7 @@ def prepare_retrieval_request(target: Any, args: Json, *, started_perf: float) -
         retrieval_session_scope=retrieval_session_scope,
         max_context_tokens=max_context_tokens,
         local_budget=local_budget,
-        ranking=ranking,
+        ranking=cache_ranking,
         include_superseded=bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
     )
     cached_pack = retrieve_cache_helpers.get_cached_context_pack(target, pack_cache_key, include_debug=debug_refs)
@@ -123,6 +145,12 @@ def prepare_retrieval_request(target: Any, args: Json, *, started_perf: float) -
         "remote_context_budget_tokens": int(retrieval_plan["remote_context_budget_tokens"]),
         "cross_session_policy": retrieval_plan["cross_session_policy"],
         "shared_context_policy": retrieval_plan["shared_context_policy"],
+        "source_role_budget_tokens": retrieval_plan["source_role_budget_tokens"],
+        "source_role_budget_mode": retrieval_plan["source_role_budget_mode"],
+        "memory_layer_budget_tokens": retrieval_plan["memory_layer_budget_tokens"],
+        "memory_layer_budget_mode": retrieval_plan["memory_layer_budget_mode"],
+        "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
+        "pre_retrieval_refreshed_records": pre_retrieval_refreshed_records,
         "query_terms": retrieval_plan["query_terms"],
         "reference_time_ms": int(retrieval_plan["reference_time_ms"]),
         "query_plan": retrieval_plan["query_plan"],

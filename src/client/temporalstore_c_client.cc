@@ -166,6 +166,150 @@ const rapidjson::Value* JsonObjectMember(const rapidjson::Value& value, const ch
     return &value[name];
 }
 
+std::string LowerAscii(std::string value);
+
+std::vector<std::string> JsonStringListMember(const rapidjson::Value& value, const char* name) {
+    std::vector<std::string> values;
+    if (!value.IsObject() || !value.HasMember(name)) {
+        return values;
+    }
+    const auto& member = value[name];
+    if (member.IsString() && member.GetStringLength() > 0) {
+        values.emplace_back(member.GetString(), member.GetStringLength());
+        return values;
+    }
+    if (!member.IsArray()) {
+        return values;
+    }
+    for (const auto& item : member.GetArray()) {
+        if (item.IsString() && item.GetStringLength() > 0) {
+            values.emplace_back(item.GetString(), item.GetStringLength());
+        }
+    }
+    return values;
+}
+
+std::string NormalizeSourceRole(std::string role) {
+    role = LowerAscii(std::move(role));
+    if (role == "assistant_response" || role == "agent" || role == "ai" ||
+        role == "bot" || role == "llm" || role == "model") {
+        return "assistant";
+    }
+    if (role == "tool_result" || role == "tool_output") {
+        return "tool";
+    }
+    if (role == "human") {
+        return "user";
+    }
+    if (role == "assistant" || role == "tool" || role == "user" || role == "system") {
+        return role;
+    }
+    return "";
+}
+
+void AddUniqueString(std::vector<std::string>* values, std::string value) {
+    if (values == nullptr || value.empty()) {
+        return;
+    }
+    if (std::find(values->begin(), values->end(), value) == values->end()) {
+        values->push_back(std::move(value));
+    }
+}
+
+std::vector<std::string> CandidateSourceRoles(const rapidjson::Value& record) {
+    std::vector<std::string> roles;
+    for (const auto& value : JsonStringListMember(record, "source_roles")) {
+        AddUniqueString(&roles, NormalizeSourceRole(value));
+    }
+    AddUniqueString(&roles, NormalizeSourceRole(JsonStringMember(record, "source_role")));
+    if (const rapidjson::Value* metadata = JsonObjectMember(record, "metadata")) {
+        for (const auto& value : JsonStringListMember(*metadata, "source_roles")) {
+            AddUniqueString(&roles, NormalizeSourceRole(value));
+        }
+        AddUniqueString(&roles, NormalizeSourceRole(JsonStringMember(*metadata, "source_role")));
+    }
+    if (const rapidjson::Value* envelope = JsonObjectMember(record, "envelope")) {
+        for (const auto& value : JsonStringListMember(*envelope, "source_roles")) {
+            AddUniqueString(&roles, NormalizeSourceRole(value));
+        }
+        if (envelope->HasMember("messages") && (*envelope)["messages"].IsArray()) {
+            for (const auto& message : (*envelope)["messages"].GetArray()) {
+                AddUniqueString(&roles, NormalizeSourceRole(JsonStringMember(message, "role")));
+            }
+        }
+    }
+    return roles;
+}
+
+std::string CandidateMemoryScope(const rapidjson::Value& record) {
+    std::string scope = JsonStringMember(record, "memory_scope");
+    if (!scope.empty()) {
+        return scope;
+    }
+    if (const rapidjson::Value* metadata = JsonObjectMember(record, "metadata")) {
+        scope = JsonStringMember(*metadata, "memory_scope");
+        if (!scope.empty()) {
+            return scope;
+        }
+    }
+    return "";
+}
+
+std::string CandidateMemoryLayer(const std::string& record_type, const std::string& memory_scope,
+                                 const std::string& session_continuity) {
+    if (record_type == "context_summary") {
+        return "summary";
+    }
+    if (record_type == "context_compression_event") {
+        return "compression";
+    }
+    if (record_type == "context_entity") {
+        return memory_scope == "user_profile" ? "profile_entity" : "same_session_entity";
+    }
+    if (record_type == "context_event") {
+        return session_continuity == "cross_session" ? "cross_session_event" : "same_session_event";
+    }
+    if (record_type == "context_segment") {
+        return session_continuity == "cross_session" ? "cross_session_segment" : "same_session_segment";
+    }
+    return record_type;
+}
+
+std::unordered_map<std::string, uint64_t> JsonBudgetMapMember(const rapidjson::Value& value,
+                                                             const char* name) {
+    std::unordered_map<std::string, uint64_t> budgets;
+    if (!value.IsObject() || !value.HasMember(name) || !value[name].IsObject()) {
+        return budgets;
+    }
+    for (auto it = value[name].MemberBegin(); it != value[name].MemberEnd(); ++it) {
+        if (!it->name.IsString()) {
+            continue;
+        }
+        uint64_t amount = 0;
+        if (it->value.IsUint64()) {
+            amount = it->value.GetUint64();
+        } else if (it->value.IsInt64() && it->value.GetInt64() > 0) {
+            amount = static_cast<uint64_t>(it->value.GetInt64());
+        }
+        if (amount > 0) {
+            budgets[it->name.GetString()] = amount;
+        }
+    }
+    return budgets;
+}
+
+std::unordered_map<std::string, uint64_t> ParseBudgetMap(const rapidjson::Value& request,
+                                                         const char* name) {
+    auto budgets = JsonBudgetMapMember(request, name);
+    if (!budgets.empty()) {
+        return budgets;
+    }
+    if (const rapidjson::Value* ranking = JsonObjectMember(request, "ranking")) {
+        budgets = JsonBudgetMapMember(*ranking, name);
+    }
+    return budgets;
+}
+
 
 bcache2::Status ReadMatrixArkServingCount(bcache2::client::TemporalStoreClient* impl,
                                           const std::string& count_key,
@@ -721,6 +865,9 @@ struct MatrixArkPreparedRetrieveCandidate {
     std::string source_ref_json;
     std::string session_continuity;
     std::string agent_scope_key;
+    std::string memory_scope;
+    std::string memory_layer;
+    std::vector<std::string> source_roles;
     double continuity_boost = 0.0;
     bool has_citation = false;
     std::unordered_set<std::string> terms;
@@ -862,6 +1009,10 @@ MatrixArkPreparedRetrieveCacheEntry PrepareMatrixArkRetrieveCandidates(
         candidate.cross_session_key = CrossSessionKey(record);
         candidate.session_continuity = SessionContinuityStatus(record, scope);
         candidate.agent_scope_key = CandidateScopeKey(record);
+        candidate.memory_scope = CandidateMemoryScope(record);
+        candidate.memory_layer = CandidateMemoryLayer(
+            candidate.record_type, candidate.memory_scope, candidate.session_continuity);
+        candidate.source_roles = CandidateSourceRoles(record);
         candidate.continuity_boost =
             ContinuityBoost(candidate.record_type, candidate.context_class,
                             candidate.session_continuity);
@@ -1211,6 +1362,8 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         remote_budget = JsonUintMember(*local_budget, "remote_budget_tokens", remote_budget);
     }
     CrossSessionPolicy cross_policy = ParseCrossSessionPolicy(request, scope, remote_budget, question_type);
+    auto source_role_budget_tokens = ParseBudgetMap(request, "source_role_budget_tokens");
+    auto memory_layer_budget_tokens = ParseBudgetMap(request, "memory_layer_budget_tokens");
     bool prefer_current_agent = JsonBoolMember(request, "prefer_current_agent", false);
     std::string current_agent_scope_key = JsonStringMember(request, "current_agent_scope_key");
     if (current_agent_scope_key.empty()) {
@@ -1244,6 +1397,8 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         std::string cross_session_key;
         std::string source_ref_json;
         std::string session_continuity;
+        std::string memory_layer;
+        std::vector<std::string> source_roles;
         double continuity_boost;
         double cross_session_rerank_boost;
     };
@@ -1294,6 +1449,8 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
                               candidate.cross_session_key,
                               candidate.source_ref_json,
                               continuity,
+                              candidate.memory_layer,
+                              candidate.source_roles,
                               continuity_boost,
                               cross_session_rerank_boost});
         }
@@ -1326,9 +1483,13 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     uint64_t dropped_low_score = 0;
     uint64_t dropped_duplicate_ref = 0;
     uint64_t dropped_policy_ref = 0;
+    uint64_t dropped_source_role_budget = 0;
+    uint64_t dropped_memory_layer_budget = 0;
     uint64_t cross_used_tokens = 0;
     uint64_t cross_selected_refs = 0;
     uint64_t entity_bridge_selected_refs = 0;
+    std::unordered_map<std::string, uint64_t> source_role_used_tokens;
+    std::unordered_map<std::string, uint64_t> memory_layer_used_tokens;
     std::unordered_set<std::string> selected_cross_sessions;
     std::unordered_set<std::string> selected_ref_signatures;
     for (const auto& item : scored) {
@@ -1343,6 +1504,25 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         const std::string& context_class = item.context_class;
         if (!IsServingSelectedRefClass(context_class)) {
             ++dropped_policy_ref;
+            continue;
+        }
+        bool role_budget_exceeded = false;
+        for (const auto& role : item.source_roles) {
+            auto budget_it = source_role_budget_tokens.find(role);
+            if (budget_it != source_role_budget_tokens.end() &&
+                source_role_used_tokens[role] + item.tokens > budget_it->second) {
+                role_budget_exceeded = true;
+                break;
+            }
+        }
+        if (role_budget_exceeded) {
+            ++dropped_source_role_budget;
+            continue;
+        }
+        auto layer_budget_it = memory_layer_budget_tokens.find(item.memory_layer);
+        if (layer_budget_it != memory_layer_budget_tokens.end() &&
+            memory_layer_used_tokens[item.memory_layer] + item.tokens > layer_budget_it->second) {
+            ++dropped_memory_layer_budget;
             continue;
         }
         bool is_cross_session = item.session_continuity == "cross_session";
@@ -1388,6 +1568,12 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
                 ++entity_bridge_selected_refs;
             }
         }
+        for (const auto& role : item.source_roles) {
+            source_role_used_tokens[role] += item.tokens;
+        }
+        if (!item.memory_layer.empty()) {
+            memory_layer_used_tokens[item.memory_layer] += item.tokens;
+        }
         rapidjson::Value ref(rapidjson::kObjectType);
         selected_counts[context_class] += 1;
         if (item.node_hash != 0) {
@@ -1402,6 +1588,12 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         ref.AddMember("score", item.score, alloc);
         if (debug_context_pack) {
             ref.AddMember("session_continuity", rapidjson::Value(item.session_continuity.c_str(), alloc), alloc);
+            ref.AddMember("memory_layer", rapidjson::Value(item.memory_layer.c_str(), alloc), alloc);
+            rapidjson::Value roles(rapidjson::kArrayType);
+            for (const auto& role : item.source_roles) {
+                roles.PushBack(rapidjson::Value(role.c_str(), alloc), alloc);
+            }
+            ref.AddMember("source_roles", roles, alloc);
             ref.AddMember("continuity_boost", item.continuity_boost, alloc);
             ref.AddMember("cross_session_rerank_boost", item.cross_session_rerank_boost, alloc);
             const char* continuity_reason =
@@ -1446,6 +1638,8 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     dropped.AddMember("low_score", dropped_low_score, alloc);
     dropped.AddMember("duplicate_ref", dropped_duplicate_ref, alloc);
     dropped.AddMember("policy_ref", dropped_policy_ref, alloc);
+    dropped.AddMember("source_role_budget", dropped_source_role_budget, alloc);
+    dropped.AddMember("memory_layer_budget", dropped_memory_layer_budget, alloc);
     rapidjson::Value reasons(rapidjson::kObjectType);
     reasons.AddMember("over_budget", dropped_over_budget, alloc);
     reasons.AddMember("cross_session_budget", dropped_cross_budget, alloc);
@@ -1454,6 +1648,8 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     reasons.AddMember("low_score", dropped_low_score, alloc);
     reasons.AddMember("duplicate_ref", dropped_duplicate_ref, alloc);
     reasons.AddMember("policy_ref", dropped_policy_ref, alloc);
+    reasons.AddMember("source_role_budget", dropped_source_role_budget, alloc);
+    reasons.AddMember("memory_layer_budget", dropped_memory_layer_budget, alloc);
     dropped.AddMember("reason_counts", reasons, alloc);
     pack.AddMember("dropped_refs", dropped, alloc);
     pack.AddMember("used_context_tokens", used_tokens, alloc);
@@ -1517,7 +1713,8 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         metrics.AddMember("selected_refs", static_cast<uint64_t>(pack["selected_refs"].Size()), alloc);
         metrics.AddMember("dropped_refs", dropped_over_budget + dropped_cross_budget +
                                           dropped_cross_session_cap + dropped_cross_candidate_cap +
-                                          dropped_low_score + dropped_duplicate_ref + dropped_policy_ref,
+                                          dropped_low_score + dropped_duplicate_ref + dropped_policy_ref +
+                                          dropped_source_role_budget + dropped_memory_layer_budget,
                           alloc);
         metrics.AddMember("scanned_records", prepared->scanned_records, alloc);
         metrics.AddMember("index_postings_read", static_cast<uint64_t>(prepared->context_index_records), alloc);
@@ -1598,6 +1795,50 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     cross.AddMember("strategy", "same_session_first_entity_bridge_then_bounded_cross_session", alloc);
     cross.AddMember("budget_guidance", "cross-session budget is a maximum cap, not a quota: 12% normally, 15% for broad/evidence, 20% for current-state/latest/multi-hop/date; spend it only on high-quality refs, prefer entities/summaries/compressions, and require high-confidence raw events", alloc);
     recall.AddMember("cross_session", cross, alloc);
+    if (!source_role_budget_tokens.empty()) {
+        rapidjson::Value role_budget(rapidjson::kObjectType);
+        role_budget.AddMember("enabled", true, alloc);
+        role_budget.AddMember("mode", "bounded_source_role_tokens", alloc);
+        role_budget.AddMember("dropped_ref_count", dropped_source_role_budget, alloc);
+        rapidjson::Value limits(rapidjson::kObjectType);
+        for (const auto& item : source_role_budget_tokens) {
+            rapidjson::Value key;
+            key.SetString(item.first.c_str(), static_cast<rapidjson::SizeType>(item.first.size()), alloc);
+            limits.AddMember(key, item.second, alloc);
+        }
+        role_budget.AddMember("budget_tokens", limits, alloc);
+        rapidjson::Value used(rapidjson::kObjectType);
+        for (const auto& item : source_role_used_tokens) {
+            rapidjson::Value key;
+            key.SetString(item.first.c_str(), static_cast<rapidjson::SizeType>(item.first.size()), alloc);
+            used.AddMember(key, item.second, alloc);
+        }
+        role_budget.AddMember("used_tokens", used, alloc);
+        role_budget.AddMember("strategy", "bound_large_assistant_and_tool_outputs_before_context_pack_injection", alloc);
+        recall.AddMember("source_role_budget_policy", role_budget, alloc);
+    }
+    if (!memory_layer_budget_tokens.empty()) {
+        rapidjson::Value layer_budget(rapidjson::kObjectType);
+        layer_budget.AddMember("enabled", true, alloc);
+        layer_budget.AddMember("mode", "bounded_memory_layer_tokens", alloc);
+        layer_budget.AddMember("dropped_ref_count", dropped_memory_layer_budget, alloc);
+        rapidjson::Value limits(rapidjson::kObjectType);
+        for (const auto& item : memory_layer_budget_tokens) {
+            rapidjson::Value key;
+            key.SetString(item.first.c_str(), static_cast<rapidjson::SizeType>(item.first.size()), alloc);
+            limits.AddMember(key, item.second, alloc);
+        }
+        layer_budget.AddMember("budget_tokens", limits, alloc);
+        rapidjson::Value used(rapidjson::kObjectType);
+        for (const auto& item : memory_layer_used_tokens) {
+            rapidjson::Value key;
+            key.SetString(item.first.c_str(), static_cast<rapidjson::SizeType>(item.first.size()), alloc);
+            used.AddMember(key, item.second, alloc);
+        }
+        layer_budget.AddMember("used_tokens", used, alloc);
+        layer_budget.AddMember("strategy", "bound_session_profile_summary_and_raw_event_layers_before_context_pack_injection", alloc);
+        recall.AddMember("memory_layer_budget_policy", layer_budget, alloc);
+    }
     rapidjson::Value tree(rapidjson::kObjectType);
     tree.AddMember("enabled", true, alloc);
     tree.AddMember("native_backend", true, alloc);

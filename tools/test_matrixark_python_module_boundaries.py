@@ -59,6 +59,98 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("summary_refresh", dashboard_table_enum)
         self.assertIn("async_pipeline", dashboard_table_enum)
 
+    def test_moduleized_request_runs_pre_retrieval_refresh_and_derives_budgets(self) -> None:
+        request_mod = importlib.import_module("tools.matrixark_mcp_retrieve_request")
+
+        class FakeTarget:
+            _context_pack_cache_max_entries = 0
+            _context_pack_cache_ttl_s = 0
+            _retrieval_records_cache_generation = 7
+
+            def __init__(self) -> None:
+                self.refresh_request = {}
+
+            def _observe_model_latency(self, *_args: object) -> None:
+                return None
+
+            def refresh_summaries(self, request: dict[str, object]) -> dict[str, object]:
+                self.refresh_request = request
+                return {
+                    "refreshed_count": 1,
+                    "compression_created_count": 0,
+                    "skipped_dirty_count": 0,
+                    "refreshed": [
+                        {
+                            "record_type": "context_summary",
+                            "summary_hash": 101,
+                            "node_hash": 202,
+                            "node_path": ["tenant:t", "user:u", "profile:long_term_memory"],
+                            "summary_text": "assistant decision retained as bounded profile memory",
+                            "memory_scope": "user_profile",
+                            "session_continuity": "cross_session",
+                            "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u"},
+                        }
+                    ],
+                }
+
+        target = FakeTarget()
+        request = request_mod.prepare_retrieval_request(
+            target,
+            {
+                "query": "latest assistant decision and tool status",
+                "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"},
+                "max_context_tokens": 2000,
+                "pre_retrieval_summary_refresh": True,
+                "pre_retrieval_summary_refresh_limit": 3,
+                "ranking": {
+                    "source_role_budget_mode": "auto",
+                },
+            },
+            started_perf=0.0,
+        )
+
+        self.assertEqual(3, target.refresh_request["limit"])
+        self.assertEqual("refreshed", request["pre_retrieval_summary_refresh"]["status"])
+        self.assertEqual(1, request["pre_retrieval_summary_refresh"]["refreshed_count"])
+        self.assertEqual("auto", request["source_role_budget_mode"])
+        self.assertIn("assistant", request["source_role_budget_tokens"])
+        self.assertEqual("pre_retrieval_summary_refresh_balanced", request["memory_layer_budget_mode"])
+        self.assertIn("profile_entity", request["memory_layer_budget_tokens"])
+        self.assertEqual(1, len(request["pre_retrieval_refreshed_records"]))
+
+    def test_moduleized_runtime_merges_pre_refreshed_summaries(self) -> None:
+        helper_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pre_refresh")
+        base = {
+            "record_type": "context_summary",
+            "summary_hash": 101,
+            "node_hash": 202,
+            "node_path": ["tenant:t", "user:u", "profile:long_term_memory"],
+            "summary_text": "old profile summary",
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u"},
+        }
+        refreshed = {
+            **base,
+            "summary_hash": 303,
+            "node_hash": 404,
+            "summary_text": "new profile summary from assistant and tool evidence",
+        }
+
+        class FakeTarget:
+            def read_all(self) -> list[dict[str, object]]:
+                return [base, refreshed]
+
+        merged = helper_mod.merge_refreshed_summary_records(
+            FakeTarget(),
+            [base.copy()],
+            retrieval_scope={"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "current"},
+            refreshed_records=[refreshed],
+            refresh={"enabled": True, "refreshed_count": 1},
+        )
+        identities = {(record.get("summary_hash"), record.get("node_hash")) for record in merged}
+        self.assertEqual({(101, 202), (303, 404)}, identities)
+
     def test_moduleized_summary_candidate_preserves_profile_memory_fields(self) -> None:
         builders = importlib.import_module("tools.matrixark_mcp_retrieve_candidate_builders")
         continuity = importlib.import_module("tools.matrixark_mcp_retrieve_continuity")

@@ -106,6 +106,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_summary_runtime as summary_runtime
 
 try:
+    from tools import matrixark_mcp_retrieve_pre_refresh as pre_refresh_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_pre_refresh as pre_refresh_helpers
+
+try:
     from tools.matrixark_mcp_retrieve_metrics import attach_python_retrieval_metrics
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_retrieve_metrics import attach_python_retrieval_metrics
@@ -217,6 +222,12 @@ def retrieve(target: Any, args: Json) -> Json:
     remote_context_budget_tokens = retrieval_request["remote_context_budget_tokens"]
     cross_session_policy = retrieval_request["cross_session_policy"]
     shared_context_policy = retrieval_request["shared_context_policy"]
+    source_role_budget_tokens = retrieval_request["source_role_budget_tokens"]
+    source_role_budget_mode = retrieval_request["source_role_budget_mode"]
+    memory_layer_budget_tokens = retrieval_request["memory_layer_budget_tokens"]
+    memory_layer_budget_mode = retrieval_request["memory_layer_budget_mode"]
+    pre_retrieval_summary_refresh = retrieval_request["pre_retrieval_summary_refresh"]
+    pre_retrieval_refreshed_records = retrieval_request["pre_retrieval_refreshed_records"]
     query_terms = retrieval_request["query_terms"]
     reference_time_ms = retrieval_request["reference_time_ms"]
     query_plan = retrieval_request["query_plan"]
@@ -269,6 +280,13 @@ def retrieve(target: Any, args: Json) -> Json:
         secondary_index_groups=secondary_index_filter_groups,
     )
     records = retrieval_record_result["records"]
+    records = pre_refresh_helpers.merge_refreshed_summary_records(
+        self,
+        records,
+        retrieval_scope=retrieval_scope,
+        refreshed_records=pre_retrieval_refreshed_records,
+        refresh=pre_retrieval_summary_refresh,
+    )
     retrieval_scan_stats = retrieval_record_result.get("scan_stats", {})
 
     def deadline_fallback(reason: str, fallback_records: list[Json] | None = None) -> Json:
@@ -594,6 +612,8 @@ def retrieve(target: Any, args: Json) -> Json:
         deadline_reason="deadline_during_context_pack",
         cross_session_policy=cross_session_policy,
         shared_context_policy=shared_context_policy,
+        source_role_budget_tokens=source_role_budget_tokens,
+        memory_layer_budget_tokens=memory_layer_budget_tokens,
     )
     partial_context_pack = bool(dropped_over_budget.get("deadline_exceeded"))
     quality_warnings = []
@@ -684,6 +704,11 @@ def retrieve(target: Any, args: Json) -> Json:
         quality_warnings=quality_warnings,
         audit_mode=audit_mode,
         audit_sample_rate=audit_sample_rate,
+        source_role_budget_tokens=source_role_budget_tokens,
+        source_role_budget_mode=source_role_budget_mode,
+        memory_layer_budget_tokens=memory_layer_budget_tokens,
+        memory_layer_budget_mode=memory_layer_budget_mode,
+        pre_retrieval_summary_refresh=pre_retrieval_summary_refresh,
         debug_refs=debug_refs,
     )
     finish_retrieval_stage("pack", stage_started_perf)

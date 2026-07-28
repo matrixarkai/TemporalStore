@@ -538,7 +538,12 @@ def build_context_pack(
     quality_warnings: list[str],
     audit_mode: str,
     audit_sample_rate: float,
-    debug_refs: bool,
+    source_role_budget_tokens: Json | None = None,
+    source_role_budget_mode: str = "",
+    memory_layer_budget_tokens: Json | None = None,
+    memory_layer_budget_mode: str = "",
+    pre_retrieval_summary_refresh: Json | None = None,
+    debug_refs: bool = False,
 ) -> Json:
     selected_context_counts = selected_context_class_counts(selected)
     memory_layer_budget = selected_ref_layer_budget(selected)
@@ -577,6 +582,17 @@ def build_context_pack(
             "memory_layer_pressure": memory_layer_pressure,
             "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
             "shared_context": dropped_over_budget.get("shared_context_policy", shared_context_policy),
+            "source_role_budget_policy": dropped_over_budget.get("source_role_budget_policy", {
+                "enabled": bool(source_role_budget_tokens),
+                "mode": source_role_budget_mode or ("explicit" if source_role_budget_tokens else "disabled"),
+                "budget_tokens": source_role_budget_tokens or {},
+            }),
+            "memory_layer_budget_policy": dropped_over_budget.get("memory_layer_budget_policy", {
+                "enabled": bool(memory_layer_budget_tokens),
+                "mode": memory_layer_budget_mode or ("explicit" if memory_layer_budget_tokens else "disabled"),
+                "budget_tokens": memory_layer_budget_tokens or {},
+            }),
+            "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh or {"enabled": False, "status": "disabled"},
             "backend_retrieval_pushdown": retrieval_scan_stats,
             "ranking": {
                 "min_similarity_score": min_similarity_score,
