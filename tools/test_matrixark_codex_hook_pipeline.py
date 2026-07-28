@@ -2100,6 +2100,158 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
+    def test_fast_hook_idle_preflush_recovers_pending_buffer_after_restart(self) -> None:
+        original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
+        matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                event_log = Path(tmp_dir) / "matrixark-fast-hook-idle-restart.jsonl"
+
+                class Server:
+                    def __init__(self, adapter: MatrixArkLocalAdapter) -> None:
+                        self.adapter = adapter
+
+                scope_args = {
+                    "event": "UserPromptSubmit",
+                    "account_id": "acct_fast_idle_restart",
+                    "tenant_id": "tenant_fast_idle_restart",
+                    "user_id": "user_fast_idle_restart",
+                    "session_id": "session_fast_idle_restart",
+                    "team": "codex",
+                    "project": "temporalstore",
+                    "session_commit_threshold": 20,
+                    "idle_commit_timeout_ms": 1,
+                    "understanding_provider": "rules",
+                    "segment_provider": "deterministic",
+                }
+                first_adapter = FastHookLocalAdapter(event_log)
+                first = matrixark_codex_hook.fast_async_hook_ingest(
+                    Server(first_adapter),
+                    args=Namespace(**scope_args),
+                    text="Tool evidence before restart idle: Exit code: 0 and restart idle recovery passed.",
+                    role="tool",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={
+                        "session_id_source": "payload_field",
+                        "thread_id": "thread-fast-idle-restart",
+                        "turn_id": "turn-fast-idle-restart-1",
+                    },
+                )
+                self.assertEqual("accepted", first["status"])
+                self.assertFalse(first["session_buffer"]["threshold_ready"])
+                self.assertFalse(first["idle_commit_result"])
+                self.assertFalse(first["auto_batch_extract_result"])
+                time.sleep(0.01)
+
+                recovered_adapter = FastHookLocalAdapter(event_log)
+                scope = {
+                    "account_id": scope_args["account_id"],
+                    "tenant_id": scope_args["tenant_id"],
+                    "user_id": scope_args["user_id"],
+                    "session_id": scope_args["session_id"],
+                }
+                recovered_pending = recovered_adapter.pending_session_events(scope)
+                self.assertEqual(1, len(recovered_pending))
+                self.assertIn("restart idle recovery", recovered_pending[0]["text"])
+
+                second = matrixark_codex_hook.fast_async_hook_ingest(
+                    Server(recovered_adapter),
+                    args=Namespace(**scope_args),
+                    text="New prompt after restart should preflush the older idle batch before entering the buffer.",
+                    role="user",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={
+                        "session_id_source": "payload_field",
+                        "thread_id": "thread-fast-idle-restart",
+                        "turn_id": "turn-fast-idle-restart-2",
+                    },
+                )
+                idle_commit = second["idle_commit_result"]
+                self.assertEqual("committed", idle_commit["status"])
+                self.assertEqual("idle_timeout", idle_commit["trigger_policy"])
+                self.assertEqual("provisional", idle_commit["extraction_phase"])
+                self.assertFalse(idle_commit["final_session_boundary"])
+                self.assertEqual(1, idle_commit["committed_event_count"])
+                self.assertEqual(["tool"], idle_commit["source_roles"])
+                self.assertTrue(second["session_buffer"]["pre_ingest_idle_ready"])
+                self.assertGreaterEqual(second["session_buffer"]["pre_ingest_idle_elapsed_ms"], 1)
+                self.assertEqual(idle_commit, second["auto_batch_extract_result"])
+
+                pending_after_preflush = recovered_adapter.pending_session_events(scope)
+                self.assertEqual(1, len(pending_after_preflush))
+                self.assertIn("New prompt after restart", pending_after_preflush[0]["text"])
+
+                records = recovered_adapter.read_all()
+                commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
+                self.assertEqual(1, len(commits))
+                self.assertEqual("idle_timeout", commits[0]["trigger_policy"])
+                self.assertEqual(
+                    [int(event_id) for event_id in idle_commit["source_event_ids"]],
+                    [int(event_id) for event_id in commits[0]["source_event_ids"]],
+                )
+                layers = idle_commit["memory_layers_written"]
+                self.assertGreaterEqual(layers["session_entities"], 1)
+                self.assertGreaterEqual(layers["profile_entities"], 1)
+                self.assertGreaterEqual(layers["secondary_indexes"], 1)
+                self.assertGreaterEqual(layers["summary_dirty_nodes"], 1)
+                self.assertGreaterEqual(
+                    sum(1 for record in records if record.get("record_type") == "context_event"),
+                    2,
+                )
+                self.assertTrue(any(record.get("record_type") == "context_index" for record in records))
+                self.assertTrue(
+                    any(
+                        record.get("record_type") == "context_entity"
+                        and record.get("memory_scope") == "user_profile"
+                        and record.get("session_continuity") == "cross_session"
+                        for record in records
+                    )
+                )
+                progress = [
+                    record
+                    for record in records
+                    if record.get("record_type") == "matrixark_async_pipeline_task"
+                    and record.get("status") == "extraction_committed"
+                    and record.get("commit_id_hash") == idle_commit["commit_id_hash"]
+                ]
+                self.assertEqual(
+                    [int(event_id) for event_id in idle_commit["source_event_ids"]],
+                    [int(record["event_id_hash"]) for record in progress],
+                )
+                self.assertTrue(all(record["completed_stages"] == ["extraction"] for record in progress))
+                self.assertTrue(all("summary" in record["remaining_stages"] for record in progress))
+
+                reopened_again = FastHookLocalAdapter(event_log)
+                pack = reopened_again.retrieve(
+                    {
+                        "scope": {**scope, "session_id": "session_fast_idle_restart_followup"},
+                        "session_scope": "prefer",
+                        "query": "What tool evidence proved restart idle recovery?",
+                        "max_context_tokens": 180,
+                        "audit_mode": "off",
+                        "debug_context_pack": True,
+                        "ranking": {"max_selected_refs": 4},
+                    }
+                )
+                self.assertLessEqual(pack["used_context_tokens"], 180)
+                self.assertTrue(
+                    any(
+                        ref.get("ref_type") == "entity"
+                        and ref.get("entity_type") == "tool_evidence"
+                        and ref.get("memory_scope") == "user_profile"
+                        and ref.get("session_continuity") == "cross_session"
+                        and "restart idle recovery passed" in str(ref.get("text") or ref.get("summary_text") or "")
+                        for ref in pack["selected_refs"]
+                    ),
+                    pack["selected_refs"],
+                )
+                budget = pack["recall_policy"]["memory_layer_budget"]
+                self.assertGreaterEqual(budget["by_memory_scope"]["user_profile"]["refs"], 1)
+                self.assertGreaterEqual(budget["by_session_continuity"]["cross_session"]["refs"], 1)
+                self.assertEqual({"tool": 1}, budget["source_message_counts_by_role"])
+        finally:
+            matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+
     def test_local_native_context_pack_receives_source_role_budget_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-budget.jsonl")
