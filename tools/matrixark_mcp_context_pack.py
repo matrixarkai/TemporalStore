@@ -437,6 +437,7 @@ def compact_context_pack_policy(policy: Any) -> Json:
         "quality_gate",
         "resource_mode",
         "skill_mode",
+        "budget_semantics",
     ]
     compact: Json = {
         field: policy.get(field)
@@ -453,9 +454,18 @@ def compact_context_pack_policy(policy: Any) -> Json:
         "selected_tokens",
         "resource_selected_tokens",
         "skill_selected_tokens",
+        "remote_budget_tokens",
     ]:
         value = policy.get(field)
         if isinstance(value, int) and value > 0:
+            compact[field] = value
+    for field in [
+        "derived",
+        "independent_caps",
+        "global_remote_budget_enforced",
+    ]:
+        value = policy.get(field)
+        if isinstance(value, bool):
             compact[field] = value
     for field in [
         "budget_tokens",
