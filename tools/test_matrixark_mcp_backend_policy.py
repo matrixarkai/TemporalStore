@@ -4043,6 +4043,106 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(stale_drop["stale_or_superseded"])
         self.assertEqual(7002, stale_drop["profile_shadowed_by_ref_hash"])
 
+    def test_budget_packer_enforces_memory_layer_caps(self) -> None:
+        selected, used_tokens, dropped = mcp_budget_pack.select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "segment",
+                    "ref_hash": 8101,
+                    "text": "same session segment",
+                    "score": 0.95,
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                },
+                {
+                    "ref_type": "segment",
+                    "ref_hash": 8102,
+                    "text": "another same session segment",
+                    "score": 0.94,
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                },
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 8103,
+                    "text": "profile entity remains selectable",
+                    "score": 0.93,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                },
+            ],
+            [],
+            max_context_tokens=40,
+            auxiliary_quota=0,
+            min_score=0.0,
+            cross_session_policy={"enabled": True, "budget_tokens": 40, "max_sessions": 4, "max_candidates": 4},
+            memory_layer_budget_tokens={"same_session_segment": 3, "profile_entity": 8},
+        )
+
+        self.assertEqual([8101, 8103], [ref["ref_hash"] for ref in selected])
+        self.assertGreater(used_tokens, 0)
+        self.assertEqual(1, dropped["memory_layer_budget"])
+        self.assertEqual(4, dropped["estimated_tokens"]["memory_layer_budget"])
+        self.assertEqual(
+            {"same_session_segment": 3, "profile_entity": 8},
+            dropped["memory_layer_budget_policy"]["budget_tokens"],
+        )
+        self.assertEqual(1, dropped["memory_layer_budget_policy"]["selected_ref_count_by_layer"]["same_session_segment"])
+        self.assertEqual(1, dropped["memory_layer_budget_policy"]["selected_ref_count_by_layer"]["profile_entity"])
+
+    def test_budget_packer_enforces_source_role_caps(self) -> None:
+        selected, used_tokens, dropped = mcp_budget_pack.select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 8201,
+                    "text": "assistant decision",
+                    "score": 0.95,
+                    "entity_type": "assistant_decision",
+                    "source_roles": ["llm", "model"],
+                    "source_role_counts": {"llm": 1, "model": 1},
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                },
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 8202,
+                    "text": "another assistant decision",
+                    "score": 0.94,
+                    "entity_type": "assistant_decision",
+                    "source_roles": ["assistant"],
+                    "source_role_counts": {"assistant": 1},
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                },
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 8203,
+                    "text": "tool evidence",
+                    "score": 0.93,
+                    "entity_type": "tool_evidence",
+                    "source_roles": ["tool"],
+                    "source_role_counts": {"tool": 1},
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                },
+            ],
+            [],
+            max_context_tokens=40,
+            auxiliary_quota=0,
+            min_score=0.0,
+            cross_session_policy={"enabled": True, "budget_tokens": 40, "max_sessions": 4, "max_candidates": 4},
+            source_role_budget_tokens={"assistant": 2, "tool": 4},
+        )
+
+        self.assertEqual([8201, 8203], [ref["ref_hash"] for ref in selected])
+        self.assertGreater(used_tokens, 0)
+        self.assertEqual(1, dropped["source_role_budget"])
+        self.assertEqual(3, dropped["estimated_tokens"]["source_role_budget"])
+        self.assertEqual({"assistant": 2, "tool": 4}, dropped["source_role_budget_policy"]["budget_tokens"])
+        self.assertEqual(1, dropped["source_role_budget_policy"]["selected_ref_count_by_role"]["assistant"])
+        self.assertEqual(1, dropped["source_role_budget_policy"]["selected_ref_count_by_role"]["tool"])
+
     def test_codex_session_identity_policy_treats_exact_payload_sources_as_strong(self) -> None:
         payload_policy = mcp_local.codex_session_identity_policy("payload.conversation_id")
         self.assertTrue(payload_policy["strong_session_identity"])
