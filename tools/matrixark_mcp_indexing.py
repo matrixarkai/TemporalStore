@@ -308,6 +308,7 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
             continue
         index_name = str(record.get("index_name") or "")
         capability = context_index_capability(record)
+        data_model = str(record.get("data_model") or "")
         if not index_name or not capability:
             passthrough.append(record)
             continue
@@ -315,6 +316,7 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
         key = (
             str(record.get("scope_key") or ""),
             capability,
+            data_model,
             index_name,
             str(record.get("ref_type") or ""),
             bucket_ms,
