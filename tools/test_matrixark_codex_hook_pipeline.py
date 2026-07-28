@@ -84,6 +84,8 @@ class NativeCaptureLocalAdapter(MatrixArkLocalAdapter):
                     "enabled": bool(request.get("memory_layer_budget_tokens")),
                     "budget_tokens": request.get("memory_layer_budget_tokens", {}),
                     "mode": request.get("memory_layer_budget_mode"),
+                    "question_type": request.get("memory_layer_budget_question_type"),
+                    "question_budget_reason": request.get("memory_layer_budget_question_reason"),
                     "derived": request.get("memory_layer_budget_mode") in {
                         "auto",
                         "balanced",
@@ -2858,6 +2860,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             request = adapter.native_requests[0]
             self.assertEqual("current_state", request["question_type"])
             self.assertEqual("auto", request["memory_layer_budget_mode"])
+            self.assertEqual("current_state", request["memory_layer_budget_question_type"])
+            self.assertIn("prioritize_profile_entity", request["memory_layer_budget_question_reason"])
             self.assertEqual(
                 {
                     "summary": 23,
@@ -3231,6 +3235,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("auto", layer_policy["mode"])
             self.assertTrue(layer_policy["derived"])
             self.assertEqual(114, layer_policy["remote_budget_tokens"])
+            self.assertEqual("evidence", layer_policy["question_type"])
+            self.assertIn("broad_or_evidence_queries", layer_policy["question_budget_reason"])
             self.assertEqual("independent_per_layer_caps_under_global_remote_budget", layer_policy["budget_semantics"])
             self.assertTrue(layer_policy["independent_caps"])
             self.assertTrue(layer_policy["global_remote_budget_enforced"])

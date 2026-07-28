@@ -135,6 +135,17 @@ def auto_source_role_budget_tokens(args: Json, ranking: Json, *, remote_budget_t
     return budgets, mode
 
 
+def memory_layer_budget_question_reason(question_type: str) -> str:
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    if normalized_question_type in {"current_state", "latest"}:
+        return "current_state_or_latest_queries_prioritize_profile_entity and cross-session current state"
+    if normalized_question_type in {"multi_hop", "date"}:
+        return "multi_hop_or_date_queries_expand cross-session events, segments, summaries, and profile bridges"
+    if normalized_question_type in {"broad_exploration", "evidence"}:
+        return "broad_or_evidence_queries_expand summaries, cross-session evidence, and profile bridges"
+    return "normal_queries_keep_profile_and_cross_session_budget compact so same-session context dominates"
+
+
 def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_tokens: int, question_type: str = "fact") -> tuple[Json, str]:
     mode = str(
         args.get("memory_layer_budget_mode")
@@ -6026,6 +6037,7 @@ class MatrixArkLocalAdapter:
             memory_layer_budget_tokens, memory_layer_budget_mode = pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 remote_budget_tokens=remote_context_budget_tokens,
             )
+        memory_layer_budget_reason = memory_layer_budget_question_reason(question_type)
         query_terms = {term for term in tokens(query) if len(term) > 2}
         raw_reference_time_ms = args.get("reference_time_ms", now_ms())
         if not isinstance(raw_reference_time_ms, int):
@@ -6177,6 +6189,8 @@ class MatrixArkLocalAdapter:
             "source_role_budget_mode": source_role_budget_mode or ("explicit" if source_role_budget_tokens else "disabled"),
             "memory_layer_budget_tokens": memory_layer_budget_tokens,
             "memory_layer_budget_mode": memory_layer_budget_mode or ("explicit" if memory_layer_budget_tokens else "disabled"),
+            "memory_layer_budget_question_type": question_type,
+            "memory_layer_budget_question_reason": memory_layer_budget_reason,
             "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
             "ranking": ranking,
             "deadline_ms": deadline_ms,
@@ -7546,6 +7560,8 @@ class MatrixArkLocalAdapter:
                     **(dropped_over_budget.get("memory_layer_budget_policy", {"enabled": False}) if isinstance(dropped_over_budget.get("memory_layer_budget_policy"), dict) else {"enabled": False}),
                     "mode": memory_layer_budget_mode or ("explicit" if memory_layer_budget_tokens else "disabled"),
                     "remote_budget_tokens": remote_context_budget_tokens,
+                    "question_type": question_type,
+                    "question_budget_reason": memory_layer_budget_reason,
                     "derived": memory_layer_budget_mode in {
                         "auto",
                         "balanced",
