@@ -1991,6 +1991,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 )
                 self.assertEqual("accepted", first["status"])
                 self.assertFalse(first["session_buffer"]["threshold_ready"])
+                self.assertEqual(1, first["session_buffer"]["pending_event_count"])
+                self.assertEqual(1, first["session_buffer"]["pending_message_count"])
                 self.assertFalse(first["auto_batch_extract_result"])
 
                 second = matrixark_codex_hook.fast_async_hook_ingest(
@@ -2012,7 +2014,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertFalse(commit["final_session_boundary"])
                 self.assertEqual(2, commit["committed_event_count"])
                 self.assertEqual(["assistant", "user"], commit["source_roles"])
+                self.assertEqual(2, commit["trigger_evidence"]["pending_event_count"])
+                self.assertEqual(2, commit["trigger_evidence"]["pending_message_count"])
                 self.assertTrue(second["session_buffer"]["threshold_ready"])
+                self.assertEqual(2, second["session_buffer"]["pending_event_count"])
+                self.assertEqual(2, second["session_buffer"]["pending_message_count"])
                 self.assertFalse(adapter.pending_session_events({
                     "account_id": "acct_fast_threshold",
                     "tenant_id": "tenant_fast_threshold",
@@ -2107,6 +2113,123 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 )
                 self.assertTrue(all(record["completed_stages"] == ["extraction"] for record in progress))
                 self.assertTrue(all("summary" in record["remaining_stages"] for record in progress))
+        finally:
+            matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+
+    def test_fast_hook_threshold_commit_counts_messages_inside_buffered_event(self) -> None:
+        original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
+        matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-message-threshold.jsonl")
+
+                class Server:
+                    def __init__(self) -> None:
+                        self.adapter = adapter
+
+                scope = {
+                    "account_id": "acct_fast_message_threshold",
+                    "tenant_id": "tenant_fast_message_threshold",
+                    "user_id": "user_fast_message_threshold",
+                    "session_id": "session_fast_message_threshold",
+                    "team": "codex",
+                    "project": "temporalstore",
+                }
+                node_path = [
+                    "tenant:tenant_fast_message_threshold",
+                    "user:user_fast_message_threshold",
+                    "session:session_fast_message_threshold",
+                    "conversation:codex_hook",
+                ]
+                seed_ms = int(time.time() * 1000) - 10
+                seed_envelope = {
+                    "kind": "message",
+                    "scope": scope,
+                    "metadata": {
+                        "hook_type": "hook_boundary",
+                        "codex_event": "Stop",
+                        "source_roles": ["user", "assistant"],
+                    },
+                    "messages": [
+                        {"role": "user", "content": "User prompt: remember multi-message hook envelopes."},
+                        {"role": "assistant", "content": "Assistant decision: commit by message threshold."},
+                    ],
+                    "ingestion_time_ms": seed_ms,
+                    "storage_options": {},
+                }
+                adapter.append(
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": 10101,
+                        "node_hash": 20202,
+                        "node_path": node_path,
+                        "text": (
+                            "user: User prompt: remember multi-message hook envelopes.\n"
+                            "assistant: Assistant decision: commit by message threshold."
+                        ),
+                        "summary_text": "User prompt and assistant decision about multi-message hook envelopes.",
+                        "classification": "PENDING_ASYNC_EXTRACTION",
+                        "event_type": "pending_async",
+                        "status": "pending",
+                        "source_kind": "message",
+                        "source_role": "user",
+                        "hook_type": "hook_boundary",
+                        "codex_event": "Stop",
+                        "scope": scope,
+                        "envelope": seed_envelope,
+                        "async_processing": True,
+                        "updated_at_ms": seed_ms,
+                    }
+                )
+                adapter.append_session_buffer_event(
+                    envelope=seed_envelope,
+                    event_id_hash=10101,
+                    node_hash=20202,
+                    node_path=node_path,
+                    hook={"hook_type": "session_commit", "trigger": "Stop"},
+                )
+
+                scope_args = {
+                    "event": "UserPromptSubmit",
+                    **scope,
+                    "team": "codex",
+                    "project": "temporalstore",
+                    "session_commit_threshold": 3,
+                    "idle_commit_timeout_ms": 300000,
+                    "understanding_provider": "rules",
+                    "segment_provider": "deterministic",
+                }
+                result = matrixark_codex_hook.fast_async_hook_ingest(
+                    Server(),
+                    args=Namespace(**scope_args),
+                    text="Tool evidence: Exit code: 0 proves the direct fast hook sees the third message.",
+                    role="tool",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={
+                        "session_id_source": "payload_field",
+                        "thread_id": "thread-fast-message-threshold",
+                        "turn_id": "turn-fast-message-threshold-3",
+                        "hook_type": "tool_result",
+                    },
+                )
+
+                self.assertEqual("accepted", result["status"])
+                self.assertTrue(result["session_buffer"]["threshold_ready"])
+                self.assertEqual(2, result["session_buffer"]["pending_event_count"])
+                self.assertEqual(3, result["session_buffer"]["pending_message_count"])
+                self.assertEqual(1, result["session_buffer"]["pending_before_ingest_count"])
+                self.assertEqual(2, result["session_buffer"]["pending_before_ingest_message_count"])
+                commit = result["auto_batch_extract_result"]
+                self.assertEqual("committed", commit["status"])
+                self.assertEqual("threshold", commit["trigger_policy"])
+                self.assertEqual(2, commit["trigger_evidence"]["pending_event_count"])
+                self.assertEqual(3, commit["trigger_evidence"]["pending_message_count"])
+                self.assertEqual(["assistant", "tool", "user"], commit["source_roles"])
+                self.assertEqual({"assistant": 1, "tool": 1, "user": 1}, commit["source_role_counts"])
+                commits = [record for record in adapter.read_all() if record.get("record_type") == "context_batch_commit"]
+                self.assertEqual(1, len(commits))
+                self.assertEqual(2, commits[0]["pending_event_count_before_commit"])
+                self.assertEqual(3, commits[0]["pending_message_count_before_commit"])
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
