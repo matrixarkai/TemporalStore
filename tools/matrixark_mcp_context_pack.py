@@ -20,6 +20,7 @@ DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS = {
     "memory_lineage",
     "memory_hierarchy",
     "lineage",
+    "current_state_policy",
     "source_session_ids",
     "source_roles",
     "budget_source_roles",
@@ -36,6 +37,7 @@ DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS = {
     "source_message_counts_by_role",
     "source_hook_counts_by_type",
     "source_codex_event_counts_by_event",
+    "source_lineage",
     "pending_source_roles",
     "pending_source_hook_types",
     "pending_source_codex_events",
@@ -50,6 +52,8 @@ DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS = {
     "source_entity_count",
     "current_state_source_session_count",
     "current_state_source_entity_count",
+    "context_pack_payload_policy",
+    "operational_visibility_policy",
 }
 
 DEFAULT_HIDDEN_DEBUG_LINEAGE_KEY_FRAGMENTS = (

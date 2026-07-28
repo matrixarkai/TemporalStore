@@ -1438,8 +1438,12 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                     "source_codex_event_counts": {"Stop": 3},
                     "source_session_ids": ["session_summary_1", "session_summary_2"],
                     "source_entity_hashes": [101, 102],
+                    "current_state_policy": "merged_profile_state",
+                    "source_lineage": {"source_role_counts": {"assistant": 1}},
                 }
             ],
+            "context_pack_payload_policy": {"enable_debug_refs_with": "include_debug_refs=true"},
+            "operational_visibility_policy": {"audit_mode": "sampled"},
             "recall_policy": {
                 "session_continuity": {
                     "mode": "prefer",
@@ -1492,6 +1496,35 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         compact = core_mod.compact_context_pack_for_serving_flat(pack, include_debug=False)
         grouped_compact = core_mod.compact_context_pack_for_serving(pack, include_debug=False)
         debug_compact = core_mod.compact_context_pack_for_serving_flat(pack, include_debug=True)
+
+        hidden_fragments = ("debug", "lineage")
+        hidden_fields = {
+            "current_state_policy",
+            "source_roles",
+            "source_role_counts",
+            "source_hook_type_counts",
+            "source_codex_event_counts",
+            "source_session_ids",
+            "source_entity_count",
+            "source_lineage",
+            "context_pack_payload_policy",
+            "operational_visibility_policy",
+            "memory_hierarchy",
+        }
+
+        def assert_no_default_debug_lineage(value):
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    self.assertNotIn(key, hidden_fields)
+                    lowered = str(key).lower()
+                    self.assertFalse(any(fragment in lowered for fragment in hidden_fragments), key)
+                    assert_no_default_debug_lineage(item)
+            elif isinstance(value, list):
+                for item in value:
+                    assert_no_default_debug_lineage(item)
+
+        for default_pack in [compact, grouped_compact]:
+            assert_no_default_debug_lineage(default_pack)
 
         for field in [
             "async_pipeline_readiness",
