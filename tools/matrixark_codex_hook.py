@@ -3492,6 +3492,9 @@ def main() -> int:
                     "max_context_tokens": args.max_context_tokens,
                     "audit_mode": "telemetry_only",
                     "audit_sample_rate": 0.0,
+                    "ranking": {
+                        "source_role_budget_mode": "auto",
+                    },
                     "metadata": {
                         "retrieval_source": "codex_hook_retrieve",
                         "codex_event": args.event,

@@ -90,6 +90,35 @@ def codex_session_identity_policy(session_id_source: str) -> Json:
     }
 
 
+def auto_source_role_budget_tokens(args: Json, ranking: Json, *, remote_budget_tokens: int) -> tuple[Json, str]:
+    mode = str(
+        args.get("source_role_budget_mode")
+        or ranking.get("source_role_budget_mode")
+        or ""
+    ).strip().lower()
+    if mode not in {"auto", "balanced", "codex_auto"}:
+        return {}, ""
+    try:
+        remote_budget = max(0, int(remote_budget_tokens or 0))
+    except (TypeError, ValueError):
+        remote_budget = 0
+    if remote_budget <= 0:
+        return {}, mode
+    fractions = optional_object(args, "source_role_budget_fractions") or optional_object(ranking, "source_role_budget_fractions")
+    defaults = {"assistant": 0.45, "tool": 0.35, "user": 0.60}
+    budgets: Json = {}
+    for role, default_fraction in defaults.items():
+        raw_fraction = fractions.get(role, default_fraction) if isinstance(fractions, dict) else default_fraction
+        try:
+            fraction = max(0.0, min(1.0, float(raw_fraction)))
+        except (TypeError, ValueError):
+            fraction = default_fraction
+        amount = max(1, int(remote_budget * fraction))
+        if amount:
+            budgets[role] = amount
+    return budgets, mode
+
+
 def session_event_message_count(records: list[Json]) -> int:
     return sum(len(messages_from_event_record(record)) for record in records)
 
@@ -5744,6 +5773,13 @@ class MatrixArkLocalAdapter:
             remote_budget_tokens=remote_context_budget_tokens,
         )
         source_role_budget_tokens = optional_object(args, "source_role_budget_tokens") or optional_object(ranking, "source_role_budget_tokens")
+        source_role_budget_mode = "explicit" if source_role_budget_tokens else ""
+        if not source_role_budget_tokens:
+            source_role_budget_tokens, source_role_budget_mode = auto_source_role_budget_tokens(
+                args,
+                ranking,
+                remote_budget_tokens=remote_context_budget_tokens,
+            )
         query_terms = {term for term in tokens(query) if len(term) > 2}
         raw_reference_time_ms = args.get("reference_time_ms", now_ms())
         if not isinstance(raw_reference_time_ms, int):
@@ -5874,6 +5910,7 @@ class MatrixArkLocalAdapter:
             "cross_session": cross_session_policy,
             "shared_context": shared_context_policy,
             "source_role_budget_tokens": source_role_budget_tokens,
+            "source_role_budget_mode": source_role_budget_mode or ("explicit" if source_role_budget_tokens else "disabled"),
             "ranking": ranking,
             "deadline_ms": deadline_ms,
             "reference_time_ms": reference_time_ms,
@@ -7055,7 +7092,12 @@ class MatrixArkLocalAdapter:
                 "async_pipeline_readiness": async_pipeline_readiness,
                 "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
                 "shared_context": dropped_over_budget.get("shared_context_policy", shared_context_policy),
-                "source_role_budget": dropped_over_budget.get("source_role_budget_policy", {"enabled": False}),
+                "source_role_budget": {
+                    **(dropped_over_budget.get("source_role_budget_policy", {"enabled": False}) if isinstance(dropped_over_budget.get("source_role_budget_policy"), dict) else {"enabled": False}),
+                    "mode": source_role_budget_mode or ("explicit" if source_role_budget_tokens else "disabled"),
+                    "remote_budget_tokens": remote_context_budget_tokens,
+                    "derived": source_role_budget_mode in {"auto", "balanced", "codex_auto"},
+                },
                 "backend_retrieval_pushdown": retrieval_scan_stats,
                 "ranking": {
                     "min_similarity_score": min_similarity_score,
