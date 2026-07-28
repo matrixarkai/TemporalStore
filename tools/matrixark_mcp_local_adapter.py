@@ -3382,6 +3382,8 @@ class MatrixArkLocalAdapter:
                     },
                     hook=hook,
                 )
+            elif auto_batch_extract and idle_ready and isinstance(idle_commit_result, dict):
+                auto_batch_result = idle_commit_result
             return {
                 "status": "accepted",
                 "sync_write_mode": "lightweight_event",
@@ -4424,6 +4426,8 @@ class MatrixArkLocalAdapter:
                 },
                 hook=hook,
             )
+        elif auto_batch_extract and idle_ready and isinstance(idle_commit_result, dict):
+            auto_batch_result = idle_commit_result
         return {
             "status": "accepted",
             "event_id_hash": event_id_hash,
