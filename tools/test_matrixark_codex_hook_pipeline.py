@@ -248,6 +248,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "source_entity_lineage",
             "current_state_source_session_count",
             "current_state_source_entity_count",
+            "profile_promotion_policy",
+            "profile_promotion_blocker",
         }
         if isinstance(value, dict):
             for key, child in value.items():
@@ -7177,7 +7179,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             for key in ["session_id", "session_hash", "scope_key"]:
                 self.assertNotIn(key, retrieved_tool_profile_ref)
             self.assertNotIn("source_session_ids", retrieved_tool_profile_ref)
-            self.assertEqual("always_when_profile_scope_available", retrieved_tool_profile_ref["profile_promotion_policy"])
+            self.assertNotIn("profile_promotion_policy", retrieved_tool_profile_ref)
             self.assertNotIn("profile_promotion_blocker", retrieved_tool_profile_ref)
             decision_pack = adapter.retrieve(
                 {
@@ -7213,7 +7215,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             for key in ["session_id", "session_hash", "scope_key"]:
                 self.assertNotIn(key, retrieved_decision_profile_ref)
             self.assertNotIn("source_session_ids", retrieved_decision_profile_ref)
-            self.assertEqual("always_when_profile_scope_available", retrieved_decision_profile_ref["profile_promotion_policy"])
+            self.assertNotIn("profile_promotion_policy", retrieved_decision_profile_ref)
             self.assertNotIn("profile_promotion_blocker", retrieved_decision_profile_ref)
             session_only_pack = adapter.retrieve(
                 {
