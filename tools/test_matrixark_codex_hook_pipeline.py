@@ -94,6 +94,11 @@ class NativeCaptureLocalAdapter(MatrixArkLocalAdapter):
                         "codex_auto",
                         "pre_retrieval_summary_refresh_balanced",
                     },
+                },
+                "memory_selection_policy_budget_policy": {
+                    "enabled": bool(request.get("memory_selection_policy_budget_tokens")),
+                    "budget_tokens": request.get("memory_selection_policy_budget_tokens", {}),
+                    "mode": request.get("memory_selection_policy_budget_mode"),
                 }
             },
         }
@@ -1518,6 +1523,74 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         compact_dropped = compact_dropped_refs_for_context_pack(dropped)
         self.assertEqual(1, compact_dropped["source_role_budget"])
         self.assertEqual({"assistant": 0}, compact_dropped["source_role_budget_policy"]["selected_tokens_by_role"])
+
+    def test_memory_selection_policy_budget_caps_assistant_decision_without_blocking_tool_evidence(self) -> None:
+        selected, _used_tokens, dropped = select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 158,
+                    "text": "assistant_decision: keep the verbose implementation decision out when policy capped",
+                    "score": 0.99,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "entity_type": "assistant_decision",
+                    "source_roles": ["assistant"],
+                    "source_memory_selection_policies": ["selected_assistant_decision_outcome_only"],
+                    "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 1},
+                },
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 159,
+                    "text": "tool_evidence: tests passed",
+                    "score": 0.82,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "entity_type": "tool_evidence",
+                    "source_roles": ["tool"],
+                    "source_memory_selection_policies": ["selected_tool_evidence_only"],
+                    "source_memory_selection_policy_counts": {"selected_tool_evidence_only": 1},
+                },
+            ],
+            [],
+            max_context_tokens=40,
+            auxiliary_quota=0,
+            question_type="broad_exploration",
+            min_score=0.0,
+            max_selected_refs=2,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 40,
+                "max_sessions": 4,
+                "max_candidates": 4,
+                "min_entity_bridge_refs": 0,
+            },
+            memory_selection_policy_budget_tokens={"selected_assistant_decision_outcome_only": 1},
+        )
+
+        self.assertEqual([159], [ref["ref_hash"] for ref in selected])
+        self.assertEqual(["selected_tool_evidence_only"], selected[0]["budget_memory_selection_policies"])
+        self.assertEqual(1, dropped["memory_selection_policy_budget"])
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 1},
+            dropped["memory_selection_policy_budget_policy"]["budget_tokens"],
+        )
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 0},
+            dropped["memory_selection_policy_budget_policy"]["selected_tokens_by_policy"],
+        )
+        self.assertTrue(
+            any(
+                ref.get("ref_hash") == 158
+                and ref.get("drop_reason") == "memory_selection_policy_budget"
+                and ref.get("memory_selection_policy_budget_capped_policies")
+                == ["selected_assistant_decision_outcome_only"]
+                for ref in dropped["refs"]
+            ),
+            dropped["refs"],
+        )
+        compact_dropped = compact_dropped_refs_for_context_pack(dropped)
+        self.assertEqual(1, compact_dropped["memory_selection_policy_budget"])
 
     def test_source_role_budget_caps_assistant_summary_without_blocking_tool_entity(self) -> None:
         selected, _used_tokens, dropped = select_token_budgeted_refs(
@@ -3244,6 +3317,42 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({"assistant": 64, "tool": 32}, request["source_role_budget_tokens"])
             self.assertEqual({"max_selected_refs": 4}, request["ranking"])
 
+    def test_local_native_context_pack_receives_memory_selection_policy_budget_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-selection-policy-budget.jsonl")
+            scope = {
+                "account_id": "acct_native_selection_policy_budget",
+                "tenant_id": "tenant_native_selection_policy_budget",
+                "user_id": "user_native_selection_policy_budget",
+                "session_id": "session_native_selection_policy_budget",
+            }
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "selected tool evidence budget",
+                    "max_context_tokens": 256,
+                    "memory_selection_policy_budget_tokens": {
+                        "selected_assistant_decision_outcome_only": 24,
+                        "selected_tool_evidence_only": 48,
+                    },
+                    "ranking": {"max_selected_refs": 4},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertEqual("local-native-pack", pack["pack_id"])
+            self.assertEqual(1, len(adapter.native_requests))
+            request = adapter.native_requests[0]
+            self.assertEqual(
+                {
+                    "selected_assistant_decision_outcome_only": 24,
+                    "selected_tool_evidence_only": 48,
+                },
+                request["memory_selection_policy_budget_tokens"],
+            )
+            self.assertEqual("explicit", request["memory_selection_policy_budget_mode"])
+
     def test_local_native_context_pack_receives_auto_source_role_budget_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-auto-budget.jsonl")
@@ -3453,6 +3562,42 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "query": "summary budget",
                     "max_context_tokens": 256,
                     "memory_layer_budget_tokens": {"summary": 1},
+                    "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertFalse(first.get("context_pack_cache_hit", False))
+            self.assertFalse(second.get("context_pack_cache_hit", False))
+
+    def test_context_pack_cache_key_includes_memory_selection_policy_budget_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-selection-policy-cache.jsonl")
+            scope = {
+                "account_id": "acct_selection_policy_cache",
+                "tenant_id": "tenant_selection_policy_cache",
+                "user_id": "user_selection_policy_cache",
+                "session_id": "session_selection_policy_cache",
+            }
+
+            first = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "assistant decision budget",
+                    "max_context_tokens": 256,
+                    "memory_selection_policy_budget_tokens": {"selected_assistant_decision_outcome_only": 128},
+                    "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+            second = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "assistant decision budget",
+                    "max_context_tokens": 256,
+                    "memory_selection_policy_budget_tokens": {"selected_assistant_decision_outcome_only": 1},
                     "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
                     "audit_mode": "off",
                     "debug_context_pack": True,

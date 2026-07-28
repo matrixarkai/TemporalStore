@@ -272,6 +272,11 @@ def retrieval_query_budget_plan(
         memory_layer_budget_tokens, memory_layer_budget_mode = pre_refresh_helpers.pre_retrieval_summary_refresh_memory_layer_budget_tokens(
             remote_budget_tokens=remote_context_budget_tokens,
         )
+    memory_selection_policy_budget_tokens = (
+        optional_object(args, "memory_selection_policy_budget_tokens")
+        or optional_object(ranking, "memory_selection_policy_budget_tokens")
+    )
+    memory_selection_policy_budget_mode = "explicit" if memory_selection_policy_budget_tokens else ""
     raw_reference_time_ms = args.get("reference_time_ms", now_ms())
     if not isinstance(raw_reference_time_ms, int):
         raise MatrixArkError("reference_time_ms must be an integer")
@@ -299,6 +304,8 @@ def retrieval_query_budget_plan(
         "source_role_budget_mode": source_role_budget_mode,
         "memory_layer_budget_tokens": memory_layer_budget_tokens,
         "memory_layer_budget_mode": memory_layer_budget_mode,
+        "memory_selection_policy_budget_tokens": memory_selection_policy_budget_tokens,
+        "memory_selection_policy_budget_mode": memory_selection_policy_budget_mode,
         "query_terms": {term for term in tokens(query) if len(term) > 2},
         "reference_time_ms": reference_time_ms,
         "query_plan": query_plan,

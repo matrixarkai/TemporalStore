@@ -639,6 +639,8 @@ def build_context_pack(
     source_role_budget_mode: str = "",
     memory_layer_budget_tokens: Json | None = None,
     memory_layer_budget_mode: str = "",
+    memory_selection_policy_budget_tokens: Json | None = None,
+    memory_selection_policy_budget_mode: str = "",
     pre_retrieval_summary_refresh: Json | None = None,
     debug_refs: bool = False,
 ) -> Json:
@@ -688,6 +690,13 @@ def build_context_pack(
                 "enabled": bool(memory_layer_budget_tokens),
                 "mode": memory_layer_budget_mode or ("explicit" if memory_layer_budget_tokens else "disabled"),
                 "budget_tokens": memory_layer_budget_tokens or {},
+            }),
+            "memory_selection_policy_budget_policy": dropped_over_budget.get("memory_selection_policy_budget_policy", {
+                "enabled": bool(memory_selection_policy_budget_tokens),
+                "mode": memory_selection_policy_budget_mode or (
+                    "explicit" if memory_selection_policy_budget_tokens else "disabled"
+                ),
+                "budget_tokens": memory_selection_policy_budget_tokens or {},
             }),
             "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh or {"enabled": False, "status": "disabled"},
             "backend_retrieval_pushdown": retrieval_scan_stats,
