@@ -1571,6 +1571,38 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         ]:
             self.assertNotIn(field, item)
 
+    def test_current_profile_entity_serving_pack_keeps_bounded_provenance(self) -> None:
+        core_mod = importlib.import_module("tools.matrixark_mcp_core")
+        context_pack_mod = importlib.import_module("tools.matrixark_mcp_context_pack")
+        selected = [
+            {
+                "ref_type": "entity",
+                "text": "preference: repo path = /root/src/github-services/TemporalStore",
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "entity_type": "preference",
+                "entity_name": "repo path",
+                "profile_current_state_boost": 0.18,
+                "source_session_ids": [f"session-{index}" for index in range(10)],
+                "source_entity_hashes": [101, 202, 303],
+                "source_roles": ["llm", "tool"],
+                "source_codex_events": ["Stop", "PostToolUse"],
+                "source_hook_types": ["hook_boundary"],
+            }
+        ]
+
+        for compact_refs in [
+            core_mod.compact_context_pack_refs,
+            context_pack_mod.compact_context_pack_refs,
+        ]:
+            item = compact_refs(selected)[0]
+            self.assertEqual([f"session-{index}" for index in range(8)], item["source_session_ids"])
+            self.assertNotIn("source_entity_count", item)
+            self.assertNotIn("source_roles", item)
+            self.assertNotIn("source_codex_events", item)
+            self.assertNotIn("source_hook_types", item)
+            self.assertNotIn("source_entity_hashes", item)
+
     def test_shared_pack_builder_exposes_memory_layer_budget_and_pressure(self) -> None:
         builder_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pack_builder")
         metrics_mod = importlib.import_module("tools.matrixark_mcp_retrieve_metrics")
