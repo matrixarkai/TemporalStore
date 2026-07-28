@@ -1,5 +1,3 @@
-#![recursion_limit = "256"]
-
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
@@ -2000,9 +1998,12 @@ fn pack_ref_from_record(
         "source_codex_event_counts": record.get("source_codex_event_counts").cloned().unwrap_or_else(|| json!({})),
         "source_session_ids": record.get("source_session_ids").cloned().unwrap_or_else(|| json!([])),
         "source_entity_hashes": record.get("source_entity_hashes").cloned().unwrap_or_else(|| json!([])),
+        "source_entity_types": record.get("source_entity_types").cloned().unwrap_or_else(|| json!([])),
         "source_memory_scopes": record.get("source_memory_scopes").cloned().unwrap_or_else(|| json!([])),
         "source_session_continuities": record.get("source_session_continuities").cloned().unwrap_or_else(|| json!([])),
         "source_extraction_phases": record.get("source_extraction_phases").cloned().unwrap_or_else(|| json!([])),
+        "source_profile_promotion_policies": record.get("source_profile_promotion_policies").cloned().unwrap_or_else(|| json!([])),
+        "source_profile_promotion_blockers": record.get("source_profile_promotion_blockers").cloned().unwrap_or_else(|| json!([])),
         "source_ref": record.get("source_ref").cloned().unwrap_or(Value::Null),
     })
 }
@@ -2034,6 +2035,7 @@ fn native_serving_ref(mut item: Value) -> Value {
                 "selection_reason",
                 "source_session_ids",
                 "source_entity_hashes",
+                "source_entity_types",
                 "source_roles",
                 "source_role_counts",
                 "budget_source_roles",
@@ -2045,6 +2047,8 @@ fn native_serving_ref(mut item: Value) -> Value {
                 "source_memory_scopes",
                 "source_session_continuities",
                 "source_extraction_phases",
+                "source_profile_promotion_policies",
+                "source_profile_promotion_blockers",
             ] {
                 object.remove(field);
             }
@@ -2080,6 +2084,8 @@ fn native_serving_memory_layer_budget(value: &Value) -> Value {
             "source_message_counts_by_role",
             "source_hook_counts_by_type",
             "source_codex_event_counts_by_event",
+            "by_profile_promotion_policy",
+            "by_profile_promotion_blocker",
         ] {
             object.remove(field);
         }
@@ -2099,6 +2105,8 @@ fn native_serving_memory_layer_pressure(value: &Value) -> Value {
         "source_message_counts_by_role",
         "source_hook_counts_by_type",
         "source_codex_event_counts_by_event",
+        "by_profile_promotion_policy",
+        "by_profile_promotion_blocker",
     ]
     .into_iter()
     .collect();
@@ -2232,6 +2240,8 @@ fn selected_ref_layer_budget(refs: &[Value]) -> Value {
         "source_message_counts_by_role": {},
         "source_hook_counts_by_type": {},
         "source_codex_event_counts_by_event": {},
+        "by_profile_promotion_policy": {},
+        "by_profile_promotion_blocker": {},
         "final_session_boundary_ref_count": 0,
         "provisional_ref_count": 0,
         "final_ref_count": 0,
@@ -2307,12 +2317,20 @@ fn selected_ref_layer_budget(refs: &[Value]) -> Value {
             .filter(|value| !value.is_empty())
             .unwrap_or("unknown");
         increment_layer_bucket(&mut breakdown, "by_ref_type", ref_type, tokens);
-        if let Some(entity_type) = item
-            .get("entity_type")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-        {
-            increment_layer_bucket(&mut breakdown, "by_entity_type", entity_type, tokens);
+        for entity_type in source_layer_values(item, "source_entity_types", "entity_type", "") {
+            if !entity_type.is_empty() {
+                increment_layer_bucket(&mut breakdown, "by_entity_type", &entity_type, tokens);
+            }
+        }
+        for policy in source_layer_values(item, "source_profile_promotion_policies", "profile_promotion_policy", "") {
+            if !policy.is_empty() {
+                increment_layer_bucket(&mut breakdown, "by_profile_promotion_policy", &policy, tokens);
+            }
+        }
+        for blocker in source_layer_values(item, "source_profile_promotion_blockers", "profile_promotion_blocker", "") {
+            if !blocker.is_empty() {
+                increment_layer_bucket(&mut breakdown, "by_profile_promotion_blocker", &blocker, tokens);
+            }
         }
         if let Some(roles) = item.get("source_roles").and_then(Value::as_array) {
             for role in roles
@@ -2594,9 +2612,12 @@ fn native_dropped_ref_detail(
         "source_hook_type_counts": record.get("source_hook_type_counts").cloned().unwrap_or_else(|| json!({})),
         "source_codex_events": record.get("source_codex_events").cloned().unwrap_or_else(|| json!([])),
         "source_codex_event_counts": record.get("source_codex_event_counts").cloned().unwrap_or_else(|| json!({})),
+        "source_entity_types": record.get("source_entity_types").cloned().unwrap_or_else(|| json!([])),
         "source_memory_scopes": record.get("source_memory_scopes").cloned().unwrap_or_else(|| json!([])),
         "source_session_continuities": record.get("source_session_continuities").cloned().unwrap_or_else(|| json!([])),
         "source_extraction_phases": record.get("source_extraction_phases").cloned().unwrap_or_else(|| json!([])),
+        "source_profile_promotion_policies": record.get("source_profile_promotion_policies").cloned().unwrap_or_else(|| json!([])),
+        "source_profile_promotion_blockers": record.get("source_profile_promotion_blockers").cloned().unwrap_or_else(|| json!([])),
         "stale_or_superseded": reason == "stale",
         "text_preview": text.chars().take(160).collect::<String>(),
     });
@@ -2644,6 +2665,8 @@ fn dropped_ref_layer_budget_from_native_counts(
         "source_message_counts_by_role": {},
         "source_hook_counts_by_type": {},
         "source_codex_event_counts_by_event": {},
+        "by_profile_promotion_policy": {},
+        "by_profile_promotion_blocker": {},
         "by_profile_shadowed_reason": {},
         "total_dropped_tokens_with_detail": 0,
         "stale_ref_count": 0,
@@ -2710,12 +2733,20 @@ fn dropped_ref_layer_budget_from_native_counts(
                 tokens,
             );
         }
-        if let Some(entity_type) = detail
-            .get("entity_type")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-        {
-            increment_layer_bucket(&mut detail_budget, "by_entity_type", entity_type, tokens);
+        for entity_type in source_layer_values(detail, "source_entity_types", "entity_type", "") {
+            if !entity_type.is_empty() {
+                increment_layer_bucket(&mut detail_budget, "by_entity_type", &entity_type, tokens);
+            }
+        }
+        for policy in source_layer_values(detail, "source_profile_promotion_policies", "profile_promotion_policy", "") {
+            if !policy.is_empty() {
+                increment_layer_bucket(&mut detail_budget, "by_profile_promotion_policy", &policy, tokens);
+            }
+        }
+        for blocker in source_layer_values(detail, "source_profile_promotion_blockers", "profile_promotion_blocker", "") {
+            if !blocker.is_empty() {
+                increment_layer_bucket(&mut detail_budget, "by_profile_promotion_blocker", &blocker, tokens);
+            }
         }
         if let Some(roles) = detail.get("source_roles").and_then(Value::as_array) {
             for role in roles
@@ -2816,6 +2847,8 @@ fn dropped_ref_layer_budget_from_native_counts(
         "source_message_counts_by_role": detail_budget["source_message_counts_by_role"].clone(),
         "source_hook_counts_by_type": detail_budget["source_hook_counts_by_type"].clone(),
         "source_codex_event_counts_by_event": detail_budget["source_codex_event_counts_by_event"].clone(),
+        "by_profile_promotion_policy": detail_budget["by_profile_promotion_policy"].clone(),
+        "by_profile_promotion_blocker": detail_budget["by_profile_promotion_blocker"].clone(),
         "by_profile_shadowed_reason": detail_budget["by_profile_shadowed_reason"].clone(),
         "total_dropped_refs_with_detail": dropped_ref_details.len() as u64,
         "total_dropped_tokens_with_detail": detail_budget["total_dropped_tokens_with_detail"].clone(),
@@ -2858,6 +2891,8 @@ fn memory_layer_pressure_summary(selected_budget: &Value, dropped_budget: &Value
         "by_source_role",
         "by_hook_type",
         "by_codex_event",
+        "by_profile_promotion_policy",
+        "by_profile_promotion_blocker",
         "by_profile_shadowed_reason",
     ] {
         let selected_buckets = selected_budget.get(dimension).and_then(Value::as_object);
@@ -5692,6 +5727,8 @@ mod tests {
             "source_memory_scopes": ["session", "user_profile"],
             "source_session_continuities": ["same_session", "cross_session"],
             "source_extraction_phases": ["provisional", "final"],
+            "source_entity_types": ["assistant_decision", "tool_evidence"],
+            "source_profile_promotion_policies": ["always_when_profile_scope_available"],
             "source_roles": ["assistant"],
             "source_hook_types": ["hook_boundary"],
             "source_codex_events": ["Stop"],
@@ -5740,6 +5777,24 @@ mod tests {
         assert_eq!(
             budget
                 .pointer("/by_extraction_phase/final/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            budget
+                .pointer("/by_entity_type/assistant_decision/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            budget
+                .pointer("/by_entity_type/tool_evidence/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            budget
+                .pointer("/by_profile_promotion_policy/always_when_profile_scope_available/refs")
                 .and_then(Value::as_u64),
             Some(1)
         );
@@ -5928,7 +5983,7 @@ mod tests {
         append.entries_compact = vec![CompactHashEntry(
             format!("{storage_prefix}:records:000000"),
             "00000000000000000000".to_string(),
-            r#"{"record_bundle":[{"record_type":"context_entity","entity_hash":101,"entity_type":"decision","entity_name":"assistant alpha","state":"gpu","memory_scope":"user_profile","session_continuity":"same_session","source_roles":["assistant"],"source_role_counts":{"assistant":1},"source_hook_types":["hook_boundary"],"source_hook_type_counts":{"hook_boundary":1},"source_codex_events":["Stop"],"source_codex_event_counts":{"Stop":1}},{"record_type":"context_entity","entity_hash":102,"entity_type":"decision","entity_name":"assistant bravo","state":"gpu","memory_scope":"user_profile","session_continuity":"same_session","extraction_phase":"final","source_memory_scopes":["session","user_profile"],"source_session_continuities":["same_session","cross_session"],"source_extraction_phases":["provisional","final"],"source_roles":["assistant"],"source_role_counts":{"assistant":1},"source_hook_types":["hook_boundary"],"source_hook_type_counts":{"hook_boundary":1},"source_codex_events":["Stop"],"source_codex_event_counts":{"Stop":1}},{"record_type":"context_event","event_id_hash":103,"text":"gpu","memory_scope":"session","session_continuity":"same_session","source_roles":["user"],"source_role_counts":{"user":1},"source_hook_types":["UserPromptSubmit"],"source_hook_type_counts":{"UserPromptSubmit":1}}]}"#.to_string(),
+            r#"{"record_bundle":[{"record_type":"context_entity","entity_hash":101,"entity_type":"decision","entity_name":"assistant alpha","state":"gpu","memory_scope":"user_profile","session_continuity":"same_session","source_roles":["assistant"],"source_role_counts":{"assistant":1},"source_hook_types":["hook_boundary"],"source_hook_type_counts":{"hook_boundary":1},"source_codex_events":["Stop"],"source_codex_event_counts":{"Stop":1},"source_entity_types":["assistant_decision"],"source_profile_promotion_policies":["always_when_profile_scope_available"]},{"record_type":"context_entity","entity_hash":102,"entity_type":"decision","entity_name":"assistant bravo","state":"gpu","memory_scope":"user_profile","session_continuity":"same_session","extraction_phase":"final","source_memory_scopes":["session","user_profile"],"source_session_continuities":["same_session","cross_session"],"source_extraction_phases":["provisional","final"],"source_roles":["assistant"],"source_role_counts":{"assistant":1},"source_hook_types":["hook_boundary"],"source_hook_type_counts":{"hook_boundary":1},"source_codex_events":["Stop"],"source_codex_event_counts":{"Stop":1},"source_entity_types":["tool_evidence"],"source_profile_promotion_policies":["always_when_profile_scope_available"]},{"record_type":"context_event","event_id_hash":103,"text":"gpu","memory_scope":"session","session_continuity":"same_session","source_roles":["user"],"source_role_counts":{"user":1},"source_hook_types":["UserPromptSubmit"],"source_hook_type_counts":{"UserPromptSubmit":1}}]}"#.to_string(),
         )];
 
         let root = record_log_root(&append);
@@ -5970,6 +6025,7 @@ mod tests {
             "selection_reason",
             "source_session_ids",
             "source_entity_hashes",
+            "source_entity_types",
             "source_roles",
             "source_role_counts",
             "budget_source_roles",
@@ -5981,6 +6037,8 @@ mod tests {
             "source_memory_scopes",
             "source_session_continuities",
             "source_extraction_phases",
+            "source_profile_promotion_policies",
+            "source_profile_promotion_blockers",
         ] {
             assert!(
                 selected_refs.iter().all(|value| value.get(field).is_none()),
@@ -6021,12 +6079,16 @@ mod tests {
             "/recall_policy/memory_layer_budget/source_message_counts_by_role",
             "/recall_policy/memory_layer_budget/source_hook_counts_by_type",
             "/recall_policy/memory_layer_budget/source_codex_event_counts_by_event",
+            "/recall_policy/memory_layer_budget/by_profile_promotion_policy",
+            "/recall_policy/memory_layer_budget/by_profile_promotion_blocker",
             "/recall_policy/dropped_memory_layer_budget/by_source_role",
             "/recall_policy/dropped_memory_layer_budget/by_hook_type",
             "/recall_policy/dropped_memory_layer_budget/by_codex_event",
             "/recall_policy/dropped_memory_layer_budget/source_message_counts_by_role",
             "/recall_policy/dropped_memory_layer_budget/source_hook_counts_by_type",
             "/recall_policy/dropped_memory_layer_budget/source_codex_event_counts_by_event",
+            "/recall_policy/dropped_memory_layer_budget/by_profile_promotion_policy",
+            "/recall_policy/dropped_memory_layer_budget/by_profile_promotion_blocker",
         ] {
             assert!(
                 pack.pointer(field).is_none(),
@@ -6130,6 +6192,14 @@ mod tests {
             .any(|value| value.get("source_codex_event_counts").is_some()));
         assert!(debug_selected_refs
             .iter()
+            .any(|value| value.pointer("/source_entity_types/0").and_then(Value::as_str)
+                == Some("assistant_decision")));
+        assert!(debug_selected_refs.iter().any(|value| value
+            .pointer("/source_profile_promotion_policies/0")
+            .and_then(Value::as_str)
+            == Some("always_when_profile_scope_available")));
+        assert!(debug_selected_refs
+            .iter()
             .any(|value| value.get("ref_hash").is_some()));
         let debug_dropped_refs = debug_pack
             .pointer("/dropped_refs/refs")
@@ -6141,6 +6211,24 @@ mod tests {
                 .pointer("/source_role_budget_capped_roles/0")
                 .and_then(Value::as_str),
             Some("assistant")
+        );
+        assert_eq!(
+            debug_dropped_refs[0]
+                .pointer("/source_entity_types/0")
+                .and_then(Value::as_str),
+            Some("tool_evidence")
+        );
+        assert_eq!(
+            debug_pack
+                .pointer("/recall_policy/memory_layer_budget/by_profile_promotion_policy/always_when_profile_scope_available/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            debug_pack
+                .pointer("/recall_policy/dropped_memory_layer_budget/by_profile_promotion_policy/always_when_profile_scope_available/refs")
+                .and_then(Value::as_u64),
+            Some(1)
         );
         env::remove_var("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE");
 
