@@ -5213,6 +5213,103 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(isinstance(record.get("index_hash"), int) for record in index_records))
             self.assertEqual(len(index_records), len({record.get("index_hash") for record in index_records}))
 
+    def test_lightweight_async_ingest_promotes_profile_with_local_tenant_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-local-profile-fallback.jsonl")
+            scope = {
+                "account_id": "acct_local_profile",
+                "user_id": "user_local_profile",
+                "session_id": "session_local_profile",
+            }
+            base_args = {
+                "scope": scope,
+                "async_processing": True,
+                "auto_batch_extract": True,
+                "session_buffer_threshold": 2,
+                "skip_prior_context": True,
+            }
+            first = adapter.ingest(
+                {
+                    **base_args,
+                    "messages": [{"role": "user", "content": "Remember that local fallback profile promotion must always run."}],
+                    "metadata": {"hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
+                }
+            )
+            self.assertEqual("accepted", first["status"])
+            second = adapter.ingest(
+                {
+                    **base_args,
+                    "messages": [{"role": "assistant", "content": "Decision: use tenant_local_agent when tenant is missing."}],
+                    "metadata": {"hook_type": "after_llm", "codex_event": "Stop"},
+                }
+            )
+            commit = second["auto_batch_extract_result"]
+            self.assertEqual("committed", commit["status"])
+            self.assertEqual("always_when_profile_scope_available", commit["profile_promotion_policy"])
+            self.assertEqual("", commit["profile_promotion_blocker"])
+            self.assertTrue(commit["profile_promotion_scope_available"])
+            self.assertGreaterEqual(commit["profile_entities_written"], 1)
+            self.assertEqual(commit["entities_written"], commit["profile_entities_written"])
+            self.assertTrue(commit["summary_refresh"]["profile_dirty_hashes"])
+
+            records = adapter.read_all()
+            profile_entities = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
+                and record.get("batch_id_hash") == commit["batch_id_hash"]
+            ]
+            self.assertTrue(profile_entities)
+            self.assertTrue(
+                all(
+                    (record.get("scope") or record.get("access_scope") or {}).get("tenant_id") == "tenant_local_agent"
+                    and (record.get("scope") or record.get("access_scope") or {}).get("user_id") == "user_local_profile"
+                    and not (record.get("scope") or record.get("access_scope") or {}).get("session_id")
+                    and record.get("profile_promotion_policy") == "always_when_profile_scope_available"
+                    and record.get("profile_promotion_blocker") == ""
+                    for record in profile_entities
+                )
+            )
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_node"
+                    and record.get("node_path") == [
+                        "tenant:tenant_local_agent",
+                        "user:user_local_profile",
+                        "profile:long_term_memory",
+                    ]
+                    for record in records
+                )
+            )
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "session_local_profile_followup"},
+                    "session_scope": "prefer",
+                    "query": "What decision did we make for missing tenant profile promotion?",
+                    "max_context_tokens": 160,
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "ranking": {"max_selected_refs": 4},
+                }
+            )
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "entity"
+                    and ref.get("memory_scope") == "user_profile"
+                    and ref.get("session_continuity") == "cross_session"
+                    and "tenant_local_agent" in str(ref.get("text") or "")
+                    for ref in pack["selected_refs"]
+                ),
+                pack["selected_refs"],
+            )
+            coverage = pack["retrieval_metrics"]["retrieval_model_coverage"]
+            self.assertTrue(coverage["compact_scope_recovery_enabled"])
+            self.assertGreaterEqual(coverage["entity_embedding_vectors"], 1)
+
+
     def test_lightweight_async_ingest_threshold_and_idle_commit_flush_session_buffer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-async-threshold-idle.jsonl")
