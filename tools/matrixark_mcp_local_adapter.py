@@ -1536,7 +1536,7 @@ class MatrixArkLocalAdapter:
         )
         commit_id_hash = stable_hash(f"commit:{scope}:{source_event_ids}:{now_ms()}")
         memory_layers_written = {
-            "context_events": int(batch_result.get("extraction_context_event_count") or 0),
+            "context_events": int(batch_result.get("events_written") or 0),
             "segments": int(batch_result.get("segments_written") or 0),
             "session_entities": int(batch_result.get("entities_written") or 0),
             "profile_entities": int(batch_result.get("profile_entities_written") or 0),
@@ -4806,6 +4806,7 @@ class MatrixArkLocalAdapter:
 
         event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
         records_to_append: list[Json] = []
+        event_records_to_append: list[Json] = []
         event_rows: list[tuple[int, Json, str, int]] = []
         segment_hash_by_position: dict[int, int] = {}
         segment_hashes_by_position: dict[int, list[int]] = {}
@@ -4816,18 +4817,25 @@ class MatrixArkLocalAdapter:
                     continue
                 segment_hashes_by_position.setdefault(message_index, []).append(segment_hash)
                 segment_hash_by_position.setdefault(message_index, segment_hash)
-        if not derive_from_existing_events:
+        if derive_from_existing_events:
+            for index, message in enumerate(envelope["messages"]):
+                if index >= len(source_event_ids):
+                    continue
+                event_text = f"{message['role']}: {message['content']}"
+                event_rows.append((index, message, event_text, int(source_event_ids[index])))
+        else:
             for index, message in enumerate(envelope["messages"]):
                 event_text = f"{message['role']}: {message['content']}"
                 event_id_hash = stable_hash(f"{batch_id_hash}:event:{index}:{event_text}")
                 event_hashes.append(event_id_hash)
                 event_rows.append((index, message, event_text, event_id_hash))
+        if event_rows:
             event_vectors = embeddings_for_texts([event_text for _index, _message, event_text, _event_id_hash in event_rows])
             for (_index, message, event_text, event_id_hash), event_vector in zip(event_rows, event_vectors):
                 event_time_ms = int(envelope["ingestion_time_ms"])
                 event_role = normalize_message_role(message.get("role"))
                 original_event_role = str(message.get("original_role") or message.get("role") or "").strip().lower()
-                records_to_append.append(
+                event_records_to_append.append(
                     {
                         "record_type": "context_event",
                         "event_id_hash": event_id_hash,
@@ -4843,7 +4851,7 @@ class MatrixArkLocalAdapter:
                         "summary_text": summarize_text(event_text),
                         "classification": extraction["classification"],
                         "event_type": extraction["event_type"],
-                        "status": "observed",
+                        "status": "extraction_committed" if derive_from_existing_events else "observed",
                         "source_kind": envelope.get("kind", "message"),
                         "envelope": {
                             **envelope,
@@ -4873,7 +4881,7 @@ class MatrixArkLocalAdapter:
                         "extraction_context_event_ids": extraction_context_event_ids,
                     }
                 )
-                records_to_append.append(
+                event_records_to_append.append(
                     {
                         "record_type": "context_embedding",
                         "embedding_type": "event_text",
@@ -5282,7 +5290,7 @@ class MatrixArkLocalAdapter:
                 "message_count": extraction["message_count"],
                 "token_count_estimate": extraction["token_count_estimate"],
                 "outputs": {
-                    "events": 0 if derive_from_existing_events else len(envelope["messages"]),
+                    "events": len(event_rows),
                     "source_events": len(event_hashes),
                     "entities": len(entity_hashes),
                     "profile_entities": len(profile_entity_hashes),
@@ -5323,6 +5331,7 @@ class MatrixArkLocalAdapter:
             dirty_reason="new_event",
         )
         records_to_append.extend(dirty_records)
+        records_to_append.extend(event_records_to_append)
         self.append_many(records_to_append)
         summary_refresh = {
             "status": "dirty_marked",
@@ -5348,7 +5357,7 @@ class MatrixArkLocalAdapter:
             "embedding_fallback_used": embedding_fallback_used(),
             "message_count": extraction["message_count"],
             "token_count_estimate": extraction["token_count_estimate"],
-            "events_written": 0 if derive_from_existing_events else len(envelope["messages"]),
+            "events_written": len(event_rows),
             "source_event_count": len(event_hashes),
             "extraction_context_event_count": len(extraction_context_event_ids),
             "raw_events_duplicated": not derive_from_existing_events,

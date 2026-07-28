@@ -443,6 +443,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                     "batch_id_hash": 7,
                     "node_hash": 8,
                     "node_path": args["metadata"]["node_path"],
+                    "events_written": len(args.get("source_event_ids", [])),
                     "extraction_context_event_count": len(args.get("extraction_context_event_ids", [])),
                     "segments_written": 1,
                     "entities_written": 3,
@@ -490,7 +491,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(committed["trigger_evidence"]["threshold_ready"])
         self.assertFalse(committed["trigger_evidence"]["idle_ready"])
         self.assertEqual("threshold", committed["trigger_policy"])
-        self.assertEqual(0, committed["memory_layers_written"]["context_events"])
+        self.assertEqual(1, committed["memory_layers_written"]["context_events"])
         self.assertEqual(1, committed["memory_layers_written"]["segments"])
         self.assertEqual(3, committed["memory_layers_written"]["session_entities"])
         self.assertEqual(1, committed["memory_layers_written"]["profile_entities"])
