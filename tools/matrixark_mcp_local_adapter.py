@@ -313,10 +313,16 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
         if role:
             roles.add(role)
     hook_types = set()
+    hook_type = str(metadata.get("hook_type") or "").strip()
+    if hook_type:
+        hook_types.add(hook_type)
     for value in metadata.get("source_hook_types", []) if isinstance(metadata.get("source_hook_types"), list) else []:
         if str(value or "").strip():
             hook_types.add(str(value).strip())
     codex_events = set()
+    codex_event = str(metadata.get("codex_event") or "").strip()
+    if codex_event:
+        codex_events.add(codex_event)
     for value in metadata.get("source_codex_events", []) if isinstance(metadata.get("source_codex_events"), list) else []:
         if str(value or "").strip():
             codex_events.add(str(value).strip())
@@ -3588,6 +3594,7 @@ class MatrixArkLocalAdapter:
                     source_hash_field="source_event_hash",
                     source_hash=event_id_hash,
                     dirty_reason="new_event",
+                    source_lineage=source_lineage,
                 )
                 self.append(
                     {
@@ -3627,6 +3634,7 @@ class MatrixArkLocalAdapter:
                         "status": "pending",
                         "stages": ["extraction", "summary", "compression", "embedding"],
                         "reason": "sync_accept_async_processing",
+                        **source_event_lineage_summary([source_lineage]),
                         "created_at_ms": envelope["ingestion_time_ms"],
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }

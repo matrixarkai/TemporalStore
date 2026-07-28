@@ -5241,6 +5241,20 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(1, first["session_buffer"]["pending_event_count"])
             self.assertFalse(first["session_buffer"]["threshold_ready"])
             self.assertFalse(first["session_buffer"]["idle_ready"])
+            first_records = adapter.read_all()
+            first_dirty = [record for record in first_records if record.get("record_type") == "context_summary_dirty"]
+            self.assertTrue(first_dirty)
+            self.assertTrue(all(record.get("source_role_counts") == {"user": 1} for record in first_dirty))
+            self.assertTrue(all(record.get("source_hook_type_counts") == {"before_llm": 1} for record in first_dirty))
+            self.assertTrue(all(record.get("source_codex_event_counts") == {"UserPromptSubmit": 1} for record in first_dirty))
+            first_tasks = [record for record in first_records if record.get("record_type") == "matrixark_async_pipeline_task"]
+            self.assertEqual(1, len(first_tasks))
+            self.assertEqual(["user"], first_tasks[0]["source_roles"])
+            self.assertEqual(["before_llm"], first_tasks[0]["source_hook_types"])
+            self.assertEqual(["UserPromptSubmit"], first_tasks[0]["source_codex_events"])
+            self.assertEqual({"user": 1}, first_tasks[0]["source_role_counts"])
+            self.assertEqual({"before_llm": 1}, first_tasks[0]["source_hook_type_counts"])
+            self.assertEqual({"UserPromptSubmit": 1}, first_tasks[0]["source_codex_event_counts"])
 
             second = adapter.ingest(
                 {
@@ -5303,6 +5317,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(second["auto_batch_extract_result"]["source_codex_event_counts"], threshold_commit["source_codex_event_counts"])
             self.assertEqual("always_when_profile_scope_available", threshold_commit["profile_promotion_policy"])
             self.assertEqual("always_when_profile_scope_available", threshold_commit["memory_layers_written"]["profile_promotion_policy"])
+            threshold_pending_tasks = [
+                record
+                for record in threshold_records
+                if record.get("record_type") == "matrixark_async_pipeline_task"
+                and record.get("status") == "pending"
+            ]
+            self.assertGreaterEqual(len(threshold_pending_tasks), 2)
+            self.assertTrue(any(task.get("source_role_counts") == {"assistant": 1} for task in threshold_pending_tasks))
+            self.assertTrue(any(task.get("source_hook_type_counts") == {"after_llm": 1} for task in threshold_pending_tasks))
+            self.assertTrue(any(task.get("source_codex_event_counts") == {"Stop": 1} for task in threshold_pending_tasks))
             threshold_tasks = [
                 record
                 for record in threshold_records
