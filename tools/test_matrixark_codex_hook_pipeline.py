@@ -2089,6 +2089,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 {
                     **base_args,
                     "messages": [{"role": "user", "content": "Plan to extract Codex prompts in batches."}],
+                    "metadata": {"hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
                 }
             )
             self.assertEqual("accepted", first["status"])
@@ -2101,6 +2102,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 {
                     **base_args,
                     "messages": [{"role": "assistant", "content": "Decision: threshold commits should flush without waiting for Stop."}],
+                    "metadata": {"hook_type": "after_llm", "codex_event": "Stop"},
                 }
             )
             self.assertEqual("committed", second["auto_batch_extract_result"]["status"])
@@ -2117,8 +2119,32 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(threshold_layers["summary_dirty_nodes"], 1)
             self.assertEqual("dirty_marked", threshold_layers["summary_refresh_status"])
             self.assertEqual(["assistant", "user"], threshold_layers["source_roles"])
+            self.assertEqual(["after_llm", "before_llm"], threshold_layers["source_hook_types"])
+            self.assertEqual(["Stop", "UserPromptSubmit"], threshold_layers["source_codex_events"])
             self.assertEqual(["assistant", "user"], second["auto_batch_extract_result"]["source_roles"])
             self.assertEqual({"assistant": 1, "user": 1}, second["auto_batch_extract_result"]["source_role_counts"])
+            self.assertEqual({"after_llm": 1, "before_llm": 1}, second["auto_batch_extract_result"]["source_hook_type_counts"])
+            self.assertEqual({"Stop": 1, "UserPromptSubmit": 1}, second["auto_batch_extract_result"]["source_codex_event_counts"])
+            threshold_records = adapter.read_all()
+            threshold_commit = next(
+                record
+                for record in threshold_records
+                if record.get("record_type") == "context_batch_commit"
+                and record.get("commit_id_hash") == second["auto_batch_extract_result"]["commit_id_hash"]
+            )
+            self.assertEqual(second["auto_batch_extract_result"]["source_role_counts"], threshold_commit["source_role_counts"])
+            self.assertEqual(second["auto_batch_extract_result"]["source_hook_type_counts"], threshold_commit["source_hook_type_counts"])
+            self.assertEqual(second["auto_batch_extract_result"]["source_codex_event_counts"], threshold_commit["source_codex_event_counts"])
+            threshold_tasks = [
+                record
+                for record in threshold_records
+                if record.get("record_type") == "matrixark_async_pipeline_task"
+                and record.get("commit_id_hash") == second["auto_batch_extract_result"]["commit_id_hash"]
+            ]
+            self.assertEqual(2, len(threshold_tasks))
+            self.assertTrue(all(task["source_role_counts"] == {"assistant": 1, "user": 1} for task in threshold_tasks))
+            self.assertTrue(all(task["source_hook_type_counts"] == {"after_llm": 1, "before_llm": 1} for task in threshold_tasks))
+            self.assertTrue(all(task["source_codex_event_counts"] == {"Stop": 1, "UserPromptSubmit": 1} for task in threshold_tasks))
             threshold_refresh = second["auto_batch_extract_result"]["summary_refresh"]
             self.assertTrue(threshold_refresh["session_dirty_hashes"])
             self.assertTrue(threshold_refresh["profile_dirty_hashes"])

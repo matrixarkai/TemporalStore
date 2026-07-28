@@ -304,6 +304,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "updated_at_ms": 100,
                 "envelope": {
                     "messages": [{"role": "user", "content": "first pending message"}],
+                    "metadata": {"hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
                     "ingestion_time_ms": 100,
                 },
             }
@@ -334,7 +335,17 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(2, committed["memory_layers_written"]["summary_dirty_nodes"])
         self.assertEqual("dirty_marked", committed["memory_layers_written"]["summary_refresh_status"])
         self.assertEqual("provisional", committed["memory_layers_written"]["extraction_phase"])
+        self.assertEqual({"user": 1}, committed["source_role_counts"])
+        self.assertEqual({"before_llm": 1}, committed["source_hook_type_counts"])
+        self.assertEqual({"UserPromptSubmit": 1}, committed["source_codex_event_counts"])
         self.assertEqual(committed["trigger_evidence"], adapter.appended[0]["trigger_evidence"])
+        self.assertEqual(committed["source_role_counts"], adapter.appended[0]["source_role_counts"])
+        self.assertEqual(committed["source_hook_type_counts"], adapter.appended[0]["source_hook_type_counts"])
+        self.assertEqual(committed["source_codex_event_counts"], adapter.appended[0]["source_codex_event_counts"])
+        async_task = next(record for record in adapter.appended if record["record_type"] == "matrixark_async_pipeline_task")
+        self.assertEqual(committed["source_role_counts"], async_task["source_role_counts"])
+        self.assertEqual(committed["source_hook_type_counts"], async_task["source_hook_type_counts"])
+        self.assertEqual(committed["source_codex_event_counts"], async_task["source_codex_event_counts"])
 
     def test_modular_batch_extract_promotes_profile_entities(self) -> None:
         batch_mod = importlib.import_module("tools.matrixark_mcp_local_batch_extract_runtime")

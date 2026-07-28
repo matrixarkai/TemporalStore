@@ -1361,14 +1361,18 @@ class MatrixArkLocalAdapter:
         source_roles = sorted(pending_source_roles)
         source_hook_types = sorted(pending_source_hook_types)
         source_codex_events = sorted(pending_source_codex_events)
+        source_lineage = source_event_lineage_summary(pending)
+        source_role_counts = source_lineage.get("source_role_counts", {})
+        source_hook_type_counts = source_lineage.get("source_hook_type_counts", {})
+        source_codex_event_counts = source_lineage.get("source_codex_event_counts", {})
         if source_roles:
-            metadata = {**metadata, "source_roles": source_roles}
+            metadata = {**metadata, "source_roles": source_roles, "source_role_counts": source_role_counts}
         if pending_source_hook_types:
-            metadata = {**metadata, "source_hook_types": source_hook_types}
+            metadata = {**metadata, "source_hook_types": source_hook_types, "source_hook_type_counts": source_hook_type_counts}
             if "hook_type" not in metadata and len(pending_source_hook_types) == 1:
                 metadata["hook_type"] = next(iter(pending_source_hook_types))
         if pending_source_codex_events:
-            metadata = {**metadata, "source_codex_events": source_codex_events}
+            metadata = {**metadata, "source_codex_events": source_codex_events, "source_codex_event_counts": source_codex_event_counts}
             if "codex_event" not in metadata and len(pending_source_codex_events) == 1:
                 metadata["codex_event"] = next(iter(pending_source_codex_events))
         storage_options = normalize_storage_options(args, metadata)
@@ -1442,8 +1446,11 @@ class MatrixArkLocalAdapter:
                 "extraction_context_event_ids": extraction_context_event_ids,
                 "extraction_context_event_count": len(extraction_context_event_ids),
                 "source_roles": source_roles,
+                "source_role_counts": source_role_counts,
                 "source_hook_types": source_hook_types,
+                "source_hook_type_counts": source_hook_type_counts,
                 "source_codex_events": source_codex_events,
+                "source_codex_event_counts": source_codex_event_counts,
                 "profile_promotion_summary": batch_result.get("profile_promotion_summary", []),
                 "summary_refresh": batch_result.get("summary_refresh", {}),
                 "memory_layers_written": memory_layers_written,
@@ -1474,8 +1481,11 @@ class MatrixArkLocalAdapter:
                     "extraction_phase": extraction_phase,
                     "final_session_boundary": final_session_boundary,
                     "source_roles": source_roles,
+                    "source_role_counts": source_role_counts,
                     "source_hook_types": source_hook_types,
+                    "source_hook_type_counts": source_hook_type_counts,
                     "source_codex_events": source_codex_events,
+                    "source_codex_event_counts": source_codex_event_counts,
                     "summary_refresh_status": memory_layers_written.get("summary_refresh_status"),
                     "summary_dirty_nodes": memory_layers_written.get("summary_dirty_nodes", 0),
                     "memory_layers_written": memory_layers_written,
@@ -1496,8 +1506,11 @@ class MatrixArkLocalAdapter:
             "extraction_context_event_ids": extraction_context_event_ids,
             "extraction_context_event_count": len(extraction_context_event_ids),
             "source_roles": source_roles,
+            "source_role_counts": source_role_counts,
             "source_hook_types": source_hook_types,
+            "source_hook_type_counts": source_hook_type_counts,
             "source_codex_events": source_codex_events,
+            "source_codex_event_counts": source_codex_event_counts,
             "profile_promotion_summary": batch_result.get("profile_promotion_summary", []),
             "commit_reason": commit_reason,
             "trigger_policy": trigger_policy,
@@ -4574,6 +4587,19 @@ class MatrixArkLocalAdapter:
             if role:
                 source_role_counts[role] = int(source_role_counts.get(role, 0)) + 1
         envelope_metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
+        metadata_role_counts = envelope_metadata.get("source_role_counts") if isinstance(envelope_metadata.get("source_role_counts"), dict) else {}
+        if metadata_role_counts:
+            source_role_counts = {}
+            for role, count in metadata_role_counts.items():
+                role_name = normalize_message_role(role)
+                if not role_name:
+                    continue
+                try:
+                    amount = max(0, int(count or 0))
+                except (TypeError, ValueError):
+                    continue
+                if amount:
+                    source_role_counts[role_name] = int(source_role_counts.get(role_name, 0)) + amount
         source_hook_type_values = [
             envelope.get("hook_type"),
             envelope_metadata.get("hook_type"),
@@ -4587,6 +4613,19 @@ class MatrixArkLocalAdapter:
             for hook_type in source_hook_types
             if hook_type
         }
+        metadata_hook_type_counts = envelope_metadata.get("source_hook_type_counts") if isinstance(envelope_metadata.get("source_hook_type_counts"), dict) else {}
+        if metadata_hook_type_counts:
+            source_hook_type_counts = {}
+            for hook_type, count in metadata_hook_type_counts.items():
+                hook_name = str(hook_type or "").strip()
+                if not hook_name:
+                    continue
+                try:
+                    amount = max(0, int(count or 0))
+                except (TypeError, ValueError):
+                    continue
+                if amount:
+                    source_hook_type_counts[hook_name] = int(source_hook_type_counts.get(hook_name, 0)) + amount
         source_codex_event_values = [
             envelope.get("codex_event"),
             envelope_metadata.get("codex_event"),
@@ -4601,6 +4640,19 @@ class MatrixArkLocalAdapter:
             for codex_event in source_codex_events
             if codex_event
         }
+        metadata_codex_event_counts = envelope_metadata.get("source_codex_event_counts") if isinstance(envelope_metadata.get("source_codex_event_counts"), dict) else {}
+        if metadata_codex_event_counts:
+            source_codex_event_counts = {}
+            for codex_event, count in metadata_codex_event_counts.items():
+                event_name = str(codex_event or "").strip()
+                if not event_name:
+                    continue
+                try:
+                    amount = max(0, int(count or 0))
+                except (TypeError, ValueError):
+                    continue
+                if amount:
+                    source_codex_event_counts[event_name] = int(source_codex_event_counts.get(event_name, 0)) + amount
 
         event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
         records_to_append: list[Json] = []

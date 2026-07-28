@@ -9,6 +9,7 @@ try:
         MatrixArkError,
         canonical_storage_route,
         message_from_event_record,
+        normalize_message_role,
         normalize_storage_options,
         now_ms,
         optional_object,
@@ -23,6 +24,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         MatrixArkError,
         canonical_storage_route,
         message_from_event_record,
+        normalize_message_role,
         normalize_storage_options,
         now_ms,
         optional_object,
@@ -94,11 +96,80 @@ def session_commit_memory_layers_written(
     return {key: value for key, value in layers.items() if value not in (None, "", [], {})}
 
 
+def _pending_source_count_summary(records: list[Json]) -> Json:
+    role_counts: Json = {}
+    hook_type_counts: Json = {}
+    codex_event_counts: Json = {}
+
+    def add_count(bucket: Json, key: object, amount: object = 1, *, normalize_role: bool = False) -> None:
+        name = normalize_message_role(key) if normalize_role else str(key or "").strip()
+        if not name:
+            return
+        try:
+            count = max(0, int(amount or 0))
+        except (TypeError, ValueError):
+            count = 0
+        if count:
+            bucket[name] = int(bucket.get(name, 0)) + count
+
+    def add_values(bucket: Json, values: object) -> None:
+        if isinstance(values, list):
+            for value in values:
+                add_count(bucket, value)
+        else:
+            add_count(bucket, values)
+
+    for record in records:
+        event_envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else {}
+        event_metadata = event_envelope.get("metadata", {}) if isinstance(event_envelope.get("metadata"), dict) else {}
+        event_hook = record.get("agent_hook", {}) if isinstance(record.get("agent_hook"), dict) else {}
+        existing_role_counts = record.get("source_role_counts") if isinstance(record.get("source_role_counts"), dict) else {}
+        if existing_role_counts:
+            for role, count in existing_role_counts.items():
+                add_count(role_counts, role, count, normalize_role=True)
+        else:
+            message = message_from_event_record(record)
+            if message:
+                add_count(role_counts, message.get("role"), normalize_role=True)
+            for role in event_metadata.get("source_roles") if isinstance(event_metadata.get("source_roles"), list) else []:
+                add_count(role_counts, role, normalize_role=True)
+        existing_hook_counts = record.get("source_hook_type_counts") if isinstance(record.get("source_hook_type_counts"), dict) else {}
+        if existing_hook_counts:
+            for hook_type, count in existing_hook_counts.items():
+                add_count(hook_type_counts, hook_type, count)
+        else:
+            add_values(hook_type_counts, event_envelope.get("hook_type"))
+            add_values(hook_type_counts, event_metadata.get("hook_type"))
+            add_values(hook_type_counts, event_metadata.get("source_hook_types"))
+            add_values(hook_type_counts, event_hook.get("hook_type"))
+        existing_codex_counts = record.get("source_codex_event_counts") if isinstance(record.get("source_codex_event_counts"), dict) else {}
+        if existing_codex_counts:
+            for codex_event, count in existing_codex_counts.items():
+                add_count(codex_event_counts, codex_event, count)
+        else:
+            add_values(codex_event_counts, event_envelope.get("codex_event"))
+            add_values(codex_event_counts, event_metadata.get("codex_event"))
+            add_values(codex_event_counts, event_metadata.get("source_codex_events"))
+            add_values(codex_event_counts, event_hook.get("codex_event"))
+            add_values(codex_event_counts, event_hook.get("trigger"))
+
+    return {
+        "source_role_counts": dict(sorted(role_counts.items())),
+        "source_hook_type_counts": dict(sorted(hook_type_counts.items())),
+        "source_codex_event_counts": dict(sorted(codex_event_counts.items())),
+    }
+
+
 def append_session_commit_task_progress(
     adapter: object,
     *,
     source_event_ids: list[int],
     source_roles: list[str],
+    source_role_counts: Json,
+    source_hook_types: list[str],
+    source_hook_type_counts: Json,
+    source_codex_events: list[str],
+    source_codex_event_counts: Json,
     commit_id_hash: int,
     batch_id_hash: int | None,
     scope: Json,
@@ -127,6 +198,11 @@ def append_session_commit_task_progress(
                 "extraction_phase": extraction_phase,
                 "final_session_boundary": final_session_boundary,
                 "source_roles": source_roles,
+                "source_role_counts": source_role_counts,
+                "source_hook_types": source_hook_types,
+                "source_hook_type_counts": source_hook_type_counts,
+                "source_codex_events": source_codex_events,
+                "source_codex_event_counts": source_codex_event_counts,
                 "summary_refresh_status": memory_layers_written.get("summary_refresh_status"),
                 "summary_dirty_nodes": memory_layers_written.get("summary_dirty_nodes", 0),
                 "memory_layers_written": memory_layers_written,
@@ -288,14 +364,18 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
     source_roles = sorted(pending_source_roles)
     source_hook_types = sorted(pending_source_hook_types)
     source_codex_events = sorted(pending_source_codex_events)
+    source_counts = _pending_source_count_summary(pending)
+    source_role_counts = source_counts["source_role_counts"]
+    source_hook_type_counts = source_counts["source_hook_type_counts"]
+    source_codex_event_counts = source_counts["source_codex_event_counts"]
     if source_roles:
-        metadata = {**metadata, "source_roles": source_roles}
+        metadata = {**metadata, "source_roles": source_roles, "source_role_counts": source_role_counts}
     if pending_source_hook_types:
-        metadata = {**metadata, "source_hook_types": source_hook_types}
+        metadata = {**metadata, "source_hook_types": source_hook_types, "source_hook_type_counts": source_hook_type_counts}
         if "hook_type" not in metadata and len(pending_source_hook_types) == 1:
             metadata["hook_type"] = next(iter(pending_source_hook_types))
     if pending_source_codex_events:
-        metadata = {**metadata, "source_codex_events": source_codex_events}
+        metadata = {**metadata, "source_codex_events": source_codex_events, "source_codex_event_counts": source_codex_event_counts}
         if "codex_event" not in metadata and len(pending_source_codex_events) == 1:
             metadata["codex_event"] = next(iter(pending_source_codex_events))
     storage_options = normalize_storage_options(args, metadata)
@@ -356,8 +436,11 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "extraction_context_event_ids": extraction_context_event_ids,
             "extraction_context_event_count": len(extraction_context_event_ids),
             "source_roles": source_roles,
+            "source_role_counts": source_role_counts,
             "source_hook_types": source_hook_types,
+            "source_hook_type_counts": source_hook_type_counts,
             "source_codex_events": source_codex_events,
+            "source_codex_event_counts": source_codex_event_counts,
             "idle_timeout_ms": idle_timeout_ms,
             "idle_elapsed_ms": idle_elapsed_ms,
             "trigger_evidence": trigger_evidence,
@@ -372,6 +455,11 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         adapter,
         source_event_ids=source_event_ids,
         source_roles=source_roles,
+        source_role_counts=source_role_counts,
+        source_hook_types=source_hook_types,
+        source_hook_type_counts=source_hook_type_counts,
+        source_codex_events=source_codex_events,
+        source_codex_event_counts=source_codex_event_counts,
         commit_id_hash=commit_id_hash,
         batch_id_hash=batch_result.get("batch_id_hash"),
         scope=scope,
@@ -393,8 +481,11 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         "extraction_context_event_ids": extraction_context_event_ids,
         "extraction_context_event_count": len(extraction_context_event_ids),
         "source_roles": source_roles,
+        "source_role_counts": source_role_counts,
         "source_hook_types": source_hook_types,
+        "source_hook_type_counts": source_hook_type_counts,
         "source_codex_events": source_codex_events,
+        "source_codex_event_counts": source_codex_event_counts,
         "commit_reason": commit_reason,
         "trigger_policy": trigger_policy,
         "extraction_phase": extraction_phase,
