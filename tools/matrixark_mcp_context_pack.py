@@ -937,6 +937,87 @@ def serving_refs_for_pack(refs: list[Json], *, default_session_continuity: str =
     ]
 
 
+def strip_raw_debug_payload_fields(value: Any) -> Any:
+    """Remove unbounded debug payloads while preserving compact debug counters."""
+    raw_debug_fields = {
+        "debug",
+        "debug_payload",
+        "debug_refs",
+        "debug_record",
+        "metadata_debug",
+        "memory_lineage",
+        "lineage",
+    }
+    if isinstance(value, dict):
+        compact: Json = {}
+        for key, item in value.items():
+            name = str(key or "")
+            lowered = name.lower()
+            if name in raw_debug_fields or "debug_" in lowered or "_debug" in lowered:
+                continue
+            if name == "source_entity_hashes" and isinstance(item, list):
+                compact["source_entity_count"] = len(item)
+                continue
+            compact[key] = strip_raw_debug_payload_fields(item)
+        return compact
+    if isinstance(value, list):
+        return [strip_raw_debug_payload_fields(item) for item in value]
+    return value
+
+
+def _bound_prebuilt_serving_lineage_item(item: Json) -> Json:
+    compact = strip_raw_debug_payload_fields(item)
+    for field in [
+        "source_session_ids",
+        "source_hook_types",
+        "source_codex_events",
+        "source_memory_scopes",
+        "source_session_continuities",
+        "source_extraction_phases",
+    ]:
+        value = compact.get(field)
+        if isinstance(value, list):
+            compact[field] = value[:8]
+    for field in ["source_roles", "budget_source_roles"]:
+        value = compact.get(field)
+        if isinstance(value, list):
+            roles = _ordered_normalized_roles(value)
+            if roles:
+                compact[field] = roles[:8]
+            else:
+                compact.pop(field, None)
+    for field in ["source_role_counts", "budget_source_role_counts"]:
+        compact_counts = _compact_role_count_map(compact.get(field))
+        if compact_counts:
+            compact[field] = compact_counts
+        else:
+            compact.pop(field, None)
+    for field in ["source_hook_type_counts", "source_codex_event_counts"]:
+        compact_counts = _compact_count_map(compact.get(field))
+        if compact_counts:
+            compact[field] = compact_counts
+        else:
+            compact.pop(field, None)
+    return compact
+
+
+def compact_prebuilt_serving_groups(groups: list[Json], *, include_debug: bool = False) -> list[Json]:
+    compact_groups: list[Json] = []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        compact_group = _bound_prebuilt_serving_lineage_item(group) if include_debug else strip_default_debug_lineage_fields(group)
+        items = group.get("items")
+        if isinstance(items, list):
+            compact_group["items"] = [
+                _bound_prebuilt_serving_lineage_item(item) if include_debug else strip_default_debug_lineage_fields(item)
+                for item in items
+                if isinstance(item, dict)
+            ]
+        compact_groups.append(compact_group)
+    return compact_groups
+
+
 def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity: str = "", default_memory_layer: str = "", include_debug: bool = False) -> list[Json]:
     groups: dict[tuple[str, str], Json] = {}
     order: list[tuple[str, str]] = []
@@ -1019,7 +1100,10 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     elif isinstance(pack.get("groups"), list):
         # Some adapters already return the serving shape. Preserve it so a
         # second compaction pass in the MCP entrypoint does not erase refs.
-        compact["groups"] = pack.get("groups", [])
+        compact["groups"] = compact_prebuilt_serving_groups(
+            pack.get("groups", []),
+            include_debug=include_debug,
+        )
         if isinstance(pack.get("counts"), dict):
             compact["counts"] = pack.get("counts", {})
         if isinstance(pack.get("defaults"), dict):
