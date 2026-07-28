@@ -3346,6 +3346,121 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             memory_budget = pack["recall_policy"]["memory_layer_budget"]
             self.assertEqual({"assistant": 1}, memory_budget["source_message_counts_by_role"])
 
+    def test_user_prompt_fast_async_threshold_commits_previous_tool_rollout(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            event_log = tmp / "matrixark-fast-tool-backfill.jsonl"
+            rollout = tmp / "rollout.jsonl"
+            rollout.write_text(
+                json.dumps(
+                    {
+                        "payload": {
+                            "type": "function_call_output",
+                            "output": "Exit code: 0\nRan 159 tests in 6.34s\nOK\n250a703a refs/heads/main",
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            msg = self.run_hook(
+                repo,
+                event_log,
+                event="UserPromptSubmit",
+                payload={
+                    "prompt": "User prompt: verify previous tool backfill under fast async.",
+                    "transcript_path": str(rollout),
+                    "thread_id": "codex-fast-tool-backfill-thread",
+                },
+                extra_env={"MATRIXARK_SESSION_COMMIT_THRESHOLD": "1"},
+            )
+
+            self.assertEqual("ok", msg["status"])
+            adapter = MatrixArkLocalAdapter(event_log)
+            scope = {
+                "account_id": "acct_hook",
+                "tenant_id": "tenant_hook",
+                "user_id": "codex_user",
+                "session_id": "codex_session_1",
+            }
+            records = adapter.read_all()
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "session_buffer_event"
+                    and (record.get("agent_hook") or {}).get("trigger") == "UserPromptSubmit:previous_tool_output_backfill"
+                    and ((record.get("envelope") or {}).get("messages") or [{}])[0].get("role") == "tool"
+                    and ((record.get("envelope") or {}).get("metadata") or {}).get("codex_event") == "PreviousToolOutputBackfill"
+                    for record in records
+                ),
+                records,
+            )
+            auto_backfill_commits = [
+                record
+                for record in records
+                if record.get("record_type") == "context_batch_commit"
+                and record.get("commit_reason") == "threshold"
+                and "tool" in record.get("source_roles", [])
+                and "PreviousToolOutputBackfill" in record.get("source_codex_events", [])
+            ]
+            self.assertTrue(auto_backfill_commits, records)
+            commit = auto_backfill_commits[0]
+            self.assertEqual("provisional", commit["extraction_phase"])
+            self.assertFalse(commit["final_session_boundary"])
+            self.assertGreaterEqual(commit["memory_layers_written"]["session_entities"], 1)
+            self.assertGreaterEqual(commit["memory_layers_written"]["profile_entities"], 1)
+            self.assertGreaterEqual(commit["memory_layers_written"]["secondary_indexes"], 1)
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_entity"
+                    and record.get("entity_type") == "tool_evidence"
+                    and record.get("memory_scope") == "user_profile"
+                    and record.get("session_continuity") == "cross_session"
+                    and "Ran 159 tests" in str(record.get("state") or "")
+                    and "PreviousToolOutputBackfill" in record.get("source_codex_events", [])
+                    for record in records
+                ),
+                records,
+            )
+            index_names = {
+                str(record.get("index_name") or "")
+                for record in records
+                if record.get("record_type") == "context_index"
+                and record.get("data_model") == "context_profile_entity"
+            }
+            self.assertIn("entity_type:tool_evidence", index_names)
+            self.assertIn("source_role:tool", index_names)
+            self.assertIn("codex_event:previoustooloutputbackfill", index_names)
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "codex_session_2"},
+                    "session_scope": "prefer",
+                    "query": "What tool evidence proved tests passed and main was pushed?",
+                    "max_context_tokens": 120,
+                    "source_role_budget_tokens": {"assistant": 1},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "ranking": {"max_selected_refs": 3},
+                }
+            )
+            selected_evidence = next(
+                ref
+                for ref in pack["selected_refs"]
+                if ref.get("ref_type") == "entity"
+                and ref.get("entity_type") == "tool_evidence"
+                and ref.get("memory_scope") == "user_profile"
+                and ref.get("session_continuity") == "cross_session"
+            )
+            self.assertIn("Ran 159 tests", selected_evidence["text"])
+            self.assertNotIn("source_codex_events", selected_evidence)
+            role_policy = pack["recall_policy"]["source_role_budget"]
+            self.assertEqual({"assistant": 1}, role_policy["budget_tokens"])
+            self.assertEqual(0, role_policy["selected_tokens_by_role"]["assistant"])
+            memory_budget = pack["recall_policy"]["memory_layer_budget"]
+            self.assertEqual({"tool": 1}, memory_budget["source_message_counts_by_role"])
+
     def test_stop_rollout_backfill_only_commits_previous_assistant_profile_memory(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp_dir:
