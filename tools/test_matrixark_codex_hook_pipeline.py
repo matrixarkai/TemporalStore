@@ -1174,6 +1174,63 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertLessEqual(pack["used_context_tokens"], 100)
             self.assertTrue(any(ref.get("ref_type") == "summary" for ref in pack["selected_refs"]))
 
+    def test_retrieve_can_pre_refresh_dirty_summaries_before_serving(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-pre-retrieve-summary.jsonl")
+
+            class Server:
+                def __init__(self) -> None:
+                    self.adapter = adapter
+
+            scope = {
+                "account_id": "acct_pre_refresh",
+                "tenant_id": "tenant_pre_refresh",
+                "user_id": "user_pre_refresh",
+                "session_id": "session_pre_refresh",
+            }
+            args = Namespace(
+                event="UserPromptSubmit",
+                **scope,
+                team="codex",
+                project="temporalstore",
+                session_commit_threshold=20,
+                idle_commit_timeout_ms=0,
+                understanding_provider="rules",
+                segment_provider="deterministic",
+            )
+            ingest = matrixark_codex_hook.fast_async_hook_ingest(
+                Server(),
+                args=args,
+                text="Remember that pre-retrieval summary refresh should drain dirty summary nodes before serving Codex memory.",
+                role="user",
+                agent_context={"workspace_root": "/repo"},
+                hook={"session_id_source": "payload_field"},
+            )
+            self.assertEqual("accepted", ingest["status"])
+            self.assertGreaterEqual(ingest["summary_dirty_count"], 1)
+            self.assertFalse(any(record.get("record_type") == "context_summary" for record in adapter.read_all()))
+
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "Summarize pre-retrieval summary refresh for Codex memory.",
+                    "max_context_tokens": 120,
+                    "audit_mode": "off",
+                    "ranking": {
+                        "max_selected_refs": 2,
+                        "pre_retrieval_summary_refresh": True,
+                        "pre_retrieval_summary_refresh_limit": 8,
+                    },
+                }
+            )
+            refresh = pack["pre_retrieval_summary_refresh"]
+            self.assertTrue(refresh["enabled"])
+            self.assertEqual("refreshed", refresh["status"])
+            self.assertGreaterEqual(refresh["refreshed_count"], 1)
+            self.assertTrue(any(record.get("record_type") == "context_summary" for record in adapter.read_all()))
+            self.assertTrue(any(ref.get("ref_type") == "summary" for ref in pack["selected_refs"]))
+            self.assertLessEqual(pack["used_context_tokens"], 120)
+
     def test_fast_hook_threshold_commit_persists_real_adapter_memory_layers(self) -> None:
         original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
         matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True

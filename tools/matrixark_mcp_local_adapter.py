@@ -71,6 +71,8 @@ RETRIEVAL_HOT_RECORD_TYPES = {
 
 RESOURCE_IMPORT_IGNORE_DIRS = {".git", "node_modules", "target", "build", "dist", ".venv", "__pycache__"}
 LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").strip().lower() not in {"0", "false", "no"}
+PRE_RETRIEVAL_SUMMARY_REFRESH = os.environ.get("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH", "0").strip().lower() in {"1", "true", "yes"}
+PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT = max(1, int(os.environ.get("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT", "2")))
 
 _LOCAL_READ_CACHE_LOCK = threading.RLock()
 _LOCAL_READ_CACHE: dict[str, tuple[int, int, list[Json]]] = {}
@@ -154,6 +156,33 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         if amount:
             budgets[layer] = amount
     return budgets, mode
+
+
+def pre_retrieval_summary_refresh_enabled(args: Json, ranking: Json) -> bool:
+    value = (
+        args.get("pre_retrieval_summary_refresh")
+        if "pre_retrieval_summary_refresh" in args
+        else ranking.get("pre_retrieval_summary_refresh")
+        if "pre_retrieval_summary_refresh" in ranking
+        else PRE_RETRIEVAL_SUMMARY_REFRESH
+    )
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "auto", "bounded"}
+    return bool(value)
+
+
+def pre_retrieval_summary_refresh_limit(args: Json, ranking: Json) -> int:
+    raw_limit = (
+        args.get("pre_retrieval_summary_refresh_limit")
+        or ranking.get("pre_retrieval_summary_refresh_limit")
+        or PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT
+    )
+    try:
+        return max(1, int(raw_limit))
+    except (TypeError, ValueError):
+        return PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT
 
 
 def session_event_message_count(records: list[Json]) -> int:
@@ -5788,6 +5817,39 @@ class MatrixArkLocalAdapter:
         secondary_index_filter_mode = "any_group" if len(secondary_index_filter_groups) > 1 else "all_groups"
         secondary_index_dropped_count = 0
         secondary_index_matched_count = 0
+        pre_retrieval_summary_refresh: Json = {
+            "enabled": pre_retrieval_summary_refresh_enabled(args, ranking),
+            "requested_limit": pre_retrieval_summary_refresh_limit(args, ranking),
+            "refreshed_count": 0,
+            "status": "disabled",
+        }
+        if pre_retrieval_summary_refresh["enabled"]:
+            refresh_started_perf = time.perf_counter()
+            try:
+                refresh_result = self.refresh_summaries(
+                    {
+                        "scope": scope,
+                        "limit": int(pre_retrieval_summary_refresh["requested_limit"]),
+                        "refreshed_at_ms": now_ms(),
+                    }
+                )
+                refreshed_count = int(refresh_result.get("refreshed_count") or 0)
+                pre_retrieval_summary_refresh.update(
+                    {
+                        "status": "refreshed" if refreshed_count else "no_dirty_nodes",
+                        "refreshed_count": refreshed_count,
+                        "compression_created_count": int(refresh_result.get("compression_created_count") or 0),
+                        "elapsed_ms": round((time.perf_counter() - refresh_started_perf) * 1000.0, 3),
+                    }
+                )
+            except Exception as exc:
+                pre_retrieval_summary_refresh.update(
+                    {
+                        "status": "error",
+                        "error": str(exc)[:240],
+                        "elapsed_ms": round((time.perf_counter() - refresh_started_perf) * 1000.0, 3),
+                    }
+                )
         budget_source = "agent_provided_max_context_tokens" if "max_context_tokens" in args else "matrixark_default_max_context_tokens"
         max_context_tokens = args.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
         if not isinstance(max_context_tokens, int) or max_context_tokens <= 0:
@@ -5857,6 +5919,16 @@ class MatrixArkLocalAdapter:
             json.dumps(shared_context_policy, sort_keys=True, separators=(",", ":")),
             json.dumps(source_role_budget_tokens, sort_keys=True, separators=(",", ":")),
             json.dumps(memory_layer_budget_tokens, sort_keys=True, separators=(",", ":")),
+            json.dumps(
+                {
+                    "enabled": bool(pre_retrieval_summary_refresh.get("enabled")),
+                    "requested_limit": int(pre_retrieval_summary_refresh.get("requested_limit") or 0),
+                    "status": pre_retrieval_summary_refresh.get("status"),
+                    "refreshed_count": int(pre_retrieval_summary_refresh.get("refreshed_count") or 0),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
             bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
         )
         if pack_cache_enabled:
@@ -5959,6 +6031,7 @@ class MatrixArkLocalAdapter:
             "source_role_budget_mode": source_role_budget_mode or ("explicit" if source_role_budget_tokens else "disabled"),
             "memory_layer_budget_tokens": memory_layer_budget_tokens,
             "memory_layer_budget_mode": memory_layer_budget_mode or ("explicit" if memory_layer_budget_tokens else "disabled"),
+            "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
             "ranking": ranking,
             "deadline_ms": deadline_ms,
             "reference_time_ms": reference_time_ms,
@@ -5973,7 +6046,9 @@ class MatrixArkLocalAdapter:
                 "backend_role": "scan_filter_score_pack",
             })
             recall_policy.setdefault("stage_latency_budgets", stage_budget_snapshot())
+            recall_policy.setdefault("pre_retrieval_summary_refresh", pre_retrieval_summary_refresh)
             native_pack["recall_policy"] = recall_policy
+            native_pack.setdefault("pre_retrieval_summary_refresh", pre_retrieval_summary_refresh)
             native_pack.setdefault("context_pack_cache_hit", False)
             native_pack.setdefault("context_pack_assembly", "native_backend")
             native_pack.setdefault("remote_context_refs", native_pack.get("selected_refs", []))
@@ -7109,6 +7184,7 @@ class MatrixArkLocalAdapter:
         pack = {
             "context_pack_id": str(context_pack_id),
             "context_sources_order": ["local_context", "matrixark_remote_context"],
+            "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
             "local_context_refs": local_context_refs_for_pack(local_budget),
             "selected_refs": serving_selected,
             "remote_context_refs": serving_selected,
@@ -7138,6 +7214,7 @@ class MatrixArkLocalAdapter:
                 "memory_layer_budget": memory_layer_budget,
                 "dropped_memory_layer_budget": dropped_memory_layer_budget,
                 "memory_layer_pressure": memory_layer_pressure,
+                "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
                 "async_pipeline_readiness": async_pipeline_readiness,
                 "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
                 "shared_context": dropped_over_budget.get("shared_context_policy", shared_context_policy),
@@ -7381,6 +7458,7 @@ class MatrixArkLocalAdapter:
             "memory_layer_budget": serving_memory_layer_budget_value,
             "dropped_memory_layer_budget": serving_dropped_memory_layer_budget_value,
             "memory_layer_pressure": serving_memory_layer_pressure_value,
+            "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
             "async_pipeline_readiness": async_pipeline_readiness,
             "scanned_records": int(retrieval_scan_stats.get("loaded_records") or retrieval_scan_stats.get("scanned_records") or len(records)) if isinstance(retrieval_scan_stats, dict) else len(records),
             "candidate_cache_hit": candidate_cache_hit,
