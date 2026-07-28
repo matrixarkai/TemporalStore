@@ -2071,6 +2071,9 @@ def benchmark_model_contract(args: argparse.Namespace, reader: "BenchmarkReader"
         "reader_context_budget_match": reader_budget_matches,
         "reader_output_budget_match": reader_output_budget_matches,
         "shared_oss_model_contract_required": bool(args.require_shared_oss_models),
+        "shared_oss_models_forced": bool(args.require_shared_oss_models),
+        "same_oss_reader_model_forced": bool(args.require_shared_oss_models),
+        "same_oss_encoding_model_forced": bool(args.require_shared_oss_models),
         "shared_oss_model_contract_passed": (
             provider_declared
             and reader_matches

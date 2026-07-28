@@ -526,6 +526,9 @@ def write_shared_oss_stack_contract(output_root: Path, args: argparse.Namespace)
     validator = "tools/validate_oss_model_contract.py"
     contract = {
         "schema": "matrixark_fair_oss_shared_stack_contract_v1",
+        "shared_oss_models_forced": True,
+        "same_oss_reader_model_forced": True,
+        "same_oss_encoding_model_forced": True,
         "rule": (
             "MatrixArk, OpenViking, VikingMem, and other baselines in this suite are forced to use "
             "one shared OSS reader model and one shared encoding/embedding model. Child runners and "

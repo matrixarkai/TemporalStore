@@ -110,6 +110,17 @@ class OssModelContractValidationTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("reader_fallback_allowed_mismatch", result.stderr)
 
+    def test_unforced_shared_stack_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            matrixark = write_report(tmp_path / "matrixark.json")
+            baseline = write_report(tmp_path / "openviking.json", forced=False)
+
+            result = run_validator(matrixark, baseline)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("shared_oss_models_forced_missing_or_false", result.stderr)
+
 
 def run_validator(matrixark: Path, baseline: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -140,6 +151,7 @@ def write_report(
     encoding_model: str | None = None,
     reader_max_tokens: int = 128,
     reader_fallback_allowed: bool = False,
+    forced: bool = True,
 ) -> Path:
     encoding = encoding_model or embedding_model
     matrixark_like = path.name.startswith("matrixark")
@@ -178,6 +190,9 @@ def write_report(
         f"{other_prefix}_retrieval_event_percent": 0.8,
         "shared_oss_model_contract_required": True,
         "shared_oss_model_contract_passed": True,
+        "shared_oss_models_forced": forced,
+        "same_oss_reader_model_forced": forced,
+        "same_oss_encoding_model_forced": forced,
     }
     path.write_text(
         json.dumps(

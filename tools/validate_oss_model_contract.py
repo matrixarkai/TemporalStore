@@ -35,6 +35,12 @@ READER_POLICY_KEYS = (
     "reader_fallback_allowed",
 )
 
+FORCED_CONTRACT_KEYS = (
+    "shared_oss_models_forced",
+    "same_oss_reader_model_forced",
+    "same_oss_encoding_model_forced",
+)
+
 RETRIEVAL_POLICY_KEYS = (
     "adaptive_max_events",
     "adaptive_base_max_events",
@@ -239,6 +245,9 @@ def normalize_report(path: Path, label: str, errors: list[str]) -> dict[str, Any
         "reader_open_source_calls": to_int(data.get("reader_open_source_calls")),
         "shared_oss_model_contract_required": bool(contract.get("shared_oss_model_contract_required")),
         "shared_oss_model_contract_passed": bool(contract.get("shared_oss_model_contract_passed")),
+        "shared_oss_models_forced": bool(contract.get("shared_oss_models_forced")),
+        "same_oss_reader_model_forced": bool(contract.get("same_oss_reader_model_forced")),
+        "same_oss_encoding_model_forced": bool(contract.get("same_oss_encoding_model_forced")),
         "diagnostic_only": bool(
             data.get("diagnostic_only")
             or data.get("python_only_diagnostic")
@@ -249,6 +258,9 @@ def normalize_report(path: Path, label: str, errors: list[str]) -> dict[str, Any
         errors.append(f"{label}: shared_oss_model_contract_not_required")
     if not row["shared_oss_model_contract_passed"]:
         errors.append(f"{label}: shared_oss_model_contract_not_passed")
+    for key in FORCED_CONTRACT_KEYS:
+        if not row.get(key):
+            errors.append(f"{label}: {key}_missing_or_false")
     for key in CONTRACT_KEYS:
         if row.get(key) in ("", None, 0):
             errors.append(f"{label}: {key}_missing")
