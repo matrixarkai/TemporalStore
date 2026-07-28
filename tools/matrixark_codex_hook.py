@@ -23,6 +23,12 @@ except ModuleNotFoundError:
 
 Json = dict[str, Any]
 
+CONTEXT_PACK_DEBUG_LINEAGE = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
 
 def normalized_role_list(values: Any) -> list[str]:
     if not isinstance(values, list):
@@ -1032,6 +1038,7 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
             ("limit", "requested_limit"),
             ("refreshed", "refreshed_count"),
             ("compression", "compression_created_count"),
+            ("skipped", "skipped_dirty_count"),
         ]:
             try:
                 value = int(pre_refresh.get(field) or 0)
@@ -1039,6 +1046,21 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
                 value = 0
             if value > 0:
                 pre_refresh_bits.append(f"{label}={value}")
+        skipped_reasons = pre_refresh.get("skipped_dirty_reasons")
+        if isinstance(skipped_reasons, dict) and skipped_reasons:
+            reason_bits = []
+            for reason, count in sorted(skipped_reasons.items()):
+                name = str(reason or "").strip()
+                if not name:
+                    continue
+                try:
+                    amount = int(count or 0)
+                except (TypeError, ValueError):
+                    amount = 0
+                if amount > 0:
+                    reason_bits.append(f"{name}={amount}")
+            if reason_bits:
+                pre_refresh_bits.append("skipped_reasons[" + ",".join(reason_bits) + "]")
         try:
             elapsed_ms = float(pre_refresh.get("elapsed_ms") or 0.0)
         except (TypeError, ValueError):
@@ -1091,15 +1113,21 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
                         layer_bits.append(suffix)
                 if layer_bits:
                     readiness_bits.append("layer_pending[" + ",".join(layer_bits[:8]) + "]")
-        for label, field in [
+        readiness_count_specs = [
             ("stage_counts", "remaining_stage_counts"),
-            ("pending_roles", "pending_source_roles"),
-            ("pending_hooks", "pending_source_hook_types"),
-            ("pending_codex_events", "pending_source_codex_events"),
             ("pending_scopes", "pending_memory_scopes"),
             ("pending_continuity", "pending_session_continuities"),
             ("pending_phases", "pending_extraction_phases"),
-        ]:
+        ]
+        if CONTEXT_PACK_DEBUG_LINEAGE:
+            readiness_count_specs.extend(
+                [
+                    ("pending_roles", "pending_source_roles"),
+                    ("pending_hooks", "pending_source_hook_types"),
+                    ("pending_codex_events", "pending_source_codex_events"),
+                ]
+            )
+        for label, field in readiness_count_specs:
             bucket = readiness.get(field)
             if not isinstance(bucket, dict) or not bucket:
                 continue
@@ -1144,16 +1172,22 @@ def _format_memory_layer_budget_bits(memory_layer_budget: Json) -> list[str]:
     if not isinstance(memory_layer_budget, dict) or not memory_layer_budget:
         return []
     budget_bits = []
-    for label, bucket_name in [
+    bucket_specs = [
         ("scope", "by_memory_scope"),
         ("continuity", "by_session_continuity"),
         ("phase", "by_extraction_phase"),
         ("ref_type", "by_ref_type"),
         ("entity_type", "by_entity_type"),
-        ("source_role", "by_source_role"),
-        ("hook_type", "by_hook_type"),
-        ("codex_event", "by_codex_event"),
-    ]:
+    ]
+    if CONTEXT_PACK_DEBUG_LINEAGE:
+        bucket_specs.extend(
+            [
+                ("source_role", "by_source_role"),
+                ("hook_type", "by_hook_type"),
+                ("codex_event", "by_codex_event"),
+            ]
+        )
+    for label, bucket_name in bucket_specs:
         buckets = memory_layer_budget.get(bucket_name)
         if not isinstance(buckets, dict):
             continue
@@ -1171,6 +1205,8 @@ def _format_memory_layer_budget_bits(memory_layer_budget: Json) -> list[str]:
                 bucket_bits.append(f"{bucket_key}={ref_count}/{token_count_estimate}t")
         if bucket_bits:
             budget_bits.append(f"{label}[" + ", ".join(bucket_bits) + "]")
+    if not CONTEXT_PACK_DEBUG_LINEAGE:
+        return budget_bits
     for label, bucket_name in [
         ("source_messages", "source_message_counts_by_role"),
         ("source_hooks", "source_hook_counts_by_type"),
@@ -1211,22 +1247,28 @@ def _format_memory_layer_pressure_bits(memory_layer_pressure: Json) -> list[str]
         if value > 0:
             pressure_bits.append(f"{label}={value}")
     flag_bits = []
-    for label, fields in [
+    flag_specs = [
         ("profile", ["profile_memory_pressure"]),
         ("session", ["session_memory_pressure"]),
         ("cross_session", ["cross_session_pressure"]),
         ("same_session", ["same_session_pressure"]),
         ("final", ["final_memory_pressure"]),
         ("provisional", ["provisional_memory_pressure"]),
-        ("assistant", ["assistant_memory_pressure", "assistant_source_message_pressure"]),
-        ("user", ["user_memory_pressure", "user_source_message_pressure"]),
-        ("tool", ["tool_memory_pressure", "tool_source_message_pressure"]),
-        ("hook_boundary_source", ["hook_boundary_source_pressure"]),
-        ("after_llm_source", ["after_llm_source_pressure"]),
-        ("tool_result_source", ["tool_result_source_pressure"]),
-        ("stop_event_source", ["stop_event_source_pressure"]),
-        ("post_tool_use_source", ["post_tool_use_source_pressure"]),
-    ]:
+    ]
+    if CONTEXT_PACK_DEBUG_LINEAGE:
+        flag_specs.extend(
+            [
+                ("assistant", ["assistant_memory_pressure", "assistant_source_message_pressure"]),
+                ("user", ["user_memory_pressure", "user_source_message_pressure"]),
+                ("tool", ["tool_memory_pressure", "tool_source_message_pressure"]),
+                ("hook_boundary_source", ["hook_boundary_source_pressure"]),
+                ("after_llm_source", ["after_llm_source_pressure"]),
+                ("tool_result_source", ["tool_result_source_pressure"]),
+                ("stop_event_source", ["stop_event_source_pressure"]),
+                ("post_tool_use_source", ["post_tool_use_source_pressure"]),
+            ]
+        )
+    for label, fields in flag_specs:
         if any(bool(memory_layer_pressure.get(field)) for field in fields):
             flag_bits.append(label)
     if flag_bits:
@@ -1237,7 +1279,21 @@ def _format_memory_layer_pressure_bits(memory_layer_pressure: Json) -> list[str]
     ]:
         values = memory_layer_pressure.get(field)
         if isinstance(values, list) and values:
-            pressure_bits.append(f"{label}[" + ",".join(str(value) for value in values[:8]) + "]")
+            dimensions = []
+            for value in values:
+                name = str(value)
+                if not CONTEXT_PACK_DEBUG_LINEAGE and name in {
+                    "by_source_role",
+                    "by_hook_type",
+                    "by_codex_event",
+                    "source_message_counts_by_role",
+                    "source_hook_counts_by_type",
+                    "source_codex_event_counts_by_event",
+                }:
+                    continue
+                dimensions.append(name)
+            if dimensions:
+                pressure_bits.append(f"{label}[" + ",".join(dimensions[:8]) + "]")
     return pressure_bits
 
 
@@ -1466,9 +1522,10 @@ def additional_context_from_retrieve(
     formatted_layer_summary = _format_retrieval_layer_summary(layer_summary)
     if formatted_layer_summary:
         lines.append(formatted_layer_summary)
-    formatted_lineage = _format_memory_lineage_summary(memory_lineage_summary(*refs))
-    if formatted_lineage:
-        lines.append(formatted_lineage)
+    if CONTEXT_PACK_DEBUG_LINEAGE:
+        formatted_lineage = _format_memory_lineage_summary(memory_lineage_summary(*refs))
+        if formatted_lineage:
+            lines.append(formatted_lineage)
     try:
         has_profile_memory = int(layer_summary.get("profile_memory_refs") or 0) > 0
     except (TypeError, ValueError):
@@ -1541,6 +1598,8 @@ def additional_context_from_retrieve(
         pressure_bits = []
         if isinstance(dropped_by_reason, dict):
             for reason in sorted(dropped_by_reason):
+                if not CONTEXT_PACK_DEBUG_LINEAGE and str(reason) == "source_role_budget":
+                    continue
                 try:
                     count = int(dropped_by_reason[reason])
                 except (TypeError, ValueError):

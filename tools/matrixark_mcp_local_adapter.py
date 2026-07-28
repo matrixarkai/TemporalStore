@@ -2140,6 +2140,7 @@ class MatrixArkLocalAdapter:
             and record.get("dirty_hash") is not None
         }
         pending_by_node: dict[int, Json] = {}
+        skipped_dirty_reasons: Json = {}
         for record in records:
             if record.get("record_type") != "context_summary_dirty":
                 continue
@@ -2154,6 +2155,7 @@ class MatrixArkLocalAdapter:
                 continue
             dirty_reason = str(record.get("dirty_reason") or "").strip()
             if dirty_reason in skip_dirty_reasons:
+                skipped_dirty_reasons[dirty_reason] = int(skipped_dirty_reasons.get(dirty_reason, 0)) + 1
                 continue
             current = pending_by_node.get(node_hash)
             if current is None or int(record.get("updated_at_ms") or 0) >= int(current.get("updated_at_ms") or 0):
@@ -2612,6 +2614,8 @@ class MatrixArkLocalAdapter:
             "status": "ok",
             "refreshed_count": len(refreshed),
             "compression_created_count": sum(int(item.get("time_compression", {}).get("created_count", 0)) for item in refreshed),
+            "skipped_dirty_count": sum(int(count or 0) for count in skipped_dirty_reasons.values()),
+            "skipped_dirty_reasons": skipped_dirty_reasons,
             "refreshed": refreshed,
         }
 
@@ -5891,6 +5895,12 @@ class MatrixArkLocalAdapter:
                         "status": "refreshed" if refreshed_count else "no_dirty_nodes",
                         "refreshed_count": refreshed_count,
                         "compression_created_count": int(refresh_result.get("compression_created_count") or 0),
+                        "skipped_dirty_count": int(refresh_result.get("skipped_dirty_count") or 0),
+                        "skipped_dirty_reasons": (
+                            refresh_result.get("skipped_dirty_reasons")
+                            if isinstance(refresh_result.get("skipped_dirty_reasons"), dict)
+                            else {}
+                        ),
                         "elapsed_ms": round((time.perf_counter() - refresh_started_perf) * 1000.0, 3),
                     }
                 )

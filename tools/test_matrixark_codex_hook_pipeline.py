@@ -1323,6 +1323,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 }
             )
             self.assertEqual(0, skipped.get("refreshed_count", 0))
+            self.assertGreaterEqual(skipped.get("skipped_dirty_count", 0), 1)
+            self.assertGreaterEqual(skipped.get("skipped_dirty_reasons", {}).get("new_event", 0), 1)
             self.assertFalse(any(record.get("record_type") == "context_summary" for record in adapter.read_all()))
 
             refreshed = adapter.refresh_summaries(
@@ -2351,6 +2353,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(3, opt_in_refresh["requested_limit"])
             self.assertEqual("no_dirty_nodes", opt_in_refresh["status"])
             self.assertEqual(0, opt_in_refresh["refreshed_count"])
+            self.assertGreaterEqual(opt_in_refresh["skipped_dirty_count"], 1)
+            self.assertGreaterEqual(opt_in_refresh["skipped_dirty_reasons"]["new_event"], 1)
             self.assertEqual(
                 opt_in_msg["retrieve"]["pre_retrieval_summary_refresh"],
                 opt_in_msg["retrieve"]["layers"]["pre_retrieval_summary_refresh"],
@@ -2359,6 +2363,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "summary_refresh[enabled=true",
                 opt_in_msg["hookSpecificOutput"]["additionalContext"],
             )
+            self.assertIn("skipped_reasons[new_event=", opt_in_msg["hookSpecificOutput"]["additionalContext"])
 
     def run_hook(self, repo: Path, event_log: Path, *, event: str, payload: dict, query: str = "", extra_env: dict | None = None) -> dict:
         cmd = [
