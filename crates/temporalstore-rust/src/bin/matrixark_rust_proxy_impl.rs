@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
@@ -1906,6 +1908,56 @@ fn increment_class_tokens(tokens_by_class: &mut HashMap<String, u64>, class_name
     *tokens_by_class.entry(class_name.to_string()).or_default() += tokens;
 }
 
+fn broad_memory_layer(record: &Value, ref_type: &str) -> String {
+    if let Some(layer) = record
+        .get("memory_layer")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return layer.to_string();
+    }
+    let sharing_scope = record
+        .get("sharing_scope")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if matches!(sharing_scope, "tenant_shared" | "global_shared")
+        || matches!(
+            ref_type,
+            "resource" | "resource_chunk" | "resource_fact" | "resource_entity_fact" | "skill" | "skill_section"
+        )
+    {
+        return "shared_context".to_string();
+    }
+    let memory_scope = record
+        .get("memory_scope")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if matches!(memory_scope, "user_profile" | "profile" | "cross_session_profile") {
+        return "profile".to_string();
+    }
+    if matches!(memory_scope, "session" | "session_memory") {
+        return "session".to_string();
+    }
+    let session_continuity = record
+        .get("session_continuity")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if session_continuity == "same_session" {
+        return "session".to_string();
+    }
+    if session_continuity == "cross_session" {
+        if ref_type == "entity" {
+            return "profile".to_string();
+        }
+        return "cross_session".to_string();
+    }
+    String::new()
+}
+
 fn pack_ref_from_record(
     record: &Value,
     text: &str,
@@ -1934,6 +1986,7 @@ fn pack_ref_from_record(
         "cross_session_rerank_boost": (cross_session_rerank_boost_value * 1000000.0).round() / 1000000.0,
         "continuity_reason": continuity_reason,
         "selection_reason": reason,
+        "memory_layer": broad_memory_layer(record, context_class),
         "memory_scope": record.get("memory_scope").and_then(Value::as_str).unwrap_or(""),
         "extraction_phase": record.get("extraction_phase").and_then(Value::as_str).unwrap_or(""),
         "final_session_boundary": record.get("final_session_boundary").and_then(Value::as_bool).unwrap_or(false),
@@ -2017,6 +2070,7 @@ fn source_layer_values(
 
 fn selected_ref_layer_budget(refs: &[Value]) -> Value {
     let mut breakdown = json!({
+        "by_memory_layer": {},
         "by_memory_scope": {},
         "by_session_continuity": {},
         "by_extraction_phase": {},
@@ -2046,6 +2100,22 @@ fn selected_ref_layer_budget(refs: &[Value]) -> Value {
             + tokens;
         if let Some(object) = breakdown.as_object_mut() {
             object.insert("total_selected_tokens".to_string(), json!(total_tokens));
+        }
+        let memory_layer = item
+            .get("memory_layer")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                let ref_type = item
+                    .get("ref_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                broad_memory_layer(item, ref_type)
+            });
+        if !memory_layer.is_empty() {
+            increment_layer_bucket(&mut breakdown, "by_memory_layer", &memory_layer, tokens);
         }
         for memory_scope in source_layer_values(item, "source_memory_scopes", "memory_scope", "unscoped") {
             increment_layer_bucket(&mut breakdown, "by_memory_scope", &memory_scope, tokens);
@@ -2413,6 +2483,7 @@ fn dropped_ref_layer_budget_from_native_counts(
         );
     }
     let mut detail_budget = json!({
+        "by_memory_layer": {},
         "by_memory_scope": {},
         "by_session_continuity": {},
         "by_extraction_phase": {},
@@ -2443,6 +2514,22 @@ fn dropped_ref_layer_budget_from_native_counts(
             + tokens;
         if let Some(object) = detail_budget.as_object_mut() {
             object.insert("total_dropped_tokens_with_detail".to_string(), json!(total_detail_tokens));
+        }
+        let memory_layer = detail
+            .get("memory_layer")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                let ref_type = detail
+                    .get("ref_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                broad_memory_layer(detail, ref_type)
+            });
+        if !memory_layer.is_empty() {
+            increment_layer_bucket(&mut detail_budget, "by_memory_layer", &memory_layer, tokens);
         }
         for memory_scope in source_layer_values(detail, "source_memory_scopes", "memory_scope", "unscoped") {
             increment_layer_bucket(&mut detail_budget, "by_memory_scope", &memory_scope, tokens);
@@ -2567,6 +2654,7 @@ fn dropped_ref_layer_budget_from_native_counts(
     }
     json!({
         "by_drop_reason": Value::Object(by_drop_reason),
+        "by_memory_layer": detail_budget["by_memory_layer"].clone(),
         "by_memory_scope": detail_budget["by_memory_scope"].clone(),
         "by_session_continuity": detail_budget["by_session_continuity"].clone(),
         "by_extraction_phase": detail_budget["by_extraction_phase"].clone(),
@@ -4754,6 +4842,7 @@ fn selected_ref_from_record(record: &Value, text: &str) -> Value {
         "ref_hash": ref_hash,
         "text": text,
         "token_estimate": token_estimate(text),
+        "memory_layer": broad_memory_layer(record, public_ref_type),
         "memory_scope": record.get("memory_scope").and_then(Value::as_str).unwrap_or(""),
         "session_continuity": record.get("session_continuity").and_then(Value::as_str).unwrap_or(""),
         "extraction_phase": record.get("extraction_phase").and_then(Value::as_str).unwrap_or(""),
@@ -5536,6 +5625,22 @@ mod tests {
             .collect();
         assert!(ref_types.contains("event"));
         assert!(ref_types.contains("entity"));
+        let session_event = refs
+            .iter()
+            .find(|value| value.get("ref_type").and_then(Value::as_str) == Some("event"))
+            .expect("session event ref");
+        let profile_entity = refs
+            .iter()
+            .find(|value| value.get("ref_type").and_then(Value::as_str) == Some("entity"))
+            .expect("profile entity ref");
+        assert_eq!(
+            session_event.get("memory_layer").and_then(Value::as_str),
+            Some("session")
+        );
+        assert_eq!(
+            profile_entity.get("memory_layer").and_then(Value::as_str),
+            Some("profile")
+        );
         assert_eq!(
             pack.pointer("/retrieval_metrics/native_pack_assembly")
                 .and_then(Value::as_bool),
@@ -5548,6 +5653,16 @@ mod tests {
         );
         assert_eq!(
             pack.pointer("/recall_policy/memory_layer_budget/by_memory_scope/user_profile/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_budget/by_memory_layer/profile/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_layer_budget/by_memory_layer/session/refs")
                 .and_then(Value::as_u64),
             Some(1)
         );
