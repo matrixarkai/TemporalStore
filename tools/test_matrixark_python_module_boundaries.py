@@ -208,6 +208,107 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         )
         self.assertFalse(report_mod.parse_args([]).require_extraction_input_coverage)
 
+    def test_recent_ingestion_report_tracks_retrieval_memory_coverage(self) -> None:
+        report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
+        backend = report_mod.summarize_backend(
+            "test",
+            "matrixark:test",
+            0,
+            0,
+            [],
+            1,
+            0,
+            [
+                {
+                    "sequence": 7,
+                    "record": {
+                        "record_type": "context_pack_audit",
+                        "context_pack_id": "pack-ok",
+                        "query": "latest TemporalStore retrieval gate",
+                        "selected_refs": [
+                            {
+                                "ref_type": "entity",
+                                "memory_scope": "user_profile",
+                                "session_continuity": "cross_session",
+                            }
+                        ],
+                        "memory_layer_budget": {
+                            "total_selected_refs": 1,
+                            "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 7}},
+                            "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 7}},
+                        },
+                    },
+                }
+            ],
+        )
+
+        coverage = backend["recent_retrieval_memory_coverages"][0]
+        self.assertEqual("ok", coverage["status"])
+        self.assertEqual([], coverage["gaps"])
+        self.assertEqual(1, coverage["selected_ref_count"])
+        self.assertEqual(1, coverage["profile_memory_refs"])
+        self.assertEqual("ok", backend["retrieval_memory_coverage_status"])
+
+    def test_recent_ingestion_report_flags_retrieval_memory_coverage_gaps(self) -> None:
+        report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
+        backend = report_mod.summarize_backend(
+            "test",
+            "matrixark:test",
+            0,
+            0,
+            [],
+            1,
+            0,
+            [
+                {
+                    "sequence": 8,
+                    "record": {
+                        "record_type": "context_pack_audit",
+                        "context_pack_id": "pack-gap",
+                        "query": "empty retrieval",
+                        "selected_refs": [],
+                        "memory_layer_budget": {},
+                    },
+                }
+            ],
+        )
+
+        coverage = backend["recent_retrieval_memory_coverages"][0]
+        self.assertEqual("gap", coverage["status"])
+        self.assertIn("retrieval:no_remote_refs_selected", coverage["gaps"])
+        self.assertIn("retrieval:no_session_or_profile_memory_selected", coverage["gaps"])
+        self.assertIn("retrieval:no_session_continuity_refs_selected", coverage["gaps"])
+        self.assertIn("retrieval:memory_layer_budget_missing_selected_refs", coverage["gaps"])
+        self.assertEqual("gap", backend["retrieval_memory_coverage_status"])
+        self.assertEqual(
+            ["retrieval:no_remote_refs_selected", "retrieval:no_session_or_profile_memory_selected", "retrieval:no_session_continuity_refs_selected", "retrieval:memory_layer_budget_missing_selected_refs"],
+            backend["retrieval_memory_coverage_gaps"][0]["gaps"],
+        )
+
+    def test_recent_ingestion_report_summarizes_retrieval_memory_coverage_gate(self) -> None:
+        report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
+        broken_report = {
+            "backends": [
+                {
+                    "backend": "Rust TemporalStore",
+                    "prefix": "matrixark:codex-hook:rust-live-v2",
+                    "retrieval_memory_coverage_gaps": [
+                        {
+                            "context_pack_id": "pack-gap",
+                            "gaps": ["retrieval:no_remote_refs_selected"],
+                        }
+                    ],
+                }
+            ]
+        }
+        summary = report_mod.retrieval_memory_coverage_summary(broken_report)
+
+        self.assertFalse(summary["retrieval_memory_coverage_pass"])
+        self.assertEqual(1, summary["retrieval_memory_coverage_gap_count"])
+        self.assertEqual(["Rust TemporalStore"], [item["backend"] for item in summary["retrieval_memory_coverage_gap_backends"]])
+        self.assertTrue(report_mod.require_retrieval_memory_coverage("1"))
+        self.assertTrue(report_mod.parse_args(["--require-retrieval-memory-coverage"]).require_retrieval_memory_coverage)
+
     def test_recent_ingestion_report_tracks_extraction_input_role_coverage(self) -> None:
         report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
         scope = {"session_id": "codex-real-workflow"}

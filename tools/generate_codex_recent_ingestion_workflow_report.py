@@ -81,9 +81,27 @@ def merge_count_map(target: dict[str, int], value: Any) -> None:
         target[key] = target.get(key, 0) + count
 
 
+def nested_dict(record: dict[str, Any], *path: str) -> dict[str, Any]:
+    value: Any = record
+    for key in path:
+        if not isinstance(value, dict):
+            return {}
+        value = value.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def int_value(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def row(record: dict[str, Any], sequence: int) -> dict[str, Any]:
     hook = record.get("agent_hook") if isinstance(record.get("agent_hook"), dict) else {}
     metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    retrieval_metrics = nested_dict(record, "retrieval_metrics")
+    recall_policy = nested_dict(record, "recall_policy")
     messages = record.get("messages") if isinstance(record.get("messages"), list) else []
     role = record.get("role")
     if not role and messages and isinstance(messages[0], dict):
@@ -112,6 +130,40 @@ def row(record: dict[str, Any], sequence: int) -> dict[str, Any]:
         "source_role_counts": compact_count_map(record.get("source_role_counts") or metadata.get("source_role_counts")),
         "source_hook_type_counts": compact_count_map(record.get("source_hook_type_counts") or metadata.get("source_hook_type_counts")),
         "source_codex_event_counts": compact_count_map(record.get("source_codex_event_counts") or metadata.get("source_codex_event_counts")),
+        "selected_ref_count": int_value(
+            record.get("selected_ref_count")
+            or record.get("selected_refs_count")
+            or retrieval_metrics.get("selected_refs")
+            or record.get("selected_refs_total")
+        ),
+        "selected_refs": record.get("selected_refs") if isinstance(record.get("selected_refs"), list) else [],
+        "memory_layer_budget": (
+            record.get("memory_layer_budget")
+            if isinstance(record.get("memory_layer_budget"), dict)
+            else retrieval_metrics.get("memory_layer_budget")
+            if isinstance(retrieval_metrics.get("memory_layer_budget"), dict)
+            else recall_policy.get("memory_layer_budget")
+            if isinstance(recall_policy.get("memory_layer_budget"), dict)
+            else {}
+        ),
+        "dropped_memory_layer_budget": (
+            record.get("dropped_memory_layer_budget")
+            if isinstance(record.get("dropped_memory_layer_budget"), dict)
+            else retrieval_metrics.get("dropped_memory_layer_budget")
+            if isinstance(retrieval_metrics.get("dropped_memory_layer_budget"), dict)
+            else recall_policy.get("dropped_memory_layer_budget")
+            if isinstance(recall_policy.get("dropped_memory_layer_budget"), dict)
+            else {}
+        ),
+        "memory_layer_pressure": (
+            record.get("memory_layer_pressure")
+            if isinstance(record.get("memory_layer_pressure"), dict)
+            else retrieval_metrics.get("memory_layer_pressure")
+            if isinstance(retrieval_metrics.get("memory_layer_pressure"), dict)
+            else recall_policy.get("memory_layer_pressure")
+            if isinstance(recall_policy.get("memory_layer_pressure"), dict)
+            else {}
+        ),
         "write_path": ((record.get("matrixark_write_debug") or {}).get("write_path") if isinstance(record.get("matrixark_write_debug"), dict) else ""),
     }
 
@@ -213,6 +265,34 @@ def require_serving_visibility(value: str | None) -> bool:
 
 
 def require_extraction_input_coverage(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "required", "require"}
+
+
+def retrieval_memory_coverage_summary(report: dict[str, Any]) -> dict[str, Any]:
+    gap_backends = []
+    for backend in report.get("backends", []):
+        gaps = backend.get("retrieval_memory_coverage_gaps") or []
+        if gaps:
+            gap_backends.append(
+                {
+                    "backend": backend.get("backend", ""),
+                    "prefix": backend.get("prefix", ""),
+                    "gaps": list(gaps),
+                }
+            )
+    return {
+        "retrieval_memory_coverage_pass": not gap_backends,
+        "retrieval_memory_coverage_gap_count": sum(
+            len(gap.get("gaps", []))
+            for backend in gap_backends
+            for gap in backend["gaps"]
+            if isinstance(gap, dict)
+        ),
+        "retrieval_memory_coverage_gap_backends": gap_backends,
+    }
+
+
+def require_retrieval_memory_coverage(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on", "required", "require"}
 
 
@@ -325,6 +405,55 @@ def extraction_input_batches(
     return sorted(batches, key=lambda item: max(item["source_event_sequences"] or [-1]), reverse=True)[:limit]
 
 
+def bucket_ref_count(budget: dict[str, Any], bucket_name: str, key: str) -> int:
+    bucket = nested_dict(budget, bucket_name, key)
+    return int_value(bucket.get("refs") or bucket.get("selected_refs"))
+
+
+def retrieval_audit_coverage(item: dict[str, Any]) -> dict[str, Any]:
+    budget = item.get("memory_layer_budget") if isinstance(item.get("memory_layer_budget"), dict) else {}
+    selected_ref_count = int_value(item.get("selected_ref_count")) or int_value(budget.get("total_selected_refs"))
+    selected_refs = item.get("selected_refs") if isinstance(item.get("selected_refs"), list) else []
+    if not selected_ref_count and selected_refs:
+        selected_ref_count = len(selected_refs)
+    session_memory_refs = bucket_ref_count(budget, "by_memory_scope", "session")
+    profile_memory_refs = bucket_ref_count(budget, "by_memory_scope", "user_profile")
+    same_session_refs = bucket_ref_count(budget, "by_session_continuity", "same_session")
+    cross_session_refs = bucket_ref_count(budget, "by_session_continuity", "cross_session")
+    if not session_memory_refs:
+        session_memory_refs = sum(1 for ref in selected_refs if isinstance(ref, dict) and ref.get("memory_scope") == "session")
+    if not profile_memory_refs:
+        profile_memory_refs = sum(1 for ref in selected_refs if isinstance(ref, dict) and ref.get("memory_scope") == "user_profile")
+    if not same_session_refs:
+        same_session_refs = sum(1 for ref in selected_refs if isinstance(ref, dict) and ref.get("session_continuity") == "same_session")
+    if not cross_session_refs:
+        cross_session_refs = sum(1 for ref in selected_refs if isinstance(ref, dict) and ref.get("session_continuity") == "cross_session")
+
+    gaps = []
+    if selected_ref_count <= 0:
+        gaps.append("retrieval:no_remote_refs_selected")
+    if session_memory_refs <= 0 and profile_memory_refs <= 0:
+        gaps.append("retrieval:no_session_or_profile_memory_selected")
+    if same_session_refs <= 0 and cross_session_refs <= 0:
+        gaps.append("retrieval:no_session_continuity_refs_selected")
+    if not budget or int_value(budget.get("total_selected_refs")) <= 0:
+        gaps.append("retrieval:memory_layer_budget_missing_selected_refs")
+    return {
+        "sequence": item.get("sequence"),
+        "record_type": item.get("record_type"),
+        "context_pack_id": item.get("context_pack_id") or "",
+        "query": item.get("text") or "",
+        "status": "gap" if gaps else "ok",
+        "gaps": gaps,
+        "selected_ref_count": selected_ref_count,
+        "session_memory_refs": session_memory_refs,
+        "profile_memory_refs": profile_memory_refs,
+        "same_session_refs": same_session_refs,
+        "cross_session_refs": cross_session_refs,
+        "memory_layer_budget_selected_refs": int_value(budget.get("total_selected_refs")),
+    }
+
+
 def rust_exec(command: dict[str, Any]) -> dict[str, Any]:
     body = json.dumps({"shard_id": 1, "command": command}).encode("utf-8")
     req = urllib.request.Request("http://127.0.0.1:17100/execute", data=body, headers={"content-type": "application/json"})
@@ -415,6 +544,21 @@ def summarize_backend(name: str, prefix: str, raw_count: int, raw_hot_count: int
     context_embeddings = [item for item in serving_records if item["record_type"] == "context_embedding"]
     profile_records = [item for item in serving_records if is_profile_record(item)]
     resource_skill_records = [item for item in serving_records if is_resource_or_skill_record(item)]
+    retrieval_records = [
+        item
+        for item in serving_records
+        if item["record_type"] in {"context_pack_audit", "context_pack_telemetry"}
+    ]
+    retrieval_coverages = [retrieval_audit_coverage(item) for item in retrieval_records]
+    retrieval_memory_coverage_gaps = [
+        {
+            "context_pack_id": item["context_pack_id"],
+            "sequence": item["sequence"],
+            "gaps": item["gaps"],
+        }
+        for item in retrieval_coverages
+        if item["gaps"]
+    ]
     extraction_batches = extraction_input_batches(raw_records, serving_records)
     extraction_input_coverage_gaps = [
         {
@@ -451,6 +595,9 @@ def summarize_backend(name: str, prefix: str, raw_count: int, raw_hot_count: int
         "recent_context_embeddings": context_embeddings[:8],
         "recent_profile_records": profile_records[:8],
         "recent_resource_skill_records": resource_skill_records[:8],
+        "recent_retrieval_memory_coverages": retrieval_coverages[:8],
+        "retrieval_memory_coverage_status": "gap" if retrieval_memory_coverage_gaps else "ok",
+        "retrieval_memory_coverage_gaps": retrieval_memory_coverage_gaps,
         "recent_context_event_count": len(context_events),
         "recent_context_embedding_count": len(context_embeddings),
         "recent_profile_record_count": len(profile_records),
@@ -474,6 +621,7 @@ def render_table(headers: list[str], rows: list[list[Any]]) -> str:
 def render_markdown(report: dict[str, Any]) -> str:
     visibility = report.get("serving_visibility") or serving_visibility_summary(report)
     extraction_coverage = report.get("extraction_input_coverage") or extraction_input_coverage_summary(report)
+    retrieval_coverage = report.get("retrieval_memory_coverage") or retrieval_memory_coverage_summary(report)
     lines = [
         "# Recent Codex Hook Ingestion Workflow",
         "",
@@ -490,6 +638,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Status: `{'pass' if extraction_coverage['extraction_input_coverage_pass'] else 'gap'}`",
         f"- Gap count: `{extraction_coverage['extraction_input_coverage_gap_count']}`",
         f"- Gap backends: `{json.dumps(extraction_coverage['extraction_input_coverage_gap_backends'], sort_keys=True)}`",
+        "",
+        "## Retrieval Memory Coverage Gate",
+        "",
+        f"- Status: `{'pass' if retrieval_coverage['retrieval_memory_coverage_pass'] else 'gap'}`",
+        f"- Gap count: `{retrieval_coverage['retrieval_memory_coverage_gap_count']}`",
+        f"- Gap backends: `{json.dumps(retrieval_coverage['retrieval_memory_coverage_gap_backends'], sort_keys=True)}`",
         "",
         "## What This Report Proves",
         "",
@@ -554,6 +708,26 @@ def render_markdown(report: dict[str, Any]) -> str:
                     ],
                 )
             )
+        lines.extend(["", f"## {backend['backend']} Retrieval Memory Coverage", ""])
+        lines.append(
+            render_table(
+                ["Seq", "Pack", "Selected", "Session", "Profile", "Same", "Cross", "Coverage", "Gaps"],
+                [
+                    [
+                        item["sequence"],
+                        item["context_pack_id"],
+                        item["selected_ref_count"],
+                        item["session_memory_refs"],
+                        item["profile_memory_refs"],
+                        item["same_session_refs"],
+                        item["cross_session_refs"],
+                        item["status"],
+                        ",".join(item["gaps"]),
+                    ]
+                    for item in backend["recent_retrieval_memory_coverages"]
+                ],
+            )
+        )
         lines.extend(["", f"## {backend['backend']} Context Events", ""])
         lines.append(render_table(["Seq", "Event", "Session", "Text"], [[r["sequence"], r["codex_api_event"], r["session_id"], r["text"]] for r in backend["recent_context_events"]]))
         lines.extend(["", f"## {backend['backend']} Embeddings/Profile/Resources", ""])
@@ -599,6 +773,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Exit nonzero when ingested user/assistant/tool input roles are missing from derived serving memory.",
     )
+    parser.add_argument(
+        "--require-retrieval-memory-coverage",
+        action="store_true",
+        help="Exit nonzero when recent context-pack audits lack selected session/profile retrieval evidence.",
+    )
     return parser.parse_args(argv)
 
 
@@ -621,6 +800,7 @@ def main(argv: list[str] | None = None) -> None:
     }
     report["serving_visibility"] = serving_visibility_summary(report)
     report["extraction_input_coverage"] = extraction_input_coverage_summary(report)
+    report["retrieval_memory_coverage"] = retrieval_memory_coverage_summary(report)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     OUT_JSON.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     md = render_markdown(report)
@@ -632,6 +812,7 @@ def main(argv: list[str] | None = None) -> None:
         "html": str(OUT_HTML),
         **report["serving_visibility"],
         **report["extraction_input_coverage"],
+        **report["retrieval_memory_coverage"],
     }
     print(json.dumps(result, indent=2))
     if (
@@ -644,6 +825,11 @@ def main(argv: list[str] | None = None) -> None:
         or require_extraction_input_coverage(os.environ.get("MATRIXARK_REQUIRE_EXTRACTION_INPUT_COVERAGE"))
     ) and not report["extraction_input_coverage"]["extraction_input_coverage_pass"]:
         raise SystemExit(3)
+    if (
+        args.require_retrieval_memory_coverage
+        or require_retrieval_memory_coverage(os.environ.get("MATRIXARK_REQUIRE_RETRIEVAL_MEMORY_COVERAGE"))
+    ) and not report["retrieval_memory_coverage"]["retrieval_memory_coverage_pass"]:
+        raise SystemExit(4)
 
 
 if __name__ == "__main__":
