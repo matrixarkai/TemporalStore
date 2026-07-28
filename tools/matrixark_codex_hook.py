@@ -2692,6 +2692,36 @@ def selected_assistant_memory_text(text: str, *, max_chars: int = 4096, max_line
     return evidence
 
 
+def codex_memory_selection_metadata(*, role: str, event: str, text: str) -> Json:
+    normalized_role = normalize_message_role(role)
+    if normalized_role not in {"assistant", "tool"}:
+        return {}
+    selected_text = str(text or "")
+    line_count = len([line for line in selected_text.splitlines() if line.strip()])
+    if normalized_role == "tool":
+        policy = "selected_tool_evidence_only"
+        truncation_marker = "[tool evidence truncated]"
+        max_chars = 4096
+        max_lines = 80
+    else:
+        policy = "selected_assistant_decision_outcome_only"
+        truncation_marker = "[assistant memory truncated]"
+        max_chars = 4096
+        max_lines = 48
+    return {
+        "policy": policy,
+        "source_role": normalized_role,
+        "codex_event": event,
+        "selected_text_chars": len(selected_text),
+        "selected_line_count": line_count,
+        "max_selected_chars": max_chars,
+        "max_selected_lines": max_lines,
+        "large_payload_verbatim_stored": False,
+        "truncated": truncation_marker in selected_text,
+        "selection_stage": "codex_hook_before_temporalstore_ingest",
+    }
+
+
 
 def latest_codex_assistant_message_from_rollout(payload: Json) -> str:
     for path in _latest_rollout_files(payload):
@@ -3000,6 +3030,9 @@ def hook_async_message_ingest_args(
     metadata: Json,
     agent_hook: Json,
 ) -> Json:
+    selection_metadata = codex_memory_selection_metadata(role=role, event=event, text=text)
+    if selection_metadata:
+        metadata = {**metadata, "codex_memory_selection": selection_metadata}
     ingest_args: Json = {
         **common,
         "messages": [{"role": role, "content": text}],
@@ -3312,6 +3345,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
     hook_type = hook_type_for_event(args.event)
     lineage = hook_lineage_fields(hook)
     source_memory_scopes, source_session_continuities = pending_extraction_memory_layer_intent(scope)
+    selection_metadata = codex_memory_selection_metadata(role=role, event=args.event, text=text)
     metadata: Json = {
         "source": "codex_hook_fast_async",
         "codex_event": args.event,
@@ -3320,6 +3354,8 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "agent_context": agent_context,
         **lineage,
     }
+    if selection_metadata:
+        metadata["codex_memory_selection"] = selection_metadata
     retention = hook_retention_fields(text=text, role=role, now_ms=now)
     raw_record: Json = {
         "record_type": "agent_message",
@@ -3405,6 +3441,10 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "updated_at_ms": now,
         **retention,
     }
+    if selection_metadata:
+        raw_record["codex_memory_selection"] = selection_metadata
+        record["codex_memory_selection"] = selection_metadata
+        record["envelope"]["codex_memory_selection"] = selection_metadata
     projection_records = fast_hook_event_projection_records(event_record=record, updated_at_ms=now)
     pipeline_task: Json = {
         "record_type": "matrixark_async_pipeline_task",

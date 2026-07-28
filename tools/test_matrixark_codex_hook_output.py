@@ -1986,6 +1986,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("refs/heads/main", evidence)
         self.assertNotIn("noise line 0", evidence)
         self.assertLess(len(evidence), 1000)
+        policy = hook.codex_memory_selection_metadata(role="tool", event="PostToolUse", text=evidence)
+        self.assertEqual("selected_tool_evidence_only", policy["policy"])
+        self.assertFalse(policy["large_payload_verbatim_stored"])
+        self.assertEqual("tool", policy["source_role"])
 
     def test_selected_assistant_memory_filters_large_response(self) -> None:
         raw = "\n".join(
@@ -2007,6 +2011,33 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertNotIn("background explanation line 0", evidence)
         self.assertNotIn("large code block", evidence)
         self.assertLess(len(evidence), 1000)
+        policy = hook.codex_memory_selection_metadata(role="assistant", event="Stop", text=evidence)
+        self.assertEqual("selected_assistant_decision_outcome_only", policy["policy"])
+        self.assertFalse(policy["large_payload_verbatim_stored"])
+        self.assertEqual("assistant", policy["source_role"])
+
+    def test_hook_async_message_ingest_args_marks_selected_memory_policy(self) -> None:
+        args = Namespace(
+            event="Stop",
+            session_commit_threshold=20,
+            idle_commit_timeout_ms=0,
+            understanding_provider="rules",
+            segment_provider="deterministic",
+        )
+        ingest_args = hook.hook_async_message_ingest_args(
+            {"scope": {"tenant_id": "tenant", "user_id": "user", "session_id": "session"}},
+            args,
+            event="Stop",
+            role="assistant",
+            text="Decision: keep assistant memory compact.",
+            metadata={"source": "test"},
+            agent_hook={"hook_type": "after_llm"},
+        )
+
+        selection = ingest_args["metadata"]["codex_memory_selection"]
+        self.assertEqual("selected_assistant_decision_outcome_only", selection["policy"])
+        self.assertFalse(selection["large_payload_verbatim_stored"])
+        self.assertEqual("codex_hook_before_temporalstore_ingest", selection["selection_stage"])
 
     def test_latest_assistant_rollout_returns_bounded_memory_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -2777,6 +2808,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("thread-tool-threshold", commit_hook["thread_id"])
         self.assertEqual(1, len(server.adapter.session_buffer_records))
         self.assertEqual("tool", server.adapter.session_buffer_records[0]["envelope"]["messages"][0]["role"])
+        raw_selection = server.adapter.raw_records[0]["metadata"]["codex_memory_selection"]
+        self.assertEqual("selected_tool_evidence_only", raw_selection["policy"])
+        self.assertFalse(raw_selection["large_payload_verbatim_stored"])
+        event_records = [record for record in server.adapter.serving_records if record.get("record_type") == "context_event"]
+        self.assertEqual("selected_tool_evidence_only", event_records[0]["codex_memory_selection"]["policy"])
 
     def test_fast_async_hook_ingest_preflushes_idle_tail_before_tool_evidence(self) -> None:
         original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT
@@ -3033,6 +3069,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("assistant", buffered["envelope"]["messages"][0]["role"])
         self.assertEqual("after_llm", buffered["envelope"]["hook_type"])
         self.assertEqual("Stop", buffered["envelope"]["codex_event"])
+        selection = buffered["envelope"]["codex_memory_selection"]
+        self.assertEqual("selected_assistant_decision_outcome_only", selection["policy"])
+        self.assertFalse(selection["large_payload_verbatim_stored"])
 
     def test_retention_keeps_acceptance_prompt_that_mentions_synthetic_rows(self) -> None:
         fields = hook.hook_retention_fields(
