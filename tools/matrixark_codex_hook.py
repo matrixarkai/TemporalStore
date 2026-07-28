@@ -57,6 +57,49 @@ def normalized_role_counts(counts: Any, fallback_values: Any = None) -> Json:
     return normalized
 
 
+def merge_role_bucket(target: Json, role: str, bucket: Any) -> None:
+    role = normalize_message_role(role)
+    if not role:
+        return
+    if isinstance(bucket, dict):
+        existing = target.setdefault(role, {})
+        for field in ["refs", "tokens", "selected_refs", "selected_tokens", "dropped_refs", "dropped_tokens"]:
+            try:
+                amount = int(bucket.get(field) or 0)
+            except (TypeError, ValueError):
+                amount = 0
+            if amount:
+                existing[field] = int(existing.get(field, 0)) + amount
+        for field, value in bucket.items():
+            if field not in existing and field not in {"refs", "tokens", "selected_refs", "selected_tokens", "dropped_refs", "dropped_tokens"}:
+                existing[field] = value
+        return
+    try:
+        amount = int(bucket or 0)
+    except (TypeError, ValueError):
+        amount = 0
+    if amount:
+        target[role] = int(target.get(role, 0)) + amount
+
+
+def normalize_role_bucket_map(bucket_map: Any) -> Json:
+    if not isinstance(bucket_map, dict):
+        return {}
+    normalized: Json = {}
+    for role, bucket in bucket_map.items():
+        merge_role_bucket(normalized, role, bucket)
+    return normalized
+
+
+def normalize_memory_layer_budget_roles(memory_layer_budget: Json) -> Json:
+    normalized = dict(memory_layer_budget)
+    for bucket_name in ["by_source_role", "source_message_counts_by_role"]:
+        role_bucket = normalize_role_bucket_map(normalized.get(bucket_name))
+        if role_bucket:
+            normalized[bucket_name] = role_bucket
+    return normalized
+
+
 def normalize_role_lineage_fields(record: Json) -> Json:
     normalized = dict(record)
     roles = normalized_role_list(normalized.get("source_roles"))
@@ -268,6 +311,8 @@ def retrieval_budget_pressure_from_retrieve(pack: Json | None) -> Json:
         dropped_memory_layer_budget = pack_view.get("dropped_memory_layer_budget")
     if not isinstance(dropped_memory_layer_budget, dict):
         dropped_memory_layer_budget = {}
+    if dropped_memory_layer_budget:
+        dropped_memory_layer_budget = normalize_memory_layer_budget_roles(dropped_memory_layer_budget)
     memory_layer_pressure = retrieval_metrics.get("memory_layer_pressure")
     if not isinstance(memory_layer_pressure, dict):
         memory_layer_pressure = recall_policy.get("memory_layer_pressure")
@@ -348,6 +393,8 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
         memory_layer_budget = pack_view.get("memory_layer_budget")
     if not isinstance(memory_layer_budget, dict):
         memory_layer_budget = {}
+    if memory_layer_budget:
+        memory_layer_budget = normalize_memory_layer_budget_roles(memory_layer_budget)
     if refs and (
         not memory_layer_budget
         or not isinstance(memory_layer_budget.get("by_entity_type"), dict)

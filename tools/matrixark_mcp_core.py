@@ -6220,6 +6220,22 @@ def memory_hierarchy_contract_from_recall_policy(recall_policy: Json) -> Json:
     cross_session = recall_policy.get("cross_session") if isinstance(recall_policy.get("cross_session"), dict) else {}
     shared_context = recall_policy.get("shared_context") if isinstance(recall_policy.get("shared_context"), dict) else {}
     source_role_budget = recall_policy.get("source_role_budget") if isinstance(recall_policy.get("source_role_budget"), dict) else {}
+
+    def normalized_role_int_map(raw: Any) -> Json:
+        if not isinstance(raw, dict):
+            return {}
+        normalized: Json = {}
+        for role, value in raw.items():
+            role_name = normalize_message_role(role)
+            if not role_name:
+                continue
+            try:
+                amount = int(value or 0)
+            except (TypeError, ValueError):
+                continue
+            normalized[role_name] = int(normalized.get(role_name, 0)) + amount
+        return normalized
+
     return {
         "models": {
             "session_entity": {
@@ -6254,9 +6270,9 @@ def memory_hierarchy_contract_from_recall_policy(recall_policy: Json) -> Json:
         "cross_session_max_candidates": cross_session.get("max_candidates"),
         "shared_context_enabled": shared_context.get("enabled"),
         "source_role_budget_enabled": source_role_budget.get("enabled"),
-        "source_role_budget_tokens": source_role_budget.get("budget_tokens"),
-        "source_role_selected_tokens_by_role": source_role_budget.get("selected_tokens_by_role"),
-        "source_role_selected_ref_count_by_role": source_role_budget.get("selected_ref_count_by_role"),
+        "source_role_budget_tokens": normalized_role_int_map(source_role_budget.get("budget_tokens")),
+        "source_role_selected_tokens_by_role": normalized_role_int_map(source_role_budget.get("selected_tokens_by_role")),
+        "source_role_selected_ref_count_by_role": normalized_role_int_map(source_role_budget.get("selected_ref_count_by_role")),
         "selected_ref_flow": [
             "local_context_budget",
             "same_session_memory",
