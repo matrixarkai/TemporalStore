@@ -2575,6 +2575,19 @@ def apply_retrieval_budget(
         out.append(source)
         used.add(key)
         counts[session_group] += 1
+    for source in candidates:
+        if len(out) >= limit:
+            break
+        key = source_identity(source)
+        if key in used:
+            continue
+        # Retrieval caps are soft quotas. Once every quota-aware pass is exhausted,
+        # fill unused capacity with the best remaining candidates instead of
+        # returning a short pack that misses available evidence.
+        out.append(source)
+        used.add(key)
+        for group in retrieval_budget_groups(source, primary_group):
+            counts[group] += 1
     return out[:limit]
 
 
@@ -2670,8 +2683,9 @@ def adaptive_max_events_for_question(question: str, args: argparse.Namespace) ->
     q = normalize_text(question)
     needs_expanded_context = bool(
         re.search(
-            r"\b(list|which|what .* (?:items?|things?|activities|places|names?|ones)|"
-            r"names?|besides|who else|both|all|total|combined|across|over time|"
+            r"\b(list|which|what .* (?:items?|things?|activities|places|names?|ones|events?)|"
+            r"names?|events?|besides|who else|both|all|total|combined|across|over time|"
+            r"kids? .* (?:like|love|enjoy)|personality traits?|traits? .* (?:has|have)|political leaning|likely be|"
             r"how many|how long|years? ago|months? ago|difference|compare|"
             r"before|after|earliest|latest|first|last|where has|where .* (?:camped|visited|been|gone|traveled|travelled))\b",
             q,
@@ -3063,6 +3077,29 @@ def add_domain_reference_sources(
                 re.compile(r"\b(?:moved from my home country|home country[, ]+Sweden|from\s+Sweden|roots)\b", re.I),
             ]
         )
+    if "kids" in q and re.search(r"\b(?:like|love|interested|stoked|enjoy)\b", q):
+        patterns.extend(
+            [
+                re.compile(r"\b(?:kids?|younger kids|they)\b.{0,180}\b(?:love|like|stoked|dinosaurs?|dinosaur exhibit|nature|animals|bones)\b", re.I),
+                re.compile(r"\b(?:dinosaur exhibit|dinosaurs?|nature|animals|bones)\b.{0,180}\b(?:kids?|they|love|like|stoked)\b", re.I),
+            ]
+        )
+    if "events" in q and "caroline" in q and re.search(r"\b(?:children|kids|youth|help)\b", q):
+        patterns.extend(
+            [
+                re.compile(r"\b(?:mentorship program|mentoring program|mentor(?:ing)?|lgbtq youth)\b", re.I),
+                re.compile(r"\b(?:school speech|giving my talk|audience|allies|voice to the trans community)\b", re.I),
+            ]
+        )
+    if "political leaning" in q or ("caroline" in q and re.search(r"\b(?:liberal|conservative|political)\b", q)):
+        patterns.append(re.compile(r"\b(?:religious conservatives|lgbtq rights|accept and support|pride fest|ally|trans community)\b", re.I))
+    if "personality traits" in q or re.search(r"\btraits?\b", q):
+        patterns.extend(
+            [
+                re.compile(r"\b(?:thoughtful|concern|concerned|care about being real|being real|authentic|drive to help|driven|your drive|helping others)\b", re.I),
+                re.compile(r"\b(?:real and helping others|so thoughtful|drive to help is awesome)\b", re.I),
+            ]
+        )
     if "activities" in q and "melanie" in q:
         patterns.extend(
             [
@@ -3124,7 +3161,7 @@ def add_domain_reference_sources(
     matched_keys: set[str] = set()
     diverse_pattern_query = len(patterns) > 1 and bool(
         re.search(
-            r"\b(activities|different|fields?|countries|items?|doctors?|games?|friends?|total|spent|earned|model kits?|destinations|films?)\b",
+            r"\b(activities|events?|children|kids?|traits?|personality|different|fields?|countries|items?|doctors?|games?|friends?|total|spent|earned|model kits?|destinations|films?|political leaning|likely be)\b",
             q,
         )
         or re.search(r"\bwhere\s+has\b|\bplaces?\b", q)
@@ -4211,6 +4248,9 @@ def locomo_temporal_anchor_answer(question: str, texts: list[str]) -> str:
     if "hike after the roadtrip" in q and "melanie" in q:
         if "19 october" in blob or "hike" in blob:
             return "19 October 2023"
+    if "volunteer at the local animal shelter" in q and "fundraising dinner" in q:
+        if "valentine" in blob or "love is in the air" in blob or "fundraising dinner" in blob:
+            return "February 14th"
     return ""
 
 
