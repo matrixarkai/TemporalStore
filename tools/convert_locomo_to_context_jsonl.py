@@ -28,6 +28,7 @@ def main() -> None:
         help="Override output dataset name. Defaults to locomo or longmemeval_s by input shape.",
     )
     parser.add_argument("--max-questions", type=int, default=None)
+    parser.add_argument("--question-offset", type=int, default=0)
     parser.add_argument("--max-conversations", type=int, default=None)
     parser.add_argument(
         "--evidence-window",
@@ -52,6 +53,7 @@ def main() -> None:
         records = records[: args.max_conversations]
 
     written = 0
+    skipped_questions = 0
     query_id_counts: dict[str, int] = {}
     out = Path(args.output)
     with out.open("w", encoding="utf-8") as handle:
@@ -67,8 +69,16 @@ def main() -> None:
                 or f"conversation_{record_index + 1}"
             )
             dataset_name = args.dataset_name or infer_dataset_name(record)
-            sources = record_sources(record, conversation_id)
             questions = record_questions(record)
+            scoreable_question_count = count_scoreable_questions(questions)
+            if (
+                args.question_offset
+                and scoreable_question_count
+                and skipped_questions + scoreable_question_count <= args.question_offset
+            ):
+                skipped_questions += scoreable_question_count
+                continue
+            sources = record_sources(record, conversation_id)
             for question_index, qa in enumerate(questions):
                 if args.max_questions is not None and written >= args.max_questions:
                     break
@@ -77,6 +87,9 @@ def main() -> None:
                     continue
                 answer_terms = normalize_answers(qa.get("answer") or qa.get("answers"))
                 if not answer_terms:
+                    continue
+                if args.question_offset and skipped_questions < args.question_offset:
+                    skipped_questions += 1
                     continue
                 evidence_refs = normalize_evidence_refs(qa.get("evidence"))
                 case_sources = (
@@ -128,6 +141,16 @@ def normalize_questions(raw: Any) -> list[dict[str, Any]]:
     if isinstance(raw, dict):
         return [raw]
     return []
+
+
+def count_scoreable_questions(questions: list[dict[str, Any]]) -> int:
+    total = 0
+    for qa in questions:
+        question = str(qa.get("question") or "").strip()
+        answers = normalize_answers(qa.get("answer") or qa.get("answers"))
+        if question and answers:
+            total += 1
+    return total
 
 
 def record_questions(record: dict[str, Any]) -> list[dict[str, Any]]:

@@ -101,6 +101,11 @@ def main() -> int:
             "not fail on remote metadata HEAD requests."
         ),
     )
+    parser.add_argument(
+        "--quiet-child-output",
+        action="store_true",
+        help="Suppress successful child benchmark stdout/stderr; failed stages still write tails into blocker artifacts.",
+    )
     args = parser.parse_args()
     apply_shared_oss_stack_aliases(args)
     validate_shared_oss_stack(args)
@@ -136,6 +141,7 @@ def main() -> int:
             repo,
             env,
             out,
+            quiet=args.quiet_child_output,
         ):
             return 1
         if not run_or_record_blocker(
@@ -144,6 +150,7 @@ def main() -> int:
             repo,
             env,
             out,
+            quiet=args.quiet_child_output,
         ):
             return 1
     require_files(locomo_matrixark, longmem_matrixark)
@@ -155,6 +162,7 @@ def main() -> int:
             repo,
             env,
             out,
+            quiet=args.quiet_child_output,
         ):
             return 1
         if not run_or_record_blocker(
@@ -163,6 +171,7 @@ def main() -> int:
             repo,
             env,
             out,
+            quiet=args.quiet_child_output,
         ):
             return 1
     require_files(locomo_baseline, longmem_baseline)
@@ -613,14 +622,24 @@ def run(command: list[str], cwd: Path, env: dict[str, str]) -> None:
     subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
-def run_or_record_blocker(stage: str, command: list[str], cwd: Path, env: dict[str, str], output_root: Path) -> bool:
+def run_or_record_blocker(
+    stage: str,
+    command: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    output_root: Path,
+    *,
+    quiet: bool = False,
+) -> bool:
     print("+ " + " ".join(command), flush=True)
     completed = subprocess.run(command, cwd=cwd, env=env, text=True, capture_output=True)
-    if completed.stdout:
+    if completed.stdout and not quiet:
         print(completed.stdout, end="")
-    if completed.stderr:
+    if completed.stderr and not quiet:
         print(completed.stderr, end="", file=sys.stderr)
     if completed.returncode == 0:
+        if quiet:
+            print(f"{stage}: complete")
         return True
     blocker = {
         "schema": "matrixark_fair_oss_benchmark_blocker_v1",
