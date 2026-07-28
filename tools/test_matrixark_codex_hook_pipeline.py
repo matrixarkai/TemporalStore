@@ -5941,6 +5941,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(result.get("entities_written"), result.get("profile_entities_written"))
             self.assertEqual("always_when_profile_scope_available", result["profile_promotion_policy"])
             self.assertTrue(result["profile_promotion_scope_available"])
+            self.assertEqual("", result["profile_promotion_blocker"])
             promotion_summary = result["profile_promotion_summary"]
             self.assertEqual(result.get("profile_entities_written"), len(promotion_summary))
             self.assertTrue(all(item.get("source_session_ids") == ["session_codex_1"] for item in promotion_summary))
@@ -5987,6 +5988,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 extraction_audits[0]["outputs"]["profile_promotion_policy"],
             )
             self.assertTrue(extraction_audits[0]["outputs"]["profile_promotion_scope_available"])
+            self.assertEqual("", extraction_audits[0]["outputs"]["profile_promotion_blocker"])
             event_counts_by_role = {
                 record["source_role"]: record["source_role_counts"]
                 for record in durable_records
@@ -6416,6 +6418,52 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertNotIn("source_hook_types", item)
                 self.assertNotIn("source_codex_events", item)
             self.assertTrue(any(item.get("final_session_boundary") is True for item in summary_items))
+
+    def test_batch_extract_reports_profile_scope_missing_without_importance_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-missing.jsonl")
+            result = adapter.batch_extract(
+                {
+                    "scope": {
+                        "account_id": "acct_profile",
+                        "tenant_id": "tenant_profile",
+                        "session_id": "session_without_user_profile",
+                        "session_hash": 20202,
+                        "scope_key": "acct_profile:tenant_profile:session_without_user_profile",
+                        "_explicit_scope_keys": ["account_id", "tenant_id", "session_id"],
+                    },
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Always keep Codex hook memories inside TemporalStore.",
+                        }
+                    ],
+                    "force": True,
+                }
+            )
+
+            self.assertGreaterEqual(result.get("entities_written", 0), 1)
+            self.assertEqual(0, result.get("profile_entities_written"))
+            self.assertEqual("always_when_profile_scope_available", result["profile_promotion_policy"])
+            self.assertFalse(result["profile_promotion_scope_available"])
+            self.assertEqual("profile_scope_missing", result["profile_promotion_blocker"])
+            self.assertFalse(result["summary_refresh"]["profile_summary_refresh_required"])
+            records = adapter.read_all()
+            audits = [
+                record
+                for record in records
+                if record.get("record_type") == "context_extraction_audit"
+                and record.get("batch_id_hash") == result["batch_id_hash"]
+            ]
+            self.assertTrue(audits)
+            self.assertEqual("profile_scope_missing", audits[0]["outputs"]["profile_promotion_blocker"])
+            self.assertFalse(
+                any(
+                    record.get("record_type") == "context_entity"
+                    and record.get("memory_scope") == "user_profile"
+                    for record in records
+                )
+            )
 
     def test_batch_extract_normalizes_llm_response_aliases_to_assistant_profile_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

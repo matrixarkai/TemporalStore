@@ -5007,6 +5007,7 @@ class MatrixArkLocalAdapter:
             )
         profile_node_hash = stable_hash("/".join(profile_node_path)) if profile_node_path else 0
         profile_promotion_policy = "always_when_profile_scope_available"
+        profile_promotion_blocker = "" if profile_node_hash else "profile_scope_missing"
         source_session_id = str(envelope["scope"].get("session_id") or "")
         entity_hashes = []
         profile_entity_hashes = []
@@ -5389,6 +5390,7 @@ class MatrixArkLocalAdapter:
                     "profile_promotion_summary": profile_promotion_summary[:16],
                     "profile_promotion_policy": profile_promotion_policy,
                     "profile_promotion_scope_available": bool(profile_node_hash),
+                    "profile_promotion_blocker": profile_promotion_blocker,
                     "entity_type_counts": entity_type_counts,
                     "source_role_counts": source_role_counts,
                     "source_hook_type_counts": source_hook_type_counts,
@@ -5475,6 +5477,7 @@ class MatrixArkLocalAdapter:
             "profile_entities_written": len(profile_entity_hashes),
             "profile_promotion_policy": profile_promotion_policy,
             "profile_promotion_scope_available": bool(profile_node_hash),
+            "profile_promotion_blocker": profile_promotion_blocker,
             "entity_type_counts": entity_type_counts,
             "source_role_counts": source_role_counts,
             "source_hook_type_counts": source_hook_type_counts,
