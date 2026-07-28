@@ -1564,6 +1564,65 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertTrue(metrics["remote_is_additive_only_within_remaining_budget"])
 
+    def test_local_deadline_fallback_hides_source_lineage_budget_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-deadline-fallback.jsonl")
+            scope = {
+                "account_id": "acct_deadline_local",
+                "tenant_id": "tenant_deadline_local",
+                "user_id": "user_deadline_local",
+                "session_id": "session_deadline_local",
+            }
+            pack = adapter.deadline_fallback_pack(
+                query="what tool result proved fallback safety?",
+                scope=scope,
+                question_type="specific_fact",
+                max_context_tokens=160,
+                local_budget={"items": [], "token_estimate": 0, "safety_margin_tokens": 0},
+                deadline_ms=1,
+                elapsed_ms=2.0,
+                records=[
+                    {
+                        "record_type": "context_entity",
+                        "scope": scope,
+                        "entity_hash": 991,
+                        "entity_type": "tool_evidence",
+                        "entity_name": "fallback safety test",
+                        "state": "Exit code: 0 proved fallback serving output stays lean.",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "extraction_phase": "final",
+                        "source_roles": ["tool"],
+                        "source_role_counts": {"tool": 2},
+                        "source_hook_types": ["hook_boundary"],
+                        "source_hook_type_counts": {"hook_boundary": 2},
+                        "source_codex_events": ["PostToolUse"],
+                        "source_codex_event_counts": {"PostToolUse": 2},
+                    }
+                ],
+                reason="deadline_unit_test",
+            )
+            selected = pack["selected_refs"]
+            self.assertTrue(selected, pack)
+            self.assertEqual("tool_evidence", selected[0]["entity_type"])
+            for field in ["source_roles", "source_role_counts", "source_hook_types", "source_codex_events"]:
+                self.assertNotIn(field, selected[0])
+            budget = pack["retrieval_metrics"]["memory_layer_budget"]
+            self.assertEqual(1, budget["by_memory_scope"]["user_profile"]["refs"])
+            self.assertEqual(1, budget["by_entity_type"]["tool_evidence"]["refs"])
+            top_level_budget = pack["memory_layer_budget"]
+            self.assertEqual(budget, top_level_budget)
+            for field in [
+                "by_source_role",
+                "by_hook_type",
+                "by_codex_event",
+                "source_message_counts_by_role",
+                "source_hook_counts_by_type",
+                "source_codex_event_counts_by_event",
+            ]:
+                self.assertNotIn(field, budget)
+                self.assertNotIn(field, top_level_budget)
+
     def test_retrieve_source_role_budget_uses_entity_semantics_for_mixed_profile_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-mixed-role-budget.jsonl")

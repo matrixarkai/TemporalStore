@@ -5497,6 +5497,7 @@ class MatrixArkLocalAdapter:
         context_pack_id = str(stable_hash(f"deadline:{query}:{selected}:{now_ms()}"))
         serving_selected = compact_context_pack_refs(selected, include_debug=False)
         memory_layer_budget = selected_ref_layer_budget(selected)
+        serving_memory_layer_budget_value = serving_memory_layer_budget(memory_layer_budget)
         async_readiness_scope = retrieval_scope if isinstance(retrieval_scope, dict) else {**scope, "_session_scope": "prefer"}
         async_pipeline_readiness = async_pipeline_retrieval_readiness(records, async_readiness_scope)
         quality_warnings = [
@@ -5521,7 +5522,7 @@ class MatrixArkLocalAdapter:
                 "elapsed_ms": elapsed_ms,
                 "partial_context_pack": True,
                 "fallback_reason": reason,
-                "memory_layer_budget": memory_layer_budget,
+                "memory_layer_budget": serving_memory_layer_budget_value,
                 "async_pipeline_readiness": async_pipeline_readiness,
                 "session_continuity": {
                     "mode": "fallback_recent_context",
@@ -5540,7 +5541,7 @@ class MatrixArkLocalAdapter:
                 "remote_context_budget_tokens": remote_budget,
                 "requested_max_context_tokens": max_context_tokens,
                 "retrieval_metrics": {
-                    "memory_layer_budget": memory_layer_budget,
+                    "memory_layer_budget": serving_memory_layer_budget_value,
                     "async_pipeline_readiness": async_pipeline_readiness,
                     "requested_max_context_tokens": max_context_tokens,
                     "used_local_context_tokens": local_tokens,
