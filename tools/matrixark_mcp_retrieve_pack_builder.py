@@ -15,6 +15,7 @@ try:
         embedding_execution_mode_name,
         embedding_fallback_used,
         embedding_model_name,
+        is_pending_async_candidate,
         local_context_refs_for_pack,
         normalize_message_role,
         optional_object,
@@ -30,6 +31,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         embedding_execution_mode_name,
         embedding_fallback_used,
         embedding_model_name,
+        is_pending_async_candidate,
         local_context_refs_for_pack,
         normalize_message_role,
         optional_object,
@@ -37,6 +39,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 def memory_layer_name(ref: Json) -> str:
+    explicit_layer = str(ref_value(ref, "budget_memory_layer") or "").strip()
+    if explicit_layer:
+        return explicit_layer
     ref_type = str(ref_value(ref, "ref_type") or "")
     context_class = str(ref_value(ref, "context_class") or ref_type)
     memory_scope = str(ref_value(ref, "memory_scope") or "")
@@ -66,6 +71,8 @@ def memory_layer_name(ref: Json) -> str:
             return "cross_session_segment"
         return "session_neutral_segment"
     if ref_type == "event":
+        if is_pending_async_candidate(ref):
+            return "pending_async_event"
         if session_continuity == "same_session":
             return "same_session_event"
         if session_continuity == "cross_session":

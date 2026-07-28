@@ -22,6 +22,7 @@ from matrixark_mcp_context_pack import (
 )
 from matrixark_mcp_core import (
     candidate_index_terms,
+    candidate_memory_layer_name,
     compact_context_pack_audit_record as core_compact_context_pack_audit_record,
     compact_context_pack_for_serving as core_compact_context_pack_for_serving,
     compact_context_pack_for_serving_flat,
@@ -1751,6 +1752,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "classification": "ANSWER",
             "extraction_status": "observed",
             "extraction_mode": "one_pass",
+            "text": "assistant_decision: Commit d0152479 pushed after extracted entity tests passed.",
         }
         extracted_entity = {
             "ref_type": "entity",
@@ -1761,6 +1763,29 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
 
         self.assertGreater(packing_sort_key(ordinary_event, "fact"), packing_sort_key(pending_event, "fact"))
         self.assertGreater(packing_sort_key(extracted_entity, "fact"), packing_sort_key(pending_event, "fact"))
+        self.assertEqual("pending_async_event", candidate_memory_layer_name(pending_event))
+        pending_budget = selected_ref_layer_budget([{**pending_event, "token_estimate": 7}])
+        self.assertEqual(1, pending_budget["by_memory_layer"]["pending_async_event"]["refs"])
+        self.assertEqual(7, pending_budget["by_memory_layer"]["pending_async_event"]["tokens"])
+
+        selected, _used_tokens, dropped = select_token_budgeted_refs(
+            [
+                {**pending_event, "ref_hash": 171, "token_estimate": 7},
+                {**ordinary_event, "ref_hash": 172, "token_estimate": 7},
+            ],
+            [],
+            max_context_tokens=32,
+            auxiliary_quota=0,
+            question_type="fact",
+            min_score=0.0,
+            max_selected_refs=2,
+            memory_layer_budget_tokens={"pending_async_event": 1},
+        )
+        self.assertEqual([172], [ref["ref_hash"] for ref in selected])
+        self.assertEqual(1, dropped["memory_layer_budget"])
+        self.assertEqual("pending_async_event", dropped["refs"][0]["memory_layer_budget_capped_layer"])
+        dropped_budget = dropped_ref_layer_budget(dropped)
+        self.assertEqual(1, dropped_budget["by_memory_layer"]["pending_async_event"]["refs"])
 
     def test_fast_hook_dirty_markers_refresh_into_retrievable_summaries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
