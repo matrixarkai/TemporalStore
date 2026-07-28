@@ -352,6 +352,8 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
     memory_scopes: list[str] = []
     session_continuities: list[str] = []
     extraction_phases: list[str] = []
+    profile_promotion_policies: list[str] = []
+    profile_promotion_blockers: list[str] = []
     final_session_boundary_count = 0
 
     def add_count(counts: Json, name: Any, count: Any = 1) -> None:
@@ -437,6 +439,10 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
         add_values(session_continuities, record.get("session_continuity"))
         add_values(extraction_phases, record.get("source_extraction_phases"))
         add_values(extraction_phases, record.get("extraction_phase"))
+        add_values(profile_promotion_policies, record.get("source_profile_promotion_policies"))
+        add_values(profile_promotion_policies, record.get("profile_promotion_policy"))
+        add_values(profile_promotion_blockers, record.get("source_profile_promotion_blockers"))
+        add_values(profile_promotion_blockers, record.get("profile_promotion_blocker"))
         try:
             final_session_boundary_count += max(0, int(record.get("source_final_session_boundary_count") or 0))
         except (TypeError, ValueError):
@@ -450,6 +456,8 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
     source_memory_scopes = ordered_unique_any(memory_scopes)
     source_session_continuities = ordered_unique_any(session_continuities)
     source_extraction_phases = ordered_unique_any(extraction_phases)
+    source_profile_promotion_policies = ordered_unique_any(profile_promotion_policies)
+    source_profile_promotion_blockers = ordered_unique_any(profile_promotion_blockers)
     memory_scope = (
         "user_profile"
         if source_memory_scopes == ["user_profile"]
@@ -487,6 +495,8 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
         "source_memory_scopes": source_memory_scopes,
         "source_session_continuities": source_session_continuities,
         "source_extraction_phases": source_extraction_phases,
+        "source_profile_promotion_policies": source_profile_promotion_policies,
+        "source_profile_promotion_blockers": source_profile_promotion_blockers,
         "source_final_session_boundary_count": final_session_boundary_count,
     }
     if memory_scope:
@@ -2165,6 +2175,8 @@ class MatrixArkLocalAdapter:
                 "source_memory_scopes",
                 "source_session_continuities",
                 "source_extraction_phases",
+                "source_profile_promotion_policies",
+                "source_profile_promotion_blockers",
                 "source_final_session_boundary_count",
                 "memory_scope",
                 "session_continuity",
@@ -2492,6 +2504,30 @@ class MatrixArkLocalAdapter:
                 for record in entity_states + child_summaries + events
                 if bool(record.get("final_session_boundary"))
             )
+            source_profile_promotion_policies = sorted(
+                {
+                    str(value).strip()
+                    for record in entity_states + child_summaries
+                    for value in (
+                        record.get("source_profile_promotion_policies")
+                        if isinstance(record.get("source_profile_promotion_policies"), list)
+                        else [record.get("profile_promotion_policy")]
+                    )
+                    if str(value or "").strip()
+                }
+            )
+            source_profile_promotion_blockers = sorted(
+                {
+                    str(value).strip()
+                    for record in entity_states + child_summaries
+                    for value in (
+                        record.get("source_profile_promotion_blockers")
+                        if isinstance(record.get("source_profile_promotion_blockers"), list)
+                        else [record.get("profile_promotion_blocker")]
+                    )
+                    if str(value or "").strip()
+                }
+            )
             source_operator_hashes = [
                 int(record.get("compression_id_hash") or record.get("ref_hash"))
                 for record in operator_states
@@ -2549,6 +2585,8 @@ class MatrixArkLocalAdapter:
                     "source_memory_scopes": source_memory_scopes,
                     "source_session_continuities": source_session_continuities,
                     "source_extraction_phases": source_extraction_phases,
+                    "source_profile_promotion_policies": source_profile_promotion_policies,
+                    "source_profile_promotion_blockers": source_profile_promotion_blockers,
                     "source_final_session_boundary_count": source_final_session_boundary_count,
                     "memory_scope": "user_profile" if "user_profile" in source_memory_scopes else ("session" if "session" in source_memory_scopes else ""),
                     "session_continuity": "cross_session" if "cross_session" in source_session_continuities else ("same_session" if "same_session" in source_session_continuities else ""),
@@ -2639,6 +2677,8 @@ class MatrixArkLocalAdapter:
                         "source_memory_scopes": source_memory_scopes,
                         "source_session_continuities": source_session_continuities,
                         "source_extraction_phases": source_extraction_phases,
+                        "source_profile_promotion_policies": source_profile_promotion_policies,
+                        "source_profile_promotion_blockers": source_profile_promotion_blockers,
                         "source_final_session_boundary_count": source_final_session_boundary_count,
                         "generated_summary_types": [spec[0] for spec in summary_specs],
                         "summary_generation_policy": l1_policy,
@@ -2691,6 +2731,8 @@ class MatrixArkLocalAdapter:
                     "source_memory_scopes": source_memory_scopes,
                     "source_session_continuities": source_session_continuities,
                     "source_extraction_phases": source_extraction_phases,
+                    "source_profile_promotion_policies": source_profile_promotion_policies,
+                    "source_profile_promotion_blockers": source_profile_promotion_blockers,
                     "source_final_session_boundary_count": source_final_session_boundary_count,
                     "source_operator_count": len(source_operator_hashes),
                     "generated_summary_types": generated_summary_types,
