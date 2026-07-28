@@ -48,11 +48,14 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("memory_layer_budget", retrieve_output_props)
         self.assertIn("dropped_memory_layer_budget", retrieve_output_props)
         self.assertIn("memory_layer_pressure", retrieve_output_props)
+        self.assertIn("debug-only", tools_by_name["matrixark_retrieve"]["outputSchema"]["description"])
         hierarchy_props = retrieve_output_props["memory_hierarchy"]["properties"]
         self.assertIn("profile entity bridge", retrieve_output_props["memory_hierarchy"]["description"])
         self.assertIn("cross_session_budget_floor_status", hierarchy_props)
         self.assertIn("selected_ref_flow", hierarchy_props)
         self.assertIn("freshness_warnings", retrieve_output_props["async_pipeline_readiness"]["properties"])
+        self.assertIn("debug-only", retrieve_output_props["async_pipeline_readiness"]["description"])
+        self.assertIn("debug-only", retrieve_output_props["memory_layer_budget"]["description"])
         self.assertIn("summary_refresh", dashboard_table_enum)
         self.assertIn("async_pipeline", dashboard_table_enum)
 

@@ -299,7 +299,10 @@ def serving_retrieval_metrics(value: Any, *, include_debug: bool = False) -> Jso
             compact["memory_layer_pressure"] = summary
     async_pipeline_readiness = value.get("async_pipeline_readiness")
     if isinstance(async_pipeline_readiness, dict):
-        compact["async_pipeline_readiness"] = strip_default_debug_lineage_fields(async_pipeline_readiness)
+        compact["async_pipeline_readiness"] = serving_async_pipeline_readiness(
+            async_pipeline_readiness,
+            include_debug=include_debug,
+        )
     pre_retrieval_summary_refresh = value.get("pre_retrieval_summary_refresh")
     if isinstance(pre_retrieval_summary_refresh, dict):
         compact["pre_retrieval_summary_refresh"] = {
@@ -317,6 +320,14 @@ def serving_retrieval_metrics(value: Any, *, include_debug: bool = False) -> Jso
             if pre_retrieval_summary_refresh.get(field) not in (None, "", [], {})
         }
     return strip_default_debug_lineage_fields(compact)
+
+
+def serving_async_pipeline_readiness(value: Any, *, include_debug: bool = False) -> Json:
+    if not isinstance(value, dict):
+        return {}
+    if debug_lineage_enabled(include_debug=include_debug):
+        return value
+    return strip_default_debug_lineage_fields(value)
 
 
 def selected_context_class_counts(refs: list[Json]) -> Json:
@@ -553,7 +564,7 @@ def compact_dropped_refs_for_context_pack(dropped: Json, *, include_debug: bool 
     return compact
 
 
-def compact_recall_policy_for_audit(recall_policy: Json) -> Json:
+def compact_recall_policy_for_audit(recall_policy: Json, *, include_debug: bool = False) -> Json:
     if not isinstance(recall_policy, dict):
         return {}
     tree = recall_policy.get("tree_traversal") if isinstance(recall_policy.get("tree_traversal"), dict) else {}
@@ -613,7 +624,10 @@ def compact_recall_policy_for_audit(recall_policy: Json) -> Json:
         compact["memory_layer_pressure"] = serving_memory_layer_pressure(memory_layer_pressure)
     async_pipeline_readiness = recall_policy.get("async_pipeline_readiness")
     if isinstance(async_pipeline_readiness, dict):
-        compact["async_pipeline_readiness"] = async_pipeline_readiness
+        compact["async_pipeline_readiness"] = serving_async_pipeline_readiness(
+            async_pipeline_readiness,
+            include_debug=include_debug,
+        )
     if storage_options:
         compact["storage_route"] = {
             field: storage_options.get(field)
@@ -696,7 +710,10 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
         recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}
         async_pipeline_readiness = recall_policy.get("async_pipeline_readiness")
     if isinstance(async_pipeline_readiness, dict):
-        compact["async_pipeline_readiness"] = async_pipeline_readiness
+        compact["async_pipeline_readiness"] = serving_async_pipeline_readiness(
+            async_pipeline_readiness,
+            include_debug=include_debug,
+        )
     local_policy = record.get("local_context_policy")
     if isinstance(local_policy, dict):
         compact["local_context_policy"] = {
@@ -1220,7 +1237,10 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         else {}
     )
     if isinstance(async_pipeline_readiness, dict) and async_pipeline_readiness:
-        compact["async_pipeline_readiness"] = async_pipeline_readiness
+        compact["async_pipeline_readiness"] = serving_async_pipeline_readiness(
+            async_pipeline_readiness,
+            include_debug=include_debug,
+        )
     pre_retrieval_summary_refresh = (
         retrieval_metrics.get("pre_retrieval_summary_refresh")
         if isinstance(retrieval_metrics.get("pre_retrieval_summary_refresh"), dict)
