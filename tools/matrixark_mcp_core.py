@@ -6295,16 +6295,16 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
     if serving_recall:
         compact["recall"] = serving_recall
     memory_layer_budget = recall_summary.get("memory_layer_budget") if isinstance(recall_summary, dict) else {}
-    if isinstance(memory_layer_budget, dict) and memory_layer_budget:
+    if (include_debug or CONTEXT_PACK_DEBUG_LINEAGE) and isinstance(memory_layer_budget, dict) and memory_layer_budget:
         compact["memory_layer_budget"] = serving_memory_layer_budget(memory_layer_budget, include_debug=include_debug)
     dropped_memory_layer_budget = recall_summary.get("dropped_memory_layer_budget") if isinstance(recall_summary, dict) else {}
-    if isinstance(dropped_memory_layer_budget, dict) and dropped_memory_layer_budget:
+    if (include_debug or CONTEXT_PACK_DEBUG_LINEAGE) and isinstance(dropped_memory_layer_budget, dict) and dropped_memory_layer_budget:
         compact["dropped_memory_layer_budget"] = serving_memory_layer_budget(dropped_memory_layer_budget, include_debug=include_debug)
     memory_layer_pressure = recall_summary.get("memory_layer_pressure") if isinstance(recall_summary, dict) else {}
-    if isinstance(memory_layer_pressure, dict) and memory_layer_pressure:
+    if (include_debug or CONTEXT_PACK_DEBUG_LINEAGE) and isinstance(memory_layer_pressure, dict) and memory_layer_pressure:
         compact["memory_layer_pressure"] = serving_memory_layer_pressure(memory_layer_pressure, include_debug=include_debug)
     async_pipeline_readiness = recall_summary.get("async_pipeline_readiness") if isinstance(recall_summary, dict) else {}
-    if isinstance(async_pipeline_readiness, dict) and async_pipeline_readiness:
+    if (include_debug or CONTEXT_PACK_DEBUG_LINEAGE) and isinstance(async_pipeline_readiness, dict) and async_pipeline_readiness:
         compact["async_pipeline_readiness"] = async_pipeline_readiness
     pre_retrieval_summary_refresh = compact.get("pre_retrieval_summary_refresh")
     if not isinstance(pre_retrieval_summary_refresh, dict):
@@ -6313,7 +6313,7 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
             if isinstance(compact.get("recall_policy"), dict)
             else {}
         )
-    if isinstance(pre_retrieval_summary_refresh, dict) and pre_retrieval_summary_refresh.get("enabled"):
+    if (include_debug or CONTEXT_PACK_DEBUG_LINEAGE) and isinstance(pre_retrieval_summary_refresh, dict) and pre_retrieval_summary_refresh.get("enabled"):
         compact["pre_retrieval_summary_refresh"] = {
             field: pre_retrieval_summary_refresh.get(field)
             for field in [
