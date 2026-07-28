@@ -5349,6 +5349,7 @@ def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate:
         "budget_source_role_counts",
         "budget_memory_layer",
         "memory_layer_budget_capped_layer",
+        "memory_layer_floor_reserved_layer",
         "source_hook_types",
         "source_hook_type_counts",
         "source_codex_events",
@@ -5579,6 +5580,33 @@ def select_token_budgeted_refs(
             normalized_memory_layer_budget_tokens[layer_name] = budget_tokens
     memory_layer_used_tokens: Json = {layer: 0 for layer in normalized_memory_layer_budget_tokens}
     memory_layer_selected_ref_counts: Json = {layer: 0 for layer in normalized_memory_layer_budget_tokens}
+    profile_entity_floor_enabled = bool(
+        normalized_memory_layer_budget_tokens.get("profile_entity")
+        and normalized_memory_layer_budget_tokens.get("summary")
+    )
+
+    def profile_entity_floor_satisfied() -> bool:
+        return int(memory_layer_selected_ref_counts.get("profile_entity", 0) or 0) > 0
+
+    def remaining_profile_entity_candidate_exists(start_index: int) -> bool:
+        for remaining in candidates[start_index:]:
+            if candidate_memory_layer_name(remaining) != "profile_entity":
+                continue
+            try:
+                remaining_score = float(remaining.get("score", 0.0))
+            except (TypeError, ValueError):
+                remaining_score = 0.0
+            if remaining_score < min_score:
+                continue
+            if question_type in {"current_state", "latest"} and is_stale_or_superseded_candidate(remaining):
+                continue
+            remaining_tokens = max(1, token_count(str(remaining.get("text", ""))))
+            if remote_budget <= 0 or (selected and used_tokens + remaining_tokens > remote_budget):
+                continue
+            if remaining.get("session_continuity") == "cross_session" and not cross_enabled:
+                continue
+            return True
+        return False
 
     def candidate_source_role_names(candidate: Json) -> set[str]:
         role_names = {
@@ -5655,6 +5683,7 @@ def select_token_budgeted_refs(
         "shared_skill_budget": 0,
         "source_role_budget": 0,
         "memory_layer_budget": 0,
+        "memory_layer_floor": 0,
         "deadline": 0,
         "max_selected_refs": 0,
         "estimated_tokens": {
@@ -5671,6 +5700,7 @@ def select_token_budgeted_refs(
             "shared_skill_budget": 0,
             "source_role_budget": 0,
             "memory_layer_budget": 0,
+            "memory_layer_floor": 0,
             "deadline": 0,
             "max_selected_refs": 0,
         },
@@ -5688,6 +5718,7 @@ def select_token_budgeted_refs(
             "shared_skill_budget": "shared skill candidate exceeded the configured shared-skill token budget",
             "source_role_budget": "candidate exceeded a configured source-role token budget",
             "memory_layer_budget": "candidate exceeded a configured memory-layer token budget",
+            "memory_layer_floor": "candidate was deferred so a required lower-layer entity could be selected first",
             "deadline": "candidate was not packed because the hard retrieval deadline was reached",
             "max_selected_refs": "candidate was relevant but dropped because max_selected_refs was reached",
         },
@@ -5810,6 +5841,26 @@ def select_token_budgeted_refs(
             record_dropped_candidate(dropped, candidate, reason="shared_skill_budget", token_estimate=ref_tokens)
             continue
         candidate_memory_layer = candidate_memory_layer_name(candidate)
+        if (
+            profile_entity_floor_enabled
+            and candidate_memory_layer == "summary"
+            and not profile_entity_floor_satisfied()
+            and remaining_profile_entity_candidate_exists(index + 1)
+        ):
+            dropped["memory_layer_floor"] += 1
+            dropped["estimated_tokens"]["memory_layer_floor"] += ref_tokens
+            record_dropped_candidate(
+                dropped,
+                {
+                    **candidate,
+                    "budget_memory_layer": candidate_memory_layer,
+                    "memory_layer_budget_capped_layer": candidate_memory_layer,
+                    "memory_layer_floor_reserved_layer": "profile_entity",
+                },
+                reason="memory_layer_floor",
+                token_estimate=ref_tokens,
+            )
+            continue
         if (
             candidate_memory_layer in normalized_memory_layer_budget_tokens
             and int(memory_layer_used_tokens.get(candidate_memory_layer, 0)) + ref_tokens

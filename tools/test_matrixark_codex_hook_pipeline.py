@@ -998,6 +998,61 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             compact_dropped["memory_layer_budget_policy"]["selected_tokens_by_layer"],
         )
 
+    def test_memory_layer_floor_keeps_profile_entity_ahead_of_refreshed_summary(self) -> None:
+        selected, used_tokens, dropped = select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "summary",
+                    "ref_hash": 171,
+                    "text": "assistant summary: pre-retrieval refresh created a compact rollout memory",
+                    "score": 0.99,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "summary_type": "node_l0",
+                    "source_roles": ["assistant"],
+                },
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 172,
+                    "text": "assistant_decision: keep direct profile entity evidence available before summaries",
+                    "score": 0.61,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "entity_type": "assistant_decision",
+                    "source_roles": ["assistant"],
+                },
+            ],
+            [],
+            max_context_tokens=40,
+            auxiliary_quota=0,
+            question_type="broad_exploration",
+            min_score=0.0,
+            max_selected_refs=1,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 40,
+                "max_sessions": 4,
+                "max_candidates": 4,
+                "min_entity_bridge_refs": 0,
+            },
+            memory_layer_budget_tokens={"summary": 32, "profile_entity": 32},
+        )
+
+        self.assertEqual([172], [ref["ref_hash"] for ref in selected])
+        self.assertGreater(used_tokens, 0)
+        self.assertEqual("profile_entity", selected[0]["budget_memory_layer"])
+        self.assertEqual(1, dropped["memory_layer_floor"])
+        self.assertGreater(dropped["estimated_tokens"]["memory_layer_floor"], 0)
+        self.assertTrue(
+            any(
+                ref.get("ref_hash") == 171
+                and ref.get("drop_reason") == "memory_layer_floor"
+                and ref.get("memory_layer_floor_reserved_layer") == "profile_entity"
+                for ref in dropped["refs"]
+            ),
+            dropped["refs"],
+        )
+
     def test_current_state_retrieval_prefers_profile_entity_over_stale_session_and_summary(self) -> None:
         session_entity = {
             "ref_type": "entity",
