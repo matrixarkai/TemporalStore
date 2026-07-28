@@ -82,6 +82,7 @@ BACKEND_READINESS_CONNECT_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_REA
 DEFAULT_MAX_CONTEXT_TOKENS = int(os.environ.get("MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS", "128000"))
 CONTEXT_PACK_DEBUG_REFS = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_REFS", "0").strip().lower() in {"1", "true", "yes"}
 AUDIT_DEBUG_PAYLOAD = os.environ.get("MATRIXARK_AUDIT_DEBUG_PAYLOAD", "0").strip().lower() in {"1", "true", "yes"}
+CONTEXT_PACK_DEBUG_LINEAGE = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", "0").strip().lower() in {"1", "true", "yes"}
 
 MAX_SECONDARY_INDEX_TERMS_PER_RECORD = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD", "10"))
 SECONDARY_INDEX_POSTING_BUCKET_MS = int(os.environ.get("MATRIXARK_SECONDARY_INDEX_POSTING_BUCKET_MS", "60000"))
@@ -5929,13 +5930,9 @@ def compact_context_pack_ref(ref: Json) -> Json:
         "profile_current_state_representative",
         "current_state_policy",
         "source_roles",
-        "source_role_counts",
         "budget_source_roles",
-        "budget_source_role_counts",
         "source_hook_types",
-        "source_hook_type_counts",
         "source_codex_events",
-        "source_codex_event_counts",
         "source_memory_scopes",
         "source_session_continuities",
         "source_extraction_phases",
@@ -5948,6 +5945,22 @@ def compact_context_pack_ref(ref: Json) -> Json:
                 if roles:
                     item[field] = roles
             elif field in {"source_role_counts", "budget_source_role_counts"} and isinstance(value, dict):
+                role_counts = normalized_role_int_map(value)
+                if role_counts:
+                    item[field] = role_counts
+            else:
+                item[field] = value
+    if CONTEXT_PACK_DEBUG_LINEAGE:
+        for field in [
+            "source_role_counts",
+            "budget_source_role_counts",
+            "source_hook_type_counts",
+            "source_codex_event_counts",
+        ]:
+            value = ref.get(field)
+            if not isinstance(value, dict) or not value:
+                continue
+            if field in {"source_role_counts", "budget_source_role_counts"}:
                 role_counts = normalized_role_int_map(value)
                 if role_counts:
                     item[field] = role_counts
