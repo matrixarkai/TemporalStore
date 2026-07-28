@@ -1731,7 +1731,7 @@ def codex_hook_output(
         "retrieve": retrieve_summary,
         "session_commit": session_commit_summary(commit),
     }
-    if lineage:
+    if CONTEXT_PACK_DEBUG_LINEAGE and lineage:
         output["memory_lineage"] = lineage
     if error:
         output["error"] = error
@@ -1860,7 +1860,7 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 if isinstance(result.get("idle_commit_result"), dict)
                 else {}
             )
-            item["result"] = {
+            ingest_result = {
                 "status": result.get("status"),
                 "event_id_hash": result.get("event_id_hash"),
                 "node_hash": result.get("node_hash"),
@@ -1870,11 +1870,13 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 "idle_commit": session_commit_summary(idle_commit_result),
                 "auto_batch_extract": session_commit_summary(auto_batch_extract_result),
                 "auto_batch_extract_decision": auto_batch_decision_summary(result),
-                "memory_lineage": memory_lineage_summary(
+            }
+            if CONTEXT_PACK_DEBUG_LINEAGE:
+                ingest_result["memory_lineage"] = memory_lineage_summary(
                     auto_batch_extract_result or auto_batch_decision_summary(result),
                     idle_commit_result,
-                ),
-            }
+                )
+            item["result"] = ingest_result
         elif name == "matrixark_retrieve":
             emitted_refs = [
                 ref for ref in _selected_refs_from_retrieve(result) if not _ref_is_codex_hook_heartbeat(ref)
@@ -1994,7 +1996,6 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             "pre_retrieval_summary_refresh": retrieve.get("pre_retrieval_summary_refresh"),
             "async_pipeline_readiness": retrieve.get("async_pipeline_readiness"),
             "rendered_context_chars": retrieve.get("rendered_context_chars"),
-            "memory_lineage": memory_lineage,
             "ingest_status": ingest.get("status"),
             "auto_batch_extract_status": ingest.get("auto_batch_extract_status"),
             "auto_batch_extract": auto_batch_extract,
@@ -2004,6 +2005,8 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             "commit_status": commit.get("status"),
             "session_commit": session_commit_summary(commit),
         }
+        if CONTEXT_PACK_DEBUG_LINEAGE and memory_lineage:
+            output_summary["memory_lineage"] = memory_lineage
         if CONTEXT_PACK_DEBUG_LINEAGE and retrieve.get("memory_hierarchy"):
             output_summary["memory_hierarchy"] = retrieve.get("memory_hierarchy")
         trace["output_summary"] = output_summary

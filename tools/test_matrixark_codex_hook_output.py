@@ -526,15 +526,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(["PostToolUse"], commit_summary["source_codex_events"])
         self.assertEqual(701, commit_summary["profile_promotion_summary"][0]["profile_entity_hash"])
         self.assertEqual(["codex-session-1"], commit_summary["profile_promotion_summary"][0]["source_session_ids"])
-        lineage = record["output_summary"]["memory_lineage"]
-        self.assertFalse(lineage["user_prompt_captured"])
-        self.assertFalse(lineage["assistant_response_captured"])
-        self.assertTrue(lineage["tool_evidence_captured"])
-        self.assertEqual({"tool": 1}, lineage["source_role_counts"])
-        self.assertEqual({"hook_boundary": 1}, lineage["source_hook_type_counts"])
-        self.assertEqual({"PostToolUse": 1}, lineage["source_codex_event_counts"])
-        self.assertEqual(1, lineage["profile_promotion_count"])
-        self.assertEqual(["codex-session-1"], lineage["promoted_source_session_ids"])
+        self.assertNotIn("memory_lineage", record["output_summary"])
         self.assertEqual(2, commit_summary["memory_layers_written"]["context_events"])
         self.assertEqual(1, commit_summary["memory_layers_written"]["segments"])
         self.assertEqual(3, commit_summary["memory_layers_written"]["session_entities"])
@@ -887,15 +879,50 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual({"before_llm": 1, "after_llm": 1}, decision["source_hook_type_counts"])
         self.assertEqual({"Stop": 1, "UserPromptSubmit": 1}, decision["source_codex_event_counts"])
         self.assertEqual(801, decision["profile_promotion_summary"][0]["profile_entity_hash"])
-        lineage = item["result"]["memory_lineage"]
+        self.assertNotIn("memory_lineage", item["result"])
+
+    def test_ingest_tool_call_trace_memory_lineage_requires_debug_lineage(self) -> None:
+        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
+        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
+        try:
+            class Server:
+                def handle(self, request):
+                    return {
+                        "result": {
+                            "content": [
+                                {
+                                    "text": json.dumps(
+                                        {
+                                            "status": "accepted",
+                                            "event_id_hash": 11,
+                                            "node_hash": 22,
+                                            "hook_captured": True,
+                                            "auto_batch_extract_result": {
+                                                "status": "committed",
+                                                "trigger_policy": "threshold",
+                                                "source_roles": ["user", "assistant"],
+                                                "source_role_counts": {"user": 1, "assistant": 2},
+                                                "source_hook_type_counts": {"before_llm": 1, "after_llm": 1},
+                                                "source_codex_event_counts": {"UserPromptSubmit": 1, "Stop": 1},
+                                            },
+                                        }
+                                    )
+                                }
+                            ]
+                        }
+                    }
+
+            trace = {"tool_calls": []}
+            hook.trace_tool_call(Server(), "matrixark_ingest", {"text": "remember this"}, trace)
+        finally:
+            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
+
+        lineage = trace["tool_calls"][0]["result"]["memory_lineage"]
         self.assertTrue(lineage["user_prompt_captured"])
         self.assertTrue(lineage["assistant_response_captured"])
-        self.assertFalse(lineage["tool_evidence_captured"])
-        self.assertEqual({"assistant": 4, "user": 1}, lineage["source_role_counts"])
-        self.assertEqual({"before_llm": 1, "after_llm": 1}, lineage["source_hook_type_counts"])
+        self.assertEqual({"assistant": 2, "user": 1}, lineage["source_role_counts"])
+        self.assertEqual({"after_llm": 1, "before_llm": 1}, lineage["source_hook_type_counts"])
         self.assertEqual({"Stop": 1, "UserPromptSubmit": 1}, lineage["source_codex_event_counts"])
-        self.assertEqual(1, lineage["profile_promotion_count"])
-        self.assertEqual(["codex-session-threshold"], lineage["promoted_source_session_ids"])
 
     def test_ingest_tool_call_trace_records_auto_batch_deferred_decision(self) -> None:
         class Server:
