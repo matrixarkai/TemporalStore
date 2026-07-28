@@ -2867,6 +2867,35 @@ def apply_hook_auto_batch_ingest_options(
     return ingest_args
 
 
+def hook_async_message_ingest_args(
+    common: Json,
+    args: argparse.Namespace,
+    *,
+    event: str,
+    role: str,
+    text: str,
+    metadata: Json,
+    agent_hook: Json,
+) -> Json:
+    ingest_args: Json = {
+        **common,
+        "messages": [{"role": role, "content": text}],
+        "wait": False,
+        "async_processing": True,
+        "understanding_provider": args.understanding_provider,
+        "segment_provider": args.segment_provider,
+        "storage_options": hook_storage_options(),
+        "metadata": metadata,
+        "agent_hook": agent_hook,
+    }
+    return apply_hook_auto_batch_ingest_options(
+        ingest_args,
+        event=event,
+        session_commit_threshold=args.session_commit_threshold,
+        idle_commit_timeout_ms=args.idle_commit_timeout_ms,
+    )
+
+
 def commit_reason_for_event(event: str) -> str:
     if event in {"IdleTimeout", "SessionIdle"}:
         return "idle_timeout"
@@ -3546,22 +3575,20 @@ def main() -> int:
                 backfill_result = trace_tool_call(
                     server,
                     "matrixark_ingest",
-                    {
-                        **common,
-                        "messages": [{"role": "tool", "content": previous_tool_output}],
-                        "wait": False,
-                        "async_processing": True,
-                        "understanding_provider": args.understanding_provider,
-                        "segment_provider": args.segment_provider,
-                        "storage_options": hook_storage_options(),
-                        "metadata": {
+                    hook_async_message_ingest_args(
+                        common,
+                        args,
+                        event=args.event,
+                        role="tool",
+                        text=previous_tool_output,
+                        metadata={
                             "source": "codex_hook_rollout_backfill",
                             "codex_event": "PreviousToolOutputBackfill",
                             "backfill_reason": "post_tool_hook_payload_can_arrive_before_rollout_tool_output_is_visible",
                             "agent_context": agent_context,
                             "codex_session_id_source": session_id_source,
                         },
-                        "agent_hook": {
+                        agent_hook={
                             "source": "codex",
                             "hook_type": "tool_result",
                             "hook_id": f"PreviousToolOutputBackfill:{stable_short_hash(previous_tool_output)}",
@@ -3571,7 +3598,7 @@ def main() -> int:
                             "auto_captured": True,
                             "session_id_source": session_id_source,
                         },
-                    },
+                    ),
                     trace,
                 )
                 hook_warning = timeout_warning(backfill_result)
@@ -3580,22 +3607,20 @@ def main() -> int:
                 backfill_result = trace_tool_call(
                     server,
                     "matrixark_ingest",
-                    {
-                        **common,
-                        "messages": [{"role": "assistant", "content": previous_assistant}],
-                        "wait": False,
-                        "async_processing": True,
-                        "understanding_provider": args.understanding_provider,
-                        "segment_provider": args.segment_provider,
-                        "storage_options": hook_storage_options(),
-                        "metadata": {
+                    hook_async_message_ingest_args(
+                        common,
+                        args,
+                        event=args.event,
+                        role="assistant",
+                        text=previous_assistant,
+                        metadata={
                             "source": "codex_hook_rollout_backfill",
                             "codex_event": "PreviousAssistantBackfill",
                             "backfill_reason": "stop_hook_runs_before_rollout_final_answer_is_visible",
                             "agent_context": agent_context,
                             "codex_session_id_source": session_id_source,
                         },
-                        "agent_hook": {
+                        agent_hook={
                             "source": "codex",
                             "hook_type": "after_llm",
                             "hook_id": f"PreviousAssistantBackfill:{stable_short_hash(previous_assistant)}",
@@ -3605,7 +3630,7 @@ def main() -> int:
                             "auto_captured": True,
                             "session_id_source": session_id_source,
                         },
-                    },
+                    ),
                     trace,
                 )
                 hook_warning = timeout_warning(backfill_result)
@@ -3668,15 +3693,13 @@ def main() -> int:
             if ingest:
                 hook_warning = timeout_warning(ingest)
             if not ingest and not hook_warning:
-                ingest_args: Json = {
-                    **common,
-                    "messages": [{"role": role_for_event(args.event), "content": text}],
-                    "wait": False,
-                    "async_processing": True,
-                    "understanding_provider": args.understanding_provider,
-                    "segment_provider": args.segment_provider,
-                    "storage_options": hook_storage_options(),
-                    "metadata": {
+                ingest_args = hook_async_message_ingest_args(
+                    common,
+                    args,
+                    event=args.event,
+                    role=role_for_event(args.event),
+                    text=text,
+                    metadata={
                         "source": "codex_hook",
                         "codex_event": args.event,
                         "raw_hook_payload": payload,
@@ -3684,13 +3707,7 @@ def main() -> int:
                         "compacted_session_summary": args.event == "PostCompact",
                         "codex_session_id_source": session_id_source,
                     },
-                    "agent_hook": main_hook,
-                }
-                apply_hook_auto_batch_ingest_options(
-                    ingest_args,
-                    event=args.event,
-                    session_commit_threshold=args.session_commit_threshold,
-                    idle_commit_timeout_ms=args.idle_commit_timeout_ms,
+                    agent_hook=main_hook,
                 )
                 ingest = trace_tool_call(server, "matrixark_ingest", ingest_args, trace)
                 hook_warning = timeout_warning(ingest)

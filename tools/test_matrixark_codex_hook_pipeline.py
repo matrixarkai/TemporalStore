@@ -3236,6 +3236,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "transcript_path": str(rollout),
                     "thread_id": "codex-fast-backfill-thread",
                 },
+                extra_env={"MATRIXARK_SESSION_COMMIT_THRESHOLD": "1"},
             )
 
             self.assertEqual("ok", msg["status"])
@@ -3277,25 +3278,22 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "user_id": "codex_user",
                 "session_id": "codex_session_1",
             }
-            commit = adapter.session_commit(
-                {
-                    "scope": scope,
-                    "threshold_messages": 1,
-                    "force": True,
-                    "commit_reason": "test_previous_assistant_profile",
-                    "skip_prior_context": True,
-                }
-            )
-            self.assertEqual("committed", commit["status"])
-            self.assertEqual("final", commit["extraction_phase"])
-            self.assertTrue(commit["final_session_boundary"])
+            records = adapter.read_all()
+            auto_backfill_commits = [
+                record
+                for record in records
+                if record.get("record_type") == "context_batch_commit"
+                and record.get("commit_reason") == "threshold"
+                and "assistant" in record.get("source_roles", [])
+                and "PreviousAssistantBackfill" in record.get("source_codex_events", [])
+            ]
+            self.assertTrue(auto_backfill_commits, records)
+            commit = auto_backfill_commits[0]
+            self.assertEqual("provisional", commit["extraction_phase"])
+            self.assertFalse(commit["final_session_boundary"])
             self.assertGreaterEqual(commit["memory_layers_written"]["session_entities"], 1)
             self.assertGreaterEqual(commit["memory_layers_written"]["profile_entities"], 1)
             self.assertGreaterEqual(commit["memory_layers_written"]["secondary_indexes"], 1)
-            self.assertIn("assistant", commit["source_roles"])
-            self.assertIn("PreviousAssistantBackfill", commit["source_codex_events"])
-
-            records = adapter.read_all()
             self.assertTrue(
                 any(
                     record.get("record_type") == "context_entity"
