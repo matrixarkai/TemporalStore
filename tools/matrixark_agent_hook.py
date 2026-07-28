@@ -549,18 +549,53 @@ def hook_storage_options() -> Json:
     return {"route": os.environ.get("MATRIXARK_HOOK_STORAGE_ROUTE", "shared_store_async")}
 
 
+def retrieval_memory_coverage_summary(layer_summary: Json, *, selected_ref_count: int) -> Json:
+    gaps: list[str] = []
+    memory_layer_budget = layer_summary.get("memory_layer_budget")
+    memory_layer_budget = memory_layer_budget if isinstance(memory_layer_budget, dict) else {}
+    try:
+        budget_selected_refs = int(memory_layer_budget.get("total_selected_refs") or 0)
+    except (TypeError, ValueError):
+        budget_selected_refs = 0
+
+    if selected_ref_count <= 0:
+        gaps.append("retrieval:no_remote_refs_selected")
+    if int(layer_summary.get("session_memory_refs") or 0) <= 0 and int(layer_summary.get("profile_memory_refs") or 0) <= 0:
+        gaps.append("retrieval:no_session_or_profile_memory_selected")
+    if int(layer_summary.get("same_session_refs") or 0) <= 0 and int(layer_summary.get("cross_session_refs") or 0) <= 0:
+        gaps.append("retrieval:no_session_continuity_refs_selected")
+    if not memory_layer_budget or budget_selected_refs <= 0:
+        gaps.append("retrieval:memory_layer_budget_missing_selected_refs")
+
+    return {
+        "status": "gap" if gaps else "ok",
+        "gaps": gaps,
+        "selected_ref_count": selected_ref_count,
+        "session_memory_refs": int(layer_summary.get("session_memory_refs") or 0),
+        "profile_memory_refs": int(layer_summary.get("profile_memory_refs") or 0),
+        "same_session_refs": int(layer_summary.get("same_session_refs") or 0),
+        "cross_session_refs": int(layer_summary.get("cross_session_refs") or 0),
+        "memory_layer_budget_selected_refs": budget_selected_refs,
+    }
+
+
 def agent_retrieval_summary(retrieve: Json | None, *, session_id_source: str) -> Json:
     retrieve = retrieve if isinstance(retrieve, dict) else {}
     layer_summary = retrieval_layer_summary_from_retrieve(retrieve, include_budget_lineage=True)
+    selected_ref_count = selected_ref_count_from_retrieve(retrieve)
     return {
         "context_pack_id": retrieve.get("context_pack_id"),
-        "selected_ref_count": selected_ref_count_from_retrieve(retrieve),
+        "selected_ref_count": selected_ref_count,
         "used_context_tokens": used_context_tokens_from_retrieve(retrieve),
         "budget": retrieval_budget_summary_from_retrieve(retrieve),
         "budget_pressure": retrieval_budget_pressure_from_retrieve(retrieve),
         "layer_summary": layer_summary,
         "memory_layer_budget": layer_summary.get("memory_layer_budget", {}),
         "memory_layer_pressure": layer_summary.get("memory_layer_pressure", {}),
+        "memory_layer_coverage": retrieval_memory_coverage_summary(
+            layer_summary,
+            selected_ref_count=selected_ref_count,
+        ),
         "session_identity": retrieval_session_identity_from_retrieve(
             retrieve,
             session_id_source=session_id_source,
