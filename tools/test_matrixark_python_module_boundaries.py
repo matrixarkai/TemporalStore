@@ -827,9 +827,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("profile", profile_item["memory_layer"])
         self.assertEqual("cross_session", summary_group["items"][0]["session_continuity"])
         self.assertEqual("cross_session", summary_group["items"][0]["memory_layer"])
-        self.assertEqual(3, event_group["items"][0]["tokens"])
+        self.assertNotIn("tokens", event_group["items"][0])
 
-    def test_serving_pack_preserves_summary_cross_session_lineage(self) -> None:
+    def test_serving_pack_hides_summary_cross_session_lineage_by_default(self) -> None:
         core_mod = importlib.import_module("tools.matrixark_mcp_core")
         pack = core_mod.compact_context_pack_for_serving(
             {
@@ -866,12 +866,15 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("profile", item["memory_layer"])
         self.assertEqual("cross_session", item["session_continuity"])
         self.assertEqual(1, pack["counts"]["memory_layer"]["profile"])
-        self.assertEqual(["session-a", "session-b"], item["source_session_ids"])
-        self.assertEqual(3, item["source_entity_count"])
-        self.assertEqual(["user", "assistant"], item["source_roles"])
-        self.assertEqual(["hook_boundary"], item["source_hook_types"])
-        self.assertEqual(["UserPromptSubmit", "Stop"], item["source_codex_events"])
-        self.assertNotIn("source_entity_hashes", item)
+        for field in [
+            "source_session_ids",
+            "source_entity_count",
+            "source_roles",
+            "source_hook_types",
+            "source_codex_events",
+            "source_entity_hashes",
+        ]:
+            self.assertNotIn(field, item)
 
     def test_shared_pack_builder_exposes_memory_layer_budget_and_pressure(self) -> None:
         builder_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pack_builder")
@@ -1030,13 +1033,13 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             debug_refs=False,
         )
         self.assertTrue(serving_selected[0]["profile_current_state_representative"])
-        self.assertEqual(
-            "profile_entity_bridge_preferred_over_session_local_history",
-            serving_selected[0]["current_state_policy"],
-        )
-        self.assertEqual(2, serving_selected[0]["current_state_source_session_count"])
-        self.assertEqual(2, serving_selected[0]["current_state_source_entity_count"])
-        self.assertEqual(2, serving_selected[0]["source_entity_count"])
+        for field in [
+            "current_state_policy",
+            "current_state_source_session_count",
+            "current_state_source_entity_count",
+            "source_entity_count",
+        ]:
+            self.assertNotIn(field, serving_selected[0])
         pack = builder_mod.build_context_pack(
             context_pack_id=124,
             selected=selected,
@@ -1272,12 +1275,15 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         entity_item = entity_group["items"][0]
         self.assertEqual("user_profile", entity_item["memory_scope"])
         self.assertEqual("cross_session", entity_item["session_continuity"])
-        self.assertEqual(["session_old", "session_now"], entity_item["source_session_ids"])
-        self.assertEqual(2, entity_item["source_entity_count"])
-        self.assertEqual(["assistant"], entity_item["source_roles"])
-        self.assertNotIn("source_role_counts", entity_item)
-        self.assertNotIn("source_hook_type_counts", entity_item)
-        self.assertNotIn("source_codex_event_counts", entity_item)
+        for field in [
+            "source_session_ids",
+            "source_entity_count",
+            "source_roles",
+            "source_role_counts",
+            "source_hook_type_counts",
+            "source_codex_event_counts",
+        ]:
+            self.assertNotIn(field, entity_item)
         self.assertEqual(1, len(adapter.audit_records))
         self.assertEqual(budget, adapter.audit_records[0]["memory_layer_budget"])
         self.assertEqual(pressure, adapter.audit_records[0]["memory_layer_pressure"])
@@ -1468,12 +1474,15 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(compact["memory_layer_pressure"]["cross_session_pressure"])
         self.assertTrue(compact["memory_layer_pressure"]["assistant_source_message_pressure"])
         flat_item = compact["selected_refs"][0]
-        self.assertEqual(["assistant", "tool"], flat_item["source_roles"])
-        self.assertNotIn("source_role_counts", flat_item)
-        self.assertNotIn("source_hook_type_counts", flat_item)
-        self.assertNotIn("source_codex_event_counts", flat_item)
-        self.assertEqual(["session_summary_1", "session_summary_2"], flat_item["source_session_ids"])
-        self.assertEqual(2, flat_item["source_entity_count"])
+        for field in [
+            "source_roles",
+            "source_role_counts",
+            "source_hook_type_counts",
+            "source_codex_event_counts",
+            "source_session_ids",
+            "source_entity_count",
+        ]:
+            self.assertNotIn(field, flat_item)
         self.assertEqual({"user_profile": {"refs": 1, "tokens": 7}}, grouped_compact["memory_layer_budget"]["by_memory_scope"])
         self.assertEqual(
             {"assistant": 2, "tool": 1},
@@ -1482,12 +1491,15 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(grouped_compact["memory_layer_pressure"]["profile_memory_pressure"])
         self.assertTrue(grouped_compact["memory_layer_pressure"]["cross_session_pressure"])
         entity_item = grouped_compact["groups"][0]["items"][0]
-        self.assertEqual(["assistant", "tool"], entity_item["source_roles"])
-        self.assertNotIn("source_role_counts", entity_item)
-        self.assertNotIn("source_hook_type_counts", entity_item)
-        self.assertNotIn("source_codex_event_counts", entity_item)
-        self.assertEqual(["session_summary_1", "session_summary_2"], entity_item["source_session_ids"])
-        self.assertEqual(2, entity_item["source_entity_count"])
+        for field in [
+            "source_roles",
+            "source_role_counts",
+            "source_hook_type_counts",
+            "source_codex_event_counts",
+            "source_session_ids",
+            "source_entity_count",
+        ]:
+            self.assertNotIn(field, entity_item)
         hierarchy = compact["memory_hierarchy"]
         self.assertEqual("user_profile", hierarchy["models"]["profile_entity"]["memory_scope"])
         self.assertEqual("context_profile_entity", hierarchy["models"]["profile_index"]["data_model"])
@@ -1720,6 +1732,8 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
                             "source_role_counts": {"llm": 2, "tool": 1},
                             "source_hook_type_counts": {"hook_boundary": 3},
                             "source_codex_event_counts": {"Stop": 3},
+                            "source_session_ids": ["session-debug-1"],
+                            "source_entity_hashes": [101, 202],
                         }
                     ],
                     "used_context_tokens": 3,
@@ -1730,6 +1744,8 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
         self.assertEqual({"assistant": 2, "tool": 1}, item["source_role_counts"])
         self.assertEqual({"hook_boundary": 3}, item["source_hook_type_counts"])
         self.assertEqual({"Stop": 3}, item["source_codex_event_counts"])
+        self.assertEqual(["session-debug-1"], item["source_session_ids"])
+        self.assertEqual(2, item["source_entity_count"])
 
 
 
