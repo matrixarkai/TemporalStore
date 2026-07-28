@@ -1779,6 +1779,136 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
+    def test_fast_hook_threshold_commit_recovers_pending_buffer_after_restart(self) -> None:
+        original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
+        matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                event_log = Path(tmp_dir) / "matrixark-fast-hook-threshold-restart.jsonl"
+
+                class Server:
+                    def __init__(self, adapter: MatrixArkLocalAdapter) -> None:
+                        self.adapter = adapter
+
+                scope_args = {
+                    "event": "UserPromptSubmit",
+                    "account_id": "acct_fast_threshold_restart",
+                    "tenant_id": "tenant_fast_threshold_restart",
+                    "user_id": "user_fast_threshold_restart",
+                    "session_id": "session_fast_threshold_restart",
+                    "team": "codex",
+                    "project": "temporalstore",
+                    "session_commit_threshold": 2,
+                    "idle_commit_timeout_ms": 300000,
+                    "understanding_provider": "rules",
+                    "segment_provider": "deterministic",
+                }
+                first_adapter = FastHookLocalAdapter(event_log)
+                first = matrixark_codex_hook.fast_async_hook_ingest(
+                    Server(first_adapter),
+                    args=Namespace(**scope_args),
+                    text="User prompt: restart recovery should keep the pending threshold buffer durable.",
+                    role="user",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={
+                        "session_id_source": "payload_field",
+                        "thread_id": "thread-fast-threshold-restart",
+                        "turn_id": "turn-fast-threshold-restart-1",
+                    },
+                )
+                self.assertEqual("accepted", first["status"])
+                self.assertFalse(first["session_buffer"]["threshold_ready"])
+                self.assertFalse(first["auto_batch_extract_result"])
+
+                recovered_adapter = FastHookLocalAdapter(event_log)
+                scope = {
+                    "account_id": scope_args["account_id"],
+                    "tenant_id": scope_args["tenant_id"],
+                    "user_id": scope_args["user_id"],
+                    "session_id": scope_args["session_id"],
+                }
+                recovered_pending = recovered_adapter.pending_session_events(scope)
+                self.assertEqual(1, len(recovered_pending))
+                self.assertIn("pending threshold buffer", recovered_pending[0]["text"])
+
+                second = matrixark_codex_hook.fast_async_hook_ingest(
+                    Server(recovered_adapter),
+                    args=Namespace(**scope_args),
+                    text="Assistant decision: restart recovery threshold commit extracted both buffered messages.",
+                    role="assistant",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={
+                        "session_id_source": "payload_field",
+                        "thread_id": "thread-fast-threshold-restart",
+                        "turn_id": "turn-fast-threshold-restart-2",
+                    },
+                )
+                commit = second["auto_batch_extract_result"]
+                self.assertEqual("committed", commit["status"])
+                self.assertEqual("threshold", commit["trigger_policy"])
+                self.assertEqual(2, commit["committed_event_count"])
+                self.assertEqual(["assistant", "user"], commit["source_roles"])
+                self.assertEqual(2, commit["trigger_evidence"]["pending_event_count"])
+                self.assertTrue(second["session_buffer"]["threshold_ready"])
+                self.assertFalse(recovered_adapter.pending_session_events(scope))
+
+                records = recovered_adapter.read_all()
+                commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
+                self.assertEqual(1, len(commits))
+                self.assertEqual(
+                    [int(event_id) for event_id in commit["source_event_ids"]],
+                    [int(event_id) for event_id in commits[0]["source_event_ids"]],
+                )
+                layers = commit["memory_layers_written"]
+                self.assertGreaterEqual(layers["segments"], 1)
+                self.assertGreaterEqual(layers["session_entities"], 1)
+                self.assertGreaterEqual(layers["profile_entities"], 1)
+                self.assertGreaterEqual(layers["secondary_indexes"], 1)
+                self.assertGreaterEqual(layers["summary_dirty_nodes"], 1)
+                self.assertGreaterEqual(
+                    sum(1 for record in records if record.get("record_type") == "context_event"),
+                    2,
+                )
+                self.assertTrue(any(record.get("record_type") == "context_index" for record in records))
+                self.assertTrue(
+                    any(
+                        record.get("record_type") == "context_entity"
+                        and record.get("memory_scope") == "user_profile"
+                        and record.get("session_continuity") == "cross_session"
+                        for record in records
+                    )
+                )
+
+                reopened_again = FastHookLocalAdapter(event_log)
+                pack = reopened_again.retrieve(
+                    {
+                        "scope": {**scope, "session_id": "session_fast_threshold_restart_followup"},
+                        "session_scope": "prefer",
+                        "query": "What assistant decision proved restart recovery threshold commit?",
+                        "max_context_tokens": 180,
+                        "audit_mode": "off",
+                        "debug_context_pack": True,
+                        "ranking": {"max_selected_refs": 4},
+                    }
+                )
+                self.assertTrue(
+                    any(
+                        ref.get("ref_type") == "entity"
+                        and ref.get("entity_type") == "assistant_decision"
+                        and ref.get("memory_scope") == "user_profile"
+                        and ref.get("session_continuity") == "cross_session"
+                        and "restart recovery threshold commit" in str(ref.get("text") or "")
+                        for ref in pack["selected_refs"]
+                    ),
+                    pack["selected_refs"],
+                )
+                budget = pack["recall_policy"]["memory_layer_budget"]
+                self.assertGreaterEqual(budget["by_memory_scope"]["user_profile"]["refs"], 1)
+                self.assertGreaterEqual(budget["by_session_continuity"]["cross_session"]["refs"], 1)
+                self.assertIn("assistant", budget["source_message_counts_by_role"])
+        finally:
+            matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+
     def test_fast_hook_idle_preflush_persists_real_adapter_memory_layers(self) -> None:
         original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
         matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
