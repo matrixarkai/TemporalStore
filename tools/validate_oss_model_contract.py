@@ -30,6 +30,7 @@ CONTRACT_KEYS = (
 READER_POLICY_KEYS = (
     "reader_include_extractive_hint",
     "reader_candidate_only",
+    "reader_candidate_hybrid",
     "reader_candidate_first",
     "reader_focus_evidence",
     "reader_fallback_allowed",
@@ -195,6 +196,7 @@ def normalize_report(path: Path, label: str, errors: list[str]) -> dict[str, Any
         "reader_max_tokens": to_int(contract.get(f"{prefix}_reader_max_tokens") or data.get("reader_max_tokens")),
         "reader_include_extractive_hint": bool(data.get("reader_include_extractive_hint")),
         "reader_candidate_only": bool(data.get("reader_candidate_only")),
+        "reader_candidate_hybrid": bool(data.get("reader_candidate_hybrid")),
         "reader_candidate_first": bool(data.get("reader_candidate_first")),
         "reader_focus_evidence": bool(data.get("reader_focus_evidence")),
         "reader_fallback_allowed": bool(

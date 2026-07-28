@@ -335,6 +335,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--reader-candidate-hybrid",
+        action="store_true",
+        help=(
+            "Send candidate-first focused evidence to the OSS reader, then fall back to the extracted "
+            "candidate only when the reader returns an empty, insufficient, or obviously noisy span."
+        ),
+    )
+    parser.add_argument(
         "--reader-no-fallback",
         action="store_true",
         help="Fail explicit open-source reader calls instead of falling back to deterministic extraction.",
@@ -494,8 +502,9 @@ def main() -> int:
             allow_fallback=not args.reader_no_fallback,
             include_extractive_hint=args.reader_include_extractive_hint,
             focus_evidence=args.reader_focus_evidence,
-            candidate_first=args.reader_candidate_first,
+            candidate_first=args.reader_candidate_first or args.reader_candidate_hybrid,
             candidate_only=args.reader_candidate_only,
+            candidate_hybrid=args.reader_candidate_hybrid,
         )
     )
 
@@ -875,6 +884,7 @@ def main() -> int:
         "reader_focus_evidence": reader.config.focus_evidence,
         "reader_candidate_first": reader.config.candidate_first,
         "reader_candidate_only": reader.config.candidate_only,
+        "reader_candidate_hybrid": reader.config.candidate_hybrid,
         "reader_open_source_calls": reader.open_source_calls,
         "reader_fallback_count": reader.fallback_count,
         "reader_error_count": reader.error_count,
@@ -2170,6 +2180,7 @@ class ReaderConfig:
     focus_evidence: bool
     candidate_first: bool
     candidate_only: bool
+    candidate_hybrid: bool
 
 
 @dataclass(frozen=True)
@@ -2249,7 +2260,7 @@ class BenchmarkReader:
         if self.config.base_url.startswith("transformers://"):
             return self.transformers_answer(question, blocks)
         candidate_hint = ""
-        if self.config.include_extractive_hint and self.config.candidate_only:
+        if self.config.include_extractive_hint and (self.config.candidate_only or self.config.candidate_hybrid):
             candidate_hint = extractive_reader_hint(question, blocks).strip()
         endpoint = self.config.base_url.rstrip("/")
         if not endpoint.endswith("/chat/completions"):
@@ -2313,6 +2324,8 @@ class BenchmarkReader:
             body = json.loads(completed.stdout)
             self.open_source_calls += 1
             answer = parse_openai_compatible_answer(body)
+            if self.config.candidate_hybrid:
+                return hybrid_reader_answer(question, candidate_hint, answer)
             return candidate_hint or answer
         try:
             with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
@@ -2322,6 +2335,8 @@ class BenchmarkReader:
             raise RuntimeError(f"reader endpoint HTTP {exc.code}: {detail}") from exc
         self.open_source_calls += 1
         answer = parse_openai_compatible_answer(body)
+        if self.config.candidate_hybrid:
+            return hybrid_reader_answer(question, candidate_hint, answer)
         return candidate_hint or answer
 
     def reader_headers(self) -> dict[str, str]:
@@ -2355,7 +2370,7 @@ class BenchmarkReader:
             candidate_only=self.config.candidate_only,
         )
         candidate_hint = ""
-        if self.config.include_extractive_hint and self.config.candidate_only:
+        if self.config.include_extractive_hint and (self.config.candidate_only or self.config.candidate_hybrid):
             candidate_hint = extractive_reader_hint(question, blocks).strip()
         max_tokens = int(os.environ.get("MATRIXARK_READER_MAX_TOKENS", "64"))
         messages = [
@@ -2371,6 +2386,8 @@ class BenchmarkReader:
         output = self._transformers_model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
         answer = tokenizer.decode(output[0][inputs.input_ids.shape[-1] :], skip_special_tokens=True).strip()
         self.open_source_calls += 1
+        if self.config.candidate_hybrid:
+            return hybrid_reader_answer(question, candidate_hint, answer)
         return candidate_hint or answer
 
     def stop_local_ollama_model_after_timeout(self) -> None:
@@ -2402,6 +2419,65 @@ def parse_openai_compatible_answer(body: dict[str, Any]) -> str:
     if str(body.get("output_text") or "").strip():
         return str(body.get("output_text")).strip()
     raise ValueError("reader endpoint response did not contain an answer")
+
+
+def hybrid_reader_answer(question: str, candidate: str, answer: str) -> str:
+    candidate = re.sub(r"\s+", " ", str(candidate or "")).strip(" .")
+    answer = re.sub(r"\s+", " ", str(answer or "")).strip()
+    if not candidate:
+        return answer
+    if not answer:
+        return candidate
+    normalized_answer = normalize_text(answer)
+    if normalized_answer.startswith("not enough context") or normalized_answer.startswith("insufficient context"):
+        return candidate
+    if reader_answer_is_noisy(question, answer, candidate):
+        return candidate
+    return answer
+
+
+def reader_answer_is_noisy(question: str, answer: str, candidate: str) -> bool:
+    normalized_answer = normalize_text(answer)
+    normalized_candidate = normalize_text(candidate)
+    if not normalized_answer or not normalized_candidate:
+        return False
+    if normalized_candidate in normalized_answer:
+        return len(answer) > max(180, len(candidate) * 4)
+    if conflicting_concrete_dates(answer, candidate):
+        return True
+    if len(answer) > 260 and len(candidate) <= 120:
+        return True
+    if len(split_reader_sentences(answer)) >= 3 and len(candidate) <= 120:
+        return True
+    q = normalize_text(question)
+    if re.search(r"\bwhen|date|year|month|day\b", q):
+        candidate_has_date = bool(date_regex().search(candidate) or re.search(r"\b\d{4}\b", candidate))
+        answer_has_many_dates = len(date_regex().findall(answer)) + len(re.findall(r"\b\d{4}\b", answer)) >= 3
+        if candidate_has_date and answer_has_many_dates:
+            return True
+    if re.search(r"\bcolou?r\b", q) and color_tokens(candidate) and not color_tokens(answer):
+        return True
+    return False
+
+
+def color_tokens(value: str) -> set[str]:
+    colors = {
+        "beige",
+        "black",
+        "blue",
+        "brown",
+        "cream",
+        "gray",
+        "green",
+        "grey",
+        "orange",
+        "pink",
+        "purple",
+        "red",
+        "white",
+        "yellow",
+    }
+    return answer_tokens(value) & colors
 
 
 def load_records(path: Path) -> list[Any]:

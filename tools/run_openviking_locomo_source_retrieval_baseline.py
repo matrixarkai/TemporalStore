@@ -73,6 +73,7 @@ def main() -> int:
     parser.add_argument("--reader-include-extractive-hint", action="store_true")
     parser.add_argument("--reader-candidate-only", action="store_true")
     parser.add_argument("--reader-candidate-first", action="store_true")
+    parser.add_argument("--reader-candidate-hybrid", action="store_true")
     parser.add_argument("--reader-focus-evidence", action="store_true")
     parser.add_argument("--same-session-percent", type=float, default=1.0)
     parser.add_argument("--cross-session-percent", type=float, default=1.0)
@@ -129,7 +130,8 @@ def main() -> int:
         "reader_max_tokens": args.reader_max_tokens,
         "reader_include_extractive_hint": bool(args.reader_include_extractive_hint),
         "reader_candidate_only": bool(args.reader_candidate_only),
-        "reader_candidate_first": bool(args.reader_candidate_first),
+        "reader_candidate_first": bool(args.reader_candidate_first or args.reader_candidate_hybrid),
+        "reader_candidate_hybrid": bool(args.reader_candidate_hybrid),
         "reader_focus_evidence": bool(args.reader_focus_evidence),
         "question_limit": args.question_limit,
         "question_offset": args.question_offset,
@@ -158,8 +160,9 @@ def main() -> int:
             allow_fallback=False,
             include_extractive_hint=bool(args.reader_include_extractive_hint),
             focus_evidence=bool(args.reader_focus_evidence),
-            candidate_first=bool(args.reader_candidate_first),
+            candidate_first=bool(args.reader_candidate_first or args.reader_candidate_hybrid),
             candidate_only=bool(args.reader_candidate_only),
+            candidate_hybrid=bool(args.reader_candidate_hybrid),
         )
     )
     retrieval_budget = RetrievalBudgetConfig(

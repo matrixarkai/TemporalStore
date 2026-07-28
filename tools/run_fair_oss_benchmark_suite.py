@@ -43,12 +43,14 @@ def main() -> int:
     parser.add_argument("--reader-max-tokens", type=int, default=96)
     parser.add_argument(
         "--reader-evidence-mode",
-        choices=("candidate-only", "candidate-first", "context-only"),
+        choices=("candidate-only", "candidate-first", "candidate-hybrid", "context-only"),
         default="candidate-only",
         help=(
             "Reader prompt/evidence policy forced for MatrixArk and OpenViking/VikingMem. "
             "candidate-only is fastest and tests the extracted answer candidate; candidate-first "
-            "also gives the OSS reader compact evidence; context-only omits the extractive hint."
+            "also gives the OSS reader compact evidence; candidate-hybrid lets the OSS reader answer "
+            "from compact evidence but falls back to a clean candidate when the reader rambles; "
+            "context-only omits the extractive hint."
         ),
     )
     parser.add_argument("--locomo-input", default="/root/matrixark_benchmarks/data/locomo10.json")
@@ -515,6 +517,8 @@ def reader_policy_flags(args: argparse.Namespace) -> list[str]:
         return ["--reader-include-extractive-hint", "--reader-candidate-only"]
     if mode == "candidate-first":
         return ["--reader-include-extractive-hint", "--reader-candidate-first", "--reader-focus-evidence"]
+    if mode == "candidate-hybrid":
+        return ["--reader-include-extractive-hint", "--reader-candidate-hybrid", "--reader-focus-evidence"]
     if mode == "context-only":
         return ["--reader-focus-evidence"]
     raise ValueError(f"unsupported reader evidence mode: {mode}")

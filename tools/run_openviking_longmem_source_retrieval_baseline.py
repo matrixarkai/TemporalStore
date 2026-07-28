@@ -22,6 +22,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from run_locomo_ingest_once import (  # noqa: E402
     configure_retrieval_embedding_model,
+    hybrid_reader_answer,
     shared_dense_relevance_score,
 )
 
@@ -54,6 +55,7 @@ def main() -> int:
     parser.add_argument("--reader-include-extractive-hint", action="store_true")
     parser.add_argument("--reader-candidate-only", action="store_true")
     parser.add_argument("--reader-candidate-first", action="store_true")
+    parser.add_argument("--reader-candidate-hybrid", action="store_true")
     parser.add_argument("--reader-focus-evidence", action="store_true")
     parser.add_argument("--same-session-percent", type=float, default=0.70)
     parser.add_argument("--cross-session-percent", type=float, default=0.45)
@@ -106,7 +108,8 @@ def main() -> int:
         "encoding_model": args.embedding_model,
         "reader_include_extractive_hint": bool(args.reader_include_extractive_hint),
         "reader_candidate_only": bool(args.reader_candidate_only),
-        "reader_candidate_first": bool(args.reader_candidate_first),
+        "reader_candidate_first": bool(args.reader_candidate_first or args.reader_candidate_hybrid),
+        "reader_candidate_hybrid": bool(args.reader_candidate_hybrid),
         "reader_focus_evidence": bool(args.reader_focus_evidence),
         "retrieval_budget_config": {
             "same_session_percent": clamp_percent(args.same_session_percent),
@@ -179,7 +182,11 @@ def main() -> int:
         raw_context = "\n\n".join(
             f"[{session['session_id']}] {session['date']}\n{session['text']}" for session in selected
         )
-        candidate = extract_candidate_hint(question, raw_context) if args.reader_candidate_only else ""
+        candidate = (
+            extract_candidate_hint(question, raw_context)
+            if args.reader_candidate_only or args.reader_candidate_hybrid or args.reader_include_extractive_hint
+            else ""
+        )
         context = reader_policy_context(question, raw_context, args)
         reader_started = time.perf_counter()
         answer = call_reader(
@@ -190,7 +197,9 @@ def main() -> int:
             timeout=args.reader_timeout_seconds,
             max_tokens=args.reader_max_tokens,
         )
-        if candidate:
+        if args.reader_candidate_hybrid:
+            answer = hybrid_reader_answer(question, candidate, answer)
+        elif args.reader_candidate_only and candidate:
             answer = candidate
         reader_ms = (time.perf_counter() - reader_started) * 1000.0
         reader_latencies.append(reader_ms)
@@ -378,6 +387,12 @@ def reader_policy_context(question: str, context: str, args: argparse.Namespace)
     candidate = extract_candidate_hint(question, context)
     if args.reader_candidate_only and candidate:
         return f"Answer candidate from retrieved context: {candidate}\n\nRetrieved evidence:\n{candidate}"
+    if args.reader_candidate_hybrid and candidate:
+        prefix = (
+            f"Answer candidate from retrieved context: {candidate}\n"
+            f"Use exactly this candidate if it answers the question; otherwise use the evidence below.\n\n"
+        )
+        return (prefix + context)[: max(1, args.max_context_chars)]
     if args.reader_include_extractive_hint and candidate:
         prefix = f"Extractive answer hint from retrieved context: {candidate}\n\n"
         return (prefix + context)[: max(1, args.max_context_chars)]
