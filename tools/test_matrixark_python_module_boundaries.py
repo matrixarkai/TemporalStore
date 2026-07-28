@@ -159,6 +159,55 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(report_mod.parse_args(["--require-serving-visibility"]).require_serving_visibility)
         self.assertFalse(report_mod.parse_args([]).require_serving_visibility)
 
+    def test_recent_ingestion_report_summarizes_extraction_input_coverage_gate(self) -> None:
+        report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
+        broken_report = {
+            "backends": [
+                {
+                    "backend": "Rust TemporalStore",
+                    "prefix": "matrixark:codex-hook:rust-live-v2",
+                    "extraction_input_coverage_gaps": [
+                        {
+                            "session_id": "codex-tool-gap",
+                            "gaps": ["source_role:tool:missing_from_derived_serving_memory"],
+                        }
+                    ],
+                },
+                {
+                    "backend": "C++ TemporalStore",
+                    "prefix": "matrixark:codex-hook:cpp-live-v2",
+                    "extraction_input_coverage_gaps": [],
+                },
+            ]
+        }
+        summary = report_mod.extraction_input_coverage_summary(broken_report)
+
+        self.assertFalse(summary["extraction_input_coverage_pass"])
+        self.assertEqual(1, summary["extraction_input_coverage_gap_count"])
+        self.assertEqual(
+            ["Rust TemporalStore"],
+            [item["backend"] for item in summary["extraction_input_coverage_gap_backends"]],
+        )
+
+        healthy = report_mod.extraction_input_coverage_summary(
+            {"backends": [{"backend": "Rust TemporalStore", "extraction_input_coverage_gaps": []}]}
+        )
+        self.assertTrue(healthy["extraction_input_coverage_pass"])
+        self.assertEqual(0, healthy["extraction_input_coverage_gap_count"])
+        self.assertEqual([], healthy["extraction_input_coverage_gap_backends"])
+
+    def test_recent_ingestion_report_extraction_input_requirement_flags(self) -> None:
+        report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
+
+        self.assertTrue(report_mod.require_extraction_input_coverage("1"))
+        self.assertTrue(report_mod.require_extraction_input_coverage("required"))
+        self.assertFalse(report_mod.require_extraction_input_coverage(""))
+        self.assertFalse(report_mod.require_extraction_input_coverage("false"))
+        self.assertTrue(
+            report_mod.parse_args(["--require-extraction-input-coverage"]).require_extraction_input_coverage
+        )
+        self.assertFalse(report_mod.parse_args([]).require_extraction_input_coverage)
+
     def test_recent_ingestion_report_tracks_extraction_input_role_coverage(self) -> None:
         report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
         scope = {"session_id": "codex-real-workflow"}

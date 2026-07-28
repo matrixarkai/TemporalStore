@@ -184,7 +184,35 @@ def serving_visibility_summary(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def extraction_input_coverage_summary(report: dict[str, Any]) -> dict[str, Any]:
+    gap_backends = []
+    for backend in report.get("backends", []):
+        gaps = backend.get("extraction_input_coverage_gaps") or []
+        if gaps:
+            gap_backends.append(
+                {
+                    "backend": backend.get("backend", ""),
+                    "prefix": backend.get("prefix", ""),
+                    "gaps": list(gaps),
+                }
+            )
+    return {
+        "extraction_input_coverage_pass": not gap_backends,
+        "extraction_input_coverage_gap_count": sum(
+            len(gap.get("gaps", []))
+            for backend in gap_backends
+            for gap in backend["gaps"]
+            if isinstance(gap, dict)
+        ),
+        "extraction_input_coverage_gap_backends": gap_backends,
+    }
+
+
 def require_serving_visibility(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "required", "require"}
+
+
+def require_extraction_input_coverage(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on", "required", "require"}
 
 
@@ -445,6 +473,7 @@ def render_table(headers: list[str], rows: list[list[Any]]) -> str:
 
 def render_markdown(report: dict[str, Any]) -> str:
     visibility = report.get("serving_visibility") or serving_visibility_summary(report)
+    extraction_coverage = report.get("extraction_input_coverage") or extraction_input_coverage_summary(report)
     lines = [
         "# Recent Codex Hook Ingestion Workflow",
         "",
@@ -455,6 +484,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Status: `{'pass' if visibility['serving_visibility_pass'] else 'gap'}`",
         f"- Gap count: `{visibility['serving_visibility_gap_count']}`",
         f"- Gap backends: `{json.dumps(visibility['serving_visibility_gap_backends'], sort_keys=True)}`",
+        "",
+        "## Extraction Input Coverage Gate",
+        "",
+        f"- Status: `{'pass' if extraction_coverage['extraction_input_coverage_pass'] else 'gap'}`",
+        f"- Gap count: `{extraction_coverage['extraction_input_coverage_gap_count']}`",
+        f"- Gap backends: `{json.dumps(extraction_coverage['extraction_input_coverage_gap_backends'], sort_keys=True)}`",
         "",
         "## What This Report Proves",
         "",
@@ -559,6 +594,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Exit nonzero when serving context_event/context_embedding/profile/resource visibility gaps are present.",
     )
+    parser.add_argument(
+        "--require-extraction-input-coverage",
+        action="store_true",
+        help="Exit nonzero when ingested user/assistant/tool input roles are missing from derived serving memory.",
+    )
     return parser.parse_args(argv)
 
 
@@ -580,6 +620,7 @@ def main(argv: list[str] | None = None) -> None:
         ],
     }
     report["serving_visibility"] = serving_visibility_summary(report)
+    report["extraction_input_coverage"] = extraction_input_coverage_summary(report)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     OUT_JSON.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     md = render_markdown(report)
@@ -590,6 +631,7 @@ def main(argv: list[str] | None = None) -> None:
         "markdown": str(OUT_MD),
         "html": str(OUT_HTML),
         **report["serving_visibility"],
+        **report["extraction_input_coverage"],
     }
     print(json.dumps(result, indent=2))
     if (
@@ -597,6 +639,11 @@ def main(argv: list[str] | None = None) -> None:
         or require_serving_visibility(os.environ.get("MATRIXARK_REQUIRE_SERVING_VISIBILITY"))
     ) and not report["serving_visibility"]["serving_visibility_pass"]:
         raise SystemExit(2)
+    if (
+        args.require_extraction_input_coverage
+        or require_extraction_input_coverage(os.environ.get("MATRIXARK_REQUIRE_EXTRACTION_INPUT_COVERAGE"))
+    ) and not report["extraction_input_coverage"]["extraction_input_coverage_pass"]:
+        raise SystemExit(3)
 
 
 if __name__ == "__main__":
