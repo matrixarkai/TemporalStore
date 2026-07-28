@@ -5498,7 +5498,7 @@ def quantity_mentions_in_sentence(sentence: str) -> list[tuple[float, str]]:
         r"\b(\d+(?:,\d{3})*(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
         r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|seventy)\s+"
         r"(pages?|miles?|pounds?|years?|times?|items?|comments?|views?|followers?|sports?|events?|projects?|"
-        r"books?|novels?|videos?|orders?|workshops?|tickets?|mugs?|shoes?|plants?|eggs?|dozen|minutes?|hours?|"
+        r"books?|novels?|videos?|orders?|workshops?|courses?|tickets?|mugs?|shoes?|plants?|eggs?|dozen|minutes?|hours?|"
         r"sessions?|classes?|charity events?|fundraisers?|coins?|bottles?)\b"
     )
     for match in re.finditer(unit_pattern, normalize_text(sentence)):
@@ -5526,6 +5526,8 @@ def canonical_quantity_unit(unit: str) -> str:
         return "sessions"
     if unit.startswith("class"):
         return "classes"
+    if unit.startswith("course"):
+        return "courses"
     if unit.startswith("charity"):
         return "charity events"
     if unit.startswith("fundraiser"):
@@ -5939,6 +5941,24 @@ def exact_domain_aggregation(question: str, texts: list[str]) -> str:
                 values.append(float(match.group(1)))
         if values:
             return f"{format_number(sum(unique_numbers(values)))} hours"
+    if "online courses" in q and re.search(r"\b(completed|finished|total|in total)\b", q):
+        values = []
+        for sentence in re.split(r"(?<=[.!?])\s+", blob):
+            normalized = normalize_text(sentence)
+            if not re.search(r"\b(?:online\s+)?courses?\b", normalized):
+                continue
+            if not re.search(r"\b(?:completed|finished|done|taken|took)\b", normalized):
+                continue
+            for match in re.finditer(
+                r"\b(?:completed|finished|done|taken|took)\b.{0,80}?\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:online\s+)?courses?\b|"
+                r"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:online\s+)?courses?\b.{0,80}?\b(?:completed|finished|done|taken|took)\b",
+                normalized,
+            ):
+                raw = match.group(1) or match.group(2)
+                values.append(number_value(raw))
+        values = unique_numbers(values)
+        if values:
+            return format_number(sum(values))
     if "average age" in q and "parents" in q and "grandparents" in q:
         values = []
         patterns = [
