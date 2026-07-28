@@ -551,7 +551,7 @@ def hook_storage_options() -> Json:
 
 def agent_retrieval_summary(retrieve: Json | None, *, session_id_source: str) -> Json:
     retrieve = retrieve if isinstance(retrieve, dict) else {}
-    layer_summary = retrieval_layer_summary_from_retrieve(retrieve)
+    layer_summary = retrieval_layer_summary_from_retrieve(retrieve, include_budget_lineage=True)
     return {
         "context_pack_id": retrieve.get("context_pack_id"),
         "selected_ref_count": selected_ref_count_from_retrieve(retrieve),

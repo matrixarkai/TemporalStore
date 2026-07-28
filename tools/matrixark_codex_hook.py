@@ -414,7 +414,12 @@ def retrieval_budget_pressure_from_retrieve(pack: Json | None) -> Json:
     return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
 
 
-def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | None = None) -> Json:
+def retrieval_layer_summary_from_retrieve(
+    pack: Json | None,
+    refs: list[Json] | None = None,
+    *,
+    include_budget_lineage: bool = False,
+) -> Json:
     if not isinstance(pack, dict):
         return {}
     pack_view = _context_pack_view(pack)
@@ -499,9 +504,11 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
     except (TypeError, ValueError):
         layer_summary["local_context_refs"] = 0
     if memory_layer_budget:
+        # Agent summaries may opt into aggregate budget counters to prove
+        # user/assistant/tool coverage without exposing raw refs/text lineage.
         layer_summary["memory_layer_budget"] = serving_memory_layer_budget(
             memory_layer_budget,
-            include_debug=CONTEXT_PACK_DEBUG_LINEAGE,
+            include_debug=include_budget_lineage or CONTEXT_PACK_DEBUG_LINEAGE,
         )
     memory_layer_pressure = retrieval_memory_layer_pressure_from_retrieve(pack)
     if memory_layer_pressure:

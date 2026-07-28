@@ -117,6 +117,48 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertGreaterEqual(healthy["recent_profile_record_count"], 1)
         self.assertEqual(1, healthy["recent_resource_skill_record_count"])
 
+    def test_recent_ingestion_report_summarizes_serving_visibility_gate(self) -> None:
+        report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
+        broken_report = {
+            "backends": [
+                {
+                    "backend": "Rust TemporalStore",
+                    "prefix": "matrixark:codex-hook:rust-live-v2",
+                    "serving_visibility_gaps": [
+                        "context_event_missing_while_derived_memory_present",
+                        "context_embedding_missing_while_derived_memory_present",
+                    ],
+                },
+                {
+                    "backend": "C++ TemporalStore",
+                    "prefix": "matrixark:codex-hook:cpp-live-v2",
+                    "serving_visibility_gaps": [],
+                },
+            ]
+        }
+        summary = report_mod.serving_visibility_summary(broken_report)
+
+        self.assertFalse(summary["serving_visibility_pass"])
+        self.assertEqual(2, summary["serving_visibility_gap_count"])
+        self.assertEqual(["Rust TemporalStore"], [item["backend"] for item in summary["serving_visibility_gap_backends"]])
+
+        healthy = report_mod.serving_visibility_summary(
+            {"backends": [{"backend": "Rust TemporalStore", "serving_visibility_gaps": []}]}
+        )
+        self.assertTrue(healthy["serving_visibility_pass"])
+        self.assertEqual(0, healthy["serving_visibility_gap_count"])
+        self.assertEqual([], healthy["serving_visibility_gap_backends"])
+
+    def test_recent_ingestion_report_serving_visibility_requirement_flags(self) -> None:
+        report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
+
+        self.assertTrue(report_mod.require_serving_visibility("1"))
+        self.assertTrue(report_mod.require_serving_visibility("required"))
+        self.assertFalse(report_mod.require_serving_visibility(""))
+        self.assertFalse(report_mod.require_serving_visibility("false"))
+        self.assertTrue(report_mod.parse_args(["--require-serving-visibility"]).require_serving_visibility)
+        self.assertFalse(report_mod.parse_args([]).require_serving_visibility)
+
     def test_moduleized_request_runs_pre_retrieval_refresh_and_derives_budgets(self) -> None:
         request_mod = importlib.import_module("tools.matrixark_mcp_retrieve_request")
 
