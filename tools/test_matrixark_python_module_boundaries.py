@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import os
 import re
 import sys
 import tempfile
@@ -1274,9 +1275,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(["session_old", "session_now"], entity_item["source_session_ids"])
         self.assertEqual(2, entity_item["source_entity_count"])
         self.assertEqual(["assistant"], entity_item["source_roles"])
-        self.assertEqual({"assistant": 3}, entity_item["source_role_counts"])
-        self.assertEqual({"hook_boundary": 3}, entity_item["source_hook_type_counts"])
-        self.assertEqual({"Stop": 3}, entity_item["source_codex_event_counts"])
+        self.assertNotIn("source_role_counts", entity_item)
+        self.assertNotIn("source_hook_type_counts", entity_item)
+        self.assertNotIn("source_codex_event_counts", entity_item)
         self.assertEqual(1, len(adapter.audit_records))
         self.assertEqual(budget, adapter.audit_records[0]["memory_layer_budget"])
         self.assertEqual(pressure, adapter.audit_records[0]["memory_layer_pressure"])
@@ -1468,9 +1469,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(compact["memory_layer_pressure"]["assistant_source_message_pressure"])
         flat_item = compact["selected_refs"][0]
         self.assertEqual(["assistant", "tool"], flat_item["source_roles"])
-        self.assertEqual({"assistant": 2, "tool": 1}, flat_item["source_role_counts"])
-        self.assertEqual({"hook_boundary": 3}, flat_item["source_hook_type_counts"])
-        self.assertEqual({"Stop": 3}, flat_item["source_codex_event_counts"])
+        self.assertNotIn("source_role_counts", flat_item)
+        self.assertNotIn("source_hook_type_counts", flat_item)
+        self.assertNotIn("source_codex_event_counts", flat_item)
         self.assertEqual(["session_summary_1", "session_summary_2"], flat_item["source_session_ids"])
         self.assertEqual(2, flat_item["source_entity_count"])
         self.assertEqual({"user_profile": {"refs": 1, "tokens": 7}}, grouped_compact["memory_layer_budget"]["by_memory_scope"])
@@ -1482,9 +1483,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(grouped_compact["memory_layer_pressure"]["cross_session_pressure"])
         entity_item = grouped_compact["groups"][0]["items"][0]
         self.assertEqual(["assistant", "tool"], entity_item["source_roles"])
-        self.assertEqual({"assistant": 2, "tool": 1}, entity_item["source_role_counts"])
-        self.assertEqual({"hook_boundary": 3}, entity_item["source_hook_type_counts"])
-        self.assertEqual({"Stop": 3}, entity_item["source_codex_event_counts"])
+        self.assertNotIn("source_role_counts", entity_item)
+        self.assertNotIn("source_hook_type_counts", entity_item)
+        self.assertNotIn("source_codex_event_counts", entity_item)
         self.assertEqual(["session_summary_1", "session_summary_2"], entity_item["source_session_ids"])
         self.assertEqual(2, entity_item["source_entity_count"])
         hierarchy = compact["memory_hierarchy"]
@@ -1699,6 +1700,36 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
             adapter._validate_storage_routes_available(
                 [{"record_type": "context_event", "storage_route": {"storage_family": "raft"}}]
             )
+
+    def test_debug_lineage_serving_pack_can_include_source_count_maps(self) -> None:
+        with mock.patch.dict(os.environ, {"MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE": "1"}):
+            context_pack_mod = importlib.import_module("tools.matrixark_mcp_context_pack")
+            reloaded = importlib.reload(context_pack_mod)
+            self.addCleanup(lambda: importlib.reload(context_pack_mod))
+            pack = reloaded.compact_context_pack_for_serving(
+                {
+                    "context_pack_id": "debug-lineage-pack",
+                    "selected_refs": [
+                        {
+                            "ref_type": "entity",
+                            "text": "debug profile decision",
+                            "token_estimate": 3,
+                            "memory_scope": "user_profile",
+                            "session_continuity": "cross_session",
+                            "source_roles": ["llm", "tool"],
+                            "source_role_counts": {"llm": 2, "tool": 1},
+                            "source_hook_type_counts": {"hook_boundary": 3},
+                            "source_codex_event_counts": {"Stop": 3},
+                        }
+                    ],
+                    "used_context_tokens": 3,
+                }
+            )
+        item = pack["groups"][0]["items"][0]
+        self.assertEqual(["assistant", "tool"], item["source_roles"])
+        self.assertEqual({"assistant": 2, "tool": 1}, item["source_role_counts"])
+        self.assertEqual({"hook_boundary": 3}, item["source_hook_type_counts"])
+        self.assertEqual({"Stop": 3}, item["source_codex_event_counts"])
 
 
 

@@ -9,6 +9,7 @@ from typing import Any
 Json = dict[str, Any]
 
 AUDIT_DEBUG_PAYLOAD = os.environ.get("MATRIXARK_AUDIT_DEBUG_PAYLOAD", "0").strip().lower() in {"1", "true", "yes"}
+DEBUG_LINEAGE_PAYLOAD = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", "0").strip().lower() in {"1", "true", "yes"}
 
 
 def _clip_context_text(text: str, *, max_chars: int = 160) -> str:
@@ -165,17 +166,20 @@ def compact_context_pack_ref(ref: Json) -> Json:
             item[field] = value
     if bool(ref.get("final_session_boundary")):
         item["final_session_boundary"] = True
-    for field in [
+    flat_prompt_lineage_fields = [
         "source_session_ids",
         "source_roles",
-        "source_role_counts",
         "budget_source_roles",
-        "budget_source_role_counts",
         "source_hook_types",
-        "source_hook_type_counts",
         "source_codex_events",
+    ]
+    flat_debug_lineage_fields = [
+        "source_role_counts",
+        "budget_source_role_counts",
+        "source_hook_type_counts",
         "source_codex_event_counts",
-    ]:
+    ] if DEBUG_LINEAGE_PAYLOAD else []
+    for field in [*flat_prompt_lineage_fields, *flat_debug_lineage_fields]:
         value = ref.get(field)
         if isinstance(value, list) and value:
             if field in {"source_roles", "budget_source_roles"}:
@@ -667,18 +671,21 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         item["memory_layer"] = memory_layer
     if bool(ref.get("final_session_boundary") or metadata.get("final_session_boundary")):
         item["final_session_boundary"] = True
-    for field in [
+    prompt_lineage_fields = [
         "source_session_ids",
         "source_roles",
-        "source_role_counts",
         "source_hook_types",
-        "source_hook_type_counts",
         "source_codex_events",
-        "source_codex_event_counts",
         "source_memory_scopes",
         "source_session_continuities",
         "source_extraction_phases",
-    ]:
+    ]
+    debug_lineage_fields = [
+        "source_role_counts",
+        "source_hook_type_counts",
+        "source_codex_event_counts",
+    ] if DEBUG_LINEAGE_PAYLOAD else []
+    for field in [*prompt_lineage_fields, *debug_lineage_fields]:
         value = ref.get(field, metadata.get(field))
         if isinstance(value, list) and value:
             if field == "source_roles":
