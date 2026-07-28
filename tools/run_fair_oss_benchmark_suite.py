@@ -57,6 +57,8 @@ def main() -> int:
     parser.add_argument("--longmem-input", default="/root/matrixark_benchmarks/data/longmemeval_s_cleaned_official_hf.json")
     parser.add_argument("--locomo-question-limit", type=int, default=300)
     parser.add_argument("--longmem-question-limit", type=int, default=0, help="0 means all LongMemEval_s records.")
+    parser.add_argument("--locomo-question-offset", type=int, default=0)
+    parser.add_argument("--longmem-question-offset", type=int, default=0)
     parser.add_argument("--locomo-max-events", type=int, default=192)
     parser.add_argument("--locomo-adaptive-base-max-events", type=int, default=128)
     parser.add_argument("--longmem-max-events", type=int, default=32)
@@ -288,6 +290,8 @@ def locomo_matrixark_command(repo: Path, args: argparse.Namespace, report: Path,
         str(args.locomo_adaptive_base_max_events),
         "--question-limit",
         str(args.locomo_question_limit),
+        "--question-offset",
+        str(args.locomo_question_offset),
         "--retrieval-same-session-percent",
         str(args.same_session_percent),
         "--retrieval-cross-session-percent",
@@ -375,6 +379,8 @@ def longmem_matrixark_command(repo: Path, args: argparse.Namespace, report: Path
     ]
     if args.longmem_question_limit > 0:
         command.extend(["--question-limit", str(args.longmem_question_limit)])
+    if args.longmem_question_offset > 0:
+        command.extend(["--question-offset", str(args.longmem_question_offset)])
     if args.allow_python_only_diagnostic:
         command.extend(["--skip-rust-temporalstore", "--allow-python-only-diagnostic"])
     return command
@@ -411,6 +417,8 @@ def locomo_baseline_command(repo: Path, args: argparse.Namespace, matrixark_repo
         str(args.locomo_adaptive_base_max_events),
         "--question-limit",
         str(args.locomo_question_limit),
+        "--question-offset",
+        str(args.locomo_question_offset),
         "--same-session-percent",
         str(args.same_session_percent),
         "--cross-session-percent",
@@ -467,6 +475,8 @@ def longmem_baseline_command(repo: Path, args: argparse.Namespace, matrixark_rep
     ]
     if args.longmem_question_limit > 0:
         command.extend(["--question-limit", str(args.longmem_question_limit)])
+    if args.longmem_question_offset > 0:
+        command.extend(["--question-offset", str(args.longmem_question_offset)])
     return command
 
 
@@ -575,6 +585,10 @@ def write_shared_oss_stack_contract(output_root: Path, args: argparse.Namespace)
         "reader_max_tokens": args.reader_max_tokens,
         "locomo_max_events": args.locomo_max_events,
         "longmem_max_events": args.longmem_max_events,
+        "locomo_question_limit": args.locomo_question_limit,
+        "locomo_question_offset": args.locomo_question_offset,
+        "longmem_question_limit": args.longmem_question_limit,
+        "longmem_question_offset": args.longmem_question_offset,
         "locomo_reader_context_chars": args.locomo_reader_context_chars,
         "longmem_reader_context_chars": args.longmem_reader_context_chars,
         "retrieval_budget_split": {

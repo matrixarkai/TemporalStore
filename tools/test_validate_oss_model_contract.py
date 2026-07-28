@@ -121,6 +121,17 @@ class OssModelContractValidationTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("shared_oss_models_forced_missing_or_false", result.stderr)
 
+    def test_question_slice_drift_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            matrixark = write_report(tmp_path / "matrixark.json", question_offset=50, question_limit=50)
+            baseline = write_report(tmp_path / "openviking.json", question_offset=0, question_limit=50)
+
+            result = run_validator(matrixark, baseline)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("question_offset_mismatch", result.stderr)
+
 
 def run_validator(matrixark: Path, baseline: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -152,6 +163,8 @@ def write_report(
     reader_max_tokens: int = 128,
     reader_fallback_allowed: bool = False,
     forced: bool = True,
+    question_limit: int = 0,
+    question_offset: int = 0,
 ) -> Path:
     encoding = encoding_model or embedding_model
     matrixark_like = path.name.startswith("matrixark")
@@ -201,6 +214,8 @@ def write_report(
                 "reader_open_source_calls": 1,
                 "reader_fallback_count": 0,
                 "reader_error_count": 0,
+                "question_limit": question_limit,
+                "question_offset": question_offset,
             },
             indent=2,
             sort_keys=True,

@@ -52,6 +52,11 @@ RETRIEVAL_POLICY_KEYS = (
     "retrieval_event_percent",
 )
 
+SLICE_POLICY_KEYS = (
+    "question_limit",
+    "question_offset",
+)
+
 NON_OSS_MODEL_MARKERS = (
     "anthropic",
     "claude",
@@ -130,6 +135,11 @@ def main() -> int:
                             f"{row['label']}: {key}_mismatch expected={rows[0].get(key)!r} actual={row.get(key)!r}"
                         )
             for key in RETRIEVAL_POLICY_KEYS:
+                if row.get(key) != rows[0].get(key):
+                    errors.append(
+                        f"{row['label']}: {key}_mismatch expected={rows[0].get(key)!r} actual={row.get(key)!r}"
+                    )
+            for key in SLICE_POLICY_KEYS:
                 if row.get(key) != rows[0].get(key):
                     errors.append(
                         f"{row['label']}: {key}_mismatch expected={rows[0].get(key)!r} actual={row.get(key)!r}"
@@ -245,6 +255,8 @@ def normalize_report(path: Path, label: str, errors: list[str]) -> dict[str, Any
         "reader_fallback_count": to_int(data.get("reader_fallback_count")) or 0,
         "reader_error_count": to_int(data.get("reader_error_count")) or 0,
         "reader_open_source_calls": to_int(data.get("reader_open_source_calls")),
+        "question_limit": to_int(data.get("question_limit") or data.get("bounded_question_limit")) or 0,
+        "question_offset": to_int(data.get("question_offset")) or 0,
         "shared_oss_model_contract_required": bool(contract.get("shared_oss_model_contract_required")),
         "shared_oss_model_contract_passed": bool(contract.get("shared_oss_model_contract_passed")),
         "shared_oss_models_forced": bool(contract.get("shared_oss_models_forced")),
