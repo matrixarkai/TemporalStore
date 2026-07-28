@@ -6760,6 +6760,8 @@ def memory_hierarchy_contract_from_recall_policy(recall_policy: Json) -> Json:
         "source_role_selected_ref_count_by_role": normalized_role_int_map(source_role_budget.get("selected_ref_count_by_role")),
         "memory_layer_budget_enabled": memory_layer_budget.get("enabled"),
         "memory_layer_budget_mode": memory_layer_budget.get("mode"),
+        "memory_layer_budget_question_type": memory_layer_budget.get("question_type"),
+        "memory_layer_budget_question_reason": memory_layer_budget.get("question_budget_reason"),
         "memory_layer_budget_semantics": memory_layer_budget.get("budget_semantics"),
         "memory_layer_independent_caps": memory_layer_budget.get("independent_caps"),
         "memory_layer_global_remote_budget_enforced": memory_layer_budget.get("global_remote_budget_enforced"),
