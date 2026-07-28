@@ -486,10 +486,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("pack-1", record["output_summary"]["context_pack_id"])
         self.assertEqual(100, record["output_summary"]["retrieval_budget"]["remote_context_budget_tokens"])
         self.assertEqual({"over_budget": 2}, record["output_summary"]["retrieval_budget_pressure"]["dropped_by_reason"])
-        self.assertEqual(
-            "user_profile",
-            record["output_summary"]["memory_hierarchy"]["models"]["profile_entity"]["memory_scope"],
-        )
+        self.assertNotIn("memory_hierarchy", record["output_summary"])
         self.assertEqual({"event": 1, "entity": 1}, record["output_summary"]["retrieval_layers"]["selected_ref_counts"])
         self.assertEqual(1, record["output_summary"]["retrieval_layers"]["cross_session_refs"])
         self.assertEqual(1, record["output_summary"]["retrieval_layers"]["profile_memory_refs"])
@@ -685,22 +682,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             ["by_memory_scope", "source_message_counts_by_role"],
             pressure["memory_layer_pressure"]["dropped_dimensions"],
         )
-        hierarchy = item["result"]["memory_hierarchy"]
-        self.assertEqual("context_entity", hierarchy["models"]["session_entity"]["record_type"])
-        self.assertEqual("user_profile", hierarchy["models"]["profile_entity"]["memory_scope"])
-        self.assertEqual("context_profile_entity", hierarchy["models"]["profile_index"]["data_model"])
-        self.assertEqual("prefer", hierarchy["session_scope_mode"])
-        self.assertTrue(hierarchy["cross_session_enabled"])
-        self.assertEqual(18, hierarchy["cross_session_budget_tokens"])
-        self.assertEqual(90, hierarchy["cross_session_remote_budget_tokens"])
-        self.assertEqual(18, hierarchy["cross_session_computed_budget_tokens"])
-        self.assertEqual(256, hierarchy["cross_session_budget_floor_tokens"])
-        self.assertFalse(hierarchy["cross_session_budget_floor_applied"])
-        self.assertEqual(
-            "remote_budget_too_small_for_profile_floor",
-            hierarchy["cross_session_budget_floor_status"],
-        )
-        self.assertIn("profile_entity_bridge", hierarchy["selected_ref_flow"])
+        self.assertNotIn("memory_hierarchy", item["result"])
         self.assertEqual(len("user: rendered profile decision"), item["result"]["rendered_context_chars"])
 
     def test_codex_hierarchy_contract_delegates_to_core_contract(self) -> None:
@@ -1215,53 +1197,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertTrue(output["retrieve"]["additional_context_emitted"])
         self.assertEqual(1, output["retrieve"]["selected_ref_count"])
         self.assertEqual(100, output["retrieve"]["budget"]["remote_context_budget_tokens"])
-        self.assertEqual(
-            "context_profile_entity",
-            output["retrieve"]["memory_hierarchy"]["models"]["profile_index"]["data_model"],
-        )
-        self.assertTrue(output["retrieve"]["memory_hierarchy"]["cross_session_enabled"])
-        self.assertEqual(64, output["retrieve"]["memory_hierarchy"]["cross_session_budget_tokens"])
-        self.assertEqual(
-            "remote_budget_too_small_for_profile_floor",
-            output["retrieve"]["memory_hierarchy"]["cross_session_budget_floor_status"],
-        )
-        self.assertTrue(output["retrieve"]["memory_hierarchy"]["source_role_budget_enabled"])
-        self.assertEqual(
-            {"assistant": 32, "tool": 24, "user": 40},
-            output["retrieve"]["memory_hierarchy"]["source_role_budget_tokens"],
-        )
-        self.assertEqual(
-            {"assistant": 22, "tool": 18},
-            output["retrieve"]["memory_hierarchy"]["source_role_selected_tokens_by_role"],
-        )
-        self.assertEqual(
-            {"assistant": 1, "tool": 1},
-            output["retrieve"]["memory_hierarchy"]["source_role_selected_ref_count_by_role"],
-        )
-        self.assertIn(
-            "source_role_budget_gate",
-            output["retrieve"]["memory_hierarchy"]["selected_ref_flow"],
-        )
-        self.assertTrue(output["retrieve"]["memory_hierarchy"]["memory_layer_budget_enabled"])
-        self.assertEqual("auto", output["retrieve"]["memory_hierarchy"]["memory_layer_budget_mode"])
-        self.assertEqual(
-            {
-                "summary": 30,
-                "compression": 25,
-                "profile_entity": 40,
-                "same_session_event": 45,
-                "cross_session_event": 25,
-            },
-            output["retrieve"]["memory_hierarchy"]["memory_layer_budget_tokens"],
-        )
-        self.assertEqual(
-            {"summary": 12, "profile_entity": 18, "same_session_event": 12},
-            output["retrieve"]["memory_hierarchy"]["memory_layer_selected_tokens_by_layer"],
-        )
-        self.assertIn(
-            "memory_layer_budget_gate",
-            output["retrieve"]["memory_hierarchy"]["selected_ref_flow"],
-        )
+        self.assertNotIn("memory_hierarchy", output["retrieve"])
         self.assertTrue(output["retrieve"]["budget_pressure"]["budget_pressure"])
         self.assertEqual(
             {"cross_session_budget": 2, "source_role_budget": 1, "max_selected_refs": 3},
@@ -1398,6 +1334,59 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("entity_type[assistant_decision=1/22t]", additional)
         self.assertNotIn("source_role[assistant=1/22t]", additional)
         self.assertNotIn("hook_type[after_llm=1/22t]", additional)
+
+    def test_hook_output_memory_hierarchy_requires_debug_lineage(self) -> None:
+        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
+        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
+        try:
+            output = hook.codex_hook_output(
+                args=Namespace(session_id="codex-session-debug-hierarchy"),
+                status="ok",
+                event="UserPromptSubmit",
+                session_id_source="payload_field",
+                agent_context={"local_context": [], "workspace_root": "/repo"},
+                retrieve={
+                    "context_pack_id": "pack-debug-hierarchy",
+                    "used_context_tokens": 18,
+                    "recall_policy": {
+                        "session_continuity": {"mode": "prefer"},
+                        "cross_session": {
+                            "enabled": True,
+                            "budget_tokens": 64,
+                            "budget_floor_status": "remote_budget_too_small_for_profile_floor",
+                        },
+                        "memory_layer_budget_policy": {
+                            "enabled": True,
+                            "mode": "auto",
+                            "budget_tokens": {"profile_entity": 40},
+                            "selected_tokens_by_layer": {"profile_entity": 18},
+                        },
+                    },
+                    "selected_refs": [
+                        {
+                            "ref_type": "entity",
+                            "memory_scope": "user_profile",
+                            "session_continuity": "cross_session",
+                            "text": "profile entity bridge",
+                            "token_estimate": 18,
+                        }
+                    ],
+                },
+                query="debug hierarchy",
+            )
+        finally:
+            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
+
+        hierarchy = output["retrieve"]["memory_hierarchy"]
+        self.assertEqual("context_profile_entity", hierarchy["models"]["profile_index"]["data_model"])
+        self.assertEqual("prefer", hierarchy["session_scope_mode"])
+        self.assertTrue(hierarchy["cross_session_enabled"])
+        self.assertEqual(64, hierarchy["cross_session_budget_tokens"])
+        self.assertEqual("remote_budget_too_small_for_profile_floor", hierarchy["cross_session_budget_floor_status"])
+        self.assertTrue(hierarchy["memory_layer_budget_enabled"])
+        self.assertEqual("auto", hierarchy["memory_layer_budget_mode"])
+        self.assertEqual({"profile_entity": 40}, hierarchy["memory_layer_budget_tokens"])
+        self.assertEqual({"profile_entity": 18}, hierarchy["memory_layer_selected_tokens_by_layer"])
 
     def test_additional_context_memory_hierarchy_details_require_debug_lineage(self) -> None:
         original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE

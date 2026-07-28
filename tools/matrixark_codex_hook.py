@@ -1696,6 +1696,21 @@ def codex_hook_output(
         ref for ref in _selected_refs_from_retrieve(retrieve) if not _ref_is_codex_hook_heartbeat(ref)
     ]
     rendered_context = sanitized_rendered_context_from_retrieve(retrieve)
+    retrieve_summary: Json = {
+        "context_pack_id": retrieve.get("context_pack_id") or retrieve.get("pack_id"),
+        "selected_ref_count": len(emitted_refs),
+        "used_context_tokens": used_context_tokens_from_retrieve(retrieve),
+        "budget": retrieval_budget_summary_from_retrieve(retrieve),
+        "budget_pressure": retrieval_budget_pressure_from_retrieve(retrieve),
+        "layers": retrieval_layer_summary_from_retrieve(retrieve, emitted_refs),
+        "pre_retrieval_summary_refresh": retrieval_pre_summary_refresh_from_retrieve(retrieve),
+        "async_pipeline_readiness": retrieval_async_readiness_from_retrieve(retrieve),
+        "session_identity": retrieval_session_identity_from_retrieve(retrieve, session_id_source=session_id_source),
+        "rendered_context_chars": len(rendered_context),
+        "additional_context_emitted": False,
+    }
+    if CONTEXT_PACK_DEBUG_LINEAGE:
+        retrieve_summary["memory_hierarchy"] = retrieval_memory_hierarchy_contract_from_retrieve(retrieve)
     output: Json = {
         "status": status,
         "event": event,
@@ -1713,20 +1728,7 @@ def codex_hook_output(
         "ingest": ingest,
         "resource_uri": raw_uri,
         "resource_type": resource_type,
-        "retrieve": {
-            "context_pack_id": retrieve.get("context_pack_id") or retrieve.get("pack_id"),
-            "selected_ref_count": len(emitted_refs),
-            "used_context_tokens": used_context_tokens_from_retrieve(retrieve),
-            "budget": retrieval_budget_summary_from_retrieve(retrieve),
-            "budget_pressure": retrieval_budget_pressure_from_retrieve(retrieve),
-            "layers": retrieval_layer_summary_from_retrieve(retrieve, emitted_refs),
-            "pre_retrieval_summary_refresh": retrieval_pre_summary_refresh_from_retrieve(retrieve),
-            "async_pipeline_readiness": retrieval_async_readiness_from_retrieve(retrieve),
-            "session_identity": retrieval_session_identity_from_retrieve(retrieve, session_id_source=session_id_source),
-            "memory_hierarchy": retrieval_memory_hierarchy_contract_from_retrieve(retrieve),
-            "rendered_context_chars": len(rendered_context),
-            "additional_context_emitted": False,
-        },
+        "retrieve": retrieve_summary,
         "session_commit": session_commit_summary(commit),
     }
     if lineage:
@@ -1877,7 +1879,7 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
             emitted_refs = [
                 ref for ref in _selected_refs_from_retrieve(result) if not _ref_is_codex_hook_heartbeat(ref)
             ]
-            item["result"] = {
+            retrieve_result = {
                 "context_pack_id": result.get("context_pack_id") or result.get("pack_id"),
                 "selected_ref_count": len(emitted_refs),
                 "used_context_tokens": used_context_tokens_from_retrieve(result),
@@ -1890,9 +1892,11 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                     result,
                     session_id_source=str((args.get("metadata") if isinstance(args.get("metadata"), dict) else {}).get("session_id_source") or ""),
                 ),
-                "memory_hierarchy": retrieval_memory_hierarchy_contract_from_retrieve(result),
                 "rendered_context_chars": len(sanitized_rendered_context_from_retrieve(result)),
             }
+            if CONTEXT_PACK_DEBUG_LINEAGE:
+                retrieve_result["memory_hierarchy"] = retrieval_memory_hierarchy_contract_from_retrieve(result)
+            item["result"] = retrieve_result
         elif name == "matrixark_session_commit":
             item["result"] = session_commit_summary(result)
         return result
@@ -1979,7 +1983,7 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
         )
         idle_commit = ingest.get("idle_commit") if isinstance(ingest.get("idle_commit"), dict) else {}
         memory_lineage = memory_lineage_summary(auto_batch_extract or auto_batch_decision, idle_commit, commit)
-        trace["output_summary"] = {
+        output_summary = {
             "strict_additional_context_emitted": bool(hook_specific.get("additionalContext")),
             "additional_context_chars": len(str(hook_specific.get("additionalContext") or "")),
             "context_pack_id": retrieve.get("context_pack_id"),
@@ -1989,7 +1993,6 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             "retrieval_layers": retrieve.get("layers"),
             "pre_retrieval_summary_refresh": retrieve.get("pre_retrieval_summary_refresh"),
             "async_pipeline_readiness": retrieve.get("async_pipeline_readiness"),
-            "memory_hierarchy": retrieve.get("memory_hierarchy"),
             "rendered_context_chars": retrieve.get("rendered_context_chars"),
             "memory_lineage": memory_lineage,
             "ingest_status": ingest.get("status"),
@@ -2001,6 +2004,9 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             "commit_status": commit.get("status"),
             "session_commit": session_commit_summary(commit),
         }
+        if CONTEXT_PACK_DEBUG_LINEAGE and retrieve.get("memory_hierarchy"):
+            output_summary["memory_hierarchy"] = retrieve.get("memory_hierarchy")
+        trace["output_summary"] = output_summary
     adapter = getattr(server, "adapter", None)
     append = getattr(adapter, "append", None)
     if callable(append):
