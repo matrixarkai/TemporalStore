@@ -346,7 +346,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "pending_source_roles": {"assistant": 2},
                     "pending_source_hook_types": {"after_llm": 1},
                     "pending_source_codex_events": {"Stop": 1},
-                }
+                },
+                "pre_retrieval_summary_refresh": {
+                    "enabled": True,
+                    "status": "refreshed",
+                    "requested_limit": 4,
+                    "refreshed_count": 2,
+                    "skipped_dirty_reasons": {"source_lineage_pending": 1},
+                },
             },
         }
 
@@ -371,6 +378,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             {"Stop": 1},
             debug_serving["async_pipeline_readiness"]["pending_source_codex_events"],
         )
+        self.assertEqual("refreshed", debug_serving["pre_retrieval_summary_refresh"]["status"])
+        self.assertEqual(2, debug_serving["pre_retrieval_summary_refresh"]["refreshed_count"])
         self.assertNotIn("debug_payload", json.dumps(debug_serving))
         self.assertNotIn("raw_source_ids", json.dumps(debug_serving))
         self.assertNotIn("selected_refs", debug_serving)
