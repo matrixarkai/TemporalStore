@@ -3210,6 +3210,7 @@ def fast_hook_summary_dirty_records(
     source_roles = [source_role] if source_role else []
     source_hook_types = [hook_type] if hook_type else []
     source_codex_events = [codex_event] if codex_event else []
+    source_memory_scopes, source_session_continuities = pending_extraction_memory_layer_intent(scope)
     for depth in range(1, len(node_path) + 1):
         prefix = node_path[:depth]
         prefix_hash = stable_int_hash("/".join(prefix))
@@ -3231,8 +3232,8 @@ def fast_hook_summary_dirty_records(
                 "source_hook_type_counts": {hook_type: 1} if hook_type else {},
                 "source_codex_events": source_codex_events,
                 "source_codex_event_counts": {codex_event: 1} if codex_event else {},
-                "source_memory_scopes": ["session"],
-                "source_session_continuities": ["same_session"],
+                "source_memory_scopes": source_memory_scopes,
+                "source_session_continuities": source_session_continuities,
                 "source_extraction_phases": ["pending_async"],
                 "changed_ref_count": 1,
                 "propagate_depth": len(node_path),
