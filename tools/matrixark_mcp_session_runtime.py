@@ -8,7 +8,7 @@ try:
         Json,
         MatrixArkError,
         canonical_storage_route,
-        message_from_event_record,
+        messages_from_event_record,
         normalize_message_role,
         normalize_storage_options,
         now_ms,
@@ -23,7 +23,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         Json,
         MatrixArkError,
         canonical_storage_route,
-        message_from_event_record,
+        messages_from_event_record,
         normalize_message_role,
         normalize_storage_options,
         now_ms,
@@ -128,8 +128,7 @@ def _pending_source_count_summary(records: list[Json]) -> Json:
             for role, count in existing_role_counts.items():
                 add_count(role_counts, role, count, normalize_role=True)
         else:
-            message = message_from_event_record(record)
-            if message:
+            for message in messages_from_event_record(record):
                 add_count(role_counts, message.get("role"), normalize_role=True)
             for role in event_metadata.get("source_roles") if isinstance(event_metadata.get("source_roles"), list) else []:
                 add_count(role_counts, role, normalize_role=True)
@@ -158,6 +157,23 @@ def _pending_source_count_summary(records: list[Json]) -> Json:
         "source_hook_type_counts": dict(sorted(hook_type_counts.items())),
         "source_codex_event_counts": dict(sorted(codex_event_counts.items())),
     }
+
+
+def session_event_message_count(records: list[Json]) -> int:
+    return sum(len(messages_from_event_record(record)) for record in records)
+
+
+def session_events_by_message_limit(records: list[Json], limit: int | None) -> list[Json]:
+    if limit is None:
+        return records
+    selected: list[Json] = []
+    message_count = 0
+    for record in records:
+        selected.append(record)
+        message_count += max(1, len(messages_from_event_record(record)))
+        if message_count >= limit:
+            break
+    return selected
 
 
 def append_session_commit_task_progress(
@@ -236,6 +252,7 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         raise MatrixArkError("max_messages must be a positive integer")
     pending_all = adapter.pending_session_events(scope)
     pending_event_count = len(pending_all)
+    pending_message_count = session_event_message_count(pending_all)
     idle_elapsed_ms = 0
     idle_ready = False
     if pending_all and idle_timeout_ms is not None:
@@ -245,9 +262,10 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         )
         idle_elapsed_ms = max(0, now_ms() - latest_event_time)
         idle_ready = idle_elapsed_ms >= idle_timeout_ms
-    threshold_ready = pending_event_count >= threshold
+    threshold_ready = pending_event_count >= threshold or pending_message_count >= threshold
     trigger_evidence: Json = {
         "pending_event_count": pending_event_count,
+        "pending_message_count": pending_message_count,
         "threshold_messages": threshold,
         "threshold_ready": threshold_ready,
         "idle_timeout_ms": idle_timeout_ms,
@@ -260,6 +278,7 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         return {
             "status": "deferred",
             "pending_event_count": pending_event_count,
+            "pending_message_count": pending_message_count,
             "threshold_messages": threshold,
             "commit_reason": commit_reason,
             "idle_timeout_ms": idle_timeout_ms,
@@ -276,7 +295,7 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         commit_limit = None
     else:
         commit_limit = threshold
-    pending = pending_all[:commit_limit] if commit_limit is not None else pending_all
+    pending = session_events_by_message_limit(pending_all, commit_limit)
     messages = []
     source_event_ids = []
     pending_source_roles: set[str] = set()
@@ -298,21 +317,23 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         for values in [event_metadata.get("source_codex_events")]:
             if isinstance(values, list):
                 pending_source_codex_events.update(str(value).strip() for value in values if str(value or "").strip())
-        message = message_from_event_record(record)
-        if not message:
+        record_messages = messages_from_event_record(record)
+        if not record_messages:
             continue
-        role = str(message.get("role") or "").strip()
-        if role:
-            pending_source_roles.add(role)
+        for message in record_messages:
+            role = normalize_message_role(message.get("role"))
+            if role:
+                pending_source_roles.add(role)
+            messages.append(message)
         for values in [event_metadata.get("source_roles")]:
             if isinstance(values, list):
                 pending_source_roles.update(str(value).strip() for value in values if str(value or "").strip())
-        messages.append(message)
         source_event_ids.append(record["event_id_hash"])
     if not messages:
         return {
             "status": "empty",
             "pending_event_count": pending_event_count,
+            "pending_message_count": pending_message_count,
             "threshold_messages": threshold,
             "commit_reason": commit_reason,
             "idle_timeout_ms": idle_timeout_ms,
@@ -352,7 +373,8 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
     overlap_records = overlap_records[-overlap_limit:]
     extraction_context_messages = [
         message
-        for message in (message_from_event_record(record) for record in overlap_records)
+        for record in overlap_records
+        for message in messages_from_event_record(record)
         if message
     ]
     extraction_context_event_ids = [
@@ -432,6 +454,7 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "extraction_phase": extraction_phase,
             "final_session_boundary": final_session_boundary,
             "pending_event_count_before_commit": pending_event_count,
+            "pending_message_count_before_commit": pending_message_count,
             "committed_event_count": len(source_event_ids),
             "extraction_context_event_ids": extraction_context_event_ids,
             "extraction_context_event_count": len(extraction_context_event_ids),
@@ -476,6 +499,7 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         "storage_options": storage_options,
         "storage_route": canonical_storage_route(storage_options),
         "pending_event_count": pending_event_count,
+        "pending_message_count": pending_message_count,
         "committed_event_count": len(source_event_ids),
         "source_event_ids": source_event_ids,
         "extraction_context_event_ids": extraction_context_event_ids,

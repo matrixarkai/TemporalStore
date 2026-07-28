@@ -895,6 +895,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertFalse(first["session_buffer"]["threshold_ready"])
         self.assertFalse(first["session_buffer"]["idle_ready"])
         self.assertEqual(1, first["session_buffer"]["pending_event_count"])
+        self.assertEqual(1, first["session_buffer"]["pending_message_count"])
         self.assertIsNone(first["auto_batch_extract_result"])
 
         second_envelope = {**envelope, "messages": [{"role": "assistant", "content": "second live message"}], "ingestion_time_ms": 124}
@@ -902,8 +903,30 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(second["session_buffer"]["threshold_ready"])
         self.assertFalse(second["session_buffer"]["idle_ready"])
         self.assertEqual(2, second["session_buffer"]["pending_event_count"])
+        self.assertEqual(2, second["session_buffer"]["pending_message_count"])
         self.assertEqual("committed", second["auto_batch_extract_result"]["status"])
         self.assertEqual(1, len(target.commit_calls))
+
+        target = Target()
+        multi_message_envelope = {
+            **envelope,
+            "messages": [
+                {"role": "user", "content": "prompt with enough context"},
+                {"role": "assistant", "content": "assistant decision to remember"},
+            ],
+            "ingestion_time_ms": 125,
+        }
+        multi = async_mod.lightweight_async_accept(
+            target,
+            args,
+            envelope=multi_message_envelope,
+            hook=None,
+            idle_commit_result={},
+        )
+        self.assertEqual(1, multi["session_buffer"]["pending_event_count"])
+        self.assertEqual(2, multi["session_buffer"]["pending_message_count"])
+        self.assertTrue(multi["session_buffer"]["threshold_ready"])
+        self.assertEqual("committed", multi["auto_batch_extract_result"]["status"])
 
     def test_modular_session_runtime_reports_trigger_evidence(self) -> None:
         runtime_mod = importlib.import_module("tools.matrixark_mcp_session_runtime")
@@ -912,6 +935,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             def __init__(self) -> None:
                 self.pending = []
                 self.appended = []
+                self.batch_extract_calls = []
 
             def pending_session_events(self, _scope):
                 return list(self.pending)
@@ -923,6 +947,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 return []
 
             def batch_extract(self, args, *, hook=None):
+                self.batch_extract_calls.append(args)
                 return {
                     "batch_id_hash": 7,
                     "node_hash": 8,
@@ -966,6 +991,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertFalse(deferred["trigger_evidence"]["threshold_ready"])
         self.assertFalse(deferred["trigger_evidence"]["idle_ready"])
         self.assertEqual(1, deferred["trigger_evidence"]["pending_event_count"])
+        self.assertEqual(1, deferred["trigger_evidence"]["pending_message_count"])
 
         committed = runtime_mod.session_commit(
             adapter,
@@ -994,6 +1020,42 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(committed["source_role_counts"], async_task["source_role_counts"])
         self.assertEqual(committed["source_hook_type_counts"], async_task["source_hook_type_counts"])
         self.assertEqual(committed["source_codex_event_counts"], async_task["source_codex_event_counts"])
+
+        multi_adapter = Adapter()
+        multi_adapter.pending = [
+            {
+                "event_id_hash": 2,
+                "updated_at_ms": 200,
+                "envelope": {
+                    "messages": [
+                        {"role": "user", "content": "What decision should be remembered?"},
+                        {"role": "assistant", "content": "Remember the assistant decision."},
+                        {"role": "tool", "content": "Exit code: 0"},
+                    ],
+                    "metadata": {"hook_type": "hook_boundary", "codex_event": "Stop"},
+                    "ingestion_time_ms": 200,
+                },
+            }
+        ]
+        multi_committed = runtime_mod.session_commit(
+            multi_adapter,
+            {"scope": scope, "threshold_messages": 3, "force": False, "commit_reason": "threshold"},
+        )
+        self.assertEqual("committed", multi_committed["status"])
+        self.assertEqual(1, multi_committed["pending_event_count"])
+        self.assertEqual(3, multi_committed["pending_message_count"])
+        self.assertTrue(multi_committed["trigger_evidence"]["threshold_ready"])
+        self.assertEqual({"assistant": 1, "tool": 1, "user": 1}, multi_committed["source_role_counts"])
+        multi_commit_record = next(
+            record for record in multi_adapter.appended if record["record_type"] == "context_batch_commit"
+        )
+        self.assertEqual(1, multi_commit_record["pending_event_count_before_commit"])
+        self.assertEqual(3, multi_commit_record["pending_message_count_before_commit"])
+        self.assertEqual(
+            ["user", "assistant", "tool"],
+            [message["role"] for message in multi_adapter.batch_extract_calls[0]["messages"]],
+        )
+        self.assertEqual([2], multi_adapter.batch_extract_calls[0]["source_event_ids"])
 
     def test_modular_batch_extract_promotes_profile_entities(self) -> None:
         batch_mod = importlib.import_module("tools.matrixark_mcp_local_batch_extract_runtime")

@@ -9,6 +9,7 @@ try:
     from tools.matrixark_mcp_core import (
         Json,
         MatrixArkError,
+        messages_from_event_record,
         normalized_node_path,
         session_buffer_key,
         stable_hash,
@@ -19,6 +20,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         Json,
         MatrixArkError,
+        messages_from_event_record,
         normalized_node_path,
         session_buffer_key,
         stable_hash,
@@ -115,14 +117,16 @@ def lightweight_async_accept(
         )
 
     session_buffer_enabled = target.session_buffer_enabled(args, kind=envelope["kind"])
-    pending_event_count = len(target.pending_session_events(envelope["scope"])) if session_buffer_enabled else 0
+    pending_events = target.pending_session_events(envelope["scope"]) if session_buffer_enabled else []
+    pending_event_count = len(pending_events)
+    pending_message_count = sum(len(messages_from_event_record(record)) for record in pending_events)
     auto_batch_extract = target.auto_batch_extract_enabled(args, kind=envelope["kind"])
     session_boundary_commit = target.session_boundary_commit_requested(args, hook=hook)
     auto_batch_result: Json | None = None
     session_buffer_threshold = args.get("session_buffer_threshold", 20)
     if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
         raise MatrixArkError("session_buffer_threshold must be a positive integer")
-    threshold_ready = pending_event_count >= session_buffer_threshold
+    threshold_ready = pending_event_count >= session_buffer_threshold or pending_message_count >= session_buffer_threshold
     idle_ready = bool(
         isinstance(idle_commit_result, dict)
         and idle_commit_result.get("status") in {"accepted", "committed"}
@@ -171,6 +175,7 @@ def lightweight_async_accept(
             "enabled": session_buffer_enabled,
             "buffer_key": list(session_buffer_key(envelope)),
             "pending_event_count": pending_event_count,
+            "pending_message_count": pending_message_count,
             "threshold_messages": session_buffer_threshold,
             "threshold_ready": threshold_ready,
             "idle_ready": idle_ready,
