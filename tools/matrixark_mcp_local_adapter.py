@@ -2106,36 +2106,56 @@ class MatrixArkLocalAdapter:
         source_hash: int,
         dirty_reason: str = "new_event",
         propagate_depth: int | None = None,
+        source_lineage: Json | None = None,
     ) -> tuple[list[int], list[Json]]:
         prefixes = node_prefixes(node_path)
         if propagate_depth is not None and propagate_depth >= 0:
             prefixes = prefixes[max(0, len(prefixes) - propagate_depth - 1) :]
         dirty_hashes: list[int] = []
         records: list[Json] = []
+        lineage = source_event_lineage_summary([source_lineage]) if isinstance(source_lineage, dict) else {}
         for prefix in prefixes:
             node_hash = stable_hash("/".join(prefix))
             dirty_hash = stable_hash(
                 f"summary_dirty:{node_hash}:{dirty_reason}:{source_ref_type}:{source_hash}:{updated_at_ms}"
             )
             dirty_hashes.append(dirty_hash)
-            records.append(
-                {
-                    "record_type": "context_summary_dirty",
-                    "dirty_hash": dirty_hash,
-                    "node_hash": node_hash,
-                    "node_path": prefix,
-                    "depth": len(prefix),
-                    "dirty_reason": dirty_reason,
-                    "source_ref_type": source_ref_type,
-                    source_hash_field: source_hash,
-                    "changed_ref_count": 1,
-                    "propagate_depth": propagate_depth if propagate_depth is not None else len(node_path),
-                    "scope": scope,
-                    "status": "pending",
-                    "created_at_ms": updated_at_ms,
-                    "updated_at_ms": updated_at_ms,
-                }
-            )
+            record = {
+                "record_type": "context_summary_dirty",
+                "dirty_hash": dirty_hash,
+                "node_hash": node_hash,
+                "node_path": prefix,
+                "depth": len(prefix),
+                "dirty_reason": dirty_reason,
+                "source_ref_type": source_ref_type,
+                source_hash_field: source_hash,
+                "changed_ref_count": 1,
+                "propagate_depth": propagate_depth if propagate_depth is not None else len(node_path),
+                "scope": scope,
+                "status": "pending",
+                "created_at_ms": updated_at_ms,
+                "updated_at_ms": updated_at_ms,
+            }
+            for field in [
+                "source_roles",
+                "source_role_counts",
+                "source_hook_types",
+                "source_hook_type_counts",
+                "source_codex_events",
+                "source_codex_event_counts",
+                "source_memory_scopes",
+                "source_session_continuities",
+                "source_extraction_phases",
+                "source_final_session_boundary_count",
+                "memory_scope",
+                "session_continuity",
+                "extraction_phase",
+                "final_session_boundary",
+            ]:
+                value = lineage.get(field)
+                if value not in (None, "", [], {}):
+                    record[field] = value
+            records.append(record)
         return dirty_hashes, records
 
     def mark_node_summary_dirty(
@@ -2149,6 +2169,7 @@ class MatrixArkLocalAdapter:
         source_hash: int,
         dirty_reason: str = "new_event",
         propagate_depth: int | None = None,
+        source_lineage: Json | None = None,
     ) -> list[int]:
         dirty_hashes, records = self.node_summary_dirty_records(
             node_path=node_path,
@@ -2159,6 +2180,7 @@ class MatrixArkLocalAdapter:
             source_hash=source_hash,
             dirty_reason=dirty_reason,
             propagate_depth=propagate_depth,
+            source_lineage=source_lineage,
         )
         self.append_many(records)
         return dirty_hashes
@@ -5219,6 +5241,7 @@ class MatrixArkLocalAdapter:
                     source_hash=profile_entity_hash,
                     dirty_reason="profile_entity_promoted",
                     propagate_depth=0,
+                    source_lineage=profile_entity_record,
                 )
                 profile_dirty_hashes.extend(_profile_dirty_hashes)
                 records_to_append.extend(profile_dirty_records)
@@ -5385,6 +5408,22 @@ class MatrixArkLocalAdapter:
             source_hash_field="source_batch_hash",
             source_hash=batch_id_hash,
             dirty_reason="new_event",
+            source_lineage={
+                "source_roles": source_roles,
+                "source_role_counts": source_role_counts,
+                "source_hook_types": source_hook_types,
+                "source_hook_type_counts": source_hook_type_counts,
+                "source_codex_events": source_codex_events,
+                "source_codex_event_counts": source_codex_event_counts,
+                "source_memory_scopes": ["session"],
+                "source_session_continuities": ["same_session"],
+                "source_extraction_phases": [extraction_phase],
+                "source_final_session_boundary_count": 1 if final_session_boundary else 0,
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+                "extraction_phase": extraction_phase,
+                "final_session_boundary": final_session_boundary,
+            },
         )
         records_to_append.extend(dirty_records)
         records_to_append.extend(event_records_to_append)
