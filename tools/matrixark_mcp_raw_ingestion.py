@@ -162,6 +162,18 @@ def raw_session_index_entries(
     ]
 
 
+def normalize_raw_ingestion_record(record: Json) -> Json:
+    normalized = dict(record)
+    if normalized.get("record_type") == "agent_message":
+        normalized.setdefault("raw_record_type", "raw_agent_message")
+    else:
+        normalized.setdefault("raw_record_type", "raw_ingestion_event")
+    normalized.setdefault("raw_ingestion_visibility", "backfill_only")
+    normalized.setdefault("serving_visible", False)
+    normalized.setdefault("session_binding", "metadata_only_for_backfill_batching")
+    return normalized
+
+
 def get_raw_count(target: Any) -> int:
     ensure_raw_ingestion_fields(target)
     try:
@@ -180,6 +192,7 @@ def get_raw_count(target: Any) -> int:
 def append_raw_ingestion_records(target: Any, records: list[Json], *, allow_queue: bool = True) -> None:
     if not records:
         return
+    records = [normalize_raw_ingestion_record(record) for record in records]
     ensure_raw_ingestion_fields(target)
     if target._raw_ingestion_prefix == target._storage_prefix:
         raise MatrixArkError("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX must differ from the serving storage prefix")

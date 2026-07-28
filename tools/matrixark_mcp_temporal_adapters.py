@@ -44,11 +44,13 @@ try:
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from tools.matrixark_mcp_metrics import MatrixArkServiceMetrics
+    from tools.matrixark_mcp_raw_ingestion import normalize_raw_ingestion_record
     from tools.matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from matrixark_mcp_metrics import MatrixArkServiceMetrics
+    from matrixark_mcp_raw_ingestion import normalize_raw_ingestion_record
     from matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 
 
@@ -984,6 +986,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def _append_raw_ingestion_records(self, records: list[Json], *, allow_queue: bool = True) -> None:
         if not records:
             return
+        records = [normalize_raw_ingestion_record(record) for record in records]
         self._ensure_raw_ingestion_fields()
         if self._raw_ingestion_prefix == self._storage_prefix:
             raise MatrixArkError("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX must differ from the serving storage prefix")

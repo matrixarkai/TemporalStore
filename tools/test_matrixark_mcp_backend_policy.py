@@ -615,6 +615,10 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(adapter._direct_write_queue.qsize(), 1)
         queued_item = adapter._direct_write_queue.get_nowait()
         queued_record = queued_item["records"][0]
+        self.assertEqual("raw_ingestion_event", queued_record["raw_record_type"])
+        self.assertEqual("backfill_only", queued_record["raw_ingestion_visibility"])
+        self.assertFalse(queued_record["serving_visible"])
+        self.assertEqual("metadata_only_for_backfill_batching", queued_record["session_binding"])
         self.assertEqual(queued_record["matrixark_write_debug"]["write_path"], "async_memory_queue")
         self.assertEqual(queued_record["matrixark_write_debug"]["queue_mode"], "raw_ingestion")
         self.assertIn("queue_batch_id", queued_record["matrixark_write_debug"])
@@ -623,6 +627,10 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
 
         raw = client.hget("matrixark:test:raw_ingestion:records:000000", "00000000000000000000")
         stored = json.loads(raw)
+        self.assertEqual("raw_ingestion_event", stored["raw_record_type"])
+        self.assertEqual("backfill_only", stored["raw_ingestion_visibility"])
+        self.assertFalse(stored["serving_visible"])
+        self.assertEqual("metadata_only_for_backfill_batching", stored["session_binding"])
         debug = stored["matrixark_write_debug"]
         self.assertEqual(debug["write_path"], "async_queue_flush")
         self.assertEqual(debug["queue_mode"], "raw_ingestion")
@@ -631,6 +639,33 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(debug["persist_sequence"], 0)
         self.assertEqual(debug["persist_field"], "00000000000000000000")
         self.assertGreaterEqual(debug["queue_wait_ms"], 0)
+        self.assertEqual(client.get_string("matrixark:test:raw_ingestion:record_count"), "1")
+
+    def test_raw_agent_message_visibility_is_backfill_only_at_storage_boundary(self) -> None:
+        client = _HashStoreClient()
+        adapter = _direct_adapter_for_hash_store(client)
+        adapter._direct_write_queue_enabled = False
+        adapter._direct_raw_ingestion_queue_enabled = False
+
+        adapter._append_raw_ingestion_records(
+            [
+                {
+                    "record_type": "agent_message",
+                    "messages": [{"role": "assistant", "content": "final answer summary"}],
+                    "scope": {"session_id": "session-raw-agent"},
+                    "metadata": {"codex_event": "PreviousAssistantBackfill"},
+                    "agent_hook": {"hook_type": "after_llm"},
+                }
+            ]
+        )
+
+        raw = client.hget("matrixark:test:raw_ingestion:records:000000", "00000000000000000000")
+        stored = json.loads(raw)
+        self.assertEqual("agent_message", stored["record_type"])
+        self.assertEqual("raw_agent_message", stored["raw_record_type"])
+        self.assertEqual("backfill_only", stored["raw_ingestion_visibility"])
+        self.assertFalse(stored["serving_visible"])
+        self.assertEqual("metadata_only_for_backfill_batching", stored["session_binding"])
         self.assertEqual(client.get_string("matrixark:test:raw_ingestion:record_count"), "1")
 
     def test_context_pack_visibility_defaults_to_inline_telemetry_without_audit_write(self) -> None:
