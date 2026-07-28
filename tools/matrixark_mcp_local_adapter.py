@@ -2833,7 +2833,7 @@ class MatrixArkLocalAdapter:
                         "entity_hash": record.get("entity_hash", 0),
                         "entity_type": record.get("entity_type", ""),
                         "entity_name": record.get("entity_name", ""),
-                        "value": record.get("value", record.get("text", "")),
+                        "value": record.get("state", record.get("value", record.get("text", ""))),
                         "status": record.get("status", ""),
                         "source_event_hash": record.get("source_event_hash", 0),
                         "source_chunk_hash": record.get("source_chunk_hash", 0),
