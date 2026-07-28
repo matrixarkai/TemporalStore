@@ -1862,6 +1862,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             budget = pack["recall_policy"]["memory_layer_budget"]
             self.assertGreaterEqual(budget["by_memory_layer"]["pending_async_event"]["refs"], 1)
             self.assertGreaterEqual(budget["by_extraction_phase"]["pending_async"]["refs"], 1)
+            readiness = pack["retrieval_metrics"]["async_pipeline_readiness"]
+            self.assertFalse(readiness["ready_for_retrieval"])
+            self.assertEqual({"user": 1}, readiness["pending_source_roles"])
+            self.assertEqual({"before_llm": 1}, readiness["pending_source_hook_types"])
+            self.assertEqual({"UserPromptSubmit": 1}, readiness["pending_source_codex_events"])
+            self.assertEqual({"session": 1}, readiness["pending_memory_scopes"])
+            self.assertEqual({"same_session": 1}, readiness["pending_session_continuities"])
+            self.assertEqual({"pending_async": 1}, readiness["pending_extraction_phases"])
+            self.assertIn("session", readiness["memory_layer_readiness"]["blocked_layers"])
+            self.assertIn("same_session", readiness["memory_layer_readiness"]["blocked_layers"])
             coverage = pack["retrieval_metrics"]["retrieval_model_coverage"]
             self.assertGreaterEqual(coverage["event_embedding_vectors"], 1)
             self.assertGreaterEqual(coverage["index_terms_by_ref"], 1)
