@@ -5120,7 +5120,6 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
     metadata = ref.get("metadata", {}) if isinstance(ref.get("metadata"), dict) else {}
     item: Json = {
         "text": ref.get("text", ""),
-        "tokens": ref.get("token_estimate", 0),
     }
     source = ref.get("citation") or ref.get("source_ref") or ref.get("source_locator") or metadata.get("source_locator")
     if source:
@@ -5139,7 +5138,6 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
         ("extraction_phase", "extraction_phase"),
         ("resource_version", "version"),
         ("version_state", "version_state"),
-        ("source_final_session_boundary_count", "source_final_session_boundary_count"),
     ]
     for field, alias in optional_field_aliases:
         value = ref.get(field, metadata.get(field))
@@ -5150,7 +5148,8 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
         item["session_continuity"] = session_continuity
     if bool(ref.get("final_session_boundary") or metadata.get("final_session_boundary")):
         item["final_session_boundary"] = True
-    for field in [
+    lineage_fields = [
+        "source_session_ids",
         "source_roles",
         "source_role_counts",
         "budget_source_roles",
@@ -5162,7 +5161,9 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
         "source_memory_scopes",
         "source_session_continuities",
         "source_extraction_phases",
-    ]:
+        "source_final_session_boundary_count",
+    ] if CONTEXT_PACK_DEBUG_LINEAGE else []
+    for field in lineage_fields:
         value = ref.get(field, metadata.get(field))
         if isinstance(value, list) and value:
             if field in {"source_roles", "budget_source_roles"}:
@@ -5185,12 +5186,13 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
                     compact_counts[name] = int(compact_counts.get(name, 0)) + compact_count
             if compact_counts:
                 item[field] = compact_counts
-    source_entity_hashes = ref.get("source_entity_hashes", metadata.get("source_entity_hashes"))
-    if isinstance(source_entity_hashes, list) and source_entity_hashes:
-        item["source_entity_count"] = len(source_entity_hashes)
-    source_entity_count = ref.get("source_entity_count", metadata.get("source_entity_count"))
-    if isinstance(source_entity_count, int) and source_entity_count > 0:
-        item["source_entity_count"] = source_entity_count
+    if CONTEXT_PACK_DEBUG_LINEAGE:
+        source_entity_hashes = ref.get("source_entity_hashes", metadata.get("source_entity_hashes"))
+        if isinstance(source_entity_hashes, list) and source_entity_hashes:
+            item["source_entity_count"] = len(source_entity_hashes)
+        source_entity_count = ref.get("source_entity_count", metadata.get("source_entity_count"))
+        if isinstance(source_entity_count, int) and source_entity_count > 0:
+            item["source_entity_count"] = source_entity_count
     return item
 
 
@@ -5928,15 +5930,6 @@ def compact_context_pack_ref(ref: Json) -> Json:
         "extraction_phase",
         "final_session_boundary",
         "profile_current_state_representative",
-        "current_state_policy",
-        "source_roles",
-        "budget_source_roles",
-        "source_hook_types",
-        "source_codex_events",
-        "source_memory_scopes",
-        "source_session_continuities",
-        "source_extraction_phases",
-        "source_final_session_boundary_count",
     ]:
         value = ref.get(field)
         if value not in (None, "", [], {}):
@@ -5952,6 +5945,15 @@ def compact_context_pack_ref(ref: Json) -> Json:
                 item[field] = value
     if CONTEXT_PACK_DEBUG_LINEAGE:
         for field in [
+            "current_state_policy",
+            "source_roles",
+            "budget_source_roles",
+            "source_hook_types",
+            "source_codex_events",
+            "source_memory_scopes",
+            "source_session_continuities",
+            "source_extraction_phases",
+            "source_final_session_boundary_count",
             "source_role_counts",
             "budget_source_role_counts",
             "source_hook_type_counts",
@@ -5966,16 +5968,17 @@ def compact_context_pack_ref(ref: Json) -> Json:
                     item[field] = role_counts
             else:
                 item[field] = value
-    value = ref.get("source_session_ids")
-    if isinstance(value, list) and value:
-        item["source_session_ids"] = value[:8]
-    value = ref.get("source_entity_hashes")
-    if isinstance(value, list) and value:
-        item["source_entity_count"] = len(value)
-    for field in ["current_state_source_session_count", "current_state_source_entity_count"]:
-        value = ref.get(field)
-        if isinstance(value, int) and value > 0:
-            item[field] = value
+    if CONTEXT_PACK_DEBUG_LINEAGE:
+        value = ref.get("source_session_ids")
+        if isinstance(value, list) and value:
+            item["source_session_ids"] = value[:8]
+        value = ref.get("source_entity_hashes")
+        if isinstance(value, list) and value:
+            item["source_entity_count"] = len(value)
+        for field in ["current_state_source_session_count", "current_state_source_entity_count"]:
+            value = ref.get(field)
+            if isinstance(value, int) and value > 0:
+                item[field] = value
     context_class = ref.get("context_class")
     if context_class and context_class != item.get("ref_type"):
         item["context_class"] = context_class

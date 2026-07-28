@@ -2014,14 +2014,51 @@ fn context_pack_debug_lineage_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn context_pack_include_scores_enabled() -> bool {
+    env::var("MATRIXARK_CONTEXT_PACK_INCLUDE_SCORES")
+        .ok()
+        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
 fn native_serving_ref(mut item: Value) -> Value {
-    if context_pack_debug_lineage_enabled() {
-        return item;
-    }
+    let include_lineage = context_pack_debug_lineage_enabled();
+    let include_scores = context_pack_include_scores_enabled();
     if let Some(object) = item.as_object_mut() {
-        object.remove("source_role_counts");
-        object.remove("source_hook_type_counts");
-        object.remove("source_codex_event_counts");
+        if !include_lineage {
+            for field in [
+                "ref_hash",
+                "node_hash",
+                "node_path",
+                "continuity_reason",
+                "selection_reason",
+                "source_session_ids",
+                "source_entity_hashes",
+                "source_roles",
+                "source_role_counts",
+                "budget_source_roles",
+                "budget_source_role_counts",
+                "source_hook_types",
+                "source_hook_type_counts",
+                "source_codex_events",
+                "source_codex_event_counts",
+                "source_memory_scopes",
+                "source_session_continuities",
+                "source_extraction_phases",
+            ] {
+                object.remove(field);
+            }
+        }
+        if !include_scores {
+            for field in [
+                "token_estimate",
+                "score",
+                "continuity_boost",
+                "cross_session_rerank_boost",
+            ] {
+                object.remove(field);
+            }
+        }
     }
     item
 }
@@ -4735,15 +4772,17 @@ fn retrieve_context_pack_output(
         memory_layer_pressure_summary(&memory_layer_budget, &dropped_memory_layer_budget);
     let elapsed_ms = started.elapsed().as_millis() as u64;
     let correctness = selected_count > 0;
+    let serving_selected_refs = native_serving_refs(&selected_refs);
+    let serving_dropped_refs = native_serving_dropped_refs(json!({
+        "refs": dropped_ref_details,
+        "native_summary": true,
+    }));
     let pack = json!({
         "context_pack_id": format!("rust-native-{}-{}", unix_ms(), stable_hash64(&query)),
         "context_pack_assembly": "native_rust_proxy",
         "native_context_pack": true,
-        "selected_refs": selected_refs,
-        "dropped_refs": {
-            "refs": dropped_ref_details,
-            "native_summary": true,
-        },
+        "selected_refs": serving_selected_refs,
+        "dropped_refs": serving_dropped_refs,
         "recall_policy": {
             "memory_layer_budget": memory_layer_budget,
             "dropped_memory_layer_budget": dropped_memory_layer_budget,
@@ -5843,27 +5882,42 @@ mod tests {
             .get("selected_refs")
             .and_then(Value::as_array)
             .expect("selected refs");
-        assert!(selected_refs
+        for field in [
+            "ref_hash",
+            "node_hash",
+            "node_path",
+            "token_estimate",
+            "score",
+            "continuity_boost",
+            "cross_session_rerank_boost",
+            "continuity_reason",
+            "selection_reason",
+            "source_session_ids",
+            "source_entity_hashes",
+            "source_roles",
+            "source_role_counts",
+            "budget_source_roles",
+            "budget_source_role_counts",
+            "source_hook_types",
+            "source_hook_type_counts",
+            "source_codex_events",
+            "source_codex_event_counts",
+            "source_memory_scopes",
+            "source_session_continuities",
+            "source_extraction_phases",
+        ] {
+            assert!(
+                selected_refs.iter().all(|value| value.get(field).is_none()),
+                "default serving ref leaked {field}"
+            );
+        }
+        let selected_entities: BTreeSet<_> = selected_refs
             .iter()
-            .all(|value| value.get("source_role_counts").is_none()));
-        assert!(selected_refs
-            .iter()
-            .all(|value| value.get("source_hook_type_counts").is_none()));
-        assert!(selected_refs
-            .iter()
-            .all(|value| value.get("source_codex_event_counts").is_none()));
-        let selected_hashes: BTreeSet<_> = selected_refs
-            .iter()
-            .filter_map(|value| {
-                value
-                    .get("ref_hash")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
+            .filter_map(|value| value.get("entity_name").and_then(Value::as_str))
             .collect();
-        assert!(selected_hashes.contains("101"));
-        assert!(selected_hashes.contains("103"));
-        assert!(!selected_hashes.contains("102"));
+        assert!(selected_entities.contains("assistant alpha"));
+        assert!(!selected_entities.contains("assistant bravo"));
+        assert!(selected_refs.iter().any(|value| value.get("ref_type").and_then(Value::as_str) == Some("event")));
         assert_eq!(
             pack.pointer("/dropped_refs/source_role_budget")
                 .and_then(Value::as_u64),
@@ -5988,6 +6042,9 @@ mod tests {
         assert!(debug_selected_refs
             .iter()
             .any(|value| value.get("source_codex_event_counts").is_some()));
+        assert!(debug_selected_refs
+            .iter()
+            .any(|value| value.get("ref_hash").is_some()));
         let debug_dropped_refs = debug_pack
             .pointer("/dropped_refs/refs")
             .and_then(Value::as_array)
@@ -6047,15 +6104,22 @@ mod tests {
         let pack = response
             .get("context_pack")
             .expect("wrapped context pack from proxy op");
-        let selected_hashes: BTreeSet<_> = pack
+        let selected_refs = pack
             .get("selected_refs")
             .and_then(Value::as_array)
-            .expect("selected refs")
-            .iter()
-            .filter_map(|value| value.get("ref_hash").map(Value::to_string))
-            .collect();
-        assert!(selected_hashes.contains("22"));
-        assert!(!selected_hashes.contains("11"));
+            .expect("selected refs");
+        assert!(selected_refs.iter().all(|value| value.get("ref_hash").is_none()));
+        assert!(selected_refs.iter().all(|value| value.get("source_session_ids").is_none()));
+        assert!(selected_refs.iter().any(|value| value
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("Current cross-session GPU procurement owner is Bob")));
+        assert!(!selected_refs.iter().any(|value| value
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("Old session-local GPU procurement owner is Alice")));
         assert_eq!(
             pack.pointer("/recall_policy/dropped_memory_layer_budget/stale_ref_count")
                 .and_then(Value::as_u64),
@@ -6089,16 +6153,16 @@ mod tests {
             response.get("dropped_ref_count").and_then(Value::as_u64),
             Some(1)
         );
-        let dropped_refs = pack
-            .pointer("/dropped_refs/refs")
-            .and_then(Value::as_array)
-            .expect("compact stale dropped ref detail");
-        assert_eq!(dropped_refs.len(), 1);
+        assert!(pack.pointer("/dropped_refs/refs").is_none());
         assert_eq!(
-            dropped_refs[0]
-                .get("profile_shadowed_by_ref_hash")
-                .and_then(Value::as_str),
-            Some("22")
+            pack.pointer("/dropped_refs/dropped_ref_detail_available_in_audit")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            pack.pointer("/dropped_refs/dropped_ref_count")
+                .and_then(Value::as_u64),
+            Some(1)
         );
 
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
@@ -6147,15 +6211,22 @@ mod tests {
             .extra
             .get("context_pack")
             .expect("wrapped context pack from proxy op");
-        let selected_hashes: BTreeSet<_> = pack
+        let selected_refs = pack
             .get("selected_refs")
             .and_then(Value::as_array)
-            .expect("selected refs")
-            .iter()
-            .filter_map(|value| value.get("ref_hash").and_then(Value::as_str))
-            .collect();
-        assert!(selected_hashes.contains("22"));
-        assert!(!selected_hashes.contains("11"));
+            .expect("selected refs");
+        assert!(selected_refs.iter().all(|value| value.get("ref_hash").is_none()));
+        assert!(selected_refs.iter().all(|value| value.get("source_session_ids").is_none()));
+        assert!(selected_refs.iter().any(|value| value
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("Current cross-session GPU procurement owner is Bob")));
+        assert!(!selected_refs.iter().any(|value| value
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .contains("Old session-local GPU procurement owner is Alice")));
         assert_eq!(
             pack.pointer("/recall_policy/dropped_memory_layer_budget/stale_ref_count")
                 .and_then(Value::as_u64),
@@ -6190,14 +6261,16 @@ mod tests {
             pack.pointer("/retrieval_metrics/dropped_memory_layer_budget"),
             pack.pointer("/recall_policy/dropped_memory_layer_budget")
         );
-        let dropped_refs = pack
-            .pointer("/dropped_refs/refs")
-            .and_then(Value::as_array)
-            .expect("native stale dropped ref detail");
-        assert_eq!(dropped_refs.len(), 1);
+        assert!(pack.pointer("/dropped_refs/refs").is_none());
         assert_eq!(
-            dropped_refs[0].get("profile_shadowed_by_ref_hash").and_then(Value::as_str),
-            Some("22")
+            pack.pointer("/dropped_refs/dropped_ref_detail_available_in_audit")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            pack.pointer("/dropped_refs/dropped_ref_count")
+                .and_then(Value::as_u64),
+            Some(1)
         );
 
         env::remove_var("MATRIXARK_RUST_PROXY_FULL_RETRIEVE_SCAN");

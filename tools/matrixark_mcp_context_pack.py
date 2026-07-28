@@ -155,31 +155,28 @@ def compact_context_pack_ref(ref: Json) -> Json:
         "entity_name",
         "extraction_phase",
         "profile_current_state_representative",
-        "current_state_policy",
-        "source_memory_scopes",
-        "source_session_continuities",
-        "source_extraction_phases",
-        "source_final_session_boundary_count",
     ]:
         value = ref.get(field)
         if value not in (None, "", [], {}):
             item[field] = value
     if bool(ref.get("final_session_boundary")):
         item["final_session_boundary"] = True
-    flat_prompt_lineage_fields = [
+    flat_debug_lineage_fields = [
         "source_session_ids",
         "source_roles",
         "budget_source_roles",
         "source_hook_types",
         "source_codex_events",
-    ]
-    flat_debug_lineage_fields = [
+        "source_memory_scopes",
+        "source_session_continuities",
+        "source_extraction_phases",
+        "source_final_session_boundary_count",
         "source_role_counts",
         "budget_source_role_counts",
         "source_hook_type_counts",
         "source_codex_event_counts",
     ] if DEBUG_LINEAGE_PAYLOAD else []
-    for field in [*flat_prompt_lineage_fields, *flat_debug_lineage_fields]:
+    for field in flat_debug_lineage_fields:
         value = ref.get(field)
         if isinstance(value, list) and value:
             if field in {"source_roles", "budget_source_roles"}:
@@ -196,13 +193,14 @@ def compact_context_pack_ref(ref: Json) -> Json:
             )
             if compact_counts:
                 item[field] = compact_counts
-    value = ref.get("source_entity_hashes")
-    if isinstance(value, list) and value:
-        item["source_entity_count"] = len(value)
-    for field in ["current_state_source_session_count", "current_state_source_entity_count"]:
-        value = ref.get(field)
-        if isinstance(value, int) and value > 0:
-            item[field] = value
+    if DEBUG_LINEAGE_PAYLOAD:
+        value = ref.get("source_entity_hashes")
+        if isinstance(value, list) and value:
+            item["source_entity_count"] = len(value)
+        for field in ["current_state_policy", "current_state_source_session_count", "current_state_source_entity_count"]:
+            value = ref.get(field)
+            if value not in (None, "", [], {}) and not (isinstance(value, int) and value <= 0):
+                item[field] = value
     context_class = ref.get("context_class")
     if context_class and context_class != item.get("ref_type"):
         item["context_class"] = context_class
@@ -638,7 +636,6 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
     metadata = ref.get("metadata", {}) if isinstance(ref.get("metadata"), dict) else {}
     item: Json = {
         "text": ref.get("text", ""),
-        "tokens": ref.get("token_estimate", 0),
     }
     source = ref.get("citation") or ref.get("source_ref") or ref.get("source_locator") or metadata.get("source_locator")
     if source:
@@ -657,7 +654,6 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         ("extraction_phase", "extraction_phase"),
         ("resource_version", "version"),
         ("version_state", "version_state"),
-        ("source_final_session_boundary_count", "source_final_session_boundary_count"),
     ]
     for field, alias in optional_field_aliases:
         value = ref.get(field, metadata.get(field))
@@ -671,7 +667,7 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         item["memory_layer"] = memory_layer
     if bool(ref.get("final_session_boundary") or metadata.get("final_session_boundary")):
         item["final_session_boundary"] = True
-    prompt_lineage_fields = [
+    debug_lineage_fields = [
         "source_session_ids",
         "source_roles",
         "source_hook_types",
@@ -679,13 +675,12 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         "source_memory_scopes",
         "source_session_continuities",
         "source_extraction_phases",
-    ]
-    debug_lineage_fields = [
+        "source_final_session_boundary_count",
         "source_role_counts",
         "source_hook_type_counts",
         "source_codex_event_counts",
     ] if DEBUG_LINEAGE_PAYLOAD else []
-    for field in [*prompt_lineage_fields, *debug_lineage_fields]:
+    for field in debug_lineage_fields:
         value = ref.get(field, metadata.get(field))
         if isinstance(value, list) and value:
             if field == "source_roles":
@@ -698,16 +693,17 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
             compact_counts = _compact_role_count_map(value) if field == "source_role_counts" else _compact_count_map(value)
             if compact_counts:
                 item[field] = compact_counts
-    value = ref.get("source_entity_hashes", metadata.get("source_entity_hashes"))
-    if isinstance(value, list) and value:
-        item["source_entity_count"] = len(value)
-    value = ref.get("source_entity_count", metadata.get("source_entity_count"))
-    if isinstance(value, int) and value > 0:
-        item["source_entity_count"] = value
-    for field in ["current_state_source_session_count", "current_state_source_entity_count"]:
-        value = ref.get(field, metadata.get(field))
+    if DEBUG_LINEAGE_PAYLOAD:
+        value = ref.get("source_entity_hashes", metadata.get("source_entity_hashes"))
+        if isinstance(value, list) and value:
+            item["source_entity_count"] = len(value)
+        value = ref.get("source_entity_count", metadata.get("source_entity_count"))
         if isinstance(value, int) and value > 0:
-            item[field] = value
+            item["source_entity_count"] = value
+        for field in ["current_state_source_session_count", "current_state_source_entity_count"]:
+            value = ref.get(field, metadata.get(field))
+            if isinstance(value, int) and value > 0:
+                item[field] = value
     return item
 
 
