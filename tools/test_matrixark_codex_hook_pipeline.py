@@ -5544,6 +5544,38 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(any(row.get("source_role_counts", {}).get("tool", 0) >= 1 for row in profile_entity_rows), entities_dashboard)
             self.assertTrue(any(row.get("source_hook_type_counts", {}).get("hook_boundary", 0) >= 1 for row in profile_entity_rows), entities_dashboard)
             self.assertTrue(any(row.get("source_codex_event_counts", {}).get("PostToolUse", 0) >= 1 for row in profile_entity_rows), entities_dashboard)
+            embeddings_dashboard = adapter.ingestion_dashboard(
+                {"scope": scope, "table": "embeddings", "page_size": 80}
+            )
+            embedding_rows = [row for row in embeddings_dashboard["rows"] if row.get("row_type") == "context_embedding"]
+            embedding_types = {row.get("embedding_type") for row in embedding_rows}
+            self.assertIn("event_text", embedding_types, embeddings_dashboard)
+            self.assertIn("entity_state", embedding_types, embeddings_dashboard)
+            self.assertIn("segment_text", embedding_types, embeddings_dashboard)
+            self.assertIn("batch_l0", embedding_types, embeddings_dashboard)
+            self.assertTrue(all(row.get("dim", 0) > 0 for row in embedding_rows), embeddings_dashboard)
+            self.assertTrue(all(row.get("has_vector") for row in embedding_rows), embeddings_dashboard)
+            self.assertTrue(all("vector" not in row for row in embedding_rows), embeddings_dashboard)
+            indexes_dashboard = adapter.ingestion_dashboard(
+                {"scope": scope, "table": "indexes", "page_size": 80}
+            )
+            index_rows = [row for row in indexes_dashboard["rows"] if row.get("row_type") == "context_index"]
+            self.assertTrue(index_rows, indexes_dashboard)
+            self.assertTrue(any(row.get("data_model") == "context_entity" for row in index_rows), indexes_dashboard)
+            self.assertTrue(any(row.get("data_model") == "context_profile_entity" for row in index_rows), indexes_dashboard)
+            self.assertTrue(any(row.get("data_model") == "context_batch_commit" for row in index_rows), indexes_dashboard)
+            self.assertTrue(all(row.get("ref_hash_count", 0) >= 0 for row in index_rows), indexes_dashboard)
+            summaries_dashboard = adapter.ingestion_dashboard(
+                {"scope": scope, "table": "summaries", "page_size": 20}
+            )
+            summary_rows = [row for row in summaries_dashboard["rows"] if row.get("row_type") == "context_summary"]
+            self.assertTrue(summary_rows, summaries_dashboard)
+            self.assertTrue(any(row.get("summary_type") == "batch_l0" for row in summary_rows), summaries_dashboard)
+            self.assertTrue(any(row.get("source_role_counts", {}).get("assistant", 0) >= 1 for row in summary_rows), summaries_dashboard)
+            self.assertTrue(any(row.get("source_hook_type_counts", {}).get("hook_boundary", 0) >= 1 for row in summary_rows), summaries_dashboard)
+            self.assertTrue(any(row.get("source_codex_event_counts", {}).get("PostToolUse", 0) >= 1 for row in summary_rows), summaries_dashboard)
+            for table_name in ["embeddings", "indexes", "summaries"]:
+                self.assertIn(table_name, embeddings_dashboard["totals"])
             committed_ids = {
                 int(event_id)
                 for commit in commits

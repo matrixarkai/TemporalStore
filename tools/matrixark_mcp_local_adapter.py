@@ -2908,9 +2908,32 @@ class MatrixArkLocalAdapter:
         rows: list[Json] = []
         if table == "messages":
             return self._dashboard_message_rows(records, scope)
+        node_scope_by_hash: dict[int, Json] = {}
+        for source_record in records:
+            try:
+                source_node_hash = int(source_record.get("node_hash") or 0)
+            except (TypeError, ValueError):
+                source_node_hash = 0
+            if not source_node_hash or source_node_hash in node_scope_by_hash:
+                continue
+            source_scope = self._dashboard_record_scope(source_record)
+            if source_scope:
+                node_scope_by_hash[source_node_hash] = source_scope
+
+        def dashboard_scope(record: Json) -> Json:
+            record_scope = self._dashboard_record_scope(record)
+            if record_scope:
+                return record_scope
+            try:
+                node_hash = int(record.get("node_hash") or 0)
+            except (TypeError, ValueError):
+                node_hash = 0
+            return node_scope_by_hash.get(node_hash, {}) if node_hash else {}
+
         for record in records:
             record_type = str(record.get("record_type") or "")
-            if not scope_matches(self._dashboard_record_scope(record), scope):
+            record_dashboard_scope = dashboard_scope(record)
+            if not scope_matches(record_dashboard_scope, scope):
                 continue
             if table == "resources" and record_type in {"resource_import_task", "resource_manifest", "resource_chunk"}:
                 rows.append(
@@ -2950,7 +2973,7 @@ class MatrixArkLocalAdapter:
                         "allowed_tools": record.get("allowed_tools", []),
                         "node_hash": record.get("node_hash", 0),
                         "node_path": record.get("node_path", []),
-                        "scope": candidate_access_scope(record),
+                        "scope": record_dashboard_scope,
                         "updated_at_ms": record.get("updated_at_ms", 0),
                     }
                 )
@@ -2968,7 +2991,7 @@ class MatrixArkLocalAdapter:
                         "source_locator": record.get("source_locator", ""),
                         "node_hash": record.get("node_hash", 0),
                         "node_path": record.get("node_path", []),
-                        "scope": record.get("envelope", {}).get("scope", record.get("scope", {})),
+                        "scope": record_dashboard_scope,
                         "memory_scope": record.get("memory_scope", ""),
                         "session_continuity": record.get("session_continuity", ""),
                         "extraction_phase": record.get("extraction_phase", ""),
@@ -2998,7 +3021,7 @@ class MatrixArkLocalAdapter:
                         "source_locator": record.get("source_locator", ""),
                         "node_hash": record.get("node_hash", 0),
                         "node_path": record.get("node_path", []),
-                        "scope": candidate_access_scope(record),
+                        "scope": record_dashboard_scope,
                         "memory_scope": record.get("memory_scope", ""),
                         "session_continuity": record.get("session_continuity", ""),
                         "promoted_from_memory_scope": record.get("promoted_from_memory_scope", ""),
@@ -3007,6 +3030,65 @@ class MatrixArkLocalAdapter:
                         "source_session_ids": record.get("source_session_ids", [])[:8] if isinstance(record.get("source_session_ids"), list) else [],
                         "source_session_count": len(record.get("source_session_ids", [])) if isinstance(record.get("source_session_ids"), list) else 0,
                         "source_entity_count": len(record.get("source_entity_hashes", [])) if isinstance(record.get("source_entity_hashes"), list) else 0,
+                        "source_roles": record.get("source_roles", []),
+                        "source_role_counts": record.get("source_role_counts", {}),
+                        "source_hook_types": record.get("source_hook_types", []),
+                        "source_hook_type_counts": record.get("source_hook_type_counts", {}),
+                        "source_codex_events": record.get("source_codex_events", []),
+                        "source_codex_event_counts": record.get("source_codex_event_counts", {}),
+                        "extraction_phase": record.get("extraction_phase", ""),
+                        "final_session_boundary": bool(record.get("final_session_boundary", False)),
+                        "updated_at_ms": record.get("updated_at_ms", 0),
+                    }
+                )
+            elif table == "embeddings" and record_type == "context_embedding":
+                rows.append(
+                    {
+                        "row_type": record_type,
+                        "embedding_type": record.get("embedding_type", ""),
+                        "ref_type": record.get("ref_type", ""),
+                        "ref_hash": record.get("ref_hash", 0),
+                        "node_hash": record.get("node_hash", 0),
+                        "node_path": record.get("node_path", []),
+                        "dim": record.get("dim", len(record.get("vector", [])) if isinstance(record.get("vector"), list) else 0),
+                        "model": record.get("model", record.get("model_ref", "")),
+                        "has_vector": isinstance(record.get("vector"), list) and bool(record.get("vector")),
+                        "scope": record_dashboard_scope,
+                        "updated_at_ms": record.get("updated_at_ms", 0),
+                    }
+                )
+            elif table == "indexes" and record_type == "context_index":
+                ref_hashes = record.get("ref_hashes", []) if isinstance(record.get("ref_hashes"), list) else []
+                rows.append(
+                    {
+                        "row_type": record_type,
+                        "index_hash": record.get("index_hash", 0),
+                        "index_name": record.get("index_name", ""),
+                        "data_model": record.get("data_model", ""),
+                        "ref_type": record.get("ref_type", ""),
+                        "ref_hash": record.get("ref_hash", 0),
+                        "ref_hash_count": len(ref_hashes),
+                        "batch_id_hash": record.get("batch_id_hash", 0),
+                        "node_hash": record.get("node_hash", 0),
+                        "node_path": record.get("node_path", []),
+                        "scope": record_dashboard_scope,
+                        "timestamp_key_ms": record.get("timestamp_key_ms", 0),
+                        "updated_at_ms": record.get("updated_at_ms", record.get("timestamp_key_ms", 0)),
+                    }
+                )
+            elif table == "summaries" and record_type == "context_summary":
+                rows.append(
+                    {
+                        "row_type": record_type,
+                        "summary_hash": record.get("summary_hash", 0),
+                        "summary_type": record.get("summary_type", ""),
+                        "summary_text": record.get("summary_text", ""),
+                        "node_hash": record.get("node_hash", 0),
+                        "node_path": record.get("node_path", []),
+                        "scope": record_dashboard_scope,
+                        "source_event_count": len(record.get("source_event_ids", [])) if isinstance(record.get("source_event_ids"), list) else 0,
+                        "source_entity_count": len(record.get("source_entity_hashes", [])) if isinstance(record.get("source_entity_hashes"), list) else 0,
+                        "source_segment_count": len(record.get("source_segment_hashes", [])) if isinstance(record.get("source_segment_hashes"), list) else 0,
                         "source_roles": record.get("source_roles", []),
                         "source_role_counts": record.get("source_role_counts", {}),
                         "source_hook_types": record.get("source_hook_types", []),
@@ -3280,6 +3362,9 @@ class MatrixArkLocalAdapter:
             "skills",
             "events",
             "entities",
+            "embeddings",
+            "indexes",
+            "summaries",
             "context_packs",
             "summary_refresh",
             "async_pipeline",
