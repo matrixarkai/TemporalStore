@@ -18,6 +18,8 @@ from typing import Any
 try:
     from tools.matrixark_mcp_core import (
         _mcp_debug_log,
+        canonical_account_id,
+        canonical_tenant_id,
         memory_hierarchy_contract_from_recall_policy,
         messages_from_event_record,
         normalize_message_role,
@@ -30,6 +32,8 @@ try:
 except ModuleNotFoundError:
     from matrixark_mcp_core import (
         _mcp_debug_log,
+        canonical_account_id,
+        canonical_tenant_id,
         memory_hierarchy_contract_from_recall_policy,
         messages_from_event_record,
         normalize_message_role,
@@ -3103,11 +3107,13 @@ def build_server(args: argparse.Namespace):
 
 
 def scope_from_args(args: argparse.Namespace) -> Json:
+    user_id = str(args.user_id or "")
+    session_id = str(args.session_id or user_id or "")
     return {
-        "account_id": args.account_id,
-        "tenant_id": args.tenant_id,
-        "user_id": args.user_id,
-        "session_id": args.session_id,
+        "account_id": canonical_account_id(str(args.account_id or "")),
+        "tenant_id": canonical_tenant_id(str(args.tenant_id or "")),
+        "user_id": user_id,
+        "session_id": session_id,
         "team": args.team,
         "project": args.project,
     }
