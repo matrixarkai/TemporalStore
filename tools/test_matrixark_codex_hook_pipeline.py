@@ -3576,6 +3576,128 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             memory_budget = debug_pack["recall_policy"]["memory_layer_budget"]
             self.assertEqual({"assistant": 1}, memory_budget["source_message_counts_by_role"])
 
+    def test_user_prompt_cli_idle_assistant_memory_pre_refreshes_profile_summaries(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            event_log = tmp / "matrixark-cli-assistant-summary-refresh.jsonl"
+            rollout = tmp / "rollout.jsonl"
+            rollout.write_text(
+                json.dumps(
+                    {
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": (
+                                "Assistant decision: pre-retrieval summaries should summarize "
+                                "idle rollout profile memory."
+                            ),
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            msg = self.run_hook(
+                repo,
+                event_log,
+                event="UserPromptSubmit",
+                payload={
+                    "prompt": "User prompt after assistant answer should trigger assistant idle profile memory.",
+                    "transcript_path": str(rollout),
+                    "thread_id": "codex-cli-assistant-summary-thread",
+                },
+                extra_env={
+                    "MATRIXARK_SESSION_COMMIT_THRESHOLD": "20",
+                    "MATRIXARK_IDLE_COMMIT_TIMEOUT_MS": "1",
+                },
+            )
+            self.assertEqual("ok", msg["status"])
+            idle_commit = msg["ingest"]["idle_commit_result"]
+            self.assertEqual("committed", idle_commit["status"])
+            self.assertEqual(["assistant"], idle_commit["source_roles"])
+            self.assertIn("PreviousAssistantBackfill", idle_commit["source_codex_events"])
+
+            adapter = MatrixArkLocalAdapter(event_log)
+            scope = {
+                "account_id": "acct_hook",
+                "tenant_id": "tenant_hook",
+                "user_id": "codex_user",
+                "session_id": "codex_session_1",
+            }
+            before_refresh_records = adapter.read_all()
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_summary_dirty"
+                    and record.get("dirty_reason") == "profile_entity_promoted"
+                    for record in before_refresh_records
+                ),
+                before_refresh_records,
+            )
+            self.assertFalse(
+                any(
+                    record.get("record_type") == "context_summary"
+                    and record.get("node_path") == ["tenant:tenant_hook", "user:codex_user", "profile:long_term_memory"]
+                    for record in before_refresh_records
+                ),
+                before_refresh_records,
+            )
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "codex_session_2"},
+                    "session_scope": "prefer",
+                    "query": "Summarize idle rollout profile memory for Codex.",
+                    "max_context_tokens": 160,
+                    "audit_mode": "off",
+                    "ranking": {
+                        "max_selected_refs": 4,
+                        "min_similarity_score": 0.0,
+                        "budget_fill_policy": "force_fill",
+                        "pre_retrieval_summary_refresh": True,
+                        "pre_retrieval_summary_refresh_limit": 8,
+                    },
+                }
+            )
+            self.assert_no_default_context_pack_debug_lineage(pack)
+            refresh = pack["pre_retrieval_summary_refresh"]
+            self.assertTrue(refresh["enabled"])
+            self.assertEqual("refreshed", refresh["status"])
+            self.assertGreaterEqual(refresh["refreshed_count"], 1)
+            self.assertLessEqual(pack["used_context_tokens"], 160)
+            self.assertTrue(any(ref.get("ref_type") == "summary" for ref in pack["selected_refs"]), pack["selected_refs"])
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "entity"
+                    and ref.get("entity_type") == "assistant_decision"
+                    and ref.get("memory_scope") == "user_profile"
+                    and "pre-retrieval summaries" in str(ref.get("text") or "")
+                    for ref in pack["selected_refs"]
+                ),
+                pack["selected_refs"],
+            )
+
+            records = adapter.read_all()
+            profile_summaries = [
+                record
+                for record in records
+                if record.get("record_type") == "context_summary"
+                and record.get("node_path") == ["tenant:tenant_hook", "user:codex_user", "profile:long_term_memory"]
+            ]
+            self.assertTrue(profile_summaries, records)
+            self.assertTrue(any(record.get("summary_type") == "node_l0" for record in profile_summaries))
+            self.assertTrue(any("assistant" in record.get("source_roles", []) for record in profile_summaries))
+            self.assertTrue(
+                any(record.get("source_role_counts", {}).get("assistant", 0) >= 1 for record in profile_summaries)
+            )
+            self.assertTrue(
+                any("PreviousAssistantBackfill" in record.get("source_codex_events", []) for record in profile_summaries)
+            )
+            self.assertTrue(any("user_profile" in record.get("source_memory_scopes", []) for record in profile_summaries))
+            self.assertTrue(any("cross_session" in record.get("source_session_continuities", []) for record in profile_summaries))
+            self.assertTrue(any("assistant_decision" in record.get("source_entity_types", []) for record in profile_summaries))
+
     def test_user_prompt_fast_async_still_backfills_previous_assistant_rollout(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp_dir:
