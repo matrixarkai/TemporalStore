@@ -1484,6 +1484,32 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({"assistant": 64, "tool": 32}, request["source_role_budget_tokens"])
             self.assertEqual({"max_selected_refs": 4}, request["ranking"])
 
+    def test_local_native_context_pack_receives_auto_source_role_budget_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-auto-budget.jsonl")
+            scope = {
+                "account_id": "acct_native_auto_budget",
+                "tenant_id": "tenant_native_auto_budget",
+                "user_id": "user_native_auto_budget",
+                "session_id": "session_native_auto_budget",
+            }
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "Codex role budget",
+                    "max_context_tokens": 100,
+                    "ranking": {"source_role_budget_mode": "auto"},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertEqual("local-native-pack", pack["pack_id"])
+            self.assertEqual(1, len(adapter.native_requests))
+            request = adapter.native_requests[0]
+            self.assertEqual({"assistant": 42, "tool": 33, "user": 57}, request["source_role_budget_tokens"])
+            self.assertEqual("auto", request["source_role_budget_mode"])
+
     def test_context_pack_cache_key_includes_source_role_budget_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-source-role-cache.jsonl")
@@ -1691,6 +1717,51 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({"tool": 1}, memory_budget["source_message_counts_by_role"])
             self.assertIn("tool", memory_budget["by_source_role"])
             self.assertNotIn("assistant", memory_budget["by_source_role"])
+
+    def test_retrieve_auto_source_role_budget_policy_is_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-auto-role-budget.jsonl")
+            scope = {
+                "account_id": "acct_auto_role_budget",
+                "tenant_id": "tenant_auto_role_budget",
+                "user_id": "user_auto_role_budget",
+                "session_id": "session_auto_role_budget",
+            }
+            adapter.batch_extract(
+                {
+                    "scope": scope,
+                    "force": True,
+                    "messages": [
+                        {"role": "assistant", "content": "Assistant decision: use idle extraction for memory quality."},
+                        {"role": "user", "content": "User requirement: keep user requests retrievable."},
+                        {"role": "tool", "content": "Exit code: 0\nRan auto budget tests successfully."},
+                    ],
+                    "metadata": {
+                        "source_roles": ["assistant", "user", "tool"],
+                        "source_hook_types": ["after_llm", "before_llm", "tool_result"],
+                        "source_codex_events": ["PreviousAssistantBackfill", "UserPromptSubmit", "PostToolUse"],
+                    },
+                }
+            )
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "session_auto_role_budget_followup"},
+                    "session_scope": "prefer",
+                    "query": "What extraction and test evidence should be remembered?",
+                    "max_context_tokens": 120,
+                    "ranking": {"max_selected_refs": 5, "min_similarity_score": 0.0, "source_role_budget_mode": "auto"},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            role_policy = pack["recall_policy"]["source_role_budget"]
+            self.assertTrue(role_policy["enabled"])
+            self.assertEqual("auto", role_policy["mode"])
+            self.assertTrue(role_policy["derived"])
+            self.assertEqual(114, role_policy["remote_budget_tokens"])
+            self.assertEqual({"assistant": 51, "tool": 39, "user": 68}, role_policy["budget_tokens"])
 
     def run_hook(self, repo: Path, event_log: Path, *, event: str, payload: dict, query: str = "") -> dict:
         cmd = [
