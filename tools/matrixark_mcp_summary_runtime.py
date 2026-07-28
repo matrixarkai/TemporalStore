@@ -283,6 +283,11 @@ def build_node_summary_refresh_records(
     source_hook_type_counts = source_count_map("source_hook_type_counts", "source_hook_types", "hook_type")
     source_codex_events = source_values("source_codex_events", "codex_event")
     source_codex_event_counts = source_count_map("source_codex_event_counts", "source_codex_events", "codex_event")
+    source_memory_selection_policies = source_values("source_memory_selection_policies")
+    source_memory_selection_policy_counts = source_count_map(
+        "source_memory_selection_policy_counts",
+        "source_memory_selection_policies",
+    )
     source_memory_scopes = source_values("source_memory_scopes", "memory_scope")
     source_session_continuities = source_values("source_session_continuities", "session_continuity")
     source_extraction_phases = sorted(
@@ -355,6 +360,8 @@ def build_node_summary_refresh_records(
                 "source_hook_type_counts": source_hook_type_counts,
                 "source_codex_events": source_codex_events,
                 "source_codex_event_counts": source_codex_event_counts,
+                "source_memory_selection_policies": source_memory_selection_policies,
+                "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                 "source_memory_scopes": source_memory_scopes,
                 "source_session_continuities": source_session_continuities,
                 "source_extraction_phases": source_extraction_phases,
@@ -401,6 +408,8 @@ def build_node_summary_refresh_records(
         "source_hook_type_counts": source_hook_type_counts,
         "source_codex_events": source_codex_events,
         "source_codex_event_counts": source_codex_event_counts,
+        "source_memory_selection_policies": source_memory_selection_policies,
+        "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
         "source_memory_scopes": source_memory_scopes,
         "source_session_continuities": source_session_continuities,
         "source_extraction_phases": source_extraction_phases,
@@ -653,6 +662,8 @@ def refresh_dirty_node_summaries(
                     "source_roles": source_roles,
                     "source_hook_types": source_hook_types,
                     "source_codex_events": source_codex_events,
+                    "source_memory_selection_policies": source_memory_selection_policies,
+                    "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                     "source_memory_scopes": source_memory_scopes,
                     "source_session_continuities": source_session_continuities,
                     "source_extraction_phases": source_extraction_phases,
@@ -701,6 +712,8 @@ def refresh_dirty_node_summaries(
                 "source_roles": source_roles,
                 "source_hook_types": source_hook_types,
                 "source_codex_events": source_codex_events,
+                "source_memory_selection_policies": source_memory_selection_policies,
+                "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                 "source_memory_scopes": source_memory_scopes,
                 "source_session_continuities": source_session_continuities,
                 "source_extraction_phases": source_extraction_phases,

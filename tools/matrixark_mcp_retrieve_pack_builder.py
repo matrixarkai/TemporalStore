@@ -232,6 +232,7 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
         "by_source_role": {},
         "by_hook_type": {},
         "by_codex_event": {},
+        "by_memory_selection_policy": {},
         "by_profile_promotion_policy": {},
         "by_profile_promotion_blocker": {},
         "source_message_counts_by_role": {},
@@ -268,6 +269,8 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
             add_ref_bucket(breakdown, "by_hook_type", hook_name, token_estimate)
         for event_name in source_bucket_names(ref, "source_codex_events", "source_codex_event_counts"):
             add_ref_bucket(breakdown, "by_codex_event", event_name, token_estimate)
+        for policy_name in source_bucket_names(ref, "source_memory_selection_policies", "source_memory_selection_policy_counts"):
+            add_ref_bucket(breakdown, "by_memory_selection_policy", policy_name, token_estimate)
         add_profile_promotion_buckets(breakdown, ref, token_estimate)
         for source_field, aggregate_field in [
             ("budget_source_role_counts", "source_message_counts_by_role"),
@@ -318,6 +321,7 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
         "by_source_role": {},
         "by_hook_type": {},
         "by_codex_event": {},
+        "by_memory_selection_policy": {},
         "by_profile_promotion_policy": {},
         "by_profile_promotion_blocker": {},
         "source_message_counts_by_role": {},
@@ -377,6 +381,8 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
             add_ref_bucket(breakdown, "by_hook_type", hook_name, token_estimate)
         for event_name in source_bucket_names(ref, "source_codex_events", "source_codex_event_counts"):
             add_ref_bucket(breakdown, "by_codex_event", event_name, token_estimate)
+        for policy_name in source_bucket_names(ref, "source_memory_selection_policies", "source_memory_selection_policy_counts"):
+            add_ref_bucket(breakdown, "by_memory_selection_policy", policy_name, token_estimate)
         add_profile_promotion_buckets(breakdown, ref, token_estimate)
         for source_field, aggregate_field in [
             ("budget_source_role_counts", "source_message_counts_by_role"),
@@ -457,6 +463,7 @@ def memory_layer_pressure_summary(selected_budget: Json, dropped_budget: Json) -
         "by_source_role",
         "by_hook_type",
         "by_codex_event",
+        "by_memory_selection_policy",
         "by_profile_shadowed_reason",
         "by_profile_promotion_policy",
         "by_profile_promotion_blocker",
@@ -529,6 +536,10 @@ def memory_layer_pressure_summary(selected_budget: Json, dropped_budget: Json) -
     summary["skill_layer_pressure"] = dropped_in("by_memory_layer", "skill_section") > 0
     summary["profile_memory_pressure"] = dropped_in("by_memory_scope", "user_profile") > 0
     summary["profile_promotion_policy_pressure"] = dropped_in("by_profile_promotion_policy", "always_when_profile_scope_available") > 0
+    summary["memory_selection_policy_pressure"] = any(
+        bucket.get("dropped_refs", 0) > 0
+        for bucket in dimension_data.get("by_memory_selection_policy", {}).values()
+    )
     summary["profile_promotion_blocker_pressure"] = any(
         bucket.get("dropped_refs", 0) > 0
         for bucket in dimension_data.get("by_profile_promotion_blocker", {}).values()
