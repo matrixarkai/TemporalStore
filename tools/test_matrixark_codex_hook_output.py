@@ -58,7 +58,37 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             result["memory_layer_budget"]["by_memory_scope"]["user_profile"]["refs"],
         )
         self.assertTrue(result["memory_layer_pressure"]["profile_memory_pressure"])
-        self.assertTrue(result["memory_layer_pressure"]["hook_boundary_source_pressure"])
+        self.assertNotIn("hook_boundary_source_pressure", result["memory_layer_pressure"])
+        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
+        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
+        try:
+            debug_result = hook.retrieval_layer_summary_from_retrieve(
+                {
+                    "ok": True,
+                    "extra": {
+                        "context_pack": {
+                            "selected_refs": [
+                                {
+                                    "ref_type": "entity",
+                                    "memory_scope": "user_profile",
+                                    "session_continuity": "cross_session",
+                                    "token_estimate": 9,
+                                }
+                            ],
+                            "retrieval_metrics": {
+                                "memory_layer_pressure": {
+                                    "selected_refs": 1,
+                                    "dropped_refs": 1,
+                                    "hook_boundary_source_pressure": True,
+                                },
+                            },
+                        }
+                    },
+                }
+            )
+        finally:
+            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
+        self.assertTrue(debug_result["memory_layer_pressure"]["hook_boundary_source_pressure"])
 
     def test_retrieve_budget_summary_reads_nested_context_pack_wrapper(self) -> None:
         wrapped = {
@@ -166,10 +196,19 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(1, budget["by_session_continuity"]["cross_session"]["refs"])
         self.assertEqual(1, budget["by_extraction_phase"]["final"]["refs"])
         self.assertEqual(1, budget["by_entity_type"]["assistant_decision"]["refs"])
-        self.assertEqual(2, budget["source_message_counts_by_role"]["assistant"])
-        self.assertEqual(1, budget["source_hook_counts_by_type"]["after_llm"])
-        self.assertEqual(1, budget["source_codex_event_counts_by_event"]["Stop"])
+        self.assertNotIn("source_message_counts_by_role", budget)
+        self.assertNotIn("source_hook_counts_by_type", budget)
+        self.assertNotIn("source_codex_event_counts_by_event", budget)
         self.assertEqual(13, budget["total_selected_tokens"])
+        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
+        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
+        try:
+            debug_budget = hook.retrieval_layer_summary_from_retrieve(wrapped)["memory_layer_budget"]
+        finally:
+            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
+        self.assertEqual(2, debug_budget["source_message_counts_by_role"]["assistant"])
+        self.assertEqual(1, debug_budget["source_hook_counts_by_type"]["after_llm"])
+        self.assertEqual(1, debug_budget["source_codex_event_counts_by_event"]["Stop"])
 
         identity = hook.retrieval_session_identity_from_retrieve(wrapped)
         self.assertEqual("payload_field", identity["session_id_source"])
@@ -226,7 +265,23 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             pressure["dropped_memory_layer_budget"]["by_memory_scope"]["user_profile"]["refs"],
         )
         self.assertTrue(pressure["memory_layer_pressure"]["profile_memory_pressure"])
-        self.assertTrue(pressure["memory_layer_pressure"]["assistant_source_message_pressure"])
+        self.assertNotIn("assistant_source_message_pressure", pressure["memory_layer_pressure"])
+        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
+        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
+        try:
+            debug_pressure = hook.retrieval_budget_pressure_from_retrieve(
+                {
+                    "retrieval_metrics": {
+                        "memory_layer_pressure": {
+                            "dropped_refs": 1,
+                            "assistant_source_message_pressure": True,
+                        },
+                    },
+                }
+            )
+        finally:
+            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
+        self.assertTrue(debug_pressure["memory_layer_pressure"]["assistant_source_message_pressure"])
 
     def test_loose_stop_payload_extracts_current_input_message_and_thread_identity(self) -> None:
         raw = (
@@ -787,9 +842,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(3, pressure["budget_pressure_reason_count"])
         self.assertTrue(pressure["memory_layer_pressure"]["profile_memory_pressure"])
         self.assertTrue(pressure["memory_layer_pressure"]["cross_session_pressure"])
-        self.assertTrue(pressure["memory_layer_pressure"]["assistant_source_message_pressure"])
+        self.assertNotIn("assistant_source_message_pressure", pressure["memory_layer_pressure"])
         self.assertEqual(
-            ["by_memory_scope", "source_message_counts_by_role"],
+            ["by_memory_scope"],
             pressure["memory_layer_pressure"]["dropped_dimensions"],
         )
         self.assertNotIn("memory_hierarchy", item["result"])
@@ -1414,10 +1469,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertNotIn("memory_hierarchy", output["retrieve"])
         self.assertTrue(output["retrieve"]["budget_pressure"]["budget_pressure"])
         self.assertEqual(
-            {"cross_session_budget": 2, "source_role_budget": 1, "max_selected_refs": 3},
+            {"cross_session_budget": 2, "max_selected_refs": 3},
             output["retrieve"]["budget_pressure"]["dropped_by_reason"],
         )
-        self.assertEqual(6, output["retrieve"]["budget_pressure"]["budget_pressure_reason_count"])
+        self.assertEqual(5, output["retrieve"]["budget_pressure"]["budget_pressure_reason_count"])
         self.assertEqual(
             1,
             output["retrieve"]["budget_pressure"]["dropped_memory_layer_budget"]["by_memory_scope"][
@@ -1425,12 +1480,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             ]["refs"],
         )
         self.assertEqual(5, output["retrieve"]["layers"]["memory_layer_pressure"]["dropped_refs"])
-        self.assertEqual(
-            {"refs": 2, "tokens": 14},
-            output["retrieve"]["layers"]["memory_layer_budget"]["by_source_role"]["assistant"],
-        )
-        self.assertEqual(3, output["retrieve"]["layers"]["memory_layer_budget"]["source_message_counts_by_role"]["assistant"])
-        self.assertTrue(output["retrieve"]["layers"]["memory_layer_pressure"]["assistant_memory_pressure"])
+        self.assertNotIn("by_source_role", output["retrieve"]["layers"]["memory_layer_budget"])
+        self.assertNotIn("source_message_counts_by_role", output["retrieve"]["layers"]["memory_layer_budget"])
+        self.assertNotIn("assistant_memory_pressure", output["retrieve"]["layers"]["memory_layer_pressure"])
         self.assertEqual(58, output["retrieve"]["budget"]["remote_budget_remaining_tokens"])
         self.assertFalse(output["retrieve"]["budget"]["remote_budget_overrun"])
         self.assertEqual("payload_field", output["retrieve"]["session_identity"]["session_id_source"])
@@ -1438,10 +1490,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertFalse(output["retrieve"]["session_identity"]["fallback_session_identity"])
         self.assertEqual(4, output["retrieve"]["async_pipeline_readiness"]["task_count"])
         self.assertFalse(output["retrieve"]["async_pipeline_readiness"]["ready_for_retrieval"])
-        self.assertEqual(
-            {"assistant": 2, "tool": 1, "user": 1},
-            output["retrieve"]["async_pipeline_readiness"]["pending_source_roles"],
-        )
+        self.assertNotIn("pending_source_roles", output["retrieve"]["async_pipeline_readiness"])
         self.assertEqual(
             {
                 "enabled": True,
@@ -1519,9 +1568,13 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertNotIn("source_codex_events[PostToolUse=1, Stop=2]", additional)
         self.assertIn("final_boundary_refs=2", additional)
         self.assertIn(
-            "async_pipeline[tasks=4; ready=false; remaining=entity,secondary_index,summary; memory_layers_ready=false; blocked_layers[session,user_profile,same_session,cross_session,summary]; ready_layers[compression,embedding]; layer_pending[cross_session=2,same_session=3,session=3,summary=2:summary,user_profile=2]; stage_counts[entity=1,secondary_index=1,summary=2]; pending_scopes[session=3,user_profile=2]; pending_continuity[cross_session=2,same_session=3]; pending_phases[final=1,provisional=3]; pending_final_boundary=1; warnings=async_pipeline_followup_pending,profile_summary_stale]",
+            "async_pipeline[tasks=4; ready=false; remaining=entity,secondary_index,summary; memory_layers_ready=false; blocked_layers[session,user_profile,same_session,cross_session,summary]; ready_layers[compression,embedding]; layer_pending[cross_session=2,same_session=3,session=3,summary=2:summary,user_profile=2]; stage_counts[entity=1,secondary_index=1,summary=2]; warnings=async_pipeline_followup_pending,profile_summary_stale]",
             additional,
         )
+        self.assertNotIn("pending_scopes[", additional)
+        self.assertNotIn("pending_continuity[", additional)
+        self.assertNotIn("pending_phases[", additional)
+        self.assertNotIn("pending_roles[", additional)
         self.assertIn("Memory hierarchy:", additional)
         self.assertIn("user_profile/cross_session refs are long-term state", additional)
         self.assertNotIn("cross_session_budget_floor_status=remote_budget_too_small_for_profile_floor", additional)

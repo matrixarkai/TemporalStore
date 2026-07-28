@@ -16,9 +16,27 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from tools.matrixark_mcp_core import _mcp_debug_log, memory_hierarchy_contract_from_recall_policy, normalize_message_role
+    from tools.matrixark_mcp_core import (
+        _mcp_debug_log,
+        memory_hierarchy_contract_from_recall_policy,
+        normalize_message_role,
+        serving_memory_layer_budget,
+        serving_memory_layer_pressure,
+    )
+    from tools.matrixark_mcp_context_pack import (
+        serving_async_pipeline_readiness,
+    )
 except ModuleNotFoundError:
-    from matrixark_mcp_core import _mcp_debug_log, memory_hierarchy_contract_from_recall_policy, normalize_message_role
+    from matrixark_mcp_core import (
+        _mcp_debug_log,
+        memory_hierarchy_contract_from_recall_policy,
+        normalize_message_role,
+        serving_memory_layer_budget,
+        serving_memory_layer_pressure,
+    )
+    from matrixark_mcp_context_pack import (
+        serving_async_pipeline_readiness,
+    )
 
 
 Json = dict[str, Any]
@@ -338,10 +356,11 @@ def retrieval_budget_pressure_from_retrieve(pack: Json | None) -> Json:
         "cross_session_candidate_cap",
         "shared_resource_budget",
         "shared_skill_budget",
-        "source_role_budget",
         "max_selected_refs",
         "deadline",
     ]
+    if CONTEXT_PACK_DEBUG_LINEAGE:
+        budget_reasons.append("source_role_budget")
     dropped_by_reason: Json = {}
     estimated_tokens: Json = {}
     raw_estimated = dropped.get("estimated_tokens") if isinstance(dropped.get("estimated_tokens"), dict) else {}
@@ -381,9 +400,15 @@ def retrieval_budget_pressure_from_retrieve(pack: Json | None) -> Json:
         "budget_fill_policy": dropped.get("budget_fill_policy"),
     }
     if dropped_memory_layer_budget:
-        summary["dropped_memory_layer_budget"] = dropped_memory_layer_budget
+        summary["dropped_memory_layer_budget"] = serving_memory_layer_budget(
+            dropped_memory_layer_budget,
+            include_debug=CONTEXT_PACK_DEBUG_LINEAGE,
+        )
     if memory_layer_pressure:
-        summary["memory_layer_pressure"] = memory_layer_pressure
+        summary["memory_layer_pressure"] = serving_memory_layer_pressure(
+            memory_layer_pressure,
+            include_debug=CONTEXT_PACK_DEBUG_LINEAGE,
+        )
     if dropped_by_reason:
         summary["budget_pressure_reason_count"] = sum(int(value) for value in dropped_by_reason.values())
     return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
@@ -474,13 +499,22 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
     except (TypeError, ValueError):
         layer_summary["local_context_refs"] = 0
     if memory_layer_budget:
-        layer_summary["memory_layer_budget"] = memory_layer_budget
+        layer_summary["memory_layer_budget"] = serving_memory_layer_budget(
+            memory_layer_budget,
+            include_debug=CONTEXT_PACK_DEBUG_LINEAGE,
+        )
     memory_layer_pressure = retrieval_memory_layer_pressure_from_retrieve(pack)
     if memory_layer_pressure:
-        layer_summary["memory_layer_pressure"] = memory_layer_pressure
+        layer_summary["memory_layer_pressure"] = serving_memory_layer_pressure(
+            memory_layer_pressure,
+            include_debug=CONTEXT_PACK_DEBUG_LINEAGE,
+        )
     async_readiness = retrieval_async_readiness_from_retrieve(pack)
     if async_readiness:
-        layer_summary["async_pipeline_readiness"] = async_readiness
+        layer_summary["async_pipeline_readiness"] = serving_async_pipeline_readiness(
+            async_readiness,
+            include_debug=CONTEXT_PACK_DEBUG_LINEAGE,
+        )
     pre_summary_refresh = retrieval_pre_summary_refresh_from_retrieve(pack)
     if pre_summary_refresh:
         layer_summary["pre_retrieval_summary_refresh"] = pre_summary_refresh
@@ -524,9 +558,17 @@ def retrieval_async_readiness_from_retrieve(pack: Json | None) -> Json:
     for source_name in ["retrieval_metrics", "recall_policy"]:
         source = pack_view.get(source_name)
         if isinstance(source, dict) and isinstance(source.get("async_pipeline_readiness"), dict):
-            return normalize_async_readiness_roles(source["async_pipeline_readiness"])
+            return serving_async_pipeline_readiness(
+                normalize_async_readiness_roles(source["async_pipeline_readiness"]),
+                include_debug=CONTEXT_PACK_DEBUG_LINEAGE,
+            )
     readiness = pack_view.get("async_pipeline_readiness")
-    return normalize_async_readiness_roles(readiness) if isinstance(readiness, dict) else {}
+    if not isinstance(readiness, dict):
+        return {}
+    return serving_async_pipeline_readiness(
+        normalize_async_readiness_roles(readiness),
+        include_debug=CONTEXT_PACK_DEBUG_LINEAGE,
+    )
 
 
 def normalize_async_readiness_roles(readiness: Json) -> Json:
