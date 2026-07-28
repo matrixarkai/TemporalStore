@@ -182,6 +182,11 @@ def add_profile_promotion_buckets(breakdown: Json, ref: Json, token_estimate: in
         add_ref_bucket(breakdown, "by_profile_promotion_blocker", value, token_estimate)
 
 
+def add_entity_type_buckets(breakdown: Json, ref: Json, token_estimate: int) -> None:
+    for entity_type in source_layer_values(ref, "source_entity_types", "entity_type", ""):
+        add_ref_bucket(breakdown, "by_entity_type", entity_type, token_estimate)
+
+
 def selected_ref_layer_budget(refs: list[Json]) -> Json:
     breakdown: Json = {
         "by_memory_layer": {},
@@ -219,11 +224,7 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
             token_estimate,
         )
         add_ref_bucket(breakdown, "by_ref_type", str(ref_value(ref, "ref_type", "unknown") or "unknown"), token_estimate)
-        entity_type = str(ref_value(ref, "entity_type") or "")
-        if entity_type:
-            bucket = breakdown["by_entity_type"].setdefault(entity_type, {"refs": 0, "tokens": 0})
-            bucket["refs"] += 1
-            bucket["tokens"] += token_estimate
+        add_entity_type_buckets(breakdown, ref, token_estimate)
         role_count_field = "budget_source_role_counts" if ref_dict(ref, "budget_source_role_counts") else "source_role_counts"
         role_list_field = "budget_source_roles" if ref_list(ref, "budget_source_roles") else "source_roles"
         for role_name in source_bucket_names(ref, role_list_field, role_count_field, normalize_roles=True):
@@ -324,11 +325,7 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
             token_estimate,
         )
         add_ref_bucket(breakdown, "by_ref_type", str(ref_value(ref, "ref_type", "unknown") or "unknown"), token_estimate)
-        entity_type = str(ref_value(ref, "entity_type") or "")
-        if entity_type:
-            bucket = breakdown["by_entity_type"].setdefault(entity_type, {"refs": 0, "tokens": 0})
-            bucket["refs"] += 1
-            bucket["tokens"] += token_estimate
+        add_entity_type_buckets(breakdown, ref, token_estimate)
         role_count_field = "budget_source_role_counts" if ref_dict(ref, "budget_source_role_counts") else "source_role_counts"
         role_list_field = "budget_source_roles" if ref_list(ref, "budget_source_roles") else "source_roles"
         for role_name in source_bucket_names(ref, role_list_field, role_count_field, normalize_roles=True):
