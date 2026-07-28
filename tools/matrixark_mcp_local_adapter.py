@@ -6006,6 +6006,8 @@ class MatrixArkLocalAdapter:
                 separators=(",", ":"),
             ),
             bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
+            debug_refs,
+            bool(args.get("debug_context_pack") or args.get("include_retrieval_debug")),
         )
         if pack_cache_enabled:
             with self._context_pack_cache_lock:
@@ -6018,6 +6020,8 @@ class MatrixArkLocalAdapter:
                         recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
                         recall_policy["context_pack_cache"] = {"hit": True, "ttl_s": self._context_pack_cache_ttl_s}
                         pack["recall_policy"] = recall_policy
+                        if bool(args.get("debug_context_pack")) or bool(args.get("include_retrieval_debug")):
+                            return pack
                         return compact_context_pack_for_serving(pack, include_debug=debug_refs)
                     self._context_pack_cache.pop(pack_cache_key, None)
         auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
