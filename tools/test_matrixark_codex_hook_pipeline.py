@@ -2199,7 +2199,53 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(34, layer_policy["budget_tokens"]["summary"])
             self.assertEqual(45, layer_policy["budget_tokens"]["profile_entity"])
 
-    def run_hook(self, repo: Path, event_log: Path, *, event: str, payload: dict, query: str = "") -> dict:
+    def test_codex_hook_pre_retrieval_summary_refresh_is_explicit_opt_in(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            default_log = tmp / "matrixark-hook-refresh-default.jsonl"
+            opt_in_log = tmp / "matrixark-hook-refresh-opt-in.jsonl"
+
+            default_msg = self.run_hook(
+                repo,
+                default_log,
+                event="UserPromptSubmit",
+                payload={
+                    "prompt": "User prompt: keep profile entities ahead of summaries by default.",
+                    "thread_id": "codex-refresh-default-thread",
+                },
+            )
+            default_refresh = default_msg["retrieve"]["pre_retrieval_summary_refresh"]
+            self.assertFalse(default_refresh["enabled"])
+            self.assertEqual("disabled", default_refresh["status"])
+
+            opt_in_msg = self.run_hook(
+                repo,
+                opt_in_log,
+                event="UserPromptSubmit",
+                payload={
+                    "prompt": "User prompt: refresh dirty summaries before retrieval when explicitly enabled.",
+                    "thread_id": "codex-refresh-opt-in-thread",
+                },
+                extra_env={
+                    "MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH": "1",
+                    "MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT": "3",
+                },
+            )
+            opt_in_refresh = opt_in_msg["retrieve"]["pre_retrieval_summary_refresh"]
+            self.assertTrue(opt_in_refresh["enabled"])
+            self.assertEqual(3, opt_in_refresh["requested_limit"])
+            self.assertIn(opt_in_refresh["status"], {"refreshed", "no_dirty_nodes"})
+            self.assertEqual(
+                opt_in_msg["retrieve"]["pre_retrieval_summary_refresh"],
+                opt_in_msg["retrieve"]["layers"]["pre_retrieval_summary_refresh"],
+            )
+            self.assertIn(
+                "summary_refresh[enabled=true",
+                opt_in_msg["hookSpecificOutput"]["additionalContext"],
+            )
+
+    def run_hook(self, repo: Path, event_log: Path, *, event: str, payload: dict, query: str = "", extra_env: dict | None = None) -> dict:
         cmd = [
             sys.executable,
             str(repo / "tools" / "matrixark_codex_hook.py"),
@@ -2231,7 +2277,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             capture_output=True,
             cwd=repo,
             timeout=30,
-            env={**os.environ, "MATRIXARK_ALLOW_LOCAL_BACKEND": "1"},
+            env={**os.environ, "MATRIXARK_ALLOW_LOCAL_BACKEND": "1", **(extra_env or {})},
         )
         if proc.returncode != 0:
             raise AssertionError(f"hook failed\nstdout={proc.stdout}\nstderr={proc.stderr}")
