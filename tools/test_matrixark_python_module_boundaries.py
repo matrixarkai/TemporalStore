@@ -1485,6 +1485,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertFalse(readiness["ready_for_retrieval"])
         self.assertEqual(["summary", "compression"], readiness["remaining_stages"])
         self.assertEqual(["profile_summary_stale"], readiness["freshness_warnings"])
+        self.assertNotIn("pending_memory_scopes", readiness)
+        self.assertNotIn("pending_session_continuities", readiness)
         self.assertEqual({"user_profile": {"refs": 1, "tokens": 7}}, compact["memory_layer_budget"]["by_memory_scope"])
         self.assertTrue(compact["memory_layer_pressure"]["profile_memory_pressure"])
         self.assertTrue(compact["memory_layer_pressure"]["cross_session_pressure"])
@@ -1526,6 +1528,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             self.assertNotIn(field, entity_item)
         self.assertNotIn("memory_hierarchy", compact)
         self.assertNotIn("memory_hierarchy", grouped_compact)
+        self.assertEqual({"user_profile": 1}, debug_compact["async_pipeline_readiness"]["pending_memory_scopes"])
+        self.assertEqual({"cross_session": 1}, debug_compact["async_pipeline_readiness"]["pending_session_continuities"])
         hierarchy = debug_compact["memory_hierarchy"]
         self.assertEqual("user_profile", hierarchy["models"]["profile_entity"]["memory_scope"])
         self.assertEqual("context_profile_entity", hierarchy["models"]["profile_index"]["data_model"])

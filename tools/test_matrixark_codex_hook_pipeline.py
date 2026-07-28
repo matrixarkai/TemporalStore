@@ -233,7 +233,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertNotIn("by_source_role", serving["memory_layer_budget"])
         self.assertEqual(3, serving["async_pipeline_readiness"]["task_count"])
         self.assertEqual({"summary": 1}, serving["async_pipeline_readiness"]["remaining_stage_counts"])
-        self.assertEqual({"user_profile": 1}, serving["async_pipeline_readiness"]["pending_memory_scopes"])
+        self.assertNotIn("pending_memory_scopes", serving["async_pipeline_readiness"])
         self.assertEqual(
             {"enabled": False, "status": "disabled", "requested_limit": 2, "elapsed_ms": 0.0},
             serving["pre_retrieval_summary_refresh"],
@@ -552,7 +552,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         readiness = default_serving["async_pipeline_readiness"]
         self.assertEqual(2, readiness["task_count"])
         self.assertEqual({"summary": 1, "embedding": 1}, readiness["remaining_stage_counts"])
-        self.assertEqual({"user_profile": 1}, readiness["pending_memory_scopes"])
+        self.assertNotIn("pending_memory_scopes", readiness)
         dropped_budget = default_serving["dropped_memory_layer_budget"]
         self.assertNotIn("by_source_role", dropped_budget)
         self.assertNotIn("source_entity_lineage", dropped_budget.get("by_profile_shadowed_reason", {}))
@@ -3949,13 +3949,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("pending_source_roles", readiness)
             self.assertNotIn("pending_source_hook_types", readiness)
             self.assertNotIn("pending_source_codex_events", readiness)
-            self.assertEqual(3, readiness["pending_memory_scopes"]["session"])
-            self.assertEqual(3, readiness["pending_memory_scopes"]["user_profile"])
-            self.assertEqual(3, readiness["pending_session_continuities"]["same_session"])
-            self.assertEqual(3, readiness["pending_session_continuities"]["cross_session"])
-            self.assertEqual(3, readiness["pending_extraction_phases"]["provisional"])
-            self.assertNotIn("final", readiness["pending_extraction_phases"])
-            self.assertEqual(0, readiness["pending_final_session_boundary_count"])
+            self.assertNotIn("pending_memory_scopes", readiness)
+            self.assertNotIn("pending_session_continuities", readiness)
+            self.assertNotIn("pending_extraction_phases", readiness)
+            self.assertNotIn("pending_final_session_boundary_count", readiness)
             layer_readiness = readiness["memory_layer_readiness"]
             self.assertFalse(layer_readiness["ready_for_retrieval"])
             self.assertIn("user_profile", layer_readiness["blocked_layers"])
@@ -3989,6 +3986,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(1, debug_readiness["pending_source_roles"]["tool"])
             self.assertEqual(1, debug_readiness["pending_source_hook_types"]["hook_boundary"])
             self.assertEqual(1, debug_readiness["pending_source_codex_events"]["PostToolUse"])
+            self.assertEqual(3, debug_readiness["pending_memory_scopes"]["session"])
+            self.assertEqual(3, debug_readiness["pending_memory_scopes"]["user_profile"])
+            self.assertEqual(3, debug_readiness["pending_session_continuities"]["same_session"])
+            self.assertEqual(3, debug_readiness["pending_session_continuities"]["cross_session"])
+            self.assertEqual(3, debug_readiness["pending_extraction_phases"]["provisional"])
+            self.assertNotIn("final", debug_readiness["pending_extraction_phases"])
+            self.assertEqual(0, debug_readiness["pending_final_session_boundary_count"])
             telemetry_rows = [
                 record
                 for record in adapter.read_all()
@@ -3999,7 +4003,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             telemetry_readiness = telemetry_rows[-1]["async_pipeline_readiness"]
             self.assertEqual(readiness["task_count"], telemetry_readiness["task_count"])
             self.assertEqual(readiness["remaining_stage_counts"], telemetry_readiness["remaining_stage_counts"])
-            self.assertEqual(readiness["pending_memory_scopes"], telemetry_readiness["pending_memory_scopes"])
+            self.assertNotIn("pending_memory_scopes", readiness)
+            self.assertEqual(debug_readiness["pending_memory_scopes"], telemetry_readiness["pending_memory_scopes"])
             self.assertEqual(2, telemetry_readiness["pending_source_roles"]["assistant"])
             self.assertEqual(1, telemetry_readiness["pending_source_hook_types"]["hook_boundary"])
             self.assertEqual(1, telemetry_readiness["pending_source_codex_events"]["PostToolUse"])
@@ -4132,10 +4137,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("pending_source_roles", summary_readiness)
             self.assertNotIn("pending_source_hook_types", summary_readiness)
             self.assertNotIn("pending_source_codex_events", summary_readiness)
-            self.assertEqual({}, summary_readiness["pending_memory_scopes"])
-            self.assertEqual({}, summary_readiness["pending_session_continuities"])
-            self.assertEqual({}, summary_readiness["pending_extraction_phases"])
-            self.assertEqual(0, summary_readiness["pending_final_session_boundary_count"])
+            self.assertNotIn("pending_memory_scopes", summary_readiness)
+            self.assertNotIn("pending_session_continuities", summary_readiness)
+            self.assertNotIn("pending_extraction_phases", summary_readiness)
+            self.assertNotIn("pending_final_session_boundary_count", summary_readiness)
             summary_layer_readiness = summary_readiness["memory_layer_readiness"]
             self.assertTrue(summary_layer_readiness["ready_for_retrieval"])
             self.assertEqual([], summary_layer_readiness["blocked_layers"])
