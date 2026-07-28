@@ -6276,7 +6276,10 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
         compact.pop("partial_context_pack", None)
     compact.pop("packing_policy", None)
 
-    recall_summary = compact_recall_policy_for_audit(compact.get("recall_policy", {}))
+    recall_summary = compact_recall_policy_for_audit(
+        compact.get("recall_policy", {}),
+        include_debug=include_debug,
+    )
     serving_recall: Json = {}
     query_plan = recall_summary.get("query_plan") if isinstance(recall_summary, dict) else {}
     if isinstance(query_plan, dict):
@@ -6293,13 +6296,13 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
         compact["recall"] = serving_recall
     memory_layer_budget = recall_summary.get("memory_layer_budget") if isinstance(recall_summary, dict) else {}
     if isinstance(memory_layer_budget, dict) and memory_layer_budget:
-        compact["memory_layer_budget"] = serving_memory_layer_budget(memory_layer_budget)
+        compact["memory_layer_budget"] = serving_memory_layer_budget(memory_layer_budget, include_debug=include_debug)
     dropped_memory_layer_budget = recall_summary.get("dropped_memory_layer_budget") if isinstance(recall_summary, dict) else {}
     if isinstance(dropped_memory_layer_budget, dict) and dropped_memory_layer_budget:
-        compact["dropped_memory_layer_budget"] = serving_memory_layer_budget(dropped_memory_layer_budget)
+        compact["dropped_memory_layer_budget"] = serving_memory_layer_budget(dropped_memory_layer_budget, include_debug=include_debug)
     memory_layer_pressure = recall_summary.get("memory_layer_pressure") if isinstance(recall_summary, dict) else {}
     if isinstance(memory_layer_pressure, dict) and memory_layer_pressure:
-        compact["memory_layer_pressure"] = serving_memory_layer_pressure(memory_layer_pressure)
+        compact["memory_layer_pressure"] = serving_memory_layer_pressure(memory_layer_pressure, include_debug=include_debug)
     async_pipeline_readiness = recall_summary.get("async_pipeline_readiness") if isinstance(recall_summary, dict) else {}
     if isinstance(async_pipeline_readiness, dict) and async_pipeline_readiness:
         compact["async_pipeline_readiness"] = async_pipeline_readiness
@@ -6461,9 +6464,9 @@ def normalize_memory_layer_budget_role_fields(memory_layer_budget: Any) -> Json:
     return normalized
 
 
-def serving_memory_layer_budget(memory_layer_budget: Any) -> Json:
+def serving_memory_layer_budget(memory_layer_budget: Any, *, include_debug: bool = False) -> Json:
     normalized = normalize_memory_layer_budget_role_fields(memory_layer_budget)
-    if CONTEXT_PACK_DEBUG_LINEAGE:
+    if include_debug or CONTEXT_PACK_DEBUG_LINEAGE:
         return normalized
     for field in [
         "by_source_role",
@@ -6474,14 +6477,22 @@ def serving_memory_layer_budget(memory_layer_budget: Any) -> Json:
         "source_codex_event_counts_by_event",
     ]:
         normalized.pop(field, None)
+    try:
+        from tools.matrixark_mcp_context_pack import strip_default_debug_lineage_fields
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_context_pack import strip_default_debug_lineage_fields
+    normalized = strip_default_debug_lineage_fields(normalized)
+    for field in list(normalized):
+        if isinstance(normalized.get(field), dict) and not normalized[field]:
+            normalized.pop(field, None)
     return normalized
 
 
-def serving_memory_layer_pressure(memory_layer_pressure: Any) -> Json:
+def serving_memory_layer_pressure(memory_layer_pressure: Any, *, include_debug: bool = False) -> Json:
     if not isinstance(memory_layer_pressure, dict):
         return {}
     compact = dict(memory_layer_pressure)
-    if CONTEXT_PACK_DEBUG_LINEAGE:
+    if include_debug or CONTEXT_PACK_DEBUG_LINEAGE:
         return compact
     lineage_dimensions = {
         "by_source_role",
@@ -6514,6 +6525,29 @@ def serving_memory_layer_pressure(memory_layer_pressure: Any) -> Json:
         "post_tool_use_source_pressure",
     ]:
         compact.pop(field, None)
+    try:
+        from tools.matrixark_mcp_context_pack import strip_default_debug_lineage_fields
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_context_pack import strip_default_debug_lineage_fields
+    compact = strip_default_debug_lineage_fields(compact)
+    by_dimension = compact.get("by_dimension")
+    if isinstance(by_dimension, dict):
+        compact["by_dimension"] = {
+            str(key): value
+            for key, value in by_dimension.items()
+            if not (isinstance(value, dict) and not value)
+        }
+        valid_dimensions = set(compact["by_dimension"])
+        for list_field in ["pressure_dimensions", "dropped_dimensions"]:
+            values = compact.get(list_field)
+            if isinstance(values, list):
+                compact[list_field] = [
+                    value
+                    for value in values
+                    if not (str(value).startswith("by_") and str(value) not in valid_dimensions)
+                ]
+        if not compact["by_dimension"]:
+            compact.pop("by_dimension", None)
     return compact
 
 
@@ -6681,7 +6715,7 @@ def memory_hierarchy_contract_from_recall_policy(recall_policy: Json) -> Json:
     }
 
 
-def compact_recall_policy_for_audit(recall_policy: Json) -> Json:
+def compact_recall_policy_for_audit(recall_policy: Json, *, include_debug: bool = False) -> Json:
     if not isinstance(recall_policy, dict):
         return {}
     tree = recall_policy.get("tree_traversal") if isinstance(recall_policy.get("tree_traversal"), dict) else {}
@@ -6732,13 +6766,13 @@ def compact_recall_policy_for_audit(recall_policy: Json) -> Json:
         }
     memory_layer_budget = recall_policy.get("memory_layer_budget")
     if isinstance(memory_layer_budget, dict):
-        compact["memory_layer_budget"] = serving_memory_layer_budget(memory_layer_budget)
+        compact["memory_layer_budget"] = serving_memory_layer_budget(memory_layer_budget, include_debug=include_debug)
     dropped_memory_layer_budget = recall_policy.get("dropped_memory_layer_budget")
     if isinstance(dropped_memory_layer_budget, dict):
-        compact["dropped_memory_layer_budget"] = serving_memory_layer_budget(dropped_memory_layer_budget)
+        compact["dropped_memory_layer_budget"] = serving_memory_layer_budget(dropped_memory_layer_budget, include_debug=include_debug)
     memory_layer_pressure = recall_policy.get("memory_layer_pressure")
     if isinstance(memory_layer_pressure, dict):
-        compact["memory_layer_pressure"] = serving_memory_layer_pressure(memory_layer_pressure)
+        compact["memory_layer_pressure"] = serving_memory_layer_pressure(memory_layer_pressure, include_debug=include_debug)
     async_pipeline_readiness = recall_policy.get("async_pipeline_readiness")
     if isinstance(async_pipeline_readiness, dict):
         compact["async_pipeline_readiness"] = async_pipeline_readiness
