@@ -95,6 +95,29 @@ def add_ref_bucket(breakdown: Json, bucket_name: str, value: str, token_estimate
     bucket["tokens"] += token_estimate
 
 
+def source_bucket_names(ref: Json, list_field: str, count_field: str, *, normalize_roles: bool = False) -> list[str]:
+    values = ref.get(list_field) if isinstance(ref.get(list_field), list) else []
+    names = {
+        normalize_message_role(value) if normalize_roles else str(value or "").strip()
+        for value in values
+    }
+    names = {name for name in names if name}
+    if names:
+        return sorted(names)
+    counts = ref.get(count_field) if isinstance(ref.get(count_field), dict) else {}
+    for value, count in counts.items():
+        try:
+            amount = max(0, int(count or 0))
+        except (TypeError, ValueError):
+            continue
+        if amount <= 0:
+            continue
+        name = normalize_message_role(value) if normalize_roles else str(value or "").strip()
+        if name:
+            names.add(name)
+    return sorted(names)
+
+
 def add_source_layer_buckets(breakdown: Json, ref: Json, token_estimate: int) -> tuple[list[str], list[str], list[str]]:
     source_memory_scopes = source_layer_values(ref, "source_memory_scopes", "memory_scope", "unscoped")
     source_session_continuities = source_layer_values(ref, "source_session_continuities", "session_continuity", "neutral")
@@ -148,26 +171,13 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
             bucket = breakdown["by_entity_type"].setdefault(entity_type, {"refs": 0, "tokens": 0})
             bucket["refs"] += 1
             bucket["tokens"] += token_estimate
-        source_roles = ref.get("budget_source_roles") if isinstance(ref.get("budget_source_roles"), list) else ref.get("source_roles") if isinstance(ref.get("source_roles"), list) else []
-        normalized_source_roles = sorted({normalize_message_role(role) for role in source_roles if normalize_message_role(role)})
-        for role_name in normalized_source_roles:
-            bucket = breakdown["by_source_role"].setdefault(role_name, {"refs": 0, "tokens": 0})
-            bucket["refs"] += 1
-            bucket["tokens"] += token_estimate
-        source_hook_types = ref.get("source_hook_types") if isinstance(ref.get("source_hook_types"), list) else []
-        for hook_type in source_hook_types:
-            hook_name = str(hook_type or "").strip()
-            if hook_name:
-                bucket = breakdown["by_hook_type"].setdefault(hook_name, {"refs": 0, "tokens": 0})
-                bucket["refs"] += 1
-                bucket["tokens"] += token_estimate
-        source_codex_events = ref.get("source_codex_events") if isinstance(ref.get("source_codex_events"), list) else []
-        for codex_event in source_codex_events:
-            event_name = str(codex_event or "").strip()
-            if event_name:
-                bucket = breakdown["by_codex_event"].setdefault(event_name, {"refs": 0, "tokens": 0})
-                bucket["refs"] += 1
-                bucket["tokens"] += token_estimate
+        role_count_field = "budget_source_role_counts" if isinstance(ref.get("budget_source_role_counts"), dict) else "source_role_counts"
+        for role_name in source_bucket_names(ref, "budget_source_roles" if isinstance(ref.get("budget_source_roles"), list) else "source_roles", role_count_field, normalize_roles=True):
+            add_ref_bucket(breakdown, "by_source_role", role_name, token_estimate)
+        for hook_name in source_bucket_names(ref, "source_hook_types", "source_hook_type_counts"):
+            add_ref_bucket(breakdown, "by_hook_type", hook_name, token_estimate)
+        for event_name in source_bucket_names(ref, "source_codex_events", "source_codex_event_counts"):
+            add_ref_bucket(breakdown, "by_codex_event", event_name, token_estimate)
         for source_field, aggregate_field in [
             ("budget_source_role_counts", "source_message_counts_by_role"),
             ("source_hook_type_counts", "source_hook_counts_by_type"),
@@ -262,26 +272,13 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
             bucket = breakdown["by_entity_type"].setdefault(entity_type, {"refs": 0, "tokens": 0})
             bucket["refs"] += 1
             bucket["tokens"] += token_estimate
-        source_roles = ref.get("budget_source_roles") if isinstance(ref.get("budget_source_roles"), list) else ref.get("source_roles") if isinstance(ref.get("source_roles"), list) else []
-        normalized_source_roles = sorted({normalize_message_role(role) for role in source_roles if normalize_message_role(role)})
-        for role_name in normalized_source_roles:
-            bucket = breakdown["by_source_role"].setdefault(role_name, {"refs": 0, "tokens": 0})
-            bucket["refs"] += 1
-            bucket["tokens"] += token_estimate
-        source_hook_types = ref.get("source_hook_types") if isinstance(ref.get("source_hook_types"), list) else []
-        for hook_type in source_hook_types:
-            hook_name = str(hook_type or "").strip()
-            if hook_name:
-                bucket = breakdown["by_hook_type"].setdefault(hook_name, {"refs": 0, "tokens": 0})
-                bucket["refs"] += 1
-                bucket["tokens"] += token_estimate
-        source_codex_events = ref.get("source_codex_events") if isinstance(ref.get("source_codex_events"), list) else []
-        for codex_event in source_codex_events:
-            event_name = str(codex_event or "").strip()
-            if event_name:
-                bucket = breakdown["by_codex_event"].setdefault(event_name, {"refs": 0, "tokens": 0})
-                bucket["refs"] += 1
-                bucket["tokens"] += token_estimate
+        role_count_field = "budget_source_role_counts" if isinstance(ref.get("budget_source_role_counts"), dict) else "source_role_counts"
+        for role_name in source_bucket_names(ref, "budget_source_roles" if isinstance(ref.get("budget_source_roles"), list) else "source_roles", role_count_field, normalize_roles=True):
+            add_ref_bucket(breakdown, "by_source_role", role_name, token_estimate)
+        for hook_name in source_bucket_names(ref, "source_hook_types", "source_hook_type_counts"):
+            add_ref_bucket(breakdown, "by_hook_type", hook_name, token_estimate)
+        for event_name in source_bucket_names(ref, "source_codex_events", "source_codex_event_counts"):
+            add_ref_bucket(breakdown, "by_codex_event", event_name, token_estimate)
         for source_field, aggregate_field in [
             ("budget_source_role_counts", "source_message_counts_by_role"),
             ("source_hook_type_counts", "source_hook_counts_by_type"),
