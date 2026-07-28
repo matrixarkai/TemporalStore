@@ -3311,6 +3311,100 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("Ran 160 tests", selected_evidence["text"])
             self.assertNotIn("source_codex_events", selected_evidence)
 
+    def test_stop_cli_empty_identity_payload_flushes_pending_memory_without_fake_assistant_event(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            event_log = tmp / "matrixark-cli-empty-stop-flush.jsonl"
+            env = {
+                "MATRIXARK_SESSION_COMMIT_THRESHOLD": "20",
+                "MATRIXARK_IDLE_COMMIT_TIMEOUT_MS": "300000",
+            }
+
+            first = self.run_hook(
+                repo,
+                event_log,
+                event="UserPromptSubmit",
+                payload={
+                    "prompt": "User preference: prefer Stop boundary flush for pending Codex memory without fake assistant JSON; marker stop-boundary-flush-922.",
+                    "thread_id": "codex-cli-empty-stop-thread",
+                },
+                extra_env=env,
+            )
+            self.assertEqual("ok", first["status"])
+            self.assertFalse(first["ingest"]["session_buffer"]["threshold_ready"])
+            self.assertEqual("deferred", first["ingest"]["idle_commit_result"]["status"])
+            self.assertFalse(first["ingest"]["auto_batch_extract_result"])
+
+            stop = self.run_hook(
+                repo,
+                event_log,
+                event="Stop",
+                payload={"thread_id": "codex-cli-empty-stop-thread"},
+                extra_env=env,
+            )
+            self.assertEqual("ok", stop["status"])
+            self.assertFalse(stop["ingest"])
+            self.assertEqual("committed", stop["session_commit"]["status"])
+            self.assertEqual("hook_boundary", stop["session_commit"]["commit_reason"])
+            self.assertEqual("force", stop["session_commit"]["trigger_policy"])
+            self.assertEqual(["user"], stop["session_commit"]["source_roles"])
+            self.assertIn("UserPromptSubmit", stop["session_commit"]["source_codex_events"])
+            self.assertTrue(stop["session_commit"]["final_session_boundary"])
+            self.assertGreaterEqual(stop["session_commit"]["memory_layers_written"]["profile_entities"], 1)
+
+            adapter = MatrixArkLocalAdapter(event_log)
+            scope = {
+                "account_id": "acct_hook",
+                "tenant_id": "tenant_hook",
+                "user_id": "codex_user",
+                "session_id": "codex_session_1",
+            }
+            self.assertEqual([], adapter.pending_session_events(scope))
+            records = adapter.read_all()
+            self.assertFalse(
+                any(
+                    record.get("record_type") == "context_entity"
+                    and record.get("entity_type") == "assistant_decision"
+                    and "thread_id" in str(record.get("state") or record.get("text") or "")
+                    for record in records
+                ),
+                records,
+            )
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_entity"
+                    and record.get("entity_type") == "preference"
+                    and record.get("memory_scope") == "user_profile"
+                    and record.get("session_continuity") == "cross_session"
+                    and record.get("extraction_phase") == "final"
+                    and "Stop boundary flush" in str(record.get("state") or "")
+                    for record in records
+                ),
+                records,
+            )
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "codex-cli-empty-stop-followup"},
+                    "session_scope": "prefer",
+                    "query": "What should Stop boundary do with pending Codex memory?",
+                    "max_context_tokens": 120,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 3},
+                }
+            )
+            self.assert_no_default_context_pack_debug_lineage(pack)
+            selected_preference = next(
+                ref
+                for ref in pack["selected_refs"]
+                if ref.get("ref_type") == "entity"
+                and ref.get("entity_type") == "preference"
+                and ref.get("memory_scope") == "user_profile"
+            )
+            self.assertIn("Stop boundary flush", selected_preference["text"])
+            self.assertNotIn("source_codex_events", selected_preference)
+
     def test_user_prompt_cli_idle_tool_memory_pre_refreshes_profile_summaries(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp_dir:

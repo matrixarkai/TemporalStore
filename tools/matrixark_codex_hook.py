@@ -2628,6 +2628,54 @@ def latest_codex_assistant_message_from_rollout(payload: Json) -> str:
     return ""
 
 
+IDENTITY_ONLY_PAYLOAD_KEYS = {
+    "account_id",
+    "api_key",
+    "codex_session_id",
+    "codex_thread_id",
+    "conversation_id",
+    "conversationId",
+    "cwd",
+    "event",
+    "hookEventName",
+    "hook_event_name",
+    "id",
+    "message_id",
+    "metadata",
+    "params",
+    "request_id",
+    "run",
+    "session_id",
+    "sessionId",
+    "tenant_id",
+    "thread_id",
+    "threadId",
+    "transcript_id",
+    "transcriptId",
+    "turn",
+    "turn_id",
+    "turnId",
+    "user_id",
+    "workspace_root",
+    "workspaceRoot",
+}
+
+
+def identity_only_payload(value: Any) -> bool:
+    if isinstance(value, dict):
+        if not value:
+            return True
+        for key, item in value.items():
+            if str(key) not in IDENTITY_ONLY_PAYLOAD_KEYS:
+                return False
+            if isinstance(item, (dict, list)) and not identity_only_payload(item):
+                return False
+        return True
+    if isinstance(value, list):
+        return all(identity_only_payload(item) for item in value)
+    return True
+
+
 def payload_text(payload: Json) -> str:
     direct = first_string_at(
         payload,
@@ -2671,7 +2719,9 @@ def payload_text(payload: Json) -> str:
                         parts.append(text)
             if parts:
                 return "\n".join(parts)
-    return json.dumps(payload, sort_keys=True)[:4000] if payload else ""
+    if payload and not identity_only_payload(payload):
+        return json.dumps(payload, sort_keys=True)[:4000]
+    return ""
 
 
 def payload_resource_uri(payload: Json) -> str:
@@ -3546,7 +3596,7 @@ def main() -> int:
         return 0
     raw_uri = payload_resource_uri(payload)
     resource_type = payload_resource_type(payload, raw_uri) if raw_uri else ""
-    if not text and not raw_uri and args.event not in {"IdleTimeout", "SessionIdle"}:
+    if not text and not raw_uri and not should_commit_session(args.event):
         trace = begin_hook_trace(args=args, payload=payload, text=text, session_id_source=session_id_source)
         output = {"status": "skipped", "reason": "empty hook payload", "event": args.event}
         server = build_server(args)
