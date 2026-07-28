@@ -2466,6 +2466,18 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertIn("New user prompt", pending_after_preflush[0]["text"])
 
                 records = adapter.read_all()
+                record_types = {record.get("record_type") for record in records}
+                for record_type in {
+                    "context_event",
+                    "context_embedding",
+                    "context_segment",
+                    "context_entity",
+                    "context_index",
+                    "context_summary_dirty",
+                    "context_extraction_audit",
+                    "context_batch_commit",
+                }:
+                    self.assertIn(record_type, record_types)
                 commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
                 self.assertEqual(1, len(commits))
                 self.assertEqual("idle_timeout", commits[0]["trigger_policy"])
@@ -2479,7 +2491,35 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     sum(1 for record in records if record.get("record_type") == "context_event"),
                     2,
                 )
-                self.assertTrue(any(record.get("record_type") == "context_index" for record in records))
+                committed_event_hashes = {int(event_id) for event_id in idle_commit["source_event_ids"]}
+                committed_events = [
+                    record
+                    for record in records
+                    if record.get("record_type") == "context_event"
+                    and record.get("status") == "extraction_committed"
+                    and record.get("event_id_hash") in committed_event_hashes
+                ]
+                self.assertEqual(1, len(committed_events))
+                committed_event_embeddings = [
+                    record
+                    for record in records
+                    if record.get("record_type") == "context_embedding"
+                    and record.get("embedding_type") == "event_text"
+                    and record.get("ref_hash") in committed_event_hashes
+                ]
+                self.assertEqual(1, len(committed_event_embeddings))
+                extraction_audits = [
+                    record
+                    for record in records
+                    if record.get("record_type") == "context_extraction_audit"
+                    and record.get("batch_id_hash") == idle_commit["batch_id_hash"]
+                ]
+                self.assertEqual(1, len(extraction_audits))
+                audit_outputs = extraction_audits[0]["outputs"]
+                self.assertEqual("always_when_profile_scope_available", audit_outputs["profile_promotion_policy"])
+                self.assertTrue(audit_outputs["profile_promotion_scope_available"])
+                self.assertEqual(audit_outputs["entities"], audit_outputs["profile_entities"])
+                self.assertGreaterEqual(audit_outputs["indexes"], audit_outputs["entity_indexes"])
                 self.assertTrue(
                     any(
                         record.get("record_type") == "context_entity"

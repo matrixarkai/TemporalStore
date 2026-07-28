@@ -1912,6 +1912,24 @@ def one_pass_memory_extraction(envelope: Json, *, prior_context: Json) -> Json:
     batch_text = text_from_messages(messages)
     batch_terms = tokens(batch_text)
     segments, segment_provider_meta = detect_memory_segments(messages, envelope)
+    if not segments and batch_text.strip():
+        segments = [
+            {
+                "topic": infer_segment_topic(batch_text),
+                "coordinate_tuples": [[0, max(0, len(messages) - 1)]],
+                "message_indexes": list(range(len(messages))),
+                "saliency_score": round(max(0.5, semantic_saliency_score(batch_text)), 6),
+                "summary_text": summarize_text(batch_text, limit=420),
+                "text": batch_text,
+                "non_contiguous": False,
+            }
+        ]
+        segment_provider_meta = {
+            **segment_provider_meta,
+            "fallback_used": True,
+            "fallback_reason": "empty_segment_output",
+            "segment_count": len(segments),
+        }
     if provider == "oss_encoder":
         entities = oss_encoder_extract_batch_entities(messages, envelope)
         event_type = oss_encoder_event_type(batch_text)
