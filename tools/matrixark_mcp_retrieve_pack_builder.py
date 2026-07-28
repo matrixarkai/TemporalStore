@@ -37,10 +37,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 def memory_layer_name(ref: Json) -> str:
-    ref_type = str(ref.get("ref_type") or "")
-    context_class = str(ref.get("context_class") or ref_type)
-    memory_scope = str(ref.get("memory_scope") or "")
-    session_continuity = str(ref.get("session_continuity") or "")
+    ref_type = str(ref_value(ref, "ref_type") or "")
+    context_class = str(ref_value(ref, "context_class") or ref_type)
+    memory_scope = str(ref_value(ref, "memory_scope") or "")
+    session_continuity = str(ref_value(ref, "session_continuity") or "")
     if context_class == "resource_entity_fact":
         return "resource_entity_fact"
     if context_class == "resource_fact":
@@ -76,13 +76,39 @@ def memory_layer_name(ref: Json) -> str:
     return context_class or ref_type or "unknown"
 
 
+def ref_metadata(ref: Json) -> Json:
+    metadata = ref.get("metadata") if isinstance(ref, dict) else {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def ref_value(ref: Json, key: str, default: object = "") -> object:
+    value = ref.get(key) if isinstance(ref, dict) else None
+    if value not in (None, "", [], {}):
+        return value
+    return ref_metadata(ref).get(key, default)
+
+
+def ref_list(ref: Json, key: str) -> list[object]:
+    value = ref.get(key) if isinstance(ref, dict) else None
+    if not isinstance(value, list):
+        value = ref_metadata(ref).get(key)
+    return value if isinstance(value, list) else []
+
+
+def ref_dict(ref: Json, key: str) -> Json:
+    value = ref.get(key) if isinstance(ref, dict) else None
+    if not isinstance(value, dict):
+        value = ref_metadata(ref).get(key)
+    return value if isinstance(value, dict) else {}
+
+
 def source_layer_values(ref: Json, source_key: str, fallback_key: str, default_value: str) -> list[str]:
-    source_values = ref.get(source_key)
-    if isinstance(source_values, list):
+    source_values = ref_list(ref, source_key)
+    if source_values:
         values = [str(value or "").strip() for value in source_values if str(value or "").strip()]
         if values:
             return values
-    fallback = str(ref.get(fallback_key) or default_value).strip()
+    fallback = str(ref_value(ref, fallback_key, default_value) or default_value).strip()
     return [fallback] if fallback else []
 
 
@@ -96,7 +122,7 @@ def add_ref_bucket(breakdown: Json, bucket_name: str, value: str, token_estimate
 
 
 def source_bucket_names(ref: Json, list_field: str, count_field: str, *, normalize_roles: bool = False) -> list[str]:
-    values = ref.get(list_field) if isinstance(ref.get(list_field), list) else []
+    values = ref_list(ref, list_field)
     names = {
         normalize_message_role(value) if normalize_roles else str(value or "").strip()
         for value in values
@@ -104,7 +130,7 @@ def source_bucket_names(ref: Json, list_field: str, count_field: str, *, normali
     names = {name for name in names if name}
     if names:
         return sorted(names)
-    counts = ref.get(count_field) if isinstance(ref.get(count_field), dict) else {}
+    counts = ref_dict(ref, count_field)
     for value, count in counts.items():
         try:
             amount = max(0, int(count or 0))
@@ -153,7 +179,7 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
     }
     for ref in refs:
         try:
-            token_estimate = max(0, int(ref.get("token_estimate") or 0))
+            token_estimate = max(0, int(ref_value(ref, "token_estimate", 0) or 0))
         except (TypeError, ValueError):
             token_estimate = 0
         breakdown["total_selected_tokens"] += token_estimate
@@ -165,14 +191,15 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
             ref,
             token_estimate,
         )
-        add_ref_bucket(breakdown, "by_ref_type", str(ref.get("ref_type") or "unknown"), token_estimate)
-        entity_type = str(ref.get("entity_type") or "")
+        add_ref_bucket(breakdown, "by_ref_type", str(ref_value(ref, "ref_type", "unknown") or "unknown"), token_estimate)
+        entity_type = str(ref_value(ref, "entity_type") or "")
         if entity_type:
             bucket = breakdown["by_entity_type"].setdefault(entity_type, {"refs": 0, "tokens": 0})
             bucket["refs"] += 1
             bucket["tokens"] += token_estimate
-        role_count_field = "budget_source_role_counts" if isinstance(ref.get("budget_source_role_counts"), dict) else "source_role_counts"
-        for role_name in source_bucket_names(ref, "budget_source_roles" if isinstance(ref.get("budget_source_roles"), list) else "source_roles", role_count_field, normalize_roles=True):
+        role_count_field = "budget_source_role_counts" if ref_dict(ref, "budget_source_role_counts") else "source_role_counts"
+        role_list_field = "budget_source_roles" if ref_list(ref, "budget_source_roles") else "source_roles"
+        for role_name in source_bucket_names(ref, role_list_field, role_count_field, normalize_roles=True):
             add_ref_bucket(breakdown, "by_source_role", role_name, token_estimate)
         for hook_name in source_bucket_names(ref, "source_hook_types", "source_hook_type_counts"):
             add_ref_bucket(breakdown, "by_hook_type", hook_name, token_estimate)
@@ -183,9 +210,9 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
             ("source_hook_type_counts", "source_hook_counts_by_type"),
             ("source_codex_event_counts", "source_codex_event_counts_by_event"),
         ]:
-            if source_field == "budget_source_role_counts" and not isinstance(ref.get(source_field), dict):
+            if source_field == "budget_source_role_counts" and not ref_dict(ref, source_field):
                 source_field = "source_role_counts"
-            source_counts = ref.get(source_field) if isinstance(ref.get(source_field), dict) else {}
+            source_counts = ref_dict(ref, source_field)
             for name, count in source_counts.items():
                 bucket_name = normalize_message_role(name) if aggregate_field == "source_message_counts_by_role" else str(name or "").strip()
                 if not bucket_name:
@@ -196,7 +223,7 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
                     source_count = 0
                 if source_count:
                     breakdown[aggregate_field][bucket_name] = int(breakdown[aggregate_field].get(bucket_name, 0)) + source_count
-        if bool(ref.get("final_session_boundary")):
+        if bool(ref_value(ref, "final_session_boundary")):
             breakdown["final_session_boundary_ref_count"] += 1
         if any(phase == "provisional" for phase in source_extraction_phases):
             breakdown["provisional_ref_count"] += 1
@@ -249,7 +276,7 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
         if not isinstance(ref, dict):
             continue
         try:
-            token_estimate = max(0, int(ref.get("token_estimate") or ref.get("token_cost") or 0))
+            token_estimate = max(0, int(ref_value(ref, "token_estimate", ref_value(ref, "token_cost", 0)) or 0))
         except (TypeError, ValueError):
             token_estimate = 0
         breakdown["total_dropped_tokens_with_detail"] += token_estimate
@@ -257,7 +284,7 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
         layer_bucket = breakdown["by_memory_layer"].setdefault(memory_layer_name(ref), {"refs": 0, "tokens": 0})
         layer_bucket["refs"] += 1
         layer_bucket["tokens"] += token_estimate
-        reason = str(ref.get("drop_reason") or ref.get("reason") or "unknown")
+        reason = str(ref_value(ref, "drop_reason", ref_value(ref, "reason", "unknown")) or "unknown")
         bucket = breakdown["by_drop_reason"].setdefault(reason, {"refs": 0, "tokens": 0})
         bucket["refs"] += 1
         bucket["tokens"] += token_estimate
@@ -266,14 +293,15 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
             ref,
             token_estimate,
         )
-        add_ref_bucket(breakdown, "by_ref_type", str(ref.get("ref_type") or "unknown"), token_estimate)
-        entity_type = str(ref.get("entity_type") or "")
+        add_ref_bucket(breakdown, "by_ref_type", str(ref_value(ref, "ref_type", "unknown") or "unknown"), token_estimate)
+        entity_type = str(ref_value(ref, "entity_type") or "")
         if entity_type:
             bucket = breakdown["by_entity_type"].setdefault(entity_type, {"refs": 0, "tokens": 0})
             bucket["refs"] += 1
             bucket["tokens"] += token_estimate
-        role_count_field = "budget_source_role_counts" if isinstance(ref.get("budget_source_role_counts"), dict) else "source_role_counts"
-        for role_name in source_bucket_names(ref, "budget_source_roles" if isinstance(ref.get("budget_source_roles"), list) else "source_roles", role_count_field, normalize_roles=True):
+        role_count_field = "budget_source_role_counts" if ref_dict(ref, "budget_source_role_counts") else "source_role_counts"
+        role_list_field = "budget_source_roles" if ref_list(ref, "budget_source_roles") else "source_roles"
+        for role_name in source_bucket_names(ref, role_list_field, role_count_field, normalize_roles=True):
             add_ref_bucket(breakdown, "by_source_role", role_name, token_estimate)
         for hook_name in source_bucket_names(ref, "source_hook_types", "source_hook_type_counts"):
             add_ref_bucket(breakdown, "by_hook_type", hook_name, token_estimate)
@@ -284,9 +312,9 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
             ("source_hook_type_counts", "source_hook_counts_by_type"),
             ("source_codex_event_counts", "source_codex_event_counts_by_event"),
         ]:
-            if source_field == "budget_source_role_counts" and not isinstance(ref.get(source_field), dict):
+            if source_field == "budget_source_role_counts" and not ref_dict(ref, source_field):
                 source_field = "source_role_counts"
-            source_counts = ref.get(source_field) if isinstance(ref.get(source_field), dict) else {}
+            source_counts = ref_dict(ref, source_field)
             for name, count in source_counts.items():
                 bucket_name = normalize_message_role(name) if aggregate_field == "source_message_counts_by_role" else str(name or "").strip()
                 if not bucket_name:
@@ -297,19 +325,19 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
                     source_count = 0
                 if source_count:
                     breakdown[aggregate_field][bucket_name] = int(breakdown[aggregate_field].get(bucket_name, 0)) + source_count
-        if bool(ref.get("final_session_boundary")):
+        if bool(ref_value(ref, "final_session_boundary")):
             breakdown["final_session_boundary_ref_count"] += 1
         if any(phase == "provisional" for phase in source_extraction_phases):
             breakdown["provisional_ref_count"] += 1
         if any(phase == "final" for phase in source_extraction_phases):
             breakdown["final_ref_count"] += 1
-        if bool(ref.get("stale_or_superseded")) or reason == "stale":
+        if bool(ref_value(ref, "stale_or_superseded")) or reason == "stale":
             breakdown["stale_ref_count"] += 1
             breakdown["stale_token_estimate"] += token_estimate
-        if ref.get("profile_shadowed_by_ref_hash") not in (None, "", [], {}):
+        if ref_value(ref, "profile_shadowed_by_ref_hash") not in (None, "", [], {}):
             breakdown["profile_shadowed_ref_count"] += 1
             breakdown["profile_shadowed_token_estimate"] += token_estimate
-            shadow_reason = str(ref.get("profile_shadowed_reason") or "unknown")
+            shadow_reason = str(ref_value(ref, "profile_shadowed_reason", "unknown") or "unknown")
             bucket = breakdown["by_profile_shadowed_reason"].setdefault(shadow_reason, {"refs": 0, "tokens": 0})
             bucket["refs"] += 1
             bucket["tokens"] += token_estimate

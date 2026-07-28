@@ -700,6 +700,77 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertTrue(pressure["post_tool_use_source_pressure"])
         self.assertTrue(pressure["stop_event_source_pressure"])
 
+    def test_memory_layer_budget_reads_metadata_backed_recovered_refs(self) -> None:
+        selected_budget = selected_ref_layer_budget(
+            [
+                {
+                    "metadata": {
+                        "ref_type": "entity",
+                        "entity_type": "assistant_decision",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "extraction_phase": "final",
+                        "token_estimate": 17,
+                        "final_session_boundary": True,
+                        "source_role_counts": {"llm": 2},
+                        "source_hook_type_counts": {"after_llm": 1},
+                        "source_codex_event_counts": {"Stop": 1},
+                    },
+                }
+            ]
+        )
+        dropped_budget = dropped_ref_layer_budget(
+            {
+                "refs": [
+                    {
+                        "metadata": {
+                            "ref_type": "entity",
+                            "entity_type": "assistant_decision",
+                            "memory_scope": "session",
+                            "session_continuity": "same_session",
+                            "extraction_phase": "final",
+                            "token_estimate": 11,
+                            "drop_reason": "profile_shadowed",
+                            "stale_or_superseded": True,
+                            "profile_shadowed_by_ref_hash": 777,
+                            "profile_shadowed_reason": "newer_profile_entity",
+                            "source_role_counts": {"tool_result": 1},
+                            "source_hook_type_counts": {"PostToolUse": 1},
+                            "source_codex_event_counts": {"PostToolUse": 1},
+                        },
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(1, selected_budget["by_memory_layer"]["profile_entity"]["refs"])
+        self.assertEqual(17, selected_budget["by_memory_layer"]["profile_entity"]["tokens"])
+        self.assertEqual(1, selected_budget["by_memory_scope"]["user_profile"]["refs"])
+        self.assertEqual(1, selected_budget["by_session_continuity"]["cross_session"]["refs"])
+        self.assertEqual(1, selected_budget["by_entity_type"]["assistant_decision"]["refs"])
+        self.assertEqual(1, selected_budget["final_session_boundary_ref_count"])
+        self.assertEqual(2, selected_budget["source_message_counts_by_role"]["assistant"])
+        self.assertEqual(1, selected_budget["source_hook_counts_by_type"]["after_llm"])
+        self.assertEqual(1, selected_budget["source_codex_event_counts_by_event"]["Stop"])
+
+        self.assertEqual(1, dropped_budget["by_memory_layer"]["same_session_entity"]["refs"])
+        self.assertEqual(11, dropped_budget["by_drop_reason"]["profile_shadowed"]["tokens"])
+        self.assertEqual(1, dropped_budget["by_memory_scope"]["session"]["refs"])
+        self.assertEqual(1, dropped_budget["by_session_continuity"]["same_session"]["refs"])
+        self.assertEqual(1, dropped_budget["by_entity_type"]["assistant_decision"]["refs"])
+        self.assertEqual(1, dropped_budget["stale_ref_count"])
+        self.assertEqual(1, dropped_budget["profile_shadowed_ref_count"])
+        self.assertEqual(1, dropped_budget["by_profile_shadowed_reason"]["newer_profile_entity"]["refs"])
+        self.assertEqual(1, dropped_budget["source_message_counts_by_role"]["tool"])
+        self.assertEqual(1, dropped_budget["source_hook_counts_by_type"]["PostToolUse"])
+        self.assertEqual(1, dropped_budget["source_codex_event_counts_by_event"]["PostToolUse"])
+
+        pressure = memory_layer_pressure_summary(selected_budget, dropped_budget)
+        self.assertTrue(pressure["profile_shadowed_current_state_pressure"])
+        self.assertTrue(pressure["stale_current_state_pressure"])
+        self.assertTrue(pressure["tool_source_message_pressure"])
+        self.assertTrue(pressure["post_tool_use_source_pressure"])
+
     def test_candidate_index_terms_normalize_llm_role_aliases(self) -> None:
         summary_terms = candidate_index_terms(
             {
