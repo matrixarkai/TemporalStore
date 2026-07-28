@@ -80,6 +80,28 @@ def async_memory_layer_readiness(
     }
 
 
+def async_memory_layer_freshness_warnings(layer_readiness: Json) -> list[str]:
+    blocked_layers = {
+        str(layer or "").strip()
+        for layer in layer_readiness.get("blocked_layers", [])
+        if str(layer or "").strip()
+    } if isinstance(layer_readiness, dict) else set()
+    warning_by_layer = {
+        "session": "session_memory_stale",
+        "user_profile": "profile_memory_stale",
+        "same_session": "same_session_memory_stale",
+        "cross_session": "cross_session_memory_stale",
+        "summary": "summary_memory_stale",
+        "compression": "compression_memory_pending",
+        "embedding": "embedding_memory_pending",
+    }
+    return [
+        warning
+        for layer, warning in warning_by_layer.items()
+        if layer in blocked_layers
+    ]
+
+
 def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json:
     readiness_scope = dict(scope)
     session_scope_mode = str(readiness_scope.pop("_session_scope", "") or "")
@@ -181,6 +203,7 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
         pending_session_continuities=pending_session_continuities,
         remaining_stage_counts=remaining_stage_counts,
     )
+    warnings.extend(async_memory_layer_freshness_warnings(layer_readiness))
     return {
         "task_count": len(latest_rows),
         "status_counts": dict(sorted(status_counts.items())),

@@ -29,6 +29,7 @@ from matrixark_mcp_core import (
     packing_sort_key,
     select_token_budgeted_refs,
 )
+from matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness
 from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget, memory_layer_pressure_summary, selected_ref_layer_budget
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 
@@ -405,6 +406,40 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual({"Stop": 1}, item["source_codex_event_counts"])
         self.assertEqual(8, len(item["source_session_ids"]))
         self.assertEqual(3, item["source_entity_count"])
+
+    def test_async_readiness_reports_layer_specific_freshness_warnings(self) -> None:
+        scope = {
+            "account_id": "acct_ready",
+            "tenant_id": "tenant_ready",
+            "user_id": "user_ready",
+            "session_id": "session_ready",
+        }
+        readiness = async_pipeline_retrieval_readiness(
+            [
+                {
+                    "record_type": "matrixark_async_pipeline_task",
+                    "task_hash": 1,
+                    "scope": scope,
+                    "status": "extraction_committed",
+                    "remaining_stages": ["summary", "compression", "embedding"],
+                    "memory_layers_written": {
+                        "session_entities": 1,
+                        "profile_entities": 1,
+                        "same_session_entities": 1,
+                        "cross_session_entities": 1,
+                    },
+                }
+            ],
+            scope,
+        )
+
+        self.assertFalse(readiness["ready_for_retrieval"])
+        self.assertIn("session_memory_stale", readiness["freshness_warnings"])
+        self.assertIn("profile_memory_stale", readiness["freshness_warnings"])
+        self.assertIn("cross_session_memory_stale", readiness["freshness_warnings"])
+        self.assertIn("summary_memory_stale", readiness["freshness_warnings"])
+        self.assertIn("compression_memory_pending", readiness["freshness_warnings"])
+        self.assertIn("embedding_memory_pending", readiness["freshness_warnings"])
 
     def test_flat_context_pack_serving_hides_async_source_readiness_by_default(self) -> None:
         pack = {
