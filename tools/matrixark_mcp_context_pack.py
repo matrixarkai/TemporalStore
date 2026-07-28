@@ -1129,6 +1129,44 @@ def selected_ref_count_from_pack(pack: Json) -> int:
     return 0
 
 
+def serving_retrieval_decision(recall_policy: Json) -> Json:
+    if not isinstance(recall_policy, dict) or not recall_policy:
+        return {}
+    query_plan = recall_policy.get("query_plan") if isinstance(recall_policy.get("query_plan"), dict) else {}
+    cross_session = recall_policy.get("cross_session") if isinstance(recall_policy.get("cross_session"), dict) else {}
+    query_type = str(query_plan.get("query_type") or cross_session.get("question_type") or "").strip()
+    decision: Json = {}
+    if query_type:
+        decision["query_type"] = query_type
+    if cross_session:
+        enabled = bool(cross_session.get("enabled"))
+        budget_ratio = cross_session.get("budget_ratio")
+        budget_class = "custom"
+        try:
+            ratio = round(float(budget_ratio), 2)
+        except (TypeError, ValueError):
+            ratio = None
+        if not enabled:
+            budget_class = "disabled"
+        elif ratio == 0.12:
+            budget_class = "normal_12_percent"
+        elif ratio == 0.15:
+            budget_class = "broad_or_evidence_15_percent"
+        elif ratio == 0.20:
+            budget_class = "current_latest_multi_hop_or_date_20_percent"
+        compact_cross = {
+            "enabled": enabled,
+            "mode": cross_session.get("mode") or ("prefer" if enabled else "disabled"),
+            "budget_class": budget_class,
+        }
+        for field in ["decision", "question_budget_reason", "strategy", "budget_floor_status"]:
+            value = cross_session.get(field)
+            if value not in (None, "", [], {}):
+                compact_cross[field] = value
+        decision["cross_session"] = compact_cross
+    return decision
+
+
 def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False) -> Json:
     """Strip planner/audit/debug fields from the default returned ContextPack.
 
@@ -1206,6 +1244,9 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         compact["retrieval_metrics"] = serving_retrieval_metrics(pack["retrieval_metrics"], include_debug=include_debug)
     retrieval_metrics = pack.get("retrieval_metrics") if isinstance(pack.get("retrieval_metrics"), dict) else {}
     recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
+    retrieval_decision = serving_retrieval_decision(recall_policy)
+    if retrieval_decision:
+        compact["retrieval_decision"] = retrieval_decision
     memory_layer_budget = (
         retrieval_metrics.get("memory_layer_budget")
         if isinstance(retrieval_metrics.get("memory_layer_budget"), dict)
