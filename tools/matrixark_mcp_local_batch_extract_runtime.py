@@ -129,6 +129,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             updated_at_ms=envelope["ingestion_time_ms"],
         )
     profile_node_hash = stable_hash("/".join(profile_node_path)) if profile_node_path else 0
+    profile_promotion_policy = "always_when_profile_scope_available"
     source_session_id = str(envelope["scope"].get("session_id") or "")
     envelope_metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
     source_roles = sorted(
@@ -645,6 +646,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "source_events": len(event_hashes),
                 "entities": len(entity_hashes),
                 "profile_entities": len(profile_entity_hashes),
+                "profile_promotion_policy": profile_promotion_policy,
+                "profile_promotion_scope_available": bool(profile_node_hash),
                 "segments": len(segment_hashes),
                 "summaries": 1,
                 "indexes": len(batch_index_terms) + entity_index_write_count,
@@ -709,6 +712,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         "raw_events_duplicated": not derive_from_existing_events,
         "entities_written": len(entity_hashes),
         "profile_entities_written": len(profile_entity_hashes),
+        "profile_promotion_policy": profile_promotion_policy,
+        "profile_promotion_scope_available": bool(profile_node_hash),
         "segments_written": len(segment_hashes),
         "summary_hash": summary_hash,
         "summary_refresh": summary_refresh,

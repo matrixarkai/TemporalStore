@@ -2082,6 +2082,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
 
         self.assertEqual("accepted", result["status"])
         self.assertEqual("accepted", result["raw_ingestion_status"])
+        self.assertEqual("accepted", result["serving_projection_status"])
+        self.assertEqual(6, result["serving_projection_record_count"])
         self.assertEqual(1, len(server.adapter.raw_records))
         self.assertEqual(6, len(server.adapter.serving_records))
         raw = server.adapter.raw_records[0]
@@ -2126,6 +2128,49 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(1, len(server.adapter.session_buffer_records))
         self.assertEqual("turn-fast-1", server.adapter.session_buffer_records[0]["hook"]["turn_id"])
         self.assertTrue(result["session_buffer"]["registered"])
+
+    def test_fast_async_hook_ingest_reports_raw_append_fallback_as_accepted(self) -> None:
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.serving_records = []
+
+            def _append_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.serving_records.extend(records)
+
+            def pending_session_events(self, scope):
+                return []
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        args = Namespace(
+            event="UserPromptSubmit",
+            account_id="acct_local",
+            tenant_id="tenant_codex",
+            user_id="deeproute",
+            session_id="codex-raw-fallback-session",
+            team="codex",
+            project="temporalstore",
+        )
+        server = Server()
+        result = hook.fast_async_hook_ingest(
+            server,
+            args=args,
+            text="fallback raw append still persisted",
+            role="user",
+            agent_context={},
+            hook={"session_id_source": "payload_field"},
+        )
+
+        self.assertEqual("accepted", result["raw_ingestion_status"])
+        self.assertEqual("accepted", result["serving_projection_status"])
+        self.assertEqual(1, len(server.adapter.raw_records))
+        self.assertEqual(6, len(server.adapter.serving_records))
 
     def test_fast_async_hook_ingest_runs_threshold_batch_commit(self) -> None:
         original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT

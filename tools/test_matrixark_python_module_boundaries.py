@@ -1006,6 +1006,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
 
         self.assertEqual(1, result["entities_written"])
         self.assertEqual(1, result["profile_entities_written"])
+        self.assertEqual("always_when_profile_scope_available", result["profile_promotion_policy"])
+        self.assertTrue(result["profile_promotion_scope_available"])
         self.assertGreaterEqual(result["entity_indexes_written"], 14)
         self.assertGreaterEqual(result["indexes_written"], result["entity_indexes_written"] + 1)
         self.assertIn("summary_refresh", result)
