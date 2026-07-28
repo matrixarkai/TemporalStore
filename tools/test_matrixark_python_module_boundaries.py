@@ -801,9 +801,10 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "selected_refs": [
                     {"ref_type": "event", "text": "same session fact", "token_estimate": 3, "session_continuity": "same_session"},
                     {"ref_type": "entity", "text": "same session entity", "token_estimate": 3, "session_continuity": "same_session"},
+                    {"ref_type": "entity", "text": "profile entity", "token_estimate": 3, "memory_scope": "user_profile", "session_continuity": "cross_session"},
                     {"ref_type": "summary", "text": "cross session summary", "token_estimate": 4, "session_continuity": "cross_session"},
                 ],
-                "used_context_tokens": 10,
+                "used_context_tokens": 13,
             }
         )
         self.assertNotIn("selected_refs", pack)
@@ -811,11 +812,20 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("groups", pack)
         self.assertEqual("same_session", pack["defaults"]["session_continuity"])
         self.assertEqual(2, pack["counts"]["session_continuity"]["same_session"])
+        self.assertEqual("session", pack["defaults"]["memory_layer"])
+        self.assertEqual(2, pack["counts"]["memory_layer"]["session"])
+        self.assertEqual(1, pack["counts"]["memory_layer"]["profile"])
+        self.assertEqual(1, pack["counts"]["memory_layer"]["cross_session"])
         event_group = next(group for group in pack["groups"] if group["type"] == "event")
+        entity_group = next(group for group in pack["groups"] if group["type"] == "entity")
         summary_group = next(group for group in pack["groups"] if group["type"] == "summary")
         self.assertNotIn("ref_type", event_group["items"][0])
         self.assertNotIn("session_continuity", event_group["items"][0])
+        self.assertNotIn("memory_layer", event_group["items"][0])
+        profile_item = next(item for item in entity_group["items"] if item["text"] == "profile entity")
+        self.assertEqual("profile", profile_item["memory_layer"])
         self.assertEqual("cross_session", summary_group["items"][0]["session_continuity"])
+        self.assertEqual("cross_session", summary_group["items"][0]["memory_layer"])
         self.assertEqual(3, event_group["items"][0]["tokens"])
 
     def test_serving_pack_preserves_summary_cross_session_lineage(self) -> None:
@@ -852,7 +862,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         summary_group = next(group for group in pack["groups"] if group["type"] == "summary")
         item = summary_group["items"][0]
         self.assertEqual("user_profile", item["memory_scope"])
+        self.assertEqual("profile", item["memory_layer"])
         self.assertEqual("cross_session", item["session_continuity"])
+        self.assertEqual(1, pack["counts"]["memory_layer"]["profile"])
         self.assertEqual(["session-a", "session-b"], item["source_session_ids"])
         self.assertEqual(3, item["source_entity_count"])
         self.assertEqual(["user", "assistant"], item["source_roles"])

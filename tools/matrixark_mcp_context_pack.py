@@ -586,7 +586,50 @@ def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> lis
     return compact
 
 
-def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> Json:
+def _memory_layer_for_ref(ref: Json) -> str:
+    if not isinstance(ref, dict):
+        return ""
+    metadata = ref.get("metadata", {}) if isinstance(ref.get("metadata"), dict) else {}
+    explicit = str(ref.get("memory_layer") or metadata.get("memory_layer") or "").strip().lower()
+    if explicit:
+        return explicit
+    sharing_scope = str(ref.get("sharing_scope") or metadata.get("sharing_scope") or "").strip().lower()
+    ref_type = str(ref.get("ref_type") or "")
+    if sharing_scope in {"tenant_shared", "global_shared"} or ref_type in {"resource_chunk", "skill_section"}:
+        return "shared_context"
+    memory_scope = str(ref.get("memory_scope") or metadata.get("memory_scope") or "").strip().lower()
+    if memory_scope in {"user_profile", "profile", "cross_session_profile"}:
+        return "profile"
+    if memory_scope in {"session", "session_memory"}:
+        return "session"
+    session_continuity = str(ref.get("session_continuity") or metadata.get("session_continuity") or "")
+    if session_continuity == "same_session":
+        return "session"
+    if session_continuity == "cross_session":
+        context_class = str(ref.get("context_class") or ref_type)
+        if ref_type == "entity" or context_class in {"resource_entity_fact", "profile_entity", "user_profile"}:
+            return "profile"
+        return "cross_session"
+    return ""
+
+
+def _memory_layer_counts(refs: list[Json]) -> Json:
+    counts: Json = {}
+    for ref in refs:
+        layer = _memory_layer_for_ref(ref)
+        if layer:
+            counts[layer] = int(counts.get(layer, 0)) + 1
+    return counts
+
+
+def _default_memory_layer_for_pack(refs: list[Json]) -> str:
+    counts = _memory_layer_counts(refs)
+    if not counts:
+        return ""
+    return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
+
+
+def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", default_memory_layer: str = "") -> Json:
     """Return only answer-bearing fields for the serving ContextPack payload."""
     metadata = ref.get("metadata", {}) if isinstance(ref.get("metadata"), dict) else {}
     item: Json = {
@@ -619,6 +662,9 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
     session_continuity = str(ref.get("session_continuity") or metadata.get("session_continuity") or "")
     if session_continuity and session_continuity != default_session_continuity:
         item["session_continuity"] = session_continuity
+    memory_layer = _memory_layer_for_ref(ref)
+    if memory_layer and memory_layer != default_memory_layer:
+        item["memory_layer"] = memory_layer
     if bool(ref.get("final_session_boundary") or metadata.get("final_session_boundary")):
         item["final_session_boundary"] = True
     for field in [
@@ -678,11 +724,18 @@ def default_session_continuity_for_pack(refs: list[Json]) -> str:
     return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
 
 
-def serving_refs_for_pack(refs: list[Json], *, default_session_continuity: str = "") -> list[Json]:
-    return [serving_ref_for_pack(ref, default_session_continuity=default_session_continuity) for ref in refs]
+def serving_refs_for_pack(refs: list[Json], *, default_session_continuity: str = "", default_memory_layer: str = "") -> list[Json]:
+    return [
+        serving_ref_for_pack(
+            ref,
+            default_session_continuity=default_session_continuity,
+            default_memory_layer=default_memory_layer,
+        )
+        for ref in refs
+    ]
 
 
-def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity: str = "") -> list[Json]:
+def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity: str = "", default_memory_layer: str = "") -> list[Json]:
     groups: dict[tuple[str, str], Json] = {}
     order: list[tuple[str, str]] = []
     for ref in refs:
@@ -696,7 +749,11 @@ def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity:
             if context_class and context_class != ref_type:
                 groups[key]["class"] = context_class
             order.append(key)
-        item = serving_ref_for_pack(ref, default_session_continuity=default_session_continuity)
+        item = serving_ref_for_pack(
+            ref,
+            default_session_continuity=default_session_continuity,
+            default_memory_layer=default_memory_layer,
+        )
         groups[key]["items"].append(item)
         groups[key]["n"] += 1
     return [groups[key] for key in order]
@@ -740,13 +797,22 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     selected_refs = pack.get("selected_refs", [])
     if isinstance(selected_refs, list) and (selected_refs or not isinstance(pack.get("groups"), list)):
         default_session_continuity = default_session_continuity_for_pack(selected_refs)
-        compact["groups"] = serving_ref_groups_for_pack(selected_refs, default_session_continuity=default_session_continuity)
+        default_memory_layer = _default_memory_layer_for_pack(selected_refs)
+        compact["groups"] = serving_ref_groups_for_pack(
+            selected_refs,
+            default_session_continuity=default_session_continuity,
+            default_memory_layer=default_memory_layer,
+        )
         if pack.get("selected_ref_counts"):
             compact.setdefault("counts", {})["refs"] = pack.get("selected_ref_counts", {})
         continuity_counts = session_continuity_counts(selected_refs)
         if continuity_counts:
             compact.setdefault("defaults", {})["session_continuity"] = default_session_continuity
             compact.setdefault("counts", {})["session_continuity"] = continuity_counts
+        layer_counts = _memory_layer_counts(selected_refs)
+        if layer_counts:
+            compact.setdefault("defaults", {})["memory_layer"] = default_memory_layer
+            compact.setdefault("counts", {})["memory_layer"] = layer_counts
     elif isinstance(pack.get("groups"), list):
         # Some adapters already return the serving shape. Preserve it so a
         # second compaction pass in the MCP entrypoint does not erase refs.
