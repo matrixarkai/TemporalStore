@@ -26,6 +26,8 @@ try:
         summarize_text,
         token_count,
         selected_context_class_counts,
+        serving_memory_layer_budget,
+        serving_memory_layer_pressure,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
@@ -48,6 +50,8 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         summarize_text,
         token_count,
         selected_context_class_counts,
+        serving_memory_layer_budget,
+        serving_memory_layer_pressure,
     )
 
 try:
@@ -186,6 +190,8 @@ def deadline_fallback_pack(
     serving_selected = compact_context_pack_refs(selected, include_debug=False)
     memory_layer_budget = selected_ref_layer_budget(selected)
     memory_layer_pressure = memory_layer_pressure_summary(memory_layer_budget, {})
+    serving_budget = serving_memory_layer_budget(memory_layer_budget)
+    serving_pressure = serving_memory_layer_pressure(memory_layer_pressure)
     async_readiness_scope = retrieval_scope if isinstance(retrieval_scope, dict) else {**scope, "_session_scope": "prefer"}
     async_pipeline_readiness = async_pipeline_retrieval_readiness(records, async_readiness_scope)
     cross_session_selected = [item for item in selected if item.get("session_continuity") == "cross_session"]
@@ -217,8 +223,8 @@ def deadline_fallback_pack(
             "elapsed_ms": elapsed_ms,
             "partial_context_pack": True,
             "fallback_reason": reason,
-            "memory_layer_budget": memory_layer_budget,
-            "memory_layer_pressure": memory_layer_pressure,
+            "memory_layer_budget": serving_budget,
+            "memory_layer_pressure": serving_pressure,
             "async_pipeline_readiness": async_pipeline_readiness,
             "session_continuity": {
                 "mode": "fallback_recent_context",
@@ -249,8 +255,8 @@ def deadline_fallback_pack(
         "remote_context_budget_tokens": remote_budget,
         "requested_max_context_tokens": max_context_tokens,
         "retrieval_metrics": {
-            "memory_layer_budget": memory_layer_budget,
-            "memory_layer_pressure": memory_layer_pressure,
+            "memory_layer_budget": serving_budget,
+            "memory_layer_pressure": serving_pressure,
             "async_pipeline_readiness": async_pipeline_readiness,
             "requested_max_context_tokens": max_context_tokens,
             "used_local_context_tokens": local_tokens,

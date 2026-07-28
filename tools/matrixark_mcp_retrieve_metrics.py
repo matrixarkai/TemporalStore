@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 Json = dict[str, Any]
@@ -11,6 +12,71 @@ try:
     from tools.matrixark_mcp_retrieve_pack_builder import memory_layer_pressure_summary
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_retrieve_pack_builder import memory_layer_pressure_summary
+
+
+CONTEXT_PACK_DEBUG_LINEAGE = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
+
+def serving_memory_layer_budget(memory_layer_budget: Any) -> Json:
+    if not isinstance(memory_layer_budget, dict):
+        return {}
+    compact = dict(memory_layer_budget)
+    if CONTEXT_PACK_DEBUG_LINEAGE:
+        return compact
+    for field in [
+        "by_source_role",
+        "by_hook_type",
+        "by_codex_event",
+        "source_message_counts_by_role",
+        "source_hook_counts_by_type",
+        "source_codex_event_counts_by_event",
+    ]:
+        compact.pop(field, None)
+    return compact
+
+
+def serving_memory_layer_pressure(memory_layer_pressure: Any) -> Json:
+    if not isinstance(memory_layer_pressure, dict):
+        return {}
+    compact = dict(memory_layer_pressure)
+    if CONTEXT_PACK_DEBUG_LINEAGE:
+        return compact
+    lineage_dimensions = {
+        "by_source_role",
+        "by_hook_type",
+        "by_codex_event",
+        "source_message_counts_by_role",
+        "source_hook_counts_by_type",
+        "source_codex_event_counts_by_event",
+    }
+    for list_field in ["pressure_dimensions", "dropped_dimensions"]:
+        values = compact.get(list_field)
+        if isinstance(values, list):
+            compact[list_field] = [value for value in values if str(value) not in lineage_dimensions]
+    by_dimension = compact.get("by_dimension")
+    if isinstance(by_dimension, dict):
+        compact["by_dimension"] = {
+            str(key): value for key, value in by_dimension.items() if str(key) not in lineage_dimensions
+        }
+    for field in [
+        "assistant_memory_pressure",
+        "user_memory_pressure",
+        "tool_memory_pressure",
+        "assistant_source_message_pressure",
+        "user_source_message_pressure",
+        "tool_source_message_pressure",
+        "hook_boundary_source_pressure",
+        "after_llm_source_pressure",
+        "tool_result_source_pressure",
+        "stop_event_source_pressure",
+        "post_tool_use_source_pressure",
+    ]:
+        compact.pop(field, None)
+    return compact
 
 
 def attach_python_retrieval_metrics(
@@ -51,6 +117,9 @@ def attach_python_retrieval_metrics(
             or retrieval_scan_stats.get("native_index_postings_found")
             or 0
         )
+    serving_budget = serving_memory_layer_budget(memory_layer_budget)
+    serving_dropped_budget = serving_memory_layer_budget(dropped_memory_layer_budget)
+    serving_pressure = serving_memory_layer_pressure(memory_layer_pressure)
     pack["retrieval_metrics"] = {
         "query_plan_ms": round(float(stage_latencies_ms.get("query_understanding", 0.0)), 3),
         "node_traversal_ms": round(float(stage_latencies_ms.get("node_traversal", 0.0)), 3),
@@ -72,9 +141,9 @@ def attach_python_retrieval_metrics(
         "native_pack_assembly": False,
         "python_pack_fallback": True,
         "raw_candidate_tables_returned": False,
-        "memory_layer_budget": memory_layer_budget,
-        "dropped_memory_layer_budget": dropped_memory_layer_budget,
-        "memory_layer_pressure": memory_layer_pressure,
+        "memory_layer_budget": serving_budget,
+        "dropped_memory_layer_budget": serving_dropped_budget,
+        "memory_layer_pressure": serving_pressure,
         "source": "python_reference_pack",
     }
     if bool(args.get("include_retrieval_metrics")):

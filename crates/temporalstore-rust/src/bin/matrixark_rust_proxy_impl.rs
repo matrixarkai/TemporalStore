@@ -2067,6 +2067,74 @@ fn native_serving_refs(refs: &[Value]) -> Vec<Value> {
     refs.iter().cloned().map(native_serving_ref).collect()
 }
 
+fn native_serving_memory_layer_budget(value: &Value) -> Value {
+    if context_pack_debug_lineage_enabled() {
+        return value.clone();
+    }
+    let mut compact = value.clone();
+    if let Some(object) = compact.as_object_mut() {
+        for field in [
+            "by_source_role",
+            "by_hook_type",
+            "by_codex_event",
+            "source_message_counts_by_role",
+            "source_hook_counts_by_type",
+            "source_codex_event_counts_by_event",
+        ] {
+            object.remove(field);
+        }
+    }
+    compact
+}
+
+fn native_serving_memory_layer_pressure(value: &Value) -> Value {
+    if context_pack_debug_lineage_enabled() {
+        return value.clone();
+    }
+    let mut compact = value.clone();
+    let lineage_dimensions: BTreeSet<&str> = [
+        "by_source_role",
+        "by_hook_type",
+        "by_codex_event",
+        "source_message_counts_by_role",
+        "source_hook_counts_by_type",
+        "source_codex_event_counts_by_event",
+    ]
+    .into_iter()
+    .collect();
+    if let Some(object) = compact.as_object_mut() {
+        for list_field in ["pressure_dimensions", "dropped_dimensions"] {
+            if let Some(values) = object.get_mut(list_field).and_then(Value::as_array_mut) {
+                values.retain(|value| {
+                    value
+                        .as_str()
+                        .map(|dimension| !lineage_dimensions.contains(dimension))
+                        .unwrap_or(true)
+                });
+            }
+        }
+        if let Some(dimensions) = object.get_mut("by_dimension").and_then(Value::as_object_mut) {
+            dimensions.retain(|dimension, _| !lineage_dimensions.contains(dimension.as_str()));
+        }
+        for field in [
+            "assistant_memory_pressure",
+            "user_memory_pressure",
+            "tool_memory_pressure",
+            "assistant_source_message_pressure",
+            "user_source_message_pressure",
+            "tool_source_message_pressure",
+            "hook_boundary_source_pressure",
+            "after_llm_source_pressure",
+            "tool_result_source_pressure",
+            "stop_event_source_pressure",
+            "post_tool_use_source_pressure",
+        ] {
+            object.remove(field);
+        }
+    }
+    compact
+}
+
 fn native_serving_dropped_refs(mut dropped_refs: Value) -> Value {
     if context_pack_debug_lineage_enabled() {
         return dropped_refs;
@@ -3511,6 +3579,11 @@ fn retrieve_context_pack_native(
     );
     let memory_layer_pressure =
         memory_layer_pressure_summary(&memory_layer_budget, &dropped_memory_layer_budget);
+    let serving_memory_layer_budget = native_serving_memory_layer_budget(&memory_layer_budget);
+    let serving_dropped_memory_layer_budget =
+        native_serving_memory_layer_budget(&dropped_memory_layer_budget);
+    let serving_memory_layer_pressure =
+        native_serving_memory_layer_pressure(&memory_layer_pressure);
     let serving_dropped_refs = native_serving_dropped_refs(json!({
         "over_budget": dropped_over_budget,
         "cross_session_budget": dropped_cross_budget,
@@ -3582,9 +3655,9 @@ fn retrieve_context_pack_native(
                 "cross_session_selected_ref_count": cross_selected_refs,
                 "entity_bridge_selected_ref_count": entity_bridge_selected_refs
             },
-            "memory_layer_budget": memory_layer_budget,
-            "dropped_memory_layer_budget": dropped_memory_layer_budget,
-            "memory_layer_pressure": memory_layer_pressure,
+            "memory_layer_budget": serving_memory_layer_budget,
+            "dropped_memory_layer_budget": serving_dropped_memory_layer_budget,
+            "memory_layer_pressure": serving_memory_layer_pressure,
             "source_role_budget": source_role_budget_policy,
             "cross_session": {
                 "enabled": cross_policy.enabled,
@@ -3701,9 +3774,9 @@ fn retrieve_context_pack_native(
             "native_pack_assembly": true,
             "python_pack_fallback": false,
             "raw_candidate_tables_returned": false,
-            "memory_layer_budget": memory_layer_budget,
-            "dropped_memory_layer_budget": dropped_memory_layer_budget,
-            "memory_layer_pressure": memory_layer_pressure,
+            "memory_layer_budget": serving_memory_layer_budget,
+            "dropped_memory_layer_budget": serving_dropped_memory_layer_budget,
+            "memory_layer_pressure": serving_memory_layer_pressure,
             "broad_scan_used": false,
             "broad_scan_blocked": false,
             "fallback_flags": [],
@@ -4770,6 +4843,11 @@ fn retrieve_context_pack_output(
     );
     let memory_layer_pressure =
         memory_layer_pressure_summary(&memory_layer_budget, &dropped_memory_layer_budget);
+    let serving_memory_layer_budget = native_serving_memory_layer_budget(&memory_layer_budget);
+    let serving_dropped_memory_layer_budget =
+        native_serving_memory_layer_budget(&dropped_memory_layer_budget);
+    let serving_memory_layer_pressure =
+        native_serving_memory_layer_pressure(&memory_layer_pressure);
     let elapsed_ms = started.elapsed().as_millis() as u64;
     let correctness = selected_count > 0;
     let serving_selected_refs = native_serving_refs(&selected_refs);
@@ -4784,9 +4862,9 @@ fn retrieve_context_pack_output(
         "selected_refs": serving_selected_refs,
         "dropped_refs": serving_dropped_refs,
         "recall_policy": {
-            "memory_layer_budget": memory_layer_budget,
-            "dropped_memory_layer_budget": dropped_memory_layer_budget,
-            "memory_layer_pressure": memory_layer_pressure,
+            "memory_layer_budget": serving_memory_layer_budget,
+            "dropped_memory_layer_budget": serving_dropped_memory_layer_budget,
+            "memory_layer_pressure": serving_memory_layer_pressure,
         },
         "retrieval_metrics": {
             "query_plan_ms": 0.0,
@@ -4808,9 +4886,9 @@ fn retrieve_context_pack_output(
             "native_pack_assembly": true,
             "python_pack_fallback": false,
             "raw_candidate_tables_returned": false,
-            "memory_layer_budget": memory_layer_budget,
-            "dropped_memory_layer_budget": dropped_memory_layer_budget,
-            "memory_layer_pressure": memory_layer_pressure,
+            "memory_layer_budget": serving_memory_layer_budget,
+            "dropped_memory_layer_budget": serving_dropped_memory_layer_budget,
+            "memory_layer_pressure": serving_memory_layer_pressure,
             "broad_scan_used": false,
             "broad_scan_blocked": false,
             "fallback_flags": [],
@@ -5772,21 +5850,19 @@ mod tests {
                 .and_then(Value::as_u64),
             Some(1)
         );
-        assert_eq!(
-            pack.pointer("/recall_policy/memory_layer_budget/by_source_role/tool/refs")
-                .and_then(Value::as_u64),
-            Some(1)
-        );
-        assert_eq!(
-            pack.pointer("/recall_policy/memory_layer_budget/by_hook_type/hook_boundary/refs")
-                .and_then(Value::as_u64),
-            Some(1)
-        );
-        assert_eq!(
-            pack.pointer("/recall_policy/memory_layer_budget/by_codex_event/Stop/refs")
-                .and_then(Value::as_u64),
-            Some(1)
-        );
+        for field in [
+            "/recall_policy/memory_layer_budget/by_source_role",
+            "/recall_policy/memory_layer_budget/by_hook_type",
+            "/recall_policy/memory_layer_budget/by_codex_event",
+            "/recall_policy/memory_layer_budget/source_message_counts_by_role",
+            "/recall_policy/memory_layer_budget/source_hook_counts_by_type",
+            "/recall_policy/memory_layer_budget/source_codex_event_counts_by_event",
+        ] {
+            assert!(
+                pack.pointer(field).is_none(),
+                "default memory budget leaked lineage field {field}"
+            );
+        }
         assert_eq!(
             pack.pointer("/recall_policy/memory_layer_budget/final_session_boundary_ref_count")
                 .and_then(Value::as_u64),
@@ -5938,11 +6014,25 @@ mod tests {
                 .and_then(Value::as_u64),
             Some(1)
         );
-        assert_eq!(
-            pack.pointer("/recall_policy/dropped_memory_layer_budget/source_message_counts_by_role/assistant")
-                .and_then(Value::as_u64),
-            Some(1)
-        );
+        for field in [
+            "/recall_policy/memory_layer_budget/by_source_role",
+            "/recall_policy/memory_layer_budget/by_hook_type",
+            "/recall_policy/memory_layer_budget/by_codex_event",
+            "/recall_policy/memory_layer_budget/source_message_counts_by_role",
+            "/recall_policy/memory_layer_budget/source_hook_counts_by_type",
+            "/recall_policy/memory_layer_budget/source_codex_event_counts_by_event",
+            "/recall_policy/dropped_memory_layer_budget/by_source_role",
+            "/recall_policy/dropped_memory_layer_budget/by_hook_type",
+            "/recall_policy/dropped_memory_layer_budget/by_codex_event",
+            "/recall_policy/dropped_memory_layer_budget/source_message_counts_by_role",
+            "/recall_policy/dropped_memory_layer_budget/source_hook_counts_by_type",
+            "/recall_policy/dropped_memory_layer_budget/source_codex_event_counts_by_event",
+        ] {
+            assert!(
+                pack.pointer(field).is_none(),
+                "default serving budget leaked lineage field {field}"
+            );
+        }
         assert_eq!(
             pack.pointer("/recall_policy/dropped_memory_layer_budget/by_memory_scope/session/refs")
                 .and_then(Value::as_u64),
@@ -5973,29 +6063,25 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
-        assert_eq!(
-            pack.pointer("/recall_policy/memory_layer_pressure/assistant_source_message_pressure")
-                .and_then(Value::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            pack.pointer("/recall_policy/memory_layer_pressure/hook_boundary_source_pressure")
-                .and_then(Value::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            pack.pointer("/recall_policy/memory_layer_pressure/stop_event_source_pressure")
-                .and_then(Value::as_bool),
-            Some(true)
-        );
+        for field in [
+            "/recall_policy/memory_layer_pressure/by_dimension/by_source_role",
+            "/recall_policy/memory_layer_pressure/by_dimension/by_hook_type",
+            "/recall_policy/memory_layer_pressure/by_dimension/by_codex_event",
+            "/recall_policy/memory_layer_pressure/by_dimension/source_message_counts_by_role",
+            "/recall_policy/memory_layer_pressure/by_dimension/source_hook_counts_by_type",
+            "/recall_policy/memory_layer_pressure/by_dimension/source_codex_event_counts_by_event",
+            "/recall_policy/memory_layer_pressure/assistant_source_message_pressure",
+            "/recall_policy/memory_layer_pressure/hook_boundary_source_pressure",
+            "/recall_policy/memory_layer_pressure/stop_event_source_pressure",
+        ] {
+            assert!(
+                pack.pointer(field).is_none(),
+                "default serving pressure leaked lineage field {field}"
+            );
+        }
         assert_eq!(
             pack.pointer("/retrieval_metrics/memory_layer_pressure"),
             pack.pointer("/recall_policy/memory_layer_pressure")
-        );
-        assert_eq!(
-            pack.pointer("/recall_policy/memory_layer_budget/source_message_counts_by_role/user")
-                .and_then(Value::as_u64),
-            Some(1)
         );
         assert!(pack.pointer("/dropped_refs/refs").is_none());
         assert_eq!(
@@ -6130,21 +6216,19 @@ mod tests {
                 .and_then(Value::as_u64),
             Some(1)
         );
-        assert_eq!(
-            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_source_role/tool/refs")
-                .and_then(Value::as_u64),
-            Some(1)
-        );
-        assert_eq!(
-            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_hook_type/tool_result/refs")
-                .and_then(Value::as_u64),
-            Some(1)
-        );
-        assert_eq!(
-            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_codex_event/PostToolUse/refs")
-                .and_then(Value::as_u64),
-            Some(1)
-        );
+        for field in [
+            "/recall_policy/dropped_memory_layer_budget/by_source_role",
+            "/recall_policy/dropped_memory_layer_budget/by_hook_type",
+            "/recall_policy/dropped_memory_layer_budget/by_codex_event",
+            "/recall_policy/dropped_memory_layer_budget/source_message_counts_by_role",
+            "/recall_policy/dropped_memory_layer_budget/source_hook_counts_by_type",
+            "/recall_policy/dropped_memory_layer_budget/source_codex_event_counts_by_event",
+        ] {
+            assert!(
+                pack.pointer(field).is_none(),
+                "default dropped budget leaked lineage field {field}"
+            );
+        }
         assert_eq!(
             pack.pointer("/retrieval_metrics/dropped_memory_layer_budget"),
             pack.pointer("/recall_policy/dropped_memory_layer_budget")
@@ -6242,21 +6326,19 @@ mod tests {
                 .and_then(Value::as_u64),
             Some(1)
         );
-        assert_eq!(
-            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_source_role/tool/refs")
-                .and_then(Value::as_u64),
-            Some(1)
-        );
-        assert_eq!(
-            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_hook_type/tool_result/refs")
-                .and_then(Value::as_u64),
-            Some(1)
-        );
-        assert_eq!(
-            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_codex_event/PostToolUse/refs")
-                .and_then(Value::as_u64),
-            Some(1)
-        );
+        for field in [
+            "/recall_policy/dropped_memory_layer_budget/by_source_role",
+            "/recall_policy/dropped_memory_layer_budget/by_hook_type",
+            "/recall_policy/dropped_memory_layer_budget/by_codex_event",
+            "/recall_policy/dropped_memory_layer_budget/source_message_counts_by_role",
+            "/recall_policy/dropped_memory_layer_budget/source_hook_counts_by_type",
+            "/recall_policy/dropped_memory_layer_budget/source_codex_event_counts_by_event",
+        ] {
+            assert!(
+                pack.pointer(field).is_none(),
+                "default dropped budget leaked lineage field {field}"
+            );
+        }
         assert_eq!(
             pack.pointer("/retrieval_metrics/dropped_memory_layer_budget"),
             pack.pointer("/recall_policy/dropped_memory_layer_budget")
