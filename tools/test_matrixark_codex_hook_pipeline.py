@@ -1137,6 +1137,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "source_role_counts": {"llm": 2, "tool_result": 1, "bad": "n/a"},
                 "source_hook_type_counts": {"hook_boundary": 2},
                 "source_codex_event_counts": {"Stop": 2},
+                "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 2},
             },
             {},
             {},
@@ -1148,6 +1149,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "summary_type": "node_l1",
                 "source_role_counts": {"model": 3},
                 "source_memory_scopes": ["user_profile"],
+                "source_memory_selection_policies": ["selected_tool_evidence_only"],
                 "source_session_continuities": ["cross_session"],
                 "source_extraction_phases": ["final"],
             },
@@ -1161,6 +1163,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "compression_id_hash": 902,
                 "source_role_counts": {"assistant_response": 1},
                 "source_hook_type_counts": {"PostToolUse": 1},
+                "source_memory_selection_policy_counts": {"selected_tool_evidence_only": 1},
             },
             {},
             {},
@@ -1172,6 +1175,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "event_type": "dialogue_batch",
                 "source_role_counts": {"tool_output": 1},
                 "source_codex_event_counts": {"PostToolUse": 1},
+                "source_memory_selection_policy_counts": {"selected_tool_evidence_only": 1},
             },
             {},
             {},
@@ -1183,6 +1187,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("source_role:tool", entity_terms)
         self.assertIn("hook_type:hook_boundary", entity_terms)
         self.assertIn("codex_event:stop", entity_terms)
+        self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", entity_terms)
         self.assertIn("memory_scope:user_profile", entity_terms)
         self.assertIn("session_continuity:cross_session", entity_terms)
         self.assertIn("extraction_phase:final", entity_terms)
@@ -1190,10 +1195,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("memory_scope:user_profile", summary_terms)
         self.assertIn("session_continuity:cross_session", summary_terms)
         self.assertIn("extraction_phase:final", summary_terms)
+        self.assertIn("memory_selection_policy:selected_tool_evidence_only", summary_terms)
         self.assertIn("source_role:assistant", compression_terms)
         self.assertIn("hook_type:posttooluse", compression_terms)
+        self.assertIn("memory_selection_policy:selected_tool_evidence_only", compression_terms)
         self.assertIn("source_role:tool", event_terms)
         self.assertIn("codex_event:posttooluse", event_terms)
+        self.assertIn("memory_selection_policy:selected_tool_evidence_only", event_terms)
 
     def test_time_compression_preserves_source_lineage_for_budgeting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -6671,6 +6679,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "metadata": {
                         "hook_type": "hook_boundary",
                         "codex_event": "Stop",
+                        "source_memory_selection_policy_counts": {
+                            "selected_assistant_decision_outcome_only": 1,
+                            "selected_tool_evidence_only": 1,
+                        },
                     },
                     "force": True,
                 }
@@ -7050,6 +7062,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("session_continuity:cross_session", summary_index_names)
             self.assertIn("extraction_phase:final", summary_index_names)
             self.assertIn("profile_promotion_policy:always_when_profile_scope_available", summary_index_names)
+            self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", summary_index_names)
+            self.assertIn("memory_selection_policy:selected_tool_evidence_only", summary_index_names)
             self.assertIn("entity_type:assistant_decision", summary_index_names)
             self.assertIn("entity_type:tool_evidence", summary_index_names)
             profile_entity_hashes_by_type = {
@@ -7112,7 +7126,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "question_type": "broad_exploration",
                     "query": (
                         "user_profile cross_session profile long_term_memory "
-                        "assistant_decision tool_evidence always_when_profile_scope_available"
+                        "assistant_decision tool_evidence selected_tool_evidence_only always_when_profile_scope_available"
                     ),
                     "max_context_tokens": 200,
                     "audit_mode": "off",
@@ -7126,7 +7140,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(selected_summary_refs, summary_pack["selected_refs"])
             self.assertTrue(
                 any(
-                    "always_when_profile_scope_available" in ref.get("source_profile_promotion_policies", [])
+                    "selected_tool_evidence_only" in ref.get("source_memory_selection_policies", [])
+                    and "always_when_profile_scope_available" in ref.get("source_profile_promotion_policies", [])
                     for ref in selected_summary_refs
                 ),
                 selected_summary_refs,
@@ -7140,11 +7155,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 selected_summary_refs,
             )
             summary_layer_budget = summary_pack["retrieval_metrics"]["memory_layer_budget"]
+            summary_debug_layer_budget = summary_pack["recall_policy"]["memory_layer_budget"]
             self.assertGreaterEqual(summary_layer_budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(summary_layer_budget["by_session_continuity"]["cross_session"]["refs"], 1)
             self.assertGreaterEqual(summary_layer_budget["by_extraction_phase"]["final"]["refs"], 1)
             self.assertGreaterEqual(
                 summary_layer_budget["by_profile_promotion_policy"]["always_when_profile_scope_available"]["refs"],
+                1,
+            )
+            self.assertGreaterEqual(
+                summary_debug_layer_budget["by_memory_selection_policy"]["selected_tool_evidence_only"]["refs"],
                 1,
             )
             self.assertGreaterEqual(summary_layer_budget["by_entity_type"]["assistant_decision"]["refs"], 1)
