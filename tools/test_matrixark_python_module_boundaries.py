@@ -1305,8 +1305,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                     "text": "assistant decision: keep profile summaries visible",
                     "memory_scope": "user_profile",
                     "session_continuity": "cross_session",
-                    "source_roles": ["assistant", "tool"],
-                    "source_role_counts": {"assistant": 2, "tool": 1},
+                    "source_roles": ["llm", "model", "tool"],
+                    "source_role_counts": {"llm": 1, "model": 1, "tool": 1},
                     "source_hook_types": ["hook_boundary"],
                     "source_hook_type_counts": {"hook_boundary": 3},
                     "source_codex_events": ["Stop"],
@@ -1344,7 +1344,12 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "memory_layer_budget": {
                     "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 7}},
                     "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 7}},
-                    "source_message_counts_by_role": {"assistant": 2, "tool": 1},
+                    "by_source_role": {
+                        "llm": {"refs": 1, "tokens": 3},
+                        "model": {"refs": 1, "tokens": 4},
+                        "tool": {"refs": 1, "tokens": 2},
+                    },
+                    "source_message_counts_by_role": {"llm": 1, "model": 1, "tool": 1},
                     "source_hook_counts_by_type": {"hook_boundary": 3},
                     "source_codex_event_counts_by_event": {"Stop": 3},
                 },
@@ -1368,6 +1373,12 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(["profile_summary_stale"], readiness["freshness_warnings"])
         self.assertEqual({"user_profile": {"refs": 1, "tokens": 7}}, compact["memory_layer_budget"]["by_memory_scope"])
         self.assertEqual({"assistant": 2, "tool": 1}, compact["memory_layer_budget"]["source_message_counts_by_role"])
+        self.assertEqual(
+            {"refs": 2, "tokens": 7},
+            compact["memory_layer_budget"]["by_source_role"]["assistant"],
+        )
+        self.assertNotIn("llm", compact["memory_layer_budget"]["source_message_counts_by_role"])
+        self.assertNotIn("model", compact["memory_layer_budget"]["by_source_role"])
         self.assertTrue(compact["memory_layer_pressure"]["profile_memory_pressure"])
         self.assertTrue(compact["memory_layer_pressure"]["cross_session_pressure"])
         self.assertTrue(compact["memory_layer_pressure"]["assistant_source_message_pressure"])
@@ -1379,6 +1390,10 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(["session_summary_1", "session_summary_2"], flat_item["source_session_ids"])
         self.assertEqual(2, flat_item["source_entity_count"])
         self.assertEqual({"user_profile": {"refs": 1, "tokens": 7}}, grouped_compact["memory_layer_budget"]["by_memory_scope"])
+        self.assertEqual(
+            {"assistant": 2, "tool": 1},
+            grouped_compact["memory_layer_budget"]["source_message_counts_by_role"],
+        )
         self.assertTrue(grouped_compact["memory_layer_pressure"]["profile_memory_pressure"])
         self.assertTrue(grouped_compact["memory_layer_pressure"]["cross_session_pressure"])
         entity_item = grouped_compact["groups"][0]["items"][0]

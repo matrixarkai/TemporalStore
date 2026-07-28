@@ -499,7 +499,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "max_candidates": 4,
                 "min_entity_bridge_refs": 0,
             },
-            source_role_budget_tokens={"assistant": 1},
+            source_role_budget_tokens={"llm": 1},
         )
 
         selected_hashes = [ref["ref_hash"] for ref in selected]
