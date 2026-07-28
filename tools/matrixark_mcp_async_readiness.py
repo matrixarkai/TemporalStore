@@ -160,6 +160,8 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
         extraction_committed_task_count += int(status == "extraction_committed")
         summary_completed_task_count += int(status == "summary_completed")
         row_remaining_stages = row.get("remaining_stages") if isinstance(row.get("remaining_stages"), list) else []
+        if status == "pending" and not row_remaining_stages and isinstance(row.get("stages"), list):
+            row_remaining_stages = row.get("stages") or []
         for stage in row_remaining_stages:
             stage_name = str(stage or "").strip()
             if stage_name:
