@@ -371,6 +371,7 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         "source_ref",
         "resource_type",
         "sharing_scope",
+        "event_type",
         "summary_type",
         "operator",
         "memory_scope",
