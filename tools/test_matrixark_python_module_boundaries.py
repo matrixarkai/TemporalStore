@@ -400,8 +400,15 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "user_id": "user_mod",
                 "session_id": "session_mod",
             },
-            "metadata": {},
-            "messages": [{"role": "assistant", "content": "Commit abc123 was pushed."}],
+            "metadata": {
+                "source_roles": ["llm", "model", "assistant", "tool"],
+                "source_role_counts": {"llm": 1, "model": 1, "assistant": 1, "tool": 2},
+                "source_hook_types": ["after_llm", "hook_boundary"],
+                "source_hook_type_counts": {"after_llm": 3, "hook_boundary": 2},
+                "source_codex_events": ["Stop", "PostToolUse"],
+                "source_codex_event_counts": {"Stop": 3, "PostToolUse": 2},
+            },
+            "messages": [{"role": "llm", "content": "Commit abc123 was pushed."}],
             "ingestion_time_ms": 123,
             "storage_options": {},
             "storage_route": {},
@@ -470,6 +477,15 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         ]
         self.assertEqual(1, len(session_entities))
         self.assertEqual(1, len(profile_entities))
+        self.assertEqual(["assistant", "tool"], session_entities[0]["source_roles"])
+        self.assertEqual({"assistant": 3, "tool": 2}, session_entities[0]["source_role_counts"])
+        self.assertEqual(["after_llm", "hook_boundary"], session_entities[0]["source_hook_types"])
+        self.assertEqual({"after_llm": 3, "hook_boundary": 2}, session_entities[0]["source_hook_type_counts"])
+        self.assertEqual(["PostToolUse", "Stop"], session_entities[0]["source_codex_events"])
+        self.assertEqual({"PostToolUse": 2, "Stop": 3}, session_entities[0]["source_codex_event_counts"])
+        self.assertEqual(session_entities[0]["source_role_counts"], profile_entities[0]["source_role_counts"])
+        self.assertEqual(session_entities[0]["source_hook_type_counts"], profile_entities[0]["source_hook_type_counts"])
+        self.assertEqual(session_entities[0]["source_codex_event_counts"], profile_entities[0]["source_codex_event_counts"])
         self.assertEqual(["session_mod"], profile_entities[0]["source_session_ids"])
         self.assertEqual([session_entities[0]["entity_hash"]], profile_entities[0]["source_entity_hashes"])
         self.assertEqual(
