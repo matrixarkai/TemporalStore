@@ -22,6 +22,12 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 def annotate_session_continuity(candidate: Json, record: Json, *, retrieval_scope: Json, question_type: str) -> Json:
     record_scope = candidate_access_scope(record)
     status = session_continuity_status(record_scope, retrieval_scope)
+    explicit_status = str(record.get("session_continuity") or candidate.get("session_continuity") or "")
+    explicit_memory_scope = str(record.get("memory_scope") or candidate.get("memory_scope") or "")
+    if explicit_status in {"same_session", "cross_session"} and explicit_memory_scope == "user_profile":
+        status = explicit_status
+    elif status in {"", "unscoped"} and explicit_status in {"same_session", "cross_session"}:
+        status = explicit_status
     boost = session_continuity_boost({**candidate, "session_continuity": status}, question_type)
     reason = (
         "same-session continuity"
