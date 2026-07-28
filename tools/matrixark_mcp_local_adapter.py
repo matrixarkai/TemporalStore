@@ -5884,6 +5884,7 @@ class MatrixArkLocalAdapter:
             "refreshed_count": 0,
             "status": "disabled",
         }
+        pre_retrieval_refreshed_records: list[Json] = []
         if pre_retrieval_summary_refresh["enabled"]:
             refresh_started_perf = time.perf_counter()
             try:
@@ -5900,6 +5901,11 @@ class MatrixArkLocalAdapter:
                     }
                 )
                 refreshed_count = int(refresh_result.get("refreshed_count") or 0)
+                pre_retrieval_refreshed_records = [
+                    record
+                    for record in refresh_result.get("refreshed", [])
+                    if isinstance(record, dict)
+                ]
                 pre_retrieval_summary_refresh.update(
                     {
                         "status": "refreshed" if refreshed_count else "no_dirty_nodes",
@@ -6029,7 +6035,10 @@ class MatrixArkLocalAdapter:
             record_scope = candidate_access_scope(record)
             status = session_continuity_status(record_scope, retrieval_scope)
             explicit_status = str(record.get("session_continuity") or candidate.get("session_continuity") or "")
-            if status in {"", "unscoped"} and explicit_status in {"same_session", "cross_session"}:
+            explicit_memory_scope = str(record.get("memory_scope") or candidate.get("memory_scope") or "")
+            if explicit_status in {"same_session", "cross_session"} and explicit_memory_scope == "user_profile":
+                status = explicit_status
+            elif status in {"", "unscoped"} and explicit_status in {"same_session", "cross_session"}:
                 status = explicit_status
             boost = session_continuity_boost({**candidate, "session_continuity": status}, question_type)
             reason = (
@@ -6187,6 +6196,39 @@ class MatrixArkLocalAdapter:
             secondary_index_groups=secondary_index_filter_groups,
         )
         records = retrieval_record_result["records"]
+        if pre_retrieval_refreshed_records or int(pre_retrieval_summary_refresh.get("refreshed_count") or 0) > 0:
+            same_user_summary_records = list(pre_retrieval_refreshed_records)
+            try:
+                same_user_summary_records.extend(
+                    record
+                    for record in self.read_all()
+                    if isinstance(record, dict)
+                    and record.get("record_type") == "context_summary"
+                    and access_scope_matches_before_scoring(record, retrieval_scope)
+                )
+            except Exception:
+                pass
+            seen_refreshed_summary_ids = {
+                (
+                    record.get("record_type"),
+                    record.get("summary_hash") or record.get("node_hash"),
+                    tuple(record.get("node_path", [])),
+                )
+                for record in records
+                if isinstance(record, dict)
+            }
+            for record in same_user_summary_records:
+                if record.get("record_type") != "context_summary":
+                    continue
+                identity = (
+                    record.get("record_type"),
+                    record.get("summary_hash") or record.get("node_hash"),
+                    tuple(record.get("node_path", [])),
+                )
+                if identity in seen_refreshed_summary_ids:
+                    continue
+                records.append(record)
+                seen_refreshed_summary_ids.add(identity)
         retrieval_scan_stats = retrieval_record_result.get("scan_stats", {})
         async_pipeline_readiness = async_pipeline_retrieval_readiness(records, retrieval_scope)
 
@@ -6605,12 +6647,6 @@ class MatrixArkLocalAdapter:
                 if summary_type not in {"node_l0", "node_l1", "resource_l0", "batch_l0", "session_l0"}:
                     continue
                 index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
-                if not passes_applicable_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
-                    secondary_index_dropped_count += 1
-                    continue
-                secondary_index_matched_count += 1
-                if not admit_candidate_for_node(record):
-                    continue
                 text = str(record.get("summary_text", ""))
                 if not text:
                     continue
@@ -6623,9 +6659,21 @@ class MatrixArkLocalAdapter:
                         *[str(value) for value in record.get("source_codex_events", []) if str(value or "")],
                         *[str(value) for value in record.get("source_memory_scopes", []) if str(value or "")],
                         *[str(value) for value in record.get("source_session_continuities", []) if str(value or "")],
+                        *[str(value) for value in record.get("source_entity_types", []) if str(value or "")],
+                        *[str(value).replace("_", " ") for value in record.get("source_entity_types", []) if str(value or "")],
                         *sorted(index_terms),
                     ]
                 )
+                summary_filter_text = " ".join([text, text.replace("_", " "), lineage_text])
+                filter_terms = set(index_terms)
+                if is_profile_summary_bridge:
+                    filter_terms.update(tokens(summary_filter_text))
+                if not passes_applicable_secondary_index_filters(filter_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
+                    secondary_index_dropped_count += 1
+                    continue
+                secondary_index_matched_count += 1
+                if not admit_candidate_for_node(record):
+                    continue
                 lineage_score = sparse_lexical_score(query_terms, lineage_text)
                 sparse_score = sparse_lexical_score(query_terms, text)
                 keyword_score = len(query_terms.intersection(tokens(text)))
@@ -7196,6 +7244,123 @@ class MatrixArkLocalAdapter:
             source_role_budget_tokens=source_role_budget_tokens,
             memory_layer_budget_tokens=memory_layer_budget_tokens,
         )
+        if (
+            question_type == "broad_exploration"
+            and bool(pre_retrieval_summary_refresh.get("enabled"))
+            and int(pre_retrieval_summary_refresh.get("refreshed_count") or 0) > 0
+            and not any(
+                item.get("ref_type") == "summary"
+                and item.get("memory_scope") == "user_profile"
+                and item.get("session_continuity") == "cross_session"
+                for item in selected
+            )
+        ):
+            refreshed_summary_candidates: list[Json] = []
+            for record in records:
+                if record.get("record_type") != "context_summary":
+                    continue
+                if str(record.get("memory_scope") or "") != "user_profile":
+                    continue
+                if str(record.get("session_continuity") or "") != "cross_session":
+                    continue
+                if str(record.get("summary_type") or "") not in {"node_l0", "node_l1", "batch_l0", "session_l0"}:
+                    continue
+                if not access_scope_matches_before_scoring(record, retrieval_scope):
+                    continue
+                summary_text = str(record.get("summary_text") or "")
+                if not summary_text:
+                    continue
+                lineage_text = " ".join(
+                    [
+                        str(record.get("memory_scope") or ""),
+                        str(record.get("session_continuity") or ""),
+                        *[str(value) for value in record.get("source_roles", []) if str(value or "")],
+                        *[str(value) for value in record.get("source_hook_types", []) if str(value or "")],
+                        *[str(value) for value in record.get("source_codex_events", []) if str(value or "")],
+                        *[str(value) for value in record.get("source_memory_scopes", []) if str(value or "")],
+                        *[str(value) for value in record.get("source_session_continuities", []) if str(value or "")],
+                        *[str(value) for value in record.get("source_entity_types", []) if str(value or "")],
+                        *[str(value).replace("_", " ") for value in record.get("source_entity_types", []) if str(value or "")],
+                    ]
+                )
+                summary_filter_text = " ".join([summary_text, summary_text.replace("_", " "), lineage_text])
+                text_score = sparse_lexical_score(query_terms, summary_filter_text)
+                lineage_score = sparse_lexical_score(query_terms, lineage_text)
+                if text_score <= 0 and lineage_score <= 0:
+                    continue
+                candidate = annotate_session_continuity(
+                    {
+                        "ref_type": "summary",
+                        "ref_hash": record.get("summary_hash") or record.get("node_hash"),
+                        "node_hash": record.get("node_hash"),
+                        "node_path": record.get("node_path", []),
+                        "origin_score": min(1.0, 0.72 + 0.18 * text_score + 0.10 * lineage_score),
+                        "keyword_score": len(query_terms.intersection(tokens(summary_text))),
+                        "sparse_score": text_score,
+                        "source_lineage_score": lineage_score,
+                        "embedding_score": 0.0,
+                        "node_score": node_scores.get(record.get("node_hash"), {}).get("score", 0.0),
+                        "matched_index_terms": [],
+                        "selection_reason": "pre-retrieval refreshed profile summary bridge",
+                        "event_type": record.get("summary_type"),
+                        "context_class": "summary",
+                        "summary_type": record.get("summary_type"),
+                        "source_roles": record.get("source_roles", []),
+                        "source_role_counts": record.get("source_role_counts", {}),
+                        "source_hook_types": record.get("source_hook_types", []),
+                        "source_hook_type_counts": record.get("source_hook_type_counts", {}),
+                        "source_codex_events": record.get("source_codex_events", []),
+                        "source_codex_event_counts": record.get("source_codex_event_counts", {}),
+                        "source_memory_scopes": record.get("source_memory_scopes", []),
+                        "source_session_continuities": record.get("source_session_continuities", []),
+                        "source_extraction_phases": record.get("source_extraction_phases", []),
+                        "source_final_session_boundary_count": record.get("source_final_session_boundary_count", 0),
+                        "memory_scope": record.get("memory_scope", ""),
+                        "session_continuity": record.get("session_continuity", ""),
+                        "extraction_phase": record.get("extraction_phase", ""),
+                        "final_session_boundary": bool(record.get("final_session_boundary", False)),
+                        "access_decision": "allowed_by_registry_scope_before_scoring",
+                        "access_scope": candidate_access_scope(record),
+                        "scope": candidate_access_scope(record),
+                        "updated_at_ms": record.get("updated_at_ms", now_ms()),
+                        "text": clip_context_text(summary_text),
+                        "recall_path": "pre_retrieval_refreshed_profile_summary",
+                    },
+                    record,
+                )
+                refreshed_summary_candidates.append(score_recall_candidate(candidate, ranking, reference_time_ms=reference_time_ms))
+            refreshed_summary_candidates.sort(key=lambda item: packing_sort_key(item, question_type), reverse=True)
+            for candidate in refreshed_summary_candidates:
+                ref_tokens = max(1, token_count(str(candidate.get("text", ""))))
+                if len(selected) >= selected_ref_cap or used_context_tokens + ref_tokens > remote_context_budget_tokens:
+                    removable_index = next(
+                        (
+                            index
+                            for index in range(len(selected) - 1, -1, -1)
+                            if selected[index].get("ref_type") in {"event", "segment"}
+                            and not bool(selected[index].get("profile_current_state_representative"))
+                        ),
+                        None,
+                    )
+                    if removable_index is None:
+                        continue
+                    removed = selected.pop(removable_index)
+                    used_context_tokens = max(0, used_context_tokens - max(1, token_count(str(removed.get("text", "")))))
+                if used_context_tokens + ref_tokens > remote_context_budget_tokens:
+                    continue
+                selected.append(
+                    {
+                        **candidate,
+                        "token_estimate": ref_tokens,
+                        "packing_score": round(packing_sort_key(candidate, question_type)[0], 6),
+                        "packing_policy": question_type,
+                        "budget_memory_layer": "summary",
+                    }
+                )
+                used_context_tokens += ref_tokens
+                dropped_over_budget.setdefault("pre_retrieval_summary_refresh", {})["injected_profile_summary_ref"] = True
+                break
+
         partial_context_pack = bool(dropped_over_budget.get("deadline_exceeded"))
         request_metadata = optional_object(args, "metadata")
         quality_warnings = []

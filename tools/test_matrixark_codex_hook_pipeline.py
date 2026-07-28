@@ -4653,6 +4653,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 ),
                 summary_pack["selected_refs"],
             )
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "summary"
+                    and ref.get("memory_scope") == "user_profile"
+                    and ref.get("session_continuity") == "cross_session"
+                    and "delayed rollout backfill" in str(ref.get("text") or ref.get("summary_text") or "")
+                    for ref in summary_pack["selected_refs"]
+                ),
+                summary_pack["selected_refs"],
+            )
             records = adapter.read_all()
             profile_summaries = [
                 record
@@ -4823,6 +4833,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     ref.get("ref_type") == "entity"
                     and ref.get("entity_type") == "tool_evidence"
                     and "Ran 88 tests" in str(ref.get("text") or "")
+                    for ref in summary_pack["selected_refs"]
+                ),
+                summary_pack["selected_refs"],
+            )
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "summary"
+                    and ref.get("memory_scope") == "user_profile"
+                    and ref.get("session_continuity") == "cross_session"
+                    and "Ran 88 tests" in str(ref.get("text") or ref.get("summary_text") or "")
                     for ref in summary_pack["selected_refs"]
                 ),
                 summary_pack["selected_refs"],
