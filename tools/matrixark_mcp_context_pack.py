@@ -239,6 +239,61 @@ def serving_memory_layer_pressure(value: Any) -> Json:
     return compact
 
 
+def serving_retrieval_metrics(value: Any, *, include_debug: bool = False) -> Json:
+    if not isinstance(value, dict):
+        return {}
+    if debug_lineage_enabled(include_debug=include_debug):
+        return value
+    compact: Json = {}
+    for field in [
+        "selected_refs",
+        "remote_context_budget_tokens",
+        "used_remote_context_tokens",
+        "used_local_context_tokens",
+        "total_prompt_context_tokens",
+        "partial_context_pack",
+        "fallback_reason",
+    ]:
+        metric = value.get(field)
+        if metric not in (None, "", [], {}):
+            compact[field] = metric
+    memory_layer_budget = value.get("memory_layer_budget")
+    if isinstance(memory_layer_budget, dict):
+        summary = serving_memory_layer_budget(memory_layer_budget)
+        if summary:
+            compact["memory_layer_budget"] = summary
+    dropped_memory_layer_budget = value.get("dropped_memory_layer_budget")
+    if isinstance(dropped_memory_layer_budget, dict):
+        summary = serving_memory_layer_budget(dropped_memory_layer_budget)
+        if summary:
+            compact["dropped_memory_layer_budget"] = summary
+    memory_layer_pressure = value.get("memory_layer_pressure")
+    if isinstance(memory_layer_pressure, dict):
+        summary = serving_memory_layer_pressure(memory_layer_pressure)
+        if summary:
+            compact["memory_layer_pressure"] = summary
+    async_pipeline_readiness = value.get("async_pipeline_readiness")
+    if isinstance(async_pipeline_readiness, dict):
+        compact["async_pipeline_readiness"] = strip_default_debug_lineage_fields(async_pipeline_readiness)
+    pre_retrieval_summary_refresh = value.get("pre_retrieval_summary_refresh")
+    if isinstance(pre_retrieval_summary_refresh, dict):
+        compact["pre_retrieval_summary_refresh"] = {
+            field: pre_retrieval_summary_refresh.get(field)
+            for field in [
+                "enabled",
+                "status",
+                "requested_limit",
+                "refreshed_count",
+                "compression_created_count",
+                "skipped_dirty_count",
+                "skipped_dirty_reasons",
+                "elapsed_ms",
+            ]
+            if pre_retrieval_summary_refresh.get(field) not in (None, "", [], {})
+        }
+    return strip_default_debug_lineage_fields(compact)
+
+
 def selected_context_class_counts(refs: list[Json]) -> Json:
     counts: Json = {
         "event": 0,
@@ -1003,7 +1058,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         isinstance(pack.get("retrieval_metrics"), dict)
         and (pack.get("include_retrieval_metrics") or include_debug or DEBUG_LINEAGE_PAYLOAD)
     ):
-        compact["retrieval_metrics"] = pack["retrieval_metrics"]
+        compact["retrieval_metrics"] = serving_retrieval_metrics(pack["retrieval_metrics"], include_debug=include_debug)
     retrieval_metrics = pack.get("retrieval_metrics") if isinstance(pack.get("retrieval_metrics"), dict) else {}
     recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
     memory_layer_budget = (

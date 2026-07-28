@@ -6753,7 +6753,7 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
     if recall_summary:
         compact["recall_policy_summary"] = recall_summary
     memory_hierarchy = memory_hierarchy_contract_from_recall_policy(record.get("recall_policy", {}))
-    if memory_hierarchy:
+    if memory_hierarchy and CONTEXT_PACK_DEBUG_LINEAGE:
         compact["memory_hierarchy"] = memory_hierarchy
     memory_layer_budget = record.get("memory_layer_budget")
     if not isinstance(memory_layer_budget, dict):
@@ -6812,7 +6812,12 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
             }
             if compact_pushdown:
                 compact["backend_retrieval_pushdown"] = compact_pushdown
-    return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
+    compact = {key: value for key, value in compact.items() if value not in (None, "", [], {})}
+    try:
+        from tools.matrixark_mcp_context_pack import strip_default_debug_lineage_fields
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_context_pack import strip_default_debug_lineage_fields
+    return strip_default_debug_lineage_fields(compact)
 
 
 def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> list[Json]:
