@@ -147,6 +147,7 @@ struct ContextWorkflowHarnessSummary {
     external_benchmark_source: String,
     external_benchmark_all_source_replay: bool,
     external_benchmark_direct_source_scoring: bool,
+    external_benchmark_source_order_ranking: bool,
     external_benchmark_rust_context_event_ingest: bool,
     external_benchmark_ingested_source_sets: usize,
     external_benchmark_retrieved_source_sets: usize,
@@ -223,6 +224,7 @@ struct ExternalContextBenchmarkReport {
     source: String,
     all_source_replay: bool,
     direct_source_scoring: bool,
+    source_order_ranking: bool,
     rust_context_event_ingest: bool,
     ingested_source_sets: usize,
     retrieved_source_sets: usize,
@@ -277,6 +279,7 @@ struct ExternalOnlyContextBenchmarkSummary {
     external_benchmark_source: String,
     external_benchmark_all_source_replay: bool,
     external_benchmark_direct_source_scoring: bool,
+    external_benchmark_source_order_ranking: bool,
     external_benchmark_rust_context_event_ingest: bool,
     external_benchmark_ingested_source_sets: usize,
     external_benchmark_retrieved_source_sets: usize,
@@ -342,6 +345,7 @@ fn main() {
                 external_benchmark_source: external_benchmark.source,
                 external_benchmark_all_source_replay: external_benchmark.all_source_replay,
                 external_benchmark_direct_source_scoring: external_benchmark.direct_source_scoring,
+                external_benchmark_source_order_ranking: external_benchmark.source_order_ranking,
                 external_benchmark_rust_context_event_ingest: external_benchmark
                     .rust_context_event_ingest,
                 external_benchmark_ingested_source_sets: external_benchmark.ingested_source_sets,
@@ -799,6 +803,7 @@ fn main() {
             external_benchmark_source: external_benchmark.source,
             external_benchmark_all_source_replay: external_benchmark.all_source_replay,
             external_benchmark_direct_source_scoring: external_benchmark.direct_source_scoring,
+            external_benchmark_source_order_ranking: external_benchmark.source_order_ranking,
             external_benchmark_rust_context_event_ingest: external_benchmark
                 .rust_context_event_ingest,
             external_benchmark_ingested_source_sets: external_benchmark.ingested_source_sets,
@@ -1163,6 +1168,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             source,
             all_source_replay: false,
             direct_source_scoring: false,
+            source_order_ranking: false,
             rust_context_event_ingest: false,
             ingested_source_sets: 0,
             retrieved_source_sets: 0,
@@ -1205,6 +1211,10 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         .unwrap_or(64);
     let direct_source_scoring =
         std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
+    let source_order_ranking =
+        std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING")
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
     let stored_record_scoring =
@@ -1387,7 +1397,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         // Re-rank cached source-set blocks for the current query. The cache is
         // keyed by source set, so preserving a previous query's order makes
         // hit@k look correct while MRR regresses.
-        order_external_blocks_by_case_relevance(case, &mut blocks);
+        order_external_blocks_by_case_relevance(case, &mut blocks, source_order_ranking);
         blocks.truncate(case_max_events.max(1));
         let retrieval_ms =
             retrieval_ms_override.unwrap_or_else(|| retrieval_started.elapsed().as_millis());
@@ -1526,6 +1536,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         source,
         all_source_replay,
         direct_source_scoring,
+        source_order_ranking,
         rust_context_event_ingest: !direct_source_scoring && !ingested_source_sets.is_empty(),
         ingested_source_sets: ingested_source_sets.len(),
         retrieved_source_sets: retrieved_source_sets.len(),
@@ -2135,7 +2146,12 @@ fn truncate_external_words(value: &str, limit: usize) -> String {
 fn order_external_blocks_by_case_relevance(
     case: &ExternalContextBenchmarkCase,
     blocks: &mut [temporalstore_rust::ContextBlock],
+    source_order_ranking: bool,
 ) {
+    if source_order_ranking {
+        blocks.sort_by_key(|block| (external_block_source_order(case, block), block.uri.clone()));
+        return;
+    }
     blocks.sort_by_key(|block| {
         (
             Reverse(external_direct_relevance_score(
