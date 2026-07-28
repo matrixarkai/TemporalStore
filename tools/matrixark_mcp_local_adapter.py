@@ -5243,9 +5243,14 @@ class MatrixArkLocalAdapter:
                 "session_id",
                 "session_hash",
                 "scope_key",
+                "tenant_hash",
+                "user_hash",
                 "_explicit_scope_keys",
             }
         }
+        profile_scope["account_id"] = canonical_account_id(str(profile_scope.get("account_id") or ""))
+        profile_scope["tenant_id"] = canonical_tenant_id(str(profile_scope.get("tenant_id") or ""))
+        profile_scope["user_id"] = str(profile_scope.get("user_id") or "")
         profile_node_path: list[str] = []
         if profile_scope.get("tenant_id") and profile_scope.get("user_id"):
             profile_node_path = [
