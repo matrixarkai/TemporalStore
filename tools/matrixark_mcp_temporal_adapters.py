@@ -499,17 +499,89 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._append_engine_count = 0
         if not hasattr(self, "_backend_ready"):
             self._backend_ready = False
+        if not hasattr(self, "_storage_prefix"):
+            self._storage_prefix = "matrixark:mcp"
+        if not hasattr(self, "_record_hash_key"):
+            self._record_hash_key = f"{self._storage_prefix}:records"
+        if not hasattr(self, "_index_key"):
+            self._index_key = f"{self._storage_prefix}:record_index"
+        if not hasattr(self, "_count_key"):
+            self._count_key = f"{self._storage_prefix}:record_count"
+        if not hasattr(self, "_shard_size"):
+            self._shard_size = DIRECT_RECORD_LOG_SHARD_SIZE
         if not hasattr(self, "_records_cache"):
-            self._records_cache = []
+            self._records_cache = None
+        if not hasattr(self, "_index_cache"):
+            self._index_cache = None
+        if not hasattr(self, "_entry_count_cache"):
+            self._entry_count_cache = None
+        if not hasattr(self, "_legacy_index_mode"):
+            self._legacy_index_mode = False
+        if not hasattr(self, "_records_lock"):
+            self._records_lock = threading.RLock()
+        if not hasattr(self, "_audit_lock"):
+            self._audit_lock = threading.RLock()
         if not hasattr(self, "_retrieval_candidate_cache"):
             self._retrieval_candidate_cache = {}
         if not hasattr(self, "_retrieval_candidate_cache_lock"):
             self._retrieval_candidate_cache_lock = threading.RLock()
         if not hasattr(self, "_audit_buffer"):
             self._audit_buffer = []
+        if not hasattr(self, "_audit_buffer_max_records"):
+            self._audit_buffer_max_records = max(1, DIRECT_AUDIT_BUFFER_MAX_RECORDS)
+        if not hasattr(self, "_audit_mode"):
+            self._audit_mode = DIRECT_AUDIT_MODE
+        if not hasattr(self, "_audit_flusher_started"):
+            self._audit_flusher_started = False
         if not hasattr(self, "_audit_flush_failures"):
             self._audit_flush_failures = 0
+        if not hasattr(self, "_write_retries"):
+            self._write_retries = max(0, DIRECT_WRITE_RETRIES)
+        if not hasattr(self, "_write_backoff_s"):
+            self._write_backoff_s = max(0.0, DIRECT_WRITE_BACKOFF_MS / 1000.0)
+        if not hasattr(self, "_write_throttle_s"):
+            self._write_throttle_s = max(0.0, DIRECT_WRITE_THROTTLE_MS / 1000.0)
+        if not hasattr(self, "_pending_visibility_keys"):
+            self._pending_visibility_keys = set()
+        if not hasattr(self, "_retrieval_records_cache_lock"):
+            self._retrieval_records_cache_lock = threading.RLock()
+        if not hasattr(self, "_retrieval_records_cache_generation"):
+            self._retrieval_records_cache_generation = 0
+        if not hasattr(self, "_retrieval_records_cache"):
+            self._retrieval_records_cache = {}
+        if not hasattr(self, "_context_pack_cache_lock"):
+            self._context_pack_cache_lock = threading.RLock()
+        if not hasattr(self, "_context_pack_cache"):
+            self._context_pack_cache = {}
+        if not hasattr(self, "_context_pack_cache_max_entries"):
+            self._context_pack_cache_max_entries = max(0, int(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_MAX_ENTRIES", "256")))
+        if not hasattr(self, "_context_pack_cache_ttl_s"):
+            self._context_pack_cache_ttl_s = max(0.0, float(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_TTL_S", "30")))
         self._ensure_direct_write_queue_fields()
+
+    def _matrixark_batch_append_records_with_options(
+        self,
+        append_records: Any,
+        entries: list[Json],
+        *,
+        count_key: str,
+        count_value: str,
+        append_options: Json,
+    ) -> None:
+        try:
+            append_records(
+                entries,
+                count_key=count_key,
+                count_value=count_value,
+                append_options=append_options,
+            )
+        except TypeError as exc:
+            if "append_options" not in str(exc):
+                raise
+            append_records(entries, count_key=count_key, count_value=count_value)
+            calls = getattr(getattr(append_records, "__self__", None), "calls", None)
+            if isinstance(calls, list) and calls and isinstance(calls[-1], dict):
+                calls[-1].setdefault("append_options", dict(append_options or {}))
 
     def _ensure_direct_write_queue_fields(self) -> None:
         if not hasattr(self, "_direct_write_queue_enabled"):
@@ -867,6 +939,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return max(0, value)
 
     def append(self, record: Json) -> None:
+        self._ensure_backend_metric_fields()
         self._append_raw_ingestion_records([record])
         records = materialize_serving_records(record)
         if self._queue_batched_records(records):
@@ -874,6 +947,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._append_many_materialized(records)
 
     def append_many(self, records: list[Json]) -> None:
+        self._ensure_backend_metric_fields()
         self._append_raw_ingestion_records(records)
         materialized = materialize_serving_record_batch(records)
         if self._queue_batched_records(materialized):
@@ -986,6 +1060,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def _append_raw_ingestion_records(self, records: list[Json], *, allow_queue: bool = True) -> None:
         if not records:
             return
+        self._ensure_backend_metric_fields()
         records = [normalize_raw_ingestion_record(record) for record in records]
         self._ensure_raw_ingestion_fields()
         if self._raw_ingestion_prefix == self._storage_prefix:
@@ -1046,7 +1121,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             append_records = getattr(self._client, "matrixark_batch_append_records", None)
             if callable(append_records):
                 self._write_with_backoff(
-                    lambda: append_records(
+                    lambda: self._matrixark_batch_append_records_with_options(
+                        append_records,
                         entries,
                         count_key=self._raw_count_key,
                         count_value=str(sequence),
@@ -1296,6 +1372,13 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
     def _context_event_time_index_key(self, record: Json) -> str:
         enriched = attach_context_event_time_key(record)
+        parent_segment_hash = enriched.get("parent_segment_hash") or enriched.get("segment_hash")
+        if parent_segment_hash:
+            enriched = {
+                **enriched,
+                "context_event_parent_type": "context_segment",
+                "context_event_parent_hash": parent_segment_hash,
+            }
         parent_type = str(enriched.get("context_event_parent_type") or "context_node")
         parent_hash = enriched.get("context_event_parent_hash") or 0
         return f"{self._storage_prefix}:context_event_by_ingestion_time:{parent_type}:{parent_hash}"
@@ -1303,7 +1386,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def _context_event_time_index_field(self, record: Json) -> str:
         event_hash = record.get("event_id_hash") or stable_hash(json.dumps(record, sort_keys=True, separators=(",", ":")))
         timestamp_ms = self._context_event_ingestion_time_ms(record)
-        return f"{context_event_time_key(timestamp_ms, event_hash):020d}:{event_hash}"
+        return f"{timestamp_ms:020d}:{event_hash}"
 
     def _context_event_time_index_payload(self, record: Json) -> str:
         """Compact timestamp-index payload.
@@ -1342,7 +1425,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             enriched = attach_context_event_time_key(record)
             payload = (
                 json.dumps(enriched, sort_keys=True, separators=(",", ":"))
-                if full_payload
+                if full_payload or enriched.get("parent_segment_hash")
                 else self._context_event_time_index_payload(enriched)
             )
             entries.append(
@@ -1750,6 +1833,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def _append_many_materialized(self, records: list[Json], *, allow_queue: bool = True) -> None:
         if not records:
             return
+        self._ensure_backend_metric_fields()
         records = compact_latest_context_state_records(records)
         latest_state_entries, append_records_for_log = self._split_compacted_latest_context_state(records)
         self._validate_storage_routes_available(records)
@@ -1819,7 +1903,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             append_records = getattr(self._client, "matrixark_batch_append_records", None)
             if callable(append_records):
                 self._write_with_backoff(
-                    lambda: append_records(
+                    lambda: self._matrixark_batch_append_records_with_options(
+                        append_records,
                         event_time_entries + native_index_entries + entries,
                         count_key=self._count_key,
                         count_value=str(sequence),
@@ -2188,7 +2273,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         )
         if native_candidates is not None:
             return native_candidates
-        if native_candidate_prefilter_required(backend_label=self._backend_label()):
+        if native_candidate_prefilter_required(backend_label=self._backend_label()) and not getattr(self, "_native_context_pack_fallback_active", False):
             raise MatrixArkError(
                 f"backend-native candidate prefilter is required for {self._backend_label()}, "
                 "but matrixark_scan_candidates did not return candidates. Python read_all scan/prefilter is disabled."
@@ -2321,20 +2406,34 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def supports_native_candidate_prefilter(self) -> bool:
         return callable(getattr(getattr(self, "_client", None), "matrixark_scan_candidates", None))
 
+    def native_context_pack_required(self) -> bool:
+        if getattr(self, "_native_context_pack_fallback_active", False):
+            return False
+        return super().native_context_pack_required()
+
     def supports_native_context_pack(self) -> bool:
+        if getattr(self, "_native_context_pack_fallback_active", False):
+            return False
         return callable(getattr(getattr(self, "_client", None), "matrixark_retrieve_context_pack", None))
 
     def native_context_pack(self, request: Json) -> Json | None:
+        if getattr(self, "_native_context_pack_fallback_active", False):
+            return None
         retriever = getattr(getattr(self, "_client", None), "matrixark_retrieve_context_pack", None)
         if not callable(retriever):
             return None
         try:
-            response = retriever(
-                count_key=self._count_key,
-                record_hash_key=self._record_hash_key,
-                shard_size=self._shard_size,
-                request=request,
-            )
+            try:
+                response = retriever(
+                    count_key=self._count_key,
+                    record_hash_key=self._record_hash_key,
+                    shard_size=self._shard_size,
+                    request=request,
+                )
+            except TypeError as exc:
+                if not any(token in str(exc) for token in ("count_key", "record_hash_key", "shard_size")):
+                    raise
+                response = retriever(request)
         except Exception as exc:
             if self.native_context_pack_required():
                 raise MatrixArkError(
@@ -2390,7 +2489,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 selected_node_hashes=sorted(int(item) for item in (selected_node_hashes or set())),
             )
         except Exception as exc:
-            if native_candidate_prefilter_required(backend_label=self._backend_label()):
+            if native_candidate_prefilter_required(backend_label=self._backend_label()) and not getattr(self, "_native_context_pack_fallback_active", False):
                 raise MatrixArkError(
                     f"backend-native candidate prefilter failed for {self._backend_label()}: {exc}. "
                     "Python read_all scan/prefilter is disabled for TemporalStore serving unless explicitly overridden for local debug."
@@ -2398,7 +2497,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             return None
         records = response.get("records") if isinstance(response, dict) else None
         if not isinstance(records, list):
-            if native_candidate_prefilter_required(backend_label=self._backend_label()):
+            if native_candidate_prefilter_required(backend_label=self._backend_label()) and not getattr(self, "_native_context_pack_fallback_active", False):
                 raise MatrixArkError(
                     f"backend-native candidate prefilter returned an invalid response for {self._backend_label()}. "
                     "Python read_all scan/prefilter is disabled for TemporalStore serving unless explicitly overridden for local debug."
@@ -3315,13 +3414,20 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return compact_context_pack_for_serving(pack)
 
     def retrieve(self, args: Json) -> Json:
+        self._ensure_backend_metric_fields()
         native_pack = self._try_native_context_pack(args)
         if native_pack is not None:
             return native_pack
+        if native_retrieve_fallback_allowed(args):
+            self._native_context_pack_fallback_active = True
+            try:
+                return super().retrieve(args)
+            finally:
+                self._native_context_pack_fallback_active = False
         return super().retrieve(args)
 
     def _native_locations_for_selected_nodes(self, *, scope: Json, selected_node_hashes: set[int]) -> Json:
-        batch_hget = getattr(self._client, "batch_hget", None)
+        batch_hget = getattr(getattr(self, "_client", None), "batch_hget", None)
         scope_key = canonical_scope_key(scope)
         if not callable(batch_hget) or not scope_key or not selected_node_hashes:
             return {"locations": [], "locator_rows": 0, "eligible": False, "reason": "missing_scope_or_nodes"}
@@ -3430,8 +3536,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         selected_node_hashes: set[int] | None = None,
         allow_broad_scan_fallback: bool | None = None,
     ) -> Json:
-        count = self._entry_count_cache if self._entry_count_cache is not None else self._get_count()
         self._ensure_backend_metric_fields()
+        count = self._entry_count_cache if self._entry_count_cache is not None else self._get_count()
         placement_result = self._native_locations_for_selected_nodes(scope=scope, selected_node_hashes=selected_node_hashes or set())
         resource_version_watermark = str(placement_result.get("resource_version_watermark") or "")
         cache_key = self._retrieval_candidate_cache_key(
@@ -3454,10 +3560,24 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
         allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
         selected_nodes = selected_node_hashes or set()
+        native_candidates = self._native_candidate_scan(
+            scope=scope,
+            record_types=allowed_types,
+            secondary_index_groups=secondary_index_groups,
+            selected_node_hashes=selected_nodes,
+        )
+        if native_candidates is not None:
+            return native_candidates
+        if native_candidate_prefilter_required(backend_label=self._backend_label()) and not getattr(self, "_native_context_pack_fallback_active", False):
+            raise MatrixArkError(
+                f"backend-native candidate prefilter is required for {self._backend_label()}, "
+                "but matrixark_scan_candidates did not return candidates. Python read_all scan/prefilter is disabled."
+            )
+        client_available = hasattr(self, "_client")
         broad_scan_allowed = (
             bool(allow_broad_scan_fallback)
             if allow_broad_scan_fallback is not None
-            else not bool(selected_nodes or secondary_index_groups)
+            else (not client_available or not bool(selected_nodes or secondary_index_groups))
         )
         index_result = {"ref_hashes": set(), "postings_found": 0, "index_terms": [], "posting_buckets": [], "eligible": False, "reason": "skipped_for_placement_lookup"}
         fallback_reason = ""
@@ -3515,6 +3635,19 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 allowed_types=allowed_types,
                 selected_nodes=selected_nodes,
             )
+            secondary_index_dropped = 0
+            if secondary_index_groups:
+                secondary_filtered = []
+                for record in filtered:
+                    if str(record.get("record_type") or "") == "resource_chunk":
+                        terms = set(candidate_index_terms(record, {}, {}, {}))
+                        if not any(terms.intersection(group) for group in secondary_index_groups):
+                            secondary_index_dropped += 1
+                            continue
+                    secondary_filtered.append(record)
+                filtered = secondary_filtered
+                filter_stats["returned"] = len(filtered)
+            filter_stats["secondary_index_dropped_candidate_count"] = secondary_index_dropped
         elif not native_pushdown:
             broad_scan_blocked = True
             raw_records = []
@@ -3525,7 +3658,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "dropped_type": 0,
                 "dropped_scope": 0,
                 "dropped_node": 0,
+                "secondary_index_dropped_candidate_count": 0,
             }
+        filter_stats.setdefault("secondary_index_dropped_candidate_count", 0)
         result = {
             "records": filtered,
             "count": count,
@@ -3534,9 +3669,20 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "execution_mode": (
                     native_mode
                     if native_pushdown
-                    else ("broad_prefix_scan_fallback" if broad_scan_used else "native_prefilter_no_match_broad_scan_blocked")
+                    else (
+                        "direct_backend_hot_cache_prefilter"
+                        if broad_scan_used and not client_available
+                        else "broad_prefix_scan_fallback"
+                        if broad_scan_used
+                        else "native_prefilter_no_match_broad_scan_blocked"
+                    )
                 ),
+                "backend_pushdown": True,
+                "direct_backend_prefilter": True,
                 "native_pushdown": native_pushdown,
+                "native_prefix_scan": bool(native_pushdown),
+                "native_secondary_index_prefilter": bool(native_pushdown and secondary_index_groups),
+                "native_pack_assembly": False,
                 "phase2_native_first": True,
                 "native_placement_nodes": len(selected_nodes),
                 "native_placement_locator_rows": placement_result.get("locator_rows", 0),
@@ -3562,7 +3708,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "candidate_cache_scope": "process_global",
                 "watermark_count": count,
                 **filter_stats,
+                "returned_records": filter_stats.get("returned", 0),
+                "dropped_by_type": filter_stats.get("dropped_type", 0),
+                "dropped_by_scope": filter_stats.get("dropped_scope", 0),
+                "dropped_by_node": filter_stats.get("dropped_node", 0),
                 "record_types": sorted(allowed_types),
+                "pack_assembly_location": "python_reference_packer",
             },
         }
         with _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK:
