@@ -773,10 +773,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "final_session_boundary": False,
                         "committed_event_count": 2,
                         "extraction_context_event_count": 1,
-                        "source_roles": ["assistant", "user"],
+                        "source_roles": ["llm", "model", "assistant", "user"],
                         "source_hook_types": ["before_llm", "after_llm"],
                         "source_codex_events": ["Stop", "UserPromptSubmit"],
-                        "source_role_counts": {"assistant": 1, "user": 1},
+                        "source_role_counts": {"llm": 1, "model": 2, "assistant": 1, "user": 1},
                         "source_hook_type_counts": {"before_llm": 1, "after_llm": 1},
                         "source_codex_event_counts": {"Stop": 1, "UserPromptSubmit": 1},
                         "profile_promotion_summary": [
@@ -787,7 +787,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                                 "entity_name": "threshold_commit",
                                 "source_session_ids": ["codex-session-threshold"],
                                 "source_entity_count": 1,
-                                "source_roles": ["assistant", "user"],
+                                "source_roles": ["model", "assistant", "user"],
                                 "source_hook_types": ["before_llm", "after_llm"],
                                 "source_codex_events": ["Stop", "UserPromptSubmit"],
                             }
@@ -828,7 +828,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(["assistant", "user"], auto_batch["source_roles"])
         self.assertEqual(["before_llm", "after_llm"], auto_batch["source_hook_types"])
         self.assertEqual(["Stop", "UserPromptSubmit"], auto_batch["source_codex_events"])
-        self.assertEqual({"assistant": 1, "user": 1}, auto_batch["source_role_counts"])
+        self.assertEqual({"assistant": 4, "user": 1}, auto_batch["source_role_counts"])
         self.assertEqual({"before_llm": 1, "after_llm": 1}, auto_batch["source_hook_type_counts"])
         self.assertEqual({"Stop": 1, "UserPromptSubmit": 1}, auto_batch["source_codex_event_counts"])
         self.assertEqual(801, auto_batch["profile_promotion_summary"][0]["profile_entity_hash"])
@@ -859,7 +859,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(["assistant", "user"], decision["source_roles"])
         self.assertEqual(["before_llm", "after_llm"], decision["source_hook_types"])
         self.assertEqual(["Stop", "UserPromptSubmit"], decision["source_codex_events"])
-        self.assertEqual({"assistant": 1, "user": 1}, decision["source_role_counts"])
+        self.assertEqual({"assistant": 4, "user": 1}, decision["source_role_counts"])
         self.assertEqual({"before_llm": 1, "after_llm": 1}, decision["source_hook_type_counts"])
         self.assertEqual({"Stop": 1, "UserPromptSubmit": 1}, decision["source_codex_event_counts"])
         self.assertEqual(801, decision["profile_promotion_summary"][0]["profile_entity_hash"])
@@ -867,7 +867,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertTrue(lineage["user_prompt_captured"])
         self.assertTrue(lineage["assistant_response_captured"])
         self.assertFalse(lineage["tool_evidence_captured"])
-        self.assertEqual({"assistant": 1, "user": 1}, lineage["source_role_counts"])
+        self.assertEqual({"assistant": 4, "user": 1}, lineage["source_role_counts"])
         self.assertEqual({"before_llm": 1, "after_llm": 1}, lineage["source_hook_type_counts"])
         self.assertEqual({"Stop": 1, "UserPromptSubmit": 1}, lineage["source_codex_event_counts"])
         self.assertEqual(1, lineage["profile_promotion_count"])
@@ -1286,8 +1286,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "memory_scope": "user_profile",
                         "session_continuity": "cross_session",
                         "entity_type": "assistant_decision",
-                        "source_roles": ["assistant"],
-                        "source_role_counts": {"assistant": 4, "user": 1},
+                        "source_roles": ["llm", "model", "assistant"],
+                        "source_role_counts": {"llm": 1, "model": 1, "assistant": 4, "user": 1},
                         "source_hook_types": ["after_llm"],
                         "source_hook_type_counts": {"after_llm": 2},
                         "text": "assistant: keep cross-session profile decision",
@@ -1340,11 +1340,13 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("hook_type[after_llm=", additional)
         self.assertIn("tool_result=", additional)
         self.assertIn("codex_event[PostToolUse=", additional)
-        self.assertIn("source_messages[assistant=4, tool=3, user=1]", additional)
+        self.assertIn("source_messages[assistant=6, tool=3, user=1]", additional)
+        self.assertNotIn("source_messages[llm=", additional)
+        self.assertNotIn("source_messages[model=", additional)
         self.assertIn("source_hooks[after_llm=2, tool_result=2]", additional)
         self.assertIn("source_codex_events[PostToolUse=2]", additional)
         self.assertIn("Retrieved memory lineage:", additional)
-        self.assertIn("roles[assistant=4,tool=3,user=1]", additional)
+        self.assertIn("roles[assistant=6,tool=3,user=1]", additional)
         self.assertIn("hooks[after_llm=2,tool_result=2]", additional)
         self.assertIn("codex_events[PostToolUse=2]", additional)
         self.assertIn("captured[user_prompt,assistant_response,tool_evidence]", additional)

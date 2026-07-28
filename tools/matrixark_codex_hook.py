@@ -16,12 +16,62 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from tools.matrixark_mcp_core import _mcp_debug_log, memory_hierarchy_contract_from_recall_policy
+    from tools.matrixark_mcp_core import _mcp_debug_log, memory_hierarchy_contract_from_recall_policy, normalize_message_role
 except ModuleNotFoundError:
-    from matrixark_mcp_core import _mcp_debug_log, memory_hierarchy_contract_from_recall_policy
+    from matrixark_mcp_core import _mcp_debug_log, memory_hierarchy_contract_from_recall_policy, normalize_message_role
 
 
 Json = dict[str, Any]
+
+
+def normalized_role_list(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    return sorted({
+        role
+        for value in values
+        for role in [normalize_message_role(value)]
+        if role
+    })
+
+
+def normalized_role_counts(counts: Any, fallback_values: Any = None) -> Json:
+    normalized: Json = {}
+    counted = False
+    if isinstance(counts, dict):
+        for key, value in counts.items():
+            role = normalize_message_role(key)
+            if not role:
+                continue
+            try:
+                amount = int(value or 0)
+            except (TypeError, ValueError):
+                amount = 0
+            if amount > 0:
+                normalized[role] = int(normalized.get(role, 0)) + amount
+                counted = True
+    if counted:
+        return normalized
+    for role in normalized_role_list(fallback_values):
+        normalized[role] = int(normalized.get(role, 0)) + 1
+    return normalized
+
+
+def normalize_role_lineage_fields(record: Json) -> Json:
+    normalized = dict(record)
+    roles = normalized_role_list(normalized.get("source_roles"))
+    role_counts = normalized_role_counts(normalized.get("source_role_counts"), normalized.get("source_roles"))
+    if roles:
+        normalized["source_roles"] = roles
+    if role_counts:
+        normalized["source_role_counts"] = role_counts
+    promotions = normalized.get("profile_promotion_summary")
+    if isinstance(promotions, list):
+        normalized["profile_promotion_summary"] = [
+            normalize_role_lineage_fields(item) if isinstance(item, dict) else item
+            for item in promotions
+        ]
+    return normalized
 
 
 def _default_additional_context_char_limit() -> int:
@@ -427,10 +477,10 @@ def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:
         bucket["refs"] += 1
         bucket["tokens"] += token_estimate
 
-    def add_source_counts(bucket_name: str, counts: Any, fallback_names: list[Any]) -> None:
+    def add_source_counts(bucket_name: str, counts: Any, fallback_names: list[Any], *, normalize_roles: bool = False) -> None:
         if isinstance(counts, dict) and counts:
             for name, count in counts.items():
-                label = str(name or "").strip()
+                label = normalize_message_role(name) if normalize_roles else str(name or "").strip()
                 if not label:
                     continue
                 try:
@@ -441,7 +491,7 @@ def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:
                     budget[bucket_name][label] = int(budget[bucket_name].get(label, 0)) + amount
             return
         for name in fallback_names:
-            label = str(name or "").strip()
+            label = normalize_message_role(name) if normalize_roles else str(name or "").strip()
             if label:
                 budget[bucket_name][label] = int(budget[bucket_name].get(label, 0)) + 1
 
@@ -481,7 +531,7 @@ def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:
         if any(phase != "final" for phase in source_extraction_phases):
             budget["provisional_ref_count"] += 1
         entity_type = str(ref.get("entity_type") or "")
-        source_roles = ref.get("source_roles") if isinstance(ref.get("source_roles"), list) else []
+        source_roles = normalized_role_list(ref.get("source_roles"))
         hook_types = ref.get("source_hook_types") if isinstance(ref.get("source_hook_types"), list) else []
         codex_events = ref.get("source_codex_events") if isinstance(ref.get("source_codex_events"), list) else []
         tool_evidence_terms = (
@@ -510,7 +560,7 @@ def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:
             add("by_hook_type", str(hook_type or ""), token_estimate)
         for codex_event in codex_events:
             add("by_codex_event", str(codex_event or ""), token_estimate)
-        add_source_counts("source_message_counts_by_role", ref.get("source_role_counts"), source_roles)
+        add_source_counts("source_message_counts_by_role", ref.get("source_role_counts"), source_roles, normalize_roles=True)
         add_source_counts("source_hook_counts_by_type", ref.get("source_hook_type_counts"), hook_types)
         add_source_counts("source_codex_event_counts_by_event", ref.get("source_codex_event_counts"), codex_events)
     return budget
@@ -545,6 +595,7 @@ def retrieval_session_identity_from_retrieve(pack: Json | None, *, session_id_so
 def session_commit_memory_layers_written(commit: Json | None) -> Json:
     if not isinstance(commit, dict) or not commit:
         return {}
+    commit = normalize_role_lineage_fields(commit)
     entities_written = _int_field(commit, "entities_written")
     profile_entities_written = _int_field(commit, "profile_entities_written")
     summary_refresh = commit.get("summary_refresh") if isinstance(commit.get("summary_refresh"), dict) else {}
@@ -575,6 +626,7 @@ def session_commit_memory_layers_written(commit: Json | None) -> Json:
 def session_commit_summary(commit: Json | None) -> Json:
     if not isinstance(commit, dict) or not commit:
         return {}
+    commit = normalize_role_lineage_fields(commit)
     trigger_evidence = commit.get("trigger_evidence") if isinstance(commit.get("trigger_evidence"), dict) else {}
     entities_written = _int_field(commit, "entities_written")
     profile_entities_written = _int_field(commit, "profile_entities_written")
@@ -632,16 +684,19 @@ def memory_lineage_summary(*sources: Json | None) -> Json:
     profile_promotion_count = 0
     promoted_source_session_ids: set[str] = set()
 
-    def add_counts(target: Json, counts: Any, values: Any = None) -> None:
+    def add_counts(target: Json, counts: Any, values: Any = None, *, normalize_roles: bool = False) -> None:
         counted = False
         if isinstance(counts, dict):
             for key, value in counts.items():
+                label = normalize_message_role(key) if normalize_roles else str(key)
+                if not label:
+                    continue
                 try:
                     count = int(value or 0)
                 except (TypeError, ValueError):
                     continue
                 if count > 0:
-                    target[str(key)] = int(target.get(str(key), 0)) + count
+                    target[label] = int(target.get(label, 0)) + count
                     counted = True
         if counted:
             return
@@ -649,7 +704,9 @@ def memory_lineage_summary(*sources: Json | None) -> Json:
             for value in values:
                 if value in (None, "", [], {}):
                     continue
-                key = str(value)
+                key = normalize_message_role(value) if normalize_roles else str(value)
+                if not key:
+                    continue
                 target[key] = int(target.get(key, 0)) + 1
 
     for source in sources:
@@ -670,12 +727,12 @@ def memory_lineage_summary(*sources: Json | None) -> Json:
         }.get(str(source.get("entity_type") or "").strip().lower())
         if entity_role and not role_counts and not role_values:
             role_values = [entity_role]
-        add_counts(source_role_counts, role_counts, role_values)
+        add_counts(source_role_counts, role_counts, role_values, normalize_roles=True)
         add_counts(source_hook_type_counts, source.get("source_hook_type_counts"), source.get("source_hook_types"))
         add_counts(source_codex_event_counts, source.get("source_codex_event_counts"), source.get("source_codex_events"))
         memory_layers = source.get("memory_layers_written") if isinstance(source.get("memory_layers_written"), dict) else {}
         if not role_counts and not role_values:
-            add_counts(source_role_counts, None, memory_layers.get("source_roles"))
+            add_counts(source_role_counts, None, memory_layers.get("source_roles"), normalize_roles=True)
         if not source.get("source_hook_type_counts") and not source.get("source_hook_types"):
             add_counts(source_hook_type_counts, None, memory_layers.get("source_hook_types"))
         if not source.get("source_codex_event_counts") and not source.get("source_codex_events"):
@@ -793,6 +850,7 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
             if value not in (None, "", [], {}):
                 summary[field] = value
     if auto_batch:
+        auto_batch = normalize_role_lineage_fields(auto_batch)
         summary["auto_batch_extract_status"] = auto_batch.get("status")
         summary["decision"] = "committed" if auto_batch.get("status") in {"accepted", "committed"} else "attempted"
         summary["reason"] = auto_batch.get("reason") or auto_batch.get("commit_reason")
@@ -802,6 +860,7 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         summary["profile_promotion_summary"] = auto_batch.get("profile_promotion_summary")
         add_commit_evidence(auto_batch)
     elif session_commit:
+        session_commit = normalize_role_lineage_fields(session_commit)
         summary["decision"] = "boundary_commit"
         summary["reason"] = session_commit.get("reason") or session_commit.get("commit_reason")
         summary["source_roles"] = session_commit.get("source_roles")
@@ -810,6 +869,7 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         summary["profile_promotion_summary"] = session_commit.get("profile_promotion_summary")
         add_commit_evidence(session_commit)
     elif idle_commit and idle_commit.get("status") in {"accepted", "committed"}:
+        idle_commit = normalize_role_lineage_fields(idle_commit)
         summary["auto_batch_extract_status"] = idle_commit.get("status")
         summary["decision"] = "idle_commit"
         summary["reason"] = idle_commit.get("reason") or idle_commit.get("commit_reason") or "idle_timeout"
