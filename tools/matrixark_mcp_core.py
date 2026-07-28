@@ -2604,6 +2604,34 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     lower = text.lower()
     source_event_ids = envelope.get("source_event_ids", [])
     source_refs = [str(ref) for ref in source_event_ids] if isinstance(source_event_ids, list) and source_event_ids else [str(index) for index, _ in enumerate(messages)]
+    user_messages = [
+        item
+        for item in messages
+        if str(item.get("role") or "").lower() in {"user", "human"}
+        and str(item.get("content") or "").strip()
+    ]
+    user_text = text_from_messages(user_messages) if user_messages else ""
+    if user_text:
+        for match in re.finditer(
+            r"\b(?:remember(?:\s+that)?|please\s+always|always|keep|use)\b[:\s]+([^.;!?\n]{4,180})",
+            user_text,
+            re.IGNORECASE,
+        ):
+            directive = clean_patch_value(match.group(1))
+            if not directive:
+                continue
+            state = summarize_text(f"user directive: {directive}", limit=220)
+            entities.append(
+                {
+                    "entity_type": "preference",
+                    "entity_name": "preference",
+                    "state": state,
+                    "confidence": 0.84,
+                    "source_refs": source_refs,
+                    "operator": normalize_entity_operator(None, "preference"),
+                    "field_patches": [entity_patch("", summarize_text(state, limit=180))],
+                }
+            )
     tool_messages = [
         item
         for item in messages
