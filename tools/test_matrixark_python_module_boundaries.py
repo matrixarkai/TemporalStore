@@ -208,6 +208,45 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         )
         self.assertFalse(report_mod.parse_args([]).require_extraction_input_coverage)
 
+    def test_recent_ingestion_report_summarizes_strict_memory_gate(self) -> None:
+        report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
+        healthy = {
+            "serving_visibility": {"serving_visibility_pass": True},
+            "extraction_input_coverage": {"extraction_input_coverage_pass": True},
+            "retrieval_memory_coverage": {"retrieval_memory_coverage_pass": True},
+        }
+
+        self.assertEqual(
+            {
+                "strict_memory_gate_pass": True,
+                "strict_memory_gate_failed": [],
+                "strict_memory_gate_status": "pass",
+            },
+            report_mod.strict_memory_gate_summary(healthy),
+        )
+
+        broken = {
+            "serving_visibility": {"serving_visibility_pass": False},
+            "extraction_input_coverage": {"extraction_input_coverage_pass": True},
+            "retrieval_memory_coverage": {"retrieval_memory_coverage_pass": False},
+        }
+        summary = report_mod.strict_memory_gate_summary(broken)
+
+        self.assertFalse(summary["strict_memory_gate_pass"])
+        self.assertEqual(["serving_visibility", "retrieval_memory_coverage"], summary["strict_memory_gate_failed"])
+        self.assertEqual("gap", summary["strict_memory_gate_status"])
+
+    def test_recent_ingestion_report_strict_memory_gate_requirement_flags(self) -> None:
+        report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
+
+        self.assertTrue(report_mod.require_all_memory_gates("1"))
+        self.assertTrue(report_mod.require_all_memory_gates("strict"))
+        self.assertTrue(report_mod.require_all_memory_gates("required"))
+        self.assertFalse(report_mod.require_all_memory_gates(""))
+        self.assertFalse(report_mod.require_all_memory_gates("false"))
+        self.assertTrue(report_mod.parse_args(["--require-all-memory-gates"]).require_all_memory_gates)
+        self.assertFalse(report_mod.parse_args([]).require_all_memory_gates)
+
     def test_recent_ingestion_report_tracks_retrieval_memory_coverage(self) -> None:
         report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
         backend = report_mod.summarize_backend(
