@@ -159,6 +159,102 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(report_mod.parse_args(["--require-serving-visibility"]).require_serving_visibility)
         self.assertFalse(report_mod.parse_args([]).require_serving_visibility)
 
+    def test_recent_ingestion_report_tracks_extraction_input_role_coverage(self) -> None:
+        report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
+        scope = {"session_id": "codex-real-workflow"}
+        raw_rows = [
+            {
+                "sequence": 1,
+                "record": {
+                    "record_type": "agent_message",
+                    "role": "user",
+                    "scope": scope,
+                    "metadata": {"hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
+                    "text": "How does batch extraction use my prompt, assistant answer, and tool result?",
+                },
+            },
+            {
+                "sequence": 2,
+                "record": {
+                    "record_type": "agent_message",
+                    "role": "assistant",
+                    "scope": scope,
+                    "metadata": {"hook_type": "after_llm", "codex_event": "AssistantResponse"},
+                    "text": "Decision: extract bounded user, assistant, and tool evidence into memory.",
+                },
+            },
+            {
+                "sequence": 3,
+                "record": {
+                    "record_type": "agent_message",
+                    "role": "tool",
+                    "scope": scope,
+                    "metadata": {"hook_type": "tool_result", "codex_event": "PostToolUse"},
+                    "text": "Exit code: 0; Ran 141 tests; OK",
+                },
+            },
+        ]
+        serving_rows = [
+            {
+                "sequence": 10,
+                "record": {
+                    "record_type": "context_entity",
+                    "source_session_ids": ["codex-real-workflow"],
+                    "source_role_counts": {"user": 1, "assistant": 1, "tool": 1},
+                    "source_hook_type_counts": {"before_llm": 1, "after_llm": 1, "tool_result": 1},
+                    "source_codex_event_counts": {
+                        "UserPromptSubmit": 1,
+                        "AssistantResponse": 1,
+                        "PostToolUse": 1,
+                    },
+                    "entity_type": "tool_evidence",
+                },
+            }
+        ]
+
+        backend = report_mod.summarize_backend("test", "matrixark:test", 3, 0, raw_rows, 1, 0, serving_rows)
+        batch = backend["recent_extraction_input_batches"][0]
+
+        self.assertEqual("codex-real-workflow", batch["session_id"])
+        self.assertEqual(3, batch["message_count"])
+        self.assertEqual({"assistant": 1, "tool": 1, "user": 1}, batch["source_role_counts"])
+        self.assertEqual("ok", batch["source_role_coverage_status"])
+        self.assertEqual([], backend["extraction_input_coverage_gaps"])
+        self.assertIn("matrixark_session_commit", batch["extraction_input_shape"])
+
+    def test_recent_ingestion_report_flags_missing_tool_extraction_coverage(self) -> None:
+        report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
+        raw_rows = [
+            {
+                "sequence": 1,
+                "record": {
+                    "record_type": "agent_message",
+                    "role": "tool",
+                    "scope": {"session_id": "codex-tool-gap"},
+                    "metadata": {"hook_type": "tool_result", "codex_event": "PostToolUse"},
+                    "text": "Exit code: 0; pushed aa12aa17",
+                },
+            }
+        ]
+        serving_rows = [
+            {
+                "sequence": 2,
+                "record": {
+                    "record_type": "context_entity",
+                    "source_session_ids": ["codex-tool-gap"],
+                    "source_role_counts": {"user": 1},
+                },
+            }
+        ]
+
+        backend = report_mod.summarize_backend("test", "matrixark:test", 1, 0, raw_rows, 1, 0, serving_rows)
+
+        self.assertEqual("gap", backend["extraction_input_coverage_status"])
+        self.assertEqual(
+            ["source_role:tool:missing_from_derived_serving_memory"],
+            backend["extraction_input_coverage_gaps"][0]["gaps"],
+        )
+
     def test_moduleized_request_runs_pre_retrieval_refresh_and_derives_budgets(self) -> None:
         request_mod = importlib.import_module("tools.matrixark_mcp_retrieve_request")
 

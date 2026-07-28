@@ -53,8 +53,37 @@ def message_text(record: dict[str, Any]) -> str:
     return ""
 
 
+def compact_count_map(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    compact: dict[str, int] = {}
+    for key, count in value.items():
+        name = str(key or "").strip()
+        if not name:
+            continue
+        try:
+            amount = int(count or 0)
+        except (TypeError, ValueError):
+            continue
+        if amount > 0:
+            compact[name] = compact.get(name, 0) + amount
+    return compact
+
+
+def add_count(target: dict[str, int], key: Any, count: int = 1) -> None:
+    name = str(key or "").strip()
+    if name and count > 0:
+        target[name] = target.get(name, 0) + count
+
+
+def merge_count_map(target: dict[str, int], value: Any) -> None:
+    for key, count in compact_count_map(value).items():
+        target[key] = target.get(key, 0) + count
+
+
 def row(record: dict[str, Any], sequence: int) -> dict[str, Any]:
     hook = record.get("agent_hook") if isinstance(record.get("agent_hook"), dict) else {}
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
     messages = record.get("messages") if isinstance(record.get("messages"), list) else []
     role = record.get("role")
     if not role and messages and isinstance(messages[0], dict):
@@ -70,12 +99,19 @@ def row(record: dict[str, Any], sequence: int) -> dict[str, Any]:
         "node_path": record.get("node_path") if isinstance(record.get("node_path"), list) else [],
         "thread_id": record.get("thread_id") or "",
         "turn_id": record.get("turn_id") or "",
-        "codex_api_event": record.get("codex_api_event") or hook.get("trigger") or "",
+        "codex_api_event": record.get("codex_api_event") or metadata.get("codex_event") or hook.get("trigger") or "",
         "hook_id": record.get("hook_id") or hook.get("hook_id") or "",
-        "hook_type": record.get("hook_type") or hook.get("hook_type") or "",
+        "hook_type": record.get("hook_type") or metadata.get("hook_type") or hook.get("hook_type") or "",
         "hook_observed_at_ms": event_ms(record),
         "synthetic": bool(record.get("synthetic", False)),
         "text": short(message_text(record)),
+        "source_roles": record.get("source_roles") if isinstance(record.get("source_roles"), list) else metadata.get("source_roles", []),
+        "source_hook_types": record.get("source_hook_types") if isinstance(record.get("source_hook_types"), list) else metadata.get("source_hook_types", []),
+        "source_codex_events": record.get("source_codex_events") if isinstance(record.get("source_codex_events"), list) else metadata.get("source_codex_events", []),
+        "source_session_ids": record.get("source_session_ids") if isinstance(record.get("source_session_ids"), list) else metadata.get("source_session_ids", []),
+        "source_role_counts": compact_count_map(record.get("source_role_counts") or metadata.get("source_role_counts")),
+        "source_hook_type_counts": compact_count_map(record.get("source_hook_type_counts") or metadata.get("source_hook_type_counts")),
+        "source_codex_event_counts": compact_count_map(record.get("source_codex_event_counts") or metadata.get("source_codex_event_counts")),
         "write_path": ((record.get("matrixark_write_debug") or {}).get("write_path") if isinstance(record.get("matrixark_write_debug"), dict) else ""),
     }
 
@@ -150,6 +186,115 @@ def serving_visibility_summary(report: dict[str, Any]) -> dict[str, Any]:
 
 def require_serving_visibility(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on", "required", "require"}
+
+
+def row_source_roles(item: dict[str, Any]) -> list[str]:
+    roles = set()
+    role = str(item.get("role") or "").strip()
+    if role:
+        roles.add(role)
+    for role in item.get("source_roles") if isinstance(item.get("source_roles"), list) else []:
+        role_name = str(role or "").strip()
+        if role_name:
+            roles.add(role_name)
+    for role in compact_count_map(item.get("source_role_counts")):
+        roles.add(role)
+    return sorted(roles)
+
+
+def serving_row_matches_session(item: dict[str, Any], session_id: str) -> bool:
+    if not session_id:
+        return False
+    if item.get("session_id") == session_id:
+        return True
+    source_session_ids = item.get("source_session_ids") if isinstance(item.get("source_session_ids"), list) else []
+    return session_id in {str(value) for value in source_session_ids}
+
+
+def extraction_input_batches(
+    raw_records: list[dict[str, Any]],
+    serving_records: list[dict[str, Any]],
+    *,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for item in raw_records:
+        if item.get("record_type") != "agent_message" or item.get("synthetic"):
+            continue
+        session_id = str(item.get("session_id") or item.get("thread_id") or "unknown_session")
+        batch = grouped.setdefault(
+            session_id,
+            {
+                "session_id": session_id,
+                "source_event_sequences": [],
+                "source_role_counts": {},
+                "source_hook_type_counts": {},
+                "source_codex_event_counts": {},
+                "messages": [],
+            },
+        )
+        batch["source_event_sequences"].append(item.get("sequence"))
+        roles = row_source_roles(item) or ["unknown"]
+        for role in roles:
+            add_count(batch["source_role_counts"], role)
+        add_count(batch["source_hook_type_counts"], item.get("hook_type") or "unknown")
+        add_count(batch["source_codex_event_counts"], item.get("codex_api_event") or "unknown")
+        batch["messages"].append(
+            {
+                "sequence": item.get("sequence"),
+                "role": roles[0] if len(roles) == 1 else ",".join(roles),
+                "hook_type": item.get("hook_type") or "",
+                "codex_api_event": item.get("codex_api_event") or "",
+                "text": item.get("text") or "",
+            }
+        )
+
+    batches: list[dict[str, Any]] = []
+    for session_id, batch in grouped.items():
+        derived_role_counts: dict[str, int] = {}
+        derived_hook_type_counts: dict[str, int] = {}
+        derived_codex_event_counts: dict[str, int] = {}
+        derived_records = [
+            item
+            for item in serving_records
+            if item.get("record_type")
+            in {"context_event", "context_segment", "context_entity", "context_index", "context_summary", "context_embedding"}
+            and serving_row_matches_session(item, session_id)
+        ]
+        for item in derived_records:
+            merge_count_map(derived_role_counts, item.get("source_role_counts"))
+            merge_count_map(derived_hook_type_counts, item.get("source_hook_type_counts"))
+            merge_count_map(derived_codex_event_counts, item.get("source_codex_event_counts"))
+            for role in item.get("source_roles") if isinstance(item.get("source_roles"), list) else []:
+                add_count(derived_role_counts, role)
+            for hook_type in item.get("source_hook_types") if isinstance(item.get("source_hook_types"), list) else []:
+                add_count(derived_hook_type_counts, hook_type)
+            for codex_event in item.get("source_codex_events") if isinstance(item.get("source_codex_events"), list) else []:
+                add_count(derived_codex_event_counts, codex_event)
+        expected_roles = sorted(
+            role
+            for role in batch["source_role_counts"]
+            if role in {"user", "assistant", "tool", "system", "llm", "model"}
+        )
+        derived_roles = sorted(derived_role_counts)
+        missing_roles = [role for role in expected_roles if role not in derived_role_counts]
+        coverage_gaps = [f"source_role:{role}:missing_from_derived_serving_memory" for role in missing_roles]
+        batches.append(
+            {
+                **batch,
+                "message_count": len(batch["messages"]),
+                "derived_record_count": len(derived_records),
+                "derived_source_role_counts": derived_role_counts,
+                "derived_source_hook_type_counts": derived_hook_type_counts,
+                "derived_source_codex_event_counts": derived_codex_event_counts,
+                "expected_source_roles": expected_roles,
+                "derived_source_roles": derived_roles,
+                "source_role_coverage_status": "gap" if coverage_gaps else "ok",
+                "source_role_coverage_gaps": coverage_gaps,
+                "extraction_input_shape": "bounded agent_message records grouped by session and passed to matrixark_session_commit/matrixark_batch_extract",
+            }
+        )
+    return sorted(batches, key=lambda item: max(item["source_event_sequences"] or [-1]), reverse=True)[:limit]
 
 
 def rust_exec(command: dict[str, Any]) -> dict[str, Any]:
@@ -242,6 +387,15 @@ def summarize_backend(name: str, prefix: str, raw_count: int, raw_hot_count: int
     context_embeddings = [item for item in serving_records if item["record_type"] == "context_embedding"]
     profile_records = [item for item in serving_records if is_profile_record(item)]
     resource_skill_records = [item for item in serving_records if is_resource_or_skill_record(item)]
+    extraction_batches = extraction_input_batches(raw_records, serving_records)
+    extraction_input_coverage_gaps = [
+        {
+            "session_id": batch["session_id"],
+            "gaps": batch["source_role_coverage_gaps"],
+        }
+        for batch in extraction_batches
+        if batch["source_role_coverage_gaps"]
+    ]
     visibility_gaps = serving_visibility_gaps(
         serving_types=serving_types,
         context_events=context_events,
@@ -262,6 +416,9 @@ def summarize_backend(name: str, prefix: str, raw_count: int, raw_hot_count: int
         "recent_raw_type_counts": dict(raw_types),
         "recent_serving_type_counts": dict(serving_types),
         "recent_real_user_prompts": user_prompts[:8],
+        "recent_extraction_input_batches": extraction_batches,
+        "extraction_input_coverage_status": "gap" if extraction_input_coverage_gaps else "ok",
+        "extraction_input_coverage_gaps": extraction_input_coverage_gaps,
         "recent_context_events": context_events[:8],
         "recent_context_embeddings": context_embeddings[:8],
         "recent_profile_records": profile_records[:8],
@@ -334,6 +491,34 @@ def render_markdown(report: dict[str, Any]) -> str:
     for backend in report["backends"]:
         lines.extend(["", f"## {backend['backend']} Recent Real User Prompts", ""])
         lines.append(render_table(["Seq", "Event", "Session", "Turn", "Hook", "Text"], [[r["sequence"], r["codex_api_event"], r["session_id"], r["turn_id"], r["hook_id"] if "hook_id" in r else r["hook_type"], r["text"]] for r in backend["recent_real_user_prompts"]]))
+        lines.extend(["", f"## {backend['backend']} Extraction Input Batches", ""])
+        lines.append(
+            render_table(
+                ["Session", "Messages", "Source roles", "Derived roles", "Coverage", "Gaps"],
+                [
+                    [
+                        batch["session_id"],
+                        batch["message_count"],
+                        json.dumps(batch["source_role_counts"], sort_keys=True),
+                        json.dumps(batch["derived_source_role_counts"], sort_keys=True),
+                        batch["source_role_coverage_status"],
+                        ",".join(batch["source_role_coverage_gaps"]),
+                    ]
+                    for batch in backend["recent_extraction_input_batches"]
+                ],
+            )
+        )
+        for batch in backend["recent_extraction_input_batches"][:3]:
+            lines.extend(["", f"### Extraction Input `{batch['session_id']}`", ""])
+            lines.append(
+                render_table(
+                    ["Seq", "Role", "Hook", "Event", "Bounded Text"],
+                    [
+                        [item["sequence"], item["role"], item["hook_type"], item["codex_api_event"], item["text"]]
+                        for item in batch["messages"][:8]
+                    ],
+                )
+            )
         lines.extend(["", f"## {backend['backend']} Context Events", ""])
         lines.append(render_table(["Seq", "Event", "Session", "Text"], [[r["sequence"], r["codex_api_event"], r["session_id"], r["text"]] for r in backend["recent_context_events"]]))
         lines.extend(["", f"## {backend['backend']} Embeddings/Profile/Resources", ""])
