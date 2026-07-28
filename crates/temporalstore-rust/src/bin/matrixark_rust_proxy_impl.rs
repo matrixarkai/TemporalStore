@@ -2030,6 +2030,28 @@ fn native_serving_refs(refs: &[Value]) -> Vec<Value> {
     refs.iter().cloned().map(native_serving_ref).collect()
 }
 
+fn native_serving_dropped_refs(mut dropped_refs: Value) -> Value {
+    if context_pack_debug_lineage_enabled() {
+        return dropped_refs;
+    }
+    if let Some(object) = dropped_refs.as_object_mut() {
+        let dropped_ref_count = object
+            .get("refs")
+            .and_then(Value::as_array)
+            .map(|refs| refs.len())
+            .unwrap_or(0);
+        object.remove("refs");
+        if dropped_ref_count > 0 {
+            object.insert(
+                "dropped_ref_detail_available_in_audit".to_string(),
+                json!(true),
+            );
+            object.insert("dropped_ref_count".to_string(), json!(dropped_ref_count));
+        }
+    }
+    dropped_refs
+}
+
 fn increment_layer_bucket(breakdown: &mut Value, bucket_name: &str, key: &str, tokens: u64) {
     let Some(bucket_map) = breakdown
         .get_mut(bucket_name)
@@ -3452,14 +3474,16 @@ fn retrieve_context_pack_native(
     );
     let memory_layer_pressure =
         memory_layer_pressure_summary(&memory_layer_budget, &dropped_memory_layer_budget);
-    let pack = json!({
-        "context_pack_id": context_pack_id,
-        "query": query,
-        "question_type": question_type,
-        "selected_ref_counts": selected_counts,
-        "remote_context_refs": serving_selected_refs,
-        "selected_refs": serving_selected_refs,
-        "dropped_refs": {
+    let serving_dropped_refs = native_serving_dropped_refs(json!({
+        "over_budget": dropped_over_budget,
+        "cross_session_budget": dropped_cross_budget,
+        "cross_session_session_cap": dropped_cross_session_cap,
+        "cross_session_candidate_cap": dropped_cross_candidate_cap,
+        "source_role_budget": dropped_source_role_budget,
+        "low_score": dropped_low_score,
+        "duplicate_ref": dropped_duplicate_ref,
+        "policy_ref": dropped_policy_ref,
+        "reason_counts": {
             "over_budget": dropped_over_budget,
             "cross_session_budget": dropped_cross_budget,
             "cross_session_session_cap": dropped_cross_session_cap,
@@ -3468,19 +3492,18 @@ fn retrieve_context_pack_native(
             "low_score": dropped_low_score,
             "duplicate_ref": dropped_duplicate_ref,
             "policy_ref": dropped_policy_ref,
-            "reason_counts": {
-                "over_budget": dropped_over_budget,
-                "cross_session_budget": dropped_cross_budget,
-                "cross_session_session_cap": dropped_cross_session_cap,
-                "cross_session_candidate_cap": dropped_cross_candidate_cap,
-                "source_role_budget": dropped_source_role_budget,
-                "low_score": dropped_low_score,
-                "duplicate_ref": dropped_duplicate_ref,
-                "policy_ref": dropped_policy_ref,
-                "stale": dropped_stale_ref
-            },
-            "refs": dropped_ref_details
+            "stale": dropped_stale_ref
         },
+        "refs": dropped_ref_details
+    }));
+    let pack = json!({
+        "context_pack_id": context_pack_id,
+        "query": query,
+        "question_type": question_type,
+        "selected_ref_counts": selected_counts,
+        "remote_context_refs": serving_selected_refs,
+        "selected_refs": serving_selected_refs,
+        "dropped_refs": serving_dropped_refs,
         "used_context_tokens": used_tokens,
         "used_remote_context_tokens": used_tokens,
         "remote_context_budget_tokens": remote_budget,
@@ -5920,16 +5943,16 @@ mod tests {
                 .and_then(Value::as_u64),
             Some(1)
         );
-        let dropped_refs = pack
-            .pointer("/dropped_refs/refs")
-            .and_then(Value::as_array)
-            .expect("dropped ref audit details");
-        assert_eq!(dropped_refs.len(), 1);
+        assert!(pack.pointer("/dropped_refs/refs").is_none());
         assert_eq!(
-            dropped_refs[0]
-                .pointer("/source_role_budget_capped_roles/0")
-                .and_then(Value::as_str),
-            Some("assistant")
+            pack.pointer("/dropped_refs/dropped_ref_detail_available_in_audit")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            pack.pointer("/dropped_refs/dropped_ref_count")
+                .and_then(Value::as_u64),
+            Some(1)
         );
 
         env::set_var("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", "1");
@@ -5965,6 +5988,17 @@ mod tests {
         assert!(debug_selected_refs
             .iter()
             .any(|value| value.get("source_codex_event_counts").is_some()));
+        let debug_dropped_refs = debug_pack
+            .pointer("/dropped_refs/refs")
+            .and_then(Value::as_array)
+            .expect("debug dropped ref audit details");
+        assert_eq!(debug_dropped_refs.len(), 1);
+        assert_eq!(
+            debug_dropped_refs[0]
+                .pointer("/source_role_budget_capped_roles/0")
+                .and_then(Value::as_str),
+            Some("assistant")
+        );
         env::remove_var("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE");
 
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
