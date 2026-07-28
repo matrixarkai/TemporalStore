@@ -470,7 +470,28 @@ def retrieval_layer_summary_from_retrieve(pack: Json | None, refs: list[Json] | 
     async_readiness = retrieval_async_readiness_from_retrieve(pack)
     if async_readiness:
         layer_summary["async_pipeline_readiness"] = async_readiness
+    pre_summary_refresh = retrieval_pre_summary_refresh_from_retrieve(pack)
+    if pre_summary_refresh:
+        layer_summary["pre_retrieval_summary_refresh"] = pre_summary_refresh
     return layer_summary
+
+
+def retrieval_pre_summary_refresh_from_retrieve(pack: Json | None) -> Json:
+    if not isinstance(pack, dict):
+        return {}
+    pack_view = _context_pack_view(pack)
+    for source_name in ["retrieval_metrics", "recall_policy"]:
+        source = pack_view.get(source_name)
+        if isinstance(source, dict) and isinstance(source.get("pre_retrieval_summary_refresh"), dict):
+            return {
+                key: value
+                for key, value in source["pre_retrieval_summary_refresh"].items()
+                if value not in (None, "", [], {})
+            }
+    refresh = pack_view.get("pre_retrieval_summary_refresh")
+    if isinstance(refresh, dict):
+        return {key: value for key, value in refresh.items() if value not in (None, "", [], {})}
+    return {}
 
 
 def retrieval_memory_layer_pressure_from_retrieve(pack: Json | None) -> Json:
@@ -995,6 +1016,33 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
         else {}
     )
     pressure_bits = _format_memory_layer_pressure_bits(memory_layer_pressure)
+    pre_refresh = (
+        layer_summary.get("pre_retrieval_summary_refresh")
+        if isinstance(layer_summary.get("pre_retrieval_summary_refresh"), dict)
+        else {}
+    )
+    pre_refresh_bits = []
+    if pre_refresh:
+        pre_refresh_bits.append(f"enabled={str(bool(pre_refresh.get('enabled'))).lower()}")
+        if pre_refresh.get("status"):
+            pre_refresh_bits.append(f"status={pre_refresh.get('status')}")
+        for label, field in [
+            ("limit", "requested_limit"),
+            ("refreshed", "refreshed_count"),
+            ("compression", "compression_created_count"),
+        ]:
+            try:
+                value = int(pre_refresh.get(field) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                pre_refresh_bits.append(f"{label}={value}")
+        try:
+            elapsed_ms = float(pre_refresh.get("elapsed_ms") or 0.0)
+        except (TypeError, ValueError):
+            elapsed_ms = 0.0
+        if elapsed_ms > 0:
+            pre_refresh_bits.append(f"elapsed_ms={round(elapsed_ms, 3)}")
     readiness = layer_summary.get("async_pipeline_readiness")
     readiness_bits = []
     if isinstance(readiness, dict):
@@ -1083,6 +1131,8 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
         details.append("memory_layer_budget: " + "; ".join(budget_bits))
     if pressure_bits:
         details.append("memory_layer_pressure: " + "; ".join(pressure_bits))
+    if pre_refresh_bits:
+        details.append("summary_refresh[" + "; ".join(pre_refresh_bits) + "]")
     if readiness_bits:
         details.append("async_pipeline[" + "; ".join(readiness_bits) + "]")
     return "Layer summary: " + "; ".join(details) + "."
@@ -1609,6 +1659,7 @@ def codex_hook_output(
             "budget": retrieval_budget_summary_from_retrieve(retrieve),
             "budget_pressure": retrieval_budget_pressure_from_retrieve(retrieve),
             "layers": retrieval_layer_summary_from_retrieve(retrieve, emitted_refs),
+            "pre_retrieval_summary_refresh": retrieval_pre_summary_refresh_from_retrieve(retrieve),
             "async_pipeline_readiness": retrieval_async_readiness_from_retrieve(retrieve),
             "session_identity": retrieval_session_identity_from_retrieve(retrieve, session_id_source=session_id_source),
             "memory_hierarchy": retrieval_memory_hierarchy_contract_from_retrieve(retrieve),
@@ -1772,6 +1823,7 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
                 "retrieval_budget": retrieval_budget_summary_from_retrieve(result),
                 "retrieval_budget_pressure": retrieval_budget_pressure_from_retrieve(result),
                 "retrieval_layers": retrieval_layer_summary_from_retrieve(result, emitted_refs),
+                "pre_retrieval_summary_refresh": retrieval_pre_summary_refresh_from_retrieve(result),
                 "async_pipeline_readiness": retrieval_async_readiness_from_retrieve(result),
                 "session_identity": retrieval_session_identity_from_retrieve(
                     result,
@@ -1874,6 +1926,7 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
             "retrieval_budget": retrieve.get("budget"),
             "retrieval_budget_pressure": retrieve.get("budget_pressure"),
             "retrieval_layers": retrieve.get("layers"),
+            "pre_retrieval_summary_refresh": retrieve.get("pre_retrieval_summary_refresh"),
             "async_pipeline_readiness": retrieve.get("async_pipeline_readiness"),
             "memory_hierarchy": retrieve.get("memory_hierarchy"),
             "rendered_context_chars": retrieve.get("rendered_context_chars"),

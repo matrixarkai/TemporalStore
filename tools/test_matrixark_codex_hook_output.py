@@ -350,6 +350,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "cross_session_refs": 1,
                         "entity_bridge_refs": 1,
                         "profile_memory_refs": 1,
+                        "pre_retrieval_summary_refresh": {
+                            "enabled": True,
+                            "status": "refreshed",
+                            "requested_limit": 2,
+                            "refreshed_count": 1,
+                        },
                         "memory_layer_budget": {
                             "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 9}},
                             "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 9}},
@@ -362,6 +368,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "ready_for_retrieval": False,
                         "remaining_stages": ["entity", "summary"],
                         "freshness_warnings": ["async_pipeline_followup_pending"],
+                    },
+                    "pre_retrieval_summary_refresh": {
+                        "enabled": True,
+                        "status": "refreshed",
+                        "requested_limit": 2,
+                        "refreshed_count": 1,
                     },
                     "memory_hierarchy": {
                         "models": {
@@ -476,6 +488,14 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(
             1,
             record["output_summary"]["retrieval_layers"]["memory_layer_budget"]["final_session_boundary_ref_count"],
+        )
+        self.assertEqual(
+            {"enabled": True, "status": "refreshed", "requested_limit": 2, "refreshed_count": 1},
+            record["output_summary"]["pre_retrieval_summary_refresh"],
+        )
+        self.assertEqual(
+            record["output_summary"]["pre_retrieval_summary_refresh"],
+            record["output_summary"]["retrieval_layers"]["pre_retrieval_summary_refresh"],
         )
         self.assertEqual(2, record["output_summary"]["async_pipeline_readiness"]["task_count"])
         self.assertFalse(record["output_summary"]["async_pipeline_readiness"]["ready_for_retrieval"])
@@ -1008,6 +1028,14 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 },
                 "local_context_policy": {"local_context_count": 1},
                 "retrieval_metrics": {
+                    "pre_retrieval_summary_refresh": {
+                        "enabled": True,
+                        "status": "refreshed",
+                        "requested_limit": 2,
+                        "refreshed_count": 1,
+                        "compression_created_count": 1,
+                        "elapsed_ms": 3.25,
+                    },
                     "async_pipeline_readiness": {
                         "task_count": 4,
                         "ready_for_retrieval": False,
@@ -1257,6 +1285,21 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             output["retrieve"]["async_pipeline_readiness"]["pending_source_roles"],
         )
         self.assertEqual(
+            {
+                "enabled": True,
+                "status": "refreshed",
+                "requested_limit": 2,
+                "refreshed_count": 1,
+                "compression_created_count": 1,
+                "elapsed_ms": 3.25,
+            },
+            output["retrieve"]["pre_retrieval_summary_refresh"],
+        )
+        self.assertEqual(
+            output["retrieve"]["pre_retrieval_summary_refresh"],
+            output["retrieve"]["layers"]["pre_retrieval_summary_refresh"],
+        )
+        self.assertEqual(
             "local_first_remote_fill_remaining",
             output["retrieve"]["budget"]["budget_contract"]["mode"],
         )
@@ -1297,6 +1340,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("dropped=5", additional)
         self.assertIn(
             "flags[profile,cross_session,final,assistant,tool,hook_boundary_source,after_llm_source,stop_event_source,post_tool_use_source]",
+            additional,
+        )
+        self.assertIn(
+            "summary_refresh[enabled=true; status=refreshed; limit=2; refreshed=1; compression=1; elapsed_ms=3.25]",
             additional,
         )
         self.assertIn("pressure_dimensions[by_memory_scope,by_source_role]", additional)
