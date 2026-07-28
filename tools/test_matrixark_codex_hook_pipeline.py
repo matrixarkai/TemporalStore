@@ -75,6 +75,140 @@ class NativeCaptureLocalAdapter(MatrixArkLocalAdapter):
 
 
 class MatrixArkCodexHookPipelineTest(unittest.TestCase):
+    def assert_no_default_context_pack_debug_lineage(self, value: object) -> None:
+        hidden_keys = {
+            "debug_payload",
+            "lineage",
+            "memory_lineage",
+            "source_session_ids",
+            "source_roles",
+            "budget_source_roles",
+            "source_hook_types",
+            "source_codex_events",
+            "source_memory_scopes",
+            "source_session_continuities",
+            "source_extraction_phases",
+            "source_final_session_boundary_count",
+            "source_role_counts",
+            "budget_source_role_counts",
+            "source_hook_type_counts",
+            "source_codex_event_counts",
+            "source_message_counts_by_role",
+            "source_hook_counts_by_type",
+            "source_codex_event_counts_by_event",
+            "by_source_role",
+            "by_hook_type",
+            "by_codex_event",
+            "source_entity_hashes",
+            "source_entity_count",
+            "current_state_source_session_count",
+            "current_state_source_entity_count",
+        }
+        if isinstance(value, dict):
+            for key, child in value.items():
+                self.assertNotIn(key, hidden_keys)
+                self.assertNotIn("lineage", str(key).lower())
+                self.assertNotIn("debug_", str(key).lower())
+                self.assertNotIn("_debug", str(key).lower())
+                self.assert_no_default_context_pack_debug_lineage(child)
+        elif isinstance(value, list):
+            for child in value:
+                self.assert_no_default_context_pack_debug_lineage(child)
+
+    def test_context_pack_serving_hides_debug_lineage_recursively_by_default(self) -> None:
+        pack = {
+            "context_pack_id": "pack-debug-default",
+            "selected_refs": [
+                {
+                    "ref_type": "entity",
+                    "context_class": "entity",
+                    "text": "assistant decided to keep default context compact",
+                    "entity_type": "assistant_decision",
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "source_roles": ["assistant"],
+                    "source_role_counts": {"assistant": 2},
+                    "source_hook_types": ["after_llm"],
+                    "source_hook_type_counts": {"after_llm": 2},
+                    "source_codex_events": ["Stop"],
+                    "source_codex_event_counts": {"Stop": 2},
+                    "source_session_ids": ["session-a", "session-b"],
+                    "source_entity_hashes": ["aaa", "bbb"],
+                    "current_state_source_session_count": 2,
+                    "metadata": {
+                        "source_role_counts": {"assistant": 2},
+                        "debug_payload": {"raw": "hidden"},
+                        "custom_lineage_marker": "hidden",
+                    },
+                }
+            ],
+            "groups": [
+                {
+                    "type": "entity",
+                    "items": [
+                        {
+                            "text": "already serving-shaped ref",
+                            "source_role_counts": {"assistant": 1},
+                            "debug_payload": {"raw": "hidden"},
+                        }
+                    ],
+                }
+            ],
+            "retrieval_metrics": {
+                "memory_layer_budget": {
+                    "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 10}},
+                    "by_source_role": {"assistant": {"refs": 1, "tokens": 10}},
+                    "source_message_counts_by_role": {"assistant": 2},
+                },
+                "memory_layer_pressure": {
+                    "dropped_dimensions": ["by_source_role", "by_memory_scope"],
+                    "by_dimension": {
+                        "by_source_role": {"assistant": {"dropped_refs": 1}},
+                        "by_memory_scope": {"session": {"dropped_refs": 1}},
+                    },
+                    "assistant_source_message_pressure": True,
+                },
+            },
+            "recall_policy": {
+                "memory_layer_budget": {
+                    "by_source_role": {"assistant": {"refs": 1}},
+                    "source_message_counts_by_role": {"assistant": 2},
+                }
+            },
+        }
+        serving = compact_context_pack_for_serving(pack)
+        self.assert_no_default_context_pack_debug_lineage(serving)
+        self.assertEqual("pack-debug-default", serving["context_pack_id"])
+        self.assertEqual("assistant_decision", serving["groups"][0]["items"][0]["entity_type"])
+        self.assertIn("by_memory_scope", serving["memory_layer_budget"])
+        self.assertNotIn("by_source_role", serving["memory_layer_budget"])
+
+    def test_context_pack_serving_includes_debug_lineage_with_flag(self) -> None:
+        pack = {
+            "context_pack_id": "pack-debug-enabled",
+            "selected_refs": [
+                {
+                    "ref_type": "entity",
+                    "text": "assistant decision debug view",
+                    "entity_type": "assistant_decision",
+                    "source_roles": ["assistant"],
+                    "source_role_counts": {"assistant": 2},
+                    "source_hook_type_counts": {"after_llm": 2},
+                    "source_codex_event_counts": {"Stop": 2},
+                    "source_entity_hashes": ["aaa", "bbb"],
+                    "current_state_source_session_count": 2,
+                }
+            ],
+        }
+        serving = compact_context_pack_for_serving(pack, include_debug=True)
+        item = serving["groups"][0]["items"][0]
+        self.assertEqual(["assistant"], item["source_roles"])
+        self.assertEqual({"assistant": 2}, item["source_role_counts"])
+        self.assertEqual({"after_llm": 2}, item["source_hook_type_counts"])
+        self.assertEqual({"Stop": 2}, item["source_codex_event_counts"])
+        self.assertEqual(2, item["source_entity_count"])
+        self.assertEqual(2, item["current_state_source_session_count"])
+
     def test_context_pack_audit_refs_preserve_memory_layer_lineage(self) -> None:
         refs = compact_refs_for_audit(
             [

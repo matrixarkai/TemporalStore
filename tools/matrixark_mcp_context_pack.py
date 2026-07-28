@@ -11,9 +11,69 @@ Json = dict[str, Any]
 AUDIT_DEBUG_PAYLOAD = os.environ.get("MATRIXARK_AUDIT_DEBUG_PAYLOAD", "0").strip().lower() in {"1", "true", "yes"}
 DEBUG_LINEAGE_PAYLOAD = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", "0").strip().lower() in {"1", "true", "yes"}
 
+DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS = {
+    "debug",
+    "debug_payload",
+    "debug_refs",
+    "debug_record",
+    "metadata_debug",
+    "memory_lineage",
+    "lineage",
+    "source_session_ids",
+    "source_roles",
+    "budget_source_roles",
+    "source_hook_types",
+    "source_codex_events",
+    "source_memory_scopes",
+    "source_session_continuities",
+    "source_extraction_phases",
+    "source_final_session_boundary_count",
+    "source_role_counts",
+    "budget_source_role_counts",
+    "source_hook_type_counts",
+    "source_codex_event_counts",
+    "source_message_counts_by_role",
+    "source_hook_counts_by_type",
+    "source_codex_event_counts_by_event",
+    "by_source_role",
+    "by_hook_type",
+    "by_codex_event",
+    "source_entity_hashes",
+    "source_entity_count",
+    "current_state_source_session_count",
+    "current_state_source_entity_count",
+}
+
+DEFAULT_HIDDEN_DEBUG_LINEAGE_KEY_FRAGMENTS = (
+    "debug_",
+    "_debug",
+    "lineage",
+)
+
 
 def debug_lineage_enabled(*, include_debug: bool = False) -> bool:
     return bool(include_debug or DEBUG_LINEAGE_PAYLOAD)
+
+
+def _is_default_hidden_debug_lineage_key(key: Any) -> bool:
+    name = str(key or "").strip()
+    if name in DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS:
+        return True
+    lowered = name.lower()
+    return any(fragment in lowered for fragment in DEFAULT_HIDDEN_DEBUG_LINEAGE_KEY_FRAGMENTS)
+
+
+def strip_default_debug_lineage_fields(value: Any) -> Any:
+    """Remove debug/lineage fields from the default prompt-facing ContextPack."""
+    if isinstance(value, dict):
+        return {
+            key: strip_default_debug_lineage_fields(item)
+            for key, item in value.items()
+            if not _is_default_hidden_debug_lineage_key(key)
+        }
+    if isinstance(value, list):
+        return [strip_default_debug_lineage_fields(item) for item in value]
+    return value
 
 
 def _clip_context_text(text: str, *, max_chars: int = 160) -> str:
@@ -981,4 +1041,6 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         memory_hierarchy = memory_hierarchy_contract_from_recall_policy(recall_policy)
         if memory_hierarchy:
             compact["memory_hierarchy"] = memory_hierarchy
-    return compact
+    if include_debug or DEBUG_LINEAGE_PAYLOAD:
+        return compact
+    return strip_default_debug_lineage_fields(compact)
