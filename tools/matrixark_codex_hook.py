@@ -1451,6 +1451,38 @@ def additional_context_from_retrieve(
                     "floor_applied="
                     + str(bool(hierarchy.get("cross_session_budget_floor_applied"))).lower()
                 )
+            layer_budget_tokens = hierarchy.get("memory_layer_budget_tokens")
+            if isinstance(layer_budget_tokens, dict) and layer_budget_tokens:
+                layer_bits = []
+                for layer in [
+                    "summary",
+                    "compression",
+                    "profile_entity",
+                    "same_session_event",
+                    "cross_session_event",
+                    "same_session_segment",
+                    "cross_session_segment",
+                ]:
+                    try:
+                        amount = int(layer_budget_tokens.get(layer) or 0)
+                    except (TypeError, ValueError):
+                        amount = 0
+                    if amount > 0:
+                        layer_bits.append(f"{layer}={amount}")
+                if layer_bits:
+                    hierarchy_bits.append("memory_layer_budget[" + ",".join(layer_bits) + "]")
+            selected_by_layer = hierarchy.get("memory_layer_selected_tokens_by_layer")
+            if isinstance(selected_by_layer, dict) and selected_by_layer:
+                selected_bits = []
+                for layer, value in sorted(selected_by_layer.items()):
+                    try:
+                        amount = int(value or 0)
+                    except (TypeError, ValueError):
+                        amount = 0
+                    if amount > 0:
+                        selected_bits.append(f"{layer}={amount}")
+                if selected_bits:
+                    hierarchy_bits.append("memory_layer_selected_tokens[" + ",".join(selected_bits) + "]")
         lines.append("Memory hierarchy: " + "; ".join(hierarchy_bits) + ".")
     if budget_pressure.get("budget_pressure"):
         dropped_by_reason = budget_pressure.get("dropped_by_reason")
