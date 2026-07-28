@@ -1635,7 +1635,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         ]:
             self.assertNotIn(field, item)
 
-    def test_current_profile_entity_serving_pack_keeps_bounded_provenance(self) -> None:
+    def test_current_profile_entity_serving_pack_hides_provenance_by_default(self) -> None:
         core_mod = importlib.import_module("tools.matrixark_mcp_core")
         context_pack_mod = importlib.import_module("tools.matrixark_mcp_context_pack")
         selected = [
@@ -1660,12 +1660,20 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             context_pack_mod.compact_context_pack_refs,
         ]:
             item = compact_refs(selected)[0]
-            self.assertEqual([f"session-{index}" for index in range(8)], item["source_session_ids"])
+            self.assertNotIn("source_session_ids", item)
             self.assertNotIn("source_entity_count", item)
             self.assertNotIn("source_roles", item)
             self.assertNotIn("source_codex_events", item)
             self.assertNotIn("source_hook_types", item)
             self.assertNotIn("source_entity_hashes", item)
+
+            debug_item = compact_refs(selected, include_debug=True)[0]
+            self.assertEqual([f"session-{index}" for index in range(8)], debug_item["source_session_ids"])
+            self.assertEqual(3, debug_item["source_entity_count"])
+            self.assertEqual(["assistant", "tool"], debug_item["source_roles"])
+            self.assertEqual(["Stop", "PostToolUse"], debug_item["source_codex_events"])
+            self.assertEqual(["hook_boundary"], debug_item["source_hook_types"])
+            self.assertNotIn("source_entity_hashes", debug_item)
 
     def test_shared_pack_builder_exposes_memory_layer_budget_and_pressure(self) -> None:
         builder_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pack_builder")

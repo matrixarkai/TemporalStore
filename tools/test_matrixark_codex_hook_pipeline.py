@@ -6900,15 +6900,21 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("assistant_decision", current_ref["entity_type"])
             self.assertEqual("user_profile", current_ref["memory_scope"])
             self.assertEqual("cross_session", current_ref["session_continuity"])
-            self.assertNotIn("source_session_ids", current_ref)
-            self.assertNotIn("source_role_counts", current_ref)
-            self.assertNotIn("source_hook_type_counts", current_ref)
-            self.assertNotIn("source_codex_event_counts", current_ref)
+            self.assertEqual(
+                ["session_profile_update_1", "session_profile_update_2"],
+                current_ref["source_session_ids"],
+            )
+            self.assertEqual({"assistant": 2}, current_ref["source_role_counts"])
+            self.assertEqual({"hook_boundary": 2}, current_ref["source_hook_type_counts"])
+            self.assertEqual({"Stop": 2}, current_ref["source_codex_event_counts"])
             self.assertTrue(current_ref["profile_current_state_representative"])
-            self.assertNotIn("current_state_policy", current_ref)
-            self.assertNotIn("current_state_source_session_count", current_ref)
-            self.assertNotIn("current_state_source_entity_count", current_ref)
-            self.assertNotIn("source_entity_count", current_ref)
+            self.assertEqual(
+                "profile_entity_bridge_preferred_over_session_local_history",
+                current_ref["current_state_policy"],
+            )
+            self.assertEqual(2, current_ref["current_state_source_session_count"])
+            self.assertGreaterEqual(current_ref["current_state_source_entity_count"], 2)
+            self.assertGreaterEqual(current_ref["source_entity_count"], 2)
             self.assertIn("bbb222", current_ref["text"])
             current_metrics = current_pack["retrieval_metrics"]
             self.assertGreaterEqual(current_metrics["stale_dropped_refs"], 1)
@@ -6916,7 +6922,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 current_metrics["stale_dropped_refs"],
                 current_metrics["dropped_ref_bucket_counts"]["stale"],
             )
-            self.assertNotIn("dropped_memory_layer_budget", current_pack)
+            self.assertIn("dropped_memory_layer_budget", current_pack)
+            debug_dropped_budget = current_pack["dropped_memory_layer_budget"]
+            self.assertGreaterEqual(debug_dropped_budget["by_source_role"]["assistant"]["refs"], 1)
+            self.assertGreaterEqual(debug_dropped_budget["source_message_counts_by_role"]["assistant"], 1)
+            self.assertGreaterEqual(debug_dropped_budget["source_hook_counts_by_type"]["hook_boundary"], 1)
+            self.assertGreaterEqual(debug_dropped_budget["source_codex_event_counts_by_event"]["Stop"], 1)
             dropped_budget = current_metrics["dropped_memory_layer_budget"]
             self.assertGreaterEqual(dropped_budget["total_dropped_refs"], 1)
             self.assertGreaterEqual(dropped_budget["by_memory_scope"]["session"]["refs"], 1)
@@ -6935,7 +6946,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("source_entity_lineage", dropped_budget.get("by_profile_shadowed_reason", {}))
             self.assertEqual(dropped_budget, current_metrics["dropped_memory_layer_budget"])
             layer_pressure = current_metrics["memory_layer_pressure"]
-            self.assertNotIn("memory_layer_pressure", current_pack)
+            self.assertIn("memory_layer_pressure", current_pack)
+            debug_layer_pressure = current_pack["memory_layer_pressure"]
+            self.assertIn("assistant_memory_pressure", debug_layer_pressure)
+            self.assertIn("assistant_source_message_pressure", debug_layer_pressure)
             self.assertGreaterEqual(layer_pressure["dropped_refs"], 1)
             self.assertTrue(layer_pressure["session_memory_pressure"])
             self.assertTrue(layer_pressure["same_session_pressure"])
@@ -6978,6 +6992,32 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(layer_pressure["dropped_refs"], current_row["memory_layer_pressure"]["dropped_refs"])
             self.assertIn("assistant_memory_pressure", current_row["memory_layer_pressure"])
             self.assertLessEqual(current_row["used_remote_context_tokens"], current_row["remote_context_budget_tokens"])
+
+            default_current_pack = adapter.retrieve(
+                {
+                    "scope": {**base_scope, "session_id": "session_profile_update_2"},
+                    "session_scope": "prefer",
+                    "question_type": "current_state",
+                    "query": "What is the latest assistant decision for bbb222?",
+                    "max_context_tokens": 500,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 1, "min_similarity_score": 0.0},
+                }
+            )
+            self.assertEqual(1, len(default_current_pack["selected_refs"]))
+            default_current_ref = default_current_pack["selected_refs"][0]
+            self.assertEqual("user_profile", default_current_ref["memory_scope"])
+            self.assertEqual("cross_session", default_current_ref["session_continuity"])
+            self.assertNotIn("source_session_ids", default_current_ref)
+            self.assertNotIn("source_role_counts", default_current_ref)
+            self.assertNotIn("source_hook_type_counts", default_current_ref)
+            self.assertNotIn("source_codex_event_counts", default_current_ref)
+            self.assertNotIn("source_entity_count", default_current_ref)
+            self.assertNotIn("current_state_policy", default_current_ref)
+            self.assertNotIn("current_state_source_session_count", default_current_ref)
+            self.assertNotIn("current_state_source_entity_count", default_current_ref)
+            self.assertNotIn("dropped_memory_layer_budget", default_current_pack)
+            self.assertNotIn("memory_layer_pressure", default_current_pack)
 
     def test_retrieval_flags_state_file_session_identity_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

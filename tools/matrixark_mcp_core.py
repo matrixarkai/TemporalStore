@@ -6237,6 +6237,8 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
                     item[field] = value
             elif isinstance(value, int) and value > 0:
                 item[field] = value
+            elif isinstance(value, str) and value.strip():
+                item[field] = value.strip()
     if CONTEXT_PACK_DEBUG_LINEAGE or include_debug:
         value = ref.get("source_session_ids")
         if isinstance(value, list) and value:
@@ -6244,20 +6246,13 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         value = ref.get("source_entity_hashes")
         if isinstance(value, list) and value:
             item["source_entity_count"] = len(value)
+        value = ref.get("source_entity_count")
+        if isinstance(value, int) and value > 0:
+            item["source_entity_count"] = value
         for field in ["current_state_source_session_count", "current_state_source_entity_count"]:
             value = ref.get(field)
             if isinstance(value, int) and value > 0:
                 item[field] = value
-    is_current_profile_entity = (
-        str(ref.get("ref_type") or "") == "entity"
-        and str(ref.get("memory_scope") or "") == "user_profile"
-        and str(ref.get("session_continuity") or "") == "cross_session"
-        and bool(ref.get("profile_current_state_representative") or ref.get("profile_current_state_boost"))
-    )
-    if is_current_profile_entity and not (CONTEXT_PACK_DEBUG_LINEAGE or include_debug):
-        value = ref.get("source_session_ids")
-        if isinstance(value, list) and value:
-            item["source_session_ids"] = value[:8]
     context_class = ref.get("context_class")
     if context_class and context_class != item.get("ref_type"):
         item["context_class"] = context_class

@@ -7083,10 +7083,22 @@ class MatrixArkLocalAdapter:
                 "source_chunk_hash": record.get("source_chunk_hash"),
                 "source_ref": record.get("source_ref", ""),
                 "source_roles": record.get("source_roles", []),
+                "source_role_counts": record.get("source_role_counts", {}),
                 "source_hook_types": record.get("source_hook_types", []),
+                "source_hook_type_counts": record.get("source_hook_type_counts", {}),
                 "source_codex_events": record.get("source_codex_events", []),
+                "source_codex_event_counts": record.get("source_codex_event_counts", {}),
                 "source_session_ids": source_session_ids,
                 "source_entity_hashes": source_entity_hashes,
+                "source_memory_scopes": record.get("source_memory_scopes", []),
+                "source_session_continuities": record.get("source_session_continuities", []),
+                "source_extraction_phases": record.get("source_extraction_phases", []),
+                "memory_scope": record.get("memory_scope", ""),
+                "session_continuity": record.get("session_continuity", ""),
+                "extraction_phase": record.get("extraction_phase", ""),
+                "final_session_boundary": bool(record.get("final_session_boundary", False)),
+                "profile_promotion_policy": record.get("profile_promotion_policy", ""),
+                "profile_promotion_blocker": record.get("profile_promotion_blocker", ""),
                 "profile_current_state_representative": is_profile_entity_bridge,
                 "current_state_source_session_count": len(source_session_ids) if isinstance(source_session_ids, list) else 0,
                 "current_state_source_entity_count": len(source_entity_hashes) if isinstance(source_entity_hashes, list) else 0,
@@ -7960,7 +7972,7 @@ class MatrixArkLocalAdapter:
             pack["quality_warnings"] = quality_warnings
         if bool(args.get("debug_context_pack")) or bool(args.get("include_retrieval_debug")):
             return pack
-        return compact_context_pack_for_serving(pack)
+        return compact_context_pack_for_serving(pack, include_debug=debug_refs)
 
     def feedback(self, args: Json, *, hook: Json | None = None) -> Json:
         args = {**args, "kind": "feedback"}
