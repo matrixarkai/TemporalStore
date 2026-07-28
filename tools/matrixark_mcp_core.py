@@ -3724,12 +3724,21 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
     kind = args.get("kind", default_kind)
     if kind not in {"message", "feedback", "resource", "skill", "business_data"}:
         raise MatrixArkError("kind is invalid")
+    ingestion_time_ms = args.get("ingestion_time_ms", metadata.get("ingestion_time_ms"))
+    if ingestion_time_ms in (None, ""):
+        ingestion_time_ms = now_ms()
+    try:
+        ingestion_time_ms = int(ingestion_time_ms)
+    except (TypeError, ValueError) as exc:
+        raise MatrixArkError("ingestion_time_ms must be an integer timestamp in milliseconds") from exc
+    if ingestion_time_ms <= 0:
+        raise MatrixArkError("ingestion_time_ms must be positive")
     envelope: Json = {
         "kind": kind,
         "messages": messages,
         "scope": scope,
         "metadata": metadata,
-        "ingestion_time_ms": now_ms(),
+        "ingestion_time_ms": ingestion_time_ms,
         "storage_options": normalize_storage_options(args, metadata),
     }
     envelope["storage_route"] = canonical_storage_route(envelope.get("storage_options", {}))

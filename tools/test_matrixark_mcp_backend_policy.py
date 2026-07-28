@@ -2484,6 +2484,59 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 )
             )
 
+    def test_historical_batch_extraction_still_promotes_profile_entities(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            historical_time_ms = 1700000000000
+            scope = {
+                "account_id": "acct_local",
+                "tenant_id": "tenant_codex",
+                "user_id": "codex_user",
+                "session_id": "historical-profile-promotion-session",
+            }
+            result = adapter.batch_extract(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Remember: historical Codex imports should still update profile memory.",
+                        }
+                    ],
+                    "scope": scope,
+                    "skip_prior_context": True,
+                    "threshold_messages": 1,
+                    "ingestion_time_ms": historical_time_ms,
+                }
+            )
+
+            self.assertEqual("accepted", result["status"])
+            self.assertEqual("always_when_profile_scope_available", result["profile_promotion_policy"])
+            self.assertTrue(result["profile_promotion_scope_available"])
+            self.assertEqual(result["entities_written"], result["profile_entities_written"])
+
+            records = adapter.read_all()
+            profile_entities = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
+            ]
+            self.assertTrue(profile_entities)
+            profile_entity = profile_entities[0]
+            self.assertEqual(historical_time_ms, profile_entity["updated_at_ms"])
+            self.assertEqual(["historical-profile-promotion-session"], profile_entity["source_session_ids"])
+            self.assertNotIn("session_id", profile_entity["access_scope"])
+            self.assertIn("historical Codex imports", profile_entity["state"])
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_summary_dirty"
+                    and record.get("dirty_reason") == "profile_entity_promoted"
+                    and record.get("updated_at_ms") == historical_time_ms
+                    for record in records
+                )
+            )
+
     def test_context_node_topology_records_store_compact_scope_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
