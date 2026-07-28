@@ -4359,6 +4359,51 @@ def candidate_index_terms(
     terms: set[str] = set()
     index_terms_by_ref = index_terms_by_ref or {}
     record_type = record.get("record_type")
+
+    def add_source_lineage_terms() -> None:
+        role_values: set[str] = set()
+        if isinstance(record.get("source_roles"), list):
+            role_values.update(
+                normalize_message_role(role)
+                for role in record.get("source_roles", [])[:16]
+                if normalize_message_role(role)
+            )
+        if isinstance(record.get("source_role_counts"), dict):
+            for role, count in list(record.get("source_role_counts", {}).items())[:16]:
+                try:
+                    if int(count or 0) <= 0:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                role_name = normalize_message_role(role)
+                if role_name:
+                    role_values.add(role_name)
+        for role in sorted(role_values):
+            terms.add(context_index_name("source_role", role))
+        for field, prefix in [
+            ("source_hook_types", "hook_type"),
+            ("source_codex_events", "codex_event"),
+            ("source_memory_scopes", "memory_scope"),
+            ("source_session_continuities", "session_continuity"),
+            ("source_extraction_phases", "extraction_phase"),
+        ]:
+            for value in record.get(field, [])[:16] if isinstance(record.get(field), list) else []:
+                terms.add(context_index_name(prefix, value))
+        for field, prefix in [
+            ("source_hook_type_counts", "hook_type"),
+            ("source_codex_event_counts", "codex_event"),
+        ]:
+            counts = record.get(field)
+            if not isinstance(counts, dict):
+                continue
+            for value, count in list(counts.items())[:16]:
+                try:
+                    if int(count or 0) <= 0:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                terms.add(context_index_name(prefix, value))
+
     if record_type == "context_event":
         terms.update(index_terms_by_batch.get(record.get("batch_id_hash"), []))
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))
@@ -4370,41 +4415,27 @@ def candidate_index_terms(
             terms.add(context_index_name("classification", classification))
         terms.add(context_index_name("status", record.get("status") or "observed"))
         terms.add(context_index_name("source_type", record.get("source_type") or "message"))
+        add_source_lineage_terms()
     elif record_type == "context_entity":
         terms.add(context_index_name("entity_type", record.get("entity_type")))
+        for field, prefix in [
+            ("memory_scope", "memory_scope"),
+            ("session_continuity", "session_continuity"),
+            ("extraction_phase", "extraction_phase"),
+        ]:
+            terms.add(context_index_name(prefix, record.get(field)))
+        add_source_lineage_terms()
     elif record_type == "context_summary":
         terms.add(context_index_name("summary_type", record.get("summary_type")))
         for entity_type in record.get("source_entity_types", [])[:16]:
             terms.add(context_index_name("entity_type", entity_type))
-        for role in sorted({normalize_message_role(role) for role in record.get("source_roles", [])[:16] if normalize_message_role(role)}):
-            terms.add(context_index_name("source_role", role))
-        for hook_type in record.get("source_hook_types", [])[:16]:
-            terms.add(context_index_name("hook_type", hook_type))
-        for codex_event in record.get("source_codex_events", [])[:16]:
-            terms.add(context_index_name("codex_event", codex_event))
-        for memory_scope in record.get("source_memory_scopes", [])[:16]:
-            terms.add(context_index_name("memory_scope", memory_scope))
-        for continuity in record.get("source_session_continuities", [])[:16]:
-            terms.add(context_index_name("session_continuity", continuity))
-        for phase in record.get("source_extraction_phases", [])[:16]:
-            terms.add(context_index_name("extraction_phase", phase))
+        add_source_lineage_terms()
     elif record_type == "context_compression_event":
         terms.update(index_terms_by_ref.get(record.get("compression_id_hash"), []))
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))
         terms.add(context_index_name("context_class", "compression"))
         terms.add(context_index_name("operator", record.get("operator") or "TIME_COMPRESS"))
-        for role in sorted({normalize_message_role(role) for role in record.get("source_roles", [])[:16] if normalize_message_role(role)}):
-            terms.add(context_index_name("source_role", role))
-        for hook_type in record.get("source_hook_types", [])[:16]:
-            terms.add(context_index_name("hook_type", hook_type))
-        for codex_event in record.get("source_codex_events", [])[:16]:
-            terms.add(context_index_name("codex_event", codex_event))
-        for memory_scope in record.get("source_memory_scopes", [])[:16]:
-            terms.add(context_index_name("memory_scope", memory_scope))
-        for continuity in record.get("source_session_continuities", [])[:16]:
-            terms.add(context_index_name("session_continuity", continuity))
-        for phase in record.get("source_extraction_phases", [])[:16]:
-            terms.add(context_index_name("extraction_phase", phase))
+        add_source_lineage_terms()
         for field, prefix in [
             ("memory_scope", "memory_scope"),
             ("session_continuity", "session_continuity"),
