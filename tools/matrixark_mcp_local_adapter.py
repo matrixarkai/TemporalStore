@@ -1183,6 +1183,58 @@ class MatrixArkLocalAdapter:
                 scan_stats["cache_hit"] = True
                 return {"records": cached.get("records", []), "scan_stats": scan_stats}
         raw_records = self.read_all()
+        node_scope_by_hash: dict[int, Json] = {}
+        for source_record in raw_records:
+            try:
+                source_node_hash = int(source_record.get("node_hash") or 0)
+            except (TypeError, ValueError):
+                source_node_hash = 0
+            if not source_node_hash or source_node_hash in node_scope_by_hash:
+                continue
+            source_scope = candidate_access_scope(source_record)
+            if source_scope:
+                node_scope_by_hash[source_node_hash] = source_scope
+
+        def scope_from_node_path(node_path: Any) -> Json:
+            if not isinstance(node_path, list):
+                return {}
+            recovered_scope: Json = {}
+            for part in node_path:
+                value = str(part or "")
+                if value.startswith("tenant:"):
+                    recovered_scope["tenant_id"] = value.split(":", 1)[1]
+                elif value.startswith("user:"):
+                    recovered_scope["user_id"] = value.split(":", 1)[1]
+                elif value.startswith("session:"):
+                    recovered_scope["session_id"] = value.split(":", 1)[1]
+            return {key: value for key, value in recovered_scope.items() if value}
+
+        def recovered_record_scope(record: Json) -> Json:
+            record_scope = candidate_access_scope(record)
+            if record_scope:
+                return record_scope
+            try:
+                node_hash = int(record.get("node_hash") or 0)
+            except (TypeError, ValueError):
+                node_hash = 0
+            if node_hash and node_hash in node_scope_by_hash:
+                return node_scope_by_hash[node_hash]
+            return scope_from_node_path(record.get("node_path", []))
+
+        def recovered_scope_for_query(record: Json, query_scope: Json) -> Json:
+            record_scope = recovered_record_scope(record)
+            if (
+                record_scope
+                and query_scope.get("account_id")
+                and not record_scope.get("account_id")
+                and (record_scope.get("tenant_id") or record_scope.get("user_id") or record_scope.get("session_id"))
+            ):
+                record_scope = {**record_scope, "account_id": query_scope.get("account_id")}
+            return record_scope
+
+        def recovered_scope_matches(record: Json, query_scope: Json) -> bool:
+            return scope_matches(recovered_scope_for_query(record, query_scope), query_scope)
+
         filtered: list[Json] = []
         scanned = 0
         dropped_type = 0
@@ -1204,7 +1256,7 @@ class MatrixArkLocalAdapter:
                     dropped_node += 1
                     continue
             if record_type in {"context_embedding", "context_index", "context_summary", "resource_manifest", "skill_registry_update"}:
-                if not scope_matches(candidate_access_scope(record), scope):
+                if not recovered_scope_matches(record, scope):
                     dropped_scope += 1
                     continue
             elif not access_scope_matches_before_scoring(record, scope):
@@ -6579,6 +6631,57 @@ class MatrixArkLocalAdapter:
                 seen_refreshed_summary_ids.add(identity)
         retrieval_scan_stats = retrieval_record_result.get("scan_stats", {})
         async_pipeline_readiness = async_pipeline_retrieval_readiness(records, retrieval_scope)
+        node_scope_by_hash: dict[int, Json] = {}
+        for source_record in records:
+            try:
+                source_node_hash = int(source_record.get("node_hash") or 0)
+            except (TypeError, ValueError):
+                source_node_hash = 0
+            if not source_node_hash or source_node_hash in node_scope_by_hash:
+                continue
+            source_scope = candidate_access_scope(source_record)
+            if source_scope:
+                node_scope_by_hash[source_node_hash] = source_scope
+
+        def scope_from_node_path(node_path: Any) -> Json:
+            if not isinstance(node_path, list):
+                return {}
+            recovered_scope: Json = {}
+            for part in node_path:
+                value = str(part or "")
+                if value.startswith("tenant:"):
+                    recovered_scope["tenant_id"] = value.split(":", 1)[1]
+                elif value.startswith("user:"):
+                    recovered_scope["user_id"] = value.split(":", 1)[1]
+                elif value.startswith("session:"):
+                    recovered_scope["session_id"] = value.split(":", 1)[1]
+            return {key: value for key, value in recovered_scope.items() if value}
+
+        def recovered_record_scope(record: Json) -> Json:
+            record_scope = candidate_access_scope(record)
+            if record_scope:
+                return record_scope
+            try:
+                node_hash = int(record.get("node_hash") or 0)
+            except (TypeError, ValueError):
+                node_hash = 0
+            if node_hash and node_hash in node_scope_by_hash:
+                return node_scope_by_hash[node_hash]
+            return scope_from_node_path(record.get("node_path", []))
+
+        def recovered_scope_for_query(record: Json, query_scope: Json) -> Json:
+            record_scope = recovered_record_scope(record)
+            if (
+                record_scope
+                and query_scope.get("account_id")
+                and not record_scope.get("account_id")
+                and (record_scope.get("tenant_id") or record_scope.get("user_id") or record_scope.get("session_id"))
+            ):
+                record_scope = {**record_scope, "account_id": query_scope.get("account_id")}
+            return record_scope
+
+        def recovered_scope_matches(record: Json, query_scope: Json) -> bool:
+            return scope_matches(recovered_scope_for_query(record, query_scope), query_scope)
 
         def deadline_fallback(reason: str, fallback_records: list[Json] | None = None) -> Json:
             return self.deadline_fallback_pack(
@@ -6646,7 +6749,7 @@ class MatrixArkLocalAdapter:
             if scan_index % 128 == 0 and deadline_exceeded():
                 return deadline_fallback("deadline_during_embedding_index_scan")
             record_type = record.get("record_type")
-            if record_type == "context_index" and scope_matches(candidate_access_scope(record), retrieval_scope):
+            if record_type == "context_index" and recovered_scope_matches(record, retrieval_scope):
                 index_name = str(record.get("index_name", ""))
                 if index_name:
                     ref_hashes = context_index_ref_hashes(record)
@@ -6666,7 +6769,7 @@ class MatrixArkLocalAdapter:
                             index_terms_by_ref.setdefault(ref_hash, []).append(index_name)
                         else:
                             index_terms_by_node.setdefault(record.get("node_hash"), []).append(index_name)
-            if record_type == "context_summary" and scope_matches(candidate_access_scope(record), scope):
+            if record_type == "context_summary" and recovered_scope_matches(record, retrieval_scope):
                 summary_type = str(record.get("summary_type", ""))
                 if summary_type in {"node_l0", "node_l1", "batch_l0", "session_l0"}:
                     try:
@@ -6692,7 +6795,7 @@ class MatrixArkLocalAdapter:
             if scan_index % 128 == 0 and deadline_exceeded():
                 return deadline_fallback("deadline_during_embedding_vector_scan")
             record_type = record.get("record_type")
-            if record_type == "context_embedding" and not scope_matches(candidate_access_scope(record), scope):
+            if record_type == "context_embedding" and not recovered_scope_matches(record, retrieval_scope):
                 continue
             if record_type == "context_embedding" and record.get("embedding_type") in {"node_l0", "node_l1"}:
                 dense_score = cosine(query_embedding, record.get("vector", []))
@@ -6837,7 +6940,7 @@ class MatrixArkLocalAdapter:
 
             for record in placement_candidate_records:
                 record_type = record.get("record_type")
-                if record_type == "context_index" and scope_matches(candidate_access_scope(record), scope):
+                if record_type == "context_index" and recovered_scope_matches(record, retrieval_scope):
                     index_name = str(record.get("index_name", ""))
                     if index_name:
                         ref_hashes = context_index_ref_hashes(record)
@@ -6857,7 +6960,7 @@ class MatrixArkLocalAdapter:
                                 index_terms_by_ref.setdefault(ref_hash, []).append(index_name)
                             else:
                                 index_terms_by_node.setdefault(record.get("node_hash"), []).append(index_name)
-                elif record_type == "context_embedding" and scope_matches(candidate_access_scope(record), scope):
+                elif record_type == "context_embedding" and recovered_scope_matches(record, retrieval_scope):
                     embedding_type = record.get("embedding_type")
                     if embedding_type == "event_text":
                         event_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
@@ -7237,6 +7340,7 @@ class MatrixArkLocalAdapter:
                 "source_codex_events": record.get("source_codex_events", []),
                 "source_codex_event_counts": record.get("source_codex_event_counts", {}),
                 "source_session_ids": source_session_ids,
+                "source_event_ids": record.get("source_event_ids", []),
                 "source_entity_hashes": source_entity_hashes,
                 "source_memory_scopes": record.get("source_memory_scopes", []),
                 "source_session_continuities": record.get("source_session_continuities", []),
@@ -7626,6 +7730,59 @@ class MatrixArkLocalAdapter:
             source_role_budget_tokens=source_role_budget_tokens,
             memory_layer_budget_tokens=memory_layer_budget_tokens,
         )
+        profile_entity_texts_by_role: dict[str, list[str]] = {}
+        for item in selected:
+            if (
+                item.get("ref_type") == "entity"
+                and item.get("memory_scope") == "user_profile"
+                and item.get("session_continuity") == "cross_session"
+                and bool(item.get("profile_current_state_representative"))
+            ):
+                role_names = set()
+                for role_name in item.get("source_roles", []) or []:
+                    normalized_role = normalize_message_role(role_name)
+                    if normalized_role:
+                        role_names.add(normalized_role)
+                for role_name in (item.get("source_role_counts", {}) or {}).keys():
+                    normalized_role = normalize_message_role(role_name)
+                    if normalized_role:
+                        role_names.add(normalized_role)
+                item_text = str(item.get("text") or "").lower()
+                for role_name in role_names:
+                    profile_entity_texts_by_role.setdefault(role_name, []).append(item_text)
+        if profile_entity_texts_by_role:
+            deduped_selected: list[Json] = []
+            removed_tokens = 0
+            for item in selected:
+                if item.get("ref_type") != "event":
+                    deduped_selected.append(item)
+                    continue
+                role_names = set()
+                for role_name in item.get("source_roles", []) or []:
+                    normalized_role = normalize_message_role(role_name)
+                    if normalized_role:
+                        role_names.add(normalized_role)
+                for role_name in (item.get("source_role_counts", {}) or {}).keys():
+                    normalized_role = normalize_message_role(role_name)
+                    if normalized_role:
+                        role_names.add(normalized_role)
+                event_text = str(item.get("text") or "").lower()
+                represented_by_profile = any(
+                    event_text
+                    and role_name in profile_entity_texts_by_role
+                    and any(event_text in profile_text or profile_text in event_text for profile_text in profile_entity_texts_by_role[role_name])
+                    for role_name in role_names
+                )
+                if represented_by_profile:
+                    removed_tokens += max(1, token_count(str(item.get("text") or "")))
+                    dropped_over_budget.setdefault("profile_entity_represented_events", 0)
+                    dropped_over_budget["profile_entity_represented_events"] += 1
+                    continue
+                deduped_selected.append(item)
+            if len(deduped_selected) != len(selected):
+                selected = deduped_selected
+                used_context_tokens = max(0, used_context_tokens - removed_tokens)
+
         if (
             question_type == "broad_exploration"
             and bool(pre_retrieval_summary_refresh.get("enabled"))
@@ -7808,6 +7965,19 @@ class MatrixArkLocalAdapter:
         memory_layer_budget = selected_ref_layer_budget(selected)
         dropped_memory_layer_budget = dropped_ref_layer_budget(dropped_over_budget)
         memory_layer_pressure = memory_layer_pressure_summary(memory_layer_budget, dropped_memory_layer_budget)
+        retrieval_model_coverage = {
+            "event_embedding_vectors": len(event_embedding_vectors),
+            "entity_embedding_vectors": len(entity_embedding_vectors),
+            "segment_embedding_vectors": len(segment_embedding_vectors),
+            "compression_embedding_vectors": len(compression_embedding_vectors),
+            "resource_embedding_vectors": len(resource_embedding_vectors),
+            "skill_embedding_vectors": len(skill_embedding_vectors),
+            "index_terms_by_ref": sum(len(values) for values in index_terms_by_ref.values()),
+            "index_terms_by_node": sum(len(values) for values in index_terms_by_node.values()),
+            "index_terms_by_batch": sum(len(values) for values in index_terms_by_batch.values()),
+            "node_scope_recovered_count": len(node_scope_by_hash),
+            "compact_scope_recovery_enabled": True,
+        }
         pack = {
             "context_pack_id": str(context_pack_id),
             "context_sources_order": ["local_context", "matrixark_remote_context"],
@@ -7871,6 +8041,7 @@ class MatrixArkLocalAdapter:
                     "global_remote_budget_enforced": True,
                 },
                 "backend_retrieval_pushdown": retrieval_scan_stats,
+                "retrieval_model_coverage": retrieval_model_coverage,
                 "ranking": {
                     "min_similarity_score": min_similarity_score,
                     "max_global_candidates": max_global_candidates,
@@ -8105,6 +8276,7 @@ class MatrixArkLocalAdapter:
             "cache_hit": candidate_cache_hit,
             "index_postings_read": index_postings_read,
             "index_postings_touched": index_postings_read,
+            "retrieval_model_coverage": retrieval_model_coverage,
             "placement_partitions_touched": len(placement.get("locations", []) or []) if isinstance(placement, dict) else 0,
             "native_pack_assembly": False,
             "python_pack_fallback": True,
