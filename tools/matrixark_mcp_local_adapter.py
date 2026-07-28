@@ -358,6 +358,9 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
     memory_scopes: list[str] = []
     session_continuities: list[str] = []
     extraction_phases: list[str] = []
+    target_memory_scopes: list[str] = []
+    target_session_continuities: list[str] = []
+    target_extraction_phases: list[str] = []
     profile_promotion_policies: list[str] = []
     profile_promotion_blockers: list[str] = []
     final_session_boundary_count = 0
@@ -449,6 +452,9 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
         add_values(session_continuities, record.get("session_continuity"))
         add_values(extraction_phases, record.get("source_extraction_phases"))
         add_values(extraction_phases, record.get("extraction_phase"))
+        add_values(target_memory_scopes, record.get("memory_scope"))
+        add_values(target_session_continuities, record.get("session_continuity"))
+        add_values(target_extraction_phases, record.get("extraction_phase"))
         add_values(profile_promotion_policies, record.get("source_profile_promotion_policies"))
         add_values(profile_promotion_policies, record.get("profile_promotion_policy"))
         add_values(profile_promotion_blockers, record.get("source_profile_promotion_blockers"))
@@ -466,10 +472,15 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
     source_memory_scopes = ordered_unique_any(memory_scopes)
     source_session_continuities = ordered_unique_any(session_continuities)
     source_extraction_phases = ordered_unique_any(extraction_phases)
+    explicit_memory_scopes = ordered_unique_any(target_memory_scopes)
+    explicit_session_continuities = ordered_unique_any(target_session_continuities)
+    explicit_extraction_phases = ordered_unique_any(target_extraction_phases)
     source_profile_promotion_policies = ordered_unique_any(profile_promotion_policies)
     source_profile_promotion_blockers = ordered_unique_any(profile_promotion_blockers)
     memory_scope = (
-        "user_profile"
+        explicit_memory_scopes[0]
+        if len(explicit_memory_scopes) == 1
+        else "user_profile"
         if source_memory_scopes == ["user_profile"]
         else "session"
         if "session" in source_memory_scopes
@@ -478,7 +489,9 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
         else ""
     )
     session_continuity = (
-        "cross_session"
+        explicit_session_continuities[0]
+        if len(explicit_session_continuities) == 1
+        else "cross_session"
         if source_session_continuities == ["cross_session"]
         else "same_session"
         if "same_session" in source_session_continuities
@@ -487,7 +500,9 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
         else ""
     )
     extraction_phase = (
-        "final"
+        explicit_extraction_phases[0]
+        if len(explicit_extraction_phases) == 1
+        else "final"
         if source_extraction_phases == ["final"]
         else "provisional"
         if "provisional" in source_extraction_phases
@@ -2551,20 +2566,25 @@ class MatrixArkLocalAdapter:
                         event_name = str(codex_event or "").strip()
                         if event_name:
                             source_codex_event_counts[event_name] = int(source_codex_event_counts.get(event_name, 0)) + 1
-            source_memory_scopes = sorted(
-                {
-                    str(record.get("memory_scope") or "").strip()
-                    for record in entity_states + child_summaries
-                    if str(record.get("memory_scope") or "").strip()
-                }
-            )
-            source_session_continuities = sorted(
-                {
-                    str(record.get("session_continuity") or "").strip()
-                    for record in entity_states + child_summaries
-                    if str(record.get("session_continuity") or "").strip()
-                }
-            )
+            def source_layer_values(list_field: str, fallback_field: str) -> list[str]:
+                values: set[str] = set()
+                for record in events + entity_states + child_summaries:
+                    raw_values = (
+                        record.get(list_field)
+                        if isinstance(record.get(list_field), list)
+                        else []
+                    )
+                    for value in raw_values:
+                        text = str(value or "").strip()
+                        if text:
+                            values.add(text)
+                    fallback = str(record.get(fallback_field) or "").strip()
+                    if fallback:
+                        values.add(fallback)
+                return sorted(values)
+
+            source_memory_scopes = source_layer_values("source_memory_scopes", "memory_scope")
+            source_session_continuities = source_layer_values("source_session_continuities", "session_continuity")
             source_extraction_phases = sorted(
                 {
                     str(record.get("extraction_phase") or "").strip()
@@ -5430,6 +5450,14 @@ class MatrixArkLocalAdapter:
                 profile_source_codex_event_counts: Json = dict(previous_profile.get("source_codex_event_counts", {}))
                 for codex_event, count in source_codex_event_counts.items():
                     profile_source_codex_event_counts[codex_event] = int(profile_source_codex_event_counts.get(codex_event, 0)) + int(count)
+                profile_source_memory_scopes = ordered_unique_any(
+                    list(previous_profile.get("source_memory_scopes", []))
+                    + [previous_profile.get("memory_scope"), "session", "user_profile"]
+                )
+                profile_source_session_continuities = ordered_unique_any(
+                    list(previous_profile.get("source_session_continuities", []))
+                    + [previous_profile.get("session_continuity"), "same_session", "cross_session"]
+                )
                 profile_entity_hashes.append(profile_entity_hash)
                 profile_promotion_summary.append(
                     {
@@ -5447,6 +5475,8 @@ class MatrixArkLocalAdapter:
                         "source_hook_type_counts": profile_source_hook_type_counts,
                         "source_codex_events": profile_source_codex_events,
                         "source_codex_event_counts": profile_source_codex_event_counts,
+                        "source_memory_scopes": profile_source_memory_scopes,
+                        "source_session_continuities": profile_source_session_continuities,
                     }
                 )
                 profile_entity_record = {
@@ -5473,6 +5503,8 @@ class MatrixArkLocalAdapter:
                     "source_hook_type_counts": profile_source_hook_type_counts,
                     "source_codex_events": profile_source_codex_events,
                     "source_codex_event_counts": profile_source_codex_event_counts,
+                    "source_memory_scopes": profile_source_memory_scopes,
+                    "source_session_continuities": profile_source_session_continuities,
                     "source_batch_id_hash": batch_id_hash,
                     "extraction_context_event_ids": extraction_context_event_ids,
                     "field_patches": promoted_entity.get("field_patches", []),

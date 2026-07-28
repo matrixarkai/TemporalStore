@@ -283,20 +283,8 @@ def build_node_summary_refresh_records(
     source_hook_type_counts = source_count_map("source_hook_type_counts", "source_hook_types", "hook_type")
     source_codex_events = source_values("source_codex_events", "codex_event")
     source_codex_event_counts = source_count_map("source_codex_event_counts", "source_codex_events", "codex_event")
-    source_memory_scopes = sorted(
-        {
-            str(record.get("memory_scope") or "").strip()
-            for record in entity_states + child_summaries
-            if str(record.get("memory_scope") or "").strip()
-        }
-    )
-    source_session_continuities = sorted(
-        {
-            str(record.get("session_continuity") or "").strip()
-            for record in entity_states + child_summaries
-            if str(record.get("session_continuity") or "").strip()
-        }
-    )
+    source_memory_scopes = source_values("source_memory_scopes", "memory_scope")
+    source_session_continuities = source_values("source_session_continuities", "session_continuity")
     source_extraction_phases = sorted(
         {
             str(record.get("extraction_phase") or "").strip()
