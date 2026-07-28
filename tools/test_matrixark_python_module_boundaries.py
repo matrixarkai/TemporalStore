@@ -1081,7 +1081,17 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                     "field_patches": [],
                 }
             ],
-            "segments": [],
+            "segments": [
+                {
+                    "topic": "commit pushed",
+                    "coordinate_tuples": [[0, 0]],
+                    "message_indexes": [0],
+                    "saliency_score": 0.8,
+                    "summary_text": "Commit abc123 was pushed.",
+                    "text": "Commit abc123 was pushed.",
+                    "non_contiguous": False,
+                }
+            ],
             "indexes": ["entity_type:assistant_decision"],
         }
 
@@ -1103,6 +1113,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             )
 
         self.assertEqual(1, result["entities_written"])
+        self.assertEqual(1, result["segments_written"])
         self.assertEqual(1, result["profile_entities_written"])
         self.assertEqual("always_when_profile_scope_available", result["profile_promotion_policy"])
         self.assertTrue(result["profile_promotion_scope_available"])
@@ -1128,6 +1139,20 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         ]
         self.assertEqual(1, len(session_entities))
         self.assertEqual(1, len(profile_entities))
+        session_segments = [
+            record
+            for record in adapter.records
+            if record.get("record_type") == "context_segment"
+            and record.get("memory_scope") == "session"
+            and record.get("session_continuity") == "same_session"
+        ]
+        self.assertEqual(1, len(session_segments))
+        self.assertEqual(["session"], session_segments[0]["source_memory_scopes"])
+        self.assertEqual(["same_session"], session_segments[0]["source_session_continuities"])
+        self.assertEqual(["final"], session_segments[0]["source_extraction_phases"])
+        self.assertEqual(session_entities[0]["source_role_counts"], session_segments[0]["source_role_counts"])
+        self.assertEqual(session_entities[0]["source_hook_type_counts"], session_segments[0]["source_hook_type_counts"])
+        self.assertEqual(session_entities[0]["source_codex_event_counts"], session_segments[0]["source_codex_event_counts"])
         self.assertEqual(["assistant", "tool"], session_entities[0]["source_roles"])
         self.assertEqual({"assistant": 3, "tool": 2}, session_entities[0]["source_role_counts"])
         self.assertEqual(["after_llm", "hook_boundary"], session_entities[0]["source_hook_types"])
