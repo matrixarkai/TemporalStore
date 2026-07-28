@@ -3781,6 +3781,7 @@ class MatrixArkLocalAdapter:
                 scope=envelope["scope"],
                 updated_at_ms=envelope["ingestion_time_ms"],
             )
+            source_memory_scopes, source_session_continuities = pending_extraction_memory_layer_intent(envelope["scope"])
             with self.write_batch("message_ingest_sync_accept"):
                 summary_dirty_hashes = self.mark_node_summary_dirty(
                     node_path=node_path,
@@ -3831,6 +3832,8 @@ class MatrixArkLocalAdapter:
                         "stages": ["extraction", "summary", "compression", "embedding"],
                         "reason": "sync_accept_async_processing",
                         **source_event_lineage_summary([source_lineage]),
+                        "source_memory_scopes": source_memory_scopes,
+                        "source_session_continuities": source_session_continuities,
                         "created_at_ms": envelope["ingestion_time_ms"],
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
