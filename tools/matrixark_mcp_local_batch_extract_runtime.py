@@ -20,6 +20,7 @@ try:
         embeddings_for_texts,
         new_secondary_index_budget,
         normalized_node_path,
+        normalize_message_role,
         now_ms,
         one_pass_memory_extraction,
         ordered_unique_any,
@@ -43,6 +44,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         embeddings_for_texts,
         new_secondary_index_budget,
         normalized_node_path,
+        normalize_message_role,
         now_ms,
         one_pass_memory_extraction,
         ordered_unique_any,
@@ -126,24 +128,81 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         )
     profile_node_hash = stable_hash("/".join(profile_node_path)) if profile_node_path else 0
     source_session_id = str(envelope["scope"].get("session_id") or "")
+    envelope_metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
     source_roles = sorted(
         {
-            str(message.get("role") or "")
+            normalize_message_role(message.get("role"))
             for message in extraction_envelope.get("messages", [])
-            if isinstance(message, dict) and str(message.get("role") or "")
+            if isinstance(message, dict) and normalize_message_role(message.get("role"))
         }
     )
     source_role_counts: Json = {}
     for message in extraction_envelope.get("messages", []):
         if not isinstance(message, dict):
             continue
-        role = str(message.get("role") or "").strip()
+        role = normalize_message_role(message.get("role"))
         if role:
             source_role_counts[role] = int(source_role_counts.get(role, 0)) + 1
-    source_hook_types = sorted({str(hook.get("hook_type") or "")}) if isinstance(hook, dict) and hook.get("hook_type") else []
+    metadata_role_counts = envelope_metadata.get("source_role_counts") if isinstance(envelope_metadata.get("source_role_counts"), dict) else {}
+    if metadata_role_counts:
+        source_role_counts = {}
+        for role, count in metadata_role_counts.items():
+            role_name = normalize_message_role(role)
+            if not role_name:
+                continue
+            try:
+                amount = max(0, int(count or 0))
+            except (TypeError, ValueError):
+                continue
+            if amount:
+                source_role_counts[role_name] = int(source_role_counts.get(role_name, 0)) + amount
+        source_roles = sorted(source_role_counts)
+    source_hook_type_values = []
+    if isinstance(hook, dict):
+        source_hook_type_values.append(hook.get("hook_type"))
+    source_hook_type_values.append(envelope.get("hook_type"))
+    source_hook_type_values.append(envelope_metadata.get("hook_type"))
+    if isinstance(envelope_metadata.get("source_hook_types"), list):
+        source_hook_type_values.extend(envelope_metadata["source_hook_types"])
+    source_hook_types = sorted({str(value).strip() for value in source_hook_type_values if str(value or "").strip()})
     source_hook_type_counts = {hook_type: 1 for hook_type in source_hook_types}
-    source_codex_events = sorted({str(hook.get("codex_event") or "")}) if isinstance(hook, dict) and hook.get("codex_event") else []
+    metadata_hook_type_counts = envelope_metadata.get("source_hook_type_counts") if isinstance(envelope_metadata.get("source_hook_type_counts"), dict) else {}
+    if metadata_hook_type_counts:
+        source_hook_type_counts = {}
+        for hook_type, count in metadata_hook_type_counts.items():
+            hook_name = str(hook_type or "").strip()
+            if not hook_name:
+                continue
+            try:
+                amount = max(0, int(count or 0))
+            except (TypeError, ValueError):
+                continue
+            if amount:
+                source_hook_type_counts[hook_name] = int(source_hook_type_counts.get(hook_name, 0)) + amount
+        source_hook_types = sorted(source_hook_type_counts)
+    source_codex_event_values = []
+    if isinstance(hook, dict):
+        source_codex_event_values.extend([hook.get("codex_event"), hook.get("trigger")])
+    source_codex_event_values.append(envelope.get("codex_event"))
+    source_codex_event_values.append(envelope_metadata.get("codex_event"))
+    if isinstance(envelope_metadata.get("source_codex_events"), list):
+        source_codex_event_values.extend(envelope_metadata["source_codex_events"])
+    source_codex_events = sorted({str(value).strip() for value in source_codex_event_values if str(value or "").strip()})
     source_codex_event_counts = {codex_event: 1 for codex_event in source_codex_events}
+    metadata_codex_event_counts = envelope_metadata.get("source_codex_event_counts") if isinstance(envelope_metadata.get("source_codex_event_counts"), dict) else {}
+    if metadata_codex_event_counts:
+        source_codex_event_counts = {}
+        for codex_event, count in metadata_codex_event_counts.items():
+            event_name = str(codex_event or "").strip()
+            if not event_name:
+                continue
+            try:
+                amount = max(0, int(count or 0))
+            except (TypeError, ValueError):
+                continue
+            if amount:
+                source_codex_event_counts[event_name] = int(source_codex_event_counts.get(event_name, 0)) + amount
+        source_codex_events = sorted(source_codex_event_counts)
     batch_summary = extraction["batch_summary"]
 
     event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
