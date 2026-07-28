@@ -4621,6 +4621,50 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             memory_budget = pack["recall_policy"]["memory_layer_budget"]
             self.assertEqual({"assistant": 1}, memory_budget["source_message_counts_by_role"])
 
+            summary_pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "codex_session_3"},
+                    "session_scope": "prefer",
+                    "question_type": "broad_exploration",
+                    "query": "Summarize delayed rollout backfill profile long term memory assistant decision.",
+                    "max_context_tokens": 240,
+                    "audit_mode": "off",
+                    "ranking": {
+                        "max_selected_refs": 8,
+                        "min_similarity_score": 0.0,
+                        "budget_fill_policy": "force_fill",
+                        "pre_retrieval_summary_refresh": True,
+                        "pre_retrieval_summary_refresh_limit": 8,
+                    },
+                }
+            )
+            self.assert_no_default_context_pack_debug_lineage(summary_pack)
+            refresh = summary_pack["pre_retrieval_summary_refresh"]
+            self.assertTrue(refresh["enabled"])
+            self.assertEqual("refreshed", refresh["status"])
+            self.assertGreaterEqual(refresh["refreshed_count"], 1)
+            self.assertLessEqual(summary_pack["used_context_tokens"], 240)
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "entity"
+                    and ref.get("entity_type") == "assistant_decision"
+                    and "delayed rollout backfill" in str(ref.get("text") or "")
+                    for ref in summary_pack["selected_refs"]
+                ),
+                summary_pack["selected_refs"],
+            )
+            records = adapter.read_all()
+            profile_summaries = [
+                record
+                for record in records
+                if record.get("record_type") == "context_summary"
+                and record.get("node_path") == ["tenant:tenant_hook", "user:codex_user", "profile:long_term_memory"]
+            ]
+            self.assertTrue(profile_summaries, records)
+            self.assertTrue(any("assistant" in record.get("source_roles", []) for record in profile_summaries))
+            self.assertTrue(any("PreviousAssistantBackfill" in record.get("source_codex_events", []) for record in profile_summaries))
+            self.assertTrue(any("assistant_decision" in record.get("source_entity_types", []) for record in profile_summaries))
+
     def test_post_tool_rollout_backfill_only_commits_tool_evidence_profile_memory(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -4750,6 +4794,50 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(0, role_policy["selected_tokens_by_role"]["assistant"])
             memory_budget = pack["recall_policy"]["memory_layer_budget"]
             self.assertEqual({"tool": 1}, memory_budget["source_message_counts_by_role"])
+
+            summary_pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "codex_session_3"},
+                    "session_scope": "prefer",
+                    "question_type": "broad_exploration",
+                    "query": "Summarize delayed rollout backfill profile long term memory tool evidence.",
+                    "max_context_tokens": 240,
+                    "audit_mode": "off",
+                    "ranking": {
+                        "max_selected_refs": 8,
+                        "min_similarity_score": 0.0,
+                        "budget_fill_policy": "force_fill",
+                        "pre_retrieval_summary_refresh": True,
+                        "pre_retrieval_summary_refresh_limit": 8,
+                    },
+                }
+            )
+            self.assert_no_default_context_pack_debug_lineage(summary_pack)
+            refresh = summary_pack["pre_retrieval_summary_refresh"]
+            self.assertTrue(refresh["enabled"])
+            self.assertEqual("refreshed", refresh["status"])
+            self.assertGreaterEqual(refresh["refreshed_count"], 1)
+            self.assertLessEqual(summary_pack["used_context_tokens"], 240)
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "entity"
+                    and ref.get("entity_type") == "tool_evidence"
+                    and "Ran 88 tests" in str(ref.get("text") or "")
+                    for ref in summary_pack["selected_refs"]
+                ),
+                summary_pack["selected_refs"],
+            )
+            records = adapter.read_all()
+            profile_summaries = [
+                record
+                for record in records
+                if record.get("record_type") == "context_summary"
+                and record.get("node_path") == ["tenant:tenant_hook", "user:codex_user", "profile:long_term_memory"]
+            ]
+            self.assertTrue(profile_summaries, records)
+            self.assertTrue(any("tool" in record.get("source_roles", []) for record in profile_summaries))
+            self.assertTrue(any("PreviousToolOutputBackfill" in record.get("source_codex_events", []) for record in profile_summaries))
+            self.assertTrue(any("tool_evidence" in record.get("source_entity_types", []) for record in profile_summaries))
 
     def test_message_ingest_batches_hot_path_writes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
