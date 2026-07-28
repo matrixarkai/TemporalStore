@@ -120,12 +120,20 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
     def test_generic_agent_retrieval_summary_exposes_memory_layer_pressure(self) -> None:
         retrieve = {
             "context_pack_id": "pack-pressure",
-            "selected_refs": [{"ref_type": "entity", "text": "assistant decision memory"}],
+            "selected_refs": [
+                {
+                    "ref_type": "entity",
+                    "text": "assistant decision memory",
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                }
+            ],
             "retrieval_metrics": {
                 "memory_layer_budget": {
                     "total_selected_refs": 1,
                     "total_selected_tokens": 8,
                     "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 8}},
+                    "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 8}},
                 },
                 "memory_layer_pressure": {
                     "selected_refs": 1,
@@ -166,6 +174,10 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         )
 
         self.assertEqual("pack-pressure", summary["context_pack_id"])
+        self.assertEqual("ok", summary["memory_layer_coverage"]["status"])
+        self.assertEqual([], summary["memory_layer_coverage"]["gaps"])
+        self.assertEqual(1, summary["memory_layer_coverage"]["profile_memory_refs"])
+        self.assertEqual(1, summary["memory_layer_coverage"]["cross_session_refs"])
         self.assertEqual(2, summary["memory_layer_pressure"]["dropped_refs"])
         self.assertTrue(summary["memory_layer_pressure"]["profile_memory_pressure"])
         self.assertEqual(
@@ -185,6 +197,23 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         )
         self.assertEqual(3, hierarchy["cross_session_max_sessions"])
         self.assertEqual(24, hierarchy["cross_session_max_candidates"])
+
+    def test_generic_agent_retrieval_summary_flags_missing_memory_layer_coverage(self) -> None:
+        summary = matrixark_agent_hook.agent_retrieval_summary(
+            {
+                "context_pack_id": "pack-empty",
+                "selected_refs": [],
+                "retrieval_metrics": {"memory_layer_budget": {}},
+            },
+            session_id_source="payload_field",
+        )
+
+        coverage = summary["memory_layer_coverage"]
+        self.assertEqual("gap", coverage["status"])
+        self.assertIn("retrieval:no_remote_refs_selected", coverage["gaps"])
+        self.assertIn("retrieval:no_session_or_profile_memory_selected", coverage["gaps"])
+        self.assertIn("retrieval:no_session_continuity_refs_selected", coverage["gaps"])
+        self.assertIn("retrieval:memory_layer_budget_missing_selected_refs", coverage["gaps"])
 
     def test_generic_hook_idle_commit_is_reported_as_auto_batch_decision(self) -> None:
         ingest = {
