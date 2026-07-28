@@ -6221,6 +6221,19 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
     async_pipeline_readiness = recall_summary.get("async_pipeline_readiness") if isinstance(recall_summary, dict) else {}
     if isinstance(async_pipeline_readiness, dict) and async_pipeline_readiness:
         compact["async_pipeline_readiness"] = async_pipeline_readiness
+    pre_retrieval_summary_refresh = compact.get("pre_retrieval_summary_refresh")
+    if not isinstance(pre_retrieval_summary_refresh, dict):
+        pre_retrieval_summary_refresh = (
+            compact.get("recall_policy", {}).get("pre_retrieval_summary_refresh")
+            if isinstance(compact.get("recall_policy"), dict)
+            else {}
+        )
+    if isinstance(pre_retrieval_summary_refresh, dict) and pre_retrieval_summary_refresh.get("enabled"):
+        compact["pre_retrieval_summary_refresh"] = {
+            field: pre_retrieval_summary_refresh.get(field)
+            for field in ["enabled", "status", "requested_limit", "refreshed_count", "compression_created_count", "elapsed_ms"]
+            if pre_retrieval_summary_refresh.get(field) not in (None, "", [], {})
+        }
     memory_hierarchy = memory_hierarchy_contract_from_recall_policy(compact.get("recall_policy", {}))
     if memory_hierarchy:
         compact["memory_hierarchy"] = memory_hierarchy
