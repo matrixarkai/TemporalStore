@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import collections
+import argparse
 import html
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -125,6 +127,29 @@ def serving_visibility_gaps(
     if raw_resource_or_skill and not resource_skill_records:
         gaps.append("resource_skill_records_missing_from_recent_serving_window")
     return gaps
+
+
+def serving_visibility_summary(report: dict[str, Any]) -> dict[str, Any]:
+    gap_backends = []
+    for backend in report.get("backends", []):
+        gaps = backend.get("serving_visibility_gaps") or []
+        if gaps:
+            gap_backends.append(
+                {
+                    "backend": backend.get("backend", ""),
+                    "prefix": backend.get("prefix", ""),
+                    "gaps": list(gaps),
+                }
+            )
+    return {
+        "serving_visibility_pass": not gap_backends,
+        "serving_visibility_gap_count": sum(len(item["gaps"]) for item in gap_backends),
+        "serving_visibility_gap_backends": gap_backends,
+    }
+
+
+def require_serving_visibility(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "required", "require"}
 
 
 def rust_exec(command: dict[str, Any]) -> dict[str, Any]:
@@ -262,10 +287,17 @@ def render_table(headers: list[str], rows: list[list[Any]]) -> str:
 
 
 def render_markdown(report: dict[str, Any]) -> str:
+    visibility = report.get("serving_visibility") or serving_visibility_summary(report)
     lines = [
         "# Recent Codex Hook Ingestion Workflow",
         "",
         f"Generated at `{report['generated_at_ms']}`.",
+        "",
+        "## Serving Visibility Gate",
+        "",
+        f"- Status: `{'pass' if visibility['serving_visibility_pass'] else 'gap'}`",
+        f"- Gap count: `{visibility['serving_visibility_gap_count']}`",
+        f"- Gap backends: `{json.dumps(visibility['serving_visibility_gap_backends'], sort_keys=True)}`",
         "",
         "## What This Report Proves",
         "",
@@ -335,7 +367,18 @@ def render_html(markdown: str) -> str:
 """
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__ or "Generate recent Codex ingestion workflow report.")
+    parser.add_argument(
+        "--require-serving-visibility",
+        action="store_true",
+        help="Exit nonzero when serving context_event/context_embedding/profile/resource visibility gaps are present.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     rust_raw_count, rust_raw_hot_count, rust_raw = scan_rust(RUST_PREFIX + ":raw_ingestion")
     rust_serving_count, rust_serving_hot_count, rust_serving = scan_rust(RUST_PREFIX)
     cpp_raw_count, cpp_raw_hot_count, cpp_raw = scan_cpp(CPP_PREFIX + ":raw_ingestion")
@@ -351,12 +394,24 @@ def main() -> None:
             summarize_backend("C++ TemporalStore", CPP_PREFIX, cpp_raw_count, cpp_raw_hot_count, cpp_raw, cpp_serving_count, cpp_serving_hot_count, cpp_serving),
         ],
     }
+    report["serving_visibility"] = serving_visibility_summary(report)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     OUT_JSON.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     md = render_markdown(report)
     OUT_MD.write_text(md, encoding="utf-8")
     OUT_HTML.write_text(render_html(md), encoding="utf-8")
-    print(json.dumps({"json": str(OUT_JSON), "markdown": str(OUT_MD), "html": str(OUT_HTML)}, indent=2))
+    result = {
+        "json": str(OUT_JSON),
+        "markdown": str(OUT_MD),
+        "html": str(OUT_HTML),
+        **report["serving_visibility"],
+    }
+    print(json.dumps(result, indent=2))
+    if (
+        args.require_serving_visibility
+        or require_serving_visibility(os.environ.get("MATRIXARK_REQUIRE_SERVING_VISIBILITY"))
+    ) and not report["serving_visibility"]["serving_visibility_pass"]:
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":
