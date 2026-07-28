@@ -3709,6 +3709,181 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(any("cross_session" in record.get("source_session_continuities", []) for record in profile_summaries))
             self.assertTrue(any("preference" in record.get("source_entity_types", []) for record in profile_summaries))
 
+    def test_user_prompt_cli_mixed_memory_retrieves_profile_summaries_under_budget(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            event_log = tmp / "matrixark-cli-mixed-profile-pack.jsonl"
+            rollout = tmp / "rollout.jsonl"
+            env = {
+                "MATRIXARK_SESSION_COMMIT_THRESHOLD": "3",
+                "MATRIXARK_IDLE_COMMIT_TIMEOUT_MS": "1",
+            }
+
+            first = self.run_hook(
+                repo,
+                event_log,
+                event="UserPromptSubmit",
+                payload={
+                    "prompt": (
+                        "User preference: prefer mixed ContextPack retrieval for user assistant and tool memories in mixed "
+                        "ContextPack retrieval; marker mixed-pack-731."
+                    ),
+                    "thread_id": "codex-cli-mixed-pack-thread",
+                },
+                extra_env=env,
+            )
+            self.assertEqual("ok", first["status"])
+
+            rollout.write_text(
+                json.dumps(
+                    {
+                        "payload": {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": (
+                                "Assistant decision: mixed ContextPack retrieval should include "
+                                "profile summaries and role-balanced evidence."
+                            ),
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            second = self.run_hook(
+                repo,
+                event_log,
+                event="UserPromptSubmit",
+                payload={
+                    "prompt": "Followup prompt should backfill prior assistant decision.",
+                    "transcript_path": str(rollout),
+                    "thread_id": "codex-cli-mixed-pack-thread",
+                },
+                extra_env=env,
+            )
+            self.assertEqual("ok", second["status"])
+
+            tool = self.run_hook(
+                repo,
+                event_log,
+                event="PostToolUse",
+                payload={
+                    "output": "Exit code: 0\nRan 166 tests in 9.42s\nOK\nmixed-pack-tool-evidence",
+                    "thread_id": "codex-cli-mixed-pack-thread",
+                },
+                extra_env=env,
+            )
+            self.assertEqual("ok", tool["status"])
+
+            time.sleep(0.01)
+            flush = self.run_hook(
+                repo,
+                event_log,
+                event="UserPromptSubmit",
+                payload={
+                    "prompt": "Next prompt should flush the remaining mixed evidence and retrieve all long-term layers.",
+                    "thread_id": "codex-cli-mixed-pack-thread",
+                },
+                extra_env=env,
+            )
+            self.assertEqual("ok", flush["status"])
+            self.assertIn(flush["ingest"]["idle_commit_result"]["status"], {"committed", "empty"})
+
+            adapter = MatrixArkLocalAdapter(event_log)
+            scope = {
+                "account_id": "acct_hook",
+                "tenant_id": "tenant_hook",
+                "user_id": "codex_user",
+                "session_id": "codex_session_1",
+            }
+            records = adapter.read_all()
+            profile_entities = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
+            ]
+            self.assertTrue(
+                any(
+                    record.get("entity_type") == "preference"
+                    and "mixed ContextPack retrieval" in str(record.get("state") or "")
+                    for record in profile_entities
+                ),
+                profile_entities,
+            )
+            self.assertTrue(any(record.get("entity_type") == "assistant_decision" for record in profile_entities), profile_entities)
+            self.assertTrue(any(record.get("entity_type") == "tool_evidence" for record in profile_entities), profile_entities)
+
+            retrieve_args = {
+                "scope": {**scope, "session_id": "codex_session_2"},
+                "session_scope": "prefer",
+                "question_type": "broad_exploration",
+                "query": "Summarize mixed user assistant tool evidence for ContextPack retrieval.",
+                "max_context_tokens": 240,
+                "audit_mode": "off",
+                "ranking": {
+                    "max_selected_refs": 8,
+                    "min_similarity_score": 0.0,
+                    "budget_fill_policy": "force_fill",
+                    "pre_retrieval_summary_refresh": True,
+                    "pre_retrieval_summary_refresh_limit": 12,
+                    "source_role_budget_mode": "auto",
+                    "memory_layer_budget_mode": "auto",
+                },
+            }
+            pack = adapter.retrieve(retrieve_args)
+            self.assert_no_default_context_pack_debug_lineage(pack)
+            refresh = pack["pre_retrieval_summary_refresh"]
+            self.assertTrue(refresh["enabled"])
+            self.assertEqual("refreshed", refresh["status"])
+            self.assertGreaterEqual(refresh["refreshed_count"], 1)
+            self.assertLessEqual(pack["used_context_tokens"], 240)
+            selected_refs = pack["selected_refs"]
+            self.assertTrue(any(ref.get("ref_type") == "summary" for ref in selected_refs), selected_refs)
+            self.assertTrue(
+                any(ref.get("ref_type") == "entity" and ref.get("entity_type") == "assistant_decision" for ref in selected_refs),
+                selected_refs,
+            )
+            self.assertTrue(
+                any(ref.get("ref_type") == "entity" and ref.get("entity_type") == "tool_evidence" for ref in selected_refs),
+                selected_refs,
+            )
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "summary"
+                    and "mixed ContextPack retrieval" in str(ref.get("text") or "")
+                    for ref in selected_refs
+                ),
+                selected_refs,
+            )
+
+            debug_pack = adapter.retrieve(
+                {
+                    **retrieve_args,
+                    "include_retrieval_debug": True,
+                    "include_debug_refs": True,
+                }
+            )
+            debug_budget = debug_pack["retrieval_metrics"]["memory_layer_budget"]
+            debug_recall_budget = debug_pack["recall_policy"]["memory_layer_budget"]
+            self.assertGreaterEqual(debug_budget["by_memory_layer"]["summary"]["refs"], 1)
+            self.assertGreaterEqual(debug_budget["by_memory_layer"]["profile_entity"]["refs"], 1)
+            self.assertGreaterEqual(debug_budget["by_memory_scope"]["user_profile"]["refs"], 1)
+            self.assertGreaterEqual(debug_budget["by_session_continuity"]["cross_session"]["refs"], 1)
+            self.assertNotIn("source_message_counts_by_role", debug_budget)
+            self.assertGreaterEqual(debug_recall_budget["source_message_counts_by_role"]["user"], 1)
+            self.assertGreaterEqual(debug_recall_budget["source_message_counts_by_role"]["assistant"], 1)
+            self.assertGreaterEqual(debug_recall_budget["source_message_counts_by_role"]["tool"], 1)
+            self.assertGreaterEqual(debug_recall_budget["by_source_role"]["user"]["refs"], 1)
+            self.assertGreaterEqual(debug_recall_budget["by_source_role"]["assistant"]["refs"], 1)
+            self.assertGreaterEqual(debug_recall_budget["by_source_role"]["tool"]["refs"], 1)
+            role_policy = debug_pack["recall_policy"]["source_role_budget"]
+            self.assertTrue(role_policy["enabled"])
+            self.assertEqual("auto", role_policy["mode"])
+            self.assertLessEqual(debug_pack["used_remote_context_tokens"], role_policy["remote_budget_tokens"])
+
     def test_user_prompt_cli_idle_preflushes_previous_assistant_rollout(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp_dir:
