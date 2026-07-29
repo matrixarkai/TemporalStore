@@ -8538,6 +8538,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 ["always_when_profile_scope_available"],
                 profile_decision_embedding["source_profile_promotion_policies"],
             )
+            superseded_session_entity_hashes = list(profile_decision["supersedes_session_entity_hashes"])
 
             pack = adapter.retrieve(
                 {
@@ -8625,6 +8626,18 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(2, current_ref["current_state_source_session_count"])
             self.assertGreaterEqual(current_ref["current_state_source_entity_count"], 2)
             self.assertGreaterEqual(current_ref["source_entity_count"], 2)
+            self.assertEqual(2, current_ref["profile_revision"])
+            self.assertEqual(1, current_ref["previous_profile_revision"])
+            self.assertGreater(current_ref["previous_profile_updated_at_ms"], 0)
+            self.assertIn(
+                current_ref["supersedes_session_entity_hash"],
+                current_ref["supersedes_session_entity_hashes"],
+            )
+            self.assertEqual(
+                superseded_session_entity_hashes,
+                current_ref["supersedes_session_entity_hashes"],
+            )
+            self.assertEqual(2, current_ref["supersedes_session_entity_count"])
             self.assertIn("bbb222", current_ref["text"])
             current_metrics = current_pack["retrieval_metrics"]
             self.assertGreaterEqual(current_metrics["stale_dropped_refs"], 1)
@@ -8726,6 +8739,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("current_state_policy", default_current_ref)
             self.assertNotIn("current_state_source_session_count", default_current_ref)
             self.assertNotIn("current_state_source_entity_count", default_current_ref)
+            self.assertNotIn("profile_revision", default_current_ref)
+            self.assertNotIn("previous_profile_revision", default_current_ref)
+            self.assertNotIn("previous_profile_updated_at_ms", default_current_ref)
+            self.assertNotIn("supersedes_session_entity_hash", default_current_ref)
+            self.assertNotIn("supersedes_session_entity_hashes", default_current_ref)
+            self.assertNotIn("supersedes_session_entity_count", default_current_ref)
             self.assertNotIn("dropped_memory_layer_budget", default_current_pack)
             self.assertNotIn("memory_layer_pressure", default_current_pack)
 
