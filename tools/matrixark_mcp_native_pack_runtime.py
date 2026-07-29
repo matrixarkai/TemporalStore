@@ -17,6 +17,7 @@ try:
         embedding_model_name,
         json,
         now_ms,
+        optional_object,
         os,
         stable_hash,
         _mcp_debug_log,
@@ -26,6 +27,7 @@ try:
         float_metric_or_default,
     )
     from tools.matrixark_mcp_native_pack import build_native_context_pack_request
+    from tools.matrixark_mcp_retrieve_request import pre_retrieval_idle_commit_flush
     from tools.matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
@@ -38,6 +40,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         embedding_model_name,
         json,
         now_ms,
+        optional_object,
         os,
         stable_hash,
         _mcp_debug_log,
@@ -47,6 +50,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         float_metric_or_default,
     )
     from matrixark_mcp_native_pack import build_native_context_pack_request
+    from matrixark_mcp_retrieve_request import pre_retrieval_idle_commit_flush
     from matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 
 
@@ -62,6 +66,26 @@ def try_native_context_pack(target: Any, args: Json) -> Json | None:
     scope = native_pack_request["scope"]
     query = str(native_pack_request["query"])
     debug_context_pack = bool(native_pack_request["debug_context_pack"])
+    if callable(getattr(self, "idle_commit_task_records", None)):
+        pre_retrieval_idle_commit = pre_retrieval_idle_commit_flush(
+            self,
+            args,
+            optional_object(args, "ranking"),
+            scope=scope,
+        )
+    else:
+        pre_retrieval_idle_commit = {
+            "enabled": True,
+            "status": "unavailable",
+            "reason": "native_idle_commit_task_reader_missing",
+        }
+    if pre_retrieval_idle_commit.get("status") in {"committed", "attempted"}:
+        self._entry_count_cache = None
+        native_pack_request = build_native_context_pack_request(self, args)
+        request = native_pack_request["request"]
+        cache_key = str(native_pack_request["cache_key"])
+        scope = native_pack_request["scope"]
+        query = str(native_pack_request["query"])
     cached = self._direct_context_pack_response_cache_get(cache_key)
     if cached is not None:
         return cached
@@ -160,6 +184,7 @@ def try_native_context_pack(target: Any, args: Json) -> Json | None:
     if "recall_policy" not in pack:
         pack["recall_policy"] = {}
     if isinstance(pack["recall_policy"], dict):
+        pack["recall_policy"]["pre_retrieval_idle_commit"] = pre_retrieval_idle_commit
         native_telemetry = pack.get("retrieval_metrics") if isinstance(pack.get("retrieval_metrics"), dict) else {}
         scan_stats = pack["recall_policy"].get("scan_stats") if isinstance(pack["recall_policy"].get("scan_stats"), dict) else {}
         if scan_stats:
@@ -226,6 +251,7 @@ def try_native_context_pack(target: Any, args: Json) -> Json | None:
             },
             "native_context_pack_ms": total_native_ms,
             "source": "native_context_pack",
+            "pre_retrieval_idle_commit": pre_retrieval_idle_commit,
         }
         native_candidate_class_counts = native_telemetry.get("candidate_class_counts")
         if isinstance(native_candidate_class_counts, dict):

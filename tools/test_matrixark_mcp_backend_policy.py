@@ -3762,6 +3762,76 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "native_context_pack",
         )
 
+    def test_direct_native_context_pack_flushes_due_idle_commit_before_request(self) -> None:
+        client = _NativeContextPackClient()
+        client.get_string = lambda key: "8" if key.endswith(":record_count") else ""
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:native-pack-idle"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._entry_count_cache = None
+        adapter._shard_size = 128
+        scope = {"tenant_hash": 11, "user_hash": 22, "session_hash": 33}
+        adapter._idle_records = [
+            {
+                "record_type": "matrixark_async_pipeline_task",
+                "task_hash": 707,
+                "event_id_hash": 808,
+                "scope": scope,
+                "status": "idle_commit_scheduled",
+                "trigger_policy": "idle_timeout",
+                "threshold_messages": 20,
+                "idle_commit_timeout_ms": 1,
+                "idle_commit_deadline_ms": 1,
+                "updated_at_ms": 1,
+            }
+        ]
+        adapter._appended_idle_markers = []
+        adapter._session_commit_requests = []
+        adapter.read_all = lambda: list(adapter._idle_records)
+        adapter.idle_commit_task_records = lambda _scope: list(adapter._idle_records)
+        adapter.append = lambda record: adapter._appended_idle_markers.append(record)
+
+        def session_commit(request):
+            adapter._session_commit_requests.append(request)
+            return {
+                "status": "committed",
+                "trigger_policy": "idle_timeout",
+                "committed_event_count": 1,
+            }
+
+        adapter.session_commit = session_commit
+        adapter.append_context_pack_visibility = lambda **kwargs: {
+            "audit_mode": "off",
+            "telemetry_record": False,
+            "rich_replay_audit": False,
+        }
+
+        result = adapter.retrieve(
+            {
+                "query": "what did the idle tail decide?",
+                "scope": scope,
+                "max_context_tokens": 2048,
+                "ranking": {"pre_retrieval_idle_commit_flush": True},
+                "debug_context_pack": True,
+                "include_retrieval_metrics": True,
+            }
+        )
+
+        self.assertEqual(1, len(adapter._session_commit_requests))
+        self.assertEqual("idle_timeout", adapter._session_commit_requests[0]["commit_reason"])
+        self.assertFalse(adapter._session_commit_requests[0]["force"])
+        self.assertEqual(1, len(client.requests))
+        self.assertEqual(8, client.requests[0]["watermark_count"])
+        self.assertEqual(8, client.requests[0]["append_watermark"])
+        self.assertEqual("committed", result["recall_policy"]["pre_retrieval_idle_commit"]["status"])
+        self.assertEqual("committed", result["retrieval_metrics"]["pre_retrieval_idle_commit"]["status"])
+        self.assertTrue(
+            any(record.get("status") == "idle_commit_committed" for record in adapter._appended_idle_markers)
+        )
+
     def test_direct_retrieve_derives_native_hash_scope_from_plain_ids(self) -> None:
         client = _NativeContextPackClient()
         adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)

@@ -52,6 +52,7 @@ try:
     )
     from tools.matrixark_mcp_metrics import MatrixArkServiceMetrics
     from tools.matrixark_mcp_raw_ingestion import normalize_raw_ingestion_record
+    from tools.matrixark_mcp_retrieve_request import pre_retrieval_idle_commit_flush
     from tools.matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
@@ -65,6 +66,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
     from matrixark_mcp_metrics import MatrixArkServiceMetrics
     from matrixark_mcp_raw_ingestion import normalize_raw_ingestion_record
+    from matrixark_mcp_retrieve_request import pre_retrieval_idle_commit_flush
     from matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 
 
@@ -2944,6 +2946,21 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         scope = _native_scope_with_hashes(optional_object(args, "scope"))
         query = require_string(args, "query")
         ranking = optional_object(args, "ranking")
+        if callable(getattr(self, "idle_commit_task_records", None)):
+            pre_retrieval_idle_commit = pre_retrieval_idle_commit_flush(
+                self,
+                args,
+                ranking,
+                scope=scope,
+            )
+        else:
+            pre_retrieval_idle_commit = {
+                "enabled": True,
+                "status": "unavailable",
+                "reason": "native_idle_commit_task_reader_missing",
+            }
+        if pre_retrieval_idle_commit.get("status") in {"committed", "attempted"}:
+            self._entry_count_cache = None
         scope_key = canonical_scope_key(scope)
         native_node_path = optional_object(args, "metadata").get("node_path")
         if not isinstance(native_node_path, list) or not native_node_path:
@@ -3255,6 +3272,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         if "recall_policy" not in pack:
             pack["recall_policy"] = {}
         if isinstance(pack["recall_policy"], dict):
+            pack["recall_policy"]["pre_retrieval_idle_commit"] = pre_retrieval_idle_commit
             native_telemetry = pack.get("retrieval_metrics") if isinstance(pack.get("retrieval_metrics"), dict) else {}
             scan_stats = pack["recall_policy"].get("scan_stats") if isinstance(pack["recall_policy"].get("scan_stats"), dict) else {}
             if scan_stats:
@@ -3360,6 +3378,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 },
                 "native_context_pack_ms": total_native_ms,
                 "source": "native_context_pack",
+                "pre_retrieval_idle_commit": pre_retrieval_idle_commit,
             }
             native_candidate_class_counts = native_telemetry.get("candidate_class_counts")
             if isinstance(native_candidate_class_counts, dict):
