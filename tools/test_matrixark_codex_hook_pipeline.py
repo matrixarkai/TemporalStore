@@ -10159,8 +10159,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("source_hook_type_counts", default_current_ref)
             self.assertNotIn("source_codex_event_counts", default_current_ref)
             self.assertNotIn("source_entity_count", default_current_ref)
-            self.assertEqual(2, default_current_ref["profile_source_session_count"])
-            self.assertGreaterEqual(default_current_ref["profile_source_entity_count"], 2)
+            self.assertNotIn("profile_source_session_count", default_current_ref)
+            self.assertNotIn("profile_source_entity_count", default_current_ref)
             self.assertNotIn("current_state_policy", default_current_ref)
             self.assertNotIn("current_state_source_session_count", default_current_ref)
             self.assertNotIn("current_state_source_entity_count", default_current_ref)
@@ -10264,8 +10264,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("source_event_ids", profile_ref)
             self.assertNotIn("source_entity_hashes", profile_ref)
             self.assertNotIn("source_role_counts", profile_ref)
-            self.assertEqual(1, profile_ref["profile_source_session_count"])
-            self.assertEqual(1, profile_ref["profile_source_entity_count"])
+            self.assertNotIn("profile_source_session_count", profile_ref)
+            self.assertNotIn("profile_source_entity_count", profile_ref)
             budget = pack["retrieval_metrics"]["memory_layer_budget"]
             self.assertGreaterEqual(budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(budget["by_session_continuity"]["cross_session"]["refs"], 1)
@@ -10294,8 +10294,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("extraction_context_event_ids", debug_ref)
             self.assertNotIn("source_entity_count", debug_ref)
             self.assertNotIn("source_session_count", debug_ref)
-            self.assertEqual(1, debug_ref["profile_source_session_count"])
-            self.assertEqual(1, debug_ref["profile_source_entity_count"])
+            self.assertNotIn("profile_source_session_count", debug_ref)
+            self.assertNotIn("profile_source_entity_count", debug_ref)
 
     def test_retrieval_recovers_profile_summary_layer_from_compact_embedding_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
