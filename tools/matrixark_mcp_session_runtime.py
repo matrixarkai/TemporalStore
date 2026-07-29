@@ -35,6 +35,72 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
+def _event_source_count_summary(envelope: Json, hook: Json | None) -> Json:
+    metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
+    hook = hook if isinstance(hook, dict) else {}
+    role_counts: Json = {}
+    hook_type_counts: Json = {}
+    codex_event_counts: Json = {}
+
+    def add_count(bucket: Json, key: object, amount: object = 1, *, normalize_role_value: bool = False) -> None:
+        name = normalize_message_role(key) if normalize_role_value else str(key or "").strip()
+        if not name:
+            return
+        try:
+            count = max(0, int(amount or 0))
+        except (TypeError, ValueError):
+            count = 0
+        if count:
+            bucket[name] = int(bucket.get(name, 0)) + count
+
+    def add_values(bucket: Json, values: object, *, normalize_role_value: bool = False) -> None:
+        if isinstance(values, list):
+            for value in values:
+                add_count(bucket, value, normalize_role_value=normalize_role_value)
+        else:
+            add_count(bucket, values, normalize_role_value=normalize_role_value)
+
+    metadata_role_counts = metadata.get("source_role_counts") if isinstance(metadata.get("source_role_counts"), dict) else {}
+    if metadata_role_counts:
+        for role, count in metadata_role_counts.items():
+            add_count(role_counts, role, count, normalize_role_value=True)
+    else:
+        for message in envelope.get("messages", []) if isinstance(envelope.get("messages"), list) else []:
+            if isinstance(message, dict):
+                add_count(role_counts, message.get("role"), normalize_role_value=True)
+        add_values(role_counts, metadata.get("source_roles"), normalize_role_value=True)
+
+    metadata_hook_type_counts = metadata.get("source_hook_type_counts") if isinstance(metadata.get("source_hook_type_counts"), dict) else {}
+    if metadata_hook_type_counts:
+        for hook_type, count in metadata_hook_type_counts.items():
+            add_count(hook_type_counts, hook_type, count)
+    else:
+        add_values(hook_type_counts, envelope.get("hook_type"))
+        add_values(hook_type_counts, metadata.get("hook_type"))
+        add_values(hook_type_counts, metadata.get("source_hook_types"))
+        add_values(hook_type_counts, hook.get("hook_type"))
+
+    metadata_codex_event_counts = metadata.get("source_codex_event_counts") if isinstance(metadata.get("source_codex_event_counts"), dict) else {}
+    if metadata_codex_event_counts:
+        for codex_event, count in metadata_codex_event_counts.items():
+            add_count(codex_event_counts, codex_event, count)
+    else:
+        add_values(codex_event_counts, envelope.get("codex_event"))
+        add_values(codex_event_counts, metadata.get("codex_event"))
+        add_values(codex_event_counts, metadata.get("source_codex_events"))
+        add_values(codex_event_counts, hook.get("codex_event"))
+        add_values(codex_event_counts, hook.get("trigger"))
+
+    return {
+        "source_roles": sorted(role_counts),
+        "source_role_counts": dict(sorted(role_counts.items())),
+        "source_hook_types": sorted(hook_type_counts),
+        "source_hook_type_counts": dict(sorted(hook_type_counts.items())),
+        "source_codex_events": sorted(codex_event_counts),
+        "source_codex_event_counts": dict(sorted(codex_event_counts.items())),
+    }
+
+
 def append_session_buffer_event(
     adapter: object,
     *,
@@ -45,6 +111,7 @@ def append_session_buffer_event(
     hook: Json | None,
 ) -> None:
     key = session_buffer_key(envelope)
+    source_counts = _event_source_count_summary(envelope, hook)
     adapter.append(
         {
             "record_type": "session_buffer_event",
@@ -59,6 +126,7 @@ def append_session_buffer_event(
             "status": "pending",
             "envelope": envelope,
             "agent_hook": hook,
+            **source_counts,
             "created_at_ms": envelope["ingestion_time_ms"],
         }
     )

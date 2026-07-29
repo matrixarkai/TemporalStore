@@ -10,6 +10,7 @@ try:
         Json,
         MatrixArkError,
         messages_from_event_record,
+        normalize_message_role,
         normalized_node_path,
         session_buffer_key,
         stable_hash,
@@ -21,12 +22,79 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         Json,
         MatrixArkError,
         messages_from_event_record,
+        normalize_message_role,
         normalized_node_path,
         session_buffer_key,
         stable_hash,
         summarize_text,
         text_from_messages,
     )
+
+
+def _source_count_summary(envelope: Json, hook: Json | None) -> Json:
+    metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
+    hook = hook if isinstance(hook, dict) else {}
+
+    def add_count(bucket: Json, key: object, amount: object = 1, *, normalize_role: bool = False) -> None:
+        name = normalize_message_role(key) if normalize_role else str(key or "").strip()
+        if not name:
+            return
+        try:
+            count = max(0, int(amount or 0))
+        except (TypeError, ValueError):
+            count = 0
+        if count:
+            bucket[name] = int(bucket.get(name, 0)) + count
+
+    def add_values(bucket: Json, values: object, *, normalize_role: bool = False) -> None:
+        if isinstance(values, list):
+            for value in values:
+                add_count(bucket, value, normalize_role=normalize_role)
+        else:
+            add_count(bucket, values, normalize_role=normalize_role)
+
+    role_counts: Json = {}
+    metadata_role_counts = metadata.get("source_role_counts") if isinstance(metadata.get("source_role_counts"), dict) else {}
+    if metadata_role_counts:
+        for role, count in metadata_role_counts.items():
+            add_count(role_counts, role, count, normalize_role=True)
+    else:
+        for message in envelope.get("messages", []) if isinstance(envelope.get("messages"), list) else []:
+            if isinstance(message, dict):
+                add_count(role_counts, message.get("role"), normalize_role=True)
+        add_values(role_counts, metadata.get("source_roles"), normalize_role=True)
+
+    hook_type_counts: Json = {}
+    metadata_hook_type_counts = metadata.get("source_hook_type_counts") if isinstance(metadata.get("source_hook_type_counts"), dict) else {}
+    if metadata_hook_type_counts:
+        for hook_type, count in metadata_hook_type_counts.items():
+            add_count(hook_type_counts, hook_type, count)
+    else:
+        add_values(hook_type_counts, envelope.get("hook_type"))
+        add_values(hook_type_counts, metadata.get("hook_type"))
+        add_values(hook_type_counts, metadata.get("source_hook_types"))
+        add_values(hook_type_counts, hook.get("hook_type"))
+
+    codex_event_counts: Json = {}
+    metadata_codex_event_counts = metadata.get("source_codex_event_counts") if isinstance(metadata.get("source_codex_event_counts"), dict) else {}
+    if metadata_codex_event_counts:
+        for codex_event, count in metadata_codex_event_counts.items():
+            add_count(codex_event_counts, codex_event, count)
+    else:
+        add_values(codex_event_counts, envelope.get("codex_event"))
+        add_values(codex_event_counts, metadata.get("codex_event"))
+        add_values(codex_event_counts, metadata.get("source_codex_events"))
+        add_values(codex_event_counts, hook.get("codex_event"))
+        add_values(codex_event_counts, hook.get("trigger"))
+
+    return {
+        "source_roles": sorted(role_counts),
+        "source_role_counts": dict(sorted(role_counts.items())),
+        "source_hook_types": sorted(hook_type_counts),
+        "source_hook_type_counts": dict(sorted(hook_type_counts.items())),
+        "source_codex_events": sorted(codex_event_counts),
+        "source_codex_event_counts": dict(sorted(codex_event_counts.items())),
+    }
 
 
 def lightweight_async_accept(
@@ -52,6 +120,7 @@ def lightweight_async_accept(
     node_hint = envelope["metadata"].get("node_path") or target.default_session_node_path(envelope["scope"])
     node_path = normalized_node_path(envelope, node_hint)
     node_hash = stable_hash("/".join(node_path))
+    source_counts = _source_count_summary(envelope, hook)
     node_materialization = target.ensure_context_node_path(
         node_path=node_path,
         scope=envelope["scope"],
@@ -88,6 +157,7 @@ def lightweight_async_accept(
                 },
                 "agent_hook": hook,
                 "storage_options": envelope.get("storage_options", {}),
+                **source_counts,
                 "async_processing": True,
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
@@ -111,6 +181,7 @@ def lightweight_async_accept(
                 "status": "pending",
                 "stages": ["extraction", "summary", "compression", "embedding"],
                 "reason": "sync_accept_async_processing",
+                **source_counts,
                 "created_at_ms": envelope["ingestion_time_ms"],
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
@@ -181,6 +252,7 @@ def lightweight_async_accept(
             "idle_ready": idle_ready,
             "auto_batch_extract": auto_batch_extract,
             "boundary_commit_requested": session_boundary_commit,
+            **source_counts,
         },
         "auto_batch_extract_result": auto_batch_result,
         "idle_commit_result": idle_commit_result,

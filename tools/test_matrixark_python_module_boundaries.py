@@ -988,7 +988,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "user_id": "user",
                 "session_id": "session",
             },
-            "metadata": {},
+            "metadata": {"hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
             "messages": [{"role": "user", "content": "first live message"}],
             "ingestion_time_ms": 123,
             "storage_options": {},
@@ -1001,6 +1001,17 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertFalse(first["session_buffer"]["idle_ready"])
         self.assertEqual(1, first["session_buffer"]["pending_event_count"])
         self.assertEqual(1, first["session_buffer"]["pending_message_count"])
+        self.assertEqual({"user": 1}, first["session_buffer"]["source_role_counts"])
+        self.assertEqual({"before_llm": 1}, first["session_buffer"]["source_hook_type_counts"])
+        self.assertEqual({"UserPromptSubmit": 1}, first["session_buffer"]["source_codex_event_counts"])
+        first_event = next(record for record in target.records if record["record_type"] == "context_event")
+        first_task = next(record for record in target.records if record["record_type"] == "matrixark_async_pipeline_task")
+        self.assertEqual({"user": 1}, first_event["source_role_counts"])
+        self.assertEqual({"before_llm": 1}, first_event["source_hook_type_counts"])
+        self.assertEqual({"UserPromptSubmit": 1}, first_event["source_codex_event_counts"])
+        self.assertEqual(first_event["source_role_counts"], first_task["source_role_counts"])
+        self.assertEqual(first_event["source_hook_type_counts"], first_task["source_hook_type_counts"])
+        self.assertEqual(first_event["source_codex_event_counts"], first_task["source_codex_event_counts"])
         self.assertIsNone(first["auto_batch_extract_result"])
 
         second_envelope = {**envelope, "messages": [{"role": "assistant", "content": "second live message"}], "ingestion_time_ms": 124}
@@ -1015,6 +1026,11 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         target = Target()
         multi_message_envelope = {
             **envelope,
+            "metadata": {
+                "source_role_counts": {"user": 1, "assistant": 1, "tool": 2},
+                "source_hook_type_counts": {"after_llm": 1, "hook_boundary": 1},
+                "source_codex_event_counts": {"PostToolUse": 2, "Stop": 1},
+            },
             "messages": [
                 {"role": "user", "content": "prompt with enough context"},
                 {"role": "assistant", "content": "assistant decision to remember"},
@@ -1030,6 +1046,13 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(1, multi["session_buffer"]["pending_event_count"])
         self.assertEqual(2, multi["session_buffer"]["pending_message_count"])
+        self.assertEqual({"assistant": 1, "tool": 2, "user": 1}, multi["session_buffer"]["source_role_counts"])
+        self.assertEqual({"after_llm": 1, "hook_boundary": 1}, multi["session_buffer"]["source_hook_type_counts"])
+        self.assertEqual({"PostToolUse": 2, "Stop": 1}, multi["session_buffer"]["source_codex_event_counts"])
+        multi_event = next(record for record in target.records if record["record_type"] == "context_event")
+        self.assertEqual(multi["session_buffer"]["source_role_counts"], multi_event["source_role_counts"])
+        self.assertEqual(multi["session_buffer"]["source_hook_type_counts"], multi_event["source_hook_type_counts"])
+        self.assertEqual(multi["session_buffer"]["source_codex_event_counts"], multi_event["source_codex_event_counts"])
         self.assertTrue(multi["session_buffer"]["threshold_ready"])
         self.assertEqual("committed", multi["auto_batch_extract_result"]["status"])
 
