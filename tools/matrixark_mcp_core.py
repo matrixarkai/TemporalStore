@@ -5399,6 +5399,14 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
             item["segment_origin"] = segment_origin.strip()
         if ref.get("derived_from_context_events") is True or metadata.get("derived_from_context_events") is True:
             item["derived_from_context_events"] = True
+    source_record_type = ref.get("source_record_type", metadata.get("source_record_type"))
+    if isinstance(source_record_type, str) and source_record_type.strip():
+        item["source_record_type"] = source_record_type.strip()
+    segment_origin = ref.get("segment_origin", metadata.get("segment_origin"))
+    if isinstance(segment_origin, str) and segment_origin.strip():
+        item["segment_origin"] = segment_origin.strip()
+    if ref.get("derived_from_context_events") is True or metadata.get("derived_from_context_events") is True:
+        item["derived_from_context_events"] = True
     return item
 
 
@@ -6558,6 +6566,14 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
             value = ref.get(field)
             if isinstance(value, int) and value > 0:
                 item[field] = value
+    value = ref.get("source_record_type")
+    if isinstance(value, str) and value.strip():
+        item["source_record_type"] = value.strip()
+    value = ref.get("segment_origin")
+    if isinstance(value, str) and value.strip():
+        item["segment_origin"] = value.strip()
+    if ref.get("derived_from_context_events") is True:
+        item["derived_from_context_events"] = True
     context_class = ref.get("context_class")
     if context_class and context_class != item.get("ref_type"):
         item["context_class"] = context_class
