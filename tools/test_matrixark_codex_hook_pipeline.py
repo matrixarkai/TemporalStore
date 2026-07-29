@@ -8478,6 +8478,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "source_codex_events": ["Stop"],
                         "source_codex_event_counts": {"Stop": 1},
                         "source_session_ids": ["session_prior"],
+                        "source_event_ids": [91003],
+                        "source_entity_hashes": [91004],
+                        "extraction_context_event_ids": [91003],
                         "source_memory_scopes": ["session", "user_profile"],
                         "source_session_continuities": ["same_session", "cross_session"],
                         "extraction_phase": "final",
@@ -8509,6 +8512,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("user_profile", profile_ref["memory_scope"])
             self.assertEqual("cross_session", profile_ref["session_continuity"])
             self.assertNotIn("source_session_ids", profile_ref)
+            self.assertNotIn("source_event_ids", profile_ref)
+            self.assertNotIn("source_entity_hashes", profile_ref)
             self.assertNotIn("source_role_counts", profile_ref)
             budget = pack["retrieval_metrics"]["memory_layer_budget"]
             self.assertGreaterEqual(budget["by_memory_scope"]["user_profile"]["refs"], 1)
@@ -8533,6 +8538,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 and "latest_profile_marker_991" in ref.get("text", "")
             )
             self.assertEqual({"assistant": 1}, debug_ref["source_role_counts"])
+            self.assertEqual(["session_prior"], debug_ref["source_session_ids"])
+            self.assertEqual([91003], debug_ref["source_event_ids"])
+            self.assertEqual([91003], debug_ref["extraction_context_event_ids"])
+            self.assertEqual(1, debug_ref["source_entity_count"])
+            self.assertEqual(1, debug_ref["source_session_count"])
+            self.assertEqual(1, debug_ref["current_state_source_session_count"])
+            self.assertEqual(1, debug_ref["current_state_source_entity_count"])
 
     def test_retrieval_flags_state_file_session_identity_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
