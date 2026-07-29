@@ -7179,6 +7179,8 @@ class MatrixArkLocalAdapter:
         memory_layer_budget_mode: str = "",
         memory_selection_policy_budget_tokens: Json | None = None,
         memory_selection_policy_budget_mode: str = "",
+        extraction_phase_budget_tokens: Json | None = None,
+        extraction_phase_budget_mode: str = "",
     ) -> Json:
         selected = []
         used_context_tokens = 0
@@ -7300,6 +7302,14 @@ class MatrixArkLocalAdapter:
             bucket_name="by_memory_selection_policy",
             semantics="independent_per_memory_selection_policy_caps_under_global_remote_budget",
         )
+        extraction_phase_budget_policy = budget_control_policy_summary(
+            selected_budget=memory_layer_budget,
+            budget_tokens=extraction_phase_budget_tokens,
+            mode=extraction_phase_budget_mode,
+            remote_budget_tokens=remote_budget,
+            bucket_name="by_extraction_phase",
+            semantics="independent_per_extraction_phase_caps_under_global_remote_budget",
+        )
         serving_memory_layer_budget_value = serving_memory_layer_budget(memory_layer_budget)
         async_readiness_scope = retrieval_scope if isinstance(retrieval_scope, dict) else {**scope, "_session_scope": "prefer"}
         async_pipeline_readiness = async_pipeline_retrieval_readiness(records, async_readiness_scope)
@@ -7350,8 +7360,9 @@ class MatrixArkLocalAdapter:
                     "memory_layer_budget": serving_memory_layer_budget_value,
                     "source_role_budget": source_role_budget_policy,
                     "memory_layer_budget_policy": memory_layer_budget_policy,
-                    "memory_selection_policy_budget": memory_selection_policy_budget_policy,
-                    "async_pipeline_readiness": async_pipeline_readiness,
+            "memory_selection_policy_budget": memory_selection_policy_budget_policy,
+            "extraction_phase_budget": extraction_phase_budget_policy,
+            "async_pipeline_readiness": async_pipeline_readiness,
                     "requested_max_context_tokens": max_context_tokens,
                     "used_local_context_tokens": local_tokens,
                     "used_remote_context_tokens": used_context_tokens,
@@ -7635,6 +7646,11 @@ class MatrixArkLocalAdapter:
                 remote_budget_tokens=remote_context_budget_tokens,
                 question_type=question_type,
             )
+        extraction_phase_budget_tokens = (
+            optional_object(args, "extraction_phase_budget_tokens")
+            or optional_object(ranking, "extraction_phase_budget_tokens")
+        )
+        extraction_phase_budget_mode = "explicit" if extraction_phase_budget_tokens else ""
         query_terms = {term for term in tokens(query) if len(term) > 2}
         raw_reference_time_ms = args.get("reference_time_ms", now_ms())
         if not isinstance(raw_reference_time_ms, int):
@@ -7668,6 +7684,7 @@ class MatrixArkLocalAdapter:
             json.dumps(source_role_budget_tokens, sort_keys=True, separators=(",", ":")),
             json.dumps(memory_layer_budget_tokens, sort_keys=True, separators=(",", ":")),
             json.dumps(memory_selection_policy_budget_tokens, sort_keys=True, separators=(",", ":")),
+            json.dumps(extraction_phase_budget_tokens, sort_keys=True, separators=(",", ":")),
             json.dumps(
                 {
                     "enabled": bool(pre_retrieval_summary_refresh.get("enabled")),
@@ -7874,6 +7891,10 @@ class MatrixArkLocalAdapter:
             "memory_selection_policy_budget_mode": memory_selection_policy_budget_mode or (
                 "explicit" if memory_selection_policy_budget_tokens else "disabled"
             ),
+            "extraction_phase_budget_tokens": extraction_phase_budget_tokens,
+            "extraction_phase_budget_mode": extraction_phase_budget_mode or (
+                "explicit" if extraction_phase_budget_tokens else "disabled"
+            ),
             "memory_layer_budget_question_type": question_type,
             "memory_layer_budget_question_reason": memory_layer_budget_reason,
             "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
@@ -8074,6 +8095,8 @@ class MatrixArkLocalAdapter:
                 memory_layer_budget_mode=memory_layer_budget_mode,
                 memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
                 memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
+                extraction_phase_budget_tokens=extraction_phase_budget_tokens,
+                extraction_phase_budget_mode=extraction_phase_budget_mode,
             )
         skill_controls = self.latest_skill_controls(records)
         include_superseded_resources = bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False))
@@ -8116,6 +8139,8 @@ class MatrixArkLocalAdapter:
                 memory_layer_budget_mode=memory_layer_budget_mode,
                 memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
                 memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
+                extraction_phase_budget_tokens=extraction_phase_budget_tokens,
+                extraction_phase_budget_mode=extraction_phase_budget_mode,
             )
         node_scores: dict[int, Json] = {}
         event_embedding_vectors: dict[int, list[float]] = {}
@@ -8258,6 +8283,8 @@ class MatrixArkLocalAdapter:
                 memory_layer_budget_mode=memory_layer_budget_mode,
                 memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
                 memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
+                extraction_phase_budget_tokens=extraction_phase_budget_tokens,
+                extraction_phase_budget_mode=extraction_phase_budget_mode,
             )
 
         top_k_per_layer = integer_arg(ranking, "top_k_per_layer", DEFAULT_TOP_K_PER_LAYER, minimum=1)
@@ -8747,6 +8774,8 @@ class MatrixArkLocalAdapter:
                 memory_layer_budget_mode=memory_layer_budget_mode,
                 memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
                 memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
+                extraction_phase_budget_tokens=extraction_phase_budget_tokens,
+                extraction_phase_budget_mode=extraction_phase_budget_mode,
             )
         for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
             if scan_index % 64 == 0 and deadline_exceeded():
@@ -8871,6 +8900,8 @@ class MatrixArkLocalAdapter:
                 memory_layer_budget_mode=memory_layer_budget_mode,
                 memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
                 memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
+                extraction_phase_budget_tokens=extraction_phase_budget_tokens,
+                extraction_phase_budget_mode=extraction_phase_budget_mode,
             )
         for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
             if scan_index % 64 == 0 and deadline_exceeded():
@@ -8981,6 +9012,8 @@ class MatrixArkLocalAdapter:
                 memory_layer_budget_mode=memory_layer_budget_mode,
                 memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
                 memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
+                extraction_phase_budget_tokens=extraction_phase_budget_tokens,
+                extraction_phase_budget_mode=extraction_phase_budget_mode,
             )
         for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
             if scan_index % 64 == 0 and deadline_exceeded():
@@ -9194,6 +9227,8 @@ class MatrixArkLocalAdapter:
                 memory_layer_budget_mode=memory_layer_budget_mode,
                 memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
                 memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
+                extraction_phase_budget_tokens=extraction_phase_budget_tokens,
+                extraction_phase_budget_mode=extraction_phase_budget_mode,
             )
         finish_retrieval_stage("rerank_score", stage_started_perf)
         stage_started_perf = time.perf_counter()
@@ -9243,6 +9278,7 @@ class MatrixArkLocalAdapter:
             source_role_budget_tokens=source_role_budget_tokens,
             memory_layer_budget_tokens=memory_layer_budget_tokens,
             memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
+            extraction_phase_budget_tokens=extraction_phase_budget_tokens,
         )
         if (
             (
@@ -9849,6 +9885,20 @@ class MatrixArkLocalAdapter:
                     ),
                     "remote_budget_tokens": remote_context_budget_tokens,
                     "budget_semantics": "independent_per_memory_selection_policy_caps_under_global_remote_budget",
+                    "independent_caps": True,
+                    "global_remote_budget_enforced": True,
+                },
+                "extraction_phase_budget_policy": {
+                    **(
+                        dropped_over_budget.get("extraction_phase_budget_policy", {"enabled": False})
+                        if isinstance(dropped_over_budget.get("extraction_phase_budget_policy"), dict)
+                        else {"enabled": False}
+                    ),
+                    "mode": extraction_phase_budget_mode or (
+                        "explicit" if extraction_phase_budget_tokens else "disabled"
+                    ),
+                    "remote_budget_tokens": remote_context_budget_tokens,
+                    "budget_semantics": "independent_per_extraction_phase_caps_under_global_remote_budget",
                     "independent_caps": True,
                     "global_remote_budget_enforced": True,
                 },

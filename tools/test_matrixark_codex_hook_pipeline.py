@@ -4371,6 +4371,40 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertEqual("explicit", request["memory_selection_policy_budget_mode"])
 
+    def test_local_native_context_pack_receives_extraction_phase_budget_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-extraction-phase-budget.jsonl")
+            scope = {
+                "account_id": "acct_native_phase_budget",
+                "tenant_id": "tenant_native_phase_budget",
+                "user_id": "user_native_phase_budget",
+                "session_id": "session_native_phase_budget",
+            }
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "final and provisional memory budget",
+                    "max_context_tokens": 256,
+                    "extraction_phase_budget_tokens": {
+                        "pending_async": 16,
+                        "provisional": 32,
+                        "final": 96,
+                    },
+                    "ranking": {"max_selected_refs": 4},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertEqual("local-native-pack", pack["pack_id"])
+            self.assertEqual(1, len(adapter.native_requests))
+            request = adapter.native_requests[0]
+            self.assertEqual(
+                {"pending_async": 16, "provisional": 32, "final": 96},
+                request["extraction_phase_budget_tokens"],
+            )
+            self.assertEqual("explicit", request["extraction_phase_budget_mode"])
+
     def test_local_native_context_pack_receives_auto_source_role_budget_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-auto-budget.jsonl")
@@ -4977,6 +5011,42 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "query": "assistant decision budget",
                     "max_context_tokens": 256,
                     "memory_selection_policy_budget_tokens": {"selected_assistant_decision_outcome_only": 1},
+                    "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertFalse(first.get("context_pack_cache_hit", False))
+            self.assertFalse(second.get("context_pack_cache_hit", False))
+
+    def test_context_pack_cache_key_includes_extraction_phase_budget_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-extraction-phase-cache.jsonl")
+            scope = {
+                "account_id": "acct_extraction_phase_cache",
+                "tenant_id": "tenant_extraction_phase_cache",
+                "user_id": "user_extraction_phase_cache",
+                "session_id": "session_extraction_phase_cache",
+            }
+
+            first = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "phase budget",
+                    "max_context_tokens": 256,
+                    "extraction_phase_budget_tokens": {"provisional": 128},
+                    "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+            second = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "phase budget",
+                    "max_context_tokens": 256,
+                    "extraction_phase_budget_tokens": {"provisional": 1},
                     "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
                     "audit_mode": "off",
                     "debug_context_pack": True,
