@@ -364,6 +364,9 @@ namespace = os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns")
 table = os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table")
 prefix = os.environ.get("MATRIXARK_RUST_TEMPORALSTORE_PREFIX", "matrixark:codex-hook:rust-live-v2")
 profile_prefix = os.environ.get("MATRIXARK_CODEX_PROFILE_PREFIX", "matrixark:mcp:codex").rstrip(":")
+account_id = os.environ.get("MATRIXARK_ACCOUNT_ID", "acct_codex")
+tenant_id = os.environ.get("MATRIXARK_TENANT_ID", "tenant_codex")
+user_id = os.environ.get("MATRIXARK_USER_ID", os.environ.get("USER", "codex_user"))
 base = "http://" + os.environ.get("MATRIXARK_RUST_SERVICE_PROXY_ADDR", "127.0.0.1:17100")
 meta = "http://" + os.environ.get("MATRIXARK_RUST_SERVICE_META_ADDR", "127.0.0.1:17101")
 session_id = identity.get("session_id") or os.environ.get("MATRIXARK_HOOK_SESSION_ID") or "codex-live-active-hook"
@@ -519,8 +522,10 @@ raw_record = {
 }
 serving_record = {
     "record_type": "context_event",
+    "event_id_hash": int(hashlib.sha256(f"event\n{record_hash}".encode("utf-8")).hexdigest()[:16], 16) & ((1 << 63) - 1),
     "text": "user: " + prompt,
     "session_id": session_id,
+    "scope": {"account_id": account_id, "tenant_id": tenant_id, "user_id": user_id, "session_id": session_id},
     "session_id_source": identity.get("session_id_source") or "fallback",
     "thread_id": identity.get("thread_id") or "",
     "turn_id": identity.get("turn_id") or "",
@@ -567,6 +572,11 @@ def compact_text(value, limit=420):
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
+def compact_embedding(text, dim=8):
+    digest = hashlib.sha256(str(text or "").encode("utf-8", "replace")).digest()
+    return [round(((digest[index] / 255.0) * 2.0) - 1.0, 6) for index in range(dim)]
+
+
 def live_topic_entities(prompt_text):
     lowered = (prompt_text or "").lower()
     topics = [
@@ -588,32 +598,54 @@ def live_topic_entities(prompt_text):
 def rust_live_extraction_records():
     if event_name != "UserPromptSubmit" or is_synthetic_prompt(prompt):
         return []
+    event_id_hash = serving_record["event_id_hash"]
+    session_scope = {"account_id": account_id, "tenant_id": tenant_id, "user_id": user_id, "session_id": session_id}
+    profile_scope = {"account_id": account_id, "tenant_id": tenant_id, "user_id": user_id}
+    session_node_path = [f"tenant:{tenant_id}", f"user:{user_id}", f"session:{session_id}", "conversation:codex_hook"]
+    profile_node_path = [f"tenant:{tenant_id}", f"user:{user_id}", "profile:long_term_memory"]
+    session_node_hash = int(hashlib.sha256("/".join(session_node_path).encode("utf-8")).hexdigest()[:16], 16) & ((1 << 63) - 1)
+    profile_node_hash = int(hashlib.sha256("/".join(profile_node_path).encode("utf-8")).hexdigest()[:16], 16) & ((1 << 63) - 1)
     common_extracted = {
         "session_id": session_id,
-        "thread_id": identity.get("thread_id") or "",
-        "turn_id": identity.get("turn_id") or "",
         "source_hook_id": hook_id,
         "updated_at_ms": now_ms,
     }
-    segment_id = hashlib.sha256(f"segment\n{record_hash}".encode("utf-8")).hexdigest()[:16]
     records = [
         {
-            "record_type": "context_segment",
-            "segment_id": segment_id,
-            "text": compact_text(prompt, 900),
+            "record_type": "context_embedding",
+            "embedding_type": "event_text",
+            "ref_type": "event",
+            "ref_hash": event_id_hash,
+            "node_hash": session_node_hash,
+            "node_path": session_node_path,
+            "dim": 8,
+            "model": "deterministic_compact_sha256_v1",
+            "vector": compact_embedding("user: " + prompt),
+            "scope": session_scope,
+            "memory_scope": "session",
+            "session_continuity": "same_session",
             **common_extracted,
         }
     ]
     topics = live_topic_entities(prompt)
     for topic in topics:
         entity_hash = int(hashlib.sha256(f"entity\n{session_id}\n{topic}".encode("utf-8")).hexdigest()[:16], 16) & ((1 << 63) - 1)
+        profile_entity_hash = int(hashlib.sha256(f"profile_entity\n{tenant_id}\n{user_id}\n{topic}".encode("utf-8")).hexdigest()[:16], 16) & ((1 << 63) - 1)
+        entity_state = compact_text(f"{topic}: {prompt}", 700)
         records.append(
             {
                 "record_type": "context_entity",
                 "entity_hash": entity_hash,
+                "node_hash": session_node_hash,
+                "node_path": session_node_path,
+                "scope": session_scope,
+                "access_scope": session_scope,
                 "entity_type": "topic",
                 "entity_name": topic,
-                "state": compact_text(f"{topic}: {prompt}", 700),
+                "state": entity_state,
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+                "source_event_ids": [event_id_hash],
                 **common_extracted,
             }
         )
@@ -623,6 +655,99 @@ def rust_live_extraction_records():
                 "index_name": f"entity_type:{topic}",
                 "ref_type": "context_entity",
                 "ref_hash": entity_hash,
+                "ref_hashes": [entity_hash],
+                "data_model": "context_entity",
+                "node_hash": session_node_hash,
+                "scope": session_scope,
+                **common_extracted,
+            }
+        )
+        records.append(
+            {
+                "record_type": "context_embedding",
+                "embedding_type": "entity_state",
+                "ref_type": "entity",
+                "ref_hash": entity_hash,
+                "node_hash": session_node_hash,
+                "node_path": session_node_path,
+                "dim": 8,
+                "model": "deterministic_compact_sha256_v1",
+                "vector": compact_embedding("topic " + entity_state),
+                "scope": session_scope,
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+                **common_extracted,
+            }
+        )
+        profile_record = {
+            "record_type": "context_entity",
+            "entity_hash": profile_entity_hash,
+            "node_hash": profile_node_hash,
+            "node_path": profile_node_path,
+            "scope": profile_scope,
+            "access_scope": profile_scope,
+            "entity_type": "topic",
+            "entity_name": topic,
+            "state": entity_state,
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "promoted_from_memory_scope": "session",
+            "profile_promotion_policy": "always_when_profile_scope_available",
+            "profile_promotion_blocker": "",
+            "source_session_ids": [session_id],
+            "source_entity_hashes": [entity_hash],
+            "source_event_ids": [event_id_hash],
+            **common_extracted,
+        }
+        records.append(profile_record)
+        records.append(
+            {
+                "record_type": "context_embedding",
+                "embedding_type": "entity_state",
+                "ref_type": "entity",
+                "ref_hash": profile_entity_hash,
+                "node_hash": profile_node_hash,
+                "node_path": profile_node_path,
+                "dim": 8,
+                "model": "deterministic_compact_sha256_v1",
+                "vector": compact_embedding("profile topic " + entity_state),
+                "scope": profile_scope,
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                **common_extracted,
+            }
+        )
+        for index_name in (f"entity_type:{topic}", "memory_scope:user_profile", "session_continuity:cross_session"):
+            records.append(
+                {
+                    "record_type": "context_index",
+                    "index_name": index_name,
+                    "ref_type": "context_profile_entity",
+                    "ref_hash": profile_entity_hash,
+                    "ref_hashes": [profile_entity_hash],
+                    "data_model": "context_profile_entity",
+                    "node_hash": profile_node_hash,
+                    "scope": profile_scope,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    **common_extracted,
+                }
+            )
+        records.append(
+            {
+                "record_type": "context_summary_dirty",
+                "dirty_hash": int(hashlib.sha256(f"profile_dirty\n{profile_entity_hash}\n{record_hash}".encode("utf-8")).hexdigest()[:16], 16) & ((1 << 63) - 1),
+                "node_hash": profile_node_hash,
+                "node_path": profile_node_path,
+                "scope": profile_scope,
+                "dirty_reason": "profile_entity_promoted",
+                "source_ref_type": "entity",
+                "source_entity_hash": profile_entity_hash,
+                "source_event_hash": event_id_hash,
+                "source_memory_scopes": ["session", "user_profile"],
+                "source_session_continuities": ["same_session", "cross_session"],
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
                 **common_extracted,
             }
         )
@@ -934,6 +1059,9 @@ namespace = os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns")
 table = os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table")
 prefix = os.environ.get("MATRIXARK_CPP_TEMPORALSTORE_PREFIX", "matrixark:codex-hook:cpp-live-v2")
 profile_prefix = os.environ.get("MATRIXARK_CODEX_PROFILE_PREFIX", "matrixark:mcp:codex").rstrip(":")
+account_id = os.environ.get("MATRIXARK_ACCOUNT_ID", "acct_codex")
+tenant_id = os.environ.get("MATRIXARK_TENANT_ID", "tenant_codex")
+user_id = os.environ.get("MATRIXARK_USER_ID", os.environ.get("USER", "codex_user"))
 session_id = identity.get("session_id") or os.environ.get("MATRIXARK_HOOK_SESSION_ID") or "codex-live-active-hook"
 session_id = f"codex:{session_id}" if not str(session_id).startswith("codex:") else str(session_id)
 event_name = os.environ.get("EVENT", "UserPromptSubmit")
@@ -1029,6 +1157,10 @@ def compact_text(value, limit=420):
     text = " ".join(str(value or "").split())
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
+def compact_embedding(text, dim=8):
+    digest = hashlib.sha256(str(text or "").encode("utf-8", "replace")).digest()
+    return [round(((digest[index] / 255.0) * 2.0) - 1.0, 6) for index in range(dim)]
+
 def live_topic_entities(prompt_text):
     lowered = (prompt_text or "").lower()
     topics = [
@@ -1049,30 +1181,52 @@ def live_topic_entities(prompt_text):
 def cpp_live_extraction_records():
     if event_name != "UserPromptSubmit" or is_synthetic_prompt(prompt):
         return []
+    event_id_hash = serving_record["event_id_hash"]
+    session_scope = {"account_id": account_id, "tenant_id": tenant_id, "user_id": user_id, "session_id": session_id}
+    profile_scope = {"account_id": account_id, "tenant_id": tenant_id, "user_id": user_id}
+    session_node_path = [f"tenant:{tenant_id}", f"user:{user_id}", f"session:{session_id}", "conversation:codex_hook"]
+    profile_node_path = [f"tenant:{tenant_id}", f"user:{user_id}", "profile:long_term_memory"]
+    session_node_hash = int(hashlib.sha256("/".join(session_node_path).encode("utf-8")).hexdigest()[:16], 16) & ((1 << 63) - 1)
+    profile_node_hash = int(hashlib.sha256("/".join(profile_node_path).encode("utf-8")).hexdigest()[:16], 16) & ((1 << 63) - 1)
     common_extracted = {
         "session_id": session_id,
-        "thread_id": identity.get("thread_id") or "",
-        "turn_id": identity.get("turn_id") or "",
         "source_hook_id": hook_id,
         "updated_at_ms": now_ms,
     }
-    segment_id = hashlib.sha256(f"segment\n{record_hash}".encode("utf-8")).hexdigest()[:16]
     records = [
         {
-            "record_type": "context_segment",
-            "segment_id": segment_id,
-            "text": compact_text(prompt, 900),
+            "record_type": "context_embedding",
+            "embedding_type": "event_text",
+            "ref_type": "event",
+            "ref_hash": event_id_hash,
+            "node_hash": session_node_hash,
+            "node_path": session_node_path,
+            "dim": 8,
+            "model": "deterministic_compact_sha256_v1",
+            "vector": compact_embedding("user: " + prompt),
+            "scope": session_scope,
+            "memory_scope": "session",
+            "session_continuity": "same_session",
             **common_extracted,
         }
     ]
     for topic in live_topic_entities(prompt):
         entity_hash = int(hashlib.sha256(f"entity\n{session_id}\n{topic}".encode("utf-8")).hexdigest()[:16], 16) & ((1 << 63) - 1)
+        profile_entity_hash = int(hashlib.sha256(f"profile_entity\n{tenant_id}\n{user_id}\n{topic}".encode("utf-8")).hexdigest()[:16], 16) & ((1 << 63) - 1)
+        entity_state = compact_text(f"{topic}: {prompt}", 700)
         records.append({
             "record_type": "context_entity",
             "entity_hash": entity_hash,
+            "node_hash": session_node_hash,
+            "node_path": session_node_path,
+            "scope": session_scope,
+            "access_scope": session_scope,
             "entity_type": "topic",
             "entity_name": topic,
-            "state": compact_text(f"{topic}: {prompt}", 700),
+            "state": entity_state,
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "source_event_ids": [event_id_hash],
             **common_extracted,
         })
         records.append({
@@ -1080,6 +1234,91 @@ def cpp_live_extraction_records():
             "index_name": f"entity_type:{topic}",
             "ref_type": "context_entity",
             "ref_hash": entity_hash,
+            "ref_hashes": [entity_hash],
+            "data_model": "context_entity",
+            "node_hash": session_node_hash,
+            "scope": session_scope,
+            **common_extracted,
+        })
+        records.append({
+            "record_type": "context_embedding",
+            "embedding_type": "entity_state",
+            "ref_type": "entity",
+            "ref_hash": entity_hash,
+            "node_hash": session_node_hash,
+            "node_path": session_node_path,
+            "dim": 8,
+            "model": "deterministic_compact_sha256_v1",
+            "vector": compact_embedding("topic " + entity_state),
+            "scope": session_scope,
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            **common_extracted,
+        })
+        profile_record = {
+            "record_type": "context_entity",
+            "entity_hash": profile_entity_hash,
+            "node_hash": profile_node_hash,
+            "node_path": profile_node_path,
+            "scope": profile_scope,
+            "access_scope": profile_scope,
+            "entity_type": "topic",
+            "entity_name": topic,
+            "state": entity_state,
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "promoted_from_memory_scope": "session",
+            "profile_promotion_policy": "always_when_profile_scope_available",
+            "profile_promotion_blocker": "",
+            "source_session_ids": [session_id],
+            "source_entity_hashes": [entity_hash],
+            "source_event_ids": [event_id_hash],
+            **common_extracted,
+        }
+        records.append(profile_record)
+        records.append({
+            "record_type": "context_embedding",
+            "embedding_type": "entity_state",
+            "ref_type": "entity",
+            "ref_hash": profile_entity_hash,
+            "node_hash": profile_node_hash,
+            "node_path": profile_node_path,
+            "dim": 8,
+            "model": "deterministic_compact_sha256_v1",
+            "vector": compact_embedding("profile topic " + entity_state),
+            "scope": profile_scope,
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            **common_extracted,
+        })
+        for index_name in (f"entity_type:{topic}", "memory_scope:user_profile", "session_continuity:cross_session"):
+            records.append({
+                "record_type": "context_index",
+                "index_name": index_name,
+                "ref_type": "context_profile_entity",
+                "ref_hash": profile_entity_hash,
+                "ref_hashes": [profile_entity_hash],
+                "data_model": "context_profile_entity",
+                "node_hash": profile_node_hash,
+                "scope": profile_scope,
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                **common_extracted,
+            })
+        records.append({
+            "record_type": "context_summary_dirty",
+            "dirty_hash": int(hashlib.sha256(f"profile_dirty\n{profile_entity_hash}\n{record_hash}".encode("utf-8")).hexdigest()[:16], 16) & ((1 << 63) - 1),
+            "node_hash": profile_node_hash,
+            "node_path": profile_node_path,
+            "scope": profile_scope,
+            "dirty_reason": "profile_entity_promoted",
+            "source_ref_type": "entity",
+            "source_entity_hash": profile_entity_hash,
+            "source_event_hash": event_id_hash,
+            "source_memory_scopes": ["session", "user_profile"],
+            "source_session_continuities": ["same_session", "cross_session"],
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
             **common_extracted,
         })
     summary_id = hashlib.sha256(f"summary\n{session_id}\n{record_hash}".encode("utf-8")).hexdigest()[:16]
@@ -1106,7 +1345,13 @@ common = {
     **retention_fields(prompt),
 }
 raw_record = {"record_type": "agent_message", "text": prompt, **common}
-serving_record = {"record_type": "context_event", "text": "user: " + prompt, **common}
+serving_record = {
+    "record_type": "context_event",
+    "event_id_hash": int(hashlib.sha256(f"event\n{record_hash}".encode("utf-8")).hexdigest()[:16], 16) & ((1 << 63) - 1),
+    "text": "user: " + prompt,
+    "scope": {"account_id": account_id, "tenant_id": tenant_id, "user_id": user_id, "session_id": session_id},
+    **common,
+}
 
 counter_cache = {}
 
