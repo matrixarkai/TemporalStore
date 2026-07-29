@@ -442,7 +442,6 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         "session_continuity",
         "entity_type",
         "entity_name",
-        "extraction_phase",
         "profile_current_state_representative",
     ]:
         value = ref.get(field)
@@ -451,8 +450,6 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
     memory_layer = _memory_layer_for_ref(ref)
     if memory_layer:
         item["memory_layer"] = memory_layer
-    if bool(ref.get("final_session_boundary")):
-        item["final_session_boundary"] = True
     flat_debug_lineage_fields = [
         "source_session_ids",
         "source_roles",
@@ -474,6 +471,12 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         "source_codex_event_counts",
         "source_memory_selection_policy_counts",
     ] if debug_lineage_enabled(include_debug=include_debug) else []
+    if debug_lineage_enabled(include_debug=include_debug):
+        value = ref.get("extraction_phase")
+        if value not in (None, "", [], {}):
+            item["extraction_phase"] = value
+        if bool(ref.get("final_session_boundary")):
+            item["final_session_boundary"] = True
     for field in flat_debug_lineage_fields:
         value = ref.get(field)
         if isinstance(value, list) and value:
@@ -513,14 +516,6 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
             value = ref.get(field)
             if value not in (None, "", [], {}) and not (isinstance(value, int) and value <= 0):
                 item[field] = value
-    value = ref.get("source_record_type")
-    if isinstance(value, str) and value.strip():
-        item["source_record_type"] = value.strip()
-    value = ref.get("segment_origin")
-    if isinstance(value, str) and value.strip():
-        item["segment_origin"] = value.strip()
-    if ref.get("derived_from_context_events") is True:
-        item["derived_from_context_events"] = True
     context_class = ref.get("context_class")
     if context_class and context_class != item.get("ref_type"):
         item["context_class"] = context_class
@@ -1015,7 +1010,6 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         ("operator", "operator"),
         ("summary_type", "summary_type"),
         ("memory_scope", "memory_scope"),
-        ("extraction_phase", "extraction_phase"),
         ("resource_version", "version"),
         ("version_state", "version_state"),
     ]
@@ -1029,8 +1023,6 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
     memory_layer = _memory_layer_for_ref(ref)
     if memory_layer and memory_layer != default_memory_layer:
         item["memory_layer"] = memory_layer
-    if bool(ref.get("final_session_boundary") or metadata.get("final_session_boundary")):
-        item["final_session_boundary"] = True
     debug_lineage_fields = [
         "source_session_ids",
         "source_roles",
@@ -1050,6 +1042,12 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         "source_codex_event_counts",
         "source_memory_selection_policy_counts",
     ] if debug_lineage_enabled(include_debug=include_debug) else []
+    if debug_lineage_enabled(include_debug=include_debug):
+        value = ref.get("extraction_phase", metadata.get("extraction_phase"))
+        if value not in (None, "", [], {}):
+            item["extraction_phase"] = value
+        if bool(ref.get("final_session_boundary") or metadata.get("final_session_boundary")):
+            item["final_session_boundary"] = True
     for field in debug_lineage_fields:
         value = ref.get(field, metadata.get(field))
         if isinstance(value, list) and value:
@@ -1080,14 +1078,6 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
             value = ref.get(field, metadata.get(field))
             if isinstance(value, int) and value > 0:
                 item[field] = value
-    value = ref.get("source_record_type", metadata.get("source_record_type"))
-    if isinstance(value, str) and value.strip():
-        item["source_record_type"] = value.strip()
-    value = ref.get("segment_origin", metadata.get("segment_origin"))
-    if isinstance(value, str) and value.strip():
-        item["segment_origin"] = value.strip()
-    if ref.get("derived_from_context_events") is True or metadata.get("derived_from_context_events") is True:
-        item["derived_from_context_events"] = True
     return item
 
 
