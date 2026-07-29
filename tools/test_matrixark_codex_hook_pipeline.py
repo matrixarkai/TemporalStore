@@ -8761,6 +8761,159 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(1, debug_ref["current_state_source_session_count"])
             self.assertEqual(1, debug_ref["current_state_source_entity_count"])
 
+    def test_retrieval_recovers_profile_summary_layer_from_embedding_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-summary-embedding-recovery.jsonl")
+            scope = {
+                "account_id": "acct_summary_embed_recovery",
+                "tenant_id": "tenant_summary_embed_recovery",
+                "user_id": "user_summary_embed_recovery",
+                "session_id": "session_current_summary",
+            }
+            profile_scope = {
+                "account_id": "acct_summary_embed_recovery",
+                "tenant_id": "tenant_summary_embed_recovery",
+                "user_id": "user_summary_embed_recovery",
+            }
+            node_path = [
+                "tenant:tenant_summary_embed_recovery",
+                "user:user_summary_embed_recovery",
+                "profile:long_term_memory",
+            ]
+            node_hash = 92001
+            summary_hash = 92002
+            summary_text = "profile summary: latest_summary_marker_992 says keep profile summaries retrievable."
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_summary",
+                        "summary_type": "node_l0",
+                        "summary_hash": summary_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "scope": profile_scope,
+                        "access_scope": profile_scope,
+                        "summary_text": summary_text,
+                        "updated_at_ms": 1000,
+                    },
+                    {
+                        "record_type": "context_summary_dirty",
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "scope": profile_scope,
+                        "reason": "profile_summary_embedding_recovery_test",
+                        "dirty_at_ms": 900,
+                    },
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "node_l0",
+                        "ref_type": "summary",
+                        "ref_hash": summary_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "dim": len(embedding_for_text(summary_text)),
+                        "model": "deterministic-test",
+                        "vector": embedding_for_text(summary_text),
+                        "scope": profile_scope,
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "promoted_from_memory_scope": "session",
+                        "profile_promotion_policy": "always_when_profile_scope_available",
+                        "source_roles": ["assistant", "tool"],
+                        "source_role_counts": {"assistant": 1, "tool": 1},
+                        "source_hook_types": ["after_llm", "tool_result"],
+                        "source_hook_type_counts": {"after_llm": 1, "tool_result": 1},
+                        "source_codex_events": ["Stop", "PostToolUse"],
+                        "source_codex_event_counts": {"Stop": 1, "PostToolUse": 1},
+                        "source_memory_selection_policies": [
+                            "selected_assistant_decision_outcome_only",
+                            "selected_tool_evidence_only",
+                        ],
+                        "source_memory_selection_policy_counts": {
+                            "selected_assistant_decision_outcome_only": 1,
+                            "selected_tool_evidence_only": 1,
+                        },
+                        "source_session_ids": ["session_prior_summary"],
+                        "source_event_ids": [92003],
+                        "source_entity_hashes": [92004],
+                        "extraction_context_event_ids": [92003],
+                        "source_memory_scopes": ["session", "user_profile"],
+                        "source_session_continuities": ["same_session", "cross_session"],
+                        "source_extraction_phases": ["final"],
+                        "extraction_phase": "final",
+                        "final_session_boundary": True,
+                        "updated_at_ms": 1000,
+                    },
+                ]
+            )
+
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "session_scope": "prefer",
+                    "question_type": "current_state",
+                    "query": "latest summary marker 992 profile summaries retrievable",
+                    "max_context_tokens": 500,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 3, "min_similarity_score": 0.0},
+                    "pre_retrieval_summary_refresh": True,
+                    "pre_retrieval_summary_refresh_limit": 1,
+                }
+            )
+            summary_refs = [
+                ref
+                for ref in pack["selected_refs"]
+                if ref.get("ref_type") == "summary" and "latest_summary_marker_992" in ref.get("text", "")
+            ]
+            self.assertTrue(summary_refs, pack["selected_refs"])
+            summary_ref = summary_refs[0]
+            self.assertEqual("user_profile", summary_ref["memory_scope"])
+            self.assertEqual("cross_session", summary_ref["session_continuity"])
+            self.assertNotIn("source_session_ids", summary_ref)
+            self.assertNotIn("source_event_ids", summary_ref)
+            self.assertNotIn("source_entity_hashes", summary_ref)
+            self.assertNotIn("source_role_counts", summary_ref)
+            self.assertNotIn("source_memory_selection_policy_counts", summary_ref)
+            budget = pack["retrieval_metrics"]["memory_layer_budget"]
+            self.assertGreaterEqual(budget["by_memory_scope"]["user_profile"]["refs"], 1)
+            self.assertGreaterEqual(budget["by_session_continuity"]["cross_session"]["refs"], 1)
+            self.assertGreaterEqual(budget["by_memory_layer"]["profile_summary"]["refs"], 1)
+
+            debug_pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "session_scope": "prefer",
+                    "question_type": "current_state",
+                    "query": "latest summary marker 992 profile summaries retrievable",
+                    "max_context_tokens": 500,
+                    "audit_mode": "off",
+                    "include_debug_refs": True,
+                    "ranking": {"max_selected_refs": 3, "min_similarity_score": 0.0},
+                    "pre_retrieval_summary_refresh": True,
+                    "pre_retrieval_summary_refresh_limit": 1,
+                }
+            )
+            debug_ref = next(
+                ref
+                for ref in debug_pack["selected_refs"]
+                if ref.get("ref_type") == "summary" and "latest_summary_marker_992" in ref.get("text", "")
+            )
+            self.assertEqual(["session_prior_summary"], debug_ref["source_session_ids"])
+            self.assertEqual([92003], debug_ref["source_event_ids"])
+            self.assertEqual([92003], debug_ref["extraction_context_event_ids"])
+            self.assertEqual(1, debug_ref["source_event_count"])
+            self.assertEqual(1, debug_ref["source_entity_count"])
+            self.assertEqual({"assistant": 1, "tool": 1}, debug_ref["source_role_counts"])
+            self.assertEqual({"after_llm": 1, "tool_result": 1}, debug_ref["source_hook_type_counts"])
+            self.assertEqual({"Stop": 1, "PostToolUse": 1}, debug_ref["source_codex_event_counts"])
+            self.assertEqual(
+                {
+                    "selected_assistant_decision_outcome_only": 1,
+                    "selected_tool_evidence_only": 1,
+                },
+                debug_ref["source_memory_selection_policy_counts"],
+            )
+
     def test_retrieval_flags_state_file_session_identity_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             event_log = Path(tmp_dir) / "matrixark-session-identity-warning.jsonl"
