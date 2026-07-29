@@ -399,6 +399,35 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 hook._extract_assistant_text_from_rollout(rollout),
             )
 
+    def test_assistant_memory_selection_marks_synthesized_facts_lossy(self) -> None:
+        raw = "\n".join(
+            [
+                "Implementation details " * 80,
+                "Implemented profile entity promotion and pushed commit def7890 to origin/main.",
+                "Validation ran 112 tests passed.",
+                "Changed assistant outcome extraction to preserve count-only facts.",
+                "Next: continue retrieval budget tuning.",
+            ]
+        )
+
+        selected = hook.selected_assistant_memory_text(raw)
+        metadata = hook.codex_memory_selection_metadata(
+            role="assistant",
+            event="Stop",
+            text=selected,
+            original_text=raw,
+        )
+
+        self.assertIn("Outcome: pushed commit def7890 to origin/main", selected)
+        self.assertIn("Validation: 112 tests passed", selected)
+        self.assertIn("assistant outcome extraction", selected)
+        self.assertNotIn("Implementation details Implementation details", selected)
+        self.assertEqual("selected_assistant_decision_outcome_only", metadata["policy"])
+        self.assertTrue(metadata["selection_lossy"])
+        self.assertLessEqual(metadata["retained_text_ratio"], 1.0)
+        self.assertLessEqual(metadata["retained_line_ratio"], 1.0)
+        self.assertFalse(metadata["large_payload_verbatim_stored"])
+
     def test_user_prompt_payload_preserves_explicit_thread_identity(self) -> None:
         payload = decode_payload(
             json.dumps(
