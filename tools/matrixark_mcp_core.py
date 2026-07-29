@@ -6464,6 +6464,17 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         value = ref.get("source_event_ids")
         if isinstance(value, list) and value:
             item["source_event_ids"] = value[:8]
+        value = ref.get("source_event_count")
+        if isinstance(value, int) and value > 0:
+            item["source_event_count"] = value
+        value = ref.get("source_record_type")
+        if isinstance(value, str) and value.strip():
+            item["source_record_type"] = value.strip()
+        value = ref.get("segment_origin")
+        if isinstance(value, str) and value.strip():
+            item["segment_origin"] = value.strip()
+        if ref.get("derived_from_context_events") is True:
+            item["derived_from_context_events"] = True
         value = ref.get("extraction_context_event_ids")
         if isinstance(value, list) and value:
             item["extraction_context_event_ids"] = value[:8]
