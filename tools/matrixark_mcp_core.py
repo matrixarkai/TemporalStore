@@ -6006,12 +6006,17 @@ def select_token_budgeted_refs(
         return False
 
     def candidate_source_role_names(candidate: Json) -> set[str]:
-        role_names = {
-            normalize_message_role(role)
-            for role in candidate.get("source_roles", [])
-            if normalize_message_role(role)
-        } if isinstance(candidate.get("source_roles"), list) else set()
-        entity_type = str(candidate.get("entity_type") or "").strip().lower()
+        role_names: set[str] = set()
+        sources = [candidate]
+        metadata = candidate.get("metadata")
+        if isinstance(metadata, dict):
+            sources.append(metadata)
+        for source in sources:
+            roles = source.get("source_roles")
+            if isinstance(roles, list):
+                role_names.update(normalize_message_role(role) for role in roles if normalize_message_role(role))
+        metadata_entity_type = metadata.get("entity_type") if isinstance(metadata, dict) else ""
+        entity_type = str(candidate.get("entity_type") or metadata_entity_type or "").strip().lower()
         role_specific_entity_types = {
             "assistant_decision": "assistant",
             "assistant_response": "assistant",
@@ -6022,32 +6027,38 @@ def select_token_budgeted_refs(
         semantic_role = role_specific_entity_types.get(entity_type)
         if semantic_role and semantic_role in role_names:
             return {semantic_role}
-        source_counts = candidate.get("source_role_counts") if isinstance(candidate.get("source_role_counts"), dict) else {}
-        for role, count in source_counts.items():
-            role_name = normalize_message_role(role)
-            if not role_name:
-                continue
-            try:
-                source_count = int(count or 0)
-            except (TypeError, ValueError):
-                source_count = 0
-            if source_count > 0:
-                role_names.add(role_name)
+        for source in sources:
+            source_counts = source.get("source_role_counts") if isinstance(source.get("source_role_counts"), dict) else {}
+            for role, count in source_counts.items():
+                role_name = normalize_message_role(role)
+                if not role_name:
+                    continue
+                try:
+                    source_count = int(count or 0)
+                except (TypeError, ValueError):
+                    source_count = 0
+                if source_count > 0:
+                    role_names.add(role_name)
         if semantic_role and semantic_role in role_names:
             return {semantic_role}
         return role_names
 
     def candidate_budget_source_role_counts(candidate: Json, role_names: set[str]) -> Json:
-        source_counts = candidate.get("source_role_counts") if isinstance(candidate.get("source_role_counts"), dict) else {}
         normalized_source_counts: Json = {}
-        for role, count in source_counts.items():
-            role_name = normalize_message_role(role)
-            if not role_name:
-                continue
-            try:
-                normalized_source_counts[role_name] = int(normalized_source_counts.get(role_name, 0)) + max(0, int(count or 0))
-            except (TypeError, ValueError):
-                continue
+        sources = [candidate]
+        metadata = candidate.get("metadata")
+        if isinstance(metadata, dict):
+            sources.append(metadata)
+        for source in sources:
+            source_counts = source.get("source_role_counts") if isinstance(source.get("source_role_counts"), dict) else {}
+            for role, count in source_counts.items():
+                role_name = normalize_message_role(role)
+                if not role_name:
+                    continue
+                try:
+                    normalized_source_counts[role_name] = int(normalized_source_counts.get(role_name, 0)) + max(0, int(count or 0))
+                except (TypeError, ValueError):
+                    continue
         result: Json = {}
         for role in sorted(role_names):
             try:

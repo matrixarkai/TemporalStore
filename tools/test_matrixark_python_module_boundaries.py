@@ -2937,6 +2937,42 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             dropped["memory_layer_budget_policy"]["selected_tokens_by_layer"],
         )
 
+        metadata_role_candidate = {
+            "ref_type": "entity",
+            "ref_hash": 505,
+            "text": "assistant decision from metadata role lineage should obey assistant caps",
+            "score": 0.97,
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "metadata": {
+                "entity_type": "assistant_decision",
+                "source_role_counts": {"llm": 2, "model": 1},
+            },
+        }
+        selected, used_tokens, dropped = budget_mod.select_token_budgeted_refs(
+            [metadata_role_candidate],
+            [],
+            max_context_tokens=40,
+            auxiliary_quota=0,
+            max_selected_refs=1,
+            min_score=0.0,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 40,
+                "max_sessions": 1,
+                "max_candidates": 1,
+            },
+            source_role_budget_tokens={"assistant": 1},
+            budget_fill_policy="quality_first",
+        )
+        self.assertEqual([], selected)
+        self.assertEqual(0, used_tokens)
+        self.assertEqual(1, dropped["source_role_budget"])
+        self.assertEqual(
+            {"assistant": 0},
+            dropped["source_role_budget_policy"]["selected_tokens_by_role"],
+        )
+
     def test_modular_budget_pack_force_fill_respects_memory_selection_policy_cap(self) -> None:
         budget_mod = importlib.import_module("tools.matrixark_mcp_budget_pack")
         assistant_candidate = {
