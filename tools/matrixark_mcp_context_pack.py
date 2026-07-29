@@ -371,6 +371,9 @@ def serving_retrieval_metrics(value: Any, *, include_debug: bool = False) -> Jso
         }
         if compact_underfill.get("enabled"):
             compact["quality_first_underfill"] = compact_underfill
+    memory_inventory = value.get("memory_inventory")
+    if isinstance(memory_inventory, dict):
+        compact["memory_inventory"] = memory_inventory
     pre_retrieval_summary_refresh = value.get("pre_retrieval_summary_refresh")
     if debug_lineage_enabled(include_debug=include_debug) and isinstance(pre_retrieval_summary_refresh, dict):
         compact["pre_retrieval_summary_refresh"] = {
@@ -1367,6 +1370,8 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         compact["tokens"] = pack.get("tokens", {})
     if pack.get("quality_warnings"):
         compact["warnings"] = pack.get("quality_warnings", [])
+    if isinstance(pack.get("memory_inventory"), dict):
+        compact["memory_inventory"] = pack["memory_inventory"]
     if pack.get("partial_context_pack"):
         compact["partial"] = True
     if pack.get("insufficient_context"):

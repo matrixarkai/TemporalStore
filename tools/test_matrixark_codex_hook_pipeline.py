@@ -6766,6 +6766,93 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertTrue(result["summary_refresh"]["profile_dirty_hashes"])
 
+    def test_retrieve_serving_pack_exposes_memory_inventory_layers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            adapter = MatrixArkLocalAdapter(tmp / "matrixark-memory-inventory.jsonl")
+            scope = {
+                "account_id": "acct_inventory",
+                "tenant_id": "tenant_inventory",
+                "user_id": "user_inventory",
+                "session_id": "session_inventory",
+            }
+            result = adapter.batch_extract(
+                {
+                    "scope": scope,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "User note: context events are the source records for profile inventory segment marker blue quartz.",
+                        },
+                        {
+                            "role": "assistant",
+                            "content": "Assistant decision: context segments remain derived serving chunks while retrieval reports session, profile, and shared memory layers.",
+                        },
+                    ],
+                    "metadata": {"hook_type": "after_llm", "codex_event": "Stop"},
+                    "threshold_messages": 1,
+                    "skip_prior_context": True,
+                }
+            )
+            self.assertEqual("accepted", result["status"])
+            self.assertGreaterEqual(result["profile_entities_written"], 1)
+
+            resource = tmp / "inventory_policy.md"
+            resource.write_text(
+                "# Inventory Policy\n\nDecision: tenant shared inventory records are retrievable outside sessions.\n",
+                encoding="utf-8",
+            )
+            adapter.ingest(
+                {
+                    "kind": "resource",
+                    "raw_uri": str(resource),
+                    "resource_type": "md",
+                    "scope": {"account_id": "acct_inventory", "tenant_id": "tenant_inventory"},
+                    "messages": [{"role": "user", "content": "Import inventory shared resource."}],
+                    "wait": True,
+                }
+            )
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "session_inventory_followup"},
+                    "session_scope": "prefer",
+                    "query": "Show profile inventory memory and tenant shared inventory policy.",
+                    "max_context_tokens": 800,
+                    "shared_context": {"resource_budget_tokens": 120},
+                    "audit_mode": "off",
+                }
+            )
+            self.assertIn("memory_inventory", pack)
+            inventory = pack["memory_inventory"]
+            self.assertTrue(inventory["has_session_memory"])
+            self.assertTrue(inventory["has_profile_memory"])
+            self.assertTrue(inventory["has_shared_memory"])
+            self.assertIn("session", inventory["available_layers"])
+            self.assertIn("profile", inventory["available_layers"])
+            self.assertIn("shared", inventory["available_layers"])
+            self.assertGreaterEqual(inventory["session"]["context_events"], 1)
+            self.assertGreaterEqual(inventory["session"]["context_segments"], 1)
+            self.assertGreaterEqual(inventory["profile"]["context_entities"], 1)
+            self.assertGreaterEqual(inventory["profile"]["context_embeddings"], 1)
+            self.assertGreaterEqual(inventory["profile"]["context_indexes"], 1)
+            self.assertGreaterEqual(inventory["shared"]["resource_chunks"], 1)
+            self.assertEqual("prefer", inventory["query_scope"]["session_scope"])
+            self.assertNotIn("source_event_ids", json.dumps(inventory, sort_keys=True))
+
+            metrics_pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "session_inventory_followup"},
+                    "session_scope": "prefer",
+                    "query": "Show profile inventory memory and tenant shared inventory policy.",
+                    "max_context_tokens": 800,
+                    "shared_context": {"resource_budget_tokens": 120},
+                    "audit_mode": "off",
+                    "include_retrieval_metrics": True,
+                }
+            )
+            self.assertEqual(inventory, metrics_pack["retrieval_metrics"]["memory_inventory"])
+
     def test_context_segment_debug_pack_shows_source_context_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-segment-source-events.jsonl")

@@ -125,6 +125,139 @@ def quality_first_underfill_summary(
     }
 
 
+def retrieval_memory_inventory(records: list[Json], retrieval_scope: Json) -> Json:
+    """Summarize memory models available after retrieval scope filtering.
+
+    This is serving-facing, not debug lineage: it helps a client distinguish
+    "no profile memory exists" from "profile memory exists but was not selected
+    under the current query/budget."
+    """
+
+    inventory: Json = {
+        "session": {
+            "context_events": 0,
+            "context_segments": 0,
+            "context_entities": 0,
+            "context_embeddings": 0,
+            "context_indexes": 0,
+            "context_summaries": 0,
+            "summary_dirty_markers": 0,
+        },
+        "profile": {
+            "context_entities": 0,
+            "context_embeddings": 0,
+            "context_indexes": 0,
+            "context_summaries": 0,
+            "summary_dirty_markers": 0,
+        },
+        "shared": {
+            "resource_chunks": 0,
+            "resource_manifests": 0,
+            "skill_sections": 0,
+            "skill_manifests": 0,
+            "context_entities": 0,
+            "context_embeddings": 0,
+            "context_indexes": 0,
+        },
+        "available_layers": [],
+        "query_scope": {
+            "session_scope": session_scope_mode(retrieval_scope),
+            "has_session_id": bool(str(retrieval_scope.get("session_id") or "").strip()),
+            "has_user_id": bool(str(retrieval_scope.get("user_id") or "").strip()),
+            "has_tenant_id": bool(str(retrieval_scope.get("tenant_id") or "").strip()),
+        },
+    }
+
+    def count(layer: str, field: str, amount: int = 1) -> None:
+        bucket = inventory.setdefault(layer, {})
+        bucket[field] = int(bucket.get(field) or 0) + amount
+
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        record_type = str(record.get("record_type") or "")
+        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+        memory_scope = str(record.get("memory_scope") or metadata.get("memory_scope") or "").strip().lower()
+        session_continuity = str(
+            record.get("session_continuity") or metadata.get("session_continuity") or ""
+        ).strip().lower()
+        data_model = str(record.get("data_model") or metadata.get("data_model") or "").strip().lower()
+        access_scope = candidate_access_scope(record)
+        sharing_scope = str(access_scope.get("sharing_scope") or record.get("sharing_scope") or "").strip().lower()
+        is_shared = (
+            sharing_scope in {"tenant_shared", "global_shared"}
+            or record_type in {"resource_chunk", "resource_manifest", "skill_section", "skill_manifest", "skill_registry_update"}
+            or data_model in {"resource_chunk", "skill_section"}
+        )
+        is_profile = (
+            memory_scope in {"user_profile", "profile", "cross_session_profile"}
+            or data_model == "context_profile_entity"
+            or (
+                record_type in {"context_entity", "context_embedding", "context_summary", "context_summary_dirty"}
+                and session_continuity == "cross_session"
+            )
+        )
+        is_session = memory_scope in {"session", "session_memory"} or session_continuity == "same_session"
+
+        if is_shared:
+            if record_type == "resource_chunk":
+                count("shared", "resource_chunks")
+            elif record_type == "resource_manifest":
+                count("shared", "resource_manifests")
+            elif record_type == "skill_section":
+                count("shared", "skill_sections")
+            elif record_type in {"skill_manifest", "skill_registry_update"}:
+                count("shared", "skill_manifests")
+            elif record_type == "context_entity":
+                count("shared", "context_entities")
+            elif record_type == "context_embedding":
+                count("shared", "context_embeddings")
+            elif record_type == "context_index":
+                count("shared", "context_indexes")
+            continue
+
+        if is_profile:
+            if record_type == "context_entity":
+                count("profile", "context_entities")
+            elif record_type == "context_embedding":
+                count("profile", "context_embeddings")
+            elif record_type == "context_index":
+                count("profile", "context_indexes")
+            elif record_type == "context_summary":
+                count("profile", "context_summaries")
+            elif record_type == "context_summary_dirty":
+                count("profile", "summary_dirty_markers")
+            continue
+
+        if is_session or record_type in {"context_event", "context_segment"}:
+            if record_type == "context_event":
+                count("session", "context_events")
+            elif record_type == "context_segment":
+                count("session", "context_segments")
+            elif record_type == "context_entity":
+                count("session", "context_entities")
+            elif record_type == "context_embedding":
+                count("session", "context_embeddings")
+            elif record_type == "context_index":
+                count("session", "context_indexes")
+            elif record_type == "context_summary":
+                count("session", "context_summaries")
+            elif record_type == "context_summary_dirty":
+                count("session", "summary_dirty_markers")
+
+    availability = {
+        "session": any(int(value or 0) > 0 for value in inventory["session"].values()),
+        "profile": any(int(value or 0) > 0 for value in inventory["profile"].values()),
+        "shared": any(int(value or 0) > 0 for value in inventory["shared"].values()),
+    }
+    inventory["available_layers"] = [layer for layer, available in availability.items() if available]
+    inventory["has_session_memory"] = availability["session"]
+    inventory["has_profile_memory"] = availability["profile"]
+    inventory["has_shared_memory"] = availability["shared"]
+    inventory["profile_records_available_but_not_selected"] = False
+    return inventory
+
+
 def legacy_hook_type_from_codex_event(event: Any) -> str:
     label = str(event or "").strip()
     if not label:
@@ -1709,6 +1842,17 @@ class MatrixArkLocalAdapter:
         def recovered_scope_matches(record: Json, query_scope: Json) -> bool:
             return scope_matches(recovered_scope_for_query(record, query_scope), query_scope)
 
+        def profile_summary_path_matches(record: Json, query_scope: Json) -> bool:
+            if record.get("record_type") != "context_summary":
+                return False
+            node_path = [str(part or "") for part in record.get("node_path", []) if str(part or "")]
+            if "profile:long_term_memory" not in node_path:
+                return False
+            path_scope = scope_from_node_path(node_path)
+            if query_scope.get("account_id") and not path_scope.get("account_id"):
+                path_scope = {**path_scope, "account_id": query_scope.get("account_id")}
+            return scope_matches(path_scope, query_scope)
+
         filtered: list[Json] = []
         scanned = 0
         dropped_type = 0
@@ -1730,13 +1874,21 @@ class MatrixArkLocalAdapter:
                     dropped_node += 1
                     continue
             if (
-                record_type in {"context_embedding", "context_index", "context_summary", "resource_manifest", "skill_registry_update"}
+                record_type in {
+                    "context_embedding",
+                    "context_index",
+                    "context_segment",
+                    "context_summary",
+                    "context_summary_dirty",
+                    "resource_manifest",
+                    "skill_registry_update",
+                }
                 or (
                     record_type == "context_event"
                     and str(record.get("event_type") or record.get("classification") or "").lower() == "pending_async"
                 )
             ):
-                if not recovered_scope_matches(record, scope):
+                if not recovered_scope_matches(record, scope) and not profile_summary_path_matches(record, scope):
                     dropped_scope += 1
                     continue
             elif not access_scope_matches_before_scoring(record, scope):
@@ -7402,6 +7554,7 @@ class MatrixArkLocalAdapter:
             bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
             debug_refs,
             bool(args.get("debug_context_pack") or args.get("include_retrieval_debug")),
+            bool(args.get("include_retrieval_metrics")),
         )
         if pack_cache_enabled:
             with self._context_pack_cache_lock:
@@ -7691,6 +7844,11 @@ class MatrixArkLocalAdapter:
                 seen_refreshed_summary_ids.add(identity)
         retrieval_scan_stats = retrieval_record_result.get("scan_stats", {})
         async_pipeline_readiness = async_pipeline_retrieval_readiness(records, retrieval_scope)
+        inventory_record_result = self.retrieval_records(
+            scope=retrieval_scope,
+            secondary_index_groups=[],
+        )
+        memory_inventory = retrieval_memory_inventory(inventory_record_result["records"], retrieval_scope)
         node_scope_by_hash: dict[int, Json] = {}
         for source_record in records:
             try:
@@ -7742,6 +7900,17 @@ class MatrixArkLocalAdapter:
 
         def recovered_scope_matches(record: Json, query_scope: Json) -> bool:
             return scope_matches(recovered_scope_for_query(record, query_scope), query_scope)
+
+        def profile_summary_scope_matches(record: Json, query_scope: Json) -> bool:
+            if record.get("record_type") != "context_summary":
+                return False
+            node_path = [str(part or "") for part in record.get("node_path", []) if str(part or "")]
+            if "profile:long_term_memory" not in node_path:
+                return False
+            path_scope = scope_from_node_path(node_path)
+            if query_scope.get("account_id") and not path_scope.get("account_id"):
+                path_scope = {**path_scope, "account_id": query_scope.get("account_id")}
+            return scope_matches(path_scope, query_scope)
 
         def deadline_fallback(reason: str, fallback_records: list[Json] | None = None) -> Json:
             return self.deadline_fallback_pack(
@@ -8092,32 +8261,40 @@ class MatrixArkLocalAdapter:
         else:
             tree_candidate_records = records if traversal.get("fallback_to_flat") else [record for record in records if selected_by_tree(record)]
             tree_prefilter_dropped_count = 0 if traversal.get("fallback_to_flat") else max(0, len(records) - len(tree_candidate_records))
-        if not traversal.get("fallback_to_flat"):
-            seen_profile_summary_hashes = {
-                record.get("summary_hash")
-                for record in tree_candidate_records
-                if record.get("record_type") == "context_summary"
-            }
-            profile_summary_bridges = [
+        seen_profile_summary_hashes = {
+            record.get("summary_hash")
+            for record in tree_candidate_records
+            if record.get("record_type") == "context_summary"
+        }
+        profile_summary_bridge_sources = list(records)
+        try:
+            profile_summary_bridge_sources.extend(
                 record
-                for record in records
-                if record.get("record_type") == "context_summary"
-                and str(
-                    record.get("memory_scope")
-                    or embedding_metadata_by_ref.get(("summary", record.get("summary_hash") or record.get("node_hash")), {}).get("memory_scope")
-                    or ""
-                )
-                == "user_profile"
-                and str(
-                    record.get("session_continuity")
-                    or embedding_metadata_by_ref.get(("summary", record.get("summary_hash") or record.get("node_hash")), {}).get("session_continuity")
-                    or ""
-                )
-                == "cross_session"
-                and record.get("summary_hash") not in seen_profile_summary_hashes
-                and recovered_scope_matches(record, retrieval_scope)
-            ]
-            tree_candidate_records.extend(profile_summary_bridges)
+                for record in self.read_all()
+                if isinstance(record, dict) and record.get("record_type") == "context_summary"
+            )
+        except Exception:
+            pass
+        profile_summary_bridges = [
+            record
+            for record in profile_summary_bridge_sources
+            if record.get("record_type") == "context_summary"
+            and str(
+                record.get("memory_scope")
+                or embedding_metadata_by_ref.get(("summary", record.get("summary_hash") or record.get("node_hash")), {}).get("memory_scope")
+                or ""
+            )
+            == "user_profile"
+            and str(
+                record.get("session_continuity")
+                or embedding_metadata_by_ref.get(("summary", record.get("summary_hash") or record.get("node_hash")), {}).get("session_continuity")
+                or ""
+            )
+            == "cross_session"
+            and record.get("summary_hash") not in seen_profile_summary_hashes
+            and (recovered_scope_matches(record, retrieval_scope) or profile_summary_scope_matches(record, retrieval_scope))
+        ]
+        tree_candidate_records.extend(profile_summary_bridges)
         extraction_committed_event_ids = {
             int(record.get("event_id_hash") or 0)
             for record in records
@@ -8190,7 +8367,7 @@ class MatrixArkLocalAdapter:
                     return deadline_fallback("deadline_during_summary_scan", records)
                 if record.get("record_type") != "context_summary":
                     continue
-                if not recovered_scope_matches(record, retrieval_scope):
+                if not recovered_scope_matches(record, retrieval_scope) and not profile_summary_scope_matches(record, retrieval_scope):
                     continue
                 is_profile_summary_bridge = (
                     str(record.get("memory_scope") or "") == "user_profile"
@@ -8231,7 +8408,7 @@ class MatrixArkLocalAdapter:
                     secondary_index_dropped_count += 1
                     continue
                 secondary_index_matched_count += 1
-                if not admit_candidate_for_node(record):
+                if not is_profile_summary_bridge and not admit_candidate_for_node(record):
                     continue
                 lineage_score = sparse_lexical_score(query_terms, lineage_text)
                 sparse_score = sparse_lexical_score(query_terms, text)
@@ -8239,6 +8416,8 @@ class MatrixArkLocalAdapter:
                 embedding_score = cosine(query_embedding, embedding_for_text(" ".join(record.get("node_path", []) + [summary_type, text])))
                 node_score = node_scores.get(record.get("node_hash"), {}).get("score", 0.0)
                 origin_score = min(1.0, 0.18 + hybrid_origin_score(query_terms, text, embedding_score, node_score) + 0.10 * lineage_score)
+                if is_profile_summary_bridge and question_type in {"broad_exploration", "profile_memory"}:
+                    origin_score = min(1.0, origin_score + 0.20)
                 if origin_score <= 0:
                     continue
                 primary_matches.append(
@@ -9351,6 +9530,18 @@ class MatrixArkLocalAdapter:
         memory_layer_budget = selected_ref_layer_budget(selected)
         dropped_memory_layer_budget = dropped_ref_layer_budget(dropped_over_budget)
         memory_layer_pressure = memory_layer_pressure_summary(memory_layer_budget, dropped_memory_layer_budget)
+        profile_selected_ref_count = sum(
+            1
+            for item in selected
+            if str(item.get("memory_scope") or "").strip().lower() in {"user_profile", "profile", "cross_session_profile"}
+            or (
+                str(item.get("session_continuity") or "").strip().lower() == "cross_session"
+                and str(item.get("ref_type") or "") == "entity"
+            )
+        )
+        memory_inventory["profile_records_available_but_not_selected"] = bool(
+            memory_inventory.get("has_profile_memory") and profile_selected_ref_count == 0
+        )
         selected_pending_async_refs = [
             item
             for item in selected
@@ -9420,6 +9611,7 @@ class MatrixArkLocalAdapter:
                 "resource_selection": "resource_facts_entities_and_chunks_are_ranked_separately",
                 "recall_reinforcement": "selected event refs and compression source ids receive protection markers before raw-event pruning",
             },
+            "memory_inventory": memory_inventory,
             "layer_scores": layer_scores[:24],
             "question_type": question_type,
             "packing_policy": f"question_type_aware:{question_type}",
@@ -9486,6 +9678,7 @@ class MatrixArkLocalAdapter:
                 },
                 "backend_retrieval_pushdown": retrieval_scan_stats,
                 "retrieval_model_coverage": retrieval_model_coverage,
+                "memory_inventory": memory_inventory,
                 "ranking": {
                     "min_similarity_score": min_similarity_score,
                     "max_global_candidates": max_global_candidates,
@@ -9622,6 +9815,7 @@ class MatrixArkLocalAdapter:
             "memory_layer_pressure": memory_layer_pressure,
             "selected_pending_async": selected_pending_async_summary,
             "quality_first_underfill": quality_first_underfill,
+            "memory_inventory": memory_inventory,
             "async_pipeline_readiness": async_pipeline_readiness,
             "used_local_context_tokens": pack["used_local_context_tokens"],
             "used_remote_context_tokens": pack["used_remote_context_tokens"],
@@ -9729,6 +9923,7 @@ class MatrixArkLocalAdapter:
             "index_postings_read": index_postings_read,
             "index_postings_touched": index_postings_read,
             "retrieval_model_coverage": retrieval_model_coverage,
+            "memory_inventory": memory_inventory,
             "placement_partitions_touched": len(placement.get("locations", []) or []) if isinstance(placement, dict) else 0,
             "native_pack_assembly": False,
             "python_pack_fallback": True,
