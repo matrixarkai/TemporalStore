@@ -4494,6 +4494,58 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(1, matched)
         self.assertEqual([9102], [candidate["ref_hash"] for candidate in primary])
         self.assertTrue(all(candidate.get("extraction_phase") == "final" for candidate in primary + auxiliary))
+        self.assertEqual("user_profile", primary[0]["memory_scope"])
+        self.assertEqual("cross_session", primary[0]["session_continuity"])
+        self.assertEqual("profile_compression", mcp_core.candidate_memory_layer_name(primary[0]))
+
+    def test_budget_packer_can_cap_profile_compression_separately(self) -> None:
+        selected, used_tokens, dropped = mcp_budget_pack.select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "compression",
+                    "ref_hash": 9201,
+                    "text": "profile compression one",
+                    "score": 0.97,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "extraction_phase": "final",
+                },
+                {
+                    "ref_type": "compression",
+                    "ref_hash": 9202,
+                    "text": "profile compression two",
+                    "score": 0.96,
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "extraction_phase": "final",
+                },
+                {
+                    "ref_type": "compression",
+                    "ref_hash": 9203,
+                    "text": "session compression one",
+                    "score": 0.95,
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "extraction_phase": "provisional",
+                },
+            ],
+            [],
+            max_context_tokens=160,
+            auxiliary_quota=0,
+            min_score=0.0,
+            cross_session_policy={"enabled": True, "budget_tokens": 40, "max_sessions": 4, "max_candidates": 4},
+            memory_layer_budget_tokens={"profile_compression": 4, "same_session_compression": 20},
+        )
+
+        self.assertEqual([9201, 9203], [ref["ref_hash"] for ref in selected])
+        self.assertGreater(used_tokens, 0)
+        self.assertEqual(1, dropped["memory_layer_budget"])
+        self.assertEqual(
+            {"profile_compression": 4, "same_session_compression": 20},
+            dropped["memory_layer_budget_policy"]["budget_tokens"],
+        )
+        self.assertEqual(1, dropped["memory_layer_budget_policy"]["selected_ref_count_by_layer"]["profile_compression"])
+        self.assertEqual(1, dropped["memory_layer_budget_policy"]["selected_ref_count_by_layer"]["same_session_compression"])
 
     def test_budget_packer_enforces_source_role_caps(self) -> None:
         selected, used_tokens, dropped = mcp_budget_pack.select_token_budgeted_refs(
