@@ -3410,6 +3410,19 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn('MATRIXARK_CPP_FULL_HOOK_PREFIX:-matrixark:mcp:codex', script)
         self.assertIn('MATRIXARK_RUST_FULL_HOOK_PREFIX:-matrixark:mcp:codex', script)
 
+    def test_dual_hook_live_projection_emits_profile_embeddings_without_trivial_segments(self) -> None:
+        script = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_dual_hook.sh").read_text()
+
+        self.assertNotIn('"record_type": "context_segment"', script)
+        self.assertIn('"memory_scope": "user_profile"', script)
+        self.assertIn('"session_continuity": "cross_session"', script)
+        self.assertIn('"record_type": "context_embedding"', script)
+        self.assertIn('"embedding_type": "event_text"', script)
+        self.assertIn('"embedding_type": "entity_state"', script)
+        self.assertIn('"record_type": "context_summary_dirty"', script)
+        self.assertIn('"memory_scope:user_profile"', script)
+        self.assertIn('"session_continuity:cross_session"', script)
+
     def test_entity_dashboard_projects_state_as_value(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             adapter = MatrixArkLocalAdapter(Path(temporary_directory) / "events.jsonl")
