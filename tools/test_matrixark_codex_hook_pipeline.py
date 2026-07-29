@@ -9453,6 +9453,64 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("budget_source_roles", selected_decision)
             self.assertNotIn("budget_source_role_counts", selected_decision)
 
+    def test_selected_assistant_outcome_facts_promote_to_profile_entity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-assistant-outcomes.jsonl")
+            scope = {
+                "account_id": "acct_profile_outcome",
+                "tenant_id": "tenant_profile_outcome",
+                "user_id": "user_profile_outcome",
+                "session_id": "session_profile_outcome_1",
+            }
+            raw = "\n".join(
+                [
+                    "verbose implementation explanation " * 120,
+                    "Implemented profile entity promotion and pushed commit def7890 to origin/main.",
+                    "Validation ran 112 tests passed.",
+                    "Changed assistant outcome extraction to preserve count-only facts.",
+                    "Next: continue retrieval budget tuning.",
+                ]
+            )
+            selected = matrixark_codex_hook.selected_assistant_memory_text(raw)
+            result = adapter.batch_extract(
+                {
+                    "scope": scope,
+                    "messages": [
+                        {"role": "user", "content": "Keep assistant outcome facts in profile memory."},
+                        {"role": "assistant", "content": selected},
+                    ],
+                    "metadata": {
+                        "source_roles": ["assistant"],
+                        "hook_type": "after_llm",
+                        "codex_event": "Stop",
+                        "codex_memory_selection": matrixark_codex_hook.codex_memory_selection_metadata(
+                            role="assistant",
+                            event="Stop",
+                            text=selected,
+                            original_text=raw,
+                        ),
+                    },
+                    "force": True,
+                }
+            )
+
+            self.assertEqual("accepted", result["status"])
+            records = adapter.read_all()
+            profile_decisions = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
+                and record.get("entity_type") == "assistant_decision"
+            ]
+            self.assertTrue(profile_decisions)
+            state = "\n".join(str(record.get("state") or "") for record in profile_decisions)
+            self.assertIn("pushed commit def7890 to origin/main", state)
+            self.assertIn("112 tests passed", state)
+            self.assertIn("assistant outcome extraction", state)
+            self.assertNotIn("verbose implementation explanation verbose implementation", state)
+
     def test_profile_entity_updates_preserve_cross_session_lineage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             event_log = Path(tmp_dir) / "matrixark-profile-entity-update.jsonl"
