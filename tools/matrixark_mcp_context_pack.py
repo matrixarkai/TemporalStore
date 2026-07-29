@@ -429,6 +429,9 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         value = ref.get(field)
         if value not in (None, "", [], {}):
             item[field] = value
+    memory_layer = _memory_layer_for_ref(ref)
+    if memory_layer:
+        item["memory_layer"] = memory_layer
     if bool(ref.get("final_session_boundary")):
         item["final_session_boundary"] = True
     flat_debug_lineage_fields = [
