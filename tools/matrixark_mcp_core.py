@@ -6094,6 +6094,12 @@ def select_token_budgeted_refs(
         is_cross_session_raw_evidence = is_cross_session and ref_type in {"event", "segment"}
         candidate_score = float(candidate.get("score", 0.0))
         candidate_cross_key = cross_session_key(candidate) if is_cross_session else ""
+        candidate_memory_layer = candidate_memory_layer_name(candidate)
+        is_broad_profile_summary = (
+            candidate_memory_layer
+            in {"summary", "profile_summary", "same_session_summary", "cross_session_summary"}
+            and normalized_question_type in {"broad_exploration", "profile_memory"}
+        )
         if is_cross_session and not cross_enabled:
             dropped["cross_session_budget"] += 1
             dropped["estimated_tokens"]["cross_session_budget"] += ref_tokens
@@ -6109,7 +6115,12 @@ def select_token_budgeted_refs(
             dropped["estimated_tokens"]["low_score"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="low_score", token_estimate=ref_tokens)
             continue
-        if is_cross_session and cross_max_candidates > 0 and cross_selected_ref_count >= cross_max_candidates:
+        if (
+            is_cross_session
+            and cross_max_candidates > 0
+            and cross_selected_ref_count >= cross_max_candidates
+            and not is_broad_profile_summary
+        ):
             dropped["cross_session_candidate_cap"] += 1
             dropped["estimated_tokens"]["cross_session_candidate_cap"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="cross_session_candidate_cap", token_estimate=ref_tokens)
@@ -6119,7 +6130,13 @@ def select_token_budgeted_refs(
             dropped["estimated_tokens"]["cross_session_session_cap"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="cross_session_session_cap", token_estimate=ref_tokens)
             continue
-        if is_cross_session and cross_budget_tokens > 0 and cross_used_tokens + ref_tokens > cross_budget_tokens and not (is_entity_bridge and entity_bridge_selected_ref_count < cross_min_entity_bridge_refs):
+        if (
+            is_cross_session
+            and cross_budget_tokens > 0
+            and cross_used_tokens + ref_tokens > cross_budget_tokens
+            and not (is_entity_bridge and entity_bridge_selected_ref_count < cross_min_entity_bridge_refs)
+            and not is_broad_profile_summary
+        ):
             dropped["cross_session_budget"] += 1
             dropped["estimated_tokens"]["cross_session_budget"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="cross_session_budget", token_estimate=ref_tokens)
@@ -6147,17 +6164,26 @@ def select_token_budgeted_refs(
             dropped["estimated_tokens"]["shared_skill_budget"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="shared_skill_budget", token_estimate=ref_tokens)
             continue
-        candidate_memory_layer = candidate_memory_layer_name(candidate)
         should_reserve_profile_entity_floor = bool(
             (
                 summary_profile_entity_floor_enabled
                 and candidate_memory_layer in {"summary", "profile_summary", "same_session_summary", "cross_session_summary"}
-                and not (normalized_question_type == "profile_memory" and candidate_memory_layer == "profile_summary")
+                and not (
+                    selected_ref_cap > 1
+                    and
+                    normalized_question_type in {"broad_exploration", "profile_memory"}
+                    and candidate_memory_layer in {"profile_summary", "cross_session_summary"}
+                )
             )
             or (
                 cross_session_profile_entity_floor_enabled
                 and candidate_memory_layer != "profile_entity"
-                and candidate_memory_layer != "profile_summary"
+                and not (
+                    selected_ref_cap > 1
+                    and
+                    normalized_question_type in {"broad_exploration", "profile_memory"}
+                    and candidate_memory_layer in {"summary", "profile_summary", "same_session_summary", "cross_session_summary"}
+                )
             )
         )
         if (
