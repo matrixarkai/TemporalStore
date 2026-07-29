@@ -185,6 +185,15 @@ def main() -> int:
         help="Base retrieval cap used when --adaptive-max-events is enabled.",
     )
     parser.add_argument(
+        "--max-blocks-per-source-group",
+        type=int,
+        default=0,
+        help=(
+            "Optional cap on blocks from the same source group after ranking. "
+            "Use 0 to preserve the historical ranking behavior."
+        ),
+    )
+    parser.add_argument(
         "--question-limit",
         type=int,
         default=0,
@@ -813,7 +822,13 @@ def main() -> int:
             source_tokens = sum(estimated_tokens(source.get("body", "")) for source in query_sources)
             retrieval_started = time.perf_counter()
             effective_max_events = adaptive_max_events_for_question(question, args)
-            blocks = rank_sources(question, query_sources, effective_max_events, retrieval_budget)
+            blocks = rank_sources(
+                question,
+                query_sources,
+                effective_max_events,
+                retrieval_budget,
+                max_blocks_per_source_group=args.max_blocks_per_source_group,
+            )
             retrieval_ms = elapsed_ms(retrieval_started)
             retrieved_tokens_before_reader = sum(estimated_tokens(block.get("body", "")) for block in blocks)
             write_benchmark_progress(
@@ -1151,6 +1166,7 @@ def main() -> int:
         "max_events": args.max_events,
         "adaptive_max_events": bool(args.adaptive_max_events),
         "adaptive_base_max_events": args.adaptive_base_max_events,
+        "max_blocks_per_source_group": args.max_blocks_per_source_group,
         "adaptive_effective_max_event_counts": {
             str(key): value for key, value in sorted(adaptive_max_event_totals.items())
         },
@@ -2236,7 +2252,16 @@ def score_rust_temporalstore_jsonl_with_python(path: Path, max_events: int, *, u
             )
             continue
         retrieval_started = time.perf_counter()
-        blocks = sources if use_source_order else rank_sources(query, sources, max_events)
+        blocks = (
+            sources
+            if use_source_order
+            else rank_sources(
+                query,
+                sources,
+                max_events,
+                max_blocks_per_source_group=int(row.get("max_blocks_per_source_group") or 0),
+            )
+        )
         retrieval_ms = elapsed_ms(retrieval_started)
         retrieval_latencies_ms.append(retrieval_ms)
         rank = first_hit_rank(blocks, answers, refs)
@@ -2964,6 +2989,8 @@ def rank_sources(
     sources: list[dict[str, str]],
     max_events: int,
     budget: RetrievalBudgetConfig | None = None,
+    *,
+    max_blocks_per_source_group: int = 0,
 ) -> list[dict[str, str]]:
     ranked = []
     for index, source in enumerate(sources):
@@ -2992,7 +3019,49 @@ def rank_sources(
     selected = refill_cross_session_sources(question, selected, ranked, max_events)
     if budget is not None:
         selected = apply_retrieval_budget(selected, ranked, max_events, budget)
+    selected = limit_source_group_repeats(selected, ranked, max_events, max_blocks_per_source_group)
     return [compact_retrieval_source(question, source) for source in selected]
+
+
+def limit_source_group_repeats(
+    selected: list[dict[str, str]],
+    ranked: list[tuple[int, int, dict[str, str]]],
+    max_events: int,
+    max_blocks_per_group: int,
+) -> list[dict[str, str]]:
+    limit = max(1, max_events)
+    group_limit = int(max_blocks_per_group or 0)
+    if group_limit <= 0:
+        return selected[:limit]
+    candidates = ordered_sources([*selected, *(source for _score, _index, source in ranked)])
+    out: list[dict[str, str]] = []
+    used: set[str] = set()
+    group_counts: defaultdict[str, int] = defaultdict(int)
+    deferred: list[dict[str, str]] = []
+    for source in candidates:
+        key = source_identity(source)
+        if key in used:
+            continue
+        group = source_group_identity(source)
+        if group_counts[group] >= group_limit:
+            deferred.append(source)
+            continue
+        out.append(source)
+        used.add(key)
+        group_counts[group] += 1
+        if len(out) >= limit:
+            return out[:limit]
+    for source in deferred:
+        if len(out) >= limit:
+            break
+        key = source_identity(source)
+        if key in used:
+            continue
+        # The group cap is a soft diversity target. Refill after unique groups are
+        # exhausted so answer-bearing repeated turns are not dropped completely.
+        out.append(source)
+        used.add(key)
+    return out[:limit]
 
 
 def apply_retrieval_budget(
