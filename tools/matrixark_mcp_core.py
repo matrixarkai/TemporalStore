@@ -5018,12 +5018,13 @@ def is_shared_skill_candidate(candidate: Json) -> bool:
 
 
 def is_pending_async_candidate(candidate: Json) -> bool:
-    if str(candidate.get("ref_type") or "") != "event":
+    metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
+    if str(candidate.get("ref_type") or metadata.get("ref_type") or "") != "event":
         return False
-    event_type = str(candidate.get("event_type") or "").strip().lower()
-    classification = str(candidate.get("classification") or "").strip().upper()
-    extraction_status = str(candidate.get("extraction_status") or "").strip().lower()
-    extraction_mode = str(candidate.get("extraction_mode") or "").strip().lower()
+    event_type = str(candidate.get("event_type") or metadata.get("event_type") or "").strip().lower()
+    classification = str(candidate.get("classification") or metadata.get("classification") or "").strip().upper()
+    extraction_status = str(candidate.get("extraction_status") or metadata.get("extraction_status") or "").strip().lower()
+    extraction_mode = str(candidate.get("extraction_mode") or metadata.get("extraction_mode") or "").strip().lower()
     return (
         event_type == "pending_async"
         or classification == "PENDING_ASYNC_EXTRACTION"
@@ -5593,16 +5594,18 @@ def selected_ref_count_from_pack(pack: Json) -> int:
 
 
 def is_resource_or_skill_candidate(candidate: Json) -> bool:
-    ref_type = str(candidate.get("ref_type") or "")
-    context_class = str(candidate.get("context_class") or "")
+    metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
+    ref_type = str(candidate.get("ref_type") or metadata.get("ref_type") or "")
+    context_class = str(candidate.get("context_class") or metadata.get("context_class") or "")
     return ref_type in {"resource_chunk", "skill_section"} or context_class in {"resource_fact", "resource_entity_fact"}
 
 
 def candidate_memory_layer_name(candidate: Json) -> str:
-    ref_type = str(candidate.get("ref_type") or "")
-    context_class = str(candidate.get("context_class") or ref_type)
-    memory_scope = str(candidate.get("memory_scope") or "")
-    session_continuity = str(candidate.get("session_continuity") or "")
+    metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
+    ref_type = str(candidate.get("ref_type") or metadata.get("ref_type") or "")
+    context_class = str(candidate.get("context_class") or metadata.get("context_class") or ref_type)
+    memory_scope = str(candidate.get("memory_scope") or metadata.get("memory_scope") or "")
+    session_continuity = str(candidate.get("session_continuity") or metadata.get("session_continuity") or "")
     if context_class == "resource_entity_fact":
         return "resource_entity_fact"
     if context_class == "resource_fact":
