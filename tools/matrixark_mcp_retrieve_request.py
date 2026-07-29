@@ -68,14 +68,23 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
     result: Json = {"enabled": bool(enabled), "status": "disabled"}
     if not enabled:
         return result
-    read_all = getattr(target, "read_all", None)
     session_commit = getattr(target, "session_commit", None)
-    if not callable(read_all) or not callable(session_commit):
-        return {**result, "status": "unavailable", "reason": "session_commit_or_read_all_missing"}
-    try:
-        records = read_all()
-    except Exception as exc:
-        return {**result, "status": "error", "reason": "read_all_failed", "error": str(exc)[:240]}
+    idle_task_records = getattr(target, "idle_commit_task_records", None)
+    read_all = getattr(target, "read_all", None)
+    if not callable(session_commit):
+        return {**result, "status": "unavailable", "reason": "session_commit_missing"}
+    if callable(idle_task_records):
+        try:
+            records = idle_task_records(scope)
+        except Exception as exc:
+            return {**result, "status": "error", "reason": "idle_commit_task_records_failed", "error": str(exc)[:240]}
+    elif callable(read_all):
+        try:
+            records = read_all()
+        except Exception as exc:
+            return {**result, "status": "error", "reason": "read_all_failed", "error": str(exc)[:240]}
+    else:
+        return {**result, "status": "unavailable", "reason": "idle_commit_task_records_or_read_all_missing"}
     current_time_ms = now_ms()
     due_tasks: list[Json] = []
     resolved_task_hashes: set[int] = set()
