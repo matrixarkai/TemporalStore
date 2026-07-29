@@ -233,13 +233,27 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
     return budgets, mode
 
 
-def pre_retrieval_summary_refresh_memory_layer_budget_tokens(*, remote_budget_tokens: int) -> tuple[Json, str]:
+def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
+    *,
+    remote_budget_tokens: int,
+    question_type: str = "fact",
+) -> tuple[Json, str]:
     try:
         remote_budget = max(0, int(remote_budget_tokens or 0))
     except (TypeError, ValueError):
         remote_budget = 0
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    mode = "pre_retrieval_summary_refresh_balanced"
+    if normalized_question_type in {"current_state", "latest"}:
+        mode = "pre_retrieval_summary_refresh_current_state"
+    elif normalized_question_type == "profile_memory":
+        mode = "pre_retrieval_summary_refresh_profile_memory"
+    elif normalized_question_type in {"multi_hop", "date"}:
+        mode = "pre_retrieval_summary_refresh_multi_hop"
+    elif normalized_question_type in {"broad_exploration", "evidence"}:
+        mode = "pre_retrieval_summary_refresh_evidence"
     if remote_budget <= 0:
-        return {}, "pre_retrieval_summary_refresh_balanced"
+        return {}, mode
     fractions = {
         "summary": 0.15,
         "profile_summary": 0.30,
@@ -256,7 +270,61 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(*, remote_budget_to
         "cross_session_segment": 0.25,
         "profile_entity": 0.45,
     }
-    return {layer: max(1, int(remote_budget * fraction)) for layer, fraction in fractions.items()}, "pre_retrieval_summary_refresh_balanced"
+    if normalized_question_type in {"current_state", "latest"}:
+        fractions.update(
+            {
+                "profile_summary": 0.35,
+                "cross_session_summary": 0.30,
+                "profile_compression": 0.35,
+                "cross_session_compression": 0.30,
+                "cross_session_event": 0.30,
+                "cross_session_segment": 0.30,
+                "profile_entity": 0.55,
+            }
+        )
+    elif normalized_question_type == "profile_memory":
+        fractions.update(
+            {
+                "summary": 0.15,
+                "profile_summary": 0.45,
+                "same_session_summary": 0.15,
+                "cross_session_summary": 0.40,
+                "profile_compression": 0.40,
+                "cross_session_compression": 0.35,
+                "same_session_event": 0.25,
+                "cross_session_event": 0.40,
+                "same_session_segment": 0.25,
+                "cross_session_segment": 0.40,
+                "profile_entity": 0.60,
+            }
+        )
+    elif normalized_question_type in {"multi_hop", "date"}:
+        fractions.update(
+            {
+                "profile_summary": 0.35,
+                "cross_session_summary": 0.35,
+                "compression": 0.30,
+                "profile_compression": 0.35,
+                "cross_session_compression": 0.35,
+                "cross_session_event": 0.35,
+                "cross_session_segment": 0.35,
+            }
+        )
+    elif normalized_question_type in {"broad_exploration", "evidence"}:
+        fractions.update(
+            {
+                "same_session_summary": 0.25,
+                "profile_summary": 0.35,
+                "cross_session_summary": 0.30,
+                "compression": 0.30,
+                "profile_compression": 0.35,
+                "same_session_compression": 0.30,
+                "cross_session_compression": 0.30,
+                "pending_async_event": 0.25,
+                "cross_session_event": 0.30,
+            }
+        )
+    return {layer: max(1, int(remote_budget * fraction)) for layer, fraction in fractions.items()}, mode
 
 
 def pre_retrieval_summary_refresh_enabled(args: Json, ranking: Json) -> bool:
