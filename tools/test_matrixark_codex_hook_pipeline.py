@@ -7727,6 +7727,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                             "selected_assistant_decision_outcome_only": 1,
                             "selected_tool_evidence_only": 1,
                         },
+                        "codex_memory_selection": {
+                            "policy": "selected_tool_evidence_only",
+                            "selection_lossy": True,
+                            "dropped_text_chars": 4096,
+                            "dropped_line_count": 96,
+                            "retained_text_ratio": 0.125,
+                            "retained_line_ratio": 0.25,
+                        },
                     },
                     "force": True,
                 }
@@ -7764,6 +7772,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertIn("source_hook_type_counts", record)
                 self.assertIn("source_codex_events", record)
                 self.assertIn("source_codex_event_counts", record)
+                self.assertEqual(1, record.get("source_memory_selection_lossy_count"))
+                self.assertEqual(4096, record.get("source_memory_selection_dropped_text_chars"))
+                self.assertEqual(96, record.get("source_memory_selection_dropped_line_count"))
+                self.assertEqual(0.125, record.get("source_memory_selection_retained_text_ratio_avg"))
             batch_level_records = [
                 record
                 for record in durable_records
@@ -7843,6 +7855,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("source_role:tool", index_names)
             self.assertIn("hook_type:hook_boundary", index_names)
             self.assertIn("codex_event:stop", index_names)
+            self.assertIn("memory_selection_quality:lossy", index_names)
             self.assertTrue(any(str(name).startswith("entity_type:") for name in index_names))
             self.assertIn("entity_type:assistant_decision", index_names)
             self.assertIn("entity_type:tool_evidence", index_names)
