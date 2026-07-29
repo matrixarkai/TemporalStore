@@ -6741,8 +6741,8 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
                     item[field] = role_counts
             else:
                 item[field] = value
-    _attach_compact_profile_source_counts(item, ref)
     if CONTEXT_PACK_DEBUG_LINEAGE or include_debug:
+        _attach_compact_profile_source_counts(item, ref)
         for field in ["extraction_phase", "final_session_boundary"]:
             value = ref.get(field)
             if value not in (None, "", [], {}):
@@ -6800,6 +6800,7 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
                 item[field] = round(value, 6)
             elif isinstance(value, str) and value.strip():
                 item[field] = value.strip()
+
     if CONTEXT_PACK_DEBUG_LINEAGE or include_debug:
         value = ref.get("source_session_ids")
         if isinstance(value, list) and value:
@@ -6810,14 +6811,13 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         value = ref.get("source_event_count")
         if isinstance(value, int) and value > 0:
             item["source_event_count"] = value
-        value = ref.get("source_record_type")
-        if isinstance(value, str) and value.strip():
-            item["source_record_type"] = value.strip()
-        value = ref.get("segment_origin")
-        if isinstance(value, str) and value.strip():
-            item["segment_origin"] = value.strip()
+        for field in ["source_record_type", "segment_origin"]:
+            value = ref.get(field)
+            if isinstance(value, str) and value.strip():
+                item[field] = value.strip()
         if ref.get("derived_from_context_events") is True:
             item["derived_from_context_events"] = True
+
         value = ref.get("extraction_context_event_ids")
         if isinstance(value, list) and value:
             item["extraction_context_event_ids"] = value[:8]

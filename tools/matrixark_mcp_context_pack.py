@@ -494,6 +494,7 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
             )
             if compact_counts:
                 item[field] = compact_counts
+
     if debug_lineage_enabled(include_debug=include_debug):
         value = ref.get("source_entity_hashes")
         if isinstance(value, list) and value:
@@ -504,14 +505,13 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         value = ref.get("source_event_count")
         if isinstance(value, int) and value > 0:
             item["source_event_count"] = value
-        value = ref.get("source_record_type")
-        if isinstance(value, str) and value.strip():
-            item["source_record_type"] = value.strip()
-        value = ref.get("segment_origin")
-        if isinstance(value, str) and value.strip():
-            item["segment_origin"] = value.strip()
+        for field in ["source_record_type", "segment_origin"]:
+            value = ref.get(field)
+            if isinstance(value, str) and value.strip():
+                item[field] = value.strip()
         if ref.get("derived_from_context_events") is True:
             item["derived_from_context_events"] = True
+
         for field in ["current_state_policy", "current_state_source_session_count", "current_state_source_entity_count"]:
             value = ref.get(field)
             if value not in (None, "", [], {}) and not (isinstance(value, int) and value <= 0):
@@ -1061,6 +1061,7 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
             compact_counts = _compact_role_count_map(value) if field == "source_role_counts" else _compact_count_map(value)
             if compact_counts:
                 item[field] = compact_counts
+
     if debug_lineage_enabled(include_debug=include_debug):
         value = ref.get("source_entity_hashes", metadata.get("source_entity_hashes"))
         if isinstance(value, list) and value:
@@ -1071,6 +1072,12 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         value = ref.get("source_event_count", metadata.get("source_event_count"))
         if isinstance(value, int) and value > 0:
             item["source_event_count"] = value
+        for field in ["source_record_type", "segment_origin"]:
+            value = ref.get(field, metadata.get(field))
+            if isinstance(value, str) and value.strip():
+                item[field] = value.strip()
+        if ref.get("derived_from_context_events") is True or metadata.get("derived_from_context_events") is True:
+            item["derived_from_context_events"] = True
         value = ref.get("current_state_policy", metadata.get("current_state_policy"))
         if value not in (None, "", [], {}):
             item["current_state_policy"] = value
@@ -1200,7 +1207,7 @@ def compact_prebuilt_serving_groups(groups: list[Json], *, include_debug: bool =
         items = group.get("items")
         if isinstance(items, list):
             compact_group["items"] = [
-                _bound_prebuilt_serving_lineage_item(item) if include_lineage else strip_default_debug_lineage_fields(item)
+                _bound_prebuilt_serving_lineage_item(item) if include_lineage else compact_context_pack_ref(item)
                 for item in items
                 if isinstance(item, dict)
             ]

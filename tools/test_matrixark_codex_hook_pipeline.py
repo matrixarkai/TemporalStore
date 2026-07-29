@@ -7847,9 +7847,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             }
             compact_default = compact_context_pack_ref(ref)
             self.assertNotIn("source_event_ids", compact_default)
-            self.assertEqual("context_event", compact_default["source_record_type"])
-            self.assertTrue(compact_default["derived_from_context_events"])
-            self.assertEqual(segment["segment_origin"], compact_default["segment_origin"])
+            self.assertNotIn("source_record_type", compact_default)
+            self.assertNotIn("derived_from_context_events", compact_default)
+            self.assertNotIn("segment_origin", compact_default)
 
             compact_debug = compact_context_pack_ref(ref, include_debug=True)
             self.assertEqual(segment["source_event_ids"][:8], compact_debug["source_event_ids"])
@@ -7869,9 +7869,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             grouped_default = compact_context_pack_for_serving(grouped_pack)
             grouped_default_item = grouped_default["groups"][0]["items"][0]
             self.assertNotIn("source_event_ids", grouped_default_item)
-            self.assertEqual("context_event", grouped_default_item["source_record_type"])
-            self.assertTrue(grouped_default_item["derived_from_context_events"])
-            self.assertEqual(segment["segment_origin"], grouped_default_item["segment_origin"])
+            self.assertNotIn("source_record_type", grouped_default_item)
+            self.assertNotIn("derived_from_context_events", grouped_default_item)
+            self.assertNotIn("segment_origin", grouped_default_item)
 
             grouped_debug = compact_context_pack_for_serving(grouped_pack, include_debug=True)
             grouped_debug_item = grouped_debug["groups"][0]["items"][0]
