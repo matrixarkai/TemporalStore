@@ -2844,6 +2844,72 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(serving_event["node_path"], buffered["node_path"])
         self.assertNotEqual("tenant:", serving_event["node_path"][0])
 
+    def test_fast_async_hook_ingest_uses_local_user_fallback_for_profile_scope(self) -> None:
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.serving_records = []
+                self.session_buffer_records = []
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.serving_records.extend(records)
+
+            def append_session_buffer_event(self, **kwargs):
+                self.session_buffer_records.append(kwargs)
+
+            def pending_session_events(self, scope):
+                return []
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        old_user = os.environ.get("MATRIXARK_LOCAL_USER_ID")
+        os.environ["MATRIXARK_LOCAL_USER_ID"] = "codex_profile_user"
+        try:
+            args = Namespace(
+                event="UserPromptSubmit",
+                account_id="acct_hook_local",
+                tenant_id="",
+                user_id="",
+                session_id="",
+                team="codex",
+                project="temporalstore",
+                session_commit_threshold=20,
+                idle_commit_timeout_ms=0,
+                understanding_provider="rules",
+                segment_provider="deterministic",
+            )
+            server = Server()
+            result = hook.fast_async_hook_ingest(
+                server,
+                args=args,
+                text="Remember that local Codex hook memory should promote into the user profile.",
+                role="user",
+                agent_context={"workspace_root": "/repo"},
+                hook={"session_id_source": "payload_field", "thread_id": "thread-profile-scope"},
+            )
+        finally:
+            if old_user is None:
+                os.environ.pop("MATRIXARK_LOCAL_USER_ID", None)
+            else:
+                os.environ["MATRIXARK_LOCAL_USER_ID"] = old_user
+
+        self.assertEqual("accepted", result["status"])
+        serving_event = next(record for record in server.adapter.serving_records if record["record_type"] == "context_event")
+        buffered = server.adapter.session_buffer_records[0]
+        for record in [server.adapter.raw_records[0], serving_event, buffered["envelope"]]:
+            self.assertEqual("codex_profile_user", record["scope"]["user_id"])
+            self.assertEqual("codex_profile_user", record["scope"]["session_id"])
+        self.assertEqual(
+            ["tenant:tenant_local_agent", "user:codex_profile_user", "session:codex_profile_user", "conversation:codex_hook"],
+            serving_event["node_path"],
+        )
+        self.assertEqual(serving_event["node_path"], buffered["node_path"])
+
 
     def test_fast_async_hook_ingest_marks_tool_evidence_lifecycle(self) -> None:
         class Adapter:

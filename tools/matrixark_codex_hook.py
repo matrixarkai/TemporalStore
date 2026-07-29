@@ -24,6 +24,7 @@ try:
         context_index_posting_record,
         embedding_for_text,
         embedding_model_name,
+        local_account_user_id,
         memory_hierarchy_contract_from_recall_policy,
         messages_from_event_record,
         normalize_message_role,
@@ -43,6 +44,7 @@ except ModuleNotFoundError:
         context_index_posting_record,
         embedding_for_text,
         embedding_model_name,
+        local_account_user_id,
         memory_hierarchy_contract_from_recall_policy,
         messages_from_event_record,
         normalize_message_role,
@@ -3412,7 +3414,7 @@ def build_server(args: argparse.Namespace):
 
 
 def scope_from_args(args: argparse.Namespace) -> Json:
-    user_id = str(args.user_id or "")
+    user_id = str(args.user_id or local_account_user_id())
     session_id = str(args.session_id or user_id or "")
     return {
         "account_id": canonical_account_id(str(args.account_id or "")),
