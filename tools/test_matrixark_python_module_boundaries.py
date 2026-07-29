@@ -44,8 +44,28 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         segment = result["segments"][0]
         self.assertEqual([0], segment["message_indexes"])
         self.assertEqual([[0, 0]], segment["coordinate_tuples"])
+        self.assertEqual("fallback_derived_from_events", segment["segment_origin"])
+        self.assertTrue(segment["derived_from_context_events"])
         self.assertTrue(result["segment_provider"]["fallback_used"])
         self.assertEqual("empty_segment_output", result["segment_provider"]["fallback_reason"])
+
+    def test_modular_extractor_promotes_codex_directives_to_entities(self) -> None:
+        extract_mod = importlib.import_module("tools.matrixark_mcp_extraction_normalization")
+        entities = extract_mod.extract_batch_entities(
+            [
+                {
+                    "role": "user",
+                    "content": "Remember: use Ubuntu /root/src/github-services for all TemporalStore repos.",
+                }
+            ],
+            {"source_event_ids": [123]},
+        )
+
+        preferences = [entity for entity in entities if entity.get("entity_type") == "preference"]
+        self.assertTrue(preferences)
+        self.assertEqual("preference", preferences[0]["entity_name"])
+        self.assertIn("/root/src/github-services", preferences[0]["state"])
+        self.assertEqual(["123"], preferences[0]["source_refs"])
 
     def test_memory_phase_and_retrieval_budget_fields_are_public_schema(self) -> None:
         schemas_mod = importlib.import_module("tools.matrixark_mcp_schemas")
@@ -1422,6 +1442,108 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             ["tenant:tenant_mod", "user:user_mod", "profile:long_term_memory"],
             profile_dirty[0]["node_path"],
         )
+
+    def test_modular_batch_extract_writes_distinct_segments_and_profile_entities(self) -> None:
+        batch_mod = importlib.import_module("tools.matrixark_mcp_local_batch_extract_runtime")
+
+        class Adapter:
+            def __init__(self) -> None:
+                self.records = []
+                self.dirty_counter = 0
+
+            def read_all(self):
+                return []
+
+            def _observe_model_latency(self, *_args):
+                return None
+
+            def default_session_node_path(self, scope):
+                return ["tenant:tenant_mod", "user:user_mod", f"session:{scope['session_id']}"]
+
+            def ensure_context_node_path(self, **kwargs):
+                return {"created": True, "node_path": kwargs["node_path"]}
+
+            def find_latest_entity(self, **_kwargs):
+                return None
+
+            def append_many(self, records):
+                self.records.extend(records)
+
+            def node_summary_dirty_records(self, **kwargs):
+                self.dirty_counter += 1
+                dirty_hash = 8800 + self.dirty_counter
+                return [
+                    dirty_hash
+                ], [
+                    {
+                        "record_type": "context_summary_dirty",
+                        "dirty_hash": dirty_hash,
+                        "node_path": kwargs["node_path"],
+                        "dirty_reason": kwargs["dirty_reason"],
+                        "source_ref_type": kwargs["source_ref_type"],
+                        "scope": kwargs["scope"],
+                    }
+                ]
+
+        adapter = Adapter()
+        envelope = {
+            "kind": "message",
+            "scope": {
+                "account_id": "acct_mod",
+                "tenant_id": "tenant_mod",
+                "user_id": "user_mod",
+                "session_id": "session_mod_real",
+            },
+            "metadata": {},
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Remember: use Ubuntu /root/src/github-services for all TemporalStore repos.",
+                }
+            ],
+            "ingestion_time_ms": 456,
+            "storage_options": {},
+            "storage_route": {},
+        }
+
+        result = batch_mod.batch_extract_after_start(
+            adapter,
+            {"skip_prior_context": True},
+            {
+                "envelope": envelope,
+                "hook": {"hook_type": "hook_boundary", "codex_event": "Stop"},
+                "threshold": 1,
+                "derive_from_existing_events": True,
+                "source_event_ids": [202],
+                "extraction_phase": "final",
+                "final_session_boundary": True,
+                "force": True,
+                "deferred_result": None,
+            },
+        )
+
+        self.assertGreaterEqual(result["segments_written"], 1)
+        self.assertGreaterEqual(result["profile_entities_written"], 1)
+        segments = [record for record in adapter.records if record.get("record_type") == "context_segment"]
+        self.assertTrue(segments)
+        self.assertNotEqual("context_event", segments[0]["record_type"])
+        self.assertEqual("context_event", segments[0]["source_record_type"])
+        self.assertEqual([202], segments[0]["source_event_ids"])
+        self.assertTrue(segments[0]["derived_from_context_events"])
+        self.assertIn("segment_origin", segments[0])
+        profile_entities = [
+            record
+            for record in adapter.records
+            if record.get("record_type") == "context_entity"
+            and record.get("memory_scope") == "user_profile"
+            and record.get("session_continuity") == "cross_session"
+        ]
+        self.assertTrue(profile_entities)
+        self.assertEqual(
+            ["tenant:tenant_mod", "user:user_mod", "profile:long_term_memory"],
+            profile_entities[0]["node_path"],
+        )
+        self.assertNotIn("session_id", profile_entities[0]["access_scope"])
 
     def test_modular_entity_scan_admits_cross_session_profile_bridge(self) -> None:
         scan_mod = importlib.import_module("tools.matrixark_mcp_retrieve_entity_scan")

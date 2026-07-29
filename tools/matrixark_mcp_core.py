@@ -1933,6 +1933,8 @@ def one_pass_memory_extraction(envelope: Json, *, prior_context: Json) -> Json:
                 "summary_text": summarize_text(batch_text, limit=420),
                 "text": batch_text,
                 "non_contiguous": False,
+                "segment_origin": "fallback_derived_from_events",
+                "derived_from_context_events": True,
             }
         ]
         segment_provider_meta = {

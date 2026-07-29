@@ -131,12 +131,144 @@ def normalize_extracted_facts(raw_facts: Any, *, chunk: Any, chunk_metadata: Jso
     return facts
 
 
+def assistant_decision_memory_text(text: str) -> str:
+    """Keep durable assistant memory focused on decisions, results, and next actions."""
+    compact = " ".join(str(text or "").split())
+    if not compact:
+        return ""
+    selected: list[str] = []
+    decision_line_pattern = re.compile(
+        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|blocked|next|follow[- ]?up|will|use|keep|remove)\b",
+        re.IGNORECASE,
+    )
+    for raw_line in str(text).splitlines():
+        line = " ".join(raw_line.split()).strip(" -*")
+        if not line:
+            continue
+        if decision_line_pattern.search(line):
+            selected.append(line)
+        if len(selected) >= 4:
+            break
+    if not selected:
+        selected = [
+            match.group(0).strip()
+            for match in re.finditer(
+                r"[^.!?\n]*(?:decision|decided|done|implemented|fixed|committed|pushed|blocked|next|will)[^.!?\n]*[.!?]?",
+                str(text),
+                flags=re.IGNORECASE,
+            )
+        ][:4]
+    return summarize_text(" ".join(selected) if selected else compact, limit=260)
+
+
+def tool_evidence_memory_text(text: str) -> str:
+    """Keep durable tool memory to result evidence, not complete stdout/stderr blobs."""
+    compact = " ".join(str(text or "").split())
+    if not compact:
+        return ""
+    selected: list[str] = []
+    evidence_line_pattern = re.compile(
+        r"\b(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|pushed|rebase|benchmark|validation)\b",
+        re.IGNORECASE,
+    )
+    for raw_line in str(text).splitlines():
+        line = " ".join(raw_line.split()).strip()
+        if not line:
+            continue
+        if evidence_line_pattern.search(line):
+            selected.append(line)
+        if len(selected) >= 6:
+            break
+    if not selected:
+        selected = [
+            match.group(0).strip()
+            for match in re.finditer(
+                r"[^.!?\n]*(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|pushed|rebase|benchmark|validation)[^.!?\n]*[.!?]?",
+                str(text),
+                flags=re.IGNORECASE,
+            )
+        ][:6]
+    return summarize_text(" ".join(selected) if selected else compact, limit=260)
+
+
 def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     entities: list[Json] = []
     text = text_from_messages(messages)
     lower = text.lower()
     source_event_ids = envelope.get("source_event_ids", [])
     source_refs = [str(ref) for ref in source_event_ids] if isinstance(source_event_ids, list) and source_event_ids else [str(index) for index, _ in enumerate(messages)]
+    user_messages = [
+        item
+        for item in messages
+        if str(item.get("role") or "").lower() in {"user", "human"}
+        and str(item.get("content") or "").strip()
+    ]
+    user_text = text_from_messages(user_messages) if user_messages else ""
+    if user_text:
+        for match in re.finditer(
+            r"\b(?:remember(?:\s+that)?|please\s+always|always|keep|use)\b[:\s]+([^.;!?\n]{4,180})",
+            user_text,
+            re.IGNORECASE,
+        ):
+            directive = clean_patch_value(match.group(1))
+            if not directive:
+                continue
+            state = summarize_text(f"user directive: {directive}", limit=220)
+            entities.append(
+                {
+                    "entity_type": "preference",
+                    "entity_name": "preference",
+                    "state": state,
+                    "confidence": 0.84,
+                    "source_refs": source_refs,
+                    "operator": normalize_entity_operator(None, "preference"),
+                    "field_patches": [entity_patch("", summarize_text(state, limit=180))],
+                }
+            )
+    tool_messages = [
+        item
+        for item in messages
+        if str(item.get("role") or "").lower() in {"tool", "tool_result"}
+        and str(item.get("content") or "").strip()
+    ]
+    tool_text = text_from_messages(tool_messages) if tool_messages else ""
+    if tool_text:
+        evidence_state = summarize_text(tool_evidence_memory_text(tool_text), limit=220)
+        entities.append(
+            {
+                "entity_type": "tool_evidence",
+                "entity_name": "tool_evidence",
+                "state": evidence_state,
+                "confidence": 0.86,
+                "source_refs": source_refs,
+                "operator": normalize_entity_operator(None, "tool_evidence"),
+                "field_patches": [entity_patch("", summarize_text(evidence_state, limit=180))],
+            }
+        )
+    assistant_messages = [
+        item
+        for item in messages
+        if str(item.get("role") or "").lower() in {"assistant", "agent", "llm"}
+        and str(item.get("content") or "").strip()
+    ]
+    assistant_text = text_from_messages(assistant_messages) if assistant_messages else ""
+    if assistant_text and re.search(
+        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|will|next|choose|chose|use|keep|remove|blocked)\b",
+        assistant_text,
+        re.IGNORECASE,
+    ):
+        decision_state = summarize_text(assistant_decision_memory_text(assistant_text), limit=220)
+        entities.append(
+            {
+                "entity_type": "assistant_decision",
+                "entity_name": "assistant_decision",
+                "state": decision_state,
+                "confidence": 0.82,
+                "source_refs": source_refs,
+                "operator": normalize_entity_operator(None, "assistant_decision"),
+                "field_patches": [entity_patch("", summarize_text(decision_state, limit=180))],
+            }
+        )
     patterns = [
         ("preference", r"\b(?:prefer|prefers|favorite|likes?|loves?)\s+([^.;!?]{2,120})"),
         ("relationship", r"\b(?:friend|partner|mother|father|sister|brother|wife|husband|manager|teammate)\s+([^.;!?]{0,120})"),
@@ -147,6 +279,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         ("correction", r"\b(?:correction|correct|wrong|instead|updated|changed)\s+([^.;!?]{2,140})"),
         ("approval_state", r"\b(?:approved|approval)\s+([^.;!?]{2,140})"),
         ("confirmation", r"\b(?:yes|confirmed|approved|correct|looks good)\b([^.;!?]{0,120})"),
+        ("tool_evidence", r"\b(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|pushed|commit\s+[0-9a-f]{7,40}|error|failed|fatal)\b([^.;!?]{0,180})"),
     ]
     for entity_type, pattern in patterns:
         for match in re.finditer(pattern, text, re.IGNORECASE):
