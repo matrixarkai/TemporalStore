@@ -5584,6 +5584,12 @@ def candidate_memory_layer_name(candidate: Json) -> str:
     if ref_type == "skill_section":
         return "skill_section"
     if ref_type == "compression" or context_class == "compression":
+        if memory_scope == "user_profile" and session_continuity == "cross_session":
+            return "profile_compression"
+        if session_continuity == "same_session":
+            return "same_session_compression"
+        if session_continuity == "cross_session":
+            return "cross_session_compression"
         return "compression"
     if ref_type == "summary" or context_class == "summary":
         if memory_scope == "user_profile" and session_continuity == "cross_session":
