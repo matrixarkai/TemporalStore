@@ -227,11 +227,31 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                     "status": "extraction_committed",
                     "updated_at_ms": 200,
                 },
+                {
+                    "record_type": "session_buffer_event",
+                    "buffer_key": ["acct", "tenant", "user", "session"],
+                    "event_id_hash": 12345,
+                    "status": "pending",
+                    "envelope": {"messages": [{"role": "user", "content": "raw pending text"}]},
+                    "updated_at_ms": 100,
+                },
+                {
+                    "record_type": "session_buffer_event",
+                    "buffer_key": ["acct", "tenant", "user", "session"],
+                    "event_id_hash": 12345,
+                    "status": "committed",
+                    "commit_id_hash": 67890,
+                    "updated_at_ms": 300,
+                },
             ]
         )
 
-        self.assertEqual(1, len(compacted))
-        self.assertEqual("extraction_committed", compacted[0]["status"])
+        self.assertEqual(2, len(compacted))
+        event = next(record for record in compacted if record["record_type"] == "context_event")
+        buffer = next(record for record in compacted if record["record_type"] == "session_buffer_event")
+        self.assertEqual("extraction_committed", event["status"])
+        self.assertEqual("committed", buffer["status"])
+        self.assertNotIn("envelope", buffer)
 
     def test_recent_ingestion_report_summarizes_serving_visibility_gate(self) -> None:
         report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
@@ -1503,6 +1523,16 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(committed["source_codex_event_counts"], async_task["source_codex_event_counts"])
         self.assertEqual(committed["source_memory_selection_policy_counts"], async_task["source_memory_selection_policy_counts"])
         self.assertEqual(1, async_task["source_memory_selection_complete_count"])
+        committed_buffer = next(
+            record
+            for record in adapter.appended
+            if record.get("record_type") == "session_buffer_event"
+            and record.get("event_id_hash") == 1
+            and record.get("status") == "committed"
+        )
+        self.assertEqual(committed["commit_id_hash"], committed_buffer["commit_id_hash"])
+        self.assertNotIn("envelope", committed_buffer)
+        self.assertNotIn("agent_hook", committed_buffer)
 
         multi_adapter = Adapter()
         multi_adapter.pending = [

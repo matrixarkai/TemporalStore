@@ -44,6 +44,8 @@ def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
         return (record_type, record.get("entity_hash"))
     if record_type == "context_summary_dirty":
         return (record_type, record.get("dirty_hash"))
+    if record_type == "session_buffer_event":
+        return (record_type, tuple(record.get("buffer_key", [])), record.get("event_id_hash"))
     if record_type == "resource_manifest":
         return (record_type, record.get("resource_hash"))
     if record_type == "skill_registry_update":

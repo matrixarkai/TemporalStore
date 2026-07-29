@@ -1308,6 +1308,8 @@ def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
         return (record_type, record.get("entity_hash"))
     if record_type == "context_summary_dirty":
         return (record_type, record.get("dirty_hash"))
+    if record_type == "session_buffer_event":
+        return (record_type, tuple(record.get("buffer_key", [])), record.get("event_id_hash"))
     if record_type == "resource_manifest":
         return (record_type, record.get("resource_hash"))
     if record_type == "skill_registry_update":
@@ -2704,41 +2706,60 @@ class MatrixArkLocalAdapter:
                 "created_at_ms": committed_at_ms,
             }
         )
-        self.append_many(
-            [
+        buffer_key = list(session_buffer_key_from_scope(scope))
+        buffer_key_hash = stable_hash(":".join(buffer_key))
+        progress_records: list[Json] = [
+            {
+                "record_type": "matrixark_async_pipeline_task",
+                "task_hash": stable_hash(f"async_pipeline:{event_id}"),
+                "event_id_hash": event_id,
+                "commit_id_hash": commit_id_hash,
+                "batch_id_hash": batch_result.get("batch_id_hash"),
+                "scope": scope,
+                "status": "extraction_committed",
+                "stages": ["extraction", "summary", "compression", "embedding"],
+                "completed_stages": ["extraction"],
+                "remaining_stages": ["summary", "compression", "embedding"],
+                "reason": "session_buffer_commit",
+                "trigger_policy": trigger_policy,
+                "extraction_phase": extraction_phase,
+                "final_session_boundary": final_session_boundary,
+                "pending_message_count_before_commit": pending_message_count,
+                "source_roles": source_roles,
+                "source_role_counts": source_role_counts,
+                "source_hook_types": source_hook_types,
+                "source_hook_type_counts": source_hook_type_counts,
+                "source_codex_events": source_codex_events,
+                "source_codex_event_counts": source_codex_event_counts,
+                "source_memory_selection_policies": source_memory_selection_policies,
+                "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                **source_memory_selection_retention,
+                "summary_refresh_status": memory_layers_written.get("summary_refresh_status"),
+                "summary_dirty_nodes": memory_layers_written.get("summary_dirty_nodes", 0),
+                "memory_layers_written": memory_layers_written,
+                "updated_at_ms": committed_at_ms,
+            }
+            for event_id in source_event_ids
+        ]
+        for event_id in source_event_ids:
+            progress_records.append(
                 {
-                    "record_type": "matrixark_async_pipeline_task",
-                    "task_hash": stable_hash(f"async_pipeline:{event_id}"),
+                    "record_type": "session_buffer_event",
+                    "buffer_key_hash": buffer_key_hash,
+                    "buffer_key": buffer_key,
                     "event_id_hash": event_id,
                     "commit_id_hash": commit_id_hash,
                     "batch_id_hash": batch_result.get("batch_id_hash"),
                     "scope": scope,
-                    "status": "extraction_committed",
-                    "stages": ["extraction", "summary", "compression", "embedding"],
-                    "completed_stages": ["extraction"],
-                    "remaining_stages": ["summary", "compression", "embedding"],
+                    "status": "committed",
                     "reason": "session_buffer_commit",
                     "trigger_policy": trigger_policy,
                     "extraction_phase": extraction_phase,
                     "final_session_boundary": final_session_boundary,
-                    "pending_message_count_before_commit": pending_message_count,
-                    "source_roles": source_roles,
-                    "source_role_counts": source_role_counts,
-                    "source_hook_types": source_hook_types,
-                    "source_hook_type_counts": source_hook_type_counts,
-                    "source_codex_events": source_codex_events,
-                    "source_codex_event_counts": source_codex_event_counts,
-                    "source_memory_selection_policies": source_memory_selection_policies,
-                    "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
-                    **source_memory_selection_retention,
-                    "summary_refresh_status": memory_layers_written.get("summary_refresh_status"),
-                    "summary_dirty_nodes": memory_layers_written.get("summary_dirty_nodes", 0),
-                    "memory_layers_written": memory_layers_written,
                     "updated_at_ms": committed_at_ms,
                 }
-                for event_id in source_event_ids
-            ]
-        )
+            )
+        self.append_many(progress_records)
         return {
             **batch_result,
             "status": "committed",
