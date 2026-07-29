@@ -1128,6 +1128,11 @@ class MatrixArkLocalAdapter:
             if isinstance(recall_policy.get("async_pipeline_readiness"), dict)
             else {}
         )
+        memory_selection_policy_budget = (
+            recall_policy.get("memory_selection_policy_budget_policy")
+            if isinstance(recall_policy.get("memory_selection_policy_budget_policy"), dict)
+            else {}
+        )
         tree = recall_policy.get("tree_traversal", {}) if isinstance(recall_policy.get("tree_traversal"), dict) else {}
         secondary = recall_policy.get("secondary_index_filter", {}) if isinstance(recall_policy.get("secondary_index_filter"), dict) else {}
         rerank = recall_policy.get("rerank", {}) if isinstance(recall_policy.get("rerank"), dict) else {}
@@ -1177,6 +1182,7 @@ class MatrixArkLocalAdapter:
             "memory_layer_budget": memory_layer_budget,
             "dropped_memory_layer_budget": dropped_memory_layer_budget,
             "memory_layer_pressure": memory_layer_pressure,
+            "memory_selection_policy_budget": memory_selection_policy_budget,
             "async_pipeline_readiness": async_pipeline_readiness,
             "session_identity": session_identity,
             "quality_warnings": pack.get("quality_warnings", []) or [],
@@ -3448,6 +3454,15 @@ class MatrixArkLocalAdapter:
                     )
                 if not memory_layer_pressure:
                     memory_layer_pressure = memory_layer_pressure_summary(memory_layer_budget, dropped_memory_layer_budget)
+                memory_selection_policy_budget = record.get("memory_selection_policy_budget")
+                if not isinstance(memory_selection_policy_budget, dict):
+                    recall_policy = record.get("recall_policy", {}) if isinstance(record.get("recall_policy"), dict) else {}
+                    memory_selection_policy_budget = (
+                        recall_policy.get("memory_selection_policy_budget_policy", {})
+                        if isinstance(recall_policy.get("memory_selection_policy_budget_policy"), dict)
+                        else {}
+                    )
+                memory_selection_policy_budget = serving_memory_selection_policy_budget(memory_selection_policy_budget)
                 async_pipeline_readiness = record.get("async_pipeline_readiness")
                 if not isinstance(async_pipeline_readiness, dict):
                     recall_policy = record.get("recall_policy", {}) if isinstance(record.get("recall_policy"), dict) else {}
@@ -3482,6 +3497,7 @@ class MatrixArkLocalAdapter:
                         "memory_layer_budget": memory_layer_budget,
                         "dropped_memory_layer_budget": dropped_memory_layer_budget,
                         "memory_layer_pressure": memory_layer_pressure,
+                        "memory_selection_policy_budget": memory_selection_policy_budget,
                         "async_pipeline_readiness": async_pipeline_readiness,
                         "session_identity": session_identity,
                         "retrieval_request_metadata": retrieval_request_metadata,
@@ -8804,6 +8820,7 @@ class MatrixArkLocalAdapter:
                             "remote_context_budget_tokens",
                             "memory_layer_budget",
                             "dropped_memory_layer_budget",
+                            "memory_selection_policy_budget",
                             "async_pipeline_readiness",
                             "session_identity",
                             "retrieval_request_metadata",
