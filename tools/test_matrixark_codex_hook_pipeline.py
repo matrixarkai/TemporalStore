@@ -4597,6 +4597,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "selected_user_prompt": 38,
                     "selected_assistant_decision_outcome_only": 42,
                     "selected_tool_evidence_only": 28,
+                    "selected_profile_current_state": 47,
                 },
                 request["memory_selection_policy_budget_tokens"],
             )
@@ -4707,9 +4708,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertEqual(
                 {
-                    "selected_user_prompt": 38,
+                    "selected_user_prompt": 33,
                     "selected_assistant_decision_outcome_only": 38,
-                    "selected_tool_evidence_only": 33,
+                    "selected_tool_evidence_only": 28,
+                    "selected_profile_current_state": 61,
                 },
                 request["memory_selection_policy_budget_tokens"],
             )
