@@ -192,6 +192,24 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(["serving_entity"], [item["text"] for item in backend["recent_entities"]])
         self.assertEqual(["serving summary"], [item["text"] for item in backend["recent_summaries"]])
 
+    def test_raw_agent_message_routes_to_raw_ingestion_storage_part(self) -> None:
+        storage_mod = importlib.import_module("tools.matrixark_mcp_storage_options")
+
+        raw_hook_message = {
+            "record_type": "agent_message",
+            "raw_record_type": "raw_agent_message",
+            "raw_ingestion_visibility": "backfill_only",
+            "serving_projection_record_type": "context_event",
+            "serving_context_event_hash": 12345,
+        }
+        serving_event = {
+            "record_type": "context_event",
+            "event_id_hash": 12345,
+        }
+
+        self.assertEqual("raw_ingestion", storage_mod.storage_record_kind(raw_hook_message))
+        self.assertEqual("context_event", storage_mod.storage_record_kind(serving_event))
+
     def test_recent_ingestion_report_summarizes_serving_visibility_gate(self) -> None:
         report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
         broken_report = {
