@@ -1949,6 +1949,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             self.assertNotIn("source_entity_hashes", debug_item)
 
     def test_pending_async_event_serving_pack_uses_live_memory_layer_without_lineage(self) -> None:
+        core_mod = importlib.import_module("tools.matrixark_mcp_core")
         context_pack_mod = importlib.import_module("tools.matrixark_mcp_context_pack")
         selected = [
             {
@@ -1966,16 +1967,56 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             }
         ]
 
-        groups = context_pack_mod.serving_ref_groups_for_pack(selected, include_debug=False)
-        item = groups[0]["items"][0]
+        for pack_groups in [
+            core_mod.serving_ref_groups_for_pack,
+            lambda refs: context_pack_mod.serving_ref_groups_for_pack(refs, include_debug=False),
+        ]:
+            groups = pack_groups(selected)
+            item = groups[0]["items"][0]
 
-        self.assertEqual("pending_async", item["memory_layer"])
-        self.assertEqual("pending_async", item["extraction_phase"])
-        self.assertEqual("session", item["memory_scope"])
-        self.assertNotIn("source_roles", item)
-        self.assertNotIn("source_hook_types", item)
-        self.assertNotIn("source_codex_events", item)
+            self.assertEqual("pending_async", item["memory_layer"])
+            self.assertEqual("pending_async", item["extraction_phase"])
+            self.assertEqual("session", item["memory_scope"])
+            self.assertNotIn("source_roles", item)
+            self.assertNotIn("source_hook_types", item)
+            self.assertNotIn("source_codex_events", item)
+        self.assertEqual({"pending_async": 1}, core_mod.memory_layer_counts(selected))
         self.assertEqual({"pending_async": 1}, context_pack_mod._memory_layer_counts(selected))
+
+    def test_profile_entity_serving_pack_keeps_profile_layer_without_lineage(self) -> None:
+        core_mod = importlib.import_module("tools.matrixark_mcp_core")
+        context_pack_mod = importlib.import_module("tools.matrixark_mcp_context_pack")
+        selected = [
+            {
+                "ref_type": "entity",
+                "context_class": "profile_entity",
+                "text": "repo preference: use /root/src/github-services for TemporalStore work",
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "extraction_phase": "final",
+                "entity_type": "preference",
+                "entity_name": "repo location",
+                "source_session_ids": ["codex:thread-a", "codex:thread-b"],
+                "source_roles": ["user", "llm"],
+                "source_hook_types": ["before_llm", "stop"],
+            }
+        ]
+
+        for pack_groups in [
+            core_mod.serving_ref_groups_for_pack,
+            lambda refs: context_pack_mod.serving_ref_groups_for_pack(refs, include_debug=False),
+        ]:
+            item = pack_groups(selected)[0]["items"][0]
+
+            self.assertEqual("profile", item["memory_layer"])
+            self.assertEqual("user_profile", item["memory_scope"])
+            self.assertEqual("cross_session", item["session_continuity"])
+            self.assertEqual("repo location", item["entity"])
+            self.assertNotIn("source_session_ids", item)
+            self.assertNotIn("source_roles", item)
+            self.assertNotIn("source_hook_types", item)
+        self.assertEqual({"profile": 1}, core_mod.memory_layer_counts(selected))
+        self.assertEqual({"profile": 1}, context_pack_mod._memory_layer_counts(selected))
 
     def test_shared_pack_builder_exposes_memory_layer_budget_and_pressure(self) -> None:
         builder_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pack_builder")
