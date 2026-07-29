@@ -2385,6 +2385,88 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({"before_llm": 1}, pending_events[0]["source_hook_type_counts"])
             self.assertEqual({"UserPromptSubmit": 1}, pending_events[0]["source_codex_event_counts"])
 
+    def test_tool_output_memory_uses_short_structured_evidence(self) -> None:
+        noisy_output = "\n".join(
+            [
+                "compiling dependency chunk that should not become memory",
+                "Exit code: 0",
+                "Ran 132 tests in 1.44s",
+                "OK",
+                "pushed commit f8c4907 to origin/main",
+                *[f"verbose build line {index}" for index in range(80)],
+            ]
+        )
+        summary = matrixark_codex_hook.selected_tool_memory_text(
+            noisy_output,
+            {"tool_name": "shell_command", "tool_status": "ok"},
+        )
+
+        self.assertEqual(
+            "tool_name=shell_command; tool_status=ok; Exit code: 0; Ran 132 tests; pushed commit f8c4907 to origin/main",
+            summary,
+        )
+        self.assertNotIn("verbose build line", summary)
+
+    def test_fast_hook_tool_message_stores_structured_tool_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-tool-structured.jsonl")
+
+            class Server:
+                def __init__(self) -> None:
+                    self.adapter = adapter
+
+            scope = {
+                "account_id": "acct_tool_summary",
+                "tenant_id": "tenant_tool_summary",
+                "user_id": "user_tool_summary",
+                "session_id": "session_tool_summary",
+            }
+            text = matrixark_codex_hook.selected_tool_memory_text(
+                "Exit code: 0\nRan 132 tests in 1.44s\nOK\npushed commit f8c4907 to origin/main\nlarge omitted stdout",
+                {"tool_name": "shell_command", "tool_status": "ok"},
+            )
+            result = matrixark_codex_hook.fast_async_hook_ingest(
+                Server(),
+                args=Namespace(
+                    event="PostToolUse",
+                    **scope,
+                    team="codex",
+                    project="temporalstore",
+                    session_commit_threshold=20,
+                    idle_commit_timeout_ms=300000,
+                    understanding_provider="rules",
+                    segment_provider="deterministic",
+                ),
+                text=text,
+                role="tool",
+                agent_context={"workspace_root": "/repo", "tool_name": "shell_command", "tool_status": "ok"},
+                hook={
+                    "source": "codex",
+                    "hook_id": "tool-summary-hook-1",
+                    "observed_at_ms": 123456,
+                    "idempotency_key": "tool-summary-hook-1",
+                    "trigger": "PostToolUse",
+                    "auto_captured": True,
+                    "session_id_source": "payload_field",
+                },
+            )
+            self.assertEqual("accepted", result["status"])
+
+            records = adapter.read_all()
+            raw_message = next(record for record in records if record.get("record_type") == "agent_message")
+            pending_event = next(
+                record
+                for record in records
+                if record.get("record_type") == "context_event" and record.get("event_type") == "pending_async"
+            )
+            self.assertEqual("shell_command", raw_message["tool_name"])
+            self.assertEqual("ok", raw_message["tool_status"])
+            self.assertEqual("shell_command", pending_event["tool_name"])
+            self.assertEqual("ok", pending_event["tool_status"])
+            self.assertIn("Ran 132 tests", raw_message["messages"][0]["content"])
+            self.assertIn("pushed commit f8c4907", pending_event["text"])
+            self.assertNotIn("large omitted stdout", pending_event["text"])
+
     def test_fast_hook_dirty_markers_refresh_into_retrievable_summaries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-summary.jsonl")

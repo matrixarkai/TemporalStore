@@ -2753,6 +2753,44 @@ def selected_tool_evidence_text(text: str, *, max_chars: int = 4096, max_lines: 
     return evidence
 
 
+def selected_tool_memory_text(text: str, payload: Json | None = None, *, max_chars: int = 1024) -> str:
+    """Summarize tool output into a short memory record for live hook ingestion."""
+    evidence = selected_tool_evidence_text(text, max_chars=2048, max_lines=20)
+    if not evidence:
+        return ""
+    source = str(evidence)
+    facts: list[str] = []
+    if isinstance(payload, dict):
+        tool_name = first_string_at(payload, [["tool_name"], ["toolName"], ["tool", "name"], ["params", "tool_name"]])
+        tool_status = first_string_at(payload, [["tool_status"], ["status"], ["tool", "status"], ["params", "status"]])
+        if tool_name:
+            facts.append(f"tool_name={tool_name}")
+        if tool_status:
+            facts.append(f"tool_status={tool_status}")
+    exit_match = re.search(r"\bexit code:\s*(-?\d+)", source, re.IGNORECASE)
+    if exit_match:
+        facts.append(f"Exit code: {exit_match.group(1)}")
+    tests_match = re.search(r"\bran\s+(\d+)\s+tests?\b", source, re.IGNORECASE)
+    if tests_match:
+        facts.append(f"Ran {tests_match.group(1)} tests")
+    commit_match = re.search(r"\bpushed commit\s+([0-9a-f]{7,40})\b", source, re.IGNORECASE)
+    if not commit_match:
+        commit_match = re.search(r"\b([0-9a-f]{7,40})\s+refs/heads/main\b", source, re.IGNORECASE)
+    if commit_match:
+        target = " to origin/main" if re.search(r"\b(?:origin/main|refs/heads/main)\b", source, re.IGNORECASE) else ""
+        facts.append(f"pushed commit {commit_match.group(1)}{target}")
+    failure_match = re.search(
+        r"^.*\b(?:error|failed|failure|fatal|panic|exception|traceback|blocked)\b.*$",
+        source,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if failure_match:
+        facts.append(f"notable={failure_match.group(0)[:180]}")
+    if facts:
+        return "; ".join(facts)[:max_chars].rstrip()
+    return evidence[:max_chars].rstrip()
+
+
 ASSISTANT_MEMORY_LINE_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
     for pattern in [
@@ -3471,6 +3509,14 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
     messages = [{"role": role, "content": text}]
     hook_type = hook_type_for_event(args.event)
     lineage = hook_lineage_fields(hook)
+    tool_name = str(agent_context.get("tool_name") or "").strip()
+    tool_status = str(agent_context.get("tool_status") or "").strip()
+    tool_fields: Json = {}
+    if role == "tool":
+        if tool_name:
+            tool_fields["tool_name"] = tool_name
+        if tool_status:
+            tool_fields["tool_status"] = tool_status
     source_memory_scopes, source_session_continuities = pending_extraction_memory_layer_intent(scope)
     selection_metadata = codex_memory_selection_metadata(role=role, event=args.event, text=text)
     source_memory_selection_policies = [str(selection_metadata["policy"])] if selection_metadata.get("policy") else []
@@ -3496,6 +3542,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "source_kind": "message",
         "source_role": role,
         "codex_event": args.event,
+        **tool_fields,
         "messages": messages,
         "scope": scope,
         "tenant_id": tenant_id,
@@ -3525,6 +3572,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "status": "pending",
         "source_kind": "message",
         "source_role": role,
+        **tool_fields,
         "source_roles": [role] if role else [],
         "source_role_counts": {role: 1} if role else {},
         "source_hook_types": [hook_type] if hook_type else [],
@@ -3551,6 +3599,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
             "kind": "message",
             "source_role": role,
             "codex_event": args.event,
+            **tool_fields,
             "messages": messages,
             "scope": scope,
             "metadata": metadata,
@@ -3605,6 +3654,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "extraction_phase": "pending_async",
         "final_session_boundary": False,
         "reason": "codex_hook_fast_async_direct_queue",
+        **tool_fields,
         "agent_hook": hook,
         "storage_options": storage_options,
         "created_at_ms": now,
@@ -3818,7 +3868,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
 
 def rollout_role_and_text(event: str, payload: Json) -> tuple[str, str, str, str]:
     if event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
-        text = selected_tool_evidence_text(latest_codex_tool_output_from_rollout(payload))
+        text = selected_tool_memory_text(latest_codex_tool_output_from_rollout(payload), payload)
         return "tool", text, "PreviousToolOutputBackfill", "previous-tool-output"
     if event in {"Stop", "PostCompact", "SubagentStop"}:
         text = latest_codex_assistant_message_from_rollout(payload)
@@ -3931,7 +3981,7 @@ def main() -> int:
         fallback_text = text
         text = ""
         for _attempt in range(12):
-            rollout_text = selected_tool_evidence_text(latest_codex_tool_output_from_rollout(payload))
+            rollout_text = selected_tool_memory_text(latest_codex_tool_output_from_rollout(payload), payload)
             if rollout_text:
                 text = rollout_text
                 break
@@ -3985,7 +4035,7 @@ def main() -> int:
 
         ingest = {}
         if args.event == "UserPromptSubmit":
-            previous_tool_output = selected_tool_evidence_text(latest_codex_tool_output_from_rollout(payload))
+            previous_tool_output = selected_tool_memory_text(latest_codex_tool_output_from_rollout(payload), payload)
             if previous_tool_output and previous_tool_output != text and not hook_warning:
                 backfill_result = trace_tool_call(
                     server,
