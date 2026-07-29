@@ -9,9 +9,11 @@ try:
     from tools.matrixark_mcp_core import (
         Json,
         access_scope_matches_before_scoring,
+        candidate_index_terms,
         cosine,
         embedding_for_text,
         hybrid_origin_score,
+        passes_secondary_index_filters,
         score_recall_candidate,
         sparse_lexical_score,
         summarize_text,
@@ -21,9 +23,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         Json,
         access_scope_matches_before_scoring,
+        candidate_index_terms,
         cosine,
         embedding_for_text,
         hybrid_origin_score,
+        passes_secondary_index_filters,
         score_recall_candidate,
         sparse_lexical_score,
         summarize_text,
@@ -46,6 +50,11 @@ def scan_compression_candidates(
     *,
     retrieval_scope: Json,
     selected_by_tree: RecordPredicate,
+    index_terms_by_batch: dict[object, list[str]],
+    index_terms_by_node: dict[object, list[str]],
+    index_terms_by_ref: dict[object, list[str]],
+    secondary_index_filter_groups: list[list[str]],
+    secondary_index_filter_mode: str,
     admit_candidate_for_node: RecordPredicate,
     query_terms: set[str],
     query_embedding: list[float],
@@ -55,18 +64,31 @@ def scan_compression_candidates(
     ranking: Json,
     reference_time_ms: int,
     deadline_exceeded: DeadlinePredicate,
-) -> tuple[list[Json], list[Json], str]:
+) -> tuple[list[Json], list[Json], int, int, str]:
     primary_matches: list[Json] = []
     auxiliary_matches: list[Json] = []
+    secondary_index_dropped_count = 0
+    secondary_index_matched_count = 0
     for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
         if scan_index % 64 == 0 and deadline_exceeded():
-            return primary_matches, auxiliary_matches, "deadline_during_compression_scan"
+            return (
+                primary_matches,
+                auxiliary_matches,
+                secondary_index_dropped_count,
+                secondary_index_matched_count,
+                "deadline_during_compression_scan",
+            )
         if record.get("record_type") != "context_compression_event":
             continue
         if not access_scope_matches_before_scoring(record, retrieval_scope):
             continue
         if not selected_by_tree(record):
             continue
+        index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
+        if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
+            secondary_index_dropped_count += 1
+            continue
+        secondary_index_matched_count += 1
         if not admit_candidate_for_node(record):
             continue
         text = f"TIME_COMPRESS: {summarize_text(str(record.get('summary_text', '')), limit=96)}"
@@ -86,6 +108,7 @@ def scan_compression_candidates(
             node_score=node_score,
             text=text,
         )
+        candidate["matched_index_terms"] = sorted(index_terms)
         if origin_score > 0:
             primary_matches.append(
                 score_recall_candidate(
@@ -94,7 +117,7 @@ def scan_compression_candidates(
                     reference_time_ms=reference_time_ms,
                 )
             )
-        graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + [text, "time_compress"]))
+        graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + sorted(index_terms) + [text, "time_compress"]))
         if graph_score > 0:
             auxiliary_matches.append(
                 score_recall_candidate(
@@ -108,4 +131,4 @@ def scan_compression_candidates(
                     reference_time_ms=reference_time_ms,
                 )
             )
-    return primary_matches, auxiliary_matches, ""
+    return primary_matches, auxiliary_matches, secondary_index_dropped_count, secondary_index_matched_count, ""

@@ -228,6 +228,8 @@ def retrieve(target: Any, args: Json) -> Json:
     memory_layer_budget_mode = retrieval_request["memory_layer_budget_mode"]
     memory_selection_policy_budget_tokens = retrieval_request["memory_selection_policy_budget_tokens"]
     memory_selection_policy_budget_mode = retrieval_request["memory_selection_policy_budget_mode"]
+    extraction_phase_budget_tokens = retrieval_request["extraction_phase_budget_tokens"]
+    extraction_phase_budget_mode = retrieval_request["extraction_phase_budget_mode"]
     pre_retrieval_summary_refresh = retrieval_request["pre_retrieval_summary_refresh"]
     pre_retrieval_refreshed_records = retrieval_request["pre_retrieval_refreshed_records"]
     query_terms = retrieval_request["query_terms"]
@@ -310,6 +312,8 @@ def retrieve(target: Any, args: Json) -> Json:
             memory_layer_budget_mode=memory_layer_budget_mode,
             memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
             memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
+            extraction_phase_budget_tokens=extraction_phase_budget_tokens,
+            extraction_phase_budget_mode=extraction_phase_budget_mode,
         )
     skill_controls = self.latest_skill_controls(records)
     include_superseded_resources = bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False))
@@ -570,24 +574,33 @@ def retrieve(target: Any, args: Json) -> Json:
     secondary_index_dropped_count += resource_skill_dropped
     secondary_index_matched_count += resource_skill_matched
 
-    compression_primary, compression_auxiliary, fallback_reason = retrieve_compression_scan_helpers.scan_compression_candidates(
-        tree_candidate_records,
-        retrieval_scope=retrieval_scope,
-        selected_by_tree=selected_by_tree,
-        admit_candidate_for_node=admit_candidate_for_node,
-        query_terms=query_terms,
-        query_embedding=query_embedding,
-        compression_embedding_vectors=compression_embedding_vectors,
-        node_scores=node_scores,
-        annotate_session_continuity=annotate_session_continuity,
-        ranking=ranking,
-        reference_time_ms=reference_time_ms,
-        deadline_exceeded=deadline_exceeded,
+    compression_primary, compression_auxiliary, compression_dropped, compression_matched, fallback_reason = (
+        retrieve_compression_scan_helpers.scan_compression_candidates(
+            tree_candidate_records,
+            retrieval_scope=retrieval_scope,
+            selected_by_tree=selected_by_tree,
+            index_terms_by_batch=index_terms_by_batch,
+            index_terms_by_node=index_terms_by_node,
+            index_terms_by_ref=index_terms_by_ref,
+            secondary_index_filter_groups=secondary_index_filter_groups,
+            secondary_index_filter_mode=secondary_index_filter_mode,
+            admit_candidate_for_node=admit_candidate_for_node,
+            query_terms=query_terms,
+            query_embedding=query_embedding,
+            compression_embedding_vectors=compression_embedding_vectors,
+            node_scores=node_scores,
+            annotate_session_continuity=annotate_session_continuity,
+            ranking=ranking,
+            reference_time_ms=reference_time_ms,
+            deadline_exceeded=deadline_exceeded,
+        )
     )
     if fallback_reason:
         return deadline_fallback(fallback_reason, records)
     primary_matches.extend(compression_primary)
     auxiliary_matches.extend(compression_auxiliary)
+    secondary_index_dropped_count += compression_dropped
+    secondary_index_matched_count += compression_matched
     if deadline_exceeded():
         return deadline_fallback("deadline_after_compression_scan")
     finish_retrieval_stage("rerank_score", stage_started_perf)
@@ -623,6 +636,7 @@ def retrieve(target: Any, args: Json) -> Json:
         source_role_budget_tokens=source_role_budget_tokens,
         memory_layer_budget_tokens=memory_layer_budget_tokens,
         memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
+        extraction_phase_budget_tokens=extraction_phase_budget_tokens,
     )
     partial_context_pack = bool(dropped_over_budget.get("deadline_exceeded"))
     quality_warnings = []
@@ -719,6 +733,8 @@ def retrieve(target: Any, args: Json) -> Json:
         memory_layer_budget_mode=memory_layer_budget_mode,
         memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
         memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
+        extraction_phase_budget_tokens=extraction_phase_budget_tokens,
+        extraction_phase_budget_mode=extraction_phase_budget_mode,
         pre_retrieval_summary_refresh=pre_retrieval_summary_refresh,
         debug_refs=debug_refs,
     )

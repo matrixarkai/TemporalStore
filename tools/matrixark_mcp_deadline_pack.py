@@ -93,6 +93,8 @@ def deadline_fallback_pack(
     memory_layer_budget_mode: str = "",
     memory_selection_policy_budget_tokens: Json | None = None,
     memory_selection_policy_budget_mode: str = "",
+    extraction_phase_budget_tokens: Json | None = None,
+    extraction_phase_budget_mode: str = "",
 ) -> Json:
     selected = []
     used_context_tokens = 0
@@ -226,6 +228,14 @@ def deadline_fallback_pack(
         bucket_name="by_memory_selection_policy",
         semantics="independent_per_memory_selection_policy_caps_under_global_remote_budget",
     )
+    extraction_phase_budget_policy = budget_control_policy_summary(
+        selected_budget=memory_layer_budget,
+        budget_tokens=extraction_phase_budget_tokens,
+        mode=extraction_phase_budget_mode,
+        remote_budget_tokens=remote_budget,
+        bucket_name="by_extraction_phase",
+        semantics="independent_per_extraction_phase_caps_under_global_remote_budget",
+    )
     serving_budget = serving_memory_layer_budget(memory_layer_budget)
     serving_pressure = serving_memory_layer_pressure(memory_layer_pressure)
     async_readiness_scope = retrieval_scope if isinstance(retrieval_scope, dict) else {**scope, "_session_scope": "prefer"}
@@ -264,6 +274,7 @@ def deadline_fallback_pack(
             "source_role_budget": source_role_budget_policy,
             "memory_layer_budget_policy": memory_layer_budget_policy,
             "memory_selection_policy_budget_policy": memory_selection_policy_budget_policy,
+            "extraction_phase_budget_policy": extraction_phase_budget_policy,
             "async_pipeline_readiness": async_pipeline_readiness,
             "session_continuity": {
                 "mode": "fallback_recent_context",
@@ -299,6 +310,7 @@ def deadline_fallback_pack(
             "source_role_budget": source_role_budget_policy,
             "memory_layer_budget_policy": memory_layer_budget_policy,
             "memory_selection_policy_budget": memory_selection_policy_budget_policy,
+            "extraction_phase_budget": extraction_phase_budget_policy,
             "async_pipeline_readiness": async_pipeline_readiness,
             "requested_max_context_tokens": max_context_tokens,
             "used_local_context_tokens": local_tokens,

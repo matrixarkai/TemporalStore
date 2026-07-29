@@ -31,6 +31,8 @@ def deadline_fallback_pack(
     memory_layer_budget_mode: str = "",
     memory_selection_policy_budget_tokens: Json | None = None,
     memory_selection_policy_budget_mode: str = "",
+    extraction_phase_budget_tokens: Json | None = None,
+    extraction_phase_budget_mode: str = "",
 ) -> Json:
     return target.deadline_fallback_pack(
         query=query,
@@ -49,4 +51,6 @@ def deadline_fallback_pack(
         memory_layer_budget_mode=memory_layer_budget_mode,
         memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
         memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
+        extraction_phase_budget_tokens=extraction_phase_budget_tokens,
+        extraction_phase_budget_mode=extraction_phase_budget_mode,
     )
