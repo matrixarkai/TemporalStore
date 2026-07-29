@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 try:
-    from tools.matrixark_mcp_core import Json, candidate_access_scope, normalize_message_role, scope_matches
+    from tools.matrixark_mcp_core import Json, candidate_access_scope, normalize_message_role, now_ms, scope_matches
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import Json, candidate_access_scope, normalize_message_role, scope_matches
+    from matrixark_mcp_core import Json, candidate_access_scope, normalize_message_role, now_ms, scope_matches
 
 
 def latest_async_pipeline_rows(rows: list[Json]) -> list[Json]:
-    status_rank = {"pending": 0, "extraction_committed": 1, "summary_completed": 2}
+    status_rank = {"pending": 0, "idle_commit_scheduled": 0, "extraction_committed": 1, "summary_completed": 2}
     latest_by_task: dict[int, Json] = {}
     for row in rows:
         try:
@@ -126,10 +126,13 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
     pending_extraction_phases: dict[str, int] = {}
     pending_final_session_boundary_count = 0
     pending_task_count = 0
+    scheduled_idle_task_count = 0
+    due_idle_task_count = 0
     extraction_committed_task_count = 0
     summary_completed_task_count = 0
     remaining_stages: set[str] = set()
     completed_stages: set[str] = set()
+    current_time_ms = now_ms()
 
     def add_count(bucket: dict[str, int], key: object) -> None:
         value = str(key or "").strip()
@@ -157,11 +160,19 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
     for row in latest_rows:
         status = str(row.get("status") or "unknown")
         status_counts[status] = status_counts.get(status, 0) + 1
-        pending_task_count += int(status == "pending")
+        is_pending_status = status in {"pending", "idle_commit_scheduled"}
+        pending_task_count += int(is_pending_status)
+        scheduled_idle_task_count += int(status == "idle_commit_scheduled")
+        try:
+            idle_deadline_ms = int(row.get("idle_commit_deadline_ms") or 0)
+        except (TypeError, ValueError):
+            idle_deadline_ms = 0
+        if status == "idle_commit_scheduled" and idle_deadline_ms > 0 and idle_deadline_ms <= current_time_ms:
+            due_idle_task_count += 1
         extraction_committed_task_count += int(status == "extraction_committed")
         summary_completed_task_count += int(status == "summary_completed")
         row_remaining_stages = row.get("remaining_stages") if isinstance(row.get("remaining_stages"), list) else []
-        if status == "pending" and not row_remaining_stages and isinstance(row.get("stages"), list):
+        if is_pending_status and not row_remaining_stages and isinstance(row.get("stages"), list):
             row_remaining_stages = row.get("stages") or []
         for stage in row_remaining_stages:
             stage_name = str(stage or "").strip()
@@ -172,7 +183,7 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
             stage_name = str(stage or "").strip()
             if stage_name:
                 completed_stages.add(stage_name)
-        if row_remaining_stages or status in {"pending", "extraction_committed"}:
+        if row_remaining_stages or status in {"pending", "idle_commit_scheduled", "extraction_committed"}:
             if not add_count_map(pending_source_roles, row.get("source_role_counts"), normalize_roles=True):
                 for role in row.get("source_roles") if isinstance(row.get("source_roles"), list) else []:
                     add_count(pending_source_roles, normalize_message_role(role))
@@ -208,6 +219,10 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
     warnings: list[str] = []
     if pending_task_count:
         warnings.append("async_pipeline_pending")
+    if scheduled_idle_task_count:
+        warnings.append("idle_commit_scheduled")
+    if due_idle_task_count:
+        warnings.append("idle_commit_due")
     if extraction_committed_task_count:
         warnings.append("async_pipeline_followup_pending")
     if remaining_stages:
@@ -222,6 +237,8 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
         "task_count": len(latest_rows),
         "status_counts": dict(sorted(status_counts.items())),
         "pending_task_count": pending_task_count,
+        "scheduled_idle_task_count": scheduled_idle_task_count,
+        "due_idle_task_count": due_idle_task_count,
         "extraction_committed_task_count": extraction_committed_task_count,
         "summary_completed_task_count": summary_completed_task_count,
         "completed_stages": sorted(completed_stages),

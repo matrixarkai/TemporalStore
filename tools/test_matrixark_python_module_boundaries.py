@@ -923,6 +923,93 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(1, len(request["pre_retrieval_refreshed_records"]))
 
+    def test_moduleized_request_flushes_due_idle_commit_before_retrieval_cache(self) -> None:
+        request_mod = importlib.import_module("tools.matrixark_mcp_retrieve_request")
+
+        class FakeTarget:
+            _context_pack_cache_max_entries = 0
+            _context_pack_cache_ttl_s = 0
+            _retrieval_records_cache_generation = 11
+
+            def __init__(self) -> None:
+                self.commit_requests = []
+
+            def _observe_model_latency(self, *_args: object) -> None:
+                return None
+
+            def read_all(self):
+                return [
+                    {
+                        "record_type": "matrixark_async_pipeline_task",
+                        "task_hash": 101,
+                        "event_id_hash": 202,
+                        "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"},
+                        "status": "idle_commit_scheduled",
+                        "trigger_policy": "idle_timeout",
+                        "threshold_messages": 20,
+                        "idle_commit_timeout_ms": 1,
+                        "idle_commit_deadline_ms": 1,
+                        "updated_at_ms": 1,
+                    }
+                ]
+
+            def session_commit(self, request):
+                self.commit_requests.append(request)
+                return {
+                    "status": "committed",
+                    "trigger_policy": "idle_timeout",
+                    "committed_event_count": 1,
+                }
+
+        target = FakeTarget()
+        request = request_mod.prepare_retrieval_request(
+            target,
+            {
+                "query": "what did we decide after the tool result?",
+                "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"},
+                "max_context_tokens": 2000,
+                "ranking": {"pre_retrieval_idle_commit_flush": True},
+            },
+            started_perf=0.0,
+        )
+
+        self.assertEqual(1, len(target.commit_requests))
+        self.assertEqual("idle_timeout", target.commit_requests[0]["commit_reason"])
+        self.assertFalse(target.commit_requests[0]["force"])
+        self.assertEqual("committed", request["pre_retrieval_idle_commit"]["status"])
+        self.assertEqual(1, request["pre_retrieval_idle_commit"]["committed_event_count"])
+
+    def test_async_readiness_tracks_scheduled_and_due_idle_commits(self) -> None:
+        readiness_mod = importlib.import_module("tools.matrixark_mcp_async_readiness")
+        readiness = readiness_mod.async_pipeline_retrieval_readiness(
+            [
+                {
+                    "record_type": "matrixark_async_pipeline_task",
+                    "task_hash": 303,
+                    "event_id_hash": 404,
+                    "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"},
+                    "status": "idle_commit_scheduled",
+                    "trigger_policy": "idle_timeout",
+                    "stages": ["extraction", "summary", "compression", "embedding"],
+                    "idle_commit_deadline_ms": 1,
+                    "source_role_counts": {"assistant": 1},
+                    "source_hook_type_counts": {"after_llm": 1},
+                    "source_codex_event_counts": {"Stop": 1},
+                    "source_memory_scopes": ["session"],
+                    "source_session_continuities": ["same_session"],
+                }
+            ],
+            {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"},
+        )
+
+        self.assertFalse(readiness["ready_for_retrieval"])
+        self.assertEqual(1, readiness["pending_task_count"])
+        self.assertEqual(1, readiness["scheduled_idle_task_count"])
+        self.assertEqual(1, readiness["due_idle_task_count"])
+        self.assertIn("idle_commit_scheduled", readiness["freshness_warnings"])
+        self.assertIn("idle_commit_due", readiness["freshness_warnings"])
+        self.assertEqual({"assistant": 1}, readiness["pending_source_roles"])
+
     def test_auto_memory_selection_budget_prioritizes_profile_memory_current_state(self) -> None:
         helper_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pre_refresh")
 
