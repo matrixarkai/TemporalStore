@@ -548,26 +548,30 @@ def select_token_budgeted_refs(
         return result
 
     def candidate_memory_selection_policy_names(candidate: Json) -> set[str]:
-        policy_names = {
-            str(policy or "").strip()
-            for policy in candidate.get("source_memory_selection_policies", [])
-            if str(policy or "").strip()
-        } if isinstance(candidate.get("source_memory_selection_policies"), list) else set()
-        policy_counts = (
-            candidate.get("source_memory_selection_policy_counts")
-            if isinstance(candidate.get("source_memory_selection_policy_counts"), dict)
-            else {}
-        )
-        for policy, count in policy_counts.items():
-            policy_name = str(policy or "").strip()
-            if not policy_name:
-                continue
-            try:
-                source_count = int(count or 0)
-            except (TypeError, ValueError):
-                source_count = 0
-            if source_count > 0:
-                policy_names.add(policy_name)
+        policy_names: set[str] = set()
+        sources = [candidate]
+        metadata = candidate.get("metadata")
+        if isinstance(metadata, dict):
+            sources.append(metadata)
+        for source in sources:
+            policies = source.get("source_memory_selection_policies")
+            if isinstance(policies, list):
+                policy_names.update(str(policy or "").strip() for policy in policies if str(policy or "").strip())
+            policy_counts = (
+                source.get("source_memory_selection_policy_counts")
+                if isinstance(source.get("source_memory_selection_policy_counts"), dict)
+                else {}
+            )
+            for policy, count in policy_counts.items():
+                policy_name = str(policy or "").strip()
+                if not policy_name:
+                    continue
+                try:
+                    source_count = int(count or 0)
+                except (TypeError, ValueError):
+                    source_count = 0
+                if source_count > 0:
+                    policy_names.add(policy_name)
         return policy_names
 
     def candidate_extraction_phase_name(candidate: Json) -> str:
