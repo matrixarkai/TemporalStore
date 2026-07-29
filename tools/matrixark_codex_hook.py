@@ -206,6 +206,7 @@ HOOK_FAST_ASYNC_INGEST = _env_bool("MATRIXARK_HOOK_FAST_ASYNC_INGEST", True)
 HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH = _env_bool("MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH", False)
 HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT = _env_int("MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT", 2, minimum=1)
 HOOK_COMPACT_HOT_PREFIX_ONLY = os.environ.get("MATRIXARK_HOOK_COMPACT_HOT_PREFIX_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
+SESSION_COMMIT_SUCCESS_STATUSES = {"accepted", "committed", "finalized"}
 
 RESOURCE_TYPE_BY_SUFFIX = {
     ".md": "md",
@@ -899,6 +900,9 @@ def session_commit_summary(commit: Json | None) -> Json:
         "extraction_phase": commit.get("extraction_phase"),
         "final_session_boundary": commit.get("final_session_boundary"),
         "source_event_count": commit.get("committed_event_count", len(commit.get("source_event_ids", []))),
+        "prior_commit_count": commit.get("prior_commit_count"),
+        "prior_committed_event_count": commit.get("prior_committed_event_count"),
+        "boundary_hash": commit.get("boundary_hash"),
         "extraction_context_event_count": commit.get("extraction_context_event_count", 0),
         "source_roles": commit.get("source_roles"),
         "source_hook_types": commit.get("source_hook_types"),
@@ -935,6 +939,7 @@ def session_commit_summary(commit: Json | None) -> Json:
                 "idle_ready",
                 "force",
                 "commit_reason",
+                "already_finalized",
             ]
             if trigger_evidence.get(key) not in (None, "", [], {})
         }
@@ -1128,7 +1133,7 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         elif auto_batch_reason == "idle_timeout":
             summary["decision"] = "idle_commit"
         else:
-            summary["decision"] = "committed" if auto_batch.get("status") in {"accepted", "committed"} else "attempted"
+            summary["decision"] = "committed" if successful_session_commit_status(auto_batch.get("status")) else "attempted"
         summary["reason"] = auto_batch_reason
         summary["source_roles"] = auto_batch.get("source_roles")
         summary["source_hook_types"] = auto_batch.get("source_hook_types")
@@ -1137,6 +1142,7 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         add_commit_evidence(auto_batch)
     elif session_commit:
         session_commit = normalize_role_lineage_fields(session_commit)
+        summary["auto_batch_extract_status"] = session_commit.get("status")
         summary["decision"] = "boundary_commit"
         summary["reason"] = session_commit.get("reason") or session_commit.get("commit_reason")
         summary["source_roles"] = session_commit.get("source_roles")
@@ -1144,7 +1150,7 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         summary["source_codex_events"] = session_commit.get("source_codex_events")
         summary["profile_promotion_summary"] = session_commit.get("profile_promotion_summary")
         add_commit_evidence(session_commit)
-    elif idle_commit and idle_commit.get("status") in {"accepted", "committed"}:
+    elif idle_commit and successful_session_commit_status(idle_commit.get("status")):
         idle_commit = normalize_role_lineage_fields(idle_commit)
         summary["auto_batch_extract_status"] = idle_commit.get("status")
         summary["decision"] = "idle_commit"
@@ -4242,6 +4248,10 @@ def run_rollout_backfill_only(args: argparse.Namespace, payload: Json, session_i
     finally:
         close_server_best_effort(server)
     return 0
+
+
+def successful_session_commit_status(status: Any) -> bool:
+    return str(status or "").strip().lower() in SESSION_COMMIT_SUCCESS_STATUSES
 
 
 def main() -> int:

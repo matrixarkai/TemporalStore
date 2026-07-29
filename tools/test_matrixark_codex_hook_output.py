@@ -3486,6 +3486,86 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("selected_assistant_decision_outcome_only", selection["policy"])
         self.assertFalse(selection["large_payload_verbatim_stored"])
 
+    def test_fast_async_hook_stop_boundary_surfaces_finalized_drained_session(self) -> None:
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.serving_records = []
+                self.session_buffer_records = []
+                self.commit_calls = []
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.serving_records.extend(records)
+
+            def append_session_buffer_event(self, **kwargs):
+                self.session_buffer_records.append(kwargs)
+
+            def pending_session_events(self, scope):
+                return []
+
+            def session_commit(self, args, *, hook=None):
+                self.commit_calls.append((args, hook))
+                return {
+                    "status": "finalized",
+                    "trigger_policy": "force",
+                    "commit_reason": "hook_boundary",
+                    "extraction_phase": "final",
+                    "final_session_boundary": True,
+                    "prior_commit_count": 1,
+                    "prior_committed_event_count": 2,
+                    "boundary_hash": 909,
+                    "summary_refresh": {"status": "dirty_marked", "dirty_reason": "session_finalized"},
+                    "trigger_evidence": {
+                        "force": True,
+                        "pending_event_count": 0,
+                        "already_finalized": False,
+                    },
+                }
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        args = Namespace(
+            event="Stop",
+            account_id="acct_local",
+            tenant_id="tenant_codex",
+            user_id="deeproute",
+            session_id="codex-session-stop-finalized",
+            team="codex",
+            project="temporalstore",
+            session_commit_threshold=20,
+            idle_commit_timeout_ms=0,
+            understanding_provider="rules",
+            extraction_provider="rules",
+            segment_provider="deterministic",
+        )
+        server = Server()
+        result = hook.fast_async_hook_ingest(
+            server,
+            args=args,
+            text="Final assistant boundary after threshold-drained session.",
+            role="assistant",
+            agent_context={"workspace_root": "/repo"},
+            hook={"session_id_source": "payload_field"},
+        )
+
+        self.assertEqual("finalized", result["session_commit"]["status"])
+        self.assertEqual(result["session_commit"], result["auto_batch_extract_result"])
+        decision = hook.auto_batch_decision_summary(result)
+        self.assertEqual("boundary_commit", decision["decision"])
+        self.assertEqual("finalized", decision["auto_batch_extract_status"])
+        self.assertTrue(decision["final_session_boundary"])
+        commit_summary = hook.session_commit_summary(result["session_commit"])
+        self.assertEqual(1, commit_summary["prior_commit_count"])
+        self.assertEqual(2, commit_summary["prior_committed_event_count"])
+        self.assertEqual(909, commit_summary["boundary_hash"])
+        self.assertEqual("dirty_marked", decision["summary_refresh"]["status"])
+        self.assertEqual(1, len(server.adapter.commit_calls))
+
     def test_retention_keeps_acceptance_prompt_that_mentions_synthetic_rows(self) -> None:
         fields = hook.hook_retention_fields(
             text=(
