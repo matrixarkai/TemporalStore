@@ -1079,7 +1079,10 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         auto_batch = normalize_role_lineage_fields(auto_batch)
         summary["auto_batch_extract_status"] = auto_batch.get("status")
         auto_batch_reason = auto_batch.get("reason") or auto_batch.get("commit_reason") or auto_batch.get("trigger_policy")
-        if auto_batch_reason == "idle_timeout":
+        if session_buffer.get("boundary_commit_requested"):
+            summary["decision"] = "boundary_commit"
+            auto_batch_reason = auto_batch_reason or "hook_boundary"
+        elif auto_batch_reason == "idle_timeout":
             summary["decision"] = "idle_commit"
         else:
             summary["decision"] = "committed" if auto_batch.get("status") in {"accepted", "committed"} else "attempted"
@@ -1122,6 +1125,18 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         if trigger_evidence:
             summary["trigger_evidence"] = trigger_evidence
     return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
+
+
+def fast_async_boundary_commit_from_ingest(ingest: Json | None) -> Json:
+    if not isinstance(ingest, dict):
+        return {}
+    session_buffer = ingest.get("session_buffer") if isinstance(ingest.get("session_buffer"), dict) else {}
+    session_commit = ingest.get("session_commit") if isinstance(ingest.get("session_commit"), dict) else {}
+    if not session_commit:
+        return {}
+    if not session_buffer.get("boundary_commit_requested"):
+        return {}
+    return session_commit
 
 
 def _format_retrieval_layer_summary(layer_summary: Json) -> str:
@@ -1898,6 +1913,17 @@ def codex_hook_output(
     ingest = ingest or {}
     retrieve = retrieve or {}
     commit = commit or {}
+    if isinstance(ingest.get("auto_batch_extract_result"), dict) and "auto_batch_extract_decision" not in ingest:
+        auto_batch_extract_result = ingest.get("auto_batch_extract_result") or {}
+        idle_commit_result = ingest.get("idle_commit_result") if isinstance(ingest.get("idle_commit_result"), dict) else {}
+        ingest = {
+            **ingest,
+            "auto_batch_extract_status": auto_batch_extract_result.get("status"),
+            "idle_commit_status": idle_commit_result.get("status"),
+            "idle_commit": session_commit_summary(idle_commit_result),
+            "auto_batch_extract": session_commit_summary(auto_batch_extract_result),
+            "auto_batch_extract_decision": auto_batch_decision_summary(ingest),
+        }
     auto_batch_extract = (
         ingest.get("auto_batch_extract")
         if isinstance(ingest.get("auto_batch_extract"), dict)
@@ -3882,6 +3908,8 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         auto_batch_extract_result = pre_ingest_idle_commit_result
     elif should_idle_commit:
         auto_batch_extract_result = session_commit_result
+    elif should_boundary_commit:
+        auto_batch_extract_result = session_commit_result
     return {
         "status": "accepted",
         "sync_write_mode": "hook_fast_async_direct_queue",
@@ -4233,34 +4261,40 @@ def main() -> int:
                 hook_warning = timeout_warning(ingest)
 
         commit = {}
+        fast_async_boundary_commit = fast_async_boundary_commit_from_ingest(ingest)
+        if fast_async_boundary_commit:
+            commit = fast_async_boundary_commit
         if should_run_session_commit_after_ingest(args.event, hook_warning):
-            commit_reason = commit_reason_for_event(args.event)
-            commit = trace_tool_call(
-                server,
-                "matrixark_session_commit",
-                {
-                    **common,
-                    "threshold_messages": args.session_commit_threshold,
-                    "force": commit_reason != "idle_timeout",
-                    "commit_reason": commit_reason,
-                    "understanding_provider": args.understanding_provider,
-                    "segment_provider": args.segment_provider,
-                    "storage_options": hook_storage_options(),
-                    **({"idle_timeout_ms": args.idle_commit_timeout_ms} if commit_reason == "idle_timeout" else {}),
-                    "agent_hook": {
-                        **codex_agent_hook(
-                            hook_type="session_commit",
-                            hook_id=f"session_commit:{args.event}:{int(time.time() * 1000)}",
-                            idempotency_key=hook_idempotency_key(payload, event=f"session_commit:{args.event}", session_id=args.session_id),
-                            trigger=args.event,
-                            session_id_source=session_id_source,
-                            identity=codex_identity,
-                        ),
+            if fast_async_boundary_commit:
+                trace.setdefault("fast_async_ingest", {})["boundary_commit_reused"] = True
+            else:
+                commit_reason = commit_reason_for_event(args.event)
+                commit = trace_tool_call(
+                    server,
+                    "matrixark_session_commit",
+                    {
+                        **common,
+                        "threshold_messages": args.session_commit_threshold,
+                        "force": commit_reason != "idle_timeout",
+                        "commit_reason": commit_reason,
+                        "understanding_provider": args.understanding_provider,
+                        "segment_provider": args.segment_provider,
+                        "storage_options": hook_storage_options(),
+                        **({"idle_timeout_ms": args.idle_commit_timeout_ms} if commit_reason == "idle_timeout" else {}),
+                        "agent_hook": {
+                            **codex_agent_hook(
+                                hook_type="session_commit",
+                                hook_id=f"session_commit:{args.event}:{int(time.time() * 1000)}",
+                                idempotency_key=hook_idempotency_key(payload, event=f"session_commit:{args.event}", session_id=args.session_id),
+                                trigger=args.event,
+                                session_id_source=session_id_source,
+                                identity=codex_identity,
+                            ),
+                        },
                     },
-                },
-                trace,
-            )
-            hook_warning = timeout_warning(commit)
+                    trace,
+                )
+                hook_warning = timeout_warning(commit)
 
         retrieve = {}
         query = args.query or text[:500]
