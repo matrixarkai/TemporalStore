@@ -3444,8 +3444,6 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertEqual(2, len(committed_event_embeddings))
                 self.assertTrue(all(record.get("memory_scope") == "session" for record in committed_event_embeddings))
                 self.assertTrue(all(record.get("session_continuity") == "same_session" for record in committed_event_embeddings))
-                self.assertTrue(all(record.get("extraction_phase") == "provisional" for record in committed_event_embeddings))
-                self.assertTrue(all(not record.get("final_session_boundary") for record in committed_event_embeddings))
                 for embedding in committed_event_embeddings:
                     self.assertNotIn("source_role", embedding)
                     self.assertNotIn("source_roles", embedding)
@@ -3454,6 +3452,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     self.assertNotIn("source_hook_type_counts", embedding)
                     self.assertNotIn("source_codex_events", embedding)
                     self.assertNotIn("source_codex_event_counts", embedding)
+                    self.assertNotIn("extraction_phase", embedding)
+                    self.assertNotIn("final_session_boundary", embedding)
                     self.assertNotIn("extraction_context_event_ids", embedding)
                 batch_summary_hashes = {
                     record.get("summary_hash")
@@ -3481,9 +3481,6 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 for embedding in batch_summary_embeddings:
                     self.assertEqual("session", embedding["memory_scope"])
                     self.assertEqual("same_session", embedding["session_continuity"])
-                    self.assertEqual("provisional", embedding["extraction_phase"])
-                    self.assertGreaterEqual(embedding["source_entity_count"], 1)
-                    self.assertGreaterEqual(embedding["source_segment_count"], 1)
                     for field in [
                         "source_event_ids",
                         "source_entity_hashes",
@@ -3499,6 +3496,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "source_memory_scopes",
                         "source_session_continuities",
                         "source_extraction_phases",
+                        "source_event_count",
+                        "source_entity_count",
+                        "source_segment_count",
+                        "extraction_phase",
+                        "final_session_boundary",
                         "extraction_context_event_ids",
                     ]:
                         self.assertNotIn(field, embedding)
