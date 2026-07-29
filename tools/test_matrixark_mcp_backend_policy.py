@@ -3774,7 +3774,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         adapter._entry_count_cache = None
         adapter._shard_size = 128
         scope = {"tenant_hash": 11, "user_hash": 22, "session_hash": 33}
-        adapter._idle_records = [
+        idle_records = [
             {
                 "record_type": "matrixark_async_pipeline_task",
                 "task_hash": 707,
@@ -3788,10 +3788,22 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "updated_at_ms": 1,
             }
         ]
+        client.scan_calls = []
+
+        def scan_candidates(**kwargs):
+            client.scan_calls.append(kwargs)
+            return {
+                "records": list(idle_records),
+                "scan_stats": {
+                    "execution_mode": "native_temporalstore_candidate_prefilter",
+                    "returned_records": len(idle_records),
+                },
+            }
+
+        client.matrixark_scan_candidates = scan_candidates
         adapter._appended_idle_markers = []
         adapter._session_commit_requests = []
-        adapter.read_all = lambda: list(adapter._idle_records)
-        adapter.idle_commit_task_records = lambda _scope: list(adapter._idle_records)
+        adapter.read_all = lambda: (_ for _ in ()).throw(AssertionError("native idle flush must not call read_all"))
         adapter.append = lambda record: adapter._appended_idle_markers.append(record)
 
         def session_commit(request):
@@ -3823,6 +3835,9 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(1, len(adapter._session_commit_requests))
         self.assertEqual("idle_timeout", adapter._session_commit_requests[0]["commit_reason"])
         self.assertFalse(adapter._session_commit_requests[0]["force"])
+        self.assertEqual(1, len(client.scan_calls))
+        self.assertEqual(["matrixark_async_pipeline_task"], client.scan_calls[0]["record_types"])
+        self.assertEqual(scope, client.scan_calls[0]["scope"])
         self.assertEqual(1, len(client.requests))
         self.assertEqual(8, client.requests[0]["watermark_count"])
         self.assertEqual(8, client.requests[0]["append_watermark"])
