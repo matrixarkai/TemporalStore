@@ -304,6 +304,12 @@ def retrieve(target: Any, args: Json) -> Json:
             records=records if fallback_records is None else fallback_records,
             reason=reason,
             budget_source=budget_source,
+            source_role_budget_tokens=source_role_budget_tokens,
+            source_role_budget_mode=source_role_budget_mode,
+            memory_layer_budget_tokens=memory_layer_budget_tokens,
+            memory_layer_budget_mode=memory_layer_budget_mode,
+            memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
+            memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
         )
     skill_controls = self.latest_skill_controls(records)
     include_superseded_resources = bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False))

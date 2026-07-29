@@ -6644,6 +6644,78 @@ def normalized_string_int_map(raw: Any) -> Json:
     return normalized
 
 
+def budget_control_policy_summary(
+    *,
+    selected_budget: Any,
+    budget_tokens: Any,
+    mode: str,
+    remote_budget_tokens: int,
+    bucket_name: str,
+    semantics: str,
+    normalize_keys: Callable[[Any], str] | None = None,
+    question_type: str = "",
+) -> Json:
+    normalize_keys = normalize_keys or (lambda value: str(value or "").strip())
+    normalized_budget: Json = {}
+    if isinstance(budget_tokens, dict):
+        for key, raw_amount in budget_tokens.items():
+            label = normalize_keys(key)
+            if not label:
+                continue
+            try:
+                amount = max(0, int(raw_amount or 0))
+            except (TypeError, ValueError):
+                amount = 0
+            if amount > 0:
+                normalized_budget[label] = int(normalized_budget.get(label, 0)) + amount
+    bucket_values = selected_budget.get(bucket_name) if isinstance(selected_budget, dict) else {}
+    if not isinstance(bucket_values, dict):
+        bucket_values = {}
+    selected_tokens: Json = {label: 0 for label in normalized_budget}
+    selected_refs: Json = {label: 0 for label in normalized_budget}
+    for key, bucket in bucket_values.items():
+        label = normalize_keys(key)
+        if not label or not isinstance(bucket, dict):
+            continue
+        try:
+            tokens_value = max(0, int(bucket.get("tokens") or 0))
+        except (TypeError, ValueError):
+            tokens_value = 0
+        try:
+            refs_value = max(0, int(bucket.get("refs") or 0))
+        except (TypeError, ValueError):
+            refs_value = 0
+        if label in selected_tokens or tokens_value > 0:
+            selected_tokens[label] = int(selected_tokens.get(label, 0)) + tokens_value
+        if label in selected_refs or refs_value > 0:
+            selected_refs[label] = int(selected_refs.get(label, 0)) + refs_value
+    active_mode = str(mode or ("explicit" if normalized_budget else "disabled"))
+    if bucket_name == "by_memory_selection_policy":
+        token_field = "selected_tokens_by_policy"
+        ref_field = "selected_ref_count_by_policy"
+    elif bucket_name == "by_memory_layer":
+        token_field = "selected_tokens_by_layer"
+        ref_field = "selected_ref_count_by_layer"
+    else:
+        token_field = "selected_tokens_by_role"
+        ref_field = "selected_ref_count_by_role"
+    policy: Json = {
+        "enabled": bool(normalized_budget),
+        "mode": active_mode,
+        "remote_budget_tokens": max(0, int(remote_budget_tokens or 0)),
+        "derived": active_mode in {"auto", "balanced", "codex_auto", "pre_retrieval_summary_refresh_balanced"},
+        "budget_semantics": semantics,
+        "independent_caps": True,
+        "global_remote_budget_enforced": True,
+        "budget_tokens": normalized_budget,
+        token_field: selected_tokens,
+        ref_field: selected_refs,
+    }
+    if question_type:
+        policy["question_type"] = question_type
+    return policy
+
+
 def ordered_normalized_role_list(raw: Any) -> list[str]:
     if not isinstance(raw, list):
         return []
