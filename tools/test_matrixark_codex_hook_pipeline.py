@@ -3365,6 +3365,53 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     self.assertNotIn("source_codex_events", embedding)
                     self.assertNotIn("source_codex_event_counts", embedding)
                     self.assertNotIn("extraction_context_event_ids", embedding)
+                batch_summary_hashes = {
+                    record.get("summary_hash")
+                    for record in records
+                    if record.get("record_type") == "context_summary"
+                    and record.get("summary_type") == "batch_l0"
+                    and record.get("batch_id_hash") == commit["batch_id_hash"]
+                }
+                batch_summaries = [
+                    record
+                    for record in records
+                    if record.get("record_type") == "context_summary"
+                    and record.get("summary_hash") in batch_summary_hashes
+                ]
+                self.assertTrue(batch_summaries)
+                self.assertTrue(all(record.get("source_event_ids") for record in batch_summaries))
+                batch_summary_embeddings = [
+                    record
+                    for record in records
+                    if record.get("record_type") == "context_embedding"
+                    and record.get("embedding_type") == "batch_l0"
+                    and record.get("ref_hash") in batch_summary_hashes
+                ]
+                self.assertTrue(batch_summary_embeddings)
+                for embedding in batch_summary_embeddings:
+                    self.assertEqual("session", embedding["memory_scope"])
+                    self.assertEqual("same_session", embedding["session_continuity"])
+                    self.assertEqual("provisional", embedding["extraction_phase"])
+                    self.assertGreaterEqual(embedding["source_entity_count"], 1)
+                    self.assertGreaterEqual(embedding["source_segment_count"], 1)
+                    for field in [
+                        "source_event_ids",
+                        "source_entity_hashes",
+                        "source_segment_hashes",
+                        "source_roles",
+                        "source_role_counts",
+                        "source_hook_types",
+                        "source_hook_type_counts",
+                        "source_codex_events",
+                        "source_codex_event_counts",
+                        "source_memory_selection_policies",
+                        "source_memory_selection_policy_counts",
+                        "source_memory_scopes",
+                        "source_session_continuities",
+                        "source_extraction_phases",
+                        "extraction_context_event_ids",
+                    ]:
+                        self.assertNotIn(field, embedding)
                 extraction_audits = [
                     record
                     for record in records
