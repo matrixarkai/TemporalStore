@@ -233,6 +233,51 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
     return budgets, mode
 
 
+def auto_extraction_phase_budget_tokens(
+    args: Json,
+    ranking: Json,
+    *,
+    remote_budget_tokens: int,
+    question_type: str = "fact",
+) -> tuple[Json, str]:
+    mode = str(args.get("extraction_phase_budget_mode") or ranking.get("extraction_phase_budget_mode") or "").strip().lower()
+    if mode not in {"auto", "balanced", "codex_auto"}:
+        return {}, ""
+    try:
+        remote_budget = max(0, int(remote_budget_tokens or 0))
+    except (TypeError, ValueError):
+        remote_budget = 0
+    if remote_budget <= 0:
+        return {}, mode
+    fractions = optional_object(args, "extraction_phase_budget_fractions") or optional_object(
+        ranking,
+        "extraction_phase_budget_fractions",
+    )
+    defaults = {
+        "pending_async": 0.12,
+        "provisional": 0.25,
+        "final": 0.70,
+    }
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    if normalized_question_type in {"current_state", "latest"}:
+        defaults.update({"pending_async": 0.12, "provisional": 0.25, "final": 0.75})
+    elif normalized_question_type == "profile_memory":
+        defaults.update({"pending_async": 0.10, "provisional": 0.20, "final": 0.80})
+    elif normalized_question_type in {"multi_hop", "date"}:
+        defaults.update({"pending_async": 0.15, "provisional": 0.30, "final": 0.70})
+    elif normalized_question_type in {"broad_exploration", "evidence"}:
+        defaults.update({"pending_async": 0.15, "provisional": 0.35, "final": 0.70})
+    budgets: Json = {}
+    for phase, default_fraction in defaults.items():
+        raw_fraction = fractions.get(phase, default_fraction) if isinstance(fractions, dict) else default_fraction
+        try:
+            fraction = max(0.0, min(1.0, float(raw_fraction)))
+        except (TypeError, ValueError):
+            fraction = default_fraction
+        budgets[phase] = max(1, int(remote_budget * fraction))
+    return budgets, mode
+
+
 def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
     *,
     remote_budget_tokens: int,
