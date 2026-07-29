@@ -2560,6 +2560,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             budget = pack["recall_policy"]["memory_layer_budget"]
             self.assertGreaterEqual(budget["by_memory_layer"]["pending_async_event"]["refs"], 1)
             self.assertGreaterEqual(budget["by_extraction_phase"]["pending_async"]["refs"], 1)
+            self.assertIn("selected_pending_async_event_refs:1", pack["quality_warnings"])
+            self.assertEqual(1, pack["recall_policy"]["selected_pending_async"]["selected_ref_count"])
+            self.assertEqual(1, pack["retrieval_metrics"]["selected_pending_async_ref_count"])
             readiness = pack["retrieval_metrics"]["async_pipeline_readiness"]
             self.assertFalse(readiness["ready_for_retrieval"])
             self.assertEqual({"user": 1}, readiness["pending_source_roles"])
@@ -2608,6 +2611,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 if ref.get("ref_type") == "event" and "phoenix quartz" in str(ref.get("text") or "")
             )
             self.assertEqual("pending_async", compact_ref["event_type"])
+            self.assertIn("selected_pending_async_event_refs:1", compact_pack["quality_warnings"])
+            self.assertEqual(1, compact_pack["retrieval_metrics"]["selected_pending_async_ref_count"])
             self.assertNotIn("matched_index_terms", compact_ref)
             self.assertNotIn("metadata", compact_ref)
             self.assertNotIn("scope", compact_ref)
