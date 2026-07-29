@@ -27,11 +27,21 @@ def add_context_index_terms(
     ref_hashes = context_index_ref_hashes(record)
     if record.get("batch_id_hash") is not None:
         index_terms_by_batch.setdefault(record.get("batch_id_hash"), []).append(index_name)
-    node_hash_for_index = record.get("node_hash")
-    try:
-        index_terms_by_node_for_prefilter.setdefault(int(node_hash_for_index), []).append(index_name)
-    except (TypeError, ValueError):
-        pass
+    node_hashes_for_index: list[Any] = []
+    if isinstance(record.get("node_hashes"), list):
+        node_hashes_for_index.extend(record.get("node_hashes", []))
+    if record.get("node_hash") is not None:
+        node_hashes_for_index.append(record.get("node_hash"))
+    seen_node_hashes: set[int] = set()
+    for node_hash_for_index in node_hashes_for_index:
+        try:
+            node_hash_int = int(node_hash_for_index)
+        except (TypeError, ValueError):
+            continue
+        if node_hash_int in seen_node_hashes:
+            continue
+        seen_node_hashes.add(node_hash_int)
+        index_terms_by_node_for_prefilter.setdefault(node_hash_int, []).append(index_name)
     if ref_hashes:
         for ref_hash in ref_hashes:
             index_terms_by_ref.setdefault(ref_hash, []).append(index_name)

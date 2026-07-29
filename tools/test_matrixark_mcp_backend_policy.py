@@ -20,6 +20,7 @@ try:
     from tools import matrixark_mcp_context_pack as mcp_context_pack
     from tools import matrixark_mcp_ingest_message_records as message_record_builders
     from tools import matrixark_mcp_retrieve_compression_scan as compression_scan
+    from tools import matrixark_mcp_retrieve_index_terms as retrieve_index_terms
     from tools import matrixark_mcp_retrieve_planning as retrieve_planning
     from tools import matrixark_mcp_summary_runtime as mcp_summary_runtime
     from tools.run_matrixark_cpp_rust_scale_report import (
@@ -44,6 +45,7 @@ except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_context_pack as mcp_context_pack
     import matrixark_mcp_ingest_message_records as message_record_builders
     import matrixark_mcp_retrieve_compression_scan as compression_scan
+    import matrixark_mcp_retrieve_index_terms as retrieve_index_terms
     import matrixark_mcp_retrieve_planning as retrieve_planning
     import matrixark_mcp_summary_runtime as mcp_summary_runtime
     from run_matrixark_cpp_rust_scale_report import (
@@ -1675,6 +1677,41 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual([cap, cap + 1], indexes[1].get("ref_hashes"))
         self.assertEqual([0, 1], [record.get("posting_part") for record in indexes])
         self.assertEqual(cap + 2, indexes[0].get("posting_count"))
+
+    def test_context_index_postings_feed_direct_ref_and_node_prefilter(self) -> None:
+        record = {
+            "record_type": "context_index",
+            "index_name": "entity_type:context_management",
+            "data_model": "context_entity",
+            "ref_type": "entity",
+            "ref_hashes": [7101],
+            "node_hashes": [44, "45", 44],
+            "updated_at_ms": 1785289825466,
+        }
+        index_terms_by_batch: dict[object, list[str]] = {}
+        index_terms_by_node: dict[object, list[str]] = {}
+        index_terms_by_ref: dict[object, list[str]] = {}
+        index_terms_by_node_for_prefilter: dict[int, list[str]] = {}
+
+        self.assertTrue(
+            retrieve_index_terms.add_context_index_terms(
+                record,
+                index_terms_by_batch=index_terms_by_batch,
+                index_terms_by_node=index_terms_by_node,
+                index_terms_by_ref=index_terms_by_ref,
+                index_terms_by_node_for_prefilter=index_terms_by_node_for_prefilter,
+            )
+        )
+
+        self.assertEqual(["entity_type:context_management"], index_terms_by_ref[7101])
+        self.assertEqual(
+            {
+                44: ["entity_type:context_management"],
+                45: ["entity_type:context_management"],
+            },
+            index_terms_by_node_for_prefilter,
+        )
+        self.assertEqual({}, index_terms_by_node)
 
     def test_secondary_index_budget_caps_total_operation_terms(self) -> None:
         budget = mcp_core.new_secondary_index_budget(3)

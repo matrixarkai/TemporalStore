@@ -7,6 +7,7 @@ try:
     from tools.matrixark_mcp_core import (
         Json,
         context_index_name,
+        context_index_posting_record,
         embedding_model_name,
         infer_event_type,
         non_default_classification,
@@ -17,6 +18,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         Json,
         context_index_name,
+        context_index_posting_record,
         embedding_model_name,
         infer_event_type,
         non_default_classification,
@@ -227,18 +229,20 @@ def context_event_index_records(
 ) -> list[Json]:
     return [
         {
-            "record_type": "context_index",
-            "index_name": index_name,
-            "capability": "context_event",
-            "ref_type": "event",
-            "ref_hashes": [event_id_hash],
-            "node_hash": node_hash,
-            "scope": scope,
+            **context_index_posting_record(
+                index_name=index_name,
+                data_model="context_event",
+                capability="context_event",
+                ref_type="event",
+                ref_hashes=[event_id_hash],
+                node_hash=node_hash,
+                scope=scope,
+                updated_at_ms=updated_at_ms,
+            ),
             "access_scope": scope,
             "memory_scope": memory_scope,
             "session_continuity": session_continuity,
             "extraction_phase": extraction_phase,
-            "updated_at_ms": updated_at_ms,
         }
         for index_name in index_terms
     ]
