@@ -1948,6 +1948,35 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             self.assertEqual(["hook_boundary"], debug_item["source_hook_types"])
             self.assertNotIn("source_entity_hashes", debug_item)
 
+    def test_pending_async_event_serving_pack_uses_live_memory_layer_without_lineage(self) -> None:
+        context_pack_mod = importlib.import_module("tools.matrixark_mcp_context_pack")
+        selected = [
+            {
+                "ref_type": "event",
+                "text": "user: remember this live hook message",
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+                "event_type": "pending_async",
+                "classification": "PENDING_ASYNC_EXTRACTION",
+                "extraction_phase": "pending_async",
+                "source_roles": ["user"],
+                "source_hook_types": ["before_llm"],
+                "source_codex_events": ["UserPromptSubmit"],
+                "source_role_counts": {"user": 1},
+            }
+        ]
+
+        groups = context_pack_mod.serving_ref_groups_for_pack(selected, include_debug=False)
+        item = groups[0]["items"][0]
+
+        self.assertEqual("pending_async", item["memory_layer"])
+        self.assertEqual("pending_async", item["extraction_phase"])
+        self.assertEqual("session", item["memory_scope"])
+        self.assertNotIn("source_roles", item)
+        self.assertNotIn("source_hook_types", item)
+        self.assertNotIn("source_codex_events", item)
+        self.assertEqual({"pending_async": 1}, context_pack_mod._memory_layer_counts(selected))
+
     def test_shared_pack_builder_exposes_memory_layer_budget_and_pressure(self) -> None:
         builder_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pack_builder")
         metrics_mod = importlib.import_module("tools.matrixark_mcp_retrieve_metrics")
