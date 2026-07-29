@@ -1301,6 +1301,62 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual({"PreviousAssistantBackfill": 1}, annotated["source_codex_event_counts"])
         self.assertEqual(1, annotated["source_final_session_boundary_count"])
 
+    def test_moduleized_summary_scan_admits_final_session_summary(self) -> None:
+        scan_mod = importlib.import_module("tools.matrixark_mcp_retrieve_summary_scan")
+        budget_mod = importlib.import_module("tools.matrixark_mcp_budget_pack")
+        scope = {
+            "tenant_id": "tenant_final_summary",
+            "user_id": "user_final_summary",
+            "session_id": "session_final_summary",
+        }
+        summary = {
+            "record_type": "context_summary",
+            "summary_type": "session_final",
+            "summary_hash": 101,
+            "node_hash": 202,
+            "node_path": [
+                "tenant:tenant_final_summary",
+                "user:user_final_summary",
+                "session:session_final_summary",
+            ],
+            "summary_text": "Session finalized after threshold extraction covering assistant decision evidence.",
+            "scope": scope,
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "extraction_phase": "final",
+            "final_session_boundary": True,
+            "source_extraction_phases": ["provisional"],
+            "updated_at_ms": 1000,
+        }
+
+        matches, dropped, matched, reason = scan_mod.scan_summary_candidates(
+            [summary],
+            retrieval_scope=scope,
+            selected_by_tree=lambda _record: True,
+            index_terms_by_batch={},
+            index_terms_by_node={},
+            index_terms_by_ref={},
+            secondary_index_filter_groups=[],
+            secondary_index_filter_mode="any",
+            admit_candidate_for_node=lambda _record: True,
+            query_terms={"session", "finalized", "assistant"},
+            query_embedding=[0.1, 0.2, 0.3],
+            node_scores={202: {"score": 0.4}},
+            annotate_session_continuity=lambda candidate, _record: candidate,
+            ranking={},
+            reference_time_ms=1000,
+            deadline_exceeded=lambda: False,
+        )
+
+        self.assertEqual("", reason)
+        self.assertEqual(0, dropped)
+        self.assertEqual(1, matched)
+        self.assertEqual(1, len(matches))
+        self.assertEqual("session_final", matches[0]["summary_type"])
+        self.assertEqual("same_session_summary", budget_mod.candidate_memory_layer_name(matches[0]))
+        self.assertEqual("final", matches[0]["extraction_phase"])
+        self.assertTrue(matches[0]["final_session_boundary"])
+
 
     def test_python_and_rust_retrieval_drop_reasons_stay_in_parity(self) -> None:
         python_source = (TOOLS_DIR / "matrixark_mcp_budget_pack.py").read_text(encoding="utf-8")
@@ -2213,6 +2269,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(event_embeddings)
         self.assertTrue(all(record.get("memory_scope") == "session" for record in event_embeddings))
         self.assertTrue(all(record.get("session_continuity") == "same_session" for record in event_embeddings))
+        self.assertTrue(all("extraction_phase" not in record for record in event_embeddings))
+        self.assertTrue(all("final_session_boundary" not in record for record in event_embeddings))
+        self.assertTrue(all("extraction_context_event_ids" not in record for record in event_embeddings))
         summary_records = [
             record
             for record in adapter.records
