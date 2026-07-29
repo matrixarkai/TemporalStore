@@ -1412,27 +1412,43 @@ fn parse_cross_session_policy(
     }
 }
 
-fn parse_source_role_budget_tokens(request: &Value) -> BTreeMap<String, u64> {
+fn parse_budget_tokens(request: &Value, field: &str, lowercase_keys: bool) -> BTreeMap<String, u64> {
     let config = request
-        .get("source_role_budget_tokens")
-        .or_else(|| json_field(request, &["ranking", "source_role_budget_tokens"]));
+        .get(field)
+        .or_else(|| json_field(request, &["ranking", field]));
     let mut budgets = BTreeMap::new();
     let Some(object) = config.and_then(Value::as_object) else {
         return budgets;
     };
-    for (role, value) in object {
-        let role_name = role.trim().to_ascii_lowercase();
-        if role_name.is_empty() {
+    for (key, value) in object {
+        let key_name = if lowercase_keys {
+            key.trim().to_ascii_lowercase()
+        } else {
+            key.trim().to_string()
+        };
+        if key_name.is_empty() {
             continue;
         }
         let Some(tokens) = value.as_u64() else {
             continue;
         };
         if tokens > 0 {
-            budgets.insert(role_name, tokens);
+            budgets.insert(key_name, tokens);
         }
     }
     budgets
+}
+
+fn parse_source_role_budget_tokens(request: &Value) -> BTreeMap<String, u64> {
+    parse_budget_tokens(request, "source_role_budget_tokens", true)
+}
+
+fn parse_memory_selection_policy_budget_tokens(request: &Value) -> BTreeMap<String, u64> {
+    parse_budget_tokens(request, "memory_selection_policy_budget_tokens", false)
+}
+
+fn parse_extraction_phase_budget_tokens(request: &Value) -> BTreeMap<String, u64> {
+    parse_budget_tokens(request, "extraction_phase_budget_tokens", true)
 }
 
 fn source_role_names(value: &Value) -> BTreeSet<String> {
@@ -1457,6 +1473,66 @@ fn source_role_names(value: &Value) -> BTreeSet<String> {
         }
     }
     roles
+}
+
+fn memory_selection_policy_names(value: &Value) -> BTreeSet<String> {
+    let mut policies = BTreeSet::new();
+    for source in [Some(value), value.get("metadata")] {
+        let Some(source) = source else {
+            continue;
+        };
+        if let Some(source_policies) = source
+            .get("source_memory_selection_policies")
+            .and_then(Value::as_array)
+        {
+            for policy in source_policies.iter().filter_map(Value::as_str) {
+                let policy_name = policy.trim();
+                if !policy_name.is_empty() {
+                    policies.insert(policy_name.to_string());
+                }
+            }
+        }
+        if let Some(policy_name) = source
+            .get("memory_selection_policy")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            policies.insert(policy_name.to_string());
+        }
+        if let Some(counts) = source
+            .get("source_memory_selection_policy_counts")
+            .and_then(Value::as_object)
+        {
+            for (policy, count) in counts {
+                if count.as_u64().unwrap_or(0) == 0 {
+                    continue;
+                }
+                let policy_name = policy.trim();
+                if !policy_name.is_empty() {
+                    policies.insert(policy_name.to_string());
+                }
+            }
+        }
+    }
+    policies
+}
+
+fn extraction_phase_name(value: &Value) -> String {
+    for source in [Some(value), value.get("metadata")] {
+        let Some(source) = source else {
+            continue;
+        };
+        if let Some(phase) = source
+            .get("extraction_phase")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return phase.to_ascii_lowercase();
+        }
+    }
+    "unknown".to_string()
 }
 
 fn increment_source_count_bucket(breakdown: &mut Value, field: &str, source_counts: Option<&Value>) {
@@ -3345,11 +3421,26 @@ fn retrieve_context_pack_native(
         &question_type,
     );
     let source_role_budget_tokens = parse_source_role_budget_tokens(&request);
+    let memory_selection_policy_budget_tokens =
+        parse_memory_selection_policy_budget_tokens(&request);
+    let extraction_phase_budget_tokens = parse_extraction_phase_budget_tokens(&request);
     let mut source_role_used_tokens: HashMap<String, u64> = HashMap::new();
     let mut source_role_selected_ref_counts: HashMap<String, u64> = HashMap::new();
     for role in source_role_budget_tokens.keys() {
         source_role_used_tokens.insert(role.clone(), 0);
         source_role_selected_ref_counts.insert(role.clone(), 0);
+    }
+    let mut memory_selection_policy_used_tokens: HashMap<String, u64> = HashMap::new();
+    let mut memory_selection_policy_selected_ref_counts: HashMap<String, u64> = HashMap::new();
+    for policy in memory_selection_policy_budget_tokens.keys() {
+        memory_selection_policy_used_tokens.insert(policy.clone(), 0);
+        memory_selection_policy_selected_ref_counts.insert(policy.clone(), 0);
+    }
+    let mut extraction_phase_used_tokens: HashMap<String, u64> = HashMap::new();
+    let mut extraction_phase_selected_ref_counts: HashMap<String, u64> = HashMap::new();
+    for phase in extraction_phase_budget_tokens.keys() {
+        extraction_phase_used_tokens.insert(phase.clone(), 0);
+        extraction_phase_selected_ref_counts.insert(phase.clone(), 0);
     }
     let mut raw_candidate_class_counts: HashMap<String, u64> = HashMap::new();
     let mut text_candidate_class_counts: HashMap<String, u64> = HashMap::new();
@@ -3448,6 +3539,8 @@ fn retrieve_context_pack_native(
     let mut dropped_cross_session_cap = 0_u64;
     let mut dropped_cross_candidate_cap = 0_u64;
     let mut dropped_source_role_budget = 0_u64;
+    let mut dropped_memory_selection_policy_budget = 0_u64;
+    let mut dropped_extraction_phase_budget = 0_u64;
     let mut dropped_low_score = 0_u64;
     let mut dropped_duplicate_ref = 0_u64;
     let mut dropped_policy_ref = 0_u64;
@@ -3459,6 +3552,9 @@ fn retrieve_context_pack_native(
     let mut cross_low_score_dropped_class_counts: HashMap<String, u64> = HashMap::new();
     let mut cross_cap_dropped_class_counts: HashMap<String, u64> = HashMap::new();
     let mut source_role_budget_dropped_class_counts: HashMap<String, u64> = HashMap::new();
+    let mut memory_selection_policy_budget_dropped_class_counts: HashMap<String, u64> =
+        HashMap::new();
+    let mut extraction_phase_budget_dropped_class_counts: HashMap<String, u64> = HashMap::new();
     let mut selected_class_counts: HashMap<String, u64> = HashMap::new();
     let mut dropped_ref_type_counts: HashMap<String, u64> = HashMap::new();
     let mut dropped_ref_type_token_counts: HashMap<String, u64> = HashMap::new();
@@ -3467,6 +3563,8 @@ fn retrieve_context_pack_native(
     let mut dropped_cross_session_cap_tokens = 0_u64;
     let mut dropped_cross_candidate_cap_tokens = 0_u64;
     let mut dropped_source_role_budget_tokens = 0_u64;
+    let mut dropped_memory_selection_policy_budget_tokens = 0_u64;
+    let mut dropped_extraction_phase_budget_tokens = 0_u64;
     let mut dropped_low_score_tokens = 0_u64;
     let mut dropped_duplicate_ref_tokens = 0_u64;
     let mut dropped_policy_ref_tokens = 0_u64;
@@ -3669,6 +3767,88 @@ fn retrieve_context_pack_native(
             dropped_ref_details.push(detail);
             continue;
         }
+        let candidate_memory_selection_policies = memory_selection_policy_names(&record);
+        let capped_memory_selection_policies: Vec<String> = candidate_memory_selection_policies
+            .iter()
+            .filter(|policy| {
+                memory_selection_policy_budget_tokens
+                    .get(*policy)
+                    .map(|budget| {
+                        memory_selection_policy_used_tokens
+                            .get(*policy)
+                            .copied()
+                            .unwrap_or(0)
+                            + tokens
+                            > *budget
+                    })
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        if !capped_memory_selection_policies.is_empty() {
+            dropped_memory_selection_policy_budget += 1;
+            dropped_memory_selection_policy_budget_tokens += tokens;
+            increment_class_count(
+                &mut memory_selection_policy_budget_dropped_class_counts,
+                &context_class,
+            );
+            increment_class_count(&mut dropped_ref_type_counts, &context_class);
+            increment_class_tokens(&mut dropped_ref_type_token_counts, &context_class, tokens);
+            let mut detail = native_dropped_ref_detail(
+                &record,
+                &text,
+                &context_class,
+                "memory_selection_policy_budget",
+                tokens,
+                None,
+            );
+            if let Some(object) = detail.as_object_mut() {
+                object.insert(
+                    "memory_selection_policy_budget_capped_policies".to_string(),
+                    json!(capped_memory_selection_policies),
+                );
+            }
+            dropped_ref_details.push(detail);
+            continue;
+        }
+        let candidate_extraction_phase = extraction_phase_name(&record);
+        if extraction_phase_budget_tokens
+            .get(&candidate_extraction_phase)
+            .map(|budget| {
+                extraction_phase_used_tokens
+                    .get(&candidate_extraction_phase)
+                    .copied()
+                    .unwrap_or(0)
+                    + tokens
+                    > *budget
+            })
+            .unwrap_or(false)
+        {
+            dropped_extraction_phase_budget += 1;
+            dropped_extraction_phase_budget_tokens += tokens;
+            increment_class_count(
+                &mut extraction_phase_budget_dropped_class_counts,
+                &context_class,
+            );
+            increment_class_count(&mut dropped_ref_type_counts, &context_class);
+            increment_class_tokens(&mut dropped_ref_type_token_counts, &context_class, tokens);
+            let mut detail = native_dropped_ref_detail(
+                &record,
+                &text,
+                &context_class,
+                "extraction_phase_budget",
+                tokens,
+                None,
+            );
+            if let Some(object) = detail.as_object_mut() {
+                object.insert(
+                    "extraction_phase_budget_capped_phase".to_string(),
+                    json!(candidate_extraction_phase),
+                );
+            }
+            dropped_ref_details.push(detail);
+            continue;
+        }
         let ref_signature = format!(
             "{}:{}",
             context_class,
@@ -3702,6 +3882,24 @@ fn retrieve_context_pack_native(
                 *source_role_used_tokens.entry(role.clone()).or_default() += tokens;
                 *source_role_selected_ref_counts.entry(role).or_default() += 1;
             }
+        }
+        for policy in candidate_memory_selection_policies {
+            if memory_selection_policy_budget_tokens.contains_key(&policy) {
+                *memory_selection_policy_used_tokens
+                    .entry(policy.clone())
+                    .or_default() += tokens;
+                *memory_selection_policy_selected_ref_counts
+                    .entry(policy)
+                    .or_default() += 1;
+            }
+        }
+        if extraction_phase_budget_tokens.contains_key(&candidate_extraction_phase) {
+            *extraction_phase_used_tokens
+                .entry(candidate_extraction_phase.clone())
+                .or_default() += tokens;
+            *extraction_phase_selected_ref_counts
+                .entry(candidate_extraction_phase)
+                .or_default() += 1;
         }
         *selected_counts.entry(context_class.clone()).or_default() += 1;
         increment_class_count(&mut selected_class_counts, &context_class);
@@ -3741,7 +3939,9 @@ fn retrieve_context_pack_native(
         "cross_policy_dropped": cross_policy_dropped_class_counts,
         "cross_low_score_dropped": cross_low_score_dropped_class_counts,
         "cross_cap_dropped": cross_cap_dropped_class_counts,
-        "source_role_budget_dropped": source_role_budget_dropped_class_counts
+        "source_role_budget_dropped": source_role_budget_dropped_class_counts,
+        "memory_selection_policy_budget_dropped": memory_selection_policy_budget_dropped_class_counts,
+        "extraction_phase_budget_dropped": extraction_phase_budget_dropped_class_counts
     });
     let memory_layer_budget = selected_ref_layer_budget(&selected);
     let serving_selected_refs = native_serving_refs(&selected);
@@ -3771,6 +3971,24 @@ fn retrieve_context_pack_native(
         "selected_tokens_by_role": hash_u64_map_to_json(&source_role_used_tokens),
         "selected_ref_count_by_role": hash_u64_map_to_json(&source_role_selected_ref_counts)
     });
+    let memory_selection_policy_budget_policy = json!({
+        "enabled": !memory_selection_policy_budget_tokens.is_empty(),
+        "mode": if memory_selection_policy_budget_tokens.is_empty() { "disabled" } else { "bounded_memory_selection_policy_tokens" },
+        "budget_tokens": json_u64_map(&memory_selection_policy_budget_tokens),
+        "selected_tokens_by_policy": hash_u64_map_to_json(&memory_selection_policy_used_tokens),
+        "selected_ref_count_by_policy": hash_u64_map_to_json(&memory_selection_policy_selected_ref_counts),
+        "dropped_ref_count": dropped_memory_selection_policy_budget,
+        "strategy": "bound_lossy_summary_decision_tool_evidence_selection_policies_before_context_pack_injection"
+    });
+    let extraction_phase_budget_policy = json!({
+        "enabled": !extraction_phase_budget_tokens.is_empty(),
+        "mode": if extraction_phase_budget_tokens.is_empty() { "disabled" } else { "bounded_extraction_phase_tokens" },
+        "budget_tokens": json_u64_map(&extraction_phase_budget_tokens),
+        "selected_tokens_by_phase": hash_u64_map_to_json(&extraction_phase_used_tokens),
+        "selected_ref_count_by_phase": hash_u64_map_to_json(&extraction_phase_selected_ref_counts),
+        "dropped_ref_count": dropped_extraction_phase_budget,
+        "strategy": "bound_pending_provisional_and_final_memory_before_context_pack_injection"
+    });
     let dropped_memory_layer_budget = dropped_ref_layer_budget_from_native_counts(
         &[
             ("over_budget", dropped_over_budget, dropped_over_budget_tokens),
@@ -3789,6 +4007,16 @@ fn retrieve_context_pack_native(
                 "source_role_budget",
                 dropped_source_role_budget,
                 dropped_source_role_budget_tokens,
+            ),
+            (
+                "memory_selection_policy_budget",
+                dropped_memory_selection_policy_budget,
+                dropped_memory_selection_policy_budget_tokens,
+            ),
+            (
+                "extraction_phase_budget",
+                dropped_extraction_phase_budget,
+                dropped_extraction_phase_budget_tokens,
             ),
             ("low_score", dropped_low_score, dropped_low_score_tokens),
             ("duplicate_ref", dropped_duplicate_ref, dropped_duplicate_ref_tokens),
@@ -3812,6 +4040,8 @@ fn retrieve_context_pack_native(
         "cross_session_session_cap": dropped_cross_session_cap,
         "cross_session_candidate_cap": dropped_cross_candidate_cap,
         "source_role_budget": dropped_source_role_budget,
+        "memory_selection_policy_budget": dropped_memory_selection_policy_budget,
+        "extraction_phase_budget": dropped_extraction_phase_budget,
         "low_score": dropped_low_score,
         "duplicate_ref": dropped_duplicate_ref,
         "policy_ref": dropped_policy_ref,
@@ -3821,6 +4051,8 @@ fn retrieve_context_pack_native(
             "cross_session_session_cap": dropped_cross_session_cap,
             "cross_session_candidate_cap": dropped_cross_candidate_cap,
             "source_role_budget": dropped_source_role_budget,
+            "memory_selection_policy_budget": dropped_memory_selection_policy_budget,
+            "extraction_phase_budget": dropped_extraction_phase_budget,
             "low_score": dropped_low_score,
             "duplicate_ref": dropped_duplicate_ref,
             "policy_ref": dropped_policy_ref,
@@ -3883,6 +4115,8 @@ fn retrieve_context_pack_native(
             "memory_layer_pressure": serving_memory_layer_pressure,
             "memory_inventory": memory_inventory.clone(),
             "source_role_budget": source_role_budget_policy,
+            "memory_selection_policy_budget_policy": memory_selection_policy_budget_policy,
+            "extraction_phase_budget_policy": extraction_phase_budget_policy,
             "cross_session": {
                 "enabled": cross_policy.enabled,
                 "mode": if cross_policy.enabled { "prefer" } else { "disabled" },
@@ -3943,6 +4177,8 @@ fn retrieve_context_pack_native(
         + dropped_cross_session_cap
         + dropped_cross_candidate_cap
         + dropped_source_role_budget
+        + dropped_memory_selection_policy_budget
+        + dropped_extraction_phase_budget
         + dropped_policy_ref
         + dropped_duplicate_ref
         + scan_dropped_count;
@@ -6512,6 +6748,103 @@ mod tests {
             Some(1)
         );
         env::remove_var("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE");
+
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+    }
+
+
+    #[test]
+    fn matrixark_native_retrieve_enforces_memory_selection_and_extraction_phase_budgets() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        env::remove_var("MATRIXARK_RUST_PROXY_FULL_RETRIEVE_SCAN");
+
+        let storage_prefix = "matrixark:test:native-selection-phase-budget";
+        let mut append = request("matrixark_batch_append_records");
+        append.key = format!("{storage_prefix}:record_count");
+        append.value = "1".to_string();
+        append.entries_compact = vec![CompactHashEntry(
+            format!("{storage_prefix}:records:000000"),
+            "00000000000000000000".to_string(),
+            r#"{"record_bundle":[{"record_type":"context_entity","entity_hash":201,"entity_type":"decision","entity_name":"policy alpha","state":"gpu","memory_scope":"user_profile","session_continuity":"same_session","extraction_phase":"final","source_memory_selection_policies":["selected_tool_evidence_only"],"source_memory_selection_policy_counts":{"selected_tool_evidence_only":1}},{"record_type":"context_entity","entity_hash":202,"entity_type":"decision","entity_name":"policy bravo","state":"gpu","memory_scope":"user_profile","session_continuity":"same_session","extraction_phase":"final","source_memory_selection_policies":["selected_tool_evidence_only"],"source_memory_selection_policy_counts":{"selected_tool_evidence_only":1}},{"record_type":"context_entity","entity_hash":203,"entity_type":"decision","entity_name":"phase alpha","state":"gpu","memory_scope":"user_profile","session_continuity":"same_session","extraction_phase":"provisional","source_memory_selection_policies":["selected_assistant_decision_outcome_only"]},{"record_type":"context_entity","entity_hash":204,"entity_type":"decision","entity_name":"phase bravo","state":"gpu","memory_scope":"user_profile","session_continuity":"same_session","extraction_phase":"provisional","source_memory_selection_policies":["selected_assistant_decision_outcome_only"]}]}"#.to_string(),
+        )];
+
+        let root = record_log_root(&append);
+        let engine = open_engine(&append).expect("engine");
+        execute_record_log_request(&engine, append, root.clone()).expect("append compact bundle");
+
+        let mut retrieve = request("matrixark_retrieve_context_pack_full_scan");
+        retrieve.storage_prefix = storage_prefix.to_string();
+        retrieve.count_key = Some(format!("{storage_prefix}:record_count"));
+        retrieve.record_hash_key = Some(format!("{storage_prefix}:records"));
+        retrieve.record = Some(json!({
+            "query": "gpu",
+            "max_context_tokens": 64,
+            "memory_selection_policy_budget_tokens": {"selected_tool_evidence_only": 1},
+            "extraction_phase_budget_tokens": {"provisional": 1},
+            "ranking": {
+                "max_selected_refs": 4,
+                "min_similarity_score": 0.0
+            }
+        }));
+        let output = execute_record_log_request(&engine, retrieve, root.clone())
+            .expect("native retrieve with selection/phase budgets");
+        let pack = output
+            .extra
+            .get("context_pack")
+            .expect("wrapped context pack from proxy op");
+
+        assert_eq!(
+            pack.pointer("/dropped_refs/memory_selection_policy_budget")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/dropped_refs/extraction_phase_budget")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_selection_policy_budget_policy/budget_tokens/selected_tool_evidence_only")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_selection_policy_budget_policy/selected_tokens_by_policy/selected_tool_evidence_only")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_selection_policy_budget_policy/dropped_ref_count")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/extraction_phase_budget_policy/budget_tokens/provisional")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/extraction_phase_budget_policy/selected_tokens_by_phase/provisional")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/extraction_phase_budget_policy/dropped_ref_count")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_drop_reason/memory_selection_policy_budget/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/dropped_memory_layer_budget/by_drop_reason/extraction_phase_budget/refs")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
 
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
     }
