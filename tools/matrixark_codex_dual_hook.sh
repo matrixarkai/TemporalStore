@@ -25,6 +25,7 @@ CPP_HOOK_STDERR="/dev/null"
 RUST_PUBLISH_STDERR="/dev/null"
 CPP_PUBLISH_STDERR="/dev/null"
 export MATRIXARK_CODEX_HOOK_DIAG_LOG=""
+HOOK_USER_ID="${MATRIXARK_HOOK_USER_ID:-${MATRIXARK_USER_ID:-${MATRIXARK_LOCAL_USER_ID:-${USER:-codex_user}}}}"
 LOCK_KEY="$(printf '%s:%s' "$EVENT" "$PAYLOAD_HASH" | sha256sum | awk '{print $1}')"
 if ! mkdir "$IDEMPOTENCY_DIR/hook-$LOCK_KEY" 2>/dev/null; then
   exit 0
@@ -36,7 +37,7 @@ COMMON_ARGS=(
   --table "${MATRIXARK_TEMPORALSTORE_TABLE:-deploy_table}"
   --account-id "${MATRIXARK_HOOK_ACCOUNT_ID:-acct_local}"
   --tenant-id "${MATRIXARK_HOOK_TENANT_ID:-tenant_codex}"
-  --user-id "${MATRIXARK_HOOK_USER_ID:-deeproute}"
+  --user-id "$HOOK_USER_ID"
   --team "${MATRIXARK_HOOK_TEAM:-codex}"
   --max-context-tokens "${MATRIXARK_HOOK_MAX_CONTEXT_TOKENS:-10000}"
   --request-timeout-ms "${MATRIXARK_HOOK_REQUEST_TIMEOUT_MS:-90000}"

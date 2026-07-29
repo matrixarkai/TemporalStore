@@ -2910,6 +2910,34 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         )
         self.assertEqual(serving_event["node_path"], buffered["node_path"])
 
+    def test_cli_user_id_default_uses_local_profile_identity(self) -> None:
+        old_argv = sys.argv
+        old_user = os.environ.get("MATRIXARK_USER_ID")
+        old_local_user = os.environ.get("MATRIXARK_LOCAL_USER_ID")
+        os.environ.pop("MATRIXARK_USER_ID", None)
+        os.environ["MATRIXARK_LOCAL_USER_ID"] = "codex_cli_profile_user"
+        sys.argv = ["matrixark_codex_hook.py"]
+        try:
+            args = hook.parse_args()
+        finally:
+            sys.argv = old_argv
+            if old_user is None:
+                os.environ.pop("MATRIXARK_USER_ID", None)
+            else:
+                os.environ["MATRIXARK_USER_ID"] = old_user
+            if old_local_user is None:
+                os.environ.pop("MATRIXARK_LOCAL_USER_ID", None)
+            else:
+                os.environ["MATRIXARK_LOCAL_USER_ID"] = old_local_user
+
+        self.assertEqual("codex_cli_profile_user", args.user_id)
+
+    def test_dual_hook_uses_local_user_identity_without_hardcoded_user(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_dual_hook.sh").read_text()
+        self.assertIn("HOOK_USER_ID=", source)
+        self.assertIn("--user-id \"$HOOK_USER_ID\"", source)
+        self.assertNotIn("--user-id \"${MATRIXARK_HOOK_USER_ID:-deeproute}\"", source)
+
 
     def test_fast_async_hook_ingest_marks_tool_evidence_lifecycle(self) -> None:
         class Adapter:
