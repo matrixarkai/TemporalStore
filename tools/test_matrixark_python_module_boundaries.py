@@ -1240,7 +1240,12 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "storage_options": {},
             "storage_route": {},
         }
-        args = {"async_processing": True, "auto_batch_extract": True, "session_buffer_threshold": 2}
+        args = {
+            "async_processing": True,
+            "auto_batch_extract": True,
+            "session_buffer_threshold": 2,
+            "idle_commit_timeout_ms": 50,
+        }
 
         first = async_mod.lightweight_async_accept(target, args, envelope=envelope, hook=None, idle_commit_result={})
         self.assertFalse(first["session_buffer"]["threshold_ready"])
@@ -1259,6 +1264,17 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(first_event["source_hook_type_counts"], first_task["source_hook_type_counts"])
         self.assertEqual(first_event["source_codex_event_counts"], first_task["source_codex_event_counts"])
         self.assertIsNone(first["auto_batch_extract_result"])
+        self.assertEqual(173, first["session_buffer"]["idle_commit_deadline_ms"])
+        self.assertEqual(1, first["session_buffer"]["idle_commit_pending_message_count"])
+        scheduled_task = next(
+            record
+            for record in target.records
+            if record.get("record_type") == "matrixark_async_pipeline_task"
+            and record.get("status") == "idle_commit_scheduled"
+        )
+        self.assertEqual(173, scheduled_task["idle_commit_deadline_ms"])
+        self.assertEqual(1, scheduled_task["idle_commit_pending_event_count"])
+        self.assertEqual(1, scheduled_task["idle_commit_pending_message_count"])
 
         class BufferAdapter:
             def __init__(self) -> None:
