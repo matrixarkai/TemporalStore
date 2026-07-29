@@ -140,11 +140,18 @@ def row(record: dict[str, Any], sequence: int) -> dict[str, Any]:
         "source_hook_type_counts": compact_count_map(record.get("source_hook_type_counts") or metadata.get("source_hook_type_counts")),
         "source_codex_event_counts": compact_count_map(record.get("source_codex_event_counts") or metadata.get("source_codex_event_counts")),
         "profile_promotion_policy": record.get("profile_promotion_policy") or outputs.get("profile_promotion_policy") or "",
+        "profile_promotion_importance_gate": bool_value(
+            record.get("profile_promotion_importance_gate")
+            if "profile_promotion_importance_gate" in record
+            else outputs.get("profile_promotion_importance_gate")
+        ),
         "profile_promotion_scope_available": bool_value(
             record.get("profile_promotion_scope_available")
             if "profile_promotion_scope_available" in record
             else outputs.get("profile_promotion_scope_available")
         ),
+        "profile_promotion_blocker": record.get("profile_promotion_blocker") or outputs.get("profile_promotion_blocker") or "",
+        "profile_promotion_summary_count": len(record.get("profile_promotion_summary") if isinstance(record.get("profile_promotion_summary"), list) else outputs.get("profile_promotion_summary") if isinstance(outputs.get("profile_promotion_summary"), list) else []),
         "entities_written": int_value(record.get("entities_written") or outputs.get("entities")),
         "profile_entities_written": int_value(record.get("profile_entities_written") or outputs.get("profile_entities")),
         "selected_ref_count": int_value(
@@ -258,10 +265,19 @@ def profile_promotion_policy_gaps(serving_records: list[dict[str, Any]]) -> list
         if item.get("profile_promotion_scope_available"):
             if item.get("profile_promotion_policy") != "always_when_profile_scope_available":
                 item_gaps.append("profile_promotion:policy_not_always")
+            if item.get("profile_promotion_importance_gate"):
+                item_gaps.append("profile_promotion:importance_gate_enabled")
+            if item.get("profile_promotion_blocker"):
+                item_gaps.append("profile_promotion:blocker_present_with_scope")
             if profile_entity_count < entity_count:
                 item_gaps.append("profile_promotion:profile_entities_less_than_session_entities")
-        elif profile_entity_count > 0:
-            item_gaps.append("profile_promotion:profile_entities_written_without_scope")
+            if int_value(item.get("profile_promotion_summary_count")) < profile_entity_count:
+                item_gaps.append("profile_promotion:summary_less_than_profile_entities")
+        else:
+            if profile_entity_count > 0:
+                item_gaps.append("profile_promotion:profile_entities_written_without_scope")
+            if item.get("profile_promotion_policy") == "always_when_profile_scope_available" and item.get("profile_promotion_blocker") != "profile_scope_missing":
+                item_gaps.append("profile_promotion:profile_scope_missing_blocker_absent")
         if item_gaps:
             gaps.append(
                 {
@@ -270,7 +286,10 @@ def profile_promotion_policy_gaps(serving_records: list[dict[str, Any]]) -> list
                     "entities_written": entity_count,
                     "profile_entities_written": profile_entity_count,
                     "profile_promotion_policy": item.get("profile_promotion_policy") or "",
+                    "profile_promotion_importance_gate": bool(item.get("profile_promotion_importance_gate")),
                     "profile_promotion_scope_available": bool(item.get("profile_promotion_scope_available")),
+                    "profile_promotion_blocker": item.get("profile_promotion_blocker") or "",
+                    "profile_promotion_summary_count": int_value(item.get("profile_promotion_summary_count")),
                 }
             )
     return gaps

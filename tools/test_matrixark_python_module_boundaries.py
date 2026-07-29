@@ -248,8 +248,10 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                             "entities": 2,
                             "profile_entities": 1,
                             "profile_promotion_policy": "important_enough",
+                            "profile_promotion_importance_gate": True,
                             "profile_promotion_scope_available": True,
                             "profile_promotion_blocker": "",
+                            "profile_promotion_summary": [],
                         },
                     },
                 }
@@ -262,6 +264,37 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn(
             "profile_promotion:profile_entities_less_than_session_entities",
             broken["profile_promotion_policy_gaps"][0]["gaps"],
+        )
+        self.assertIn("profile_promotion:importance_gate_enabled", broken["profile_promotion_policy_gaps"][0]["gaps"])
+        self.assertIn("profile_promotion:summary_less_than_profile_entities", broken["profile_promotion_policy_gaps"][0]["gaps"])
+
+        missing_scope_blocker = report_mod.summarize_backend(
+            "test",
+            "matrixark:test",
+            0,
+            0,
+            [],
+            1,
+            0,
+            [
+                {
+                    "sequence": 11,
+                    "record": {
+                        "record_type": "context_extraction_audit",
+                        "outputs": {
+                            "entities": 1,
+                            "profile_entities": 0,
+                            "profile_promotion_policy": "always_when_profile_scope_available",
+                            "profile_promotion_scope_available": False,
+                            "profile_promotion_blocker": "",
+                        },
+                    },
+                }
+            ],
+        )
+        self.assertIn(
+            "profile_promotion:profile_scope_missing_blocker_absent",
+            missing_scope_blocker["profile_promotion_policy_gaps"][0]["gaps"],
         )
 
         healthy = report_mod.summarize_backend(
@@ -281,7 +314,13 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                             "entities": 2,
                             "profile_entities": 2,
                             "profile_promotion_policy": "always_when_profile_scope_available",
+                            "profile_promotion_importance_gate": False,
                             "profile_promotion_scope_available": True,
+                            "profile_promotion_blocker": "",
+                            "profile_promotion_summary": [
+                                {"profile_entity_hash": 1},
+                                {"profile_entity_hash": 2},
+                            ],
                         },
                     },
                 }
@@ -1245,8 +1284,10 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(1, result["segments_written"])
         self.assertEqual(1, result["profile_entities_written"])
         self.assertEqual("always_when_profile_scope_available", result["profile_promotion_policy"])
+        self.assertFalse(result["profile_promotion_importance_gate"])
         self.assertTrue(result["profile_promotion_scope_available"])
         self.assertEqual("", result["profile_promotion_blocker"])
+        self.assertEqual(1, len(result["profile_promotion_summary"]))
         self.assertGreaterEqual(result["entity_indexes_written"], 14)
         self.assertGreaterEqual(result["indexes_written"], result["entity_indexes_written"] + 1)
         self.assertIn("summary_refresh", result)
@@ -1294,6 +1335,11 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(session_entities[0]["source_codex_event_counts"], profile_entities[0]["source_codex_event_counts"])
         self.assertEqual(["session_mod"], profile_entities[0]["source_session_ids"])
         self.assertEqual([session_entities[0]["entity_hash"]], profile_entities[0]["source_entity_hashes"])
+        self.assertEqual("always_when_profile_scope_available", profile_entities[0]["profile_promotion_policy"])
+        self.assertFalse(profile_entities[0]["profile_promotion_importance_gate"])
+        self.assertEqual("", profile_entities[0]["profile_promotion_blocker"])
+        self.assertEqual(session_entities[0]["entity_hash"], result["profile_promotion_summary"][0]["source_entity_hash"])
+        self.assertEqual(profile_entities[0]["entity_hash"], result["profile_promotion_summary"][0]["profile_entity_hash"])
         self.assertEqual(
             ["tenant:tenant_mod", "user:user_mod", "profile:long_term_memory"],
             profile_entities[0]["node_path"],
