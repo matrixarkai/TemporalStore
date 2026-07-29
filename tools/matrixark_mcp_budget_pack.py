@@ -354,6 +354,7 @@ def select_token_budgeted_refs(
     source_role_budget_tokens: Json | None = None,
     memory_layer_budget_tokens: Json | None = None,
     memory_selection_policy_budget_tokens: Json | None = None,
+    extraction_phase_budget_tokens: Json | None = None,
 ) -> tuple[list[Json], int, Json]:
     duplicate_text_hashes = duplicate_text_hashes or set()
     remote_budget = max(0, max_context_tokens - max(0, reserved_tokens))
@@ -443,6 +444,20 @@ def select_token_budgeted_refs(
     memory_selection_policy_selected_ref_counts: Json = {
         policy: 0 for policy in normalized_memory_selection_policy_budget_tokens
     }
+    extraction_phase_budget_tokens = extraction_phase_budget_tokens if isinstance(extraction_phase_budget_tokens, dict) else {}
+    normalized_extraction_phase_budget_tokens: Json = {}
+    for phase, budget in extraction_phase_budget_tokens.items():
+        phase_name = str(phase or "").strip().lower()
+        if not phase_name:
+            continue
+        try:
+            budget_tokens = max(0, int(budget or 0))
+        except (TypeError, ValueError):
+            budget_tokens = 0
+        if budget_tokens:
+            normalized_extraction_phase_budget_tokens[phase_name] = budget_tokens
+    extraction_phase_used_tokens: Json = {phase: 0 for phase in normalized_extraction_phase_budget_tokens}
+    extraction_phase_selected_ref_counts: Json = {phase: 0 for phase in normalized_extraction_phase_budget_tokens}
     profile_entity_floor_enabled = bool(
         normalized_memory_layer_budget_tokens.get("profile_entity")
         and any(
@@ -549,6 +564,14 @@ def select_token_budgeted_refs(
                 policy_names.add(policy_name)
         return policy_names
 
+    def candidate_extraction_phase_name(candidate: Json) -> str:
+        phase = str(candidate.get("extraction_phase") or "").strip().lower()
+        if not phase and isinstance(candidate.get("metadata"), dict):
+            phase = str(candidate.get("metadata", {}).get("extraction_phase") or "").strip().lower()
+        if not phase and is_pending_async_candidate(candidate):
+            phase = "pending_async"
+        return phase or "unknown"
+
     selected_cross_sessions: set[str] = set()
     def cross_session_key(candidate: Json) -> str:
         for source in [candidate, candidate.get("access_scope", {}), candidate.get("scope", {}), candidate.get("metadata", {}).get("access_scope", {}) if isinstance(candidate.get("metadata"), dict) else {}]:
@@ -575,6 +598,7 @@ def select_token_budgeted_refs(
         "source_role_budget": 0,
         "memory_layer_budget": 0,
         "memory_selection_policy_budget": 0,
+        "extraction_phase_budget": 0,
         "memory_layer_floor": 0,
         "deadline": 0,
         "max_selected_refs": 0,
@@ -594,6 +618,7 @@ def select_token_budgeted_refs(
             "source_role_budget": 0,
             "memory_layer_budget": 0,
             "memory_selection_policy_budget": 0,
+            "extraction_phase_budget": 0,
             "memory_layer_floor": 0,
             "deadline": 0,
             "max_selected_refs": 0,
@@ -614,6 +639,7 @@ def select_token_budgeted_refs(
             "source_role_budget": "candidate exceeded a configured source-role token budget",
             "memory_layer_budget": "candidate exceeded a configured memory-layer token budget",
             "memory_selection_policy_budget": "candidate exceeded a configured memory-selection-policy token budget",
+            "extraction_phase_budget": "candidate exceeded a configured extraction-phase token budget",
             "memory_layer_floor": "candidate was deferred so a required lower-layer entity could be selected first",
             "deadline": "candidate was not packed because the hard retrieval deadline was reached",
             "max_selected_refs": "candidate was relevant but dropped because max_selected_refs was reached",
@@ -847,6 +873,25 @@ def select_token_budgeted_refs(
                 token_estimate=ref_tokens,
             )
             continue
+        candidate_extraction_phase = candidate_extraction_phase_name(candidate)
+        if (
+            candidate_extraction_phase in normalized_extraction_phase_budget_tokens
+            and int(extraction_phase_used_tokens.get(candidate_extraction_phase, 0)) + ref_tokens
+            > int(normalized_extraction_phase_budget_tokens[candidate_extraction_phase])
+        ):
+            dropped["extraction_phase_budget"] += 1
+            dropped["estimated_tokens"]["extraction_phase_budget"] += ref_tokens
+            record_dropped_candidate(
+                dropped,
+                {
+                    **candidate,
+                    "budget_extraction_phase": candidate_extraction_phase,
+                    "extraction_phase_budget_capped_phase": candidate_extraction_phase,
+                },
+                reason="extraction_phase_budget",
+                token_estimate=ref_tokens,
+            )
+            continue
         seen_text_hashes.add(text_hash)
         selected.append(
             {
@@ -858,6 +903,7 @@ def select_token_budgeted_refs(
                 "budget_source_roles": sorted(candidate_source_roles),
                 "budget_source_role_counts": candidate_budget_source_role_counts(candidate, candidate_source_roles),
                 "budget_memory_selection_policies": sorted(candidate_memory_selection_policies),
+                "budget_extraction_phase": candidate_extraction_phase,
             }
         )
         used_tokens += ref_tokens
@@ -886,6 +932,13 @@ def select_token_budgeted_refs(
                 memory_selection_policy_selected_ref_counts[policy] = int(
                     memory_selection_policy_selected_ref_counts.get(policy, 0)
                 ) + 1
+        if candidate_extraction_phase in normalized_extraction_phase_budget_tokens:
+            extraction_phase_used_tokens[candidate_extraction_phase] = (
+                int(extraction_phase_used_tokens.get(candidate_extraction_phase, 0)) + ref_tokens
+            )
+            extraction_phase_selected_ref_counts[candidate_extraction_phase] = (
+                int(extraction_phase_selected_ref_counts.get(candidate_extraction_phase, 0)) + 1
+            )
         if used_tokens >= remote_budget:
             break
     dropped["cross_session_policy"] = {
@@ -920,10 +973,17 @@ def select_token_budgeted_refs(
         "selected_tokens_by_policy": memory_selection_policy_used_tokens,
         "selected_ref_count_by_policy": memory_selection_policy_selected_ref_counts,
     }
+    dropped["extraction_phase_budget_policy"] = {
+        "enabled": bool(normalized_extraction_phase_budget_tokens),
+        "budget_tokens": normalized_extraction_phase_budget_tokens,
+        "selected_tokens_by_phase": extraction_phase_used_tokens,
+        "selected_ref_count_by_phase": extraction_phase_selected_ref_counts,
+    }
     if not selected and candidates and remote_budget > 0 and budget_fill_policy != "quality_first":
         first: Json | None = None
         first_source_roles: set[str] = set()
         first_memory_selection_policies: set[str] = set()
+        first_extraction_phase = ""
         first_memory_layer = ""
         first_clipped_words: list[str] = []
         for candidate in candidates:
@@ -955,9 +1015,17 @@ def select_token_budgeted_refs(
                 for policy in candidate_memory_selection_policies
             ):
                 continue
+            candidate_extraction_phase = candidate_extraction_phase_name(candidate)
+            if (
+                candidate_extraction_phase in normalized_extraction_phase_budget_tokens
+                and int(extraction_phase_used_tokens.get(candidate_extraction_phase, 0)) + fallback_tokens
+                > int(normalized_extraction_phase_budget_tokens[candidate_extraction_phase])
+            ):
+                continue
             first = candidate
             first_source_roles = candidate_source_roles
             first_memory_selection_policies = candidate_memory_selection_policies
+            first_extraction_phase = candidate_extraction_phase
             first_memory_layer = candidate_memory_layer
             first_clipped_words = clipped_words_for_candidate
             break
@@ -973,6 +1041,7 @@ def select_token_budgeted_refs(
                 "budget_source_roles": sorted(first_source_roles),
                 "budget_source_role_counts": candidate_budget_source_role_counts(first, first_source_roles),
                 "budget_memory_selection_policies": sorted(first_memory_selection_policies),
+                "budget_extraction_phase": first_extraction_phase,
             }
         ]
         used_tokens = len(clipped_words)
@@ -989,11 +1058,24 @@ def select_token_budgeted_refs(
                 memory_selection_policy_selected_ref_counts[policy] = int(
                     memory_selection_policy_selected_ref_counts.get(policy, 0)
                 ) + 1
+        if first_extraction_phase in normalized_extraction_phase_budget_tokens:
+            extraction_phase_used_tokens[first_extraction_phase] = (
+                int(extraction_phase_used_tokens.get(first_extraction_phase, 0)) + used_tokens
+            )
+            extraction_phase_selected_ref_counts[first_extraction_phase] = (
+                int(extraction_phase_selected_ref_counts.get(first_extraction_phase, 0)) + 1
+            )
         dropped["memory_selection_policy_budget_policy"] = {
             "enabled": bool(normalized_memory_selection_policy_budget_tokens),
             "budget_tokens": normalized_memory_selection_policy_budget_tokens,
             "selected_tokens_by_policy": memory_selection_policy_used_tokens,
             "selected_ref_count_by_policy": memory_selection_policy_selected_ref_counts,
+        }
+        dropped["extraction_phase_budget_policy"] = {
+            "enabled": bool(normalized_extraction_phase_budget_tokens),
+            "budget_tokens": normalized_extraction_phase_budget_tokens,
+            "selected_tokens_by_phase": extraction_phase_used_tokens,
+            "selected_ref_count_by_phase": extraction_phase_selected_ref_counts,
         }
         dropped["over_budget"] = max(0, len(candidates) - 1)
         for candidate in candidates[1:]:

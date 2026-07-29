@@ -4334,6 +4334,58 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(1, dropped["memory_layer_budget_policy"]["selected_ref_count_by_layer"]["pending_async_event"])
         self.assertEqual(1, dropped["memory_layer_budget_policy"]["selected_ref_count_by_layer"]["same_session_event"])
 
+    def test_budget_packer_enforces_extraction_phase_caps(self) -> None:
+        selected, used_tokens, dropped = mcp_budget_pack.select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "event",
+                    "ref_hash": 8121,
+                    "text": "provisional idle extraction captures a live preference",
+                    "score": 0.95,
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "extraction_phase": "provisional",
+                },
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 8122,
+                    "text": "another provisional extraction should be capped",
+                    "score": 0.94,
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "extraction_phase": "provisional",
+                },
+                {
+                    "ref_type": "summary",
+                    "ref_hash": 8123,
+                    "text": "final Stop boundary summary remains selectable",
+                    "score": 0.93,
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "extraction_phase": "final",
+                    "final_session_boundary": True,
+                },
+            ],
+            [],
+            max_context_tokens=120,
+            auxiliary_quota=0,
+            min_score=0.0,
+            extraction_phase_budget_tokens={"provisional": 7, "final": 20},
+        )
+
+        self.assertEqual(2, len(selected))
+        self.assertEqual(1, sum(1 for ref in selected if ref.get("extraction_phase") == "provisional"))
+        self.assertIn(8123, [ref["ref_hash"] for ref in selected])
+        self.assertGreater(used_tokens, 0)
+        self.assertEqual(1, dropped["extraction_phase_budget"])
+        self.assertGreater(dropped["estimated_tokens"]["extraction_phase_budget"], 0)
+        self.assertEqual(
+            {"provisional": 7, "final": 20},
+            dropped["extraction_phase_budget_policy"]["budget_tokens"],
+        )
+        self.assertEqual(1, dropped["extraction_phase_budget_policy"]["selected_ref_count_by_phase"]["provisional"])
+        self.assertEqual(1, dropped["extraction_phase_budget_policy"]["selected_ref_count_by_phase"]["final"])
+
     def test_budget_packer_enforces_source_role_caps(self) -> None:
         selected, used_tokens, dropped = mcp_budget_pack.select_token_budgeted_refs(
             [

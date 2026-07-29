@@ -991,6 +991,17 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 "selected_tokens_by_policy": {"selected_assistant_decision_outcome_only": 18},
                 "selected_ref_count_by_policy": {"selected_assistant_decision_outcome_only": 1},
             },
+            "extraction_phase_budget_policy": {
+                "enabled": True,
+                "mode": "explicit",
+                "remote_budget_tokens": 100,
+                "budget_semantics": "independent_per_extraction_phase_caps_under_global_remote_budget",
+                "independent_caps": True,
+                "global_remote_budget_enforced": True,
+                "budget_tokens": {"pending_async": 16, "provisional": 24, "final": 60},
+                "selected_tokens_by_phase": {"pending_async": 8, "final": 22},
+                "selected_ref_count_by_phase": {"pending_async": 1, "final": 1},
+            },
         }
 
         contract = hook.retrieval_memory_hierarchy_contract_from_retrieve({"recall_policy": recall_policy})
@@ -1032,8 +1043,20 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             {"selected_assistant_decision_outcome_only": 1},
             contract["memory_selection_policy_selected_ref_count_by_policy"],
         )
+        self.assertTrue(contract["extraction_phase_budget_enabled"])
+        self.assertEqual("explicit", contract["extraction_phase_budget_mode"])
+        self.assertEqual(
+            "independent_per_extraction_phase_caps_under_global_remote_budget",
+            contract["extraction_phase_budget_semantics"],
+        )
+        self.assertTrue(contract["extraction_phase_independent_caps"])
+        self.assertTrue(contract["extraction_phase_global_remote_budget_enforced"])
+        self.assertEqual({"pending_async": 16, "provisional": 24, "final": 60}, contract["extraction_phase_budget_tokens"])
+        self.assertEqual({"pending_async": 8, "final": 22}, contract["extraction_phase_selected_tokens_by_phase"])
+        self.assertEqual({"pending_async": 1, "final": 1}, contract["extraction_phase_selected_ref_count_by_phase"])
         self.assertIn("memory_layer_budget_gate", contract["selected_ref_flow"])
         self.assertIn("memory_selection_policy_budget_gate", contract["selected_ref_flow"])
+        self.assertIn("extraction_phase_budget_gate", contract["selected_ref_flow"])
 
     def test_codex_retrieve_ranking_options_enable_all_auto_memory_budgets(self) -> None:
         ranking = hook.codex_retrieve_ranking_options()
