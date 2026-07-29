@@ -41,6 +41,14 @@ def _event_source_count_summary(envelope: Json, hook: Json | None) -> Json:
     role_counts: Json = {}
     hook_type_counts: Json = {}
     codex_event_counts: Json = {}
+    selection_policy_counts: Json = {}
+    selection_lossy_count = 0
+    selection_complete_count = 0
+    selection_dropped_text_chars = 0
+    selection_dropped_line_count = 0
+    selection_retained_text_ratio_sum = 0.0
+    selection_retained_line_ratio_sum = 0.0
+    selection_ratio_count = 0
 
     def add_count(bucket: Json, key: object, amount: object = 1, *, normalize_role_value: bool = False) -> None:
         name = normalize_message_role(key) if normalize_role_value else str(key or "").strip()
@@ -91,7 +99,61 @@ def _event_source_count_summary(envelope: Json, hook: Json | None) -> Json:
         add_values(codex_event_counts, hook.get("codex_event"))
         add_values(codex_event_counts, hook.get("trigger"))
 
-    return {
+    metadata_selection_counts = (
+        metadata.get("source_memory_selection_policy_counts")
+        if isinstance(metadata.get("source_memory_selection_policy_counts"), dict)
+        else {}
+    )
+    if metadata_selection_counts:
+        for policy, count in metadata_selection_counts.items():
+            add_count(selection_policy_counts, policy, count)
+    else:
+        add_values(selection_policy_counts, metadata.get("source_memory_selection_policies"))
+        selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
+        add_count(selection_policy_counts, selection.get("policy"))
+    selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
+    if selection:
+        selection_lossy_count += 1 if bool(selection.get("selection_lossy")) else 0
+        selection_complete_count += 0 if bool(selection.get("selection_lossy")) else 1
+        try:
+            selection_dropped_text_chars += max(0, int(selection.get("dropped_text_chars") or 0))
+        except (TypeError, ValueError):
+            pass
+        try:
+            selection_dropped_line_count += max(0, int(selection.get("dropped_line_count") or 0))
+        except (TypeError, ValueError):
+            pass
+        text_ratio: float | None = None
+        try:
+            text_ratio = float(selection.get("retained_text_ratio"))
+            selection_retained_text_ratio_sum += text_ratio
+            selection_ratio_count += 1
+        except (TypeError, ValueError):
+            pass
+        try:
+            selection_retained_line_ratio_sum += float(selection.get("retained_line_ratio"))
+        except (TypeError, ValueError):
+            if text_ratio is not None:
+                selection_retained_line_ratio_sum += text_ratio
+    for field in [
+        "source_memory_selection_lossy_count",
+        "source_memory_selection_complete_count",
+        "source_memory_selection_dropped_text_chars",
+        "source_memory_selection_dropped_line_count",
+    ]:
+        try:
+            value = max(0, int(metadata.get(field) or 0))
+        except (TypeError, ValueError):
+            value = 0
+        if field == "source_memory_selection_lossy_count":
+            selection_lossy_count += value
+        elif field == "source_memory_selection_complete_count":
+            selection_complete_count += value
+        elif field == "source_memory_selection_dropped_text_chars":
+            selection_dropped_text_chars += value
+        elif field == "source_memory_selection_dropped_line_count":
+            selection_dropped_line_count += value
+    result = {
         "source_roles": sorted(role_counts),
         "source_role_counts": dict(sorted(role_counts.items())),
         "source_hook_types": sorted(hook_type_counts),
@@ -99,6 +161,27 @@ def _event_source_count_summary(envelope: Json, hook: Json | None) -> Json:
         "source_codex_events": sorted(codex_event_counts),
         "source_codex_event_counts": dict(sorted(codex_event_counts.items())),
     }
+    if selection_policy_counts:
+        result["source_memory_selection_policies"] = sorted(selection_policy_counts)
+        result["source_memory_selection_policy_counts"] = dict(sorted(selection_policy_counts.items()))
+    if selection_lossy_count:
+        result["source_memory_selection_lossy_count"] = selection_lossy_count
+    if selection_complete_count:
+        result["source_memory_selection_complete_count"] = selection_complete_count
+    if selection_dropped_text_chars:
+        result["source_memory_selection_dropped_text_chars"] = selection_dropped_text_chars
+    if selection_dropped_line_count:
+        result["source_memory_selection_dropped_line_count"] = selection_dropped_line_count
+    if selection_ratio_count:
+        result["source_memory_selection_retained_text_ratio_avg"] = round(
+            selection_retained_text_ratio_sum / selection_ratio_count,
+            6,
+        )
+        result["source_memory_selection_retained_line_ratio_avg"] = round(
+            selection_retained_line_ratio_sum / selection_ratio_count,
+            6,
+        )
+    return result
 
 
 def append_session_buffer_event(
@@ -168,6 +251,14 @@ def _pending_source_count_summary(records: list[Json]) -> Json:
     role_counts: Json = {}
     hook_type_counts: Json = {}
     codex_event_counts: Json = {}
+    selection_policy_counts: Json = {}
+    selection_lossy_count = 0
+    selection_complete_count = 0
+    selection_dropped_text_chars = 0
+    selection_dropped_line_count = 0
+    selection_retained_text_ratio_sum = 0.0
+    selection_retained_line_ratio_sum = 0.0
+    selection_ratio_count = 0
 
     def add_count(bucket: Json, key: object, amount: object = 1, *, normalize_role: bool = False) -> None:
         name = normalize_message_role(key) if normalize_role else str(key or "").strip()
@@ -186,6 +277,18 @@ def _pending_source_count_summary(records: list[Json]) -> Json:
                 add_count(bucket, value)
         else:
             add_count(bucket, values)
+
+    def add_int(value: object) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def add_ratio(value: object) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     for record in records:
         event_envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else {}
@@ -219,12 +322,103 @@ def _pending_source_count_summary(records: list[Json]) -> Json:
             add_values(codex_event_counts, event_metadata.get("source_codex_events"))
             add_values(codex_event_counts, event_hook.get("codex_event"))
             add_values(codex_event_counts, event_hook.get("trigger"))
+        existing_selection_counts = (
+            record.get("source_memory_selection_policy_counts")
+            if isinstance(record.get("source_memory_selection_policy_counts"), dict)
+            else {}
+        )
+        metadata_selection_counts = (
+            event_metadata.get("source_memory_selection_policy_counts")
+            if isinstance(event_metadata.get("source_memory_selection_policy_counts"), dict)
+            else {}
+        )
+        if existing_selection_counts or metadata_selection_counts:
+            for counts in [metadata_selection_counts, existing_selection_counts]:
+                for policy, count in counts.items():
+                    amount = add_int(count)
+                    if amount:
+                        selection_policy_counts[str(policy)] = int(selection_policy_counts.get(str(policy), 0)) + amount
+        else:
+            add_values(selection_policy_counts, record.get("source_memory_selection_policies"))
+            add_values(selection_policy_counts, event_metadata.get("source_memory_selection_policies"))
+            selection = (
+                record.get("codex_memory_selection")
+                if isinstance(record.get("codex_memory_selection"), dict)
+                else event_envelope.get("codex_memory_selection")
+                if isinstance(event_envelope.get("codex_memory_selection"), dict)
+                else event_metadata.get("codex_memory_selection")
+                if isinstance(event_metadata.get("codex_memory_selection"), dict)
+                else {}
+            )
+            add_count(selection_policy_counts, selection.get("policy"))
+        selection_lossy_count += add_int(record.get("source_memory_selection_lossy_count"))
+        selection_lossy_count += add_int(event_metadata.get("source_memory_selection_lossy_count"))
+        selection_complete_count += add_int(record.get("source_memory_selection_complete_count"))
+        selection_complete_count += add_int(event_metadata.get("source_memory_selection_complete_count"))
+        selection_dropped_text_chars += add_int(record.get("source_memory_selection_dropped_text_chars"))
+        selection_dropped_text_chars += add_int(event_metadata.get("source_memory_selection_dropped_text_chars"))
+        selection_dropped_line_count += add_int(record.get("source_memory_selection_dropped_line_count"))
+        selection_dropped_line_count += add_int(event_metadata.get("source_memory_selection_dropped_line_count"))
+        selection = (
+            record.get("codex_memory_selection")
+            if isinstance(record.get("codex_memory_selection"), dict)
+            else event_envelope.get("codex_memory_selection")
+            if isinstance(event_envelope.get("codex_memory_selection"), dict)
+            else event_metadata.get("codex_memory_selection")
+            if isinstance(event_metadata.get("codex_memory_selection"), dict)
+            else {}
+        )
+        if selection:
+            if "source_memory_selection_lossy_count" not in record and "source_memory_selection_lossy_count" not in event_metadata:
+                selection_lossy_count += 1 if bool(selection.get("selection_lossy")) else 0
+            if "source_memory_selection_complete_count" not in record and "source_memory_selection_complete_count" not in event_metadata:
+                selection_complete_count += 0 if bool(selection.get("selection_lossy")) else 1
+            selection_dropped_text_chars += add_int(selection.get("dropped_text_chars"))
+            selection_dropped_line_count += add_int(selection.get("dropped_line_count"))
+            text_ratio = add_ratio(selection.get("retained_text_ratio"))
+            line_ratio = add_ratio(selection.get("retained_line_ratio"))
+            if text_ratio is not None:
+                selection_retained_text_ratio_sum += text_ratio
+                selection_retained_line_ratio_sum += line_ratio if line_ratio is not None else text_ratio
+                selection_ratio_count += 1
+        else:
+            text_ratio = add_ratio(record.get("source_memory_selection_retained_text_ratio_avg"))
+            if text_ratio is None:
+                text_ratio = add_ratio(event_metadata.get("source_memory_selection_retained_text_ratio_avg"))
+            line_ratio = add_ratio(record.get("source_memory_selection_retained_line_ratio_avg"))
+            if line_ratio is None:
+                line_ratio = add_ratio(event_metadata.get("source_memory_selection_retained_line_ratio_avg"))
+            if text_ratio is not None:
+                selection_retained_text_ratio_sum += text_ratio
+                selection_retained_line_ratio_sum += line_ratio if line_ratio is not None else text_ratio
+                selection_ratio_count += 1
 
-    return {
+    result = {
         "source_role_counts": dict(sorted(role_counts.items())),
         "source_hook_type_counts": dict(sorted(hook_type_counts.items())),
         "source_codex_event_counts": dict(sorted(codex_event_counts.items())),
     }
+    if selection_policy_counts:
+        result["source_memory_selection_policies"] = sorted(selection_policy_counts)
+        result["source_memory_selection_policy_counts"] = dict(sorted(selection_policy_counts.items()))
+    if selection_lossy_count:
+        result["source_memory_selection_lossy_count"] = selection_lossy_count
+    if selection_complete_count:
+        result["source_memory_selection_complete_count"] = selection_complete_count
+    if selection_dropped_text_chars:
+        result["source_memory_selection_dropped_text_chars"] = selection_dropped_text_chars
+    if selection_dropped_line_count:
+        result["source_memory_selection_dropped_line_count"] = selection_dropped_line_count
+    if selection_ratio_count:
+        result["source_memory_selection_retained_text_ratio_avg"] = round(
+            selection_retained_text_ratio_sum / selection_ratio_count,
+            6,
+        )
+        result["source_memory_selection_retained_line_ratio_avg"] = round(
+            selection_retained_line_ratio_sum / selection_ratio_count,
+            6,
+        )
+    return result
 
 
 def session_event_message_count(records: list[Json]) -> int:
@@ -262,8 +456,14 @@ def append_session_commit_task_progress(
     final_session_boundary: bool,
     memory_layers_written: Json,
     updated_at_ms: int,
+    source_memory_selection_policies: list[str] | None = None,
+    source_memory_selection_policy_counts: Json | None = None,
+    source_memory_selection_retention: Json | None = None,
 ) -> None:
     records: list[Json] = []
+    source_memory_selection_policies = source_memory_selection_policies or []
+    source_memory_selection_policy_counts = source_memory_selection_policy_counts or {}
+    source_memory_selection_retention = source_memory_selection_retention or {}
     for event_id in source_event_ids:
         records.append(
             {
@@ -287,6 +487,9 @@ def append_session_commit_task_progress(
                 "source_hook_type_counts": source_hook_type_counts,
                 "source_codex_events": source_codex_events,
                 "source_codex_event_counts": source_codex_event_counts,
+                "source_memory_selection_policies": source_memory_selection_policies,
+                "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                **source_memory_selection_retention,
                 "summary_refresh_status": memory_layers_written.get("summary_refresh_status"),
                 "summary_dirty_nodes": memory_layers_written.get("summary_dirty_nodes", 0),
                 "memory_layers_written": memory_layers_written,
@@ -458,6 +661,20 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
     source_role_counts = source_counts["source_role_counts"]
     source_hook_type_counts = source_counts["source_hook_type_counts"]
     source_codex_event_counts = source_counts["source_codex_event_counts"]
+    source_memory_selection_policies = source_counts.get("source_memory_selection_policies", [])
+    source_memory_selection_policy_counts = source_counts.get("source_memory_selection_policy_counts", {})
+    source_memory_selection_retention: Json = {
+        key: source_counts.get(key)
+        for key in [
+            "source_memory_selection_lossy_count",
+            "source_memory_selection_complete_count",
+            "source_memory_selection_dropped_text_chars",
+            "source_memory_selection_dropped_line_count",
+            "source_memory_selection_retained_text_ratio_avg",
+            "source_memory_selection_retained_line_ratio_avg",
+        ]
+        if source_counts.get(key) not in (None, "", [], {})
+    }
     if source_roles:
         metadata = {**metadata, "source_roles": source_roles, "source_role_counts": source_role_counts}
     if pending_source_hook_types:
@@ -468,6 +685,13 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         metadata = {**metadata, "source_codex_events": source_codex_events, "source_codex_event_counts": source_codex_event_counts}
         if "codex_event" not in metadata and len(pending_source_codex_events) == 1:
             metadata["codex_event"] = next(iter(pending_source_codex_events))
+    if source_memory_selection_policies:
+        metadata = {
+            **metadata,
+            "source_memory_selection_policies": source_memory_selection_policies,
+            "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            **source_memory_selection_retention,
+        }
     storage_options = normalize_storage_options(args, metadata)
     if "node_path" not in metadata:
         metadata = {**metadata, "node_path": adapter.default_session_node_path(scope)}
@@ -505,6 +729,10 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         source_hook_types=source_hook_types,
         source_codex_events=source_codex_events,
     )
+    if source_memory_selection_policies:
+        memory_layers_written["source_memory_selection_policies"] = source_memory_selection_policies
+        memory_layers_written["source_memory_selection_policy_counts"] = source_memory_selection_policy_counts
+        memory_layers_written.update(source_memory_selection_retention)
     committed_at_ms = now_ms()
     adapter.append(
         {
@@ -532,6 +760,9 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "source_hook_type_counts": source_hook_type_counts,
             "source_codex_events": source_codex_events,
             "source_codex_event_counts": source_codex_event_counts,
+            "source_memory_selection_policies": source_memory_selection_policies,
+            "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            **source_memory_selection_retention,
             "idle_timeout_ms": idle_timeout_ms,
             "idle_elapsed_ms": idle_elapsed_ms,
             "trigger_evidence": trigger_evidence,
@@ -551,6 +782,9 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         source_hook_type_counts=source_hook_type_counts,
         source_codex_events=source_codex_events,
         source_codex_event_counts=source_codex_event_counts,
+        source_memory_selection_policies=source_memory_selection_policies,
+        source_memory_selection_policy_counts=source_memory_selection_policy_counts,
+        source_memory_selection_retention=source_memory_selection_retention,
         commit_id_hash=commit_id_hash,
         batch_id_hash=batch_result.get("batch_id_hash"),
         scope=scope,
@@ -578,6 +812,9 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         "source_hook_type_counts": source_hook_type_counts,
         "source_codex_events": source_codex_events,
         "source_codex_event_counts": source_codex_event_counts,
+        "source_memory_selection_policies": source_memory_selection_policies,
+        "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+        **source_memory_selection_retention,
         "commit_reason": commit_reason,
         "trigger_policy": trigger_policy,
         "extraction_phase": extraction_phase,
