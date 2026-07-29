@@ -10,6 +10,7 @@ try:
         Json,
         budget_control_policy_summary,
         candidate_access_scope,
+        candidate_memory_layer_name,
         clip_context_text,
         compact_context_pack_audit_record,
         compact_context_pack_for_serving,
@@ -35,6 +36,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         Json,
         budget_control_policy_summary,
         candidate_access_scope,
+        candidate_memory_layer_name,
         clip_context_text,
         compact_context_pack_audit_record,
         compact_context_pack_for_serving,
@@ -71,6 +73,56 @@ try:
     from tools.matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness
+
+
+def _ref_list_value(item: Json, field: str) -> list[Any]:
+    value = item.get(field)
+    if isinstance(value, list):
+        return value
+    metadata = item.get("metadata")
+    if isinstance(metadata, dict):
+        value = metadata.get(field)
+    return value if isinstance(value, list) else []
+
+
+def _suppress_extracted_represented_pending_events(selected: list[Json]) -> tuple[list[Json], int, int]:
+    extracted_event_ids: set[int] = set()
+    for item in selected:
+        if candidate_memory_layer_name(item) == "pending_async_event":
+            continue
+        for field in ["source_event_ids", "extraction_context_event_ids", "source_ref_hashes"]:
+            for value in _ref_list_value(item, field):
+                try:
+                    event_id = int(value or 0)
+                except (TypeError, ValueError):
+                    event_id = 0
+                if event_id:
+                    extracted_event_ids.add(event_id)
+    if not extracted_event_ids:
+        return selected, 0, 0
+
+    retained: list[Json] = []
+    removed_tokens = 0
+    removed_count = 0
+    for item in selected:
+        try:
+            metadata = item.get("metadata")
+            metadata_ref_hash = metadata.get("ref_hash") if isinstance(metadata, dict) else 0
+            pending_event_id = int(item.get("ref_hash") or metadata_ref_hash or 0)
+        except (TypeError, ValueError):
+            pending_event_id = 0
+        if (
+            candidate_memory_layer_name(item) == "pending_async_event"
+            and pending_event_id
+            and pending_event_id in extracted_event_ids
+        ):
+            removed_count += 1
+            removed_tokens += int(item.get("token_estimate") or max(1, token_count(str(item.get("text") or ""))))
+            continue
+        retained.append(item)
+    if removed_count and retained:
+        return retained, removed_tokens, removed_count
+    return selected, 0, 0
 
 
 def deadline_fallback_pack(
@@ -145,6 +197,8 @@ def deadline_fallback_pack(
             "memory_scope",
             "session_continuity",
             "extraction_phase",
+            "event_type",
+            "classification",
             "entity_type",
             "entity_name",
             "summary_type",
@@ -168,7 +222,9 @@ def deadline_fallback_pack(
             "source_extraction_phases",
             "source_memory_selection_policies",
             "source_session_ids",
+            "source_event_ids",
             "source_entity_hashes",
+            "extraction_context_event_ids",
         ]:
             value = record.get(field, metadata.get(field))
             if isinstance(value, list) and value:
@@ -198,6 +254,9 @@ def deadline_fallback_pack(
         used_context_tokens += item_tokens
         if len(selected) >= 8:
             break
+    selected, removed_pending_tokens, removed_pending_count = _suppress_extracted_represented_pending_events(selected)
+    if removed_pending_tokens:
+        used_context_tokens = max(0, used_context_tokens - removed_pending_tokens)
     context_pack_id = str(stable_hash(f"deadline:{query}:{selected}:{now_ms()}"))
     serving_selected = compact_context_pack_refs(selected, include_debug=False)
     memory_layer_budget = selected_ref_layer_budget(selected)
@@ -251,6 +310,8 @@ def deadline_fallback_pack(
         f"retrieval_deadline_exceeded:{reason}",
         *async_pipeline_readiness.get("freshness_warnings", []),
     ]
+    if removed_pending_count:
+        quality_warnings.append(f"pending_async_event_superseded_by_extracted_refs:{removed_pending_count}")
     pack = {
         "context_pack_id": context_pack_id,
         "context_sources_order": ["local_context", "matrixark_remote_context"],

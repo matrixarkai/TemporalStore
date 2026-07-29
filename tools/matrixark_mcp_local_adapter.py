@@ -7384,6 +7384,8 @@ class MatrixArkLocalAdapter:
                 "memory_scope",
                 "session_continuity",
                 "extraction_phase",
+                "event_type",
+                "classification",
                 "entity_type",
                 "entity_name",
                 "summary_type",
@@ -7411,7 +7413,9 @@ class MatrixArkLocalAdapter:
                 "source_memory_selection_policies",
                 "source_memory_selection_policy_counts",
                 "source_session_ids",
+                "source_event_ids",
                 "source_entity_hashes",
+                "extraction_context_event_ids",
             ]:
                 value = record.get(field, metadata.get(field))
                 if isinstance(value, list) and value:
@@ -7426,6 +7430,11 @@ class MatrixArkLocalAdapter:
             used_context_tokens += item_tokens
             if len(selected) >= 8:
                 break
+        fallback_dropped_over_budget: Json = {}
+        selected, removed_pending_tokens = suppress_extracted_represented_pending_events(selected, fallback_dropped_over_budget)
+        removed_pending_count = int(fallback_dropped_over_budget.get("pending_async_event_superseded_by_extracted_refs") or 0)
+        if removed_pending_tokens:
+            used_context_tokens = max(0, used_context_tokens - removed_pending_tokens)
         context_pack_id = str(stable_hash(f"deadline:{query}:{selected}:{now_ms()}"))
         serving_selected = compact_context_pack_refs(selected, include_debug=False)
         memory_layer_budget = selected_ref_layer_budget(selected)
@@ -7470,6 +7479,8 @@ class MatrixArkLocalAdapter:
             f"retrieval_deadline_exceeded:{reason}",
             *async_pipeline_readiness.get("freshness_warnings", []),
         ]
+        if removed_pending_count:
+            quality_warnings.append(f"pending_async_event_superseded_by_extracted_refs:{removed_pending_count}")
         pack = {
             "context_pack_id": context_pack_id,
             "context_sources_order": ["local_context", "matrixark_remote_context"],
