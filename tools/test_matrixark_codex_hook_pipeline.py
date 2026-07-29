@@ -262,6 +262,55 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             for child in value:
                 self.assert_no_default_context_pack_debug_lineage(child)
 
+    def test_hook_layer_summary_surfaces_memory_selection_policy_budget(self) -> None:
+        pack = {
+            "context_pack_id": "pack-selection-budget",
+            "selected_refs": [
+                {
+                    "ref_type": "entity",
+                    "entity_type": "assistant_decision",
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "text": "assistant_decision: use threshold and idle extraction",
+                }
+            ],
+            "retrieval_metrics": {
+                "memory_layer_budget": {
+                    "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 8}},
+                    "by_memory_selection_policy": {
+                        "selected_assistant_decision_outcome_only": {"refs": 1, "tokens": 8}
+                    },
+                }
+            },
+            "recall_policy": {
+                "memory_selection_policy_budget_policy": {
+                    "enabled": True,
+                    "mode": "auto",
+                    "remote_budget_tokens": 100,
+                    "budget_tokens": {
+                        "selected_user_prompt": 40,
+                        "selected_assistant_decision_outcome_only": 45,
+                        "selected_tool_evidence_only": 30,
+                    },
+                    "selected_tokens_by_policy": {"selected_assistant_decision_outcome_only": 8},
+                    "selected_ref_count_by_policy": {"selected_assistant_decision_outcome_only": 1},
+                }
+            },
+        }
+
+        summary = matrixark_codex_hook.retrieval_layer_summary_from_retrieve(pack)
+        selection_budget = summary["memory_selection_policy_budget"]
+        self.assertTrue(selection_budget["enabled"])
+        self.assertEqual("auto", selection_budget["mode"])
+        self.assertEqual(100, selection_budget["remote_budget_tokens"])
+        self.assertEqual(45, selection_budget["budget_tokens"]["selected_assistant_decision_outcome_only"])
+        self.assertEqual(1, selection_budget["selected_ref_count_by_policy"]["selected_assistant_decision_outcome_only"])
+        self.assertNotIn("by_memory_selection_policy", summary["memory_layer_budget"])
+        rendered = matrixark_codex_hook._format_retrieval_layer_summary(summary)
+        self.assertIn("memory_selection_policy_budget", rendered)
+        self.assertIn("mode=auto", rendered)
+        self.assertIn("selected_assistant_decision_outcome_only=45", rendered)
+
     def test_context_pack_serving_hides_debug_lineage_recursively_by_default(self) -> None:
         pack = {
             "context_pack_id": "pack-debug-default",

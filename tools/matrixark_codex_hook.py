@@ -430,6 +430,51 @@ def retrieval_budget_pressure_from_retrieve(pack: Json | None) -> Json:
     return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
 
 
+def serving_memory_selection_policy_budget(policy: Any) -> Json:
+    if not isinstance(policy, dict):
+        return {}
+    compact: Json = {}
+    if "enabled" in policy:
+        compact["enabled"] = bool(policy.get("enabled"))
+    for field in [
+        "mode",
+        "budget_semantics",
+        "independent_caps",
+        "global_remote_budget_enforced",
+    ]:
+        value = policy.get(field)
+        if value not in (None, "", [], {}):
+            compact[field] = value
+    try:
+        remote_budget = int(policy.get("remote_budget_tokens") or 0)
+    except (TypeError, ValueError):
+        remote_budget = 0
+    if remote_budget > 0:
+        compact["remote_budget_tokens"] = remote_budget
+    for field in [
+        "budget_tokens",
+        "selected_tokens_by_policy",
+        "selected_ref_count_by_policy",
+    ]:
+        values = policy.get(field)
+        if not isinstance(values, dict):
+            continue
+        normalized: Json = {}
+        for key, value in values.items():
+            label = str(key or "").strip()
+            if not label:
+                continue
+            try:
+                amount = int(value or 0)
+            except (TypeError, ValueError):
+                continue
+            if amount > 0:
+                normalized[label] = amount
+        if normalized:
+            compact[field] = normalized
+    return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
+
+
 def retrieval_layer_summary_from_retrieve(
     pack: Json | None,
     refs: list[Json] | None = None,
@@ -526,6 +571,11 @@ def retrieval_layer_summary_from_retrieve(
             memory_layer_budget,
             include_debug=include_budget_lineage or CONTEXT_PACK_DEBUG_LINEAGE,
         )
+    memory_selection_policy_budget = recall_policy.get("memory_selection_policy_budget_policy")
+    if isinstance(memory_selection_policy_budget, dict):
+        compact_policy_budget = serving_memory_selection_policy_budget(memory_selection_policy_budget)
+        if compact_policy_budget:
+            layer_summary["memory_selection_policy_budget"] = compact_policy_budget
     memory_layer_pressure = retrieval_memory_layer_pressure_from_retrieve(pack)
     if memory_layer_pressure:
         layer_summary["memory_layer_pressure"] = serving_memory_layer_pressure(
@@ -1097,6 +1147,12 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
         final_boundary_refs = 0
     if final_boundary_refs > 0:
         budget_bits.append(f"final_boundary_refs={final_boundary_refs}")
+    memory_selection_policy_budget = (
+        layer_summary.get("memory_selection_policy_budget")
+        if isinstance(layer_summary.get("memory_selection_policy_budget"), dict)
+        else {}
+    )
+    selection_budget_bits = _format_memory_selection_policy_budget_bits(memory_selection_policy_budget)
     memory_layer_pressure = (
         layer_summary.get("memory_layer_pressure")
         if isinstance(layer_summary.get("memory_layer_pressure"), dict)
@@ -1229,7 +1285,7 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
         warnings = readiness.get("freshness_warnings")
         if isinstance(warnings, list) and warnings:
             readiness_bits.append("warnings=" + ",".join(str(item) for item in warnings[:3]))
-    if not count_bits and not continuity_bits and not budget_bits and not pressure_bits and not readiness_bits:
+    if not count_bits and not continuity_bits and not budget_bits and not selection_budget_bits and not pressure_bits and not readiness_bits:
         return ""
     details = []
     if count_bits:
@@ -1238,6 +1294,8 @@ def _format_retrieval_layer_summary(layer_summary: Json) -> str:
         details.append(", ".join(continuity_bits))
     if budget_bits:
         details.append("memory_layer_budget: " + "; ".join(budget_bits))
+    if selection_budget_bits:
+        details.append("memory_selection_policy_budget: " + "; ".join(selection_budget_bits))
     if pressure_bits:
         details.append("memory_layer_pressure: " + "; ".join(pressure_bits))
     if pre_refresh_bits:
@@ -1305,6 +1363,41 @@ def _format_memory_layer_budget_bits(memory_layer_budget: Json) -> list[str]:
         if count_bits:
             budget_bits.append(f"{label}[" + ", ".join(count_bits) + "]")
     return budget_bits
+
+
+def _format_memory_selection_policy_budget_bits(policy: Json) -> list[str]:
+    if not isinstance(policy, dict) or not policy:
+        return []
+    bits = []
+    if "enabled" in policy:
+        bits.append("enabled=" + str(bool(policy.get("enabled"))).lower())
+    if policy.get("mode"):
+        bits.append(f"mode={policy.get('mode')}")
+    try:
+        remote_budget = int(policy.get("remote_budget_tokens") or 0)
+    except (TypeError, ValueError):
+        remote_budget = 0
+    if remote_budget > 0:
+        bits.append(f"remote_budget={remote_budget}")
+    for label, field in [
+        ("caps", "budget_tokens"),
+        ("selected_tokens", "selected_tokens_by_policy"),
+        ("selected_refs", "selected_ref_count_by_policy"),
+    ]:
+        values = policy.get(field)
+        if not isinstance(values, dict) or not values:
+            continue
+        value_bits = []
+        for key in sorted(values):
+            try:
+                amount = int(values[key] or 0)
+            except (TypeError, ValueError):
+                continue
+            if amount > 0:
+                value_bits.append(f"{key}={amount}")
+        if value_bits:
+            bits.append(f"{label}[" + ",".join(value_bits) + "]")
+    return bits
 
 
 def _format_memory_layer_pressure_bits(memory_layer_pressure: Json) -> list[str]:
