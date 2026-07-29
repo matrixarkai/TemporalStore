@@ -25,6 +25,12 @@ def deadline_fallback_pack(
     records: list[Json],
     reason: str,
     budget_source: str,
+    source_role_budget_tokens: Json | None = None,
+    source_role_budget_mode: str = "",
+    memory_layer_budget_tokens: Json | None = None,
+    memory_layer_budget_mode: str = "",
+    memory_selection_policy_budget_tokens: Json | None = None,
+    memory_selection_policy_budget_mode: str = "",
 ) -> Json:
     return target.deadline_fallback_pack(
         query=query,
@@ -37,4 +43,10 @@ def deadline_fallback_pack(
         records=records,
         reason=reason,
         budget_source=budget_source,
+        source_role_budget_tokens=source_role_budget_tokens,
+        source_role_budget_mode=source_role_budget_mode,
+        memory_layer_budget_tokens=memory_layer_budget_tokens,
+        memory_layer_budget_mode=memory_layer_budget_mode,
+        memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
+        memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
     )

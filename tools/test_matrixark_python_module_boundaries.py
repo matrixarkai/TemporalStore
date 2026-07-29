@@ -2025,6 +2025,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "source_hook_type_counts": {"hook_boundary": 1},
                 "source_codex_events": ["Stop"],
                 "source_codex_event_counts": {"Stop": 1},
+                "source_memory_selection_policies": ["selected_assistant_decision_outcome_only"],
+                "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 1},
             },
             {
                 "record_type": "context_entity",
@@ -2047,6 +2049,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "source_hook_type_counts": {"hook_boundary": 3},
                 "source_codex_events": ["Stop"],
                 "source_codex_event_counts": {"Stop": 3},
+                "source_memory_selection_policies": ["selected_assistant_decision_outcome_only"],
+                "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 2},
                 "source_session_ids": ["session_old", "session_now"],
                 "source_entity_hashes": [10, 11],
             },
@@ -2079,6 +2083,12 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             records=records,
             reason="deadline_after_record_load",
             budget_source="test",
+            source_role_budget_tokens={"assistant": 40},
+            source_role_budget_mode="auto",
+            memory_layer_budget_tokens={"profile_entity": 48},
+            memory_layer_budget_mode="auto",
+            memory_selection_policy_budget_tokens={"selected_assistant_decision_outcome_only": 56},
+            memory_selection_policy_budget_mode="auto",
         )
 
         self.assertTrue(pack["partial"])
@@ -2106,6 +2116,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "source_message_counts_by_role",
             "source_hook_counts_by_type",
             "source_codex_event_counts_by_event",
+            "by_memory_selection_policy",
         ]:
             self.assertNotIn(field, budget)
         self.assertEqual(1, budget["final_session_boundary_ref_count"])
@@ -2145,6 +2156,15 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(pressure, audit_record["memory_layer_pressure"])
         self.assertEqual(readiness, audit_record["async_pipeline_readiness"])
         self.assertNotIn("memory_hierarchy", audit_record)
+        policy_budget = audit_record["recall_policy_summary"]["memory_selection_policy_budget"]
+        self.assertTrue(policy_budget["enabled"])
+        self.assertEqual("auto", policy_budget["mode"])
+        self.assertEqual(80, policy_budget["remote_budget_tokens"])
+        self.assertEqual(56, policy_budget["budget_tokens"]["selected_assistant_decision_outcome_only"])
+        self.assertEqual(
+            2,
+            policy_budget["selected_ref_count_by_policy"]["selected_assistant_decision_outcome_only"],
+        )
         self.assertEqual(pressure, audit_record["recall_policy_summary"]["memory_layer_pressure"])
         self.assertEqual(readiness, audit_record["recall_policy_summary"]["async_pipeline_readiness"])
         self.assertEqual(

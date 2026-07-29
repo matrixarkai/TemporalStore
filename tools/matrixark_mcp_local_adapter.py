@@ -6331,6 +6331,12 @@ class MatrixArkLocalAdapter:
         reason: str,
         budget_source: str = "matrixark_default_max_context_tokens",
         retrieval_scope: Json | None = None,
+        source_role_budget_tokens: Json | None = None,
+        source_role_budget_mode: str = "",
+        memory_layer_budget_tokens: Json | None = None,
+        memory_layer_budget_mode: str = "",
+        memory_selection_policy_budget_tokens: Json | None = None,
+        memory_selection_policy_budget_mode: str = "",
     ) -> Json:
         selected = []
         used_context_tokens = 0
@@ -6405,6 +6411,8 @@ class MatrixArkLocalAdapter:
                 "source_memory_scopes",
                 "source_session_continuities",
                 "source_extraction_phases",
+                "source_memory_selection_policies",
+                "source_memory_selection_policy_counts",
                 "source_session_ids",
                 "source_entity_hashes",
             ]:
@@ -6424,6 +6432,32 @@ class MatrixArkLocalAdapter:
         context_pack_id = str(stable_hash(f"deadline:{query}:{selected}:{now_ms()}"))
         serving_selected = compact_context_pack_refs(selected, include_debug=False)
         memory_layer_budget = selected_ref_layer_budget(selected)
+        source_role_budget_policy = budget_control_policy_summary(
+            selected_budget=memory_layer_budget,
+            budget_tokens=source_role_budget_tokens,
+            mode=source_role_budget_mode,
+            remote_budget_tokens=remote_budget,
+            bucket_name="by_source_role",
+            semantics="independent_per_role_caps_under_global_remote_budget",
+            normalize_keys=normalize_message_role,
+        )
+        memory_layer_budget_policy = budget_control_policy_summary(
+            selected_budget=memory_layer_budget,
+            budget_tokens=memory_layer_budget_tokens,
+            mode=memory_layer_budget_mode,
+            remote_budget_tokens=remote_budget,
+            bucket_name="by_memory_layer",
+            semantics="independent_per_layer_caps_under_global_remote_budget",
+            question_type=question_type,
+        )
+        memory_selection_policy_budget_policy = budget_control_policy_summary(
+            selected_budget=memory_layer_budget,
+            budget_tokens=memory_selection_policy_budget_tokens,
+            mode=memory_selection_policy_budget_mode,
+            remote_budget_tokens=remote_budget,
+            bucket_name="by_memory_selection_policy",
+            semantics="independent_per_memory_selection_policy_caps_under_global_remote_budget",
+        )
         serving_memory_layer_budget_value = serving_memory_layer_budget(memory_layer_budget)
         async_readiness_scope = retrieval_scope if isinstance(retrieval_scope, dict) else {**scope, "_session_scope": "prefer"}
         async_pipeline_readiness = async_pipeline_retrieval_readiness(records, async_readiness_scope)
@@ -6450,6 +6484,9 @@ class MatrixArkLocalAdapter:
                 "partial_context_pack": True,
                 "fallback_reason": reason,
                 "memory_layer_budget": serving_memory_layer_budget_value,
+                "source_role_budget": source_role_budget_policy,
+                "memory_layer_budget_policy": memory_layer_budget_policy,
+                "memory_selection_policy_budget_policy": memory_selection_policy_budget_policy,
                 "async_pipeline_readiness": async_pipeline_readiness,
                 "session_continuity": {
                     "mode": "fallback_recent_context",
@@ -6469,6 +6506,9 @@ class MatrixArkLocalAdapter:
                 "requested_max_context_tokens": max_context_tokens,
                 "retrieval_metrics": {
                     "memory_layer_budget": serving_memory_layer_budget_value,
+                    "source_role_budget": source_role_budget_policy,
+                    "memory_layer_budget_policy": memory_layer_budget_policy,
+                    "memory_selection_policy_budget": memory_selection_policy_budget_policy,
                     "async_pipeline_readiness": async_pipeline_readiness,
                     "requested_max_context_tokens": max_context_tokens,
                     "used_local_context_tokens": local_tokens,
@@ -7111,6 +7151,12 @@ class MatrixArkLocalAdapter:
                 reason=reason,
                 budget_source=budget_source,
                 retrieval_scope=retrieval_scope,
+                source_role_budget_tokens=source_role_budget_tokens,
+                source_role_budget_mode=source_role_budget_mode,
+                memory_layer_budget_tokens=memory_layer_budget_tokens,
+                memory_layer_budget_mode=memory_layer_budget_mode,
+                memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
+                memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
             )
         skill_controls = self.latest_skill_controls(records)
         include_superseded_resources = bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False))
@@ -7147,6 +7193,12 @@ class MatrixArkLocalAdapter:
                 reason="deadline_after_record_load",
                 budget_source=budget_source,
                 retrieval_scope=retrieval_scope,
+                source_role_budget_tokens=source_role_budget_tokens,
+                source_role_budget_mode=source_role_budget_mode,
+                memory_layer_budget_tokens=memory_layer_budget_tokens,
+                memory_layer_budget_mode=memory_layer_budget_mode,
+                memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
+                memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
             )
         node_scores: dict[int, Json] = {}
         event_embedding_vectors: dict[int, list[float]] = {}
@@ -7275,6 +7327,12 @@ class MatrixArkLocalAdapter:
                 reason="deadline_after_embedding_index_scan",
                 budget_source=budget_source,
                 retrieval_scope=retrieval_scope,
+                source_role_budget_tokens=source_role_budget_tokens,
+                source_role_budget_mode=source_role_budget_mode,
+                memory_layer_budget_tokens=memory_layer_budget_tokens,
+                memory_layer_budget_mode=memory_layer_budget_mode,
+                memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
+                memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
             )
 
         top_k_per_layer = integer_arg(ranking, "top_k_per_layer", DEFAULT_TOP_K_PER_LAYER, minimum=1)
@@ -7720,6 +7778,12 @@ class MatrixArkLocalAdapter:
                 reason="deadline_after_event_scan",
                 budget_source=budget_source,
                 retrieval_scope=retrieval_scope,
+                source_role_budget_tokens=source_role_budget_tokens,
+                source_role_budget_mode=source_role_budget_mode,
+                memory_layer_budget_tokens=memory_layer_budget_tokens,
+                memory_layer_budget_mode=memory_layer_budget_mode,
+                memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
+                memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
             )
         for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
             if scan_index % 64 == 0 and deadline_exceeded():
@@ -7833,6 +7897,12 @@ class MatrixArkLocalAdapter:
                 reason="deadline_after_entity_scan",
                 budget_source=budget_source,
                 retrieval_scope=retrieval_scope,
+                source_role_budget_tokens=source_role_budget_tokens,
+                source_role_budget_mode=source_role_budget_mode,
+                memory_layer_budget_tokens=memory_layer_budget_tokens,
+                memory_layer_budget_mode=memory_layer_budget_mode,
+                memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
+                memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
             )
         for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
             if scan_index % 64 == 0 and deadline_exceeded():
@@ -7924,6 +7994,12 @@ class MatrixArkLocalAdapter:
                 reason="deadline_after_segment_scan",
                 budget_source=budget_source,
                 retrieval_scope=retrieval_scope,
+                source_role_budget_tokens=source_role_budget_tokens,
+                source_role_budget_mode=source_role_budget_mode,
+                memory_layer_budget_tokens=memory_layer_budget_tokens,
+                memory_layer_budget_mode=memory_layer_budget_mode,
+                memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
+                memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
             )
         for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
             if scan_index % 64 == 0 and deadline_exceeded():
@@ -8121,6 +8197,12 @@ class MatrixArkLocalAdapter:
                 reason="deadline_after_compression_scan",
                 budget_source=budget_source,
                 retrieval_scope=retrieval_scope,
+                source_role_budget_tokens=source_role_budget_tokens,
+                source_role_budget_mode=source_role_budget_mode,
+                memory_layer_budget_tokens=memory_layer_budget_tokens,
+                memory_layer_budget_mode=memory_layer_budget_mode,
+                memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
+                memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
             )
         finish_retrieval_stage("rerank_score", stage_started_perf)
         stage_started_perf = time.perf_counter()

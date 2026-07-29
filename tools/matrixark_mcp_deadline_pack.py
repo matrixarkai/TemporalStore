@@ -8,6 +8,7 @@ from typing import Any
 try:
     from tools.matrixark_mcp_core import (
         Json,
+        budget_control_policy_summary,
         candidate_access_scope,
         clip_context_text,
         compact_context_pack_audit_record,
@@ -32,6 +33,7 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         Json,
+        budget_control_policy_summary,
         candidate_access_scope,
         clip_context_text,
         compact_context_pack_audit_record,
@@ -85,6 +87,12 @@ def deadline_fallback_pack(
     reason: str,
     budget_source: str = "matrixark_default_max_context_tokens",
     retrieval_scope: Json | None = None,
+    source_role_budget_tokens: Json | None = None,
+    source_role_budget_mode: str = "",
+    memory_layer_budget_tokens: Json | None = None,
+    memory_layer_budget_mode: str = "",
+    memory_selection_policy_budget_tokens: Json | None = None,
+    memory_selection_policy_budget_mode: str = "",
 ) -> Json:
     selected = []
     used_context_tokens = 0
@@ -156,6 +164,7 @@ def deadline_fallback_pack(
             "source_memory_scopes",
             "source_session_continuities",
             "source_extraction_phases",
+            "source_memory_selection_policies",
             "source_session_ids",
             "source_entity_hashes",
         ]:
@@ -166,6 +175,7 @@ def deadline_fallback_pack(
             "source_role_counts",
             "source_hook_type_counts",
             "source_codex_event_counts",
+            "source_memory_selection_policy_counts",
         ]:
             value = record.get(field, metadata.get(field))
             if isinstance(value, dict) and value:
@@ -190,6 +200,32 @@ def deadline_fallback_pack(
     serving_selected = compact_context_pack_refs(selected, include_debug=False)
     memory_layer_budget = selected_ref_layer_budget(selected)
     memory_layer_pressure = memory_layer_pressure_summary(memory_layer_budget, {})
+    source_role_budget_policy = budget_control_policy_summary(
+        selected_budget=memory_layer_budget,
+        budget_tokens=source_role_budget_tokens,
+        mode=source_role_budget_mode,
+        remote_budget_tokens=remote_budget,
+        bucket_name="by_source_role",
+        semantics="independent_per_role_caps_under_global_remote_budget",
+        normalize_keys=normalize_message_role,
+    )
+    memory_layer_budget_policy = budget_control_policy_summary(
+        selected_budget=memory_layer_budget,
+        budget_tokens=memory_layer_budget_tokens,
+        mode=memory_layer_budget_mode,
+        remote_budget_tokens=remote_budget,
+        bucket_name="by_memory_layer",
+        semantics="independent_per_layer_caps_under_global_remote_budget",
+        question_type=question_type,
+    )
+    memory_selection_policy_budget_policy = budget_control_policy_summary(
+        selected_budget=memory_layer_budget,
+        budget_tokens=memory_selection_policy_budget_tokens,
+        mode=memory_selection_policy_budget_mode,
+        remote_budget_tokens=remote_budget,
+        bucket_name="by_memory_selection_policy",
+        semantics="independent_per_memory_selection_policy_caps_under_global_remote_budget",
+    )
     serving_budget = serving_memory_layer_budget(memory_layer_budget)
     serving_pressure = serving_memory_layer_pressure(memory_layer_pressure)
     async_readiness_scope = retrieval_scope if isinstance(retrieval_scope, dict) else {**scope, "_session_scope": "prefer"}
@@ -225,6 +261,9 @@ def deadline_fallback_pack(
             "fallback_reason": reason,
             "memory_layer_budget": serving_budget,
             "memory_layer_pressure": serving_pressure,
+            "source_role_budget": source_role_budget_policy,
+            "memory_layer_budget_policy": memory_layer_budget_policy,
+            "memory_selection_policy_budget_policy": memory_selection_policy_budget_policy,
             "async_pipeline_readiness": async_pipeline_readiness,
             "session_continuity": {
                 "mode": "fallback_recent_context",
@@ -257,6 +296,9 @@ def deadline_fallback_pack(
         "retrieval_metrics": {
             "memory_layer_budget": serving_budget,
             "memory_layer_pressure": serving_pressure,
+            "source_role_budget": source_role_budget_policy,
+            "memory_layer_budget_policy": memory_layer_budget_policy,
+            "memory_selection_policy_budget": memory_selection_policy_budget_policy,
             "async_pipeline_readiness": async_pipeline_readiness,
             "requested_max_context_tokens": max_context_tokens,
             "used_local_context_tokens": local_tokens,
