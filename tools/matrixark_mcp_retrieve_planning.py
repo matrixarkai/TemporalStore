@@ -267,6 +267,7 @@ def retrieval_query_budget_plan(
             args,
             ranking,
             remote_budget_tokens=remote_context_budget_tokens,
+            question_type=question_type,
         )
     if pre_refresh_helpers.pre_retrieval_summary_refresh_enabled(args, ranking) and not memory_layer_budget_tokens:
         memory_layer_budget_tokens, memory_layer_budget_mode = pre_refresh_helpers.pre_retrieval_summary_refresh_memory_layer_budget_tokens(

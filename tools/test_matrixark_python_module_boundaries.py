@@ -849,6 +849,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("pre_retrieval_summary_refresh_balanced", request["memory_layer_budget_mode"])
         self.assertIn("pending_async_event", request["memory_layer_budget_tokens"])
         self.assertIn("profile_entity", request["memory_layer_budget_tokens"])
+        self.assertIn("profile_compression", request["memory_layer_budget_tokens"])
+        self.assertIn("cross_session_compression", request["memory_layer_budget_tokens"])
         self.assertEqual("auto", request["memory_selection_policy_budget_mode"])
         self.assertEqual(
             {
@@ -1555,21 +1557,21 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         ]
         self.assertEqual("session", session_entity_embedding["memory_scope"])
         self.assertEqual("same_session", session_entity_embedding["session_continuity"])
-        self.assertEqual("final", session_entity_embedding["extraction_phase"])
-        self.assertTrue(session_entity_embedding["final_session_boundary"])
-        self.assertEqual(session_entities[0]["source_event_ids"], session_entity_embedding["source_event_ids"])
-        self.assertEqual(session_entities[0]["source_role_counts"], session_entity_embedding["source_role_counts"])
+        self.assertNotIn("extraction_phase", session_entity_embedding)
+        self.assertNotIn("final_session_boundary", session_entity_embedding)
+        self.assertNotIn("source_event_ids", session_entity_embedding)
+        self.assertNotIn("source_role_counts", session_entity_embedding)
         self.assertEqual("user_profile", profile_entity_embedding["memory_scope"])
         self.assertEqual("cross_session", profile_entity_embedding["session_continuity"])
-        self.assertEqual("session", profile_entity_embedding["promoted_from_memory_scope"])
-        self.assertEqual(profile_entities[0]["source_session_ids"], profile_entity_embedding["source_session_ids"])
-        self.assertEqual(profile_entities[0]["source_entity_hashes"], profile_entity_embedding["source_entity_hashes"])
-        self.assertEqual(profile_entities[0]["source_role_counts"], profile_entity_embedding["source_role_counts"])
+        self.assertNotIn("promoted_from_memory_scope", profile_entity_embedding)
+        self.assertNotIn("source_session_ids", profile_entity_embedding)
+        self.assertNotIn("source_entity_hashes", profile_entity_embedding)
+        self.assertNotIn("source_role_counts", profile_entity_embedding)
         self.assertEqual("session", segment_embedding["memory_scope"])
         self.assertEqual("same_session", segment_embedding["session_continuity"])
-        self.assertEqual(["session"], segment_embedding["source_memory_scopes"])
-        self.assertEqual(["same_session"], segment_embedding["source_session_continuities"])
-        self.assertEqual(session_segments[0]["source_event_ids"], segment_embedding["source_event_ids"])
+        self.assertNotIn("source_memory_scopes", segment_embedding)
+        self.assertNotIn("source_session_continuities", segment_embedding)
+        self.assertNotIn("source_event_ids", segment_embedding)
         event_embeddings = [
             record
             for record in embeddings
@@ -1591,9 +1593,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         ]
         self.assertEqual("session", summary_embedding["memory_scope"])
         self.assertEqual("same_session", summary_embedding["session_continuity"])
-        self.assertEqual("final", summary_embedding["extraction_phase"])
-        self.assertEqual(summary_records[0]["source_entity_hashes"], summary_embedding["source_entity_hashes"])
-        self.assertEqual(summary_records[0]["source_segment_hashes"], summary_embedding["source_segment_hashes"])
+        self.assertNotIn("extraction_phase", summary_embedding)
+        self.assertNotIn("source_entity_hashes", summary_embedding)
+        self.assertNotIn("source_segment_hashes", summary_embedding)
         profile_indexes = [
             record
             for record in adapter.records

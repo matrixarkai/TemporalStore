@@ -8,6 +8,7 @@ from typing import Any
 
 try:
     from tools.matrixark_mcp_core import (
+        EMBEDDING_LINEAGE_DEBUG_FIELDS,
         MAX_PRIOR_MESSAGES,
         Json,
         apply_entity_patches,
@@ -33,6 +34,7 @@ try:
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
+        EMBEDDING_LINEAGE_DEBUG_FIELDS,
         MAX_PRIOR_MESSAGES,
         Json,
         apply_entity_patches,
@@ -56,6 +58,13 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         take_secondary_index_terms,
         text_from_messages,
     )
+
+
+def compact_context_embedding_record(record: Json) -> Json:
+    compacted = dict(record)
+    for field in EMBEDDING_LINEAGE_DEBUG_FIELDS:
+        compacted.pop(field, None)
+    return compacted
 
 
 def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
@@ -280,7 +289,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 }
             )
             event_records_to_append.append(
-                {
+                compact_context_embedding_record({
                     "record_type": "context_embedding",
                     "embedding_type": "event_text",
                     "ref_type": "event",
@@ -296,7 +305,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "extraction_phase": extraction_phase,
                     "final_session_boundary": final_session_boundary,
                     "updated_at_ms": envelope["ingestion_time_ms"],
-                }
+                })
             )
 
     entity_hashes = []
@@ -384,7 +393,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         entity_embedding_text = updated_entity["entity_type"] + " " + updated_entity["state"]
         entity_vector = embedding_for_text(entity_embedding_text)
         records_to_append.append(
-            {
+            compact_context_embedding_record({
                 "record_type": "context_embedding",
                 "embedding_type": "entity_state",
                 "ref_type": "entity",
@@ -408,7 +417,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "final_session_boundary": final_session_boundary,
                 "extraction_context_event_ids": extraction_context_event_ids,
                 "updated_at_ms": envelope["ingestion_time_ms"],
-            }
+            })
         )
         if profile_node_hash:
             profile_entity_hash = stable_hash(
@@ -515,7 +524,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             profile_entity_embedding_text = promoted_entity["entity_type"] + " " + promoted_entity["state"]
             profile_entity_vector = embedding_for_text(profile_entity_embedding_text)
             records_to_append.append(
-                {
+                compact_context_embedding_record({
                     "record_type": "context_embedding",
                     "embedding_type": "entity_state",
                     "ref_type": "entity",
@@ -545,7 +554,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "final_session_boundary": final_session_boundary,
                     "extraction_context_event_ids": extraction_context_event_ids,
                     "updated_at_ms": envelope["ingestion_time_ms"],
-                }
+                })
             )
             for index_name in candidate_index_terms(profile_entity_record, {}, {}):
                 profile_index = context_index_posting_record(
@@ -618,7 +627,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         segment_embedding_text = segment["topic"] + " " + segment["summary_text"]
         segment_vector = embedding_for_text(segment_embedding_text)
         records_to_append.append(
-            {
+            compact_context_embedding_record({
                 "record_type": "context_embedding",
                 "embedding_type": "segment_text",
                 "ref_type": "segment",
@@ -645,7 +654,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "final_session_boundary": final_session_boundary,
                 "extraction_context_event_ids": extraction_context_event_ids,
                 "updated_at_ms": envelope["ingestion_time_ms"],
-            }
+            })
         )
 
     summary_hash = stable_hash(f"batch_summary:{batch_id_hash}")
@@ -679,7 +688,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
     summary_embedding_text = " ".join(node_path + [batch_summary])
     summary_vector = embedding_for_text(summary_embedding_text)
     records_to_append.append(
-        {
+        compact_context_embedding_record({
             "record_type": "context_embedding",
             "embedding_type": "batch_l0",
             "ref_type": "summary",
@@ -705,7 +714,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             "final_session_boundary": final_session_boundary,
             "extraction_context_event_ids": extraction_context_event_ids,
             "updated_at_ms": envelope["ingestion_time_ms"],
-        }
+        })
     )
     secondary_index_budget = new_secondary_index_budget()
     batch_index_terms = take_secondary_index_terms(list(extraction["indexes"]), secondary_index_budget)

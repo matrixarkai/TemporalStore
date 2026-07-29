@@ -305,6 +305,13 @@ def profile_promotion_decision(profile_node_hash: int) -> Json:
     }
 
 
+def compact_context_embedding_record(record: Json) -> Json:
+    compacted = dict(record)
+    for field in EMBEDDING_LINEAGE_DEBUG_FIELDS:
+        compacted.pop(field, None)
+    return compacted
+
+
 def _ref_list_value(item: Json, field: str) -> list[Any]:
     values = item.get(field)
     if isinstance(values, list):
@@ -594,6 +601,9 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         "same_session_summary": 0.20,
         "cross_session_summary": 0.20,
         "compression": 0.25,
+        "profile_compression": 0.25,
+        "same_session_compression": 0.20,
+        "cross_session_compression": 0.20,
         "pending_async_event": 0.20,
         "same_session_event": 0.45,
         "cross_session_event": 0.25,
@@ -610,6 +620,9 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "same_session_summary": 0.15,
                 "cross_session_summary": 0.15,
                 "compression": 0.20,
+                "profile_compression": 0.25,
+                "same_session_compression": 0.15,
+                "cross_session_compression": 0.20,
                 "pending_async_event": 0.15,
                 "same_session_event": 0.35,
                 "cross_session_event": 0.30,
@@ -626,6 +639,9 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "same_session_summary": 0.15,
                 "cross_session_summary": 0.40,
                 "compression": 0.25,
+                "profile_compression": 0.40,
+                "same_session_compression": 0.20,
+                "cross_session_compression": 0.35,
                 "pending_async_event": 0.15,
                 "same_session_event": 0.25,
                 "cross_session_event": 0.40,
@@ -642,6 +658,9 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "same_session_summary": 0.20,
                 "cross_session_summary": 0.35,
                 "compression": 0.30,
+                "profile_compression": 0.35,
+                "same_session_compression": 0.25,
+                "cross_session_compression": 0.35,
                 "pending_async_event": 0.20,
                 "same_session_event": 0.40,
                 "cross_session_event": 0.35,
@@ -658,6 +677,9 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "same_session_summary": 0.25,
                 "cross_session_summary": 0.30,
                 "compression": 0.30,
+                "profile_compression": 0.35,
+                "same_session_compression": 0.30,
+                "cross_session_compression": 0.30,
                 "pending_async_event": 0.25,
                 "same_session_event": 0.45,
                 "cross_session_event": 0.30,
@@ -692,6 +714,9 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(*, remote_budget_to
         "same_session_summary": 0.20,
         "cross_session_summary": 0.25,
         "compression": 0.20,
+        "profile_compression": 0.25,
+        "same_session_compression": 0.20,
+        "cross_session_compression": 0.25,
         "pending_async_event": 0.20,
         "same_session_event": 0.45,
         "cross_session_event": 0.25,
@@ -6359,7 +6384,7 @@ class MatrixArkLocalAdapter:
                     }
                 )
                 event_records_to_append.append(
-                    {
+                    compact_context_embedding_record({
                         "record_type": "context_embedding",
                         "embedding_type": "event_text",
                         "ref_type": "event",
@@ -6375,7 +6400,7 @@ class MatrixArkLocalAdapter:
                         "extraction_phase": extraction_phase,
                         "final_session_boundary": final_session_boundary,
                         "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
+                    })
                 )
 
         profile_scope = {
@@ -6504,7 +6529,7 @@ class MatrixArkLocalAdapter:
             entity_embedding_text = updated_entity["entity_type"] + " " + updated_entity["state"]
             entity_vector = embedding_for_text(entity_embedding_text)
             records_to_append.append(
-                {
+                compact_context_embedding_record({
                     "record_type": "context_embedding",
                     "embedding_type": "entity_state",
                     "ref_type": "entity",
@@ -6531,7 +6556,7 @@ class MatrixArkLocalAdapter:
                     "final_session_boundary": final_session_boundary,
                     "extraction_context_event_ids": extraction_context_event_ids,
                     "updated_at_ms": envelope["ingestion_time_ms"],
-                }
+                })
             )
             if profile_node_hash:
                 profile_entity_hash = stable_hash(
@@ -6727,7 +6752,7 @@ class MatrixArkLocalAdapter:
                 profile_entity_embedding_text = promoted_entity["entity_type"] + " " + promoted_entity["state"]
                 profile_entity_vector = embedding_for_text(profile_entity_embedding_text)
                 records_to_append.append(
-                    {
+                    compact_context_embedding_record({
                         "record_type": "context_embedding",
                         "embedding_type": "profile_entity_state",
                         "ref_type": "entity",
@@ -6752,7 +6777,7 @@ class MatrixArkLocalAdapter:
                         "extraction_phase": extraction_phase,
                         "final_session_boundary": final_session_boundary,
                         "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
+                    })
                 )
                 for index_name in candidate_index_terms(profile_entity_record, {}, {}):
                     profile_index = context_index_posting_record(
@@ -6829,7 +6854,7 @@ class MatrixArkLocalAdapter:
             segment_embedding_text = segment["topic"] + " " + segment["summary_text"]
             segment_vector = embedding_for_text(segment_embedding_text)
             records_to_append.append(
-                {
+                compact_context_embedding_record({
                     "record_type": "context_embedding",
                     "embedding_type": "segment_text",
                     "ref_type": "segment",
@@ -6859,7 +6884,7 @@ class MatrixArkLocalAdapter:
                     "final_session_boundary": final_session_boundary,
                     "extraction_context_event_ids": extraction_context_event_ids,
                     "updated_at_ms": envelope["ingestion_time_ms"],
-                }
+                })
             )
 
         summary_hash = stable_hash(f"batch_summary:{batch_id_hash}")
@@ -6913,7 +6938,7 @@ class MatrixArkLocalAdapter:
         summary_embedding_text = " ".join(node_path + [batch_summary])
         summary_vector = embedding_for_text(summary_embedding_text)
         records_to_append.append(
-            {
+            compact_context_embedding_record({
                 "record_type": "context_embedding",
                 "embedding_type": "batch_l0",
                 "ref_type": "summary",
@@ -6932,7 +6957,7 @@ class MatrixArkLocalAdapter:
                 "extraction_phase": extraction_phase,
                 "final_session_boundary": final_session_boundary,
                 "updated_at_ms": envelope["ingestion_time_ms"],
-            }
+            })
         )
         secondary_index_budget = new_secondary_index_budget()
         batch_index_terms = take_secondary_index_terms(list(extraction["indexes"]), secondary_index_budget)
