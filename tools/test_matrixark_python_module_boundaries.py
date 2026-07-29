@@ -2811,6 +2811,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
 
     def test_modular_budget_pack_caps_memory_selection_policy(self) -> None:
         budget_mod = importlib.import_module("tools.matrixark_mcp_budget_pack")
+        core_mod = importlib.import_module("tools.matrixark_mcp_core")
         candidates = [
             {
                 "ref_type": "entity",
@@ -2903,6 +2904,37 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(
             {"selected_assistant_decision_outcome_only": 0},
             dropped["memory_selection_policy_budget_policy"]["selected_tokens_by_policy"],
+        )
+
+        metadata_pending_async = {
+            "ref_hash": 404,
+            "text": "fresh pending assistant decision should obey pending async layer caps",
+            "score": 0.96,
+            "metadata": {
+                "ref_type": "event",
+                "event_type": "pending_async",
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+            },
+        }
+        self.assertEqual("pending_async_event", core_mod.candidate_memory_layer_name(metadata_pending_async))
+        self.assertEqual("pending_async_event", budget_mod.candidate_memory_layer_name(metadata_pending_async))
+        selected, used_tokens, dropped = budget_mod.select_token_budgeted_refs(
+            [metadata_pending_async],
+            [],
+            max_context_tokens=40,
+            auxiliary_quota=0,
+            max_selected_refs=1,
+            min_score=0.0,
+            memory_layer_budget_tokens={"pending_async_event": 1},
+            budget_fill_policy="quality_first",
+        )
+        self.assertEqual([], selected)
+        self.assertEqual(0, used_tokens)
+        self.assertEqual(1, dropped["memory_layer_budget"])
+        self.assertEqual(
+            {"pending_async_event": 0},
+            dropped["memory_layer_budget_policy"]["selected_tokens_by_layer"],
         )
 
     def test_modular_budget_pack_force_fill_respects_memory_selection_policy_cap(self) -> None:

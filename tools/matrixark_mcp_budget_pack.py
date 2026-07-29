@@ -174,18 +174,20 @@ def is_stale_or_superseded_candidate(candidate: Json) -> bool:
 
 
 def is_pending_async_candidate(candidate: Json) -> bool:
+    metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
     return (
-        str(candidate.get("event_type") or "").strip().lower() == "pending_async"
-        or str(candidate.get("classification") or "").strip().upper() == "PENDING_ASYNC_EXTRACTION"
-        or str(candidate.get("extraction_phase") or "").strip().lower() == "pending_async"
+        str(candidate.get("event_type") or metadata.get("event_type") or "").strip().lower() == "pending_async"
+        or str(candidate.get("classification") or metadata.get("classification") or "").strip().upper() == "PENDING_ASYNC_EXTRACTION"
+        or str(candidate.get("extraction_phase") or metadata.get("extraction_phase") or "").strip().lower() == "pending_async"
     )
 
 
 def candidate_memory_layer_name(candidate: Json) -> str:
-    ref_type = str(candidate.get("ref_type") or "")
-    context_class = str(candidate.get("context_class") or ref_type)
-    memory_scope = str(candidate.get("memory_scope") or "")
-    session_continuity = str(candidate.get("session_continuity") or "")
+    metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
+    ref_type = str(candidate.get("ref_type") or metadata.get("ref_type") or "")
+    context_class = str(candidate.get("context_class") or metadata.get("context_class") or ref_type)
+    memory_scope = str(candidate.get("memory_scope") or metadata.get("memory_scope") or "")
+    session_continuity = str(candidate.get("session_continuity") or metadata.get("session_continuity") or "")
     if context_class == "resource_entity_fact":
         return "resource_entity_fact"
     if context_class == "resource_fact":
