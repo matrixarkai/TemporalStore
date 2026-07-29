@@ -158,6 +158,40 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertGreaterEqual(healthy["recent_profile_record_count"], 1)
         self.assertEqual(1, healthy["recent_resource_skill_record_count"])
 
+    def test_recent_ingestion_report_keeps_raw_rows_out_of_serving_memory_lists(self) -> None:
+        report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
+        backend = report_mod.summarize_backend(
+            "test",
+            "matrixark:test",
+            3,
+            0,
+            [
+                {
+                    "sequence": 1,
+                    "record": {
+                        "record_type": "agent_message",
+                        "raw_record_type": "raw_agent_message",
+                        "raw_ingestion_visibility": "backfill_only",
+                        "codex_api_event": "UserPromptSubmit",
+                        "synthetic": False,
+                    },
+                },
+                {"sequence": 2, "record": {"record_type": "context_entity", "entity_name": "raw_only_entity"}},
+                {"sequence": 3, "record": {"record_type": "context_summary", "summary_text": "raw only summary"}},
+            ],
+            2,
+            0,
+            [
+                {"sequence": 10, "record": {"record_type": "context_entity", "entity_name": "serving_entity"}},
+                {"sequence": 11, "record": {"record_type": "context_summary", "summary_text": "serving summary"}},
+            ],
+        )
+
+        self.assertEqual("raw_agent_message_backfill_only_context_event_serving", backend["serving_boundary_policy"])
+        self.assertEqual(1, backend["raw_backfill_only_count"])
+        self.assertEqual(["serving_entity"], [item["text"] for item in backend["recent_entities"]])
+        self.assertEqual(["serving summary"], [item["text"] for item in backend["recent_summaries"]])
+
     def test_recent_ingestion_report_summarizes_serving_visibility_gate(self) -> None:
         report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
         broken_report = {

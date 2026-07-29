@@ -118,6 +118,8 @@ def row(record: dict[str, Any], sequence: int) -> dict[str, Any]:
     return {
         "sequence": sequence,
         "record_type": record.get("record_type") or record.get("type") or "unknown",
+        "raw_record_type": record.get("raw_record_type") or "",
+        "raw_ingestion_visibility": record.get("raw_ingestion_visibility") or "",
         "role": role or "",
         "session_id": record.get("session_id") or (record.get("scope") or {}).get("session_id", ""),
         "memory_scope": record.get("memory_scope") or "",
@@ -702,8 +704,15 @@ def summarize_backend(name: str, prefix: str, raw_count: int, raw_hot_count: int
     raw_types = collections.Counter(item["record_type"] for item in raw_records)
     serving_types = collections.Counter(item["record_type"] for item in serving_records)
     user_prompts = [item for item in raw_records if item["record_type"] == "agent_message" and item["codex_api_event"] == "UserPromptSubmit" and not item["synthetic"]]
-    entities = [item for item in raw_records + serving_records if item["record_type"] in {"context_entity", "context_entity_update_audit"}]
-    summaries = [item for item in raw_records + serving_records if item["record_type"] in {"context_summary", "context_summary_dirty", "context_batch_commit"}]
+    raw_backfill_only_records = [
+        item
+        for item in raw_records
+        if item["record_type"] == "agent_message"
+        or item.get("raw_ingestion_visibility") == "backfill_only"
+        or item.get("raw_record_type") == "raw_agent_message"
+    ]
+    entities = [item for item in serving_records if item["record_type"] in {"context_entity", "context_entity_update_audit"}]
+    summaries = [item for item in serving_records if item["record_type"] in {"context_summary", "context_summary_dirty", "context_batch_commit"}]
     context_events = [item for item in serving_records if item["record_type"] == "context_event"]
     context_embeddings = [item for item in serving_records if item["record_type"] == "context_embedding"]
     profile_records = [item for item in serving_records if is_profile_record(item)]
@@ -752,6 +761,8 @@ def summarize_backend(name: str, prefix: str, raw_count: int, raw_hot_count: int
         "compact_hot_serving_count": serving_hot_count,
         "recent_raw_type_counts": dict(raw_types),
         "recent_serving_type_counts": dict(serving_types),
+        "raw_backfill_only_count": len(raw_backfill_only_records),
+        "serving_boundary_policy": "raw_agent_message_backfill_only_context_event_serving",
         "recent_real_user_prompts": user_prompts[:8],
         "recent_extraction_input_batches": extraction_batches,
         "extraction_input_coverage_status": "gap" if extraction_input_coverage_gaps else "ok",
