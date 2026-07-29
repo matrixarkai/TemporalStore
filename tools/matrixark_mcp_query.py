@@ -297,6 +297,8 @@ def infer_query_type(query: str) -> str:
     if core.understanding_provider() == "oss_encoder":
         return oss_encoder_query_type(query)
     lower = query.lower()
+    if re.search(r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|across sessions?|profile entit(?:y|ies)|profile summar(?:y|ies))\b", lower):
+        return "profile_memory"
     if re.search(r"\b(when|what date|which date|day|month|year|yesterday|tomorrow|last week|next week|before|after|as of|valid as of)\b", lower):
         return "date"
     if re.search(r"\b(current|currently|latest|now|still|today|valid|status|preference|prefer|likes|where does|where is)\b", lower):
