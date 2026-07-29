@@ -2842,7 +2842,7 @@ TOOL_EVIDENCE_LINE_PATTERNS = [
         r"\b(?:passed|ok|success|succeeded|validated|verified)\b",
         r"\b(?:commit|pushed|push|rebase|rebased|branch|origin/main|refs/heads/main)\b",
         r"\b(?:test|tests|unittest|pytest|cargo test|cargo check|bash -n|py_compile)\b",
-        r"\b(?:warning|blocked|missing|skipped)\b",
+        r"\b(?:warning|blocked|rejected|missing|skipped|non-fast-forward)\b",
     ]
 ]
 
@@ -2889,17 +2889,26 @@ def selected_tool_memory_text(text: str, payload: Json | None = None, *, max_cha
     tests_match = re.search(r"\bran\s+(\d+)\s+tests?\b", source, re.IGNORECASE)
     if tests_match:
         facts.append(f"Ran {tests_match.group(1)} tests")
+    elif re.search(r"\b(?:test|tests|validation|py_compile|unittest|pytest|cargo test|cargo check)\b", source, re.IGNORECASE) and re.search(
+        r"\b(?:passed|ok|succeeded|success|clean)\b",
+        source,
+        re.IGNORECASE,
+    ):
+        facts.append("Validation: tests passed")
     commit_match = re.search(r"\bpushed commit\s+([0-9a-f]{7,40})\b", source, re.IGNORECASE)
     if not commit_match:
         commit_match = re.search(r"\b([0-9a-f]{7,40})\s+refs/heads/main\b", source, re.IGNORECASE)
     if commit_match:
         target = " to origin/main" if re.search(r"\b(?:origin/main|refs/heads/main)\b", source, re.IGNORECASE) else ""
         facts.append(f"pushed commit {commit_match.group(1)}{target}")
-    failure_match = re.search(
-        r"^.*\b(?:error|failed|failure|fatal|panic|exception|traceback|blocked)\b.*$",
-        source,
-        re.IGNORECASE | re.MULTILINE,
-    )
+    failure_match = None
+    for notable_pattern in [
+        r"^.*\b(?:blocked|rejected|failed|failure|fatal|panic|exception|traceback|error)\b.*$",
+        r"^.*\b(?:missing|skipped|warning)\b.*$",
+    ]:
+        failure_match = re.search(notable_pattern, source, re.IGNORECASE | re.MULTILINE)
+        if failure_match:
+            break
     if failure_match:
         facts.append(f"notable={failure_match.group(0)[:180]}")
     if facts:
