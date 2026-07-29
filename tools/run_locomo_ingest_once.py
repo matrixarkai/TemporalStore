@@ -7001,6 +7001,7 @@ def single_temporal_event_anchor(question: str) -> str:
         r"\bhow long ago did I\s+(.+)$",
         r"\bwhen did I\s+(.+)$",
         r"\bwhen did\s+(.+)$",
+        r"\bwhen\s+(.+?\s+(?:is|are|was|were)\s+planning\s+to\s+.+)$",
         r"\bwhen I\s+(.+)$",
     ]
     for pattern in patterns:
@@ -7492,9 +7493,9 @@ def relative_date_answer(text: str) -> str:
         return str(anchor.year - 1)
     if "two weekends ago" in lower:
         return f"two weekends before {anchor_text}"
-    weekday = re.search(r"\blast\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", lower)
+    weekday = re.search(r"\blast\s+(mon(?:day)?|tue(?:s|sday)?|wed(?:nesday)?|thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b", lower)
     if weekday:
-        return f"the {weekday.group(1).capitalize()} before {anchor_text}"
+        return f"the {normalize_weekday_name(weekday.group(1))} before {anchor_text}"
     if re.search(r"\b(last weekend|over the weekend|during the weekend|weekend before)\b", lower):
         return f"the weekend before {anchor_text}"
     if re.search(r"\b(last week|the week before|recently|recent)\b", lower):
@@ -7577,8 +7578,18 @@ def event_date_answer(question: str, texts: list[str]) -> str:
             score += 34
         if re.search(r"\b(yesterday|tomorrow|last night|last week|last month|next month|a few years ago|few years ago)\b", entry_text):
             score += 18
-        if re.search(r"\b(last weekend|last\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b", entry_text):
+        if re.search(r"\b(last weekend|last\s+(?:mon(?:day)?|tue(?:s|sday)?|wed(?:nesday)?|thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?))\b", entry_text):
             score += 18
+        if re.search(r"\b(join|joined|joining)\b", q) and re.search(r"\b(group|club|community|activist)\b", q):
+            if re.search(
+                r"\b(join|joined|joining)\b.*\b(group|club|community|activist)\b|\b(group|club|community|activist)\b.*\b(join|joined|joining)\b",
+                entry_text,
+            ):
+                score += 36
+            if re.search(r"\blast\s+(?:mon(?:day)?|tue(?:s|sday)?|wed(?:nesday)?|thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b", entry_text):
+                score += 24
+        if re.search(r"\b(planning|plan|open|opening)\b", q) and re.search(r"\b(opening|open|official opening|tomorrow)\b", entry_text):
+            score += 24
         if "next month" in entry_text and not re.search(r"\b(host|hosted|hosting|competition|showcase)\b", q):
             score -= 24
         if "family" in anchor_tokens and "fam" in entry_text:
@@ -7613,9 +7624,9 @@ def event_date_answer(question: str, texts: list[str]) -> str:
         year = entry.date.year - (1 if month < 1 else 0)
         month = 12 if month < 1 else month
         return f"{calendar.month_name[month]} {year}. Evidence: {entry.text}"
-    weekday = re.search(r"\blast\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", lower)
+    weekday = re.search(r"\blast\s+(mon(?:day)?|tue(?:s|sday)?|wed(?:nesday)?|thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b", lower)
     if weekday:
-        return f"the {weekday.group(1).capitalize()} before {format_date(entry.date)}. Evidence: {entry.text}"
+        return f"the {normalize_weekday_name(weekday.group(1))} before {format_date(entry.date)}. Evidence: {entry.text}"
     if re.search(r"\b(last weekend|over the weekend|during the weekend|weekend before)\b", lower):
         return f"the weekend before {format_date(entry.date)}. Evidence: {entry.text}"
     if "last week" in lower or "the week before" in lower:
@@ -7623,6 +7634,25 @@ def event_date_answer(question: str, texts: list[str]) -> str:
     if "this month" in lower or "month" in q:
         return f"{calendar.month_name[entry.date.month]} {entry.date.year}. Evidence: {entry.text}"
     return f"{format_date(entry.date)}. Evidence: {entry.text}"
+
+
+def normalize_weekday_name(value: str) -> str:
+    lower = normalize_text(value)
+    if lower.startswith("mon"):
+        return "Monday"
+    if lower.startswith("tue"):
+        return "Tuesday"
+    if lower.startswith("wed"):
+        return "Wednesday"
+    if lower.startswith("thu"):
+        return "Thursday"
+    if lower.startswith("fri"):
+        return "Friday"
+    if lower.startswith("sat"):
+        return "Saturday"
+    if lower.startswith("sun"):
+        return "Sunday"
+    return str(value).capitalize()
 
 
 def event_date_entries(texts: list[str]) -> list[TemporalEntry]:
