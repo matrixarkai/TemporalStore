@@ -177,6 +177,25 @@ class LocomoCrossSessionRetrievalTest(unittest.TestCase):
             bench.extractive_reader_hint("How many times did I bake egg tarts in the past two weeks?", blocks).lower(),
         )
 
+    def test_longmemeval_project_count_excludes_thesis(self) -> None:
+        blocks = [
+            {
+                "body": (
+                    "User: I've created separate boards for my thesis, Data Mining project, "
+                    "and Database Systems project. It's been helpful while juggling multiple projects."
+                )
+            },
+            {"body": "Assistant: Here are 3 Trello label ideas and 1 checklist template."},
+        ]
+
+        self.assertEqual(
+            "2",
+            bench.extractive_reader_hint(
+                "How many projects have I been working on simultaneously, excluding my thesis?",
+                blocks,
+            ),
+        )
+
 
 if __name__ == "__main__":
     raise SystemExit(unittest.main())
