@@ -7,10 +7,38 @@ import json
 import unittest
 
 from tools import matrixark_mcp_core as core
+from tools import matrixark_mcp_context_pack as context_pack
 from tools import run_matrixark_message_pdf_debug_trace as trace_runner
 
 
 class MatrixArkDebugTraceCompactionTest(unittest.TestCase):
+    def test_flat_context_pack_refs_expose_memory_layer_without_lineage(self) -> None:
+        refs = [
+            {
+                "ref_type": "entity",
+                "text": "Project Aurora owner is Bob.",
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "source_session_ids": ["codex:old"],
+                "source_entity_hashes": [11, 22],
+            },
+            {
+                "ref_type": "event",
+                "text": "User asked about Project Aurora.",
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+                "source_roles": ["user"],
+            },
+        ]
+
+        compact = context_pack.compact_context_pack_refs(refs)
+
+        self.assertEqual("profile", compact[0]["memory_layer"])
+        self.assertEqual("session", compact[1]["memory_layer"])
+        self.assertNotIn("source_session_ids", compact[0])
+        self.assertNotIn("source_entity_hashes", compact[0])
+        self.assertNotIn("source_roles", compact[1])
+
     def test_context_pack_compaction_is_idempotent_for_grouped_pack(self) -> None:
         grouped_pack = {
             "context_pack_id": "pack-1",
