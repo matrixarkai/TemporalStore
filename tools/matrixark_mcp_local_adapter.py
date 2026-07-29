@@ -9301,6 +9301,39 @@ class MatrixArkLocalAdapter:
         memory_layer_budget = selected_ref_layer_budget(selected)
         dropped_memory_layer_budget = dropped_ref_layer_budget(dropped_over_budget)
         memory_layer_pressure = memory_layer_pressure_summary(memory_layer_budget, dropped_memory_layer_budget)
+        selected_pending_async_refs = [
+            item
+            for item in selected
+            if candidate_memory_layer_name(item) == "pending_async_event"
+            or str(item.get("extraction_phase") or "").strip().lower() == "pending_async"
+        ]
+        selected_pending_async_summary = {
+            "selected_ref_count": len(selected_pending_async_refs),
+            "selected_event_hashes": [
+                ref.get("event_id_hash") or ref.get("ref_hash")
+                for ref in selected_pending_async_refs[:16]
+                if ref.get("event_id_hash") is not None or ref.get("ref_hash") is not None
+            ],
+            "selected_source_roles": ordered_normalized_role_list(
+                [
+                    role
+                    for ref in selected_pending_async_refs
+                    for role in (ref.get("source_roles", []) if isinstance(ref.get("source_roles"), list) else [])
+                ]
+            ),
+            "selected_hook_types": ordered_unique(
+                [
+                    str(hook_type)
+                    for ref in selected_pending_async_refs
+                    for hook_type in (ref.get("source_hook_types", []) if isinstance(ref.get("source_hook_types"), list) else [])
+                    if str(hook_type or "")
+                ]
+            ),
+        }
+        if selected_pending_async_refs:
+            quality_warnings.append(
+                f"selected_pending_async_event_refs:{len(selected_pending_async_refs)}"
+            )
         retrieval_model_coverage = {
             "event_embedding_vectors": len(event_embedding_vectors),
             "entity_embedding_vectors": len(entity_embedding_vectors),
@@ -9347,6 +9380,7 @@ class MatrixArkLocalAdapter:
                 "memory_layer_budget": memory_layer_budget,
                 "dropped_memory_layer_budget": dropped_memory_layer_budget,
                 "memory_layer_pressure": memory_layer_pressure,
+                "selected_pending_async": selected_pending_async_summary,
                 "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
                 "async_pipeline_readiness": async_pipeline_readiness,
                 "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
@@ -9526,6 +9560,7 @@ class MatrixArkLocalAdapter:
             "memory_layer_budget": memory_layer_budget,
             "dropped_memory_layer_budget": dropped_memory_layer_budget,
             "memory_layer_pressure": memory_layer_pressure,
+            "selected_pending_async": selected_pending_async_summary,
             "async_pipeline_readiness": async_pipeline_readiness,
             "used_local_context_tokens": pack["used_local_context_tokens"],
             "used_remote_context_tokens": pack["used_remote_context_tokens"],
@@ -9619,6 +9654,7 @@ class MatrixArkLocalAdapter:
             "memory_layer_budget": serving_memory_layer_budget_value,
             "dropped_memory_layer_budget": serving_dropped_memory_layer_budget_value,
             "memory_layer_pressure": serving_memory_layer_pressure_value,
+            "selected_pending_async_ref_count": selected_pending_async_summary["selected_ref_count"],
             "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
             "async_pipeline_readiness": async_pipeline_readiness,
             "scanned_records": int(retrieval_scan_stats.get("loaded_records") or retrieval_scan_stats.get("scanned_records") or len(records)) if isinstance(retrieval_scan_stats, dict) else len(records),
