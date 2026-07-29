@@ -167,6 +167,7 @@ const rapidjson::Value* JsonObjectMember(const rapidjson::Value& value, const ch
 }
 
 std::string LowerAscii(std::string value);
+std::string TrimAscii(std::string value);
 
 std::vector<std::string> JsonStringListMember(const rapidjson::Value& value, const char* name) {
     std::vector<std::string> values;
@@ -190,7 +191,7 @@ std::vector<std::string> JsonStringListMember(const rapidjson::Value& value, con
 }
 
 std::string NormalizeSourceRole(std::string role) {
-    role = LowerAscii(std::move(role));
+    role = LowerAscii(TrimAscii(std::move(role)));
     if (role == "assistant_response" || role == "agent" || role == "ai" ||
         role == "bot" || role == "llm" || role == "model") {
         return "assistant";
@@ -208,6 +209,7 @@ std::string NormalizeSourceRole(std::string role) {
 }
 
 void AddUniqueString(std::vector<std::string>* values, std::string value) {
+    value = TrimAscii(std::move(value));
     if (values == nullptr || value.empty()) {
         return;
     }
@@ -239,6 +241,61 @@ std::vector<std::string> CandidateSourceRoles(const rapidjson::Value& record) {
         }
     }
     return roles;
+}
+
+std::vector<std::string> CandidateMemorySelectionPolicies(const rapidjson::Value& record) {
+    std::vector<std::string> policies;
+    for (const auto& value : JsonStringListMember(record, "source_memory_selection_policies")) {
+        AddUniqueString(&policies, value);
+    }
+    AddUniqueString(&policies, JsonStringMember(record, "memory_selection_policy"));
+    if (const rapidjson::Value* counts = JsonObjectMember(record, "source_memory_selection_policy_counts")) {
+        for (auto it = counts->MemberBegin(); it != counts->MemberEnd(); ++it) {
+            if (!it->name.IsString()) {
+                continue;
+            }
+            const bool positive_count =
+                (it->value.IsUint64() && it->value.GetUint64() > 0) ||
+                (it->value.IsInt64() && it->value.GetInt64() > 0);
+            if (positive_count) {
+                AddUniqueString(&policies, std::string(it->name.GetString(), it->name.GetStringLength()));
+            }
+        }
+    }
+    if (const rapidjson::Value* metadata = JsonObjectMember(record, "metadata")) {
+        for (const auto& value : JsonStringListMember(*metadata, "source_memory_selection_policies")) {
+            AddUniqueString(&policies, value);
+        }
+        AddUniqueString(&policies, JsonStringMember(*metadata, "memory_selection_policy"));
+        if (const rapidjson::Value* counts = JsonObjectMember(*metadata, "source_memory_selection_policy_counts")) {
+            for (auto it = counts->MemberBegin(); it != counts->MemberEnd(); ++it) {
+                if (!it->name.IsString()) {
+                    continue;
+                }
+                const bool positive_count =
+                    (it->value.IsUint64() && it->value.GetUint64() > 0) ||
+                    (it->value.IsInt64() && it->value.GetInt64() > 0);
+                if (positive_count) {
+                    AddUniqueString(&policies, std::string(it->name.GetString(), it->name.GetStringLength()));
+                }
+            }
+        }
+    }
+    return policies;
+}
+
+std::string CandidateExtractionPhase(const rapidjson::Value& record) {
+    std::string phase = LowerAscii(TrimAscii(JsonStringMember(record, "extraction_phase")));
+    if (!phase.empty()) {
+        return phase;
+    }
+    if (const rapidjson::Value* metadata = JsonObjectMember(record, "metadata")) {
+        phase = LowerAscii(TrimAscii(JsonStringMember(*metadata, "extraction_phase")));
+        if (!phase.empty()) {
+            return phase;
+        }
+    }
+    return "unknown";
 }
 
 std::string CandidateMemoryScope(const rapidjson::Value& record) {
@@ -310,6 +367,21 @@ std::unordered_map<std::string, uint64_t> ParseBudgetMap(const rapidjson::Value&
     return budgets;
 }
 
+std::unordered_map<std::string, uint64_t> NormalizeBudgetKeys(
+    std::unordered_map<std::string, uint64_t> budgets, bool lowercase) {
+    std::unordered_map<std::string, uint64_t> normalized;
+    for (auto& item : budgets) {
+        std::string key = TrimAscii(std::move(item.first));
+        if (lowercase) {
+            key = LowerAscii(std::move(key));
+        }
+        if (!key.empty() && item.second > 0) {
+            normalized[key] = item.second;
+        }
+    }
+    return normalized;
+}
+
 
 bcache2::Status ReadMatrixArkServingCount(bcache2::client::TemporalStoreClient* impl,
                                           const std::string& count_key,
@@ -346,6 +418,23 @@ std::string LowerAscii(std::string value) {
         ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     }
     return value;
+}
+
+std::string TrimAscii(std::string value) {
+    size_t begin = 0;
+    while (begin < value.size() &&
+           std::isspace(static_cast<unsigned char>(value[begin]))) {
+        ++begin;
+    }
+    size_t end = value.size();
+    while (end > begin &&
+           std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+        --end;
+    }
+    if (begin == 0 && end == value.size()) {
+        return value;
+    }
+    return value.substr(begin, end - begin);
 }
 
 std::string CandidateText(const rapidjson::Value& record) {
@@ -897,6 +986,8 @@ struct MatrixArkPreparedRetrieveCandidate {
     std::string memory_scope;
     std::string memory_layer;
     std::vector<std::string> source_roles;
+    std::vector<std::string> memory_selection_policies;
+    std::string extraction_phase;
     double continuity_boost = 0.0;
     bool has_citation = false;
     std::unordered_set<std::string> terms;
@@ -1042,6 +1133,8 @@ MatrixArkPreparedRetrieveCacheEntry PrepareMatrixArkRetrieveCandidates(
         candidate.memory_layer = CandidateMemoryLayer(
             candidate.record_type, candidate.memory_scope, candidate.session_continuity);
         candidate.source_roles = CandidateSourceRoles(record);
+        candidate.memory_selection_policies = CandidateMemorySelectionPolicies(record);
+        candidate.extraction_phase = CandidateExtractionPhase(record);
         candidate.continuity_boost =
             ContinuityBoost(candidate.record_type, candidate.context_class,
                             candidate.session_continuity);
@@ -1392,7 +1485,12 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     }
     CrossSessionPolicy cross_policy = ParseCrossSessionPolicy(request, scope, remote_budget, question_type);
     auto source_role_budget_tokens = ParseBudgetMap(request, "source_role_budget_tokens");
-    auto memory_layer_budget_tokens = ParseBudgetMap(request, "memory_layer_budget_tokens");
+    auto memory_layer_budget_tokens =
+        NormalizeBudgetKeys(ParseBudgetMap(request, "memory_layer_budget_tokens"), true);
+    auto memory_selection_policy_budget_tokens =
+        NormalizeBudgetKeys(ParseBudgetMap(request, "memory_selection_policy_budget_tokens"), false);
+    auto extraction_phase_budget_tokens =
+        NormalizeBudgetKeys(ParseBudgetMap(request, "extraction_phase_budget_tokens"), true);
     bool prefer_current_agent = JsonBoolMember(request, "prefer_current_agent", false);
     std::string current_agent_scope_key = JsonStringMember(request, "current_agent_scope_key");
     if (current_agent_scope_key.empty()) {
@@ -1428,6 +1526,8 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         std::string session_continuity;
         std::string memory_layer;
         std::vector<std::string> source_roles;
+        std::vector<std::string> memory_selection_policies;
+        std::string extraction_phase;
         double continuity_boost;
         double cross_session_rerank_boost;
     };
@@ -1480,6 +1580,8 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
                               continuity,
                               candidate.memory_layer,
                               candidate.source_roles,
+                              candidate.memory_selection_policies,
+                              candidate.extraction_phase,
                               continuity_boost,
                               cross_session_rerank_boost});
         }
@@ -1514,11 +1616,15 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     uint64_t dropped_policy_ref = 0;
     uint64_t dropped_source_role_budget = 0;
     uint64_t dropped_memory_layer_budget = 0;
+    uint64_t dropped_memory_selection_policy_budget = 0;
+    uint64_t dropped_extraction_phase_budget = 0;
     uint64_t cross_used_tokens = 0;
     uint64_t cross_selected_refs = 0;
     uint64_t entity_bridge_selected_refs = 0;
     std::unordered_map<std::string, uint64_t> source_role_used_tokens;
     std::unordered_map<std::string, uint64_t> memory_layer_used_tokens;
+    std::unordered_map<std::string, uint64_t> memory_selection_policy_used_tokens;
+    std::unordered_map<std::string, uint64_t> extraction_phase_used_tokens;
     std::unordered_set<std::string> selected_cross_sessions;
     std::unordered_set<std::string> selected_ref_signatures;
     for (const auto& item : scored) {
@@ -1552,6 +1658,25 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         if (layer_budget_it != memory_layer_budget_tokens.end() &&
             memory_layer_used_tokens[item.memory_layer] + item.tokens > layer_budget_it->second) {
             ++dropped_memory_layer_budget;
+            continue;
+        }
+        bool memory_selection_policy_budget_exceeded = false;
+        for (const auto& policy : item.memory_selection_policies) {
+            auto budget_it = memory_selection_policy_budget_tokens.find(policy);
+            if (budget_it != memory_selection_policy_budget_tokens.end() &&
+                memory_selection_policy_used_tokens[policy] + item.tokens > budget_it->second) {
+                memory_selection_policy_budget_exceeded = true;
+                break;
+            }
+        }
+        if (memory_selection_policy_budget_exceeded) {
+            ++dropped_memory_selection_policy_budget;
+            continue;
+        }
+        auto phase_budget_it = extraction_phase_budget_tokens.find(item.extraction_phase);
+        if (phase_budget_it != extraction_phase_budget_tokens.end() &&
+            extraction_phase_used_tokens[item.extraction_phase] + item.tokens > phase_budget_it->second) {
+            ++dropped_extraction_phase_budget;
             continue;
         }
         bool is_cross_session = item.session_continuity == "cross_session";
@@ -1603,6 +1728,12 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         if (!item.memory_layer.empty()) {
             memory_layer_used_tokens[item.memory_layer] += item.tokens;
         }
+        for (const auto& policy : item.memory_selection_policies) {
+            memory_selection_policy_used_tokens[policy] += item.tokens;
+        }
+        if (!item.extraction_phase.empty()) {
+            extraction_phase_used_tokens[item.extraction_phase] += item.tokens;
+        }
         rapidjson::Value ref(rapidjson::kObjectType);
         selected_counts[context_class] += 1;
         if (item.node_hash != 0) {
@@ -1623,6 +1754,12 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
                 roles.PushBack(rapidjson::Value(role.c_str(), alloc), alloc);
             }
             ref.AddMember("source_roles", roles, alloc);
+            rapidjson::Value policies(rapidjson::kArrayType);
+            for (const auto& policy : item.memory_selection_policies) {
+                policies.PushBack(rapidjson::Value(policy.c_str(), alloc), alloc);
+            }
+            ref.AddMember("memory_selection_policies", policies, alloc);
+            ref.AddMember("extraction_phase", rapidjson::Value(item.extraction_phase.c_str(), alloc), alloc);
             ref.AddMember("continuity_boost", item.continuity_boost, alloc);
             ref.AddMember("cross_session_rerank_boost", item.cross_session_rerank_boost, alloc);
             const char* continuity_reason =
@@ -1669,6 +1806,8 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     dropped.AddMember("policy_ref", dropped_policy_ref, alloc);
     dropped.AddMember("source_role_budget", dropped_source_role_budget, alloc);
     dropped.AddMember("memory_layer_budget", dropped_memory_layer_budget, alloc);
+    dropped.AddMember("memory_selection_policy_budget", dropped_memory_selection_policy_budget, alloc);
+    dropped.AddMember("extraction_phase_budget", dropped_extraction_phase_budget, alloc);
     rapidjson::Value reasons(rapidjson::kObjectType);
     reasons.AddMember("over_budget", dropped_over_budget, alloc);
     reasons.AddMember("cross_session_budget", dropped_cross_budget, alloc);
@@ -1679,6 +1818,8 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     reasons.AddMember("policy_ref", dropped_policy_ref, alloc);
     reasons.AddMember("source_role_budget", dropped_source_role_budget, alloc);
     reasons.AddMember("memory_layer_budget", dropped_memory_layer_budget, alloc);
+    reasons.AddMember("memory_selection_policy_budget", dropped_memory_selection_policy_budget, alloc);
+    reasons.AddMember("extraction_phase_budget", dropped_extraction_phase_budget, alloc);
     dropped.AddMember("reason_counts", reasons, alloc);
     pack.AddMember("dropped_refs", dropped, alloc);
     pack.AddMember("used_context_tokens", used_tokens, alloc);
@@ -1754,7 +1895,9 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         metrics.AddMember("dropped_refs", dropped_over_budget + dropped_cross_budget +
                                           dropped_cross_session_cap + dropped_cross_candidate_cap +
                                           dropped_low_score + dropped_duplicate_ref + dropped_policy_ref +
-                                          dropped_source_role_budget + dropped_memory_layer_budget,
+                                          dropped_source_role_budget + dropped_memory_layer_budget +
+                                          dropped_memory_selection_policy_budget +
+                                          dropped_extraction_phase_budget,
                           alloc);
         metrics.AddMember("scanned_records", prepared->scanned_records, alloc);
         metrics.AddMember("index_postings_read", static_cast<uint64_t>(prepared->context_index_records), alloc);
@@ -1878,6 +2021,50 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         layer_budget.AddMember("used_tokens", used, alloc);
         layer_budget.AddMember("strategy", "bound_session_profile_summary_and_raw_event_layers_before_context_pack_injection", alloc);
         recall.AddMember("memory_layer_budget_policy", layer_budget, alloc);
+    }
+    if (!memory_selection_policy_budget_tokens.empty()) {
+        rapidjson::Value policy_budget(rapidjson::kObjectType);
+        policy_budget.AddMember("enabled", true, alloc);
+        policy_budget.AddMember("mode", "bounded_memory_selection_policy_tokens", alloc);
+        policy_budget.AddMember("dropped_ref_count", dropped_memory_selection_policy_budget, alloc);
+        rapidjson::Value limits(rapidjson::kObjectType);
+        for (const auto& item : memory_selection_policy_budget_tokens) {
+            rapidjson::Value key;
+            key.SetString(item.first.c_str(), static_cast<rapidjson::SizeType>(item.first.size()), alloc);
+            limits.AddMember(key, item.second, alloc);
+        }
+        policy_budget.AddMember("budget_tokens", limits, alloc);
+        rapidjson::Value used(rapidjson::kObjectType);
+        for (const auto& item : memory_selection_policy_used_tokens) {
+            rapidjson::Value key;
+            key.SetString(item.first.c_str(), static_cast<rapidjson::SizeType>(item.first.size()), alloc);
+            used.AddMember(key, item.second, alloc);
+        }
+        policy_budget.AddMember("selected_tokens_by_policy", used, alloc);
+        policy_budget.AddMember("strategy", "bound_lossy_summary_decision_tool_evidence_selection_policies_before_context_pack_injection", alloc);
+        recall.AddMember("memory_selection_policy_budget_policy", policy_budget, alloc);
+    }
+    if (!extraction_phase_budget_tokens.empty()) {
+        rapidjson::Value phase_budget(rapidjson::kObjectType);
+        phase_budget.AddMember("enabled", true, alloc);
+        phase_budget.AddMember("mode", "bounded_extraction_phase_tokens", alloc);
+        phase_budget.AddMember("dropped_ref_count", dropped_extraction_phase_budget, alloc);
+        rapidjson::Value limits(rapidjson::kObjectType);
+        for (const auto& item : extraction_phase_budget_tokens) {
+            rapidjson::Value key;
+            key.SetString(item.first.c_str(), static_cast<rapidjson::SizeType>(item.first.size()), alloc);
+            limits.AddMember(key, item.second, alloc);
+        }
+        phase_budget.AddMember("budget_tokens", limits, alloc);
+        rapidjson::Value used(rapidjson::kObjectType);
+        for (const auto& item : extraction_phase_used_tokens) {
+            rapidjson::Value key;
+            key.SetString(item.first.c_str(), static_cast<rapidjson::SizeType>(item.first.size()), alloc);
+            used.AddMember(key, item.second, alloc);
+        }
+        phase_budget.AddMember("selected_tokens_by_phase", used, alloc);
+        phase_budget.AddMember("strategy", "bound_pending_provisional_and_final_memory_before_context_pack_injection", alloc);
+        recall.AddMember("extraction_phase_budget_policy", phase_budget, alloc);
     }
     rapidjson::Value tree(rapidjson::kObjectType);
     tree.AddMember("enabled", true, alloc);
