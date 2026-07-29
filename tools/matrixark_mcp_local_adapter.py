@@ -1457,7 +1457,16 @@ class MatrixArkLocalAdapter:
                 return {"records": cached.get("records", []), "scan_stats": scan_stats}
         raw_records = self.read_all()
         node_scope_by_hash: dict[int, Json] = {}
+        summary_embedding_scope_by_ref: dict[Any, Json] = {}
         for source_record in raw_records:
+            if (
+                source_record.get("record_type") == "context_embedding"
+                and source_record.get("ref_type") == "summary"
+                and source_record.get("ref_hash") not in (None, "")
+            ):
+                embedding_scope = candidate_access_scope(source_record)
+                if embedding_scope:
+                    summary_embedding_scope_by_ref[source_record.get("ref_hash")] = embedding_scope
             try:
                 source_node_hash = int(source_record.get("node_hash") or 0)
             except (TypeError, ValueError):
@@ -1486,6 +1495,11 @@ class MatrixArkLocalAdapter:
             record_scope = candidate_access_scope(record)
             if record_scope:
                 return record_scope
+            if record.get("record_type") == "context_summary":
+                summary_ref_hash = record.get("summary_hash") or record.get("node_hash")
+                embedding_scope = summary_embedding_scope_by_ref.get(summary_ref_hash)
+                if embedding_scope:
+                    return embedding_scope
             try:
                 node_hash = int(record.get("node_hash") or 0)
             except (TypeError, ValueError):
@@ -7800,10 +7814,20 @@ class MatrixArkLocalAdapter:
                 record
                 for record in records
                 if record.get("record_type") == "context_summary"
-                and str(record.get("memory_scope") or "") == "user_profile"
-                and str(record.get("session_continuity") or "") == "cross_session"
+                and str(
+                    record.get("memory_scope")
+                    or embedding_metadata_by_ref.get(("summary", record.get("summary_hash") or record.get("node_hash")), {}).get("memory_scope")
+                    or ""
+                )
+                == "user_profile"
+                and str(
+                    record.get("session_continuity")
+                    or embedding_metadata_by_ref.get(("summary", record.get("summary_hash") or record.get("node_hash")), {}).get("session_continuity")
+                    or ""
+                )
+                == "cross_session"
                 and record.get("summary_hash") not in seen_profile_summary_hashes
-                and access_scope_matches_before_scoring(record, retrieval_scope)
+                and recovered_scope_matches(record, retrieval_scope)
             ]
             tree_candidate_records.extend(profile_summary_bridges)
         extraction_committed_event_ids = {
@@ -7878,7 +7902,7 @@ class MatrixArkLocalAdapter:
                     return deadline_fallback("deadline_during_summary_scan", records)
                 if record.get("record_type") != "context_summary":
                     continue
-                if not access_scope_matches_before_scoring(record, retrieval_scope):
+                if not recovered_scope_matches(record, retrieval_scope):
                     continue
                 is_profile_summary_bridge = (
                     str(record.get("memory_scope") or "") == "user_profile"
@@ -8653,7 +8677,7 @@ class MatrixArkLocalAdapter:
                     continue
                 if str(record.get("summary_type") or "") not in {"node_l0", "node_l1", "batch_l0", "session_l0"}:
                     continue
-                if not access_scope_matches_before_scoring(record, retrieval_scope):
+                if not recovered_scope_matches(record, retrieval_scope):
                     continue
                 summary_text = str(record.get("summary_text") or "")
                 if not summary_text:
