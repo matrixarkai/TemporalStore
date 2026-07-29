@@ -1174,6 +1174,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
 
     def test_modular_async_ingest_reports_session_buffer_readiness(self) -> None:
         async_mod = importlib.import_module("tools.matrixark_mcp_async_ingest")
+        runtime_mod = importlib.import_module("tools.matrixark_mcp_session_runtime")
 
         class Batch:
             def __enter__(self):
@@ -1257,6 +1258,32 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(first_event["source_hook_type_counts"], first_task["source_hook_type_counts"])
         self.assertEqual(first_event["source_codex_event_counts"], first_task["source_codex_event_counts"])
         self.assertIsNone(first["auto_batch_extract_result"])
+
+        class BufferAdapter:
+            def __init__(self) -> None:
+                self.records = []
+
+            def append(self, record):
+                self.records.append(record)
+
+        buffer_adapter = BufferAdapter()
+        runtime_mod.append_session_buffer_event(
+            buffer_adapter,
+            envelope={
+                **envelope,
+                "metadata": {"codex_event": "Stop"},
+                "messages": [{"role": "assistant", "content": "final assistant decision"}],
+                "ingestion_time_ms": 124,
+            },
+            event_id_hash=99,
+            node_hash=100,
+            node_path=["tenant:tenant", "user:user", "session:session"],
+            hook=None,
+        )
+        buffered = buffer_adapter.records[0]
+        self.assertEqual({"assistant": 1}, buffered["source_role_counts"])
+        self.assertEqual({"after_llm": 1}, buffered["source_hook_type_counts"])
+        self.assertEqual({"Stop": 1}, buffered["source_codex_event_counts"])
 
         second_envelope = {**envelope, "messages": [{"role": "assistant", "content": "second live message"}], "ingestion_time_ms": 124}
         second = async_mod.lightweight_async_accept(target, args, envelope=second_envelope, hook=None, idle_commit_result={})

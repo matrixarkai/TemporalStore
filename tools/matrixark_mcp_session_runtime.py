@@ -102,6 +102,9 @@ def _event_source_count_summary(envelope: Json, hook: Json | None) -> Json:
         add_values(codex_event_counts, metadata.get("source_codex_events"))
         add_values(codex_event_counts, hook.get("codex_event"))
         add_values(codex_event_counts, hook.get("trigger"))
+    if not hook_type_counts:
+        for codex_event, count in codex_event_counts.items():
+            add_count(hook_type_counts, legacy_hook_type_from_codex_event(codex_event), count)
 
     metadata_selection_counts = (
         metadata.get("source_memory_selection_policy_counts")
