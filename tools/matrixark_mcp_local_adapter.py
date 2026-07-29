@@ -1156,6 +1156,8 @@ def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
         return (record_type, record.get("node_hash"))
     if record_type == "context_child_ref":
         return (record_type, record.get("child_ref_hash"))
+    if record_type == "context_event":
+        return (record_type, record.get("event_id_hash"))
     if record_type == "context_summary":
         return (record_type, record.get("summary_type"), record.get("summary_hash") or record.get("node_hash"))
     if record_type == "context_embedding":

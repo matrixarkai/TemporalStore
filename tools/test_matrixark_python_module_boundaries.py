@@ -210,6 +210,29 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("raw_ingestion", storage_mod.storage_record_kind(raw_hook_message))
         self.assertEqual("context_event", storage_mod.storage_record_kind(serving_event))
 
+    def test_latest_value_compaction_keeps_one_context_event_per_event_hash(self) -> None:
+        latest_mod = importlib.import_module("tools.matrixark_mcp_latest_values")
+
+        compacted = latest_mod.compact_latest_value_records(
+            [
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 12345,
+                    "status": "pending",
+                    "updated_at_ms": 100,
+                },
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 12345,
+                    "status": "extraction_committed",
+                    "updated_at_ms": 200,
+                },
+            ]
+        )
+
+        self.assertEqual(1, len(compacted))
+        self.assertEqual("extraction_committed", compacted[0]["status"])
+
     def test_recent_ingestion_report_summarizes_serving_visibility_gate(self) -> None:
         report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
         broken_report = {

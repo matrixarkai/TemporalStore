@@ -3124,6 +3124,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertTrue(commits[0]["trigger_evidence"]["threshold_ready"])
                 self.assertEqual(2, commits[0]["trigger_evidence"]["pending_event_count"])
                 committed_event_hashes = {int(event_id) for event_id in commit["source_event_ids"]}
+                latest_context_events = [
+                    record
+                    for record in records
+                    if record.get("record_type") == "context_event"
+                    and record.get("event_id_hash") in committed_event_hashes
+                ]
+                self.assertEqual(2, len(latest_context_events))
                 committed_events = [
                     record
                     for record in records
