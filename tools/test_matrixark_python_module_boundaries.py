@@ -1275,7 +1275,16 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "updated_at_ms": 100,
                 "envelope": {
                     "messages": [{"role": "user", "content": "first pending message"}],
-                    "metadata": {"hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
+                    "metadata": {
+                        "hook_type": "before_llm",
+                        "codex_event": "UserPromptSubmit",
+                        "codex_memory_selection": {
+                            "policy": "selected_user_prompt",
+                            "selection_lossy": False,
+                            "retained_text_ratio": 1.0,
+                            "retained_line_ratio": 1.0,
+                        },
+                    },
                     "ingestion_time_ms": 100,
                 },
             }
@@ -1310,14 +1319,28 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual({"user": 1}, committed["source_role_counts"])
         self.assertEqual({"before_llm": 1}, committed["source_hook_type_counts"])
         self.assertEqual({"UserPromptSubmit": 1}, committed["source_codex_event_counts"])
+        self.assertEqual(["selected_user_prompt"], committed["source_memory_selection_policies"])
+        self.assertEqual({"selected_user_prompt": 1}, committed["source_memory_selection_policy_counts"])
+        self.assertEqual(1, committed["source_memory_selection_complete_count"])
+        self.assertEqual(1.0, committed["source_memory_selection_retained_text_ratio_avg"])
+        self.assertEqual(
+            {"selected_user_prompt": 1},
+            adapter.batch_extract_calls[0]["metadata"]["source_memory_selection_policy_counts"],
+        )
         self.assertEqual(committed["trigger_evidence"], adapter.appended[0]["trigger_evidence"])
         self.assertEqual(committed["source_role_counts"], adapter.appended[0]["source_role_counts"])
         self.assertEqual(committed["source_hook_type_counts"], adapter.appended[0]["source_hook_type_counts"])
         self.assertEqual(committed["source_codex_event_counts"], adapter.appended[0]["source_codex_event_counts"])
+        self.assertEqual(
+            committed["source_memory_selection_policy_counts"],
+            adapter.appended[0]["source_memory_selection_policy_counts"],
+        )
         async_task = next(record for record in adapter.appended if record["record_type"] == "matrixark_async_pipeline_task")
         self.assertEqual(committed["source_role_counts"], async_task["source_role_counts"])
         self.assertEqual(committed["source_hook_type_counts"], async_task["source_hook_type_counts"])
         self.assertEqual(committed["source_codex_event_counts"], async_task["source_codex_event_counts"])
+        self.assertEqual(committed["source_memory_selection_policy_counts"], async_task["source_memory_selection_policy_counts"])
+        self.assertEqual(1, async_task["source_memory_selection_complete_count"])
 
         multi_adapter = Adapter()
         multi_adapter.pending = [
