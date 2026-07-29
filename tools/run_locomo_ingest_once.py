@@ -138,6 +138,22 @@ def main() -> int:
     parser.add_argument("--output", default="/tmp/temporalstore_locomo_ingest_once_result.json")
     parser.add_argument("--misses", default="/tmp/temporalstore_locomo_ingest_once_misses.jsonl")
     parser.add_argument(
+        "--progress-output",
+        default="",
+        help="Optional progress JSON path. Defaults to <output>.progress.json.",
+    )
+    parser.add_argument(
+        "--per-query-output",
+        default="",
+        help="Optional append-only per-query JSONL path. Defaults to <output>.per_query.jsonl.",
+    )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=1,
+        help="Write progress every N completed scored queries.",
+    )
+    parser.add_argument(
         "--dataset-name",
         default=None,
         help="Override report dataset name. Defaults to locomo or longmemeval_s by input shape.",
@@ -446,6 +462,28 @@ def main() -> int:
         help="Reuse an existing ready Rust TemporalStore report instead of replaying the corpus again.",
     )
     args = parser.parse_args()
+    output_path = Path(args.output)
+    progress_path = Path(args.progress_output) if args.progress_output else output_path.with_suffix(output_path.suffix + ".progress.json")
+    per_query_output_path = (
+        Path(args.per_query_output) if args.per_query_output else output_path.with_suffix(output_path.suffix + ".per_query.jsonl")
+    )
+    progress_every = max(1, int(args.progress_every))
+    if per_query_output_path.exists():
+        per_query_output_path.unlink()
+    write_benchmark_progress(
+        progress_path,
+        {
+            "phase": "starting",
+            "input": str(args.input),
+            "output": str(output_path),
+            "misses": str(args.misses),
+            "per_query_output": str(per_query_output_path),
+            "reader_mode": args.reader_mode,
+            "reader_model": args.reader_model,
+            "require_rust_temporalstore": bool(args.require_rust_temporalstore),
+            "require_full_rust_temporalstore_replay": bool(args.require_full_rust_temporalstore_replay),
+        },
+    )
     if not args.baseline_reader_model:
         args.baseline_reader_model = args.reader_model
     if not args.baseline_embedding_model:
@@ -489,7 +527,44 @@ def main() -> int:
     )
     rust_backend_report = load_reusable_rust_temporalstore_report(args)
     if rust_backend_report is None and args.require_rust_temporalstore:
-        rust_backend_report = run_rust_temporalstore_backend(args)
+        write_benchmark_progress(
+            progress_path,
+            {
+                "phase": "rust_temporalstore_backend_start",
+                "input": str(args.input),
+                "require_full_rust_temporalstore_replay": bool(args.require_full_rust_temporalstore_replay),
+                "rust_temporalstore_max_cases": int(args.rust_temporalstore_max_cases),
+                "rust_temporalstore_timeout_seconds": float(args.rust_temporalstore_timeout_seconds),
+            },
+        )
+        try:
+            rust_backend_report = run_rust_temporalstore_backend(args)
+        except Exception as exc:
+            write_benchmark_progress(
+                progress_path,
+                {
+                    "phase": "rust_temporalstore_backend_failed",
+                    "error": str(exc),
+                    "input": str(args.input),
+                    "completed_cases": 0,
+                },
+            )
+            raise
+        write_benchmark_progress(
+            progress_path,
+            {
+                "phase": "rust_temporalstore_backend_complete",
+                "rust_temporalstore_backend_ready": bool(
+                    rust_backend_report and rust_backend_report.get("rust_temporalstore_backend_ready")
+                ),
+                "rust_temporalstore_full_replay_ready": bool(
+                    rust_backend_report and rust_backend_report.get("rust_temporalstore_full_replay_ready")
+                ),
+                "rust_temporalstore_report": rust_backend_report.get("report_path", "")
+                if isinstance(rust_backend_report, dict)
+                else "",
+            },
+        )
     reader = BenchmarkReader(
         ReaderConfig(
             mode=args.reader_mode,
@@ -509,6 +584,19 @@ def main() -> int:
     )
 
     records = load_records(Path(args.input))
+    expected_case_count = count_benchmark_questions(records)
+    write_benchmark_progress(
+        progress_path,
+        {
+            "phase": "reader_scoring_start",
+            "record_count": len(records),
+            "expected_case_count": expected_case_count,
+            "question_limit": int(args.question_limit),
+            "question_offset": int(args.question_offset),
+            "reader_mode": reader.config.mode,
+            "reader_model": reader.config.model,
+        },
+    )
     total = 0
     hit_count = 0
     reciprocal_rank_sum = 0.0
@@ -622,6 +710,22 @@ def main() -> int:
             effective_max_events = adaptive_max_events_for_question(question, args)
             blocks = rank_sources(question, query_sources, effective_max_events, retrieval_budget)
             retrieval_ms = elapsed_ms(retrieval_started)
+            retrieved_tokens_before_reader = sum(estimated_tokens(block.get("body", "")) for block in blocks)
+            write_benchmark_progress(
+                progress_path,
+                {
+                    "phase": "reader_call_start",
+                    "query_id": query_id,
+                    "record_index": record_index,
+                    "question_index": question_index,
+                    "completed_cases": total,
+                    "expected_case_count": expected_case_count,
+                    "reader_mode": reader.config.mode,
+                    "reader_model": reader.config.model,
+                    "retrieved_blocks": len(blocks),
+                    "retrieved_tokens": retrieved_tokens_before_reader,
+                },
+            )
             reader_started = time.perf_counter()
             reader_answer = reader.answer(question, blocks)
             reader_ms = elapsed_ms(reader_started)
@@ -719,9 +823,10 @@ def main() -> int:
                     "reader_ms": reader_ms,
                 }
             )
-            if total == 1 or total % int(os.environ.get("MATRIXARK_BENCHMARK_PROGRESS_EVERY", "25")) == 0:
+            append_benchmark_jsonl(per_query_output_path, per_query[-1])
+            if total == 1 or total % progress_every == 0:
                 write_locomo_reader_progress(
-                    progress_path=Path(args.output).with_suffix(Path(args.output).suffix + ".progress.json"),
+                    progress_path=progress_path,
                     phase="running_reader",
                     completed_queries=total,
                     hit_count=hit_count,
@@ -951,9 +1056,9 @@ def main() -> int:
     }
     report["paper_comparable_claim_ready"] = paper_comparable_claim_ready(report, thresholds)
 
-    Path(args.output).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     write_locomo_reader_progress(
-        progress_path=Path(args.output).with_suffix(Path(args.output).suffix + ".progress.json"),
+        progress_path=progress_path,
         phase="complete",
         completed_queries=total,
         hit_count=hit_count,
@@ -967,11 +1072,55 @@ def main() -> int:
         reader_latencies_ms=reader_latencies_ms,
         last_query_id=per_query[-1]["query_id"] if per_query else "",
     )
+    write_benchmark_progress(
+        progress_path,
+        {
+            "phase": "complete",
+            "output": str(output_path),
+            "misses": str(args.misses),
+            "per_query_output": str(per_query_output_path),
+            "case_count": total,
+            "expected_case_count": expected_case_count,
+            "retrieval_hit_at_k": hit_rate,
+            "reader_hit_rate": reader_hit_rate,
+            "reader_open_source_calls": reader.open_source_calls,
+            "reader_error_count": reader.error_count,
+            "reader_fallback_count": reader.fallback_count,
+            "benchmark_threshold_passed": not threshold_violations,
+            "benchmark_threshold_violations": threshold_violations,
+            "token_reduction_percent": total_token_reduction,
+        },
+    )
     with Path(args.misses).open("w", encoding="utf-8") as handle:
         for miss in misses:
             handle.write(json.dumps(miss, ensure_ascii=False) + "\n")
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["passed"] else 1
+
+
+def count_benchmark_questions(records: list[Any]) -> int:
+    total = 0
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        total += count_scoreable_questions(record_questions(record))
+    return total
+
+
+def write_benchmark_progress(path: Path, update: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    progress = {
+        "schema": "matrixark_benchmark_progress_v2",
+        "updated_at_ms": int(time.time() * 1000),
+    }
+    progress.update(update)
+    path.write_text(json.dumps(progress, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def append_benchmark_jsonl(path: Path, row: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def count_scoreable_questions(questions: list[dict[str, Any]]) -> int:
