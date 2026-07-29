@@ -1317,6 +1317,83 @@ struct CrossSessionPolicy {
     parallelism: u64,
 }
 
+fn native_question_contains_any(lower: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| lower.contains(needle))
+}
+
+fn infer_native_question_type(query: &str) -> String {
+    let lower = query.to_ascii_lowercase();
+    if native_question_contains_any(
+        &lower,
+        &[
+            "when",
+            "what date",
+            "which date",
+            "yesterday",
+            "tomorrow",
+            "last week",
+            "next week",
+            "before",
+            "after",
+            "as of",
+            "valid as of",
+        ],
+    ) {
+        return "date".to_string();
+    }
+    if native_question_contains_any(
+        &lower,
+        &[
+            "current",
+            "currently",
+            "latest",
+            "now",
+            "still",
+            "today",
+            "valid",
+            "status",
+            "preference",
+            "prefer",
+            "likes",
+            "where does",
+            "where is",
+        ],
+    ) {
+        return "current_state".to_string();
+    }
+    if native_question_contains_any(
+        &lower,
+        &["why", "reason", "because", "feel", "felt", "emotion", "happy", "sad", "angry", "worried", "excited"],
+    ) {
+        return "why_emotion".to_string();
+    }
+    if native_question_contains_any(
+        &lower,
+        &["overview", "summarize", "summary", "explore", "broad", "what is in", "what do we know", "topics", "map", "inventory"],
+    ) {
+        return "broad_exploration".to_string();
+    }
+    if native_question_contains_any(
+        &lower,
+        &["evidence", "quote", "exactly", "what did ", "conversation", "dialogue", "message"],
+    ) {
+        return "evidence".to_string();
+    }
+    if native_question_contains_any(
+        &lower,
+        &["procedure", "step", "steps", "how to", "troubleshoot", "debug", "rollback", "runbook", "playbook", "checklist", "fix", "remediate", "mitigate"],
+    ) {
+        return "procedure".to_string();
+    }
+    if native_question_contains_any(
+        &lower,
+        &["both", "together", "across", "between", "compare", "combine", "sessions", "multi-hop", "multi session", "multi-session"],
+    ) {
+        return "multi_hop".to_string();
+    }
+    "fact".to_string()
+}
+
 fn parse_cross_session_policy(
     request: &Value,
     scope: Option<&Value>,
@@ -2157,8 +2234,9 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
     let question_type = request
         .get("question_type")
         .and_then(Value::as_str)
-        .unwrap_or("fact")
-        .to_string();
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| infer_native_question_type(&query));
     let mut scan_command = command.clone();
     scan_command.scope = request
         .get("scope")
@@ -2442,7 +2520,7 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
     let pack = json!({
         "context_pack_id": context_pack_id,
         "query": query,
-        "question_type": request.get("question_type").cloned().unwrap_or_else(|| json!("fact")),
+        "question_type": question_type,
         "selected_ref_counts": selected_counts,
         "remote_context_refs": selected,
         "selected_refs": selected,
@@ -3123,6 +3201,22 @@ mod tests {
         let stats = command_stats(&command, &json!({"ok": true, "written": 2}));
         assert_eq!(stats.records_written, 2);
         assert!(stats.bytes_written > 0);
+    }
+
+    #[test]
+    fn native_retrieve_infers_question_type_when_absent() {
+        assert_eq!(
+            infer_native_question_type("What is the latest assistant decision for bbb222?"),
+            "current_state"
+        );
+        assert_eq!(
+            infer_native_question_type("Show evidence from the exact message"),
+            "evidence"
+        );
+        assert_eq!(
+            infer_native_question_type("Compare both sessions together"),
+            "multi_hop"
+        );
     }
 
     #[test]
