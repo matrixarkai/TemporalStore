@@ -2974,6 +2974,55 @@ def selected_assistant_outcome_facts(text: str, *, max_facts: int = 6) -> list[s
     return facts[:max_facts]
 
 
+def assistant_memory_line_covered_by_outcome_facts(line: str, outcome_facts: list[str]) -> bool:
+    normalized_line = " ".join(str(line or "").lower().split())
+    if not normalized_line or not outcome_facts:
+        return False
+    normalized_facts = [" ".join(str(fact or "").lower().split()) for fact in outcome_facts if str(fact or "").strip()]
+    if not normalized_facts:
+        return False
+    has_outcome_fact = any(fact.startswith("outcome:") for fact in normalized_facts)
+
+    line_commit_hashes = set(re.findall(r"\b[0-9a-f]{7,40}\b", normalized_line))
+    if line_commit_hashes:
+        for fact in normalized_facts:
+            fact_commit_hashes = set(re.findall(r"\b[0-9a-f]{7,40}\b", fact))
+            if line_commit_hashes & fact_commit_hashes:
+                return True
+
+    line_numbers = set(re.findall(r"\b\d+\b", normalized_line))
+    if re.search(r"\b(?:test|tests|validation|py_compile|unittest|pytest|cargo)\b", normalized_line):
+        for fact in normalized_facts:
+            if fact.startswith("validation:"):
+                if re.search(r"\b(?:commit|pushed|push|origin/main|refs/heads/main)\b", normalized_line) and not has_outcome_fact:
+                    continue
+                fact_numbers = set(re.findall(r"\b\d+\b", fact))
+                if not line_numbers or line_numbers & fact_numbers:
+                    return True
+
+    line_tokens = {
+        token
+        for token in re.findall(r"\b[a-z0-9_/-]{4,}\b", normalized_line)
+        if token not in {"this", "that", "with", "from", "into", "after", "before", "tests", "passed"}
+    }
+    for fact in normalized_facts:
+        fact_tokens = {
+            token
+            for token in re.findall(r"\b[a-z0-9_/-]{4,}\b", fact)
+            if token not in {"this", "that", "with", "from", "into", "after", "before", "tests", "passed"}
+        }
+        overlap = line_tokens & fact_tokens
+        if fact.startswith("next:") and re.search(r"\bnext\b", normalized_line) and len(overlap) >= 2:
+            return True
+        if fact.startswith("blocker:") and re.search(r"\b(?:blocked|blocker|failed|failure|error|missing|rejected)\b", normalized_line) and len(overlap) >= 2:
+            return True
+        if fact.startswith("changed:") and re.search(r"\b(?:changed|updated|implemented|added|removed|fixed)\b", normalized_line) and len(overlap) >= 2:
+            return True
+        if fact.startswith("outcome:") and re.search(r"\b(?:commit|pushed|push|origin/main|refs/heads/main)\b", normalized_line) and len(overlap) >= 2:
+            return True
+    return False
+
+
 def selected_assistant_memory_text(text: str, *, max_chars: int = 4096, max_lines: int = 48) -> str:
     """Keep decision/outcome lines from assistant responses without storing large answers verbatim."""
     compact = str(text or "").strip()
@@ -3001,7 +3050,13 @@ def selected_assistant_memory_text(text: str, *, max_chars: int = 4096, max_line
     outcome_facts = selected_assistant_outcome_facts(compact)
     if outcome_facts:
         outcome_line = "; ".join(outcome_facts)
-        selected = [outcome_line] + [line for line in selected if line not in outcome_facts and line != outcome_line]
+        selected = [outcome_line] + [
+            line
+            for line in selected
+            if line not in outcome_facts
+            and line != outcome_line
+            and not assistant_memory_line_covered_by_outcome_facts(line, outcome_facts)
+        ]
     evidence = "\n".join(selected).strip()
     if len(evidence) > max_chars:
         evidence = evidence[:max_chars].rstrip() + "\n[assistant memory truncated]"
