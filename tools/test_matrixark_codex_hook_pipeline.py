@@ -3601,6 +3601,40 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertEqual("auto", request["memory_selection_policy_budget_mode"])
 
+    def test_local_native_context_pack_infers_memory_selection_policy_auto_from_related_budget_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-inferred-selection-budget.jsonl")
+            scope = {
+                "account_id": "acct_native_inferred_selection_budget",
+                "tenant_id": "tenant_native_inferred_selection_budget",
+                "user_id": "user_native_inferred_selection_budget",
+                "session_id": "session_native_inferred_selection_budget",
+            }
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "Codex current profile budget",
+                    "max_context_tokens": 100,
+                    "ranking": {"memory_layer_budget_mode": "auto"},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertEqual("local-native-pack", pack["pack_id"])
+            self.assertEqual(1, len(adapter.native_requests))
+            request = adapter.native_requests[0]
+            self.assertEqual("auto", request["memory_layer_budget_mode"])
+            self.assertEqual("auto", request["memory_selection_policy_budget_mode"])
+            self.assertEqual(
+                {
+                    "selected_user_prompt": 38,
+                    "selected_assistant_decision_outcome_only": 42,
+                    "selected_tool_evidence_only": 28,
+                },
+                request["memory_selection_policy_budget_tokens"],
+            )
+
     def test_auto_memory_layer_budget_expands_profile_for_current_state_queries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-current-budget.jsonl")
