@@ -4462,6 +4462,91 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(pack["memory_inventory"]["has_profile_memory"])
             self.assertFalse(pack["memory_inventory"]["profile_records_available_but_not_selected"])
 
+    def test_profile_memory_query_selects_existing_profile_summary_without_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-summary-existing.jsonl")
+            scope = {
+                "account_id": "acct_profile_summary_existing",
+                "tenant_id": "tenant_profile_summary_existing",
+                "user_id": "user_profile_summary_existing",
+                "session_id": "session_profile_summary_source",
+            }
+            followup_scope = {**scope, "session_id": "session_profile_summary_followup"}
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_entity",
+                        "entity_hash": 4301,
+                        "node_hash": 5301,
+                        "node_path": [
+                            "tenant:tenant_profile_summary_existing",
+                            "user:user_profile_summary_existing",
+                            "profile:long_term_memory",
+                        ],
+                        "entity_type": "assistant_decision",
+                        "entity_name": "summary_runtime",
+                        "state": "Profile summaries should be returned with profile entities for long-term Codex memory queries.",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "profile_current_state_representative": True,
+                        "profile_revision": 1,
+                        "source_session_ids": ["session_profile_summary_source"],
+                        "source_entity_hashes": [4300],
+                        "source_roles": ["assistant"],
+                        "source_role_counts": {"assistant": 1},
+                        "scope": scope,
+                        "updated_at_ms": 3000,
+                    },
+                    {
+                        "record_type": "context_summary",
+                        "summary_hash": 4401,
+                        "node_hash": 5301,
+                        "node_path": [
+                            "tenant:tenant_profile_summary_existing",
+                            "user:user_profile_summary_existing",
+                            "profile:long_term_memory",
+                        ],
+                        "summary_type": "node_l0",
+                        "summary_text": "Profile summary: Codex long-term memory keeps assistant decisions and tool evidence across sessions.",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "source_roles": ["assistant", "tool"],
+                        "source_role_counts": {"assistant": 1, "tool": 1},
+                        "source_entity_types": ["assistant_decision", "tool_evidence"],
+                        "scope": scope,
+                        "updated_at_ms": 3100,
+                    },
+                ]
+            )
+
+            pack = adapter.retrieve(
+                {
+                    "scope": followup_scope,
+                    "session_scope": "prefer",
+                    "query": "Show user profile long-term memory across sessions",
+                    "max_context_tokens": 220,
+                    "ranking": {
+                        "max_selected_refs": 2,
+                        "min_similarity_score": 0.0,
+                        "pre_retrieval_summary_refresh": False,
+                    },
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "include_debug_refs": True,
+                }
+            )
+
+            selected_layers = {
+                (ref.get("ref_type"), ref.get("memory_scope"), ref.get("session_continuity"))
+                for ref in pack["selected_refs"]
+            }
+            self.assertIn(("entity", "user_profile", "cross_session"), selected_layers)
+            self.assertIn(("summary", "user_profile", "cross_session"), selected_layers)
+            budget = pack["retrieval_metrics"]["memory_layer_budget"]["by_memory_layer"]
+            self.assertGreaterEqual(budget["profile_entity"]["refs"], 1)
+            self.assertGreaterEqual(budget["profile_summary"]["refs"], 1)
+            self.assertFalse(pack["pre_retrieval_summary_refresh"]["enabled"])
+
     def test_invalid_pre_retrieval_summary_refresh_limit_env_does_not_break_import(self) -> None:
         env = os.environ.copy()
         env["PYTHONPATH"] = "tools"

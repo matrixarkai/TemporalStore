@@ -8432,7 +8432,7 @@ class MatrixArkLocalAdapter:
         )
         primary_matches = []
         auxiliary_matches = []
-        if question_type == "broad_exploration":
+        if question_type in {"broad_exploration", "profile_memory"}:
             for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
                 if scan_index % 64 == 0 and deadline_exceeded():
                     return deadline_fallback("deadline_during_summary_scan", records)
