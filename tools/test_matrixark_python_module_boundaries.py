@@ -1056,6 +1056,21 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(multi["session_buffer"]["threshold_ready"])
         self.assertEqual("committed", multi["auto_batch_extract_result"]["status"])
 
+        target = Target()
+        idle_result = {"status": "committed", "trigger_policy": "idle_timeout", "committed_event_count": 1}
+        idle_visible = async_mod.lightweight_async_accept(
+            target,
+            {**args, "session_buffer_threshold": 20},
+            envelope={**envelope, "messages": [{"role": "assistant", "content": "fresh event after idle flush"}], "ingestion_time_ms": 126},
+            hook=None,
+            idle_commit_result=idle_result,
+        )
+        self.assertTrue(idle_visible["session_buffer"]["idle_ready"])
+        self.assertFalse(idle_visible["session_buffer"]["threshold_ready"])
+        self.assertEqual(idle_result, idle_visible["auto_batch_extract_result"])
+        self.assertEqual(idle_result, idle_visible["idle_commit_result"])
+        self.assertEqual([], target.commit_calls)
+
     def test_modular_session_runtime_reports_trigger_evidence(self) -> None:
         runtime_mod = importlib.import_module("tools.matrixark_mcp_session_runtime")
 
