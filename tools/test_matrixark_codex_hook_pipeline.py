@@ -14,6 +14,7 @@ from unittest import mock
 from pathlib import Path
 
 import matrixark_codex_hook
+import matrixark_mcp_core
 import matrixark_mcp_query
 import matrixark_mcp_summary_runtime
 from matrixark_mcp_context_pack import (
@@ -159,6 +160,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         session_flattened = {term for group in session_groups for term in group}
         self.assertIn("memory_scope:session", session_flattened)
         self.assertIn("session_continuity:same_session", session_flattened)
+
+    def test_profile_memory_queries_stay_profile_memory_in_oss_understanding_mode(self) -> None:
+        query = "Show user profile long-term memory and cross-session entities"
+        with mock.patch("matrixark_mcp_core.understanding_provider", return_value="oss_encoder"):
+            self.assertEqual("profile_memory", infer_query_type(query))
+            self.assertEqual("profile_memory", matrixark_mcp_query.infer_query_type(query))
+        self.assertIn("profile_memory", matrixark_mcp_core.QUERY_TYPE_LABELS)
+        self.assertIn("profile_memory", matrixark_mcp_query.QUERY_TYPE_LABELS)
 
     def test_candidate_index_terms_keep_context_event_distinct_from_context_segment(self) -> None:
         event_terms = candidate_index_terms(

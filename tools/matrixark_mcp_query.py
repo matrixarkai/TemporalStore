@@ -18,6 +18,7 @@ Json = dict[str, Any]
 
 
 QUERY_TYPE_LABELS: dict[str, str] = {
+    "profile_memory": "question asks user profile long term memory profile entities profile summaries cross session memories across sessions",
     "date": "question asks when date before after yesterday tomorrow week month year",
     "current_state": "question asks current latest now still status preference location role valid state",
     "why_emotion": "question asks why reason feeling emotion because",
@@ -27,6 +28,10 @@ QUERY_TYPE_LABELS: dict[str, str] = {
     "multi_hop": "question requires combining multiple sessions people facts cross conversation reasoning",
     "fact": "question asks a direct factual answer",
 }
+
+PROFILE_MEMORY_QUERY_RE = re.compile(
+    r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|across sessions?|profile entit(?:y|ies)|profile summar(?:y|ies))\b"
+)
 
 QUERY_INDEX_LABELS: dict[str, str] = {
     "entity_type:location": "location city moved lives staying where user is",
@@ -294,11 +299,11 @@ def _core_query_runtime() -> Any:
 
 def infer_query_type(query: str) -> str:
     core = _core_query_runtime()
+    lower = query.lower()
+    if PROFILE_MEMORY_QUERY_RE.search(lower):
+        return "profile_memory"
     if core.understanding_provider() == "oss_encoder":
         return oss_encoder_query_type(query)
-    lower = query.lower()
-    if re.search(r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|across sessions?|profile entit(?:y|ies)|profile summar(?:y|ies))\b", lower):
-        return "profile_memory"
     if re.search(r"\b(when|what date|which date|day|month|year|yesterday|tomorrow|last week|next week|before|after|as of|valid as of)\b", lower):
         return "date"
     if re.search(r"\b(current|currently|latest|now|still|today|valid|status|preference|prefer|likes|where does|where is)\b", lower):
