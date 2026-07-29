@@ -7243,6 +7243,7 @@ class MatrixArkLocalAdapter:
                 "source_event_ids": source_event_ids,
                 "source_entity_hashes": source_entity_hashes,
                 "source_session_count": len(source_session_ids),
+                "source_event_count": len(source_event_ids),
                 "source_entity_count": len(source_entity_hashes),
                 "extraction_context_event_ids": extraction_context_event_ids,
                 "current_state_source_session_count": current_state_source_session_count or len(source_session_ids),
@@ -8629,7 +8630,6 @@ class MatrixArkLocalAdapter:
         if (
             question_type in {"broad_exploration", "evidence", "current_state", "latest", "multi_hop", "date"}
             and bool(pre_retrieval_summary_refresh.get("enabled"))
-            and int(pre_retrieval_summary_refresh.get("refreshed_count") or 0) > 0
             and not any(
                 item.get("ref_type") == "summary"
                 and item.get("memory_scope") == "user_profile"
@@ -8641,9 +8641,15 @@ class MatrixArkLocalAdapter:
             for record in records:
                 if record.get("record_type") != "context_summary":
                     continue
-                if str(record.get("memory_scope") or "") != "user_profile":
+                summary_ref_hash = record.get("summary_hash") or record.get("node_hash")
+                embedding_metadata = embedding_metadata_by_ref.get(("summary", summary_ref_hash), {})
+                recovered_memory_scope = str(record.get("memory_scope") or embedding_metadata.get("memory_scope") or "")
+                recovered_session_continuity = str(
+                    record.get("session_continuity") or embedding_metadata.get("session_continuity") or ""
+                )
+                if recovered_memory_scope != "user_profile":
                     continue
-                if str(record.get("session_continuity") or "") != "cross_session":
+                if recovered_session_continuity != "cross_session":
                     continue
                 if str(record.get("summary_type") or "") not in {"node_l0", "node_l1", "batch_l0", "session_l0"}:
                     continue
@@ -8654,15 +8660,55 @@ class MatrixArkLocalAdapter:
                     continue
                 lineage_text = " ".join(
                     [
-                        str(record.get("memory_scope") or ""),
-                        str(record.get("session_continuity") or ""),
-                        *[str(value) for value in record.get("source_roles", []) if str(value or "")],
-                        *[str(value) for value in record.get("source_hook_types", []) if str(value or "")],
-                        *[str(value) for value in record.get("source_codex_events", []) if str(value or "")],
-                        *[str(value) for value in record.get("source_memory_selection_policies", []) if str(value or "")],
-                        *[str(value).replace("_", " ") for value in record.get("source_memory_selection_policies", []) if str(value or "")],
-                        *[str(value) for value in record.get("source_memory_scopes", []) if str(value or "")],
-                        *[str(value) for value in record.get("source_session_continuities", []) if str(value or "")],
+                        recovered_memory_scope,
+                        recovered_session_continuity,
+                        *[
+                            str(value)
+                            for value in (record.get("source_roles") or embedding_metadata.get("source_roles") or [])
+                            if str(value or "")
+                        ],
+                        *[
+                            str(value)
+                            for value in (record.get("source_hook_types") or embedding_metadata.get("source_hook_types") or [])
+                            if str(value or "")
+                        ],
+                        *[
+                            str(value)
+                            for value in (record.get("source_codex_events") or embedding_metadata.get("source_codex_events") or [])
+                            if str(value or "")
+                        ],
+                        *[
+                            str(value)
+                            for value in (
+                                record.get("source_memory_selection_policies")
+                                or embedding_metadata.get("source_memory_selection_policies")
+                                or []
+                            )
+                            if str(value or "")
+                        ],
+                        *[
+                            str(value).replace("_", " ")
+                            for value in (
+                                record.get("source_memory_selection_policies")
+                                or embedding_metadata.get("source_memory_selection_policies")
+                                or []
+                            )
+                            if str(value or "")
+                        ],
+                        *[
+                            str(value)
+                            for value in (record.get("source_memory_scopes") or embedding_metadata.get("source_memory_scopes") or [])
+                            if str(value or "")
+                        ],
+                        *[
+                            str(value)
+                            for value in (
+                                record.get("source_session_continuities")
+                                or embedding_metadata.get("source_session_continuities")
+                                or []
+                            )
+                            if str(value or "")
+                        ],
                         *[str(value) for value in record.get("source_entity_types", []) if str(value or "")],
                         *[str(value).replace("_", " ") for value in record.get("source_entity_types", []) if str(value or "")],
                     ]
@@ -8675,7 +8721,7 @@ class MatrixArkLocalAdapter:
                 candidate = annotate_session_continuity(
                     {
                         "ref_type": "summary",
-                        "ref_hash": record.get("summary_hash") or record.get("node_hash"),
+                        "ref_hash": summary_ref_hash,
                         "node_hash": record.get("node_hash"),
                         "node_path": record.get("node_path", []),
                         "origin_score": min(1.0, 0.72 + 0.18 * text_score + 0.10 * lineage_score),
@@ -8701,10 +8747,12 @@ class MatrixArkLocalAdapter:
                         "source_session_continuities": record.get("source_session_continuities", []),
                         "source_extraction_phases": record.get("source_extraction_phases", []),
                         "source_final_session_boundary_count": record.get("source_final_session_boundary_count", 0),
-                        "memory_scope": record.get("memory_scope", ""),
-                        "session_continuity": record.get("session_continuity", ""),
-                        "extraction_phase": record.get("extraction_phase", ""),
-                        "final_session_boundary": bool(record.get("final_session_boundary", False)),
+                        "memory_scope": record.get("memory_scope") or embedding_metadata.get("memory_scope", ""),
+                        "session_continuity": record.get("session_continuity") or embedding_metadata.get("session_continuity", ""),
+                        "extraction_phase": record.get("extraction_phase") or embedding_metadata.get("extraction_phase", ""),
+                        "final_session_boundary": bool(
+                            record.get("final_session_boundary", embedding_metadata.get("final_session_boundary", False))
+                        ),
                         "access_decision": "allowed_by_registry_scope_before_scoring",
                         "access_scope": candidate_access_scope(record),
                         "scope": candidate_access_scope(record),
