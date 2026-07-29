@@ -1860,7 +1860,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                         "memory_layer_budget_policy": {
                             "budget_tokens": {
                                 "summary": 30,
+                                "profile_summary": 35,
+                                "cross_session_summary": 25,
                                 "profile_entity": 40,
+                                "profile_compression": 22,
+                                "cross_session_compression": 18,
                             },
                             "selected_tokens_by_layer": {
                                 "profile_entity": 12,
@@ -1907,7 +1911,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("computed=64", additional)
         self.assertIn("floor=256", additional)
         self.assertIn("floor_applied=false", additional)
-        self.assertIn("memory_layer_budget[summary=30,profile_entity=40]", additional)
+        self.assertIn(
+            "memory_layer_budget[summary=30,profile_summary=35,cross_session_summary=25,profile_compression=22,cross_session_compression=18,profile_entity=40]",
+            additional,
+        )
         self.assertIn(
             "memory_selection_policy_budget[selected_assistant_decision_outcome_only=36,selected_tool_evidence_only=28]",
             additional,
