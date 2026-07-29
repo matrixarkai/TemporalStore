@@ -1740,6 +1740,24 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("same_session", compression["session_continuity"])
             self.assertEqual("final", compression["extraction_phase"])
             self.assertTrue(compression["final_session_boundary"])
+            compression_embeddings = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") == "context_embedding"
+                and record.get("embedding_type") == "compression_summary"
+                and record.get("ref_hash") == compression["compression_id_hash"]
+            ]
+            self.assertEqual(1, len(compression_embeddings))
+            compression_embedding = compression_embeddings[0]
+            self.assertEqual("session", compression_embedding["memory_scope"])
+            self.assertEqual("same_session", compression_embedding["session_continuity"])
+            self.assertNotIn("source_event_ids", compression_embedding)
+            self.assertNotIn("source_roles", compression_embedding)
+            self.assertNotIn("source_hook_types", compression_embedding)
+            self.assertNotIn("source_codex_events", compression_embedding)
+            self.assertNotIn("source_memory_selection_policies", compression_embedding)
+            self.assertNotIn("extraction_phase", compression_embedding)
+            self.assertNotIn("final_session_boundary", compression_embedding)
             compression_index_names = {
                 record.get("index_name")
                 for record in adapter.read_all()
@@ -1799,8 +1817,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     }
                 ]
             )
-            self.assertEqual(1, budget["by_memory_layer"]["compression"]["refs"])
-            self.assertEqual(17, budget["by_memory_layer"]["compression"]["tokens"])
+            self.assertEqual(1, budget["by_memory_layer"]["same_session_compression"]["refs"])
+            self.assertEqual(17, budget["by_memory_layer"]["same_session_compression"]["tokens"])
             self.assertEqual(1, budget["by_memory_scope"]["session"]["refs"])
             self.assertEqual(1, budget["by_session_continuity"]["same_session"]["refs"])
             self.assertEqual(1, budget["by_extraction_phase"]["final"]["refs"])
@@ -1845,7 +1863,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 selected_compression[0]["source_memory_selection_policy_counts"],
             )
             retrieved_budget = pack["recall_policy"]["memory_layer_budget"]
-            self.assertIn("compression", retrieved_budget["by_memory_layer"])
+            self.assertIn("same_session_compression", retrieved_budget["by_memory_layer"])
             self.assertIn("selected_tool_evidence_only", retrieved_budget["by_memory_selection_policy"])
 
     def test_source_role_budget_caps_assistant_context_without_blocking_user_refs(self) -> None:
