@@ -30,6 +30,7 @@ from matrixark_mcp_core import (
     compact_context_pack_for_serving_flat,
     embedding_for_text,
     identity_hashes,
+    infer_query_type,
     infer_secondary_index_filter_groups,
     packing_sort_key,
     select_token_budgeted_refs,
@@ -128,6 +129,27 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         assistant_flattened = {term for group in assistant_groups for term in group}
         self.assertIn("entity_type:assistant_decision", assistant_flattened)
         self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", assistant_flattened)
+
+    def test_profile_memory_queries_target_profile_and_cross_session_indexes(self) -> None:
+        self.assertEqual(
+            "profile_memory",
+            infer_query_type("Show user profile long-term memory across sessions"),
+        )
+        groups = infer_secondary_index_filter_groups(
+            "Show user profile long-term memory and cross-session entities",
+            "profile_memory",
+        )
+        flattened = {term for group in groups for term in group}
+        self.assertIn("memory_scope:user_profile", flattened)
+        self.assertIn("session_continuity:cross_session", flattened)
+
+        session_groups = infer_secondary_index_filter_groups(
+            "Show session-specific same-session context entities",
+            "fact",
+        )
+        session_flattened = {term for group in session_groups for term in group}
+        self.assertIn("memory_scope:session", session_flattened)
+        self.assertIn("session_continuity:same_session", session_flattened)
 
     def test_candidate_index_terms_keep_context_event_distinct_from_context_segment(self) -> None:
         event_terms = candidate_index_terms(
@@ -4162,6 +4184,58 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreater(
                 request["memory_layer_budget_tokens"]["cross_session_event"],
                 23,
+            )
+
+    def test_auto_memory_layer_budget_expands_profile_for_profile_memory_queries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-profile-memory-budget.jsonl")
+            scope = {
+                "account_id": "acct_native_profile_memory_budget",
+                "tenant_id": "tenant_native_profile_memory_budget",
+                "user_id": "user_native_profile_memory_budget",
+                "session_id": "session_native_profile_memory_budget",
+            }
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "Show user profile long-term memory and cross-session entities",
+                    "max_context_tokens": 100,
+                    "ranking": {
+                        "memory_layer_budget_mode": "auto",
+                        "memory_selection_policy_budget_mode": "auto",
+                    },
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertEqual("local-native-pack", pack["pack_id"])
+            self.assertEqual(1, len(adapter.native_requests))
+            request = adapter.native_requests[0]
+            self.assertEqual("profile_memory", request["question_type"])
+            self.assertEqual("auto", request["memory_layer_budget_mode"])
+            self.assertEqual("profile_memory", request["memory_layer_budget_question_type"])
+            self.assertIn("profile_memory_queries_prioritize", request["memory_layer_budget_question_reason"])
+            self.assertEqual(57, request["memory_layer_budget_tokens"]["profile_entity"])
+            self.assertEqual(42, request["memory_layer_budget_tokens"]["profile_summary"])
+            self.assertEqual(38, request["memory_layer_budget_tokens"]["cross_session_summary"])
+            self.assertEqual(38, request["memory_layer_budget_tokens"]["cross_session_event"])
+            self.assertEqual(38, request["memory_layer_budget_tokens"]["cross_session_segment"])
+            self.assertGreater(
+                request["memory_layer_budget_tokens"]["profile_entity"],
+                request["memory_layer_budget_tokens"]["same_session_event"],
+            )
+            self.assertGreater(
+                request["memory_layer_budget_tokens"]["cross_session_event"],
+                request["memory_layer_budget_tokens"]["same_session_event"],
+            )
+            self.assertEqual(
+                {
+                    "selected_user_prompt": 38,
+                    "selected_assistant_decision_outcome_only": 38,
+                    "selected_tool_evidence_only": 33,
+                },
+                request["memory_selection_policy_budget_tokens"],
             )
 
     def test_invalid_pre_retrieval_summary_refresh_limit_env_does_not_break_import(self) -> None:
