@@ -241,6 +241,18 @@ def auto_extraction_phase_budget_tokens(
     question_type: str = "fact",
 ) -> tuple[Json, str]:
     mode = str(args.get("extraction_phase_budget_mode") or ranking.get("extraction_phase_budget_mode") or "").strip().lower()
+    if not mode:
+        sibling_mode = str(
+            args.get("source_role_budget_mode")
+            or ranking.get("source_role_budget_mode")
+            or args.get("memory_layer_budget_mode")
+            or ranking.get("memory_layer_budget_mode")
+            or args.get("memory_selection_policy_budget_mode")
+            or ranking.get("memory_selection_policy_budget_mode")
+            or ""
+        ).strip().lower()
+        if sibling_mode in {"auto", "balanced", "codex_auto"}:
+            mode = sibling_mode
     if mode not in {"auto", "balanced", "codex_auto"}:
         return {}, ""
     try:

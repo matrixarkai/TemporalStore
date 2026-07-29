@@ -44,6 +44,7 @@ try:
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from tools.matrixark_mcp_local_adapter import (
+        auto_extraction_phase_budget_tokens,
         auto_memory_layer_budget_tokens,
         auto_memory_selection_policy_budget_tokens,
         auto_source_role_budget_tokens,
@@ -56,6 +57,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from matrixark_mcp_local_adapter import (
+        auto_extraction_phase_budget_tokens,
         auto_memory_layer_budget_tokens,
         auto_memory_selection_policy_budget_tokens,
         auto_source_role_budget_tokens,
@@ -3004,6 +3006,13 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             or optional_object(ranking, "extraction_phase_budget_tokens")
         )
         extraction_phase_budget_mode = "explicit" if extraction_phase_budget_tokens else ""
+        if not extraction_phase_budget_tokens:
+            extraction_phase_budget_tokens, extraction_phase_budget_mode = auto_extraction_phase_budget_tokens(
+                args,
+                ranking,
+                remote_budget_tokens=remote_context_budget_tokens,
+                question_type=question_type,
+            )
         resource_version_watermark = str(
             ranking.get("resource_version_watermark")
             or args.get("resource_version_watermark")

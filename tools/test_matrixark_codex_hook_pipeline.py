@@ -4599,6 +4599,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 request["memory_selection_policy_budget_tokens"],
             )
             self.assertEqual("auto", request["memory_selection_policy_budget_mode"])
+            self.assertEqual({"pending_async": 11, "provisional": 23, "final": 66}, request["extraction_phase_budget_tokens"])
+            self.assertEqual("auto", request["extraction_phase_budget_mode"])
 
     def test_local_native_context_pack_infers_memory_selection_policy_auto_from_related_budget_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
