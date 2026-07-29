@@ -2298,6 +2298,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "source_final_session_boundary_count": 1,
                     "final_session_boundary": True,
                     "profile_revision": 2,
+                    "promoted_from_memory_scope": "session",
                     "supersedes_session_entity_hashes": [33],
                 }
             ]
@@ -2320,6 +2321,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "extraction_phase",
             "final_session_boundary",
             "profile_revision",
+            "promoted_from_memory_scope",
             "supersedes_session_entity_hashes",
         ]:
             self.assertNotIn(field, embedding)

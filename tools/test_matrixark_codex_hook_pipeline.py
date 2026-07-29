@@ -4497,6 +4497,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "same_session_summary": 19,
                     "cross_session_summary": 19,
                     "compression": 23,
+                    "profile_compression": 23,
+                    "same_session_compression": 19,
+                    "cross_session_compression": 19,
                     "pending_async_event": 19,
                     "same_session_event": 42,
                     "cross_session_event": 23,
@@ -4585,6 +4588,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "same_session_summary": 14,
                     "cross_session_summary": 14,
                     "compression": 19,
+                    "profile_compression": 23,
+                    "same_session_compression": 14,
+                    "cross_session_compression": 19,
                     "pending_async_event": 14,
                     "same_session_event": 33,
                     "cross_session_event": 28,
@@ -4639,6 +4645,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(57, request["memory_layer_budget_tokens"]["profile_entity"])
             self.assertEqual(42, request["memory_layer_budget_tokens"]["profile_summary"])
             self.assertEqual(38, request["memory_layer_budget_tokens"]["cross_session_summary"])
+            self.assertEqual(38, request["memory_layer_budget_tokens"]["profile_compression"])
+            self.assertEqual(33, request["memory_layer_budget_tokens"]["cross_session_compression"])
+            self.assertEqual(19, request["memory_layer_budget_tokens"]["same_session_compression"])
             self.assertEqual(38, request["memory_layer_budget_tokens"]["cross_session_event"])
             self.assertEqual(38, request["memory_layer_budget_tokens"]["cross_session_segment"])
             self.assertGreater(
@@ -4876,6 +4885,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertEqual(14, request["memory_layer_budget_tokens"]["summary"])
             self.assertEqual(28, request["memory_layer_budget_tokens"]["profile_summary"])
+            self.assertEqual(23, request["memory_layer_budget_tokens"]["profile_compression"])
+            self.assertEqual(23, request["memory_layer_budget_tokens"]["cross_session_compression"])
             self.assertEqual(42, request["memory_layer_budget_tokens"]["profile_entity"])
             self.assertGreater(
                 request["memory_layer_budget_tokens"]["profile_entity"],
@@ -4901,6 +4912,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertEqual(14, auto_request["memory_layer_budget_tokens"]["summary"])
             self.assertEqual(28, auto_request["memory_layer_budget_tokens"]["profile_summary"])
+            self.assertEqual(23, auto_request["memory_layer_budget_tokens"]["profile_compression"])
+            self.assertEqual(23, auto_request["memory_layer_budget_tokens"]["cross_session_compression"])
             self.assertEqual(42, auto_request["memory_layer_budget_tokens"]["profile_entity"])
             explicit_pack = adapter.retrieve(
                 {
@@ -10352,8 +10365,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("source_entity_hashes", summary_ref)
             self.assertNotIn("source_role_counts", summary_ref)
             self.assertNotIn("source_memory_selection_policy_counts", summary_ref)
-            self.assertEqual(1, summary_ref["profile_source_session_count"])
-            self.assertEqual(1, summary_ref["profile_source_entity_count"])
+            self.assertNotIn("profile_source_session_count", summary_ref)
+            self.assertNotIn("profile_source_entity_count", summary_ref)
             budget = pack["retrieval_metrics"]["memory_layer_budget"]
             self.assertGreaterEqual(budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(budget["by_session_continuity"]["cross_session"]["refs"], 1)
@@ -10387,8 +10400,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("source_hook_type_counts", debug_ref)
             self.assertNotIn("source_codex_event_counts", debug_ref)
             self.assertNotIn("source_memory_selection_policy_counts", debug_ref)
-            self.assertEqual(1, debug_ref["profile_source_session_count"])
-            self.assertEqual(1, debug_ref["profile_source_entity_count"])
+            self.assertNotIn("profile_source_session_count", debug_ref)
+            self.assertNotIn("profile_source_entity_count", debug_ref)
 
     def test_retrieval_flags_state_file_session_identity_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

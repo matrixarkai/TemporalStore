@@ -108,7 +108,7 @@ def auto_memory_selection_policy_budget_tokens(
     return budgets, mode
 
 
-def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_tokens: int) -> tuple[Json, str]:
+def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_tokens: int, question_type: str = "fact") -> tuple[Json, str]:
     mode = str(args.get("memory_layer_budget_mode") or ranking.get("memory_layer_budget_mode") or "").strip().lower()
     if mode not in {"auto", "balanced", "codex_auto"}:
         return {}, ""
@@ -120,8 +120,14 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         return {}, mode
     fractions = optional_object(args, "memory_layer_budget_fractions") or optional_object(ranking, "memory_layer_budget_fractions")
     defaults = {
-        "summary": 0.30,
+        "summary": 0.20,
+        "profile_summary": 0.30,
+        "same_session_summary": 0.20,
+        "cross_session_summary": 0.20,
         "compression": 0.25,
+        "profile_compression": 0.25,
+        "same_session_compression": 0.20,
+        "cross_session_compression": 0.20,
         "pending_async_event": 0.20,
         "same_session_event": 0.45,
         "cross_session_event": 0.25,
@@ -129,6 +135,83 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         "cross_session_segment": 0.25,
         "profile_entity": 0.40,
     }
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    if normalized_question_type in {"current_state", "latest"}:
+        defaults.update(
+            {
+                "summary": 0.15,
+                "profile_summary": 0.20,
+                "same_session_summary": 0.15,
+                "cross_session_summary": 0.15,
+                "compression": 0.20,
+                "profile_compression": 0.25,
+                "same_session_compression": 0.15,
+                "cross_session_compression": 0.20,
+                "pending_async_event": 0.15,
+                "same_session_event": 0.35,
+                "cross_session_event": 0.30,
+                "same_session_segment": 0.30,
+                "cross_session_segment": 0.30,
+                "profile_entity": 0.55,
+            }
+        )
+    elif normalized_question_type == "profile_memory":
+        defaults.update(
+            {
+                "summary": 0.15,
+                "profile_summary": 0.45,
+                "same_session_summary": 0.15,
+                "cross_session_summary": 0.40,
+                "compression": 0.25,
+                "profile_compression": 0.40,
+                "same_session_compression": 0.20,
+                "cross_session_compression": 0.35,
+                "pending_async_event": 0.15,
+                "same_session_event": 0.25,
+                "cross_session_event": 0.40,
+                "same_session_segment": 0.25,
+                "cross_session_segment": 0.40,
+                "profile_entity": 0.60,
+            }
+        )
+    elif normalized_question_type in {"multi_hop", "date"}:
+        defaults.update(
+            {
+                "summary": 0.20,
+                "profile_summary": 0.35,
+                "same_session_summary": 0.20,
+                "cross_session_summary": 0.35,
+                "compression": 0.30,
+                "profile_compression": 0.35,
+                "same_session_compression": 0.25,
+                "cross_session_compression": 0.35,
+                "pending_async_event": 0.20,
+                "same_session_event": 0.40,
+                "cross_session_event": 0.35,
+                "same_session_segment": 0.35,
+                "cross_session_segment": 0.35,
+                "profile_entity": 0.45,
+            }
+        )
+    elif normalized_question_type in {"broad_exploration", "evidence"}:
+        defaults.update(
+            {
+                "summary": 0.20,
+                "profile_summary": 0.35,
+                "same_session_summary": 0.25,
+                "cross_session_summary": 0.30,
+                "compression": 0.30,
+                "profile_compression": 0.35,
+                "same_session_compression": 0.30,
+                "cross_session_compression": 0.30,
+                "pending_async_event": 0.25,
+                "same_session_event": 0.45,
+                "cross_session_event": 0.30,
+                "same_session_segment": 0.40,
+                "cross_session_segment": 0.30,
+                "profile_entity": 0.45,
+            }
+        )
     budgets: Json = {}
     for layer, default_fraction in defaults.items():
         raw_fraction = fractions.get(layer, default_fraction) if isinstance(fractions, dict) else default_fraction
@@ -148,8 +231,14 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(*, remote_budget_to
     if remote_budget <= 0:
         return {}, "pre_retrieval_summary_refresh_balanced"
     fractions = {
-        "summary": 0.25,
+        "summary": 0.15,
+        "profile_summary": 0.30,
+        "same_session_summary": 0.20,
+        "cross_session_summary": 0.25,
         "compression": 0.20,
+        "profile_compression": 0.25,
+        "same_session_compression": 0.20,
+        "cross_session_compression": 0.25,
         "pending_async_event": 0.20,
         "same_session_event": 0.45,
         "cross_session_event": 0.25,
