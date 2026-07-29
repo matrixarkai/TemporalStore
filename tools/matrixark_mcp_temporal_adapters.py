@@ -2544,6 +2544,26 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         scan_stats["latest_state_records_loaded"] = len(latest_state_records)
         return {"records": records, "scan_stats": scan_stats}
 
+    def idle_commit_task_records(self, scope: Json) -> list[Json]:
+        """Read only scheduled idle-commit tasks without broad Python materialization."""
+        result = self._native_candidate_scan(
+            scope=scope,
+            record_types={"matrixark_async_pipeline_task"},
+            secondary_index_groups=None,
+            selected_node_hashes=None,
+        )
+        if not isinstance(result, dict):
+            return []
+        records = result.get("records")
+        if not isinstance(records, list):
+            return []
+        return [
+            record
+            for record in records
+            if isinstance(record, dict)
+            and record.get("record_type") == "matrixark_async_pipeline_task"
+        ]
+
     def _direct_record_load_lock(self) -> threading.RLock:
         with _DIRECT_RECORD_CACHE_LOCK:
             lock = _DIRECT_RECORD_LOAD_LOCKS.get(self._storage_prefix)
