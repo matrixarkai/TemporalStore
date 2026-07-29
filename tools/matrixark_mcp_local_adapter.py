@@ -2984,6 +2984,8 @@ class MatrixArkLocalAdapter:
                 "model": embedding_model_name(),
                 "vector": summary_vector,
                 "scope": scope,
+                "memory_scope": record.get("memory_scope", ""),
+                "session_continuity": record.get("session_continuity", ""),
                 "updated_at_ms": compressed_time_ms,
             }
         )
@@ -7209,6 +7211,8 @@ class MatrixArkLocalAdapter:
                 "model": embedding_model_name(),
                 "vector": embedding_for_text(record["summary_text"]),
                 "scope": compression_scope,
+                "memory_scope": record.get("memory_scope", ""),
+                "session_continuity": record.get("session_continuity", ""),
                 "updated_at_ms": compressed_time_ms,
             }
         )
