@@ -9148,12 +9148,12 @@ class MatrixArkLocalAdapter:
                 bool(cross_session_policy.get("enabled"))
                 or (
                     retrieval_session_scope == "prefer"
-                    and question_type in {"current_state", "latest"}
+                    and question_type in {"current_state", "latest", "profile_memory"}
                 )
             )
             and (
                 int(cross_session_policy.get("min_entity_bridge_refs") or 0) > 0
-                or question_type in {"current_state", "latest"}
+                or question_type in {"current_state", "latest", "profile_memory"}
             )
             and not any(
                 item.get("ref_type") == "entity"

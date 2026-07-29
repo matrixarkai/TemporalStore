@@ -4376,6 +4376,92 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 request["memory_selection_policy_budget_tokens"],
             )
 
+    def test_profile_memory_query_rescues_profile_entity_when_single_ref_budget_competes_with_session_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-memory-bridge-rescue.jsonl")
+            base_scope = {
+                "account_id": "acct_profile_bridge_rescue",
+                "tenant_id": "tenant_profile_bridge_rescue",
+                "user_id": "user_profile_bridge_rescue",
+            }
+            profile_scope = {**base_scope, "session_id": "session_profile_bridge_source"}
+            followup_scope = {**base_scope, "session_id": "session_profile_bridge_followup"}
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": 4101,
+                        "node_hash": 5101,
+                        "node_path": [
+                            "tenant:tenant_profile_bridge_rescue",
+                            "user:user_profile_bridge_rescue",
+                            "session:session_profile_bridge_followup",
+                        ],
+                        "text": "User asks for profile memory. Same-session event is verbose and keyword heavy but only local evidence.",
+                        "summary_text": "same-session profile memory query event",
+                        "event_type": "user_prompt",
+                        "classification": "request",
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "source_roles": ["user"],
+                        "source_role_counts": {"user": 1},
+                        "scope": followup_scope,
+                        "updated_at_ms": 2000,
+                    },
+                    {
+                        "record_type": "context_entity",
+                        "entity_hash": 4201,
+                        "node_hash": 5201,
+                        "node_path": [
+                            "tenant:tenant_profile_bridge_rescue",
+                            "user:user_profile_bridge_rescue",
+                            "profile:long_term_memory",
+                        ],
+                        "entity_type": "assistant_decision",
+                        "entity_name": "memory_architecture",
+                        "state": "Profile memory should preserve cross-session assistant decisions and tool evidence as durable user-profile entities.",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "profile_current_state_representative": True,
+                        "profile_revision": 1,
+                        "source_session_ids": ["session_profile_bridge_source"],
+                        "source_entity_hashes": [4200],
+                        "source_roles": ["assistant"],
+                        "source_role_counts": {"assistant": 1},
+                        "source_hook_types": ["hook_boundary"],
+                        "source_codex_events": ["Stop"],
+                        "scope": profile_scope,
+                        "updated_at_ms": 3000,
+                    },
+                ]
+            )
+
+            pack = adapter.retrieve(
+                {
+                    "scope": followup_scope,
+                    "session_scope": "prefer",
+                    "query": "Show user profile long-term memory across sessions",
+                    "max_context_tokens": 160,
+                    "ranking": {"max_selected_refs": 1, "min_similarity_score": 0.0},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "include_debug_refs": True,
+                }
+            )
+
+            self.assertEqual("profile_memory", pack["question_type"])
+            self.assertEqual(1, len(pack["selected_refs"]))
+            selected = pack["selected_refs"][0]
+            self.assertEqual("entity", selected["ref_type"])
+            self.assertEqual("user_profile", selected["memory_scope"])
+            self.assertEqual("cross_session", selected["session_continuity"])
+            self.assertGreaterEqual(
+                pack["retrieval_metrics"]["memory_layer_budget"]["by_memory_layer"]["profile_entity"]["refs"],
+                1,
+            )
+            self.assertTrue(pack["memory_inventory"]["has_profile_memory"])
+            self.assertFalse(pack["memory_inventory"]["profile_records_available_but_not_selected"])
+
     def test_invalid_pre_retrieval_summary_refresh_limit_env_does_not_break_import(self) -> None:
         env = os.environ.copy()
         env["PYTHONPATH"] = "tools"
