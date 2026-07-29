@@ -1051,6 +1051,12 @@ def materialize_serving_records(record: Json) -> list[Json]:
         for field in ENTITY_DEBUG_FIELDS:
             serving.pop(field, None)
     elif record_type == "context_embedding":
+        source_event_ids = serving.get("source_event_ids")
+        if isinstance(source_event_ids, list) and source_event_ids:
+            serving.setdefault("source_event_count", len(source_event_ids))
+        source_segment_hashes = serving.get("source_segment_hashes")
+        if isinstance(source_segment_hashes, list) and source_segment_hashes:
+            serving.setdefault("source_segment_count", len(source_segment_hashes))
         source_session_ids = serving.get("source_session_ids")
         if isinstance(source_session_ids, list) and source_session_ids:
             serving.setdefault("profile_source_session_count", len(source_session_ids))
