@@ -42,7 +42,7 @@ RecordPredicate = Callable[[Json], bool]
 DeadlinePredicate = Callable[[], bool]
 CandidateAnnotator = Callable[[Json, Json], Json]
 
-SUMMARY_TYPES = {"node_l0", "node_l1", "resource_l0", "batch_l0", "session_l0"}
+SUMMARY_TYPES = {"node_l0", "node_l1", "resource_l0", "batch_l0", "session_l0", "session_final"}
 
 
 def scan_summary_candidates(

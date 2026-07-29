@@ -8862,7 +8862,7 @@ class MatrixArkLocalAdapter:
                 if not selected_by_tree(record) and not is_profile_summary_bridge:
                     continue
                 summary_type = str(record.get("summary_type") or "")
-                if summary_type not in {"node_l0", "node_l1", "resource_l0", "batch_l0", "session_l0"}:
+                if summary_type not in {"node_l0", "node_l1", "resource_l0", "batch_l0", "session_l0", "session_final"}:
                     continue
                 index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
                 text = str(record.get("summary_text", ""))
@@ -9838,7 +9838,7 @@ class MatrixArkLocalAdapter:
                     continue
                 if recovered_session_continuity != "cross_session":
                     continue
-                if str(record.get("summary_type") or "") not in {"node_l0", "node_l1", "batch_l0", "session_l0"}:
+                if str(record.get("summary_type") or "") not in {"node_l0", "node_l1", "batch_l0", "session_l0", "session_final"}:
                     continue
                 if not recovered_scope_matches(record, retrieval_scope):
                     continue
