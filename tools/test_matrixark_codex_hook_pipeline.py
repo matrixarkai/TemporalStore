@@ -14,6 +14,7 @@ from unittest import mock
 from pathlib import Path
 
 import matrixark_codex_hook
+import matrixark_mcp_summary_runtime
 from matrixark_mcp_context_pack import (
     compact_context_pack_audit_record,
     compact_context_pack_for_serving,
@@ -218,6 +219,125 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(summary["source_role_counts"], embedding["source_role_counts"])
             self.assertEqual(summary["source_hook_type_counts"], embedding["source_hook_type_counts"])
             self.assertEqual(summary["source_codex_event_counts"], embedding["source_codex_event_counts"])
+
+    def test_summary_runtime_refresh_preserves_selection_counts_in_audit_and_result(self) -> None:
+        scope = {
+            "account_id": "acct_runtime_refresh",
+            "tenant_id": "tenant_runtime_refresh",
+            "user_id": "user_runtime_refresh",
+        }
+        node_path = ["tenant:tenant_runtime_refresh", "user:user_runtime_refresh", "profile:long_term_memory"]
+        node_hash = 525252
+        dirty_hash = 525253
+        event = {
+            "record_type": "context_event",
+            "event_id_hash": 525254,
+            "node_hash": node_hash,
+            "node_path": node_path,
+            "scope": scope,
+            "access_scope": scope,
+            "text": "tool: Exit code 0 proves summary refresh selection lineage",
+            "source_roles": ["tool"],
+            "source_role_counts": {"tool": 1},
+            "source_hook_types": ["tool_result"],
+            "source_hook_type_counts": {"tool_result": 1},
+            "source_codex_events": ["PostToolUse"],
+            "source_codex_event_counts": {"PostToolUse": 1},
+            "source_memory_selection_policies": ["selected_tool_evidence_only"],
+            "source_memory_selection_policy_counts": {"selected_tool_evidence_only": 1},
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "extraction_phase": "provisional",
+        }
+        entity = {
+            "record_type": "context_entity",
+            "entity_hash": 525255,
+            "node_hash": node_hash,
+            "node_path": node_path,
+            "scope": scope,
+            "access_scope": scope,
+            "entity_type": "tool_evidence",
+            "entity_name": "summary_refresh_selection_lineage",
+            "state": "tool evidence should survive later summary refresh",
+            "source_roles": ["tool"],
+            "source_role_counts": {"tool": 1},
+            "source_hook_types": ["tool_result"],
+            "source_hook_type_counts": {"tool_result": 1},
+            "source_codex_events": ["PostToolUse"],
+            "source_codex_event_counts": {"PostToolUse": 1},
+            "source_memory_selection_policies": ["selected_tool_evidence_only"],
+            "source_memory_selection_policy_counts": {"selected_tool_evidence_only": 1},
+            "source_event_ids": [525254],
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "extraction_phase": "provisional",
+        }
+
+        class RuntimeRefreshAdapter:
+            def __init__(self) -> None:
+                self.records = [
+                    {
+                        "record_type": "context_summary_dirty",
+                        "dirty_hash": dirty_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "scope": scope,
+                        "status": "pending",
+                        "updated_at_ms": 1000,
+                    },
+                    event,
+                    entity,
+                ]
+
+            def read_all(self) -> list[dict]:
+                return list(self.records)
+
+            def node_summary_source_records(self, **_kwargs):
+                return [event], [], [entity], [], {"source_policy": "direct_events_and_profile_state"}
+
+            def append_many(self, records: list[dict]) -> None:
+                self.records.extend(records)
+
+            def append(self, record: dict) -> None:
+                self.records.append(record)
+
+            def auto_time_compress_node_events(self, **_kwargs) -> dict:
+                return {"created_count": 0}
+
+            def context_event_ingestion_time_ms(self, record: dict, _debug_by_ref=None) -> int:
+                return int(record.get("updated_at_ms") or record.get("event_time_ms") or 0)
+
+        adapter = RuntimeRefreshAdapter()
+        previous_audit_flag = matrixark_mcp_summary_runtime.ENABLE_SUMMARY_REFRESH_AUDIT
+        matrixark_mcp_summary_runtime.ENABLE_SUMMARY_REFRESH_AUDIT = True
+        try:
+            refresh = matrixark_mcp_summary_runtime.refresh_dirty_node_summaries(
+                adapter,
+                scope=scope,
+                limit=8,
+                refreshed_at_ms=2000,
+            )
+        finally:
+            matrixark_mcp_summary_runtime.ENABLE_SUMMARY_REFRESH_AUDIT = previous_audit_flag
+
+        self.assertEqual("ok", refresh["status"])
+        self.assertEqual(1, refresh["refreshed_count"])
+        refreshed = refresh["refreshed"][0]
+        self.assertEqual(["selected_tool_evidence_only"], refreshed["source_memory_selection_policies"])
+        self.assertEqual({"selected_tool_evidence_only": 2}, refreshed["source_memory_selection_policy_counts"])
+        self.assertEqual({"tool": 2}, refreshed["source_role_counts"])
+        self.assertEqual({"tool_result": 2}, refreshed["source_hook_type_counts"])
+        self.assertEqual({"PostToolUse": 2}, refreshed["source_codex_event_counts"])
+
+        audit = next(
+            record
+            for record in adapter.records
+            if record.get("record_type") == "context_summary_refresh_audit"
+        )
+        self.assertEqual({"selected_tool_evidence_only": 2}, audit["source_memory_selection_policy_counts"])
+        self.assertEqual({"tool": 2}, audit["source_role_counts"])
+        self.assertEqual({"tool_result": 2}, audit["source_hook_type_counts"])
+        self.assertEqual({"PostToolUse": 2}, audit["source_codex_event_counts"])
 
     def assert_no_default_context_pack_debug_lineage(self, value: object) -> None:
         hidden_keys = {
