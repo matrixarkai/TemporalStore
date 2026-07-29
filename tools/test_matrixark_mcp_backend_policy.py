@@ -21,6 +21,7 @@ try:
     from tools import matrixark_mcp_ingest_message_records as message_record_builders
     from tools import matrixark_mcp_retrieve_compression_scan as compression_scan
     from tools import matrixark_mcp_retrieve_planning as retrieve_planning
+    from tools import matrixark_mcp_summary_runtime as mcp_summary_runtime
     from tools.run_matrixark_cpp_rust_scale_report import (
         comparison,
         default_cpp_lib_path,
@@ -44,6 +45,7 @@ except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_ingest_message_records as message_record_builders
     import matrixark_mcp_retrieve_compression_scan as compression_scan
     import matrixark_mcp_retrieve_planning as retrieve_planning
+    import matrixark_mcp_summary_runtime as mcp_summary_runtime
     from run_matrixark_cpp_rust_scale_report import (
         comparison,
         default_cpp_lib_path,
@@ -2388,6 +2390,67 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertNotIn("extraction_phase", embedding)
         self.assertNotIn("source_event_ids", embedding)
         self.assertNotIn("source_role_counts", embedding)
+
+    def test_summary_embedding_compaction_strips_lineage_debug_fields(self) -> None:
+        embedding = mcp_summary_runtime.compact_summary_embedding_record(
+            {
+                "record_type": "context_embedding",
+                "embedding_type": "node_l1",
+                "ref_type": "summary",
+                "ref_hash": 44,
+                "node_hash": 55,
+                "node_path": ["tenant:t", "user:u", "profile:long_term_memory"],
+                "vector": [0.1, 0.2],
+                "dim": 2,
+                "model": "matrixark-local-token-hash-v1",
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "extraction_phase": "final",
+                "final_session_boundary": True,
+                "source_event_ids": [11],
+                "source_entity_hashes": [22],
+                "source_summary_hashes": [33],
+                "source_roles": ["user", "assistant"],
+                "source_role_counts": {"user": 1, "assistant": 1},
+                "source_hook_types": ["before_llm", "after_llm"],
+                "source_hook_type_counts": {"before_llm": 1, "after_llm": 1},
+                "source_codex_events": ["UserPromptSubmit", "Stop"],
+                "source_codex_event_counts": {"UserPromptSubmit": 1, "Stop": 1},
+                "source_memory_selection_policy_counts": {
+                    "selected_assistant_decision_outcome_only": 1,
+                },
+                "source_memory_scopes": ["session", "user_profile"],
+                "source_session_continuities": ["same_session", "cross_session"],
+                "source_extraction_phases": ["provisional", "final"],
+                "source_final_session_boundary_count": 1,
+                "summary_generation_policy": {"provider": "deterministic"},
+                "dirty_hash": 66,
+            }
+        )
+
+        self.assertEqual("user_profile", embedding["memory_scope"])
+        self.assertEqual("cross_session", embedding["session_continuity"])
+        for field in [
+            "extraction_phase",
+            "final_session_boundary",
+            "source_event_ids",
+            "source_entity_hashes",
+            "source_summary_hashes",
+            "source_roles",
+            "source_role_counts",
+            "source_hook_types",
+            "source_hook_type_counts",
+            "source_codex_events",
+            "source_codex_event_counts",
+            "source_memory_selection_policy_counts",
+            "source_memory_scopes",
+            "source_session_continuities",
+            "source_extraction_phases",
+            "source_final_session_boundary_count",
+            "summary_generation_policy",
+            "dirty_hash",
+        ]:
+            self.assertNotIn(field, embedding)
 
     def test_latest_context_state_compacts_summary_and_summary_embedding_versions(self) -> None:
         records = [
