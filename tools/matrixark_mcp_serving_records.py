@@ -322,6 +322,12 @@ def materialize_serving_records(record: Json) -> list[Json]:
         for field in ENTITY_DEBUG_FIELDS:
             serving.pop(field, None)
     elif record_type == "context_embedding":
+        source_session_ids = serving.get("source_session_ids")
+        if isinstance(source_session_ids, list) and source_session_ids:
+            serving.setdefault("profile_source_session_count", len(source_session_ids))
+        source_entity_hashes = serving.get("source_entity_hashes")
+        if isinstance(source_entity_hashes, list) and source_entity_hashes:
+            serving.setdefault("profile_source_entity_count", len(source_entity_hashes))
         debug_payload = {
             field: record[field]
             for field in EMBEDDING_LINEAGE_DEBUG_FIELDS

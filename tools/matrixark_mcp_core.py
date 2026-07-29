@@ -1051,6 +1051,12 @@ def materialize_serving_records(record: Json) -> list[Json]:
         for field in ENTITY_DEBUG_FIELDS:
             serving.pop(field, None)
     elif record_type == "context_embedding":
+        source_session_ids = serving.get("source_session_ids")
+        if isinstance(source_session_ids, list) and source_session_ids:
+            serving.setdefault("profile_source_session_count", len(source_session_ids))
+        source_entity_hashes = serving.get("source_entity_hashes")
+        if isinstance(source_entity_hashes, list) and source_entity_hashes:
+            serving.setdefault("profile_source_entity_count", len(source_entity_hashes))
         debug_payload = {
             field: record[field]
             for field in EMBEDDING_LINEAGE_DEBUG_FIELDS
@@ -6508,6 +6514,48 @@ def selected_context_class_counts(refs: list[Json]) -> Json:
     return counts
 
 
+def _positive_count_from_ref(ref: Json, *fields: str, list_fields: tuple[str, ...] = ()) -> int:
+    for field in fields:
+        value = ref.get(field)
+        if isinstance(value, int) and value > 0:
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = int(value)
+            except ValueError:
+                parsed = 0
+            if parsed > 0:
+                return parsed
+    for field in list_fields:
+        value = ref.get(field)
+        if isinstance(value, list) and value:
+            return len(value)
+    return 0
+
+
+def _attach_compact_profile_source_counts(item: Json, ref: Json) -> None:
+    if ref.get("memory_scope") != "user_profile" or ref.get("session_continuity") != "cross_session":
+        return
+    session_count = _positive_count_from_ref(
+        ref,
+        "profile_source_session_count",
+        "current_state_source_session_count",
+        "source_session_count",
+        list_fields=("source_session_ids",),
+    )
+    entity_count = _positive_count_from_ref(
+        ref,
+        "profile_source_entity_count",
+        "current_state_source_entity_count",
+        "source_entity_count",
+        list_fields=("source_entity_hashes", "supersedes_session_entity_hashes"),
+    )
+    if session_count > 0:
+        item["profile_source_session_count"] = session_count
+    if entity_count > 0:
+        item["profile_source_entity_count"] = entity_count
+
+
 def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
     """Return the prompt-facing ContextPack ref shape.
 
@@ -6547,6 +6595,7 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
                     item[field] = role_counts
             else:
                 item[field] = value
+    _attach_compact_profile_source_counts(item, ref)
     if CONTEXT_PACK_DEBUG_LINEAGE or include_debug:
         for field in [
             "current_state_policy",

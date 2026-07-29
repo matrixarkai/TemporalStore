@@ -7731,6 +7731,12 @@ class MatrixArkLocalAdapter:
                 "source_entity_hashes",
                 "source_event_ids",
                 "extraction_context_event_ids",
+                "profile_source_session_count",
+                "profile_source_entity_count",
+                "source_session_count",
+                "source_entity_count",
+                "current_state_source_session_count",
+                "current_state_source_entity_count",
             ]
             metadata = {
                 field: record[field]
@@ -7784,11 +7790,21 @@ class MatrixArkLocalAdapter:
             current_state_source_session_count = candidate.get("current_state_source_session_count")
             current_state_source_entity_count = candidate.get("current_state_source_entity_count")
             try:
-                current_state_source_session_count = int(current_state_source_session_count or 0)
+                current_state_source_session_count = int(
+                    current_state_source_session_count
+                    or first_value("profile_source_session_count", 0)
+                    or first_value("source_session_count", 0)
+                    or 0
+                )
             except (TypeError, ValueError):
                 current_state_source_session_count = 0
             try:
-                current_state_source_entity_count = int(current_state_source_entity_count or 0)
+                current_state_source_entity_count = int(
+                    current_state_source_entity_count
+                    or first_value("profile_source_entity_count", 0)
+                    or first_value("source_entity_count", 0)
+                    or 0
+                )
             except (TypeError, ValueError):
                 current_state_source_entity_count = 0
             return {
