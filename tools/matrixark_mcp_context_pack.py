@@ -44,9 +44,6 @@ DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS = {
     "source_lineage",
     "source_event_ids",
     "source_event_count",
-    "source_record_type",
-    "segment_origin",
-    "derived_from_context_events",
     "pending_source_roles",
     "pending_source_hook_types",
     "pending_source_codex_events",
@@ -360,6 +357,20 @@ def serving_retrieval_metrics(value: Any, *, include_debug: bool = False) -> Jso
             async_pipeline_readiness,
             include_debug=include_debug,
         )
+    quality_first_underfill = value.get("quality_first_underfill")
+    if isinstance(quality_first_underfill, dict):
+        compact_underfill = {
+            field: quality_first_underfill.get(field)
+            for field in [
+                "enabled",
+                "unused_remote_context_tokens",
+                "dropped_ref_count",
+                "dropped_reason_counts",
+            ]
+            if quality_first_underfill.get(field) not in (None, "", [], {})
+        }
+        if compact_underfill.get("enabled"):
+            compact["quality_first_underfill"] = compact_underfill
     pre_retrieval_summary_refresh = value.get("pre_retrieval_summary_refresh")
     if debug_lineage_enabled(include_debug=include_debug) and isinstance(pre_retrieval_summary_refresh, dict):
         compact["pre_retrieval_summary_refresh"] = {
@@ -499,6 +510,14 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
             value = ref.get(field)
             if value not in (None, "", [], {}) and not (isinstance(value, int) and value <= 0):
                 item[field] = value
+    value = ref.get("source_record_type")
+    if isinstance(value, str) and value.strip():
+        item["source_record_type"] = value.strip()
+    value = ref.get("segment_origin")
+    if isinstance(value, str) and value.strip():
+        item["segment_origin"] = value.strip()
+    if ref.get("derived_from_context_events") is True:
+        item["derived_from_context_events"] = True
     context_class = ref.get("context_class")
     if context_class and context_class != item.get("ref_type"):
         item["context_class"] = context_class
@@ -1051,14 +1070,6 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         value = ref.get("source_event_count", metadata.get("source_event_count"))
         if isinstance(value, int) and value > 0:
             item["source_event_count"] = value
-        value = ref.get("source_record_type", metadata.get("source_record_type"))
-        if isinstance(value, str) and value.strip():
-            item["source_record_type"] = value.strip()
-        value = ref.get("segment_origin", metadata.get("segment_origin"))
-        if isinstance(value, str) and value.strip():
-            item["segment_origin"] = value.strip()
-        if ref.get("derived_from_context_events") is True or metadata.get("derived_from_context_events") is True:
-            item["derived_from_context_events"] = True
         value = ref.get("current_state_policy", metadata.get("current_state_policy"))
         if value not in (None, "", [], {}):
             item["current_state_policy"] = value
@@ -1066,6 +1077,14 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
             value = ref.get(field, metadata.get(field))
             if isinstance(value, int) and value > 0:
                 item[field] = value
+    value = ref.get("source_record_type", metadata.get("source_record_type"))
+    if isinstance(value, str) and value.strip():
+        item["source_record_type"] = value.strip()
+    value = ref.get("segment_origin", metadata.get("segment_origin"))
+    if isinstance(value, str) and value.strip():
+        item["segment_origin"] = value.strip()
+    if ref.get("derived_from_context_events") is True or metadata.get("derived_from_context_events") is True:
+        item["derived_from_context_events"] = True
     return item
 
 

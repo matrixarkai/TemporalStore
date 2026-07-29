@@ -38,7 +38,7 @@ from matrixark_mcp_core import (
 from matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness
 from matrixark_mcp_recovery import matrixark_local_recovery_report
 from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget, memory_layer_pressure_summary, selected_ref_layer_budget
-from matrixark_mcp_local_adapter import suppress_extracted_represented_pending_events
+from matrixark_mcp_local_adapter import quality_first_underfill_summary, suppress_extracted_represented_pending_events
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 from matrixark_mcp_summary_runtime import build_node_summary_refresh_records
 
@@ -584,6 +584,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     },
                     "assistant_source_message_pressure": True,
                 },
+                "quality_first_underfill": {
+                    "enabled": True,
+                    "unused_remote_context_tokens": 56,
+                    "dropped_ref_count": 3,
+                    "dropped_reason_counts": {
+                        "memory_layer_budget": 2,
+                        "source_role_budget": 1,
+                    },
+                    "warning": "quality_first_budget_underfill:unused_tokens=56,dropped_refs=3",
+                },
             },
             "recall_policy": {
                 "cross_session": {
@@ -637,6 +647,19 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             {"by_memory_scope"},
             set(metrics_serving["retrieval_metrics"]["memory_layer_pressure"]["dropped_dimensions"]),
         )
+        self.assertEqual(
+            {
+                "enabled": True,
+                "unused_remote_context_tokens": 56,
+                "dropped_ref_count": 3,
+                "dropped_reason_counts": {
+                    "memory_layer_budget": 2,
+                    "source_role_budget": 1,
+                },
+            },
+            metrics_serving["retrieval_metrics"]["quality_first_underfill"],
+        )
+        self.assertNotIn("warning", metrics_serving["retrieval_metrics"]["quality_first_underfill"])
 
     def test_context_pack_serving_includes_debug_lineage_with_flag(self) -> None:
         pack = {
@@ -1370,6 +1393,34 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(
             1,
             pressure["by_dimension"]["by_memory_selection_policy"]["selected_tool_evidence_only"]["dropped_refs"],
+        )
+
+    def test_quality_first_underfill_summary_tracks_budget_dropped_memory(self) -> None:
+        summary = quality_first_underfill_summary(
+            budget_fill_policy="quality_first",
+            selected_ref_count=1,
+            used_context_tokens=24,
+            remote_context_budget_tokens=80,
+            dropped_over_budget={
+                "memory_layer_budget": 2,
+                "cross_session_budget": 1,
+                "deadline_exceeded": True,
+            },
+        )
+
+        self.assertTrue(summary["enabled"])
+        self.assertEqual(56, summary["unused_remote_context_tokens"])
+        self.assertEqual(3, summary["dropped_ref_count"])
+        self.assertEqual({"cross_session_budget": 1, "memory_layer_budget": 2}, summary["dropped_reason_counts"])
+        self.assertEqual("quality_first_budget_underfill:unused_tokens=56,dropped_refs=3", summary["warning"])
+        self.assertFalse(
+            quality_first_underfill_summary(
+                budget_fill_policy="force_fill",
+                selected_ref_count=1,
+                used_context_tokens=24,
+                remote_context_budget_tokens=80,
+                dropped_over_budget={"memory_layer_budget": 2},
+            )["enabled"]
         )
 
     def test_recovery_report_surfaces_memory_selection_policy_budget_pressure(self) -> None:
@@ -6777,8 +6828,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             }
             compact_default = compact_context_pack_ref(ref)
             self.assertNotIn("source_event_ids", compact_default)
-            self.assertNotIn("source_record_type", compact_default)
-            self.assertNotIn("derived_from_context_events", compact_default)
+            self.assertEqual("context_event", compact_default["source_record_type"])
+            self.assertTrue(compact_default["derived_from_context_events"])
+            self.assertEqual(segment["segment_origin"], compact_default["segment_origin"])
 
             compact_debug = compact_context_pack_ref(ref, include_debug=True)
             self.assertEqual(segment["source_event_ids"][:8], compact_debug["source_event_ids"])
@@ -6798,8 +6850,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             grouped_default = compact_context_pack_for_serving(grouped_pack)
             grouped_default_item = grouped_default["groups"][0]["items"][0]
             self.assertNotIn("source_event_ids", grouped_default_item)
-            self.assertNotIn("source_record_type", grouped_default_item)
-            self.assertNotIn("derived_from_context_events", grouped_default_item)
+            self.assertEqual("context_event", grouped_default_item["source_record_type"])
+            self.assertTrue(grouped_default_item["derived_from_context_events"])
+            self.assertEqual(segment["segment_origin"], grouped_default_item["segment_origin"])
 
             grouped_debug = compact_context_pack_for_serving(grouped_pack, include_debug=True)
             grouped_debug_item = grouped_debug["groups"][0]["items"][0]

@@ -74,6 +74,56 @@ RESOURCE_IMPORT_IGNORE_DIRS = {".git", "node_modules", "target", "build", "dist"
 LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").strip().lower() not in {"0", "false", "no"}
 PRE_RETRIEVAL_SUMMARY_REFRESH = os.environ.get("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH", "0").strip().lower() in {"1", "true", "yes"}
 
+QUALITY_FIRST_UNDERFILL_DROP_KEYS = {
+    "cross_session_budget",
+    "cross_session_session_cap",
+    "cross_session_candidate_cap",
+    "low_score",
+    "memory_layer_budget",
+    "memory_layer_floor",
+    "memory_selection_policy_budget",
+    "shared_resource_budget",
+    "shared_skill_budget",
+    "source_role_budget",
+    "stale",
+}
+
+
+def quality_first_underfill_summary(
+    *,
+    budget_fill_policy: str,
+    selected_ref_count: int,
+    used_context_tokens: int,
+    remote_context_budget_tokens: int,
+    dropped_over_budget: Json,
+) -> Json:
+    if str(budget_fill_policy or "").strip().lower() != "quality_first":
+        return {"enabled": False}
+    if selected_ref_count <= 0:
+        return {"enabled": False}
+    unused_tokens = max(0, int(remote_context_budget_tokens or 0) - int(used_context_tokens or 0))
+    if unused_tokens <= 0:
+        return {"enabled": False}
+    dropped_reason_counts: Json = {}
+    for key in sorted(QUALITY_FIRST_UNDERFILL_DROP_KEYS):
+        try:
+            count = int(dropped_over_budget.get(key) or 0)
+        except (AttributeError, TypeError, ValueError):
+            count = 0
+        if count > 0:
+            dropped_reason_counts[key] = count
+    dropped_ref_count = sum(int(count or 0) for count in dropped_reason_counts.values())
+    if dropped_ref_count <= 0:
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "policy": "quality_first",
+        "unused_remote_context_tokens": unused_tokens,
+        "dropped_ref_count": dropped_ref_count,
+        "dropped_reason_counts": dropped_reason_counts,
+        "warning": f"quality_first_budget_underfill:unused_tokens={unused_tokens},dropped_refs={dropped_ref_count}",
+    }
+
 
 def legacy_hook_type_from_codex_event(event: Any) -> str:
     label = str(event or "").strip()
@@ -9334,6 +9384,15 @@ class MatrixArkLocalAdapter:
             quality_warnings.append(
                 f"selected_pending_async_event_refs:{len(selected_pending_async_refs)}"
             )
+        quality_first_underfill = quality_first_underfill_summary(
+            budget_fill_policy=budget_fill_policy,
+            selected_ref_count=len(selected),
+            used_context_tokens=used_context_tokens,
+            remote_context_budget_tokens=remote_context_budget_tokens,
+            dropped_over_budget=dropped_over_budget,
+        )
+        if quality_first_underfill.get("enabled"):
+            quality_warnings.append(quality_first_underfill["warning"])
         retrieval_model_coverage = {
             "event_embedding_vectors": len(event_embedding_vectors),
             "entity_embedding_vectors": len(entity_embedding_vectors),
@@ -9381,6 +9440,7 @@ class MatrixArkLocalAdapter:
                 "dropped_memory_layer_budget": dropped_memory_layer_budget,
                 "memory_layer_pressure": memory_layer_pressure,
                 "selected_pending_async": selected_pending_async_summary,
+                "quality_first_underfill": quality_first_underfill,
                 "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
                 "async_pipeline_readiness": async_pipeline_readiness,
                 "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
@@ -9561,6 +9621,7 @@ class MatrixArkLocalAdapter:
             "dropped_memory_layer_budget": dropped_memory_layer_budget,
             "memory_layer_pressure": memory_layer_pressure,
             "selected_pending_async": selected_pending_async_summary,
+            "quality_first_underfill": quality_first_underfill,
             "async_pipeline_readiness": async_pipeline_readiness,
             "used_local_context_tokens": pack["used_local_context_tokens"],
             "used_remote_context_tokens": pack["used_remote_context_tokens"],
@@ -9655,6 +9716,11 @@ class MatrixArkLocalAdapter:
             "dropped_memory_layer_budget": serving_dropped_memory_layer_budget_value,
             "memory_layer_pressure": serving_memory_layer_pressure_value,
             "selected_pending_async_ref_count": selected_pending_async_summary["selected_ref_count"],
+            "quality_first_underfill": {
+                key: value
+                for key, value in quality_first_underfill.items()
+                if key in {"enabled", "unused_remote_context_tokens", "dropped_ref_count", "dropped_reason_counts"}
+            },
             "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
             "async_pipeline_readiness": async_pipeline_readiness,
             "scanned_records": int(retrieval_scan_stats.get("loaded_records") or retrieval_scan_stats.get("scanned_records") or len(records)) if isinstance(retrieval_scan_stats, dict) else len(records),
