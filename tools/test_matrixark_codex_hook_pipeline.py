@@ -8505,8 +8505,39 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({"hook_boundary": 2}, profile_decision["source_hook_type_counts"])
             self.assertIn("Stop", profile_decision["source_codex_events"])
             self.assertEqual({"Stop": 2}, profile_decision["source_codex_event_counts"])
+            self.assertEqual(["always_when_profile_scope_available"], profile_decision["source_profile_promotion_policies"])
+            self.assertEqual([], profile_decision["source_profile_promotion_blockers"])
+            self.assertEqual(2, profile_decision["profile_revision"])
+            self.assertTrue(profile_decision["profile_entity_current"])
+            self.assertEqual(1, profile_decision["previous_profile_revision"])
+            self.assertGreater(profile_decision["previous_profile_updated_at_ms"], 0)
+            self.assertIn(
+                profile_decision["supersedes_session_entity_hash"],
+                profile_decision["supersedes_session_entity_hashes"],
+            )
+            self.assertEqual(
+                profile_decision["source_entity_hashes"],
+                profile_decision["supersedes_session_entity_hashes"],
+            )
             self.assertIn("aaa111", profile_decision["state"])
             self.assertIn("bbb222", profile_decision["state"])
+            profile_decision_embedding = next(
+                record
+                for record in records
+                if record.get("record_type") == "context_embedding"
+                and record.get("ref_hash") == profile_decision["entity_hash"]
+                and record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
+            )
+            self.assertEqual(2, profile_decision_embedding["profile_revision"])
+            self.assertEqual(
+                profile_decision["source_entity_hashes"],
+                profile_decision_embedding["supersedes_session_entity_hashes"],
+            )
+            self.assertEqual(
+                ["always_when_profile_scope_available"],
+                profile_decision_embedding["source_profile_promotion_policies"],
+            )
 
             pack = adapter.retrieve(
                 {
