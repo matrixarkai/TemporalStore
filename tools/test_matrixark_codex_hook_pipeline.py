@@ -6723,6 +6723,34 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(row.get("dim", 0) > 0 for row in embedding_rows), embeddings_dashboard)
             self.assertTrue(all(row.get("has_vector") for row in embedding_rows), embeddings_dashboard)
             self.assertTrue(all("vector" not in row for row in embedding_rows), embeddings_dashboard)
+            self.assertTrue(
+                any(
+                    row.get("embedding_type") == "event_text"
+                    and row.get("memory_scope") == "session"
+                    and row.get("session_continuity") == "same_session"
+                    for row in embedding_rows
+                ),
+                embeddings_dashboard,
+            )
+            profile_embedding_rows = [
+                row
+                for row in embedding_rows
+                if row.get("memory_scope") == "user_profile"
+                and row.get("session_continuity") == "cross_session"
+            ]
+            self.assertTrue(profile_embedding_rows, embeddings_dashboard)
+            self.assertTrue(
+                all(row.get("promoted_from_memory_scope") == "session" for row in profile_embedding_rows),
+                embeddings_dashboard,
+            )
+            self.assertTrue(
+                any(row.get("source_role_counts", {}).get("assistant", 0) >= 1 for row in profile_embedding_rows),
+                embeddings_dashboard,
+            )
+            self.assertTrue(
+                any(row.get("source_hook_type_counts", {}).get("hook_boundary", 0) >= 1 for row in profile_embedding_rows),
+                embeddings_dashboard,
+            )
             indexes_dashboard = adapter.ingestion_dashboard(
                 {"scope": scope, "table": "indexes", "page_size": 80}
             )
