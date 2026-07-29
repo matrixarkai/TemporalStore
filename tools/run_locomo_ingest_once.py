@@ -148,6 +148,11 @@ def main() -> int:
         help="Optional append-only per-query JSONL path. Defaults to <output>.per_query.jsonl.",
     )
     parser.add_argument(
+        "--resume-per-query",
+        action="store_true",
+        help="Preserve existing per-query JSONL rows, skip completed query_ids, and include them in final totals.",
+    )
+    parser.add_argument(
         "--progress-every",
         type=int,
         default=1,
@@ -468,7 +473,7 @@ def main() -> int:
         Path(args.per_query_output) if args.per_query_output else output_path.with_suffix(output_path.suffix + ".per_query.jsonl")
     )
     progress_every = max(1, int(args.progress_every))
-    if per_query_output_path.exists():
+    if per_query_output_path.exists() and not args.resume_per_query:
         per_query_output_path.unlink()
     write_benchmark_progress(
         progress_path,
@@ -628,6 +633,97 @@ def main() -> int:
     unsupported_case_count = 0
     unsupported_cases: list[dict[str, str]] = []
     supported_question_index = 0
+    completed_query_ids: set[str] = set()
+    if args.resume_per_query and per_query_output_path.exists():
+        for existing_row in iter_jsonl_cases(per_query_output_path):
+            if not isinstance(existing_row, dict):
+                continue
+            existing_query_id = str(existing_row.get("query_id") or "")
+            if not existing_query_id or existing_query_id in completed_query_ids:
+                continue
+            completed_query_ids.add(existing_query_id)
+            per_query.append(existing_row)
+            case_category = normalize_category(existing_row.get("category"))
+            answer_terms = int(existing_row.get("answer_terms") or 0)
+            matched_terms = int(existing_row.get("matched_retrieval_answer_terms") or 0)
+            matched_context_terms = int(existing_row.get("matched_context_answer_terms") or 0)
+            reader_matched_terms = int(existing_row.get("matched_answer_terms") or 0)
+            expected_refs = int(existing_row.get("expected_source_refs") or 0)
+            matched_ref_count = int(existing_row.get("matched_source_refs") or 0)
+            rank = existing_row.get("rank")
+            retrieval_hit = bool(existing_row.get("hit"))
+            reader_hit = bool(existing_row.get("reader_hit"))
+            source_tokens = int(existing_row.get("source_tokens") or 0)
+            retrieved_tokens = int(existing_row.get("retrieved_tokens") or 0)
+            retrieved_blocks = int(existing_row.get("retrieved_blocks") or 0)
+            retrieved_source_groups = int(existing_row.get("retrieved_source_groups") or 0)
+
+            total += 1
+            total_answer_terms += answer_terms
+            matched_answer_terms += matched_terms
+            matched_context_answer_terms += matched_context_terms
+            reader_answer_coverage_count += reader_matched_terms
+            total_refs += expected_refs
+            matched_refs += matched_ref_count
+            total_source_tokens += source_tokens
+            total_retrieved_tokens += retrieved_tokens
+            max_retrieved_tokens = max(max_retrieved_tokens, retrieved_tokens)
+            total_retrieved_blocks += retrieved_blocks
+            total_retrieved_source_groups += retrieved_source_groups
+            if retrieved_source_groups >= 2:
+                multi_source_group_queries += 1
+            if isinstance(existing_row.get("retrieval_ms"), (int, float)):
+                retrieval_latencies_ms.append(float(existing_row["retrieval_ms"]))
+            if isinstance(existing_row.get("reader_ms"), (int, float)):
+                reader_latencies_ms.append(float(existing_row["reader_ms"]))
+            budget_counts = existing_row.get("retrieval_budget_counts") or {}
+            if isinstance(budget_counts, dict):
+                for key, value in budget_counts.items():
+                    if isinstance(value, (int, float)):
+                        retrieval_budget_totals[str(key)] += int(value)
+
+            category[case_category]["case_count"] += 1
+            category[case_category]["terms"] += answer_terms
+            category[case_category]["matched_terms"] += matched_context_terms
+            category_reader[case_category]["case_count"] += 1
+            category_reader[case_category]["terms"] += answer_terms
+            category_reader[case_category]["matched_terms"] += reader_matched_terms
+            if retrieval_hit:
+                hit_count += 1
+                row_rank = int(rank) if isinstance(rank, int) and rank > 0 else 1
+                reciprocal_rank_sum += 1.0 / row_rank
+                category[case_category]["hits"] += 1
+                category[case_category]["rr"] += 1.0 / row_rank
+            if reader_hit:
+                reader_hit_count += 1
+                category_reader[case_category]["hits"] += 1
+            if not retrieval_hit or not reader_hit:
+                misses.append(
+                    {
+                        "query_id": existing_query_id,
+                        "category": case_category,
+                        "miss_type": "retrieval_and_reader"
+                        if not retrieval_hit and not reader_hit
+                        else "retrieval"
+                        if not retrieval_hit
+                        else "reader",
+                        "reader_answer": str(existing_row.get("reader_answer") or "")[:500],
+                        "reader_hit": reader_hit,
+                        "retrieval_hit": retrieval_hit,
+                        "rank": rank,
+                        "resumed_from_per_query": True,
+                    }
+                )
+        if completed_query_ids:
+            write_benchmark_progress(
+                progress_path,
+                {
+                    "phase": "reader_resume_loaded",
+                    "completed_cases": total,
+                    "resumed_query_count": len(completed_query_ids),
+                    "per_query_output": str(per_query_output_path),
+                },
+            )
 
     for record_index, record in enumerate(records):
         if not isinstance(record, dict):
@@ -705,6 +801,8 @@ def main() -> int:
                 break
 
             supported_question_index += 1
+            if query_id in completed_query_ids:
+                continue
             source_tokens = sum(estimated_tokens(source.get("body", "")) for source in query_sources)
             retrieval_started = time.perf_counter()
             effective_max_events = adaptive_max_events_for_question(question, args)
