@@ -289,11 +289,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("summary", embedding["ref_type"])
             self.assertEqual("user_profile", embedding["memory_scope"])
             self.assertEqual("cross_session", embedding["session_continuity"])
-            self.assertEqual(["session", "user_profile"], embedding["source_memory_scopes"])
-            self.assertEqual(["cross_session", "same_session"], embedding["source_session_continuities"])
-            self.assertEqual(summary["source_role_counts"], embedding["source_role_counts"])
-            self.assertEqual(summary["source_hook_type_counts"], embedding["source_hook_type_counts"])
-            self.assertEqual(summary["source_codex_event_counts"], embedding["source_codex_event_counts"])
+            self.assertNotIn("source_memory_scopes", embedding)
+            self.assertNotIn("source_session_continuities", embedding)
+            self.assertNotIn("source_role_counts", embedding)
+            self.assertNotIn("source_hook_type_counts", embedding)
+            self.assertNotIn("source_codex_event_counts", embedding)
 
     def test_summary_runtime_refresh_preserves_selection_counts_in_audit_and_result(self) -> None:
         scope = {
@@ -3308,11 +3308,17 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "understanding_provider": "rules",
                     "segment_provider": "deterministic",
                 }
+                selected_tool_text = "Tool evidence: Exit code: 0 proves the direct fast hook sees the third message."
+                original_tool_text = selected_tool_text + "\n" + "\n".join(
+                    f"verbose build output line {index} without serving value"
+                    for index in range(40)
+                )
                 result = matrixark_codex_hook.fast_async_hook_ingest(
                     Server(),
                     args=Namespace(**scope_args),
-                    text="Tool evidence: Exit code: 0 proves the direct fast hook sees the third message.",
+                    text=selected_tool_text,
                     role="tool",
+                    original_text=original_tool_text,
                     agent_context={"workspace_root": "/repo"},
                     hook={
                         "session_id_source": "payload_field",
@@ -3335,10 +3341,29 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertEqual(3, commit["trigger_evidence"]["pending_message_count"])
                 self.assertEqual(["assistant", "tool", "user"], commit["source_roles"])
                 self.assertEqual({"assistant": 1, "tool": 1, "user": 1}, commit["source_role_counts"])
-                commits = [record for record in adapter.read_all() if record.get("record_type") == "context_batch_commit"]
+                self.assertEqual(1, commit["source_memory_selection_lossy_count"])
+                self.assertGreater(commit["source_memory_selection_dropped_text_chars"], 0)
+                self.assertLess(commit["source_memory_selection_retained_text_ratio_avg"], 1.0)
+                records = adapter.read_all()
+                derived_records = [
+                    record
+                    for record in records
+                    if record.get("batch_id_hash") == commit["batch_id_hash"]
+                    and record.get("record_type")
+                    in {"context_entity", "context_segment", "context_summary", "context_extraction_audit"}
+                ]
+                self.assertTrue(derived_records)
+                self.assertTrue(
+                    all(record.get("source_memory_selection_lossy_count") == 1 for record in derived_records)
+                )
+                self.assertTrue(
+                    all(record.get("source_memory_selection_dropped_text_chars", 0) > 0 for record in derived_records)
+                )
+                commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
                 self.assertEqual(1, len(commits))
                 self.assertEqual(2, commits[0]["pending_event_count_before_commit"])
                 self.assertEqual(3, commits[0]["pending_message_count_before_commit"])
+                self.assertEqual(1, commits[0]["source_memory_selection_lossy_count"])
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
@@ -7370,11 +7395,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 embeddings_dashboard,
             )
             self.assertTrue(
-                any(row.get("source_role_counts", {}).get("assistant", 0) >= 1 for row in profile_embedding_rows),
+                all(not row.get("source_role_counts") for row in profile_embedding_rows),
                 embeddings_dashboard,
             )
             self.assertTrue(
-                any(row.get("source_hook_type_counts", {}).get("hook_boundary", 0) >= 1 for row in profile_embedding_rows),
+                all(not row.get("source_hook_type_counts") for row in profile_embedding_rows),
                 embeddings_dashboard,
             )
             indexes_dashboard = adapter.ingestion_dashboard(
@@ -8932,15 +8957,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 and record.get("memory_scope") == "user_profile"
                 and record.get("session_continuity") == "cross_session"
             )
-            self.assertEqual(2, profile_decision_embedding["profile_revision"])
-            self.assertEqual(
-                profile_decision["source_entity_hashes"],
-                profile_decision_embedding["supersedes_session_entity_hashes"],
-            )
-            self.assertEqual(
-                ["always_when_profile_scope_available"],
-                profile_decision_embedding["source_profile_promotion_policies"],
-            )
+            self.assertNotIn("profile_revision", profile_decision_embedding)
+            self.assertNotIn("supersedes_session_entity_hashes", profile_decision_embedding)
+            self.assertNotIn("source_profile_promotion_policies", profile_decision_embedding)
             superseded_session_entity_hashes = list(profile_decision["supersedes_session_entity_hashes"])
 
             pack = adapter.retrieve(
@@ -9151,7 +9170,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("dropped_memory_layer_budget", default_current_pack)
             self.assertNotIn("memory_layer_pressure", default_current_pack)
 
-    def test_retrieval_recovers_profile_layer_from_embedding_metadata(self) -> None:
+    def test_retrieval_recovers_profile_layer_from_compact_embedding_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-embedding-recovery.jsonl")
             scope = {
@@ -9264,16 +9283,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 if ref.get("ref_type") == "entity"
                 and "latest_profile_marker_991" in ref.get("text", "")
             )
-            self.assertEqual({"assistant": 1}, debug_ref["source_role_counts"])
-            self.assertEqual(["session_prior"], debug_ref["source_session_ids"])
-            self.assertEqual([91003], debug_ref["source_event_ids"])
-            self.assertEqual([91003], debug_ref["extraction_context_event_ids"])
-            self.assertEqual(1, debug_ref["source_entity_count"])
-            self.assertEqual(1, debug_ref["source_session_count"])
-            self.assertEqual(1, debug_ref["current_state_source_session_count"])
-            self.assertEqual(1, debug_ref["current_state_source_entity_count"])
+            self.assertNotIn("source_role_counts", debug_ref)
+            self.assertNotIn("source_session_ids", debug_ref)
+            self.assertNotIn("source_event_ids", debug_ref)
+            self.assertNotIn("extraction_context_event_ids", debug_ref)
+            self.assertNotIn("source_entity_count", debug_ref)
+            self.assertNotIn("source_session_count", debug_ref)
+            self.assertNotIn("current_state_source_session_count", debug_ref)
+            self.assertNotIn("current_state_source_entity_count", debug_ref)
 
-    def test_retrieval_recovers_profile_summary_layer_from_embedding_metadata(self) -> None:
+    def test_retrieval_recovers_profile_summary_layer_from_compact_embedding_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-summary-embedding-recovery.jsonl")
             scope = {
@@ -9404,21 +9423,15 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 for ref in debug_pack["selected_refs"]
                 if ref.get("ref_type") == "summary" and "latest_summary_marker_992" in ref.get("text", "")
             )
-            self.assertEqual(["session_prior_summary"], debug_ref["source_session_ids"])
-            self.assertEqual([92003], debug_ref["source_event_ids"])
-            self.assertEqual([92003], debug_ref["extraction_context_event_ids"])
-            self.assertEqual(1, debug_ref["source_event_count"])
-            self.assertEqual(1, debug_ref["source_entity_count"])
-            self.assertEqual({"assistant": 1, "tool": 1}, debug_ref["source_role_counts"])
-            self.assertEqual({"after_llm": 1, "tool_result": 1}, debug_ref["source_hook_type_counts"])
-            self.assertEqual({"Stop": 1, "PostToolUse": 1}, debug_ref["source_codex_event_counts"])
-            self.assertEqual(
-                {
-                    "selected_assistant_decision_outcome_only": 1,
-                    "selected_tool_evidence_only": 1,
-                },
-                debug_ref["source_memory_selection_policy_counts"],
-            )
+            self.assertNotIn("source_session_ids", debug_ref)
+            self.assertNotIn("source_event_ids", debug_ref)
+            self.assertNotIn("extraction_context_event_ids", debug_ref)
+            self.assertNotIn("source_event_count", debug_ref)
+            self.assertNotIn("source_entity_count", debug_ref)
+            self.assertNotIn("source_role_counts", debug_ref)
+            self.assertNotIn("source_hook_type_counts", debug_ref)
+            self.assertNotIn("source_codex_event_counts", debug_ref)
+            self.assertNotIn("source_memory_selection_policy_counts", debug_ref)
 
     def test_retrieval_flags_state_file_session_identity_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
