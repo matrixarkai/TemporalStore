@@ -11,20 +11,26 @@ try:
         CONTEXT_PACK_DEBUG_REFS,
         DEFAULT_MAX_CONTEXT_TOKENS,
         Json,
+        candidate_access_scope,
         integer_arg,
         normalize_storage_options,
+        now_ms,
         optional_object,
         require_string,
+        scope_matches,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         CONTEXT_PACK_DEBUG_REFS,
         DEFAULT_MAX_CONTEXT_TOKENS,
         Json,
+        candidate_access_scope,
         integer_arg,
         normalize_storage_options,
+        now_ms,
         optional_object,
         require_string,
+        scope_matches,
     )
 
 try:
@@ -51,6 +57,93 @@ try:
     from tools import matrixark_mcp_retrieve_pre_refresh as pre_refresh_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_pre_refresh as pre_refresh_helpers
+
+
+def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, scope: Json) -> Json:
+    enabled = (
+        args.get("pre_retrieval_idle_commit_flush")
+        if "pre_retrieval_idle_commit_flush" in args
+        else ranking.get("pre_retrieval_idle_commit_flush", True)
+    )
+    result: Json = {"enabled": bool(enabled), "status": "disabled"}
+    if not enabled:
+        return result
+    read_all = getattr(target, "read_all", None)
+    session_commit = getattr(target, "session_commit", None)
+    if not callable(read_all) or not callable(session_commit):
+        return {**result, "status": "unavailable", "reason": "session_commit_or_read_all_missing"}
+    try:
+        records = read_all()
+    except Exception as exc:
+        return {**result, "status": "error", "reason": "read_all_failed", "error": str(exc)[:240]}
+    current_time_ms = now_ms()
+    due_tasks: list[Json] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if record.get("record_type") != "matrixark_async_pipeline_task":
+            continue
+        if str(record.get("status") or "") != "idle_commit_scheduled":
+            continue
+        if not scope_matches(candidate_access_scope(record), scope):
+            continue
+        try:
+            deadline_ms = int(record.get("idle_commit_deadline_ms") or 0)
+        except (TypeError, ValueError):
+            deadline_ms = 0
+        if deadline_ms > 0 and deadline_ms <= current_time_ms:
+            due_tasks.append(record)
+    if not due_tasks:
+        return {**result, "status": "no_due_idle_commits", "due_task_count": 0}
+    due_tasks.sort(key=lambda item: int(item.get("idle_commit_deadline_ms") or item.get("updated_at_ms") or 0))
+    task = due_tasks[0]
+    try:
+        threshold = int(task.get("threshold_messages") or args.get("session_buffer_threshold") or 20)
+    except (TypeError, ValueError):
+        threshold = 20
+    try:
+        timeout_ms = int(task.get("idle_commit_timeout_ms") or args.get("idle_commit_timeout_ms") or 0)
+    except (TypeError, ValueError):
+        timeout_ms = 0
+    commit_args: Json = {
+        "scope": scope,
+        "metadata": optional_object(args, "metadata"),
+        "threshold_messages": max(1, threshold),
+        "force": False,
+        "idle_timeout_ms": max(0, timeout_ms),
+        "commit_reason": "idle_timeout",
+        "skip_prior_context": bool(args.get("skip_prior_context", False)),
+        "storage_options": normalize_storage_options(args),
+    }
+    for field in [
+        "understanding_provider",
+        "extraction_provider",
+        "segment_provider",
+        "segment_model",
+        "segment_model_path",
+        "segment_max_new_tokens",
+        "segment_provider_fallback",
+    ]:
+        if args.get(field) not in (None, "", [], {}):
+            commit_args[field] = args.get(field)
+    try:
+        commit_result = session_commit(commit_args)
+    except Exception as exc:
+        return {
+            **result,
+            "status": "error",
+            "reason": "session_commit_failed",
+            "due_task_count": len(due_tasks),
+            "error": str(exc)[:240],
+        }
+    return {
+        **result,
+        "status": "committed" if isinstance(commit_result, dict) and commit_result.get("status") == "committed" else "attempted",
+        "due_task_count": len(due_tasks),
+        "committed_event_count": int(commit_result.get("committed_event_count") or 0) if isinstance(commit_result, dict) else 0,
+        "trigger_policy": commit_result.get("trigger_policy") if isinstance(commit_result, dict) else "",
+        "commit_result_status": commit_result.get("status") if isinstance(commit_result, dict) else "",
+    }
 
 
 def prepare_retrieval_request(target: Any, args: Json, *, started_perf: float) -> Json:
@@ -86,6 +179,12 @@ def prepare_retrieval_request(target: Any, args: Json, *, started_perf: float) -
     retrieval_scope = retrieval_plan["retrieval_scope"]
     local_budget = retrieval_plan["local_budget"]
     max_context_tokens = int(retrieval_plan["max_context_tokens"])
+    pre_retrieval_idle_commit = pre_retrieval_idle_commit_flush(
+        target,
+        args,
+        ranking,
+        scope=scope,
+    )
     pre_retrieval_summary_refresh, pre_retrieval_refreshed_records = pre_refresh_helpers.run_pre_retrieval_summary_refresh(
         target,
         args,
@@ -104,6 +203,11 @@ def prepare_retrieval_request(target: Any, args: Json, *, started_perf: float) -
             "requested_limit": int(pre_retrieval_summary_refresh.get("requested_limit") or 0),
             "status": pre_retrieval_summary_refresh.get("status"),
             "refreshed_count": int(pre_retrieval_summary_refresh.get("refreshed_count") or 0),
+        },
+        "_pre_retrieval_idle_commit": {
+            "enabled": bool(pre_retrieval_idle_commit.get("enabled")),
+            "status": pre_retrieval_idle_commit.get("status"),
+            "committed_event_count": int(pre_retrieval_idle_commit.get("committed_event_count") or 0),
         },
     }
     pack_cache_key = retrieve_cache_helpers.context_pack_cache_key(
@@ -156,6 +260,7 @@ def prepare_retrieval_request(target: Any, args: Json, *, started_perf: float) -
         "extraction_phase_budget_tokens": retrieval_plan["extraction_phase_budget_tokens"],
         "extraction_phase_budget_mode": retrieval_plan["extraction_phase_budget_mode"],
         "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
+        "pre_retrieval_idle_commit": pre_retrieval_idle_commit,
         "pre_retrieval_refreshed_records": pre_retrieval_refreshed_records,
         "query_terms": retrieval_plan["query_terms"],
         "reference_time_ms": int(retrieval_plan["reference_time_ms"]),

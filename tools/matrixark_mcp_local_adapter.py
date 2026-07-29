@@ -57,6 +57,11 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness, latest_async_pipeline_rows
 
+try:
+    from tools.matrixark_mcp_retrieve_request import pre_retrieval_idle_commit_flush
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieve_request import pre_retrieval_idle_commit_flush
+
 RETRIEVAL_HOT_RECORD_TYPES = {
     "context_compression_event",
     "context_embedding",
@@ -7686,6 +7691,12 @@ class MatrixArkLocalAdapter:
         secondary_index_filter_mode = "any_group" if len(secondary_index_filter_groups) > 1 else "all_groups"
         secondary_index_dropped_count = 0
         secondary_index_matched_count = 0
+        pre_retrieval_idle_commit = pre_retrieval_idle_commit_flush(
+            self,
+            args,
+            ranking,
+            scope=scope,
+        )
         pre_retrieval_summary_refresh: Json = {
             "enabled": pre_retrieval_summary_refresh_enabled(args, ranking),
             "requested_limit": pre_retrieval_summary_refresh_limit(args, ranking),
@@ -7839,6 +7850,15 @@ class MatrixArkLocalAdapter:
                     "requested_limit": int(pre_retrieval_summary_refresh.get("requested_limit") or 0),
                     "status": pre_retrieval_summary_refresh.get("status"),
                     "refreshed_count": int(pre_retrieval_summary_refresh.get("refreshed_count") or 0),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            json.dumps(
+                {
+                    "enabled": bool(pre_retrieval_idle_commit.get("enabled")),
+                    "status": pre_retrieval_idle_commit.get("status"),
+                    "committed_event_count": int(pre_retrieval_idle_commit.get("committed_event_count") or 0),
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -8045,6 +8065,7 @@ class MatrixArkLocalAdapter:
             ),
             "memory_layer_budget_question_type": question_type,
             "memory_layer_budget_question_reason": memory_layer_budget_reason,
+            "pre_retrieval_idle_commit": pre_retrieval_idle_commit,
             "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
             "ranking": ranking,
             "deadline_ms": deadline_ms,
@@ -9960,6 +9981,7 @@ class MatrixArkLocalAdapter:
         pack = {
             "context_pack_id": str(context_pack_id),
             "context_sources_order": ["local_context", "matrixark_remote_context"],
+            "pre_retrieval_idle_commit": pre_retrieval_idle_commit,
             "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
             "local_context_refs": local_context_refs_for_pack(local_budget),
             "selected_refs": serving_selected,
@@ -9993,6 +10015,7 @@ class MatrixArkLocalAdapter:
                 "memory_layer_pressure": memory_layer_pressure,
                 "selected_pending_async": selected_pending_async_summary,
                 "quality_first_underfill": quality_first_underfill,
+                "pre_retrieval_idle_commit": pre_retrieval_idle_commit,
                 "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
                 "async_pipeline_readiness": async_pipeline_readiness,
                 "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
@@ -10289,6 +10312,7 @@ class MatrixArkLocalAdapter:
                 for key, value in quality_first_underfill.items()
                 if key in {"enabled", "unused_remote_context_tokens", "dropped_ref_count", "dropped_reason_counts"}
             },
+            "pre_retrieval_idle_commit": pre_retrieval_idle_commit,
             "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh,
             "async_pipeline_readiness": async_pipeline_readiness,
             "scanned_records": int(retrieval_scan_stats.get("loaded_records") or retrieval_scan_stats.get("scanned_records") or len(records)) if isinstance(retrieval_scan_stats, dict) else len(records),

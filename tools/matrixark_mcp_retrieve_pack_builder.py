@@ -651,6 +651,7 @@ def build_context_pack(
     memory_selection_policy_budget_mode: str = "",
     extraction_phase_budget_tokens: Json | None = None,
     extraction_phase_budget_mode: str = "",
+    pre_retrieval_idle_commit: Json | None = None,
     pre_retrieval_summary_refresh: Json | None = None,
     debug_refs: bool = False,
 ) -> Json:
@@ -691,6 +692,7 @@ def build_context_pack(
     return {
         "context_pack_id": str(context_pack_id),
         "context_sources_order": ["local_context", "matrixark_remote_context"],
+        "pre_retrieval_idle_commit": pre_retrieval_idle_commit or {"enabled": False, "status": "disabled"},
         "local_context_refs": local_context_refs_for_pack(local_budget),
         "selected_refs": serving_selected,
         "remote_context_refs": serving_selected,
@@ -769,6 +771,7 @@ def build_context_pack(
                 "global_remote_budget_enforced": True,
                 "budget_tokens": extraction_phase_policy.get("budget_tokens", extraction_phase_budget_tokens or {}),
             },
+            "pre_retrieval_idle_commit": pre_retrieval_idle_commit or {"enabled": False, "status": "disabled"},
             "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh or {"enabled": False, "status": "disabled"},
             "backend_retrieval_pushdown": retrieval_scan_stats,
             "ranking": {
@@ -842,6 +845,7 @@ def build_context_pack(
         "requested_max_context_tokens": max_context_tokens,
         "local_context_safety_margin_tokens": safety_margin_tokens,
         "budget_source": budget_source,
+        "pre_retrieval_idle_commit": pre_retrieval_idle_commit or {"enabled": False, "status": "disabled"},
         "local_context_policy": {
             "mode": "shared_budget_dedupe",
             "local_context_count": len(local_budget["items"]),

@@ -230,6 +230,7 @@ def retrieve(target: Any, args: Json) -> Json:
     memory_selection_policy_budget_mode = retrieval_request["memory_selection_policy_budget_mode"]
     extraction_phase_budget_tokens = retrieval_request["extraction_phase_budget_tokens"]
     extraction_phase_budget_mode = retrieval_request["extraction_phase_budget_mode"]
+    pre_retrieval_idle_commit = retrieval_request["pre_retrieval_idle_commit"]
     pre_retrieval_summary_refresh = retrieval_request["pre_retrieval_summary_refresh"]
     pre_retrieval_refreshed_records = retrieval_request["pre_retrieval_refreshed_records"]
     query_terms = retrieval_request["query_terms"]
@@ -735,6 +736,7 @@ def retrieve(target: Any, args: Json) -> Json:
         memory_selection_policy_budget_mode=memory_selection_policy_budget_mode,
         extraction_phase_budget_tokens=extraction_phase_budget_tokens,
         extraction_phase_budget_mode=extraction_phase_budget_mode,
+        pre_retrieval_idle_commit=pre_retrieval_idle_commit,
         pre_retrieval_summary_refresh=pre_retrieval_summary_refresh,
         debug_refs=debug_refs,
     )
