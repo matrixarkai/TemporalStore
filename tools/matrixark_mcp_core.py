@@ -4511,6 +4511,16 @@ def candidate_index_terms(
     index_terms_by_ref = index_terms_by_ref or {}
     record_type = record.get("record_type")
 
+    def add_direct_layer_terms() -> None:
+        for field, prefix in [
+            ("memory_scope", "memory_scope"),
+            ("session_continuity", "session_continuity"),
+            ("extraction_phase", "extraction_phase"),
+        ]:
+            value = record.get(field)
+            if value not in (None, "", [], {}):
+                terms.add(context_index_name(prefix, value))
+
     def add_source_lineage_terms() -> None:
         role_values: set[str] = set()
         if isinstance(record.get("source_roles"), list):
@@ -4585,19 +4595,16 @@ def candidate_index_terms(
         terms.add(context_index_name("status", record.get("status") or "observed"))
         terms.add(context_index_name("source_type", record.get("source_type") or "message"))
         add_source_lineage_terms()
+        add_direct_layer_terms()
     elif record_type == "context_entity":
         terms.add(context_index_name("entity_type", record.get("entity_type")))
-        for field, prefix in [
-            ("memory_scope", "memory_scope"),
-            ("session_continuity", "session_continuity"),
-            ("extraction_phase", "extraction_phase"),
-        ]:
-            terms.add(context_index_name(prefix, record.get(field)))
+        add_direct_layer_terms()
         add_source_lineage_terms()
     elif record_type == "context_summary":
         terms.add(context_index_name("summary_type", record.get("summary_type")))
         for entity_type in record.get("source_entity_types", [])[:16]:
             terms.add(context_index_name("entity_type", entity_type))
+        add_direct_layer_terms()
         add_source_lineage_terms()
     elif record_type == "context_compression_event":
         terms.update(index_terms_by_ref.get(record.get("compression_id_hash"), []))
@@ -4605,16 +4612,10 @@ def candidate_index_terms(
         terms.add(context_index_name("context_class", "compression"))
         terms.add(context_index_name("operator", record.get("operator") or "TIME_COMPRESS"))
         add_source_lineage_terms()
-        for field, prefix in [
-            ("memory_scope", "memory_scope"),
-            ("session_continuity", "session_continuity"),
-            ("extraction_phase", "extraction_phase"),
-        ]:
-            value = record.get(field)
-            if value not in (None, "", [], {}):
-                terms.add(context_index_name(prefix, value))
+        add_direct_layer_terms()
     elif record_type == "context_segment":
         terms.add(context_index_name("segment_topic", record.get("topic")))
+        add_direct_layer_terms()
     elif record_type == "resource_chunk":
         terms.update(index_terms_by_ref.get(record.get("chunk_hash"), []))
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))

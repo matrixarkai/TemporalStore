@@ -370,6 +370,17 @@ def candidate_index_terms(
     terms: set[str] = set()
     index_terms_by_ref = index_terms_by_ref or {}
     record_type = record.get("record_type")
+
+    def add_direct_layer_terms() -> None:
+        for field, prefix in [
+            ("memory_scope", "memory_scope"),
+            ("session_continuity", "session_continuity"),
+            ("extraction_phase", "extraction_phase"),
+        ]:
+            value = record.get(field)
+            if value not in (None, "", [], {}):
+                terms.add(context_index_name(prefix, value))
+
     if record_type == "context_event":
         terms.update(index_terms_by_batch.get(record.get("batch_id_hash"), []))
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))
@@ -381,10 +392,22 @@ def candidate_index_terms(
             terms.add(context_index_name("classification", classification))
         terms.add(context_index_name("status", record.get("status") or "observed"))
         terms.add(context_index_name("source_type", record.get("source_type") or "message"))
+        add_direct_layer_terms()
     elif record_type == "context_entity":
         terms.add(context_index_name("entity_type", record.get("entity_type")))
+        add_direct_layer_terms()
     elif record_type == "context_segment":
         terms.add(context_index_name("segment_topic", record.get("topic")))
+        add_direct_layer_terms()
+    elif record_type == "context_summary":
+        terms.add(context_index_name("summary_type", record.get("summary_type")))
+        add_direct_layer_terms()
+    elif record_type == "context_compression_event":
+        terms.update(index_terms_by_ref.get(record.get("compression_id_hash"), []))
+        terms.update(index_terms_by_node.get(record.get("node_hash"), []))
+        terms.add(context_index_name("context_class", "compression"))
+        terms.add(context_index_name("operator", record.get("operator") or "TIME_COMPRESS"))
+        add_direct_layer_terms()
     elif record_type == "resource_chunk":
         terms.update(index_terms_by_ref.get(record.get("chunk_hash"), []))
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))
