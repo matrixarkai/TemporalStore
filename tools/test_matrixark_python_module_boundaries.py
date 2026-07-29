@@ -955,12 +955,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
 
             def __init__(self) -> None:
                 self.commit_requests = []
-
-            def _observe_model_latency(self, *_args: object) -> None:
-                return None
-
-            def read_all(self):
-                return [
+                self.records = [
                     {
                         "record_type": "matrixark_async_pipeline_task",
                         "task_hash": 101,
@@ -974,6 +969,15 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                         "updated_at_ms": 1,
                     }
                 ]
+
+            def _observe_model_latency(self, *_args: object) -> None:
+                return None
+
+            def read_all(self):
+                return list(self.records)
+
+            def append(self, record):
+                self.records.append(record)
 
             def session_commit(self, request):
                 self.commit_requests.append(request)
@@ -1000,6 +1004,26 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertFalse(target.commit_requests[0]["force"])
         self.assertEqual("committed", request["pre_retrieval_idle_commit"]["status"])
         self.assertEqual(1, request["pre_retrieval_idle_commit"]["committed_event_count"])
+        self.assertTrue(
+            any(
+                record.get("status") == "idle_commit_committed"
+                and record.get("scheduled_task_hash") == 101
+                for record in target.records
+            )
+        )
+
+        second = request_mod.prepare_retrieval_request(
+            target,
+            {
+                "query": "what did we decide after the tool result?",
+                "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"},
+                "max_context_tokens": 2000,
+                "ranking": {"pre_retrieval_idle_commit_flush": True},
+            },
+            started_perf=0.0,
+        )
+        self.assertEqual(1, len(target.commit_requests))
+        self.assertEqual("no_due_idle_commits", second["pre_retrieval_idle_commit"]["status"])
 
     def test_async_readiness_tracks_scheduled_and_due_idle_commits(self) -> None:
         readiness_mod = importlib.import_module("tools.matrixark_mcp_async_readiness")
@@ -1029,6 +1053,38 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(1, readiness["scheduled_idle_task_count"])
         self.assertEqual(1, readiness["due_idle_task_count"])
         self.assertIn("idle_commit_scheduled", readiness["freshness_warnings"])
+
+        resolved = readiness_mod.async_pipeline_retrieval_readiness(
+            [
+                {
+                    "record_type": "matrixark_async_pipeline_task",
+                    "task_hash": 303,
+                    "event_id_hash": 404,
+                    "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"},
+                    "status": "idle_commit_scheduled",
+                    "trigger_policy": "idle_timeout",
+                    "stages": ["extraction", "summary", "compression", "embedding"],
+                    "idle_commit_deadline_ms": 1,
+                },
+                {
+                    "record_type": "matrixark_async_pipeline_task",
+                    "task_hash": 303,
+                    "scheduled_task_hash": 303,
+                    "event_id_hash": 404,
+                    "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"},
+                    "status": "idle_commit_committed",
+                    "trigger_policy": "idle_timeout",
+                    "committed_event_count": 1,
+                    "updated_at_ms": 2,
+                },
+            ],
+            {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"},
+        )
+        self.assertTrue(resolved["ready_for_retrieval"])
+        self.assertEqual(0, resolved["pending_task_count"])
+        self.assertEqual(0, resolved["scheduled_idle_task_count"])
+        self.assertEqual(0, resolved["due_idle_task_count"])
+        self.assertNotIn("idle_commit_scheduled", resolved["freshness_warnings"])
         self.assertIn("idle_commit_due", readiness["freshness_warnings"])
         self.assertEqual({"assistant": 1}, readiness["pending_source_roles"])
 
