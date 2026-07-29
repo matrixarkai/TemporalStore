@@ -127,6 +127,56 @@ class LocomoCrossSessionRetrievalTest(unittest.TestCase):
         )
         self.assertEqual("2 weeks", bench.extractive_reader_hint("How long was I in Japan for?", japan_blocks))
 
+    def test_longmemeval_inventory_totals_keep_distinct_duplicate_counts(self) -> None:
+        blocks = [
+            {
+                "body": (
+                    "User: I'm thinking of adding live plants to my new 20-gallon tank, "
+                    "which currently has 10 neon tetras, 5 golden honey gouramis, "
+                    "and a small pleco catfish."
+                )
+            },
+            {
+                "body": (
+                    "User: I also upgraded my old 10-gallon tank, which has my "
+                    "betta fish, Bubbles."
+                )
+            },
+            {"body": "Assistant: Here are 50 generic aquarium tips and 20 plant ideas."},
+        ]
+
+        self.assertEqual(
+            "17",
+            bench.extractive_reader_hint("How many fish are there in total in both of my aquariums?", blocks),
+        )
+
+    def test_longmemeval_charity_total_uses_user_raised_amounts_only(self) -> None:
+        blocks = [
+            {"body": "User: I recently participated in a charity walk and managed to raise $250 through sponsors."},
+            {"body": "User: I just helped organize a charity yoga event that raised $600 for a local animal shelter."},
+            {"body": "User: I recently participated in a Bike-a-Thon for Cancer Research and my team managed to raise $5,000."},
+            {"body": "Assistant: Here are 10 tips for charity events and 3 possible sponsors."},
+        ]
+
+        self.assertEqual(
+            "$5,850",
+            bench.extractive_reader_hint(
+                "How much money did I raise in total through all the charity events I participated in?",
+                blocks,
+            ),
+        )
+
+    def test_longmemeval_absent_count_target_beats_distractor_numbers(self) -> None:
+        blocks = [
+            {"body": "User: I baked cookies twice and made 3 cakes for a party."},
+            {"body": "Assistant: Use 150 grams of flour and 125 grams of sugar."},
+        ]
+
+        self.assertIn(
+            "not enough",
+            bench.extractive_reader_hint("How many times did I bake egg tarts in the past two weeks?", blocks).lower(),
+        )
+
 
 if __name__ == "__main__":
     raise SystemExit(unittest.main())
