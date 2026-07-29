@@ -4158,6 +4158,8 @@ def infer_query_type(query: str) -> str:
         return "current_state"
     if re.search(r"\b(why|reason|because|feel|felt|emotion|happy|sad|angry|worried|excited)\b", lower):
         return "why_emotion"
+    if re.search(r"\b(user profile|profile memory|long[- ]term memory|cross[- ]session memory|profile entity|profile entities|profile summary|profile summaries)\b", lower):
+        return "profile_memory"
     if re.search(r"\b(overview|summarize|summary|explore|broad|what is in|what do we know|topics|map|inventory)\b", lower):
         return "broad_exploration"
     if re.search(r"\b(evidence|quote|exactly|what did .* say|conversation|dialogue|message)\b", lower):
@@ -4291,6 +4293,13 @@ def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[
             context_index_name("classification", "correction"),
             context_index_name("segment_topic", "correction"),
         )
+    if re.search(r"\b(user profile|profile memory|long[- ]term memory|profile entity|profile entities|profile summary|profile summaries)\b", lower):
+        add_group(context_index_name("memory_scope", "user_profile"))
+    if re.search(r"\b(cross[- ]session|across sessions|between sessions|multi[- ]session|long[- ]term)\b", lower):
+        add_group(context_index_name("session_continuity", "cross_session"))
+    if re.search(r"\b(session[- ]local|same[- ]session|current session|this session|session specific|session-specific)\b", lower):
+        add_group(context_index_name("memory_scope", "session"))
+        add_group(context_index_name("session_continuity", "same_session"))
     if re.search(r"\b(assistant|decision|decided|done|implemented|fixed|final answer|what did codex|what was done|next action)\b", lower):
         add_group(context_index_name("entity_type", "assistant_decision"), context_index_name("source_type", "message"))
     if re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
@@ -4722,7 +4731,7 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     elif normalized_question_type in {"multi_hop", "date"}:
         default_ratio = DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO
         question_budget_reason = "multi_hop_or_date_queries_often_need_multiple sessions"
-    elif normalized_question_type in {"broad_exploration", "evidence"}:
+    elif normalized_question_type in {"broad_exploration", "evidence", "profile_memory"}:
         default_ratio = DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO
         question_budget_reason = "broad_or_evidence_queries_get_extra cross-session exploration"
     else:
@@ -5746,6 +5755,7 @@ def select_token_budgeted_refs(
     memory_selection_policy_budget_tokens: Json | None = None,
 ) -> tuple[list[Json], int, Json]:
     duplicate_text_hashes = duplicate_text_hashes or set()
+    normalized_question_type = str(question_type or "fact").strip().lower()
     remote_budget = max(0, max_context_tokens - max(0, reserved_tokens))
     selected_ref_cap = max(1, int(max_selected_refs or DEFAULT_MAX_SELECTED_REFS))
     candidate_pool_limit = max(
@@ -6134,6 +6144,7 @@ def select_token_budgeted_refs(
             (
                 summary_profile_entity_floor_enabled
                 and candidate_memory_layer in {"summary", "profile_summary", "same_session_summary", "cross_session_summary"}
+                and not (normalized_question_type == "profile_memory" and candidate_memory_layer == "profile_summary")
             )
             or (
                 cross_session_profile_entity_floor_enabled

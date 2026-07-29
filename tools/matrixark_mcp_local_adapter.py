@@ -220,6 +220,8 @@ def auto_source_role_budget_tokens(args: Json, ranking: Json, *, remote_budget_t
 
 def memory_layer_budget_question_reason(question_type: str) -> str:
     normalized_question_type = str(question_type or "fact").strip().lower()
+    if normalized_question_type == "profile_memory":
+        return "profile_memory_queries_prioritize user_profile entities, profile summaries, and cross-session bridges"
     if normalized_question_type in {"current_state", "latest"}:
         return "current_state_or_latest_queries_prioritize_profile_entity and cross-session current state"
     if normalized_question_type in {"multi_hop", "date"}:
@@ -275,6 +277,14 @@ def auto_memory_selection_policy_budget_tokens(
                 "selected_user_prompt": 0.40,
                 "selected_assistant_decision_outcome_only": 0.45,
                 "selected_tool_evidence_only": 0.30,
+            }
+        )
+    elif normalized_question_type == "profile_memory":
+        defaults.update(
+            {
+                "selected_user_prompt": 0.40,
+                "selected_assistant_decision_outcome_only": 0.40,
+                "selected_tool_evidence_only": 0.35,
             }
         )
     elif normalized_question_type in {"multi_hop", "date", "broad_exploration", "evidence"}:
@@ -341,6 +351,22 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "same_session_segment": 0.30,
                 "cross_session_segment": 0.30,
                 "profile_entity": 0.55,
+            }
+        )
+    elif normalized_question_type == "profile_memory":
+        defaults.update(
+            {
+                "summary": 0.15,
+                "profile_summary": 0.45,
+                "same_session_summary": 0.15,
+                "cross_session_summary": 0.40,
+                "compression": 0.25,
+                "pending_async_event": 0.15,
+                "same_session_event": 0.25,
+                "cross_session_event": 0.40,
+                "same_session_segment": 0.25,
+                "cross_session_segment": 0.40,
+                "profile_entity": 0.60,
             }
         )
     elif normalized_question_type in {"multi_hop", "date"}:
@@ -9032,7 +9058,7 @@ class MatrixArkLocalAdapter:
             used_context_tokens = max(0, used_context_tokens - removed_pending_tokens)
 
         if (
-            question_type in {"broad_exploration", "evidence", "current_state", "latest", "multi_hop", "date"}
+            question_type in {"broad_exploration", "evidence", "current_state", "latest", "multi_hop", "date", "profile_memory"}
             and bool(pre_retrieval_summary_refresh.get("enabled"))
             and not any(
                 item.get("ref_type") == "summary"
