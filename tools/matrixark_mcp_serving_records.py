@@ -131,6 +131,7 @@ EMBEDDING_LINEAGE_DEBUG_FIELDS = {
     "previous_profile_updated_at_ms",
     "extraction_context_event_ids",
     "summary_generation_policy",
+    "dirty_hash",
 }
 
 COMPACT_DERIVED_SCOPE_FIELDS = {"_explicit_scope_keys"}
