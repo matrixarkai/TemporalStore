@@ -23,6 +23,7 @@ from matrixark_mcp_context_pack import (
 from matrixark_mcp_core import (
     candidate_index_terms,
     candidate_memory_layer_name,
+    compact_context_pack_ref,
     compact_context_pack_audit_record as core_compact_context_pack_audit_record,
     compact_context_pack_for_serving as core_compact_context_pack_for_serving,
     compact_context_pack_for_serving_flat,
@@ -6371,6 +6372,78 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 )
             )
             self.assertTrue(result["summary_refresh"]["profile_dirty_hashes"])
+
+    def test_context_segment_debug_pack_shows_source_context_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-segment-source-events.jsonl")
+            result = adapter.batch_extract(
+                {
+                    "scope": {
+                        "account_id": "acct_segment_lineage",
+                        "tenant_id": "tenant_segment_lineage",
+                        "user_id": "user_segment_lineage",
+                        "session_id": "session_segment_lineage",
+                    },
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "User note: context events are the source records for segment lineage marker blue quartz.",
+                        },
+                        {
+                            "role": "assistant",
+                            "content": "Assistant decision: context segments remain derived serving chunks, not raw events.",
+                        },
+                    ],
+                    "metadata": {"hook_type": "after_llm", "codex_event": "Stop"},
+                    "threshold_messages": 1,
+                    "skip_prior_context": True,
+                }
+            )
+
+            self.assertEqual("accepted", result["status"])
+            records = adapter.read_all()
+            segments = [
+                record
+                for record in records
+                if record.get("record_type") == "context_segment"
+                and record.get("batch_id_hash") == result["batch_id_hash"]
+            ]
+            events = [
+                record
+                for record in records
+                if record.get("record_type") == "context_event"
+                and record.get("batch_id_hash") == result["batch_id_hash"]
+            ]
+            self.assertTrue(segments)
+            self.assertEqual(result["events_written"], len(events))
+            segment = segments[0]
+            self.assertEqual("context_event", segment["source_record_type"])
+            self.assertTrue(segment["derived_from_context_events"])
+            self.assertGreaterEqual(len(segment["source_event_ids"]), 1)
+            self.assertTrue(set(segment["source_event_ids"]).issubset({event["event_id_hash"] for event in events}))
+
+            ref = {
+                "ref_type": "segment",
+                "text": segment["summary_text"],
+                "memory_scope": segment["memory_scope"],
+                "session_continuity": segment["session_continuity"],
+                "source_event_ids": segment["source_event_ids"],
+                "source_event_count": len(segment["source_event_ids"]),
+                "source_record_type": segment["source_record_type"],
+                "segment_origin": segment["segment_origin"],
+                "derived_from_context_events": segment["derived_from_context_events"],
+            }
+            compact_default = compact_context_pack_ref(ref)
+            self.assertNotIn("source_event_ids", compact_default)
+            self.assertNotIn("source_record_type", compact_default)
+            self.assertNotIn("derived_from_context_events", compact_default)
+
+            compact_debug = compact_context_pack_ref(ref, include_debug=True)
+            self.assertEqual(segment["source_event_ids"][:8], compact_debug["source_event_ids"])
+            self.assertEqual(len(segment["source_event_ids"]), compact_debug["source_event_count"])
+            self.assertEqual("context_event", compact_debug["source_record_type"])
+            self.assertTrue(compact_debug["derived_from_context_events"])
+            self.assertEqual(segment["segment_origin"], compact_debug["segment_origin"])
 
 
     def test_lightweight_async_ingest_threshold_and_idle_commit_flush_session_buffer(self) -> None:
