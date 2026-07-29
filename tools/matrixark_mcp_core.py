@@ -5322,6 +5322,7 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         "source_profile_promotion_policies",
         "source_profile_promotion_blockers",
         "source_final_session_boundary_count",
+        "source_event_ids",
     ] if CONTEXT_PACK_DEBUG_LINEAGE else []
     for field in lineage_fields:
         value = ref.get(field, metadata.get(field))
@@ -5353,6 +5354,17 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         source_entity_count = ref.get("source_entity_count", metadata.get("source_entity_count"))
         if isinstance(source_entity_count, int) and source_entity_count > 0:
             item["source_entity_count"] = source_entity_count
+        source_event_count = ref.get("source_event_count", metadata.get("source_event_count"))
+        if isinstance(source_event_count, int) and source_event_count > 0:
+            item["source_event_count"] = source_event_count
+        source_record_type = ref.get("source_record_type", metadata.get("source_record_type"))
+        if isinstance(source_record_type, str) and source_record_type.strip():
+            item["source_record_type"] = source_record_type.strip()
+        segment_origin = ref.get("segment_origin", metadata.get("segment_origin"))
+        if isinstance(segment_origin, str) and segment_origin.strip():
+            item["segment_origin"] = segment_origin.strip()
+        if ref.get("derived_from_context_events") is True or metadata.get("derived_from_context_events") is True:
+            item["derived_from_context_events"] = True
     return item
 
 

@@ -6445,6 +6445,28 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(compact_debug["derived_from_context_events"])
             self.assertEqual(segment["segment_origin"], compact_debug["segment_origin"])
 
+            grouped_pack = {
+                "context_pack_id": "segment-source-events",
+                "selected_refs": [ref],
+                "remote_context_refs": [ref],
+                "recall_policy": {},
+                "retrieval_metrics": {},
+                "used_context_tokens": 8,
+            }
+            grouped_default = compact_context_pack_for_serving(grouped_pack)
+            grouped_default_item = grouped_default["groups"][0]["items"][0]
+            self.assertNotIn("source_event_ids", grouped_default_item)
+            self.assertNotIn("source_record_type", grouped_default_item)
+            self.assertNotIn("derived_from_context_events", grouped_default_item)
+
+            grouped_debug = compact_context_pack_for_serving(grouped_pack, include_debug=True)
+            grouped_debug_item = grouped_debug["groups"][0]["items"][0]
+            self.assertEqual(segment["source_event_ids"][:8], grouped_debug_item["source_event_ids"])
+            self.assertEqual(len(segment["source_event_ids"]), grouped_debug_item["source_event_count"])
+            self.assertEqual("context_event", grouped_debug_item["source_record_type"])
+            self.assertTrue(grouped_debug_item["derived_from_context_events"])
+            self.assertEqual(segment["segment_origin"], grouped_debug_item["segment_origin"])
+
 
     def test_lightweight_async_ingest_threshold_and_idle_commit_flush_session_buffer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
