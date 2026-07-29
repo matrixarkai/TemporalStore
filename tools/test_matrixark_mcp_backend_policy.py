@@ -2303,6 +2303,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual("user_profile", embedding["memory_scope"])
         self.assertEqual("cross_session", embedding["session_continuity"])
         self.assertEqual("final", embedding["extraction_phase"])
+        self.assertTrue(embedding["final_session_boundary"])
         for field in [
             "source_event_ids",
             "source_session_ids",
@@ -2312,7 +2313,6 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "source_memory_selection_policy_counts",
             "source_event_count",
             "source_final_session_boundary_count",
-            "final_session_boundary",
             "profile_revision",
             "supersedes_session_entity_hashes",
         ]:
