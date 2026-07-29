@@ -171,7 +171,17 @@ def auto_memory_selection_policy_budget_tokens(
         or ""
     ).strip().lower()
     if mode not in {"auto", "balanced", "codex_auto"}:
-        return {}, ""
+        sibling_mode = str(
+            args.get("source_role_budget_mode")
+            or ranking.get("source_role_budget_mode")
+            or args.get("memory_layer_budget_mode")
+            or ranking.get("memory_layer_budget_mode")
+            or ""
+        ).strip().lower()
+        if sibling_mode in {"auto", "balanced", "codex_auto"}:
+            mode = sibling_mode
+        else:
+            return {}, ""
     try:
         remote_budget = max(0, int(remote_budget_tokens or 0))
     except (TypeError, ValueError):
