@@ -291,18 +291,10 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "model": embedding_model_name(),
                     "vector": event_vector,
                     "scope": envelope["scope"],
-                    "source_role": str(message.get("role") or ""),
-                    "source_roles": [str(message.get("role") or "")] if str(message.get("role") or "") else [],
-                    "source_role_counts": {str(message.get("role") or ""): 1} if str(message.get("role") or "") else {},
-                    "source_hook_types": source_hook_types,
-                    "source_hook_type_counts": source_hook_type_counts,
-                    "source_codex_events": source_codex_events,
-                    "source_codex_event_counts": source_codex_event_counts,
                     "memory_scope": "session",
                     "session_continuity": "same_session",
                     "extraction_phase": extraction_phase,
                     "final_session_boundary": final_session_boundary,
-                    "extraction_context_event_ids": extraction_context_event_ids,
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )

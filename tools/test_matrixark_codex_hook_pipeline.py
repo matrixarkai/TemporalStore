@@ -3352,6 +3352,19 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     and record.get("ref_hash") in committed_event_hashes
                 ]
                 self.assertEqual(2, len(committed_event_embeddings))
+                self.assertTrue(all(record.get("memory_scope") == "session" for record in committed_event_embeddings))
+                self.assertTrue(all(record.get("session_continuity") == "same_session" for record in committed_event_embeddings))
+                self.assertTrue(all(record.get("extraction_phase") == "provisional" for record in committed_event_embeddings))
+                self.assertTrue(all(not record.get("final_session_boundary") for record in committed_event_embeddings))
+                for embedding in committed_event_embeddings:
+                    self.assertNotIn("source_role", embedding)
+                    self.assertNotIn("source_roles", embedding)
+                    self.assertNotIn("source_role_counts", embedding)
+                    self.assertNotIn("source_hook_types", embedding)
+                    self.assertNotIn("source_hook_type_counts", embedding)
+                    self.assertNotIn("source_codex_events", embedding)
+                    self.assertNotIn("source_codex_event_counts", embedding)
+                    self.assertNotIn("extraction_context_event_ids", embedding)
                 extraction_audits = [
                     record
                     for record in records
@@ -4024,6 +4037,18 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     and record.get("ref_hash") in committed_event_hashes
                 ]
                 self.assertEqual(1, len(committed_event_embeddings))
+                self.assertEqual("session", committed_event_embeddings[0]["memory_scope"])
+                self.assertEqual("same_session", committed_event_embeddings[0]["session_continuity"])
+                self.assertEqual("provisional", committed_event_embeddings[0]["extraction_phase"])
+                self.assertFalse(committed_event_embeddings[0]["final_session_boundary"])
+                self.assertNotIn("source_role", committed_event_embeddings[0])
+                self.assertNotIn("source_roles", committed_event_embeddings[0])
+                self.assertNotIn("source_role_counts", committed_event_embeddings[0])
+                self.assertNotIn("source_hook_types", committed_event_embeddings[0])
+                self.assertNotIn("source_hook_type_counts", committed_event_embeddings[0])
+                self.assertNotIn("source_codex_events", committed_event_embeddings[0])
+                self.assertNotIn("source_codex_event_counts", committed_event_embeddings[0])
+                self.assertNotIn("extraction_context_event_ids", committed_event_embeddings[0])
                 extraction_audits = [
                     record
                     for record in records
