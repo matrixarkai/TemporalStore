@@ -3479,6 +3479,29 @@ def fast_hook_event_projection_records(*, event_record: Json, updated_at_ms: int
     node_hash = int(event_record.get("node_hash") or 0)
     node_path = event_record.get("node_path", []) if isinstance(event_record.get("node_path"), list) else []
     scope = event_record.get("scope", {}) if isinstance(event_record.get("scope"), dict) else {}
+    projection_lineage: Json = {
+        "memory_scope": event_record.get("memory_scope") or "session",
+        "session_continuity": event_record.get("session_continuity") or "same_session",
+        "extraction_phase": event_record.get("extraction_phase") or "pending_async",
+        "final_session_boundary": bool(event_record.get("final_session_boundary", False)),
+        "source_roles": event_record.get("source_roles", []),
+        "source_role_counts": event_record.get("source_role_counts", {}),
+        "source_hook_types": event_record.get("source_hook_types", []),
+        "source_hook_type_counts": event_record.get("source_hook_type_counts", {}),
+        "source_codex_events": event_record.get("source_codex_events", []),
+        "source_codex_event_counts": event_record.get("source_codex_event_counts", {}),
+        "source_memory_scopes": event_record.get("source_memory_scopes", []),
+        "source_session_continuities": event_record.get("source_session_continuities", []),
+        "source_extraction_phases": event_record.get("source_extraction_phases", []),
+        "source_memory_selection_policies": event_record.get("source_memory_selection_policies", []),
+        "source_memory_selection_policy_counts": event_record.get("source_memory_selection_policy_counts", {}),
+        "source_event_ids": [event_id_hash] if event_id_hash else [],
+    }
+    projection_lineage = {
+        key: value
+        for key, value in projection_lineage.items()
+        if value not in (None, "", [], {})
+    }
     vector = embedding_for_text(text)
     records: list[Json] = [
         {
@@ -3492,6 +3515,7 @@ def fast_hook_event_projection_records(*, event_record: Json, updated_at_ms: int
             "model": embedding_model_name(),
             "vector": vector,
             "scope": scope,
+            **projection_lineage,
             "projection_phase": "fast_hook_pending_async",
             "updated_at_ms": updated_at_ms,
         }
@@ -3507,6 +3531,7 @@ def fast_hook_event_projection_records(*, event_record: Json, updated_at_ms: int
             updated_at_ms=updated_at_ms,
         )
         index_record["access_scope"] = scope
+        index_record.update(projection_lineage)
         index_record["projection_phase"] = "fast_hook_pending_async"
         records.append(index_record)
     return records
