@@ -2061,10 +2061,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("refs/heads/main", evidence)
         self.assertNotIn("noise line 0", evidence)
         self.assertLess(len(evidence), 1000)
-        policy = hook.codex_memory_selection_metadata(role="tool", event="PostToolUse", text=evidence)
+        policy = hook.codex_memory_selection_metadata(role="tool", event="PostToolUse", text=evidence, original_text=raw)
         self.assertEqual("selected_tool_evidence_only", policy["policy"])
         self.assertFalse(policy["large_payload_verbatim_stored"])
         self.assertEqual("tool", policy["source_role"])
+        self.assertGreater(policy["original_text_chars"], policy["selected_text_chars"])
+        self.assertGreater(policy["dropped_text_chars"], 0)
+        self.assertGreater(policy["dropped_line_count"], 0)
+        self.assertLess(policy["retained_text_ratio"], 1.0)
+        self.assertTrue(policy["selection_lossy"])
 
     def test_selected_assistant_memory_filters_large_response(self) -> None:
         raw = "\n".join(
@@ -2086,10 +2091,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertNotIn("background explanation line 0", evidence)
         self.assertNotIn("large code block", evidence)
         self.assertLess(len(evidence), 1000)
-        policy = hook.codex_memory_selection_metadata(role="assistant", event="Stop", text=evidence)
+        policy = hook.codex_memory_selection_metadata(role="assistant", event="Stop", text=evidence, original_text=raw)
         self.assertEqual("selected_assistant_decision_outcome_only", policy["policy"])
         self.assertFalse(policy["large_payload_verbatim_stored"])
         self.assertEqual("assistant", policy["source_role"])
+        self.assertGreater(policy["original_text_chars"], policy["selected_text_chars"])
+        self.assertGreater(policy["dropped_text_chars"], 0)
+        self.assertGreater(policy["dropped_line_count"], 0)
+        self.assertLess(policy["retained_line_ratio"], 1.0)
+        self.assertTrue(policy["selection_lossy"])
 
     def test_hook_async_message_ingest_args_marks_selected_memory_policy(self) -> None:
         args = Namespace(
@@ -2113,6 +2123,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("selected_assistant_decision_outcome_only", selection["policy"])
         self.assertFalse(selection["large_payload_verbatim_stored"])
         self.assertEqual("codex_hook_before_temporalstore_ingest", selection["selection_stage"])
+        self.assertEqual(selection["selected_text_chars"], selection["original_text_chars"])
+        self.assertEqual(selection["selected_line_count"], selection["original_line_count"])
+        self.assertEqual(0, selection["dropped_text_chars"])
+        self.assertEqual(0, selection["dropped_line_count"])
+        self.assertFalse(selection["selection_lossy"])
 
     def test_latest_assistant_rollout_returns_bounded_memory_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
