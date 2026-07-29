@@ -2907,12 +2907,18 @@ def selected_assistant_memory_text(text: str, *, max_chars: int = 4096, max_line
     return evidence
 
 
-def codex_memory_selection_metadata(*, role: str, event: str, text: str) -> Json:
+def codex_memory_selection_metadata(*, role: str, event: str, text: str, original_text: str | None = None) -> Json:
     normalized_role = normalize_message_role(role)
     if normalized_role not in {"assistant", "tool", "user"}:
         return {}
     selected_text = str(text or "")
+    original = selected_text if original_text is None else str(original_text or "")
     line_count = len([line for line in selected_text.splitlines() if line.strip()])
+    original_line_count = len([line for line in original.splitlines() if line.strip()])
+    original_text_chars = len(original)
+    selected_text_chars = len(selected_text)
+    dropped_text_chars = max(0, original_text_chars - selected_text_chars)
+    dropped_line_count = max(0, original_line_count - line_count)
     if normalized_role == "tool":
         policy = "selected_tool_evidence_only"
         truncation_marker = "[tool evidence truncated]"
@@ -2932,22 +2938,36 @@ def codex_memory_selection_metadata(*, role: str, event: str, text: str) -> Json
         "policy": policy,
         "source_role": normalized_role,
         "codex_event": event,
-        "selected_text_chars": len(selected_text),
+        "selected_text_chars": selected_text_chars,
         "selected_line_count": line_count,
+        "original_text_chars": original_text_chars,
+        "original_line_count": original_line_count,
+        "dropped_text_chars": dropped_text_chars,
+        "dropped_line_count": dropped_line_count,
+        "retained_text_ratio": round(selected_text_chars / original_text_chars, 6) if original_text_chars else 1.0,
+        "retained_line_ratio": round(line_count / original_line_count, 6) if original_line_count else 1.0,
         "max_selected_chars": max_chars,
         "max_selected_lines": max_lines,
         "large_payload_verbatim_stored": False,
         "truncated": truncation_marker in selected_text,
+        "selection_lossy": bool(dropped_text_chars or dropped_line_count or truncation_marker in selected_text),
         "selection_stage": "codex_hook_before_temporalstore_ingest",
     }
 
 
 
-def latest_codex_assistant_message_from_rollout(payload: Json) -> str:
+def latest_codex_assistant_message_from_rollout_raw(payload: Json) -> str:
     for path in _latest_rollout_files(payload):
         text = _extract_assistant_text_from_rollout(path)
         if text:
-            return selected_assistant_memory_text(text)
+            return text
+    return ""
+
+
+def latest_codex_assistant_message_from_rollout(payload: Json) -> str:
+    text = latest_codex_assistant_message_from_rollout_raw(payload)
+    if text:
+        return selected_assistant_memory_text(text)
     return ""
 
 
@@ -3270,8 +3290,9 @@ def hook_async_message_ingest_args(
     text: str,
     metadata: Json,
     agent_hook: Json,
+    original_text: str | None = None,
 ) -> Json:
-    selection_metadata = codex_memory_selection_metadata(role=role, event=event, text=text)
+    selection_metadata = codex_memory_selection_metadata(role=role, event=event, text=text, original_text=original_text)
     if selection_metadata:
         metadata = {**metadata, "codex_memory_selection": selection_metadata}
     ingest_args: Json = {
@@ -3608,7 +3629,16 @@ def pending_session_message_count(records: list[Json]) -> int:
     return sum(len(messages_from_event_record(record)) for record in records)
 
 
-def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, role: str, agent_context: Json, hook: Json | None) -> Json:
+def fast_async_hook_ingest(
+    server: Any,
+    *,
+    args: argparse.Namespace,
+    text: str,
+    role: str,
+    agent_context: Json,
+    hook: Json | None,
+    original_text: str | None = None,
+) -> Json:
     adapter = getattr(server, "adapter", None)
     enqueue = getattr(adapter, "_enqueue_direct_write", None)
     if not callable(enqueue):
@@ -3639,7 +3669,12 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         if tool_status:
             tool_fields["tool_status"] = tool_status
     source_memory_scopes, source_session_continuities = pending_extraction_memory_layer_intent(scope)
-    selection_metadata = codex_memory_selection_metadata(role=role, event=args.event, text=text)
+    selection_metadata = codex_memory_selection_metadata(
+        role=role,
+        event=args.event,
+        text=text,
+        original_text=original_text,
+    )
     source_memory_selection_policies = [str(selection_metadata["policy"])] if selection_metadata.get("policy") else []
     source_memory_selection_policy_counts = {
         str(selection_metadata["policy"]): 1,
@@ -4109,28 +4144,35 @@ def main() -> int:
     if args.rollout_backfill_only:
         return run_rollout_backfill_only(args, payload, session_id_source)
     text = payload_text(payload) or args.query
+    original_hook_text = text
     if args.event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
         fallback_text = text
         text = ""
         for _attempt in range(12):
-            rollout_text = selected_tool_memory_text(latest_codex_tool_output_from_rollout(payload), payload)
+            rollout_raw = latest_codex_tool_output_from_rollout(payload)
+            rollout_text = selected_tool_memory_text(rollout_raw, payload)
             if rollout_text:
                 text = rollout_text
+                original_hook_text = rollout_raw
                 break
             time.sleep(0.2)
         if not text:
             text = fallback_text
+            original_hook_text = fallback_text
     if args.event in {"Stop", "PostCompact", "SubagentStop"}:
         fallback_text = text
         text = ""
         for _attempt in range(12):
-            rollout_text = latest_codex_assistant_message_from_rollout(payload)
+            rollout_raw = latest_codex_assistant_message_from_rollout_raw(payload)
+            rollout_text = selected_assistant_memory_text(rollout_raw)
             if rollout_text:
                 text = rollout_text
+                original_hook_text = rollout_raw
                 break
             time.sleep(0.2)
         if not text:
             text = selected_assistant_memory_text(fallback_text)
+            original_hook_text = fallback_text
     if is_codex_hook_heartbeat_text(text):
         trace = begin_hook_trace(args=args, payload=payload, text=text, session_id_source=session_id_source)
         output = {"status": "skipped", "reason": "codex_hook_heartbeat_not_user_context", "event": args.event}
@@ -4167,7 +4209,8 @@ def main() -> int:
 
         ingest = {}
         if args.event == "UserPromptSubmit":
-            previous_tool_output = selected_tool_memory_text(latest_codex_tool_output_from_rollout(payload), payload)
+            previous_tool_raw = latest_codex_tool_output_from_rollout(payload)
+            previous_tool_output = selected_tool_memory_text(previous_tool_raw, payload)
             if previous_tool_output and previous_tool_output != text and not hook_warning:
                 backfill_result = trace_tool_call(
                     server,
@@ -4178,6 +4221,7 @@ def main() -> int:
                         event=args.event,
                         role="tool",
                         text=previous_tool_output,
+                        original_text=previous_tool_raw,
                         metadata=codex_hook_metadata(
                             source="codex_hook_rollout_backfill",
                             event="PreviousToolOutputBackfill",
@@ -4199,7 +4243,8 @@ def main() -> int:
                     trace,
                 )
                 hook_warning = timeout_warning(backfill_result)
-            previous_assistant = latest_codex_assistant_message_from_rollout(payload)
+            previous_assistant_raw = latest_codex_assistant_message_from_rollout_raw(payload)
+            previous_assistant = selected_assistant_memory_text(previous_assistant_raw)
             if previous_assistant and previous_assistant != text and not hook_warning:
                 backfill_result = trace_tool_call(
                     server,
@@ -4210,6 +4255,7 @@ def main() -> int:
                         event=args.event,
                         role="assistant",
                         text=previous_assistant,
+                        original_text=previous_assistant_raw,
                         metadata=codex_hook_metadata(
                             source="codex_hook_rollout_backfill",
                             event="PreviousAssistantBackfill",
@@ -4284,6 +4330,7 @@ def main() -> int:
                     role=role_for_event(args.event),
                     agent_context=agent_context,
                     hook=main_hook,
+                    original_text=original_hook_text,
                 )
                 if not ingest:
                     trace.setdefault("fast_async_ingest", {})["fallback_reason"] = "direct_write_queue_unavailable"
@@ -4296,6 +4343,7 @@ def main() -> int:
                     event=args.event,
                     role=role_for_event(args.event),
                     text=text,
+                    original_text=original_hook_text,
                     metadata=codex_hook_metadata(
                         source="codex_hook",
                         event=args.event,
