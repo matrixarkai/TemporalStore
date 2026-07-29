@@ -4295,6 +4295,17 @@ def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[
         add_group(context_index_name("entity_type", "assistant_decision"), context_index_name("source_type", "message"))
     if re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
         add_group(context_index_name("entity_type", "tool_evidence"))
+    if re.search(r"\b(selected|bounded|retained|extracted|memory selection|memory-selection)\b", lower):
+        if re.search(r"\b(user prompt|prompt|user request|request)\b", lower):
+            add_group(context_index_name("memory_selection_policy", "selected_user_prompt"))
+        if re.search(r"\b(assistant|decision|outcome|final answer|what did codex|what was done|done|fixed|implemented)\b", lower):
+            add_group(context_index_name("memory_selection_policy", "selected_assistant_decision_outcome_only"))
+        if re.search(r"\b(tool|tool output|tool result|evidence|test|tests|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
+            add_group(context_index_name("memory_selection_policy", "selected_tool_evidence_only"))
+    if re.search(r"\b(lossy|truncated|dropped|omitted|shortened|summarized output|large output)\b", lower):
+        add_group(context_index_name("memory_selection_quality", "lossy"))
+    if re.search(r"\b(complete|untruncated|full selected|no loss|lossless)\b", lower):
+        add_group(context_index_name("memory_selection_quality", "complete"))
     if re.search(r"\b(resource|document|doc|file|pdf|markdown|readme|csv|spreadsheet|excel|html|word|slides?|deck)\b", lower):
         add_group(context_index_name("source_type", "resource"), context_index_name("source_type", "resource_fact"))
     for alias, resource_type in RESOURCE_TYPE_QUERY_ALIASES.items():

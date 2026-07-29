@@ -30,6 +30,7 @@ from matrixark_mcp_core import (
     compact_context_pack_for_serving_flat,
     embedding_for_text,
     identity_hashes,
+    infer_secondary_index_filter_groups,
     packing_sort_key,
     select_token_budgeted_refs,
 )
@@ -110,6 +111,49 @@ class NativeCaptureLocalAdapter(MatrixArkLocalAdapter):
 
 
 class MatrixArkCodexHookPipelineTest(unittest.TestCase):
+    def test_secondary_index_filters_understand_selected_evidence_quality(self) -> None:
+        groups = infer_secondary_index_filter_groups(
+            "Show lossy selected tool evidence with exit code and pushed commit details",
+            "evidence",
+        )
+        flattened = {term for group in groups for term in group}
+        self.assertIn("entity_type:tool_evidence", flattened)
+        self.assertIn("memory_selection_policy:selected_tool_evidence_only", flattened)
+        self.assertIn("memory_selection_quality:lossy", flattened)
+
+        assistant_groups = infer_secondary_index_filter_groups(
+            "What selected assistant decision outcome did Codex implement?",
+            "current_state",
+        )
+        assistant_flattened = {term for group in assistant_groups for term in group}
+        self.assertIn("entity_type:assistant_decision", assistant_flattened)
+        self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", assistant_flattened)
+
+    def test_candidate_index_terms_keep_context_event_distinct_from_context_segment(self) -> None:
+        event_terms = candidate_index_terms(
+            {
+                "record_type": "context_event",
+                "event_type": "tool_evidence",
+                "source_type": "message",
+                "source_memory_selection_policy_counts": {"selected_tool_evidence_only": 1},
+                "source_memory_selection_lossy_count": 1,
+            },
+            {},
+            {},
+        )
+        segment_terms = candidate_index_terms(
+            {"record_type": "context_segment", "topic": "tool_evidence"},
+            {},
+            {},
+        )
+        self.assertIn("event_type:tool_evidence", event_terms)
+        self.assertIn("source_type:message", event_terms)
+        self.assertIn("memory_selection_policy:selected_tool_evidence_only", event_terms)
+        self.assertIn("memory_selection_quality:lossy", event_terms)
+        self.assertIn("segment_topic:tool_evidence", segment_terms)
+        self.assertNotIn("event_type:tool_evidence", segment_terms)
+        self.assertNotIn("source_type:message", segment_terms)
+
     def test_summary_runtime_preserves_event_child_and_entity_lineage_counts(self) -> None:
         result = build_node_summary_refresh_records(
             node_path=["tenant:tenant_runtime", "user:user_runtime", "profile:long_term_memory"],
