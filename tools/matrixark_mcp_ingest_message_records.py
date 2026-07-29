@@ -113,7 +113,6 @@ def context_embedding_record(
     updated_at_ms: int,
     memory_scope: str = "",
     session_continuity: str = "",
-    extraction_phase: str = "",
 ) -> Json:
     record = {
         "record_type": "context_embedding",
@@ -132,8 +131,6 @@ def context_embedding_record(
         record["memory_scope"] = memory_scope
     if session_continuity:
         record["session_continuity"] = session_continuity
-    if extraction_phase:
-        record["extraction_phase"] = extraction_phase
     return record
 
 

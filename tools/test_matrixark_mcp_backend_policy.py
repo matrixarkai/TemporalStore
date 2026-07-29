@@ -18,6 +18,7 @@ try:
     from tools import matrixark_mcp_local_adapter as mcp_local
     from tools import matrixark_mcp_core as mcp_core
     from tools import matrixark_mcp_context_pack as mcp_context_pack
+    from tools import matrixark_mcp_ingest_message_records as message_record_builders
     from tools.run_matrixark_cpp_rust_scale_report import (
         comparison,
         default_cpp_lib_path,
@@ -38,6 +39,7 @@ except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_local_adapter as mcp_local
     import matrixark_mcp_core as mcp_core
     import matrixark_mcp_context_pack as mcp_context_pack
+    import matrixark_mcp_ingest_message_records as message_record_builders
     from run_matrixark_cpp_rust_scale_report import (
         comparison,
         default_cpp_lib_path,
@@ -2317,6 +2319,26 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "supersedes_session_entity_hashes",
         ]:
             self.assertNotIn(field, embedding)
+
+    def test_message_embedding_builder_keeps_only_serving_layer_fields(self) -> None:
+        embedding = message_record_builders.context_embedding_record(
+            embedding_type="event_text",
+            ref_type="event",
+            ref_hash=44,
+            node_hash=55,
+            node_path=["tenant:t", "user:u", "session:s"],
+            vector=[0.1, 0.2],
+            scope={"tenant_id": "t", "user_id": "u", "session_id": "s"},
+            updated_at_ms=1000,
+            memory_scope="session",
+            session_continuity="same_session",
+        )
+
+        self.assertEqual("session", embedding["memory_scope"])
+        self.assertEqual("same_session", embedding["session_continuity"])
+        self.assertNotIn("extraction_phase", embedding)
+        self.assertNotIn("source_event_ids", embedding)
+        self.assertNotIn("source_role_counts", embedding)
 
     def test_latest_context_state_compacts_summary_and_summary_embedding_versions(self) -> None:
         records = [

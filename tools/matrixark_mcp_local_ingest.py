@@ -168,7 +168,6 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
                 updated_at_ms=envelope["ingestion_time_ms"],
                 memory_scope="session",
                 session_continuity="same_session",
-                extraction_phase="pending_async",
             )
         )
         record = message_record_builders.context_event_record(
