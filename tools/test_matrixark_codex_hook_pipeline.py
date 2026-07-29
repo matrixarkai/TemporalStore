@@ -311,6 +311,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("source_role_counts", embedding)
             self.assertNotIn("source_hook_type_counts", embedding)
             self.assertNotIn("source_codex_event_counts", embedding)
+            self.assertNotIn("source_memory_selection_policies", embedding)
+            self.assertNotIn("source_memory_selection_policy_counts", embedding)
+            self.assertNotIn("source_profile_promotion_policies", embedding)
+            self.assertNotIn("source_profile_promotion_blockers", embedding)
 
     def test_summary_runtime_refresh_preserves_selection_counts_in_audit_and_result(self) -> None:
         scope = {
@@ -1655,6 +1659,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "source_hook_type_counts": {"hook_boundary": 1},
                         "source_codex_events": ["Stop"],
                         "source_codex_event_counts": {"Stop": 1},
+                        "source_memory_selection_policies": ["selected_assistant_decision_outcome_only"],
+                        "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 1},
+                        "source_memory_selection_complete_count": 1,
+                        "source_profile_promotion_policies": ["always_when_profile_scope_available"],
                         "memory_scope": "session",
                         "session_continuity": "same_session",
                         "extraction_phase": "final",
@@ -1675,6 +1683,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "source_hook_type_counts": {"hook_boundary": 1},
                         "source_codex_events": ["PostToolUse"],
                         "source_codex_event_counts": {"PostToolUse": 1},
+                        "source_memory_selection_policies": ["selected_tool_evidence_only"],
+                        "source_memory_selection_policy_counts": {"selected_tool_evidence_only": 1},
+                        "source_memory_selection_complete_count": 1,
+                        "source_profile_promotion_policies": ["always_when_profile_scope_available"],
                         "memory_scope": "session",
                         "session_continuity": "same_session",
                         "extraction_phase": "final",
@@ -1701,6 +1713,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({"hook_boundary": 2}, compression["source_hook_type_counts"])
             self.assertEqual(["PostToolUse", "Stop"], compression["source_codex_events"])
             self.assertEqual({"Stop": 1, "PostToolUse": 1}, compression["source_codex_event_counts"])
+            self.assertEqual(
+                ["selected_assistant_decision_outcome_only", "selected_tool_evidence_only"],
+                compression["source_memory_selection_policies"],
+            )
+            self.assertEqual(
+                {"selected_assistant_decision_outcome_only": 1, "selected_tool_evidence_only": 1},
+                compression["source_memory_selection_policy_counts"],
+            )
+            self.assertEqual(2, compression["source_memory_selection_complete_count"])
+            self.assertEqual(["always_when_profile_scope_available"], compression["source_profile_promotion_policies"])
             self.assertEqual(["session"], compression["source_memory_scopes"])
             self.assertEqual(["same_session"], compression["source_session_continuities"])
             self.assertEqual(["final"], compression["source_extraction_phases"])
@@ -1719,11 +1741,18 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             }
             self.assertIn("context_class:compression", compression_index_names)
             self.assertIn("operator:TIME_COMPRESS", compression_index_names)
+            self.assertIn("source_type:message", compression_index_names)
+            self.assertIn("keyword:compressed", compression_index_names)
+            self.assertIn("keyword:evidence", compression_index_names)
             self.assertIn("source_role:assistant", compression_index_names)
             self.assertIn("source_role:tool", compression_index_names)
             self.assertIn("hook_type:hook_boundary", compression_index_names)
             self.assertIn("codex_event:Stop", compression_index_names)
             self.assertIn("codex_event:PostToolUse", compression_index_names)
+            self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", compression_index_names)
+            self.assertIn("memory_selection_policy:selected_tool_evidence_only", compression_index_names)
+            self.assertIn("profile_promotion_policy:always_when_profile_scope_available", compression_index_names)
+            self.assertIn("final_session_boundary:true", compression_index_names)
             self.assertIn("memory_scope:session", compression_index_names)
             self.assertIn("session_continuity:same_session", compression_index_names)
             self.assertIn("extraction_phase:final", compression_index_names)
@@ -1744,6 +1773,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("hook_type:hook_boundary", compression_terms)
             self.assertIn("codex_event:stop", compression_terms)
             self.assertIn("codex_event:posttooluse", compression_terms)
+            self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", compression_terms)
+            self.assertIn("memory_selection_policy:selected_tool_evidence_only", compression_terms)
             self.assertIn("memory_scope:session", compression_terms)
             self.assertIn("session_continuity:same_session", compression_terms)
             self.assertIn("extraction_phase:final", compression_terms)
@@ -1769,11 +1800,44 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(1, budget["by_hook_type"]["hook_boundary"]["refs"])
             self.assertEqual(1, budget["by_codex_event"]["Stop"]["refs"])
             self.assertEqual(1, budget["by_codex_event"]["PostToolUse"]["refs"])
+            self.assertEqual(1, budget["by_memory_selection_policy"]["selected_assistant_decision_outcome_only"]["refs"])
+            self.assertEqual(1, budget["by_memory_selection_policy"]["selected_tool_evidence_only"]["refs"])
             self.assertEqual({"assistant": 1, "tool": 1}, budget["source_message_counts_by_role"])
             self.assertEqual({"hook_boundary": 2}, budget["source_hook_counts_by_type"])
             self.assertEqual({"Stop": 1, "PostToolUse": 1}, budget["source_codex_event_counts_by_event"])
             self.assertEqual(1, budget["final_session_boundary_ref_count"])
             self.assertEqual(1, budget["final_ref_count"])
+
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "Compressed assistant decision and tool validation evidence",
+                    "max_context_tokens": 120,
+                    "ranking": {
+                        "max_selected_refs": 3,
+                        "min_similarity_score": 0.0,
+                        "memory_layer_budget_tokens": {"same_session_event": 1},
+                    },
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "include_debug_refs": True,
+                }
+            )
+            selected_compression = [
+                ref for ref in pack["selected_refs"] if ref.get("ref_type") == "compression"
+            ]
+            self.assertTrue(selected_compression, pack)
+            self.assertEqual(
+                ["selected_assistant_decision_outcome_only", "selected_tool_evidence_only"],
+                selected_compression[0]["source_memory_selection_policies"],
+            )
+            self.assertEqual(
+                {"selected_assistant_decision_outcome_only": 1, "selected_tool_evidence_only": 1},
+                selected_compression[0]["source_memory_selection_policy_counts"],
+            )
+            retrieved_budget = pack["recall_policy"]["memory_layer_budget"]
+            self.assertIn("compression", retrieved_budget["by_memory_layer"])
+            self.assertIn("selected_tool_evidence_only", retrieved_budget["by_memory_selection_policy"])
 
     def test_source_role_budget_caps_assistant_context_without_blocking_user_refs(self) -> None:
         selected, used_tokens, dropped = select_token_budgeted_refs(
