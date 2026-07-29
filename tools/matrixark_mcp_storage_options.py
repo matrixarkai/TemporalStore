@@ -92,7 +92,13 @@ def storage_record_kind(record: Json) -> str:
     kind = str(envelope.get("kind") or record.get("kind") or "").strip().lower()
     if kind == "feedback" or record_type in {"context_feedback", "feedback_event"}:
         return "feedback"
-    if record_type in {"raw_ingestion", "raw_ingestion_event", "raw_agent_message"}:
+    raw_record_type = str(record.get("raw_record_type") or "").strip().lower()
+    raw_visibility = str(record.get("raw_ingestion_visibility") or "").strip().lower()
+    if (
+        record_type in {"raw_ingestion", "raw_ingestion_event", "raw_agent_message"}
+        or raw_record_type in {"raw_ingestion", "raw_ingestion_event", "raw_agent_message"}
+        or raw_visibility == "backfill_only"
+    ):
         return "raw_ingestion"
     if record_type in {"session_buffer_event", "session_commit_marker"}:
         return "session_buffer"
