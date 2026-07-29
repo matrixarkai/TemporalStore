@@ -7486,9 +7486,33 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(len(profile_entities), len(profile_embeddings))
             self.assertTrue(all(record.get("extraction_phase") == "provisional" for record in profile_embeddings))
             self.assertTrue(all(record.get("final_session_boundary") is False for record in profile_embeddings))
-            self.assertTrue(all("source_event_ids" not in record for record in profile_embeddings))
-            self.assertTrue(all("source_session_ids" not in record for record in profile_embeddings))
-            self.assertTrue(all("source_entity_hashes" not in record for record in profile_embeddings))
+            for record in profile_embeddings:
+                for field in [
+                    "source_event_ids",
+                    "source_session_ids",
+                    "source_entity_hashes",
+                    "source_roles",
+                    "source_role_counts",
+                    "source_hook_types",
+                    "source_hook_type_counts",
+                    "source_codex_events",
+                    "source_codex_event_counts",
+                    "source_memory_selection_policies",
+                    "source_memory_selection_policy_counts",
+                    "source_profile_promotion_policies",
+                    "source_profile_promotion_blockers",
+                    "source_memory_scopes",
+                    "source_session_continuities",
+                    "supersedes_session_entity_hash",
+                    "supersedes_session_entity_hashes",
+                    "previous_profile_revision",
+                    "previous_profile_updated_at_ms",
+                    "extraction_context_event_ids",
+                ]:
+                    self.assertNotIn(field, record)
+                self.assertEqual(1, record["profile_source_session_count"])
+                self.assertEqual(1, record["profile_source_entity_count"])
+                self.assertGreaterEqual(record["profile_source_event_count"], 0)
 
             pack = adapter.retrieve(
                 {
