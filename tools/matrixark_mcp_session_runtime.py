@@ -466,6 +466,8 @@ def append_session_commit_task_progress(
     source_memory_selection_policies = source_memory_selection_policies or []
     source_memory_selection_policy_counts = source_memory_selection_policy_counts or {}
     source_memory_selection_retention = source_memory_selection_retention or {}
+    buffer_key = list(session_buffer_key_from_scope(scope))
+    buffer_key_hash = stable_hash(":".join(buffer_key))
     for event_id in source_event_ids:
         records.append(
             {
@@ -495,6 +497,23 @@ def append_session_commit_task_progress(
                 "summary_refresh_status": memory_layers_written.get("summary_refresh_status"),
                 "summary_dirty_nodes": memory_layers_written.get("summary_dirty_nodes", 0),
                 "memory_layers_written": memory_layers_written,
+                "updated_at_ms": updated_at_ms,
+            }
+        )
+        records.append(
+            {
+                "record_type": "session_buffer_event",
+                "buffer_key_hash": buffer_key_hash,
+                "buffer_key": buffer_key,
+                "event_id_hash": event_id,
+                "commit_id_hash": commit_id_hash,
+                "batch_id_hash": batch_id_hash,
+                "scope": scope,
+                "status": "committed",
+                "reason": "session_buffer_commit",
+                "trigger_policy": trigger_policy,
+                "extraction_phase": extraction_phase,
+                "final_session_boundary": final_session_boundary,
                 "updated_at_ms": updated_at_ms,
             }
         )
