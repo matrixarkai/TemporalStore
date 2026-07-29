@@ -173,6 +173,14 @@ def is_stale_or_superseded_candidate(candidate: Json) -> bool:
     return version_state in {"stale", "superseded", "historical_superseded"}
 
 
+def is_pending_async_candidate(candidate: Json) -> bool:
+    return (
+        str(candidate.get("event_type") or "").strip().lower() == "pending_async"
+        or str(candidate.get("classification") or "").strip().upper() == "PENDING_ASYNC_EXTRACTION"
+        or str(candidate.get("extraction_phase") or "").strip().lower() == "pending_async"
+    )
+
+
 def candidate_memory_layer_name(candidate: Json) -> str:
     ref_type = str(candidate.get("ref_type") or "")
     context_class = str(candidate.get("context_class") or ref_type)
@@ -203,6 +211,8 @@ def candidate_memory_layer_name(candidate: Json) -> str:
             return "cross_session_segment"
         return "session_neutral_segment"
     if ref_type == "event":
+        if is_pending_async_candidate(candidate):
+            return "pending_async_event"
         if session_continuity == "same_session":
             return "same_session_event"
         if session_continuity == "cross_session":

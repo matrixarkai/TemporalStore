@@ -4225,6 +4225,62 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(1, dropped["memory_layer_budget_policy"]["selected_ref_count_by_layer"]["same_session_segment"])
         self.assertEqual(1, dropped["memory_layer_budget_policy"]["selected_ref_count_by_layer"]["profile_entity"])
 
+    def test_budget_packer_enforces_pending_async_event_caps_separately(self) -> None:
+        selected, used_tokens, dropped = mcp_budget_pack.select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "event",
+                    "ref_hash": 8111,
+                    "text": "user: remember this live pending hook event",
+                    "score": 0.95,
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "event_type": "pending_async",
+                    "classification": "PENDING_ASYNC_EXTRACTION",
+                    "extraction_phase": "pending_async",
+                },
+                {
+                    "ref_type": "event",
+                    "ref_hash": 8112,
+                    "text": "user: another pending hook event should be capped",
+                    "score": 0.94,
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "event_type": "pending_async",
+                    "classification": "PENDING_ASYNC_EXTRACTION",
+                    "extraction_phase": "pending_async",
+                },
+                {
+                    "ref_type": "event",
+                    "ref_hash": 8113,
+                    "text": "final extracted same-session event remains separate",
+                    "score": 0.93,
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "event_type": "memory_update",
+                    "classification": "BATCH_MEMORY",
+                    "extraction_phase": "final",
+                },
+            ],
+            [],
+            max_context_tokens=80,
+            auxiliary_quota=0,
+            min_score=0.0,
+            cross_session_policy={"enabled": True, "budget_tokens": 80, "max_sessions": 4, "max_candidates": 4},
+            memory_layer_budget_tokens={"pending_async_event": 7, "same_session_event": 12},
+        )
+
+        self.assertEqual([8111, 8113], [ref["ref_hash"] for ref in selected])
+        self.assertGreater(used_tokens, 0)
+        self.assertEqual(1, dropped["memory_layer_budget"])
+        self.assertEqual(8, dropped["estimated_tokens"]["memory_layer_budget"])
+        self.assertEqual(
+            {"pending_async_event": 7, "same_session_event": 12},
+            dropped["memory_layer_budget_policy"]["budget_tokens"],
+        )
+        self.assertEqual(1, dropped["memory_layer_budget_policy"]["selected_ref_count_by_layer"]["pending_async_event"])
+        self.assertEqual(1, dropped["memory_layer_budget_policy"]["selected_ref_count_by_layer"]["same_session_event"])
+
     def test_budget_packer_enforces_source_role_caps(self) -> None:
         selected, used_tokens, dropped = mcp_budget_pack.select_token_budgeted_refs(
             [
