@@ -5191,6 +5191,10 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
         # because they preserve an old answer-bearing window in fewer tokens.
         return 0.50 if source_count >= 2 else 0.24
     if question_type in {"current_state", "latest"}:
+        if ref_type == "entity" and event_type == "assistant_decision":
+            return 0.44
+        if ref_type == "entity" and event_type == "tool_evidence":
+            return 0.40
         if ref_type == "entity":
             return 0.30
         if context_class == "resource_entity_fact":
@@ -5253,8 +5257,11 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
             token_efficiency *= 1.5
     current_state_priority = 0.0
     if question_type in {"current_state", "latest"} and candidate.get("ref_type") == "entity":
+        entity_type = str(candidate.get("entity_type") or candidate.get("event_type") or "").strip().lower()
         if bool(candidate.get("profile_current_state_representative")) or bool(candidate.get("profile_current_state_boost")):
             current_state_priority = 1.0
+        elif entity_type in {"assistant_decision", "tool_evidence"}:
+            current_state_priority = 0.75
         elif str(candidate.get("memory_scope") or "") == "user_profile" and str(candidate.get("session_continuity") or "") == "cross_session":
             current_state_priority = 0.5
     return (boosted, current_state_priority, token_efficiency, score)

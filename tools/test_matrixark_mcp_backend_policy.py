@@ -4676,6 +4676,54 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(1, dropped["source_role_budget_policy"]["selected_ref_count_by_role"]["assistant"])
         self.assertEqual(1, dropped["source_role_budget_policy"]["selected_ref_count_by_role"]["tool"])
 
+    def test_current_state_prioritizes_assistant_decision_and_tool_evidence(self) -> None:
+        selected, used_tokens, dropped = mcp_budget_pack.select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 8301,
+                    "text": "generic profile preference with a higher base score",
+                    "score": 0.86,
+                    "entity_type": "preference",
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                },
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 8302,
+                    "text": "assistant decision: keep the live memory extraction path",
+                    "score": 0.72,
+                    "entity_type": "assistant_decision",
+                    "source_roles": ["model"],
+                    "source_role_counts": {"model": 1},
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                },
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 8303,
+                    "text": "tool evidence: Exit code: 0; Ran 78 tests OK",
+                    "score": 0.70,
+                    "entity_type": "tool_evidence",
+                    "source_roles": ["tool"],
+                    "source_role_counts": {"tool": 1},
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                },
+            ],
+            [],
+            question_type="current_state",
+            max_context_tokens=24,
+            max_selected_refs=2,
+            auxiliary_quota=0,
+            min_score=0.0,
+            cross_session_policy={"enabled": True, "budget_tokens": 24, "max_sessions": 4, "max_candidates": 4},
+        )
+
+        self.assertEqual([8302, 8303], [ref["ref_hash"] for ref in selected])
+        self.assertNotIn(8301, [ref["ref_hash"] for ref in selected])
+        self.assertGreater(used_tokens, 0)
+
     def test_codex_session_identity_policy_treats_exact_payload_sources_as_strong(self) -> None:
         payload_policy = mcp_local.codex_session_identity_policy("payload.conversation_id")
         self.assertTrue(payload_policy["strong_session_identity"])
