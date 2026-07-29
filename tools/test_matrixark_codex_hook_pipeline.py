@@ -8775,11 +8775,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "tenant_id": "tenant_summary_embed_recovery",
                 "user_id": "user_summary_embed_recovery",
             }
-            node_path = [
-                "tenant:tenant_summary_embed_recovery",
-                "user:user_summary_embed_recovery",
-                "profile:long_term_memory",
-            ]
+            node_path = ["profile:long_term_memory"]
             node_hash = 92001
             summary_hash = 92002
             summary_text = "profile summary: latest_summary_marker_992 says keep profile summaries retrievable."
@@ -8791,8 +8787,6 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "summary_hash": summary_hash,
                         "node_hash": node_hash,
                         "node_path": node_path,
-                        "scope": profile_scope,
-                        "access_scope": profile_scope,
                         "summary_text": summary_text,
                         "updated_at_ms": 1000,
                     },
@@ -8814,7 +8808,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "dim": len(embedding_for_text(summary_text)),
                         "model": "deterministic-test",
                         "vector": embedding_for_text(summary_text),
-                        "scope": profile_scope,
+                        "access_scope": profile_scope,
                         "memory_scope": "user_profile",
                         "session_continuity": "cross_session",
                         "promoted_from_memory_scope": "session",
