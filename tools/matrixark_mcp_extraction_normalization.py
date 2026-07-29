@@ -351,6 +351,8 @@ def infer_entity_field_patches(entity_type: str, value: str, text: str) -> list[
         "approval_state",
         "correction",
         "confirmation",
+        "assistant_decision",
+        "tool_evidence",
     }
     if entity_type in evolving_entity_types and not patches and value:
         patches.append(entity_patch("", summarize_text(value, limit=180)))
@@ -371,6 +373,8 @@ def canonical_entity_name(entity_type: str, value: str) -> str:
         "family_profile",
         "correction",
         "confirmation",
+        "assistant_decision",
+        "tool_evidence",
     }:
         return entity_type
     if entity_type == "approval_state":
@@ -400,6 +404,8 @@ def dedupe_entities(entities: list[Json]) -> list[Json]:
     for entity in entities:
         key = (entity.get("entity_type"), str(entity.get("entity_name", "")).lower())
         if key in seen:
+            if entity.get("entity_type") == "tool_evidence" and out[positions[key]].get("state"):
+                continue
             if entity.get("entity_name") == entity.get("entity_type"):
                 out[positions[key]] = entity
             continue

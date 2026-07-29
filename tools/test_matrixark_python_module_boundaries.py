@@ -84,6 +84,28 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("Validated profile cross-session memory retrieval", decisions[0]["state"])
         self.assertEqual(["456"], decisions[0]["source_refs"])
 
+    def test_modular_extractor_uses_canonical_assistant_and_tool_entities(self) -> None:
+        extract_mod = importlib.import_module("tools.matrixark_mcp_extraction_normalization")
+        entities = extract_mod.extract_batch_entities(
+            [
+                {
+                    "role": "assistant",
+                    "content": "Updated profile memory extraction and validated cross-session retrieval.",
+                },
+                {
+                    "role": "tool",
+                    "content": "Exit code: 0; Ran 42 tests; pushed commit abc1234 to origin/main.",
+                },
+            ],
+            {"source_event_ids": [789]},
+        )
+
+        by_type = {entity.get("entity_type"): entity for entity in entities}
+        self.assertEqual("assistant_decision", by_type["assistant_decision"]["entity_name"])
+        self.assertEqual("tool_evidence", by_type["tool_evidence"]["entity_name"])
+        self.assertTrue(by_type["assistant_decision"]["field_patches"])
+        self.assertTrue(by_type["tool_evidence"]["field_patches"])
+
     def test_memory_phase_and_retrieval_budget_fields_are_public_schema(self) -> None:
         schemas_mod = importlib.import_module("tools.matrixark_mcp_schemas")
         tools_by_name = {tool["name"]: tool for tool in schemas_mod.TOOLS}
