@@ -33,6 +33,21 @@ def sh(cmd):
     except Exception as exc: return str(exc)
 def metric(title,value,sub='',cls=''):
     return f'<div class="card"><div class="sub">{esc(title)}</div><div class="metric {cls}">{esc(value)}</div><div class="sub">{esc(sub)}</div></div>'
+def gap_tuning_section():
+    rows=[
+        ('cap128 current strict run', 'baseline live run', 'Fast, compact, but current retrieval misses remain clustered in a few LoCoMo categories.'),
+        ('cap160', 'recovered 7 / 24 prior retrieval misses', 'First useful step up; still leaves several source-depth misses.'),
+        ('cap192', 'recovered 12 / 24 prior retrieval misses', 'Best next retrieval-only probe before spending much more reader time.'),
+        ('cap256', 'recovered 17 / 24 prior retrieval misses', 'Likely stronger retrieval quality at moderate extra token cost.'),
+        ('cap384', 'recovered 22 / 24 prior retrieval misses', 'High-recall diagnostic setting, not the default compact budget.'),
+        ('quota reshuffle at cap128', 'recovered 1 / 24 prior retrieval misses', 'Misses look mostly depth/cutoff-driven, not only per-session/cross-session quota mix.'),
+        ('Qwen7B reader subset', '40 retrieval-hit reader-miss questions staged', 'Run after this LoCoMo job frees Ollama, to separate reader quality from retrieval quality.'),
+    ]
+    body=['<section class="section"><h2>Gap Closure Evidence And Next Knobs</h2><table><tr><th>Probe</th><th>Observed Effect</th><th>Interpretation</th></tr>']
+    for name,effect,note in rows:
+        body.append(f'<tr><td>{esc(name)}</td><td>{esc(effect)}</td><td>{esc(note)}</td></tr>')
+    body.append('</table></section>')
+    return ''.join(body)
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--run-dir', type=pathlib.Path, default=DEFAULT_RUN_DIR)
@@ -60,6 +75,7 @@ def main():
     parts=[f'<!doctype html><html><head><meta charset="utf-8"><title>{esc(args.output.stem)}</title><style>{css}</style></head><body>',f'<header><h1>MatrixArk Full OSS Benchmark Live Report</h1><p>Generated {esc(time.strftime("%Y-%m-%d %H:%M:%S"))}. This is a live checkpoint, not a final benchmark claim.</p><p><span class="pill">{esc(status)}</span><span class="pill">LoCoMo full OSS reader</span><span class="pill">Qwen 2.5 1.5B via Ollama</span><span class="pill">Rust TemporalStore full replay</span></p></header><main>','<section class="grid">']
     parts += [metric('Completed rows', f'{completed} / {expected}', f'{rate(completed,expected):.1f}% complete'), metric('Retrieval hit rate', f'{rate(retrieval_hits,completed):.2f}%', f'{completed-retrieval_hits} misses', 'ok'), metric('Retrieval p95', f'{pct(retrieval_ms,95):.2f} ms', f'p99 {pct(retrieval_ms,99):.2f} ms'), metric('Reader exact hit rate', f'{rate(reader_hits,completed):.2f}%', 'reader quality gap under Qwen 1.5B', 'warn'), metric('Reader p95', f'{pct(reader_ms,95):.2f} ms', f'p99 {pct(reader_ms,99):.2f} ms'), metric('Mean token reduction', f'{(statistics.mean(token_saves) if token_saves else 0):.2f}%', f'source avg {(statistics.mean(source_tokens) if source_tokens else 0):.0f}; retrieved avg {(statistics.mean(retrieved_tokens) if retrieved_tokens else 0):.0f}')]
     parts += ['</section>','<section class="section"><h2>What This Checkpoint Shows</h2><div class="card"><p>Retrieval remains strong and fast on the completed slice. The main visible quality gap is downstream reader answering: many misses have retrieval_hit=true, so the right source is present but the small OSS reader does not reliably extract the exact answer.</p><p>The active goal is still open: full LoCoMo completion, full LongMemEval_s OSS-reader rerun, and apples-to-apples OpenViking/VikingMem comparison remain required before final claims.</p></div></section>']
+    parts.append(gap_tuning_section())
     parts.append(f'<section class="section"><h2>Current Runner State</h2><table><tr><th>Field</th><th>Value</th></tr><tr><td>phase</td><td>{esc(progress.get("phase"))}</td></tr><tr><td>current query</td><td>{esc(progress.get("query_id"))}</td></tr><tr><td>last completed row</td><td>{esc(rows[-1].get("query_id") if rows else None)}</td></tr><tr><td>per-query mtime age</td><td>{mtime_age:.1f}s</td></tr><tr><td>tmux</td><td><pre>{esc(tmux)}</pre></td></tr><tr><td>processes</td><td><pre>{esc(processes)}</pre></td></tr></table></section>')
     parts.append('<section class="section"><h2>Category Breakdown</h2><table><tr><th>Category</th><th>Rows</th><th>Retrieval Hit</th><th>Reader Hit</th><th>Retrieval p95</th><th>Reader p95</th></tr>')
     for cat, cr in sorted(by_cat.items()):
