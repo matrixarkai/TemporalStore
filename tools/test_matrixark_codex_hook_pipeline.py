@@ -40,7 +40,11 @@ from matrixark_mcp_core import (
 from matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness
 from matrixark_mcp_recovery import matrixark_local_recovery_report
 from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget, memory_layer_pressure_summary, selected_ref_layer_budget
-from matrixark_mcp_local_adapter import quality_first_underfill_summary, suppress_extracted_represented_pending_events
+from matrixark_mcp_local_adapter import (
+    quality_first_underfill_summary,
+    suppress_extracted_represented_pending_events,
+    suppress_profile_shadowed_session_entities,
+)
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 from matrixark_mcp_summary_runtime import build_node_summary_refresh_records
 
@@ -2585,6 +2589,57 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual([801], [item["ref_hash"] for item in selected])
         self.assertEqual(5, removed_tokens)
         self.assertEqual(1, dropped["pending_async_event_superseded_by_extracted_refs"])
+
+    def test_profile_entity_cleanup_suppresses_shadowed_same_session_entity(self) -> None:
+        session_entity = {
+            "ref_type": "entity",
+            "ref_hash": 4501,
+            "entity_type": "user_preference",
+            "entity_name": "memory_mode",
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "token_estimate": 4,
+            "text": "old same-session memory mode",
+        }
+        profile_entity = {
+            "ref_type": "entity",
+            "ref_hash": 4502,
+            "entity_type": "user_preference",
+            "entity_name": "memory_mode",
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "source_entity_hashes": [4501],
+            "token_estimate": 5,
+            "text": "current profile memory mode",
+        }
+        other_session_entity = {
+            "ref_type": "entity",
+            "ref_hash": 4503,
+            "entity_type": "user_preference",
+            "entity_name": "other_mode",
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "token_estimate": 3,
+            "text": "keep different same-session entity",
+        }
+        dropped: dict = {}
+
+        selected, removed_tokens = suppress_profile_shadowed_session_entities(
+            [session_entity, profile_entity, other_session_entity],
+            dropped,
+        )
+
+        self.assertEqual([4502, 4503], [item["ref_hash"] for item in selected])
+        self.assertEqual(4, removed_tokens)
+        self.assertEqual(1, dropped["profile_entity_shadowed_session_entities"])
+        self.assertTrue(
+            any(
+                ref.get("drop_reason") == "profile_entity_shadowed_session_entity"
+                and ref.get("profile_shadowed_reason") == "selected_profile_entity_supersedes_session_entity"
+                for ref in dropped.get("refs", [])
+            ),
+            dropped,
+        )
 
     def test_fast_hook_pending_event_is_retrievable_before_batch_extraction(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

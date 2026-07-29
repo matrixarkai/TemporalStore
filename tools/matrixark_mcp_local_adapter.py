@@ -369,6 +369,62 @@ def suppress_extracted_represented_pending_events(selected: list[Json], dropped_
     return selected, 0
 
 
+def suppress_profile_shadowed_session_entities(selected: list[Json], dropped_over_budget: Json) -> tuple[list[Json], int]:
+    profile_entity_source_hashes: set[Any] = set()
+    profile_entity_identity_keys: set[tuple[str, str]] = set()
+    for item in selected:
+        if (
+            item.get("ref_type") == "entity"
+            and item.get("memory_scope") == "user_profile"
+            and item.get("session_continuity") == "cross_session"
+        ):
+            profile_entity_source_hashes.update(_ref_list_value(item, "source_entity_hashes"))
+            entity_type = str(item.get("entity_type") or "").strip().lower()
+            entity_name = str(item.get("entity_name") or "").strip().lower()
+            if entity_type and entity_name:
+                profile_entity_identity_keys.add((entity_type, entity_name))
+    if not profile_entity_source_hashes and not profile_entity_identity_keys:
+        return selected, 0
+
+    deduped_selected: list[Json] = []
+    removed_tokens = 0
+    removed_count = 0
+    for item in selected:
+        if (
+            item.get("ref_type") == "entity"
+            and item.get("memory_scope") == "session"
+            and item.get("session_continuity") == "same_session"
+        ):
+            item_key = (
+                str(item.get("entity_type") or "").strip().lower(),
+                str(item.get("entity_name") or "").strip().lower(),
+            )
+            represented_by_profile = item.get("ref_hash") in profile_entity_source_hashes or (
+                bool(item_key[0] and item_key[1]) and item_key in profile_entity_identity_keys
+            )
+            if represented_by_profile:
+                token_estimate = int(item.get("token_estimate") or max(1, token_count(str(item.get("text") or ""))))
+                removed_tokens += token_estimate
+                removed_count += 1
+                record_dropped_candidate(
+                    dropped_over_budget,
+                    {
+                        **item,
+                        "profile_shadowed_reason": "selected_profile_entity_supersedes_session_entity",
+                    },
+                    reason="profile_entity_shadowed_session_entity",
+                    token_estimate=token_estimate,
+                )
+                continue
+        deduped_selected.append(item)
+    if not removed_count or not deduped_selected:
+        return selected, 0
+    dropped_over_budget["profile_entity_shadowed_session_entities"] = (
+        int(dropped_over_budget.get("profile_entity_shadowed_session_entities") or 0) + removed_count
+    )
+    return deduped_selected, removed_tokens
+
+
 def codex_session_identity_policy(session_id_source: str) -> Json:
     source = str(session_id_source or "").strip()
     strong_sources = {"explicit", "payload_field", "payload_path_hash"}
@@ -9352,6 +9408,10 @@ class MatrixArkLocalAdapter:
             if len(deduped_selected) != len(selected):
                 selected = deduped_selected
                 used_context_tokens = max(0, used_context_tokens - removed_tokens)
+
+        selected, removed_shadowed_tokens = suppress_profile_shadowed_session_entities(selected, dropped_over_budget)
+        if removed_shadowed_tokens:
+            used_context_tokens = max(0, used_context_tokens - removed_shadowed_tokens)
 
         selected, removed_pending_tokens = suppress_extracted_represented_pending_events(selected, dropped_over_budget)
         if removed_pending_tokens:
