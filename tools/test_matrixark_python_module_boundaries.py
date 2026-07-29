@@ -2872,6 +2872,39 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             dropped["estimated_tokens"]["memory_selection_policy_budget"],
         )
 
+        metadata_only_candidate = {
+            "ref_type": "event",
+            "ref_hash": 303,
+            "text": "assistant pending decision should obey policy caps from metadata",
+            "score": 0.95,
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "metadata": {
+                "source_memory_selection_policy_counts": {
+                    "selected_assistant_decision_outcome_only": 1,
+                },
+            },
+        }
+        selected, used_tokens, dropped = budget_mod.select_token_budgeted_refs(
+            [metadata_only_candidate],
+            [],
+            max_context_tokens=40,
+            auxiliary_quota=0,
+            max_selected_refs=1,
+            min_score=0.0,
+            memory_selection_policy_budget_tokens={
+                "selected_assistant_decision_outcome_only": 1,
+            },
+            budget_fill_policy="quality_first",
+        )
+        self.assertEqual([], selected)
+        self.assertEqual(0, used_tokens)
+        self.assertEqual(1, dropped["memory_selection_policy_budget"])
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 0},
+            dropped["memory_selection_policy_budget_policy"]["selected_tokens_by_policy"],
+        )
+
     def test_modular_budget_pack_force_fill_respects_memory_selection_policy_cap(self) -> None:
         budget_mod = importlib.import_module("tools.matrixark_mcp_budget_pack")
         assistant_candidate = {
