@@ -42,6 +42,11 @@ DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS = {
     "source_hook_counts_by_type",
     "source_codex_event_counts_by_event",
     "source_lineage",
+    "source_event_ids",
+    "source_event_count",
+    "source_record_type",
+    "segment_origin",
+    "derived_from_context_events",
     "pending_source_roles",
     "pending_source_hook_types",
     "pending_source_codex_events",
@@ -448,6 +453,7 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         "source_profile_promotion_policies",
         "source_profile_promotion_blockers",
         "source_final_session_boundary_count",
+        "source_event_ids",
         "source_role_counts",
         "budget_source_role_counts",
         "source_hook_type_counts",
@@ -478,6 +484,17 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         value = ref.get("source_entity_count")
         if isinstance(value, int) and value > 0:
             item["source_entity_count"] = value
+        value = ref.get("source_event_count")
+        if isinstance(value, int) and value > 0:
+            item["source_event_count"] = value
+        value = ref.get("source_record_type")
+        if isinstance(value, str) and value.strip():
+            item["source_record_type"] = value.strip()
+        value = ref.get("segment_origin")
+        if isinstance(value, str) and value.strip():
+            item["segment_origin"] = value.strip()
+        if ref.get("derived_from_context_events") is True:
+            item["derived_from_context_events"] = True
         for field in ["current_state_policy", "current_state_source_session_count", "current_state_source_entity_count"]:
             value = ref.get(field)
             if value not in (None, "", [], {}) and not (isinstance(value, int) and value <= 0):
@@ -1005,6 +1022,7 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         "source_profile_promotion_policies",
         "source_profile_promotion_blockers",
         "source_final_session_boundary_count",
+        "source_event_ids",
         "source_role_counts",
         "source_hook_type_counts",
         "source_codex_event_counts",
@@ -1030,6 +1048,17 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         value = ref.get("source_entity_count", metadata.get("source_entity_count"))
         if isinstance(value, int) and value > 0:
             item["source_entity_count"] = value
+        value = ref.get("source_event_count", metadata.get("source_event_count"))
+        if isinstance(value, int) and value > 0:
+            item["source_event_count"] = value
+        value = ref.get("source_record_type", metadata.get("source_record_type"))
+        if isinstance(value, str) and value.strip():
+            item["source_record_type"] = value.strip()
+        value = ref.get("segment_origin", metadata.get("segment_origin"))
+        if isinstance(value, str) and value.strip():
+            item["segment_origin"] = value.strip()
+        if ref.get("derived_from_context_events") is True or metadata.get("derived_from_context_events") is True:
+            item["derived_from_context_events"] = True
         value = ref.get("current_state_policy", metadata.get("current_state_policy"))
         if value not in (None, "", [], {}):
             item["current_state_policy"] = value
@@ -1113,10 +1142,15 @@ def _bound_prebuilt_serving_lineage_item(item: Json) -> Json:
         "source_entity_types",
         "source_profile_promotion_policies",
         "source_profile_promotion_blockers",
+        "source_event_ids",
     ]:
         value = compact.get(field)
         if isinstance(value, list):
             compact[field] = value[:8]
+    for field in ["source_event_count", "source_record_type", "segment_origin", "derived_from_context_events"]:
+        value = compact.get(field)
+        if value in (None, "", [], {}) or (isinstance(value, int) and value <= 0) or value is False:
+            compact.pop(field, None)
     for field in ["source_roles", "budget_source_roles"]:
         value = compact.get(field)
         if isinstance(value, list):
