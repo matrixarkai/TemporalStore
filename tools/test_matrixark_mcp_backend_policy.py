@@ -19,6 +19,8 @@ try:
     from tools import matrixark_mcp_core as mcp_core
     from tools import matrixark_mcp_context_pack as mcp_context_pack
     from tools import matrixark_mcp_ingest_message_records as message_record_builders
+    from tools import matrixark_mcp_retrieve_compression_scan as compression_scan
+    from tools import matrixark_mcp_retrieve_planning as retrieve_planning
     from tools.run_matrixark_cpp_rust_scale_report import (
         comparison,
         default_cpp_lib_path,
@@ -40,6 +42,8 @@ except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_core as mcp_core
     import matrixark_mcp_context_pack as mcp_context_pack
     import matrixark_mcp_ingest_message_records as message_record_builders
+    import matrixark_mcp_retrieve_compression_scan as compression_scan
+    import matrixark_mcp_retrieve_planning as retrieve_planning
     from run_matrixark_cpp_rust_scale_report import (
         comparison,
         default_cpp_lib_path,
@@ -4407,6 +4411,89 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         )
         self.assertEqual(1, dropped["extraction_phase_budget_policy"]["selected_ref_count_by_phase"]["provisional"])
         self.assertEqual(1, dropped["extraction_phase_budget_policy"]["selected_ref_count_by_phase"]["final"])
+
+    def test_retrieval_plan_preserves_extraction_phase_budget_tokens(self) -> None:
+        plan = retrieve_planning.retrieval_query_budget_plan(
+            {
+                "query": "show final profile decisions",
+                "scope": {"tenant_id": "tenant", "user_id": "user", "session_id": "session"},
+                "max_context_tokens": 400,
+                "extraction_phase_budget_tokens": {"final": 80, "provisional": 20},
+            },
+            {},
+            query="show final profile decisions",
+            scope={"tenant_id": "tenant", "user_id": "user", "session_id": "session"},
+            default_max_context_tokens=400,
+        )
+
+        self.assertEqual({"final": 80, "provisional": 20}, plan["extraction_phase_budget_tokens"])
+        self.assertEqual("explicit", plan["extraction_phase_budget_mode"])
+
+    def test_compression_scan_honors_secondary_memory_layer_filters(self) -> None:
+        scope = {"tenant_id": "tenant", "user_id": "user", "session_id": "session"}
+        records = [
+            {
+                "record_type": "context_compression_event",
+                "compression_id_hash": 9101,
+                "node_hash": 501,
+                "node_path": ["tenant:tenant", "user:user", "session:session"],
+                "scope": scope,
+                "summary_text": "provisional session evidence that should be filtered",
+                "operator": "TIME_COMPRESS",
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+                "extraction_phase": "provisional",
+                "updated_at_ms": 1000,
+            },
+            {
+                "record_type": "context_compression_event",
+                "compression_id_hash": 9102,
+                "node_hash": 501,
+                "node_path": ["tenant:tenant", "user:user", "profile:long_term_memory"],
+                "scope": scope,
+                "summary_text": "final profile decision evidence that should remain",
+                "operator": "TIME_COMPRESS",
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "extraction_phase": "final",
+                "updated_at_ms": 1001,
+            },
+        ]
+
+        primary, auxiliary, dropped, matched, fallback = compression_scan.scan_compression_candidates(
+            records,
+            retrieval_scope=scope,
+            selected_by_tree=lambda _record: True,
+            index_terms_by_batch={},
+            index_terms_by_node={},
+            index_terms_by_ref={},
+            secondary_index_filter_groups=[
+                {"memory_scope:user_profile"},
+                {"session_continuity:cross_session"},
+                {"extraction_phase:final"},
+            ],
+            secondary_index_filter_mode="all_groups",
+            admit_candidate_for_node=lambda _record: True,
+            query_terms={"final", "profile", "decision"},
+            query_embedding=mcp_core.embedding_for_text("final profile decision"),
+            compression_embedding_vectors={},
+            node_scores={501: {"score": 0.7}},
+            annotate_session_continuity=lambda candidate, record: {
+                **candidate,
+                "memory_scope": record.get("memory_scope", ""),
+                "session_continuity": record.get("session_continuity", ""),
+                "extraction_phase": record.get("extraction_phase", ""),
+            },
+            ranking={},
+            reference_time_ms=2000,
+            deadline_exceeded=lambda: False,
+        )
+
+        self.assertEqual("", fallback)
+        self.assertEqual(1, dropped)
+        self.assertEqual(1, matched)
+        self.assertEqual([9102], [candidate["ref_hash"] for candidate in primary])
+        self.assertTrue(all(candidate.get("extraction_phase") == "final" for candidate in primary + auxiliary))
 
     def test_budget_packer_enforces_source_role_caps(self) -> None:
         selected, used_tokens, dropped = mcp_budget_pack.select_token_budgeted_refs(

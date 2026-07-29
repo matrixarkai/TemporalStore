@@ -643,6 +643,8 @@ def build_context_pack(
     memory_layer_budget_mode: str = "",
     memory_selection_policy_budget_tokens: Json | None = None,
     memory_selection_policy_budget_mode: str = "",
+    extraction_phase_budget_tokens: Json | None = None,
+    extraction_phase_budget_mode: str = "",
     pre_retrieval_summary_refresh: Json | None = None,
     debug_refs: bool = False,
 ) -> Json:
@@ -665,14 +667,21 @@ def build_context_pack(
         if isinstance(dropped_over_budget.get("memory_selection_policy_budget_policy"), dict)
         else {"enabled": False}
     )
+    extraction_phase_policy = (
+        dropped_over_budget.get("extraction_phase_budget_policy", {"enabled": False})
+        if isinstance(dropped_over_budget.get("extraction_phase_budget_policy"), dict)
+        else {"enabled": False}
+    )
     source_role_policy = dict(source_role_policy)
     memory_layer_policy = dict(memory_layer_policy)
     memory_selection_policy = dict(memory_selection_policy)
+    extraction_phase_policy = dict(extraction_phase_policy)
     source_role_policy["enabled"] = bool(source_role_policy.get("enabled") or source_role_budget_tokens)
     memory_layer_policy["enabled"] = bool(memory_layer_policy.get("enabled") or memory_layer_budget_tokens)
     memory_selection_policy["enabled"] = bool(
         memory_selection_policy.get("enabled") or memory_selection_policy_budget_tokens
     )
+    extraction_phase_policy["enabled"] = bool(extraction_phase_policy.get("enabled") or extraction_phase_budget_tokens)
     return {
         "context_pack_id": str(context_pack_id),
         "context_sources_order": ["local_context", "matrixark_remote_context"],
@@ -742,6 +751,17 @@ def build_context_pack(
                 "independent_caps": True,
                 "global_remote_budget_enforced": True,
                 "budget_tokens": memory_selection_policy.get("budget_tokens", memory_selection_policy_budget_tokens or {}),
+            },
+            "extraction_phase_budget_policy": {
+                **extraction_phase_policy,
+                "mode": extraction_phase_budget_mode or (
+                    "explicit" if extraction_phase_budget_tokens else "disabled"
+                ),
+                "remote_budget_tokens": remote_context_budget_tokens,
+                "budget_semantics": "independent_per_extraction_phase_caps_under_global_remote_budget",
+                "independent_caps": True,
+                "global_remote_budget_enforced": True,
+                "budget_tokens": extraction_phase_policy.get("budget_tokens", extraction_phase_budget_tokens or {}),
             },
             "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh or {"enabled": False, "status": "disabled"},
             "backend_retrieval_pushdown": retrieval_scan_stats,
