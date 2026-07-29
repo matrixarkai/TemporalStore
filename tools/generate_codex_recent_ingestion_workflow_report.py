@@ -181,6 +181,17 @@ def row(record: dict[str, Any], sequence: int) -> dict[str, Any]:
             if isinstance(recall_policy.get("memory_layer_pressure"), dict)
             else {}
         ),
+        "memory_selection_policy_budget": (
+            record.get("memory_selection_policy_budget")
+            if isinstance(record.get("memory_selection_policy_budget"), dict)
+            else retrieval_metrics.get("memory_selection_policy_budget")
+            if isinstance(retrieval_metrics.get("memory_selection_policy_budget"), dict)
+            else recall_policy.get("memory_selection_policy_budget")
+            if isinstance(recall_policy.get("memory_selection_policy_budget"), dict)
+            else recall_policy.get("memory_selection_policy_budget_policy")
+            if isinstance(recall_policy.get("memory_selection_policy_budget_policy"), dict)
+            else {}
+        ),
         "write_path": ((record.get("matrixark_write_debug") or {}).get("write_path") if isinstance(record.get("matrixark_write_debug"), dict) else ""),
     }
 
@@ -509,6 +520,35 @@ def bucket_ref_count(budget: dict[str, Any], bucket_name: str, key: str) -> int:
     return int_value(bucket.get("refs") or bucket.get("selected_refs"))
 
 
+def memory_selection_policy_budget_evidence(item: dict[str, Any], budget: dict[str, Any]) -> dict[str, Any]:
+    policy_budget = item.get("memory_selection_policy_budget") if isinstance(item.get("memory_selection_policy_budget"), dict) else {}
+    budget_by_policy = budget.get("by_memory_selection_policy") if isinstance(budget.get("by_memory_selection_policy"), dict) else {}
+    selected_ref_count_by_policy = (
+        policy_budget.get("selected_ref_count_by_policy")
+        if isinstance(policy_budget.get("selected_ref_count_by_policy"), dict)
+        else {}
+    )
+    selected_tokens_by_policy = (
+        policy_budget.get("selected_tokens_by_policy")
+        if isinstance(policy_budget.get("selected_tokens_by_policy"), dict)
+        else {}
+    )
+    budget_tokens = policy_budget.get("budget_tokens") if isinstance(policy_budget.get("budget_tokens"), dict) else {}
+    budget_policy_refs = sum(
+        bucket_ref_count({"by_memory_selection_policy": budget_by_policy}, "by_memory_selection_policy", key)
+        for key in budget_by_policy
+    )
+    selected_policy_refs = sum(int_value(value) for value in selected_ref_count_by_policy.values())
+    policy_refs = max(budget_policy_refs, selected_policy_refs)
+    enabled = bool_value(policy_budget.get("enabled")) or bool(budget_tokens) or bool(selected_tokens_by_policy) or bool(selected_ref_count_by_policy)
+    return {
+        "enabled": enabled,
+        "policy_refs": policy_refs,
+        "policy_names": sorted(set(budget_by_policy) | set(budget_tokens) | set(selected_ref_count_by_policy) | set(selected_tokens_by_policy)),
+        "has_budget_evidence": enabled or bool(budget_by_policy),
+    }
+
+
 def retrieval_audit_coverage(item: dict[str, Any]) -> dict[str, Any]:
     budget = item.get("memory_layer_budget") if isinstance(item.get("memory_layer_budget"), dict) else {}
     selected_ref_count = int_value(item.get("selected_ref_count")) or int_value(budget.get("total_selected_refs"))
@@ -528,6 +568,7 @@ def retrieval_audit_coverage(item: dict[str, Any]) -> dict[str, Any]:
     if not cross_session_refs:
         cross_session_refs = sum(1 for ref in selected_refs if isinstance(ref, dict) and ref.get("session_continuity") == "cross_session")
 
+    policy_evidence = memory_selection_policy_budget_evidence(item, budget)
     gaps = []
     if selected_ref_count <= 0:
         gaps.append("retrieval:no_remote_refs_selected")
@@ -537,6 +578,8 @@ def retrieval_audit_coverage(item: dict[str, Any]) -> dict[str, Any]:
         gaps.append("retrieval:no_session_continuity_refs_selected")
     if not budget or int_value(budget.get("total_selected_refs")) <= 0:
         gaps.append("retrieval:memory_layer_budget_missing_selected_refs")
+    if selected_ref_count > 0 and not policy_evidence["has_budget_evidence"]:
+        gaps.append("retrieval:memory_selection_policy_budget_missing_selected_refs")
     return {
         "sequence": item.get("sequence"),
         "record_type": item.get("record_type"),
@@ -550,6 +593,9 @@ def retrieval_audit_coverage(item: dict[str, Any]) -> dict[str, Any]:
         "same_session_refs": same_session_refs,
         "cross_session_refs": cross_session_refs,
         "memory_layer_budget_selected_refs": int_value(budget.get("total_selected_refs")),
+        "memory_selection_policy_budget_enabled": bool(policy_evidence["enabled"]),
+        "memory_selection_policy_refs": int_value(policy_evidence["policy_refs"]),
+        "memory_selection_policy_names": policy_evidence["policy_names"],
     }
 
 
