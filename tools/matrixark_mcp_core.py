@@ -5218,7 +5218,56 @@ def local_context_refs_for_pack(local_budget: Json) -> list[Json]:
     return refs
 
 
-def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> Json:
+def memory_layer_for_serving_ref(ref: Json) -> str:
+    if not isinstance(ref, dict):
+        return ""
+    metadata = ref.get("metadata", {}) if isinstance(ref.get("metadata"), dict) else {}
+    explicit = str(ref.get("memory_layer") or metadata.get("memory_layer") or "").strip().lower()
+    if explicit:
+        return explicit
+    if (
+        str(ref.get("event_type") or metadata.get("event_type") or "").strip().lower() == "pending_async"
+        or str(ref.get("classification") or metadata.get("classification") or "").strip().upper() == "PENDING_ASYNC_EXTRACTION"
+        or str(ref.get("extraction_phase") or metadata.get("extraction_phase") or "").strip().lower() == "pending_async"
+    ):
+        return "pending_async"
+    sharing_scope = str(ref.get("sharing_scope") or metadata.get("sharing_scope") or "").strip().lower()
+    ref_type = str(ref.get("ref_type") or "")
+    if sharing_scope in {"tenant_shared", "global_shared"} or ref_type in {"resource_chunk", "skill_section"}:
+        return "shared_context"
+    memory_scope = str(ref.get("memory_scope") or metadata.get("memory_scope") or "").strip().lower()
+    if memory_scope in {"user_profile", "profile", "cross_session_profile"}:
+        return "profile"
+    if memory_scope in {"session", "session_memory"}:
+        return "session"
+    session_continuity = str(ref.get("session_continuity") or metadata.get("session_continuity") or "")
+    if session_continuity == "same_session":
+        return "session"
+    if session_continuity == "cross_session":
+        context_class = str(ref.get("context_class") or ref_type)
+        if ref_type == "entity" or context_class in {"resource_entity_fact", "profile_entity", "user_profile"}:
+            return "profile"
+        return "cross_session"
+    return ""
+
+
+def memory_layer_counts(refs: list[Json]) -> Json:
+    counts: Json = {}
+    for ref in refs:
+        layer = memory_layer_for_serving_ref(ref)
+        if layer:
+            counts[layer] = int(counts.get(layer, 0)) + 1
+    return counts
+
+
+def default_memory_layer_for_pack(refs: list[Json]) -> str:
+    counts = memory_layer_counts(refs)
+    if not counts:
+        return ""
+    return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
+
+
+def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", default_memory_layer: str = "") -> Json:
     """Return only answer-bearing fields for the serving ContextPack payload."""
     metadata = ref.get("metadata", {}) if isinstance(ref.get("metadata"), dict) else {}
     item: Json = {
@@ -5249,6 +5298,9 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
     session_continuity = str(ref.get("session_continuity") or metadata.get("session_continuity") or "")
     if session_continuity and session_continuity != default_session_continuity:
         item["session_continuity"] = session_continuity
+    memory_layer = memory_layer_for_serving_ref(ref)
+    if memory_layer and memory_layer != default_memory_layer:
+        item["memory_layer"] = memory_layer
     if bool(ref.get("final_session_boundary") or metadata.get("final_session_boundary")):
         item["final_session_boundary"] = True
     lineage_fields = [
@@ -5324,11 +5376,28 @@ def default_session_continuity_for_pack(refs: list[Json]) -> str:
     return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
 
 
-def serving_refs_for_pack(refs: list[Json], *, default_session_continuity: str = "") -> list[Json]:
-    return [serving_ref_for_pack(ref, default_session_continuity=default_session_continuity) for ref in refs]
+def serving_refs_for_pack(
+    refs: list[Json],
+    *,
+    default_session_continuity: str = "",
+    default_memory_layer: str = "",
+) -> list[Json]:
+    return [
+        serving_ref_for_pack(
+            ref,
+            default_session_continuity=default_session_continuity,
+            default_memory_layer=default_memory_layer,
+        )
+        for ref in refs
+    ]
 
 
-def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity: str = "") -> list[Json]:
+def serving_ref_groups_for_pack(
+    refs: list[Json],
+    *,
+    default_session_continuity: str = "",
+    default_memory_layer: str = "",
+) -> list[Json]:
     groups: dict[tuple[str, str], Json] = {}
     order: list[tuple[str, str]] = []
     for ref in refs:
@@ -5342,7 +5411,11 @@ def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity:
             if context_class and context_class != ref_type:
                 groups[key]["class"] = context_class
             order.append(key)
-        item = serving_ref_for_pack(ref, default_session_continuity=default_session_continuity)
+        item = serving_ref_for_pack(
+            ref,
+            default_session_continuity=default_session_continuity,
+            default_memory_layer=default_memory_layer,
+        )
         groups[key]["items"].append(item)
         groups[key]["n"] += 1
     return [groups[key] for key in order]
