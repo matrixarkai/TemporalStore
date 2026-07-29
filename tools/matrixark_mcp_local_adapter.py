@@ -8227,7 +8227,7 @@ class MatrixArkLocalAdapter:
                 )
 
         if (
-            question_type == "broad_exploration"
+            question_type in {"broad_exploration", "evidence", "current_state", "latest", "multi_hop", "date"}
             and bool(pre_retrieval_summary_refresh.get("enabled"))
             and int(pre_retrieval_summary_refresh.get("refreshed_count") or 0) > 0
             and not any(

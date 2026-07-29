@@ -7685,6 +7685,77 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertNotIn("source_memory_selection_policy_counts", item)
             self.assertTrue(any(item.get("final_session_boundary") is True for item in summary_items))
 
+    def test_current_state_pre_retrieval_refresh_injects_profile_summary_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-current-refresh-profile-summary.jsonl")
+            scope = {
+                "account_id": "acct_current_refresh",
+                "tenant_id": "tenant_current_refresh",
+                "user_id": "user_current_refresh",
+                "session_id": "session_current_refresh",
+            }
+            result = adapter.batch_extract(
+                {
+                    "scope": scope,
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "Current decision: preserve always-promoted profile summaries for latest retrieval.",
+                        },
+                        {
+                            "role": "tool",
+                            "content": "Tool evidence: current profile summary refresh should be returned with the profile entity.",
+                        },
+                    ],
+                    "metadata": {"hook_type": "hook_boundary", "codex_event": "Stop"},
+                    "force": True,
+                }
+            )
+            self.assertGreaterEqual(result.get("profile_entities_written", 0), 1)
+            self.assertTrue(result["summary_refresh"]["profile_summary_refresh_required"])
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "session_current_refresh_later"},
+                    "session_scope": "prefer",
+                    "question_type": "current_state",
+                    "query": "What is the current profile summary refresh decision and tool evidence?",
+                    "max_context_tokens": 180,
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "ranking": {
+                        "max_selected_refs": 3,
+                        "min_similarity_score": 0.0,
+                        "pre_retrieval_summary_refresh": True,
+                        "pre_retrieval_summary_refresh_limit": 8,
+                    },
+                }
+            )
+
+            self.assertEqual("refreshed", pack["pre_retrieval_summary_refresh"]["status"])
+            selected_refs = pack["selected_refs"]
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "entity"
+                    and ref.get("memory_scope") == "user_profile"
+                    and ref.get("session_continuity") == "cross_session"
+                    for ref in selected_refs
+                ),
+                selected_refs,
+            )
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "summary"
+                    and ref.get("memory_scope") == "user_profile"
+                    and ref.get("session_continuity") == "cross_session"
+                    for ref in selected_refs
+                ),
+                selected_refs,
+            )
+            budget = pack["recall_policy"]["memory_layer_budget"]
+            self.assertGreaterEqual(budget["by_memory_layer"]["profile_summary"]["refs"], 1)
+            self.assertGreaterEqual(budget["by_memory_layer"]["profile_entity"]["refs"], 1)
+
     def test_batch_extract_reports_profile_scope_missing_without_importance_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-missing.jsonl")
