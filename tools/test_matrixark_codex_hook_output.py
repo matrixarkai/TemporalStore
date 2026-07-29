@@ -2686,6 +2686,25 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         )
 
         self.assertEqual("accepted", result["session_commit"]["status"])
+        self.assertEqual("accepted", result["auto_batch_extract_result"]["status"])
+        self.assertEqual(result["session_commit"], hook.fast_async_boundary_commit_from_ingest(result))
+        decision = hook.auto_batch_decision_summary(result)
+        self.assertEqual("boundary_commit", decision["decision"])
+        self.assertEqual("hook_boundary", decision["reason"])
+        self.assertEqual("accepted", decision["auto_batch_extract_status"])
+        self.assertTrue(decision["boundary_commit_requested"])
+        output = hook.codex_hook_output(
+            args=args,
+            status="ok",
+            event="Stop",
+            session_id_source="payload_field",
+            agent_context={"workspace_root": "/repo"},
+            ingest=result,
+            commit=hook.fast_async_boundary_commit_from_ingest(result),
+        )
+        self.assertEqual("accepted", output["ingest"]["auto_batch_extract_status"])
+        self.assertEqual("boundary_commit", output["ingest"]["auto_batch_extract_decision"]["decision"])
+        self.assertEqual("accepted", output["session_commit"]["status"])
         self.assertEqual(1, len(server.adapter.raw_records))
         raw_record = server.adapter.raw_records[0]
         self.assertEqual("assistant", raw_record["messages"][0]["role"])
