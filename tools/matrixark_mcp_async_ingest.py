@@ -265,6 +265,9 @@ def lightweight_async_accept(
                 "threshold_messages": session_buffer_threshold,
                 **idle_schedule,
                 **source_counts,
+                "source_extraction_phases": ["provisional"],
+                "extraction_phase": "provisional",
+                "final_session_boundary": False,
                 "created_at_ms": envelope["ingestion_time_ms"],
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }

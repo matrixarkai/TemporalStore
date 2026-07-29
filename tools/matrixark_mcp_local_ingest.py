@@ -279,6 +279,9 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
                 "auto_batch_extract": auto_batch_extract,
                 "threshold_messages": session_buffer_threshold,
                 **idle_schedule,
+                "source_extraction_phases": ["provisional"],
+                "extraction_phase": "provisional",
+                "final_session_boundary": False,
                 "created_at_ms": envelope["ingestion_time_ms"],
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
