@@ -10,7 +10,15 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 def latest_async_pipeline_rows(rows: list[Json]) -> list[Json]:
-    status_rank = {"pending": 0, "idle_commit_scheduled": 0, "extraction_committed": 1, "summary_completed": 2}
+    status_rank = {
+        "pending": 0,
+        "idle_commit_scheduled": 0,
+        "idle_commit_failed": 1,
+        "idle_commit_attempted": 1,
+        "idle_commit_committed": 1,
+        "extraction_committed": 2,
+        "summary_completed": 3,
+    }
     latest_by_task: dict[int, Json] = {}
     for row in rows:
         try:
