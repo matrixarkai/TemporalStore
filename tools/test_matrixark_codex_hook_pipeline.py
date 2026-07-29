@@ -2545,6 +2545,38 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(6, removed_tokens)
         self.assertEqual(1, dropped["pending_async_event_superseded_by_extracted_refs"])
 
+    def test_pending_async_cleanup_reads_compacted_lineage_metadata(self) -> None:
+        represented_pending = {
+            "ref_type": "event",
+            "metadata": {"ref_hash": 701},
+            "event_type": "pending_async",
+            "classification": "PENDING_ASYNC_EXTRACTION",
+            "extraction_phase": "pending_async",
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "token_estimate": 5,
+            "text": "assistant: compacted lineage pending event",
+        }
+        extracted_segment = {
+            "ref_type": "segment",
+            "ref_hash": 801,
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "metadata": {"source_event_ids": [701]},
+            "token_estimate": 4,
+            "text": "assistant: compacted lineage extracted segment",
+        }
+        dropped: dict = {}
+
+        selected, removed_tokens = suppress_extracted_represented_pending_events(
+            [represented_pending, extracted_segment],
+            dropped,
+        )
+
+        self.assertEqual([801], [item["ref_hash"] for item in selected])
+        self.assertEqual(5, removed_tokens)
+        self.assertEqual(1, dropped["pending_async_event_superseded_by_extracted_refs"])
+
     def test_fast_hook_pending_event_is_retrievable_before_batch_extraction(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-pending-retrieval.jsonl")
@@ -7925,6 +7957,45 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(
                 any("Stop force-drains" in str(record.get("state") or "") for record in assistant_decisions)
             )
+
+    def test_threshold_commit_keeps_uncommitted_tail_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-threshold-tail.jsonl")
+            scope = {
+                "account_id": "acct_threshold_tail",
+                "tenant_id": "tenant_threshold_tail",
+                "user_id": "user_threshold_tail",
+                "session_id": "session_threshold_tail",
+            }
+            base_args = {
+                "scope": scope,
+                "async_processing": True,
+                "auto_batch_extract": False,
+                "session_buffer_threshold": 20,
+                "skip_prior_context": True,
+            }
+            first = adapter.ingest({**base_args, "messages": [{"role": "user", "content": "first threshold message"}]})
+            second = adapter.ingest({**base_args, "messages": [{"role": "assistant", "content": "second threshold tail"}]})
+            self.assertEqual(1, first["session_buffer"]["pending_event_count"])
+            self.assertEqual(2, second["session_buffer"]["pending_event_count"])
+
+            threshold = adapter.session_commit(
+                {
+                    "scope": scope,
+                    "threshold_messages": 1,
+                    "force": False,
+                    "commit_reason": "threshold",
+                    "max_messages": 1,
+                    "skip_prior_context": True,
+                }
+            )
+            self.assertEqual("committed", threshold["status"])
+            self.assertEqual("threshold", threshold["trigger_policy"])
+            self.assertEqual(1, threshold["committed_event_count"])
+
+            pending_after_threshold = adapter.pending_session_events(scope)
+            self.assertEqual(1, len(pending_after_threshold))
+            self.assertEqual(second["event_id_hash"], pending_after_threshold[0]["event_id_hash"])
 
     def test_compact_hot_prefix_preserves_boundary_session_commits(self) -> None:
         with mock.patch.object(matrixark_codex_hook, "HOOK_COMPACT_HOT_PREFIX_ONLY", True):

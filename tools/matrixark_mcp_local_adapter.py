@@ -303,6 +303,16 @@ def profile_promotion_decision(profile_node_hash: int) -> Json:
     }
 
 
+def _ref_list_value(item: Json, field: str) -> list[Any]:
+    values = item.get(field)
+    if isinstance(values, list):
+        return values
+    metadata = item.get("metadata")
+    if isinstance(metadata, dict):
+        values = metadata.get(field)
+    return values if isinstance(values, list) else []
+
+
 def suppress_extracted_represented_pending_events(selected: list[Json], dropped_over_budget: Json) -> tuple[list[Json], int]:
     extracted_selected_event_ids: set[int] = set()
     for item in selected:
@@ -313,10 +323,7 @@ def suppress_extracted_represented_pending_events(selected: list[Json], dropped_
             "extraction_context_event_ids",
             "source_ref_hashes",
         ]:
-            values = item.get(field)
-            if not isinstance(values, list):
-                continue
-            for value in values:
+            for value in _ref_list_value(item, field):
                 try:
                     event_id = int(value or 0)
                 except (TypeError, ValueError):
@@ -337,7 +344,9 @@ def suppress_extracted_represented_pending_events(selected: list[Json], dropped_
     removed_pending_count = 0
     for item in selected:
         try:
-            pending_event_id = int(item.get("ref_hash") or 0)
+            metadata = item.get("metadata")
+            metadata_ref_hash = metadata.get("ref_hash") if isinstance(metadata, dict) else 0
+            pending_event_id = int(item.get("ref_hash") or metadata_ref_hash or 0)
         except (TypeError, ValueError):
             pending_event_id = 0
         if (
