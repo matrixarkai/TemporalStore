@@ -2315,6 +2315,76 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("metadata", compact_ref)
             self.assertNotIn("scope", compact_ref)
 
+    def test_fast_hook_message_ingestion_omits_legacy_hook_type_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir, mock.patch.dict(
+            os.environ,
+            {"MATRIXARK_HOOK_INCLUDE_LEGACY_HOOK_TYPE": "0"},
+            clear=False,
+        ):
+            adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-minimal-lineage.jsonl")
+
+            class Server:
+                def __init__(self) -> None:
+                    self.adapter = adapter
+
+            scope = {
+                "account_id": "acct_minimal_hook",
+                "tenant_id": "tenant_minimal_hook",
+                "user_id": "user_minimal_hook",
+                "session_id": "session_minimal_hook",
+            }
+            hook = matrixark_codex_hook.codex_agent_hook(
+                hook_type="before_llm",
+                hook_id="minimal-hook-1",
+                idempotency_key="minimal-hook-1",
+                trigger="UserPromptSubmit",
+                session_id_source="payload_field",
+                identity={"thread_id": "thread-minimal-hook", "turn_id": "turn-minimal-hook-1"},
+                observed_at_ms=123456,
+            )
+            self.assertNotIn("hook_type", hook)
+            self.assertEqual("UserPromptSubmit", hook["trigger"])
+
+            result = matrixark_codex_hook.fast_async_hook_ingest(
+                Server(),
+                args=Namespace(
+                    event="UserPromptSubmit",
+                    **scope,
+                    team="codex",
+                    project="temporalstore",
+                    session_commit_threshold=20,
+                    idle_commit_timeout_ms=300000,
+                    understanding_provider="rules",
+                    segment_provider="deterministic",
+                ),
+                text="Remember compact Codex hook lineage should use codex_event and role.",
+                role="user",
+                agent_context={"workspace_root": "/repo"},
+                hook=hook,
+            )
+            self.assertEqual("accepted", result["status"])
+
+            records = adapter.read_all()
+            raw_messages = [record for record in records if record.get("record_type") == "agent_message"]
+            pending_events = [
+                record
+                for record in records
+                if record.get("record_type") == "context_event"
+                and record.get("event_type") == "pending_async"
+            ]
+            self.assertEqual(1, len(raw_messages))
+            self.assertEqual(1, len(pending_events))
+            self.assertNotIn("hook_type", raw_messages[0])
+            self.assertNotIn("hook_type", raw_messages[0].get("metadata", {}))
+            self.assertNotIn("hook_type", raw_messages[0].get("agent_hook", {}))
+            self.assertNotIn("hook_type", pending_events[0])
+            self.assertNotIn("hook_type", pending_events[0].get("metadata", {}))
+            self.assertNotIn("hook_type", pending_events[0].get("envelope", {}))
+            self.assertEqual("UserPromptSubmit", raw_messages[0]["codex_event"])
+            self.assertEqual("UserPromptSubmit", pending_events[0]["codex_event"])
+            self.assertEqual({"before_llm": 1}, pending_events[0]["source_hook_type_counts"])
+            self.assertEqual({"UserPromptSubmit": 1}, pending_events[0]["source_codex_event_counts"])
+
     def test_fast_hook_dirty_markers_refresh_into_retrievable_summaries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-summary.jsonl")

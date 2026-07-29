@@ -75,6 +75,22 @@ LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").s
 PRE_RETRIEVAL_SUMMARY_REFRESH = os.environ.get("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH", "0").strip().lower() in {"1", "true", "yes"}
 
 
+def legacy_hook_type_from_codex_event(event: Any) -> str:
+    label = str(event or "").strip()
+    if not label:
+        return ""
+    normalized = label.lower()
+    if "tool" in normalized or "permissionrequest" in normalized:
+        return "tool_result"
+    if "previousassistantbackfill" in normalized or normalized.startswith(("stop", "postcompact", "subagentstop")):
+        return "after_llm"
+    if normalized.startswith(("idletimeout", "sessionidle")):
+        return "session_commit"
+    if normalized.startswith("userpromptsubmit"):
+        return "before_llm"
+    return ""
+
+
 def positive_int_value(value: Any, default: int) -> int:
     try:
         return max(1, int(value))
@@ -433,6 +449,11 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
         trigger = str(hook.get("trigger") or "").strip()
         if trigger:
             codex_events.add(trigger)
+    if not hook_types:
+        for event in sorted(codex_events):
+            legacy_hook_type = legacy_hook_type_from_codex_event(event)
+            if legacy_hook_type:
+                hook_types.add(legacy_hook_type)
     memory_selection_policy_counts: Json = {}
     explicit_policy_counts = (
         metadata.get("source_memory_selection_policy_counts")
@@ -580,6 +601,9 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
             add_values(codex_values, hook.get("trigger"))
             for codex_event in ordered_unique_any(codex_values):
                 add_count(codex_event_counts, codex_event, 1)
+        if not hook_type_counts:
+            for codex_event in sorted(codex_event_counts):
+                add_count(hook_type_counts, legacy_hook_type_from_codex_event(codex_event), codex_event_counts[codex_event])
 
         existing_selection_counts = (
             record.get("source_memory_selection_policy_counts")
@@ -1596,6 +1620,11 @@ class MatrixArkLocalAdapter:
             event_name = str(value or "").strip()
             if event_name:
                 source_codex_event_counts[event_name] = int(source_codex_event_counts.get(event_name, 0)) + 1
+        if not source_hook_type_counts:
+            for event_name, count in source_codex_event_counts.items():
+                hook_name = legacy_hook_type_from_codex_event(event_name)
+                if hook_name:
+                    source_hook_type_counts[hook_name] = int(source_hook_type_counts.get(hook_name, 0)) + int(count or 0)
         self.append(
             {
                 "record_type": "session_buffer_event",
@@ -1859,6 +1888,11 @@ class MatrixArkLocalAdapter:
         ]
         metadata = optional_object(args, "metadata")
         source_roles = sorted(pending_source_roles)
+        if not pending_source_hook_types:
+            for event_name in pending_source_codex_events:
+                hook_name = legacy_hook_type_from_codex_event(event_name)
+                if hook_name:
+                    pending_source_hook_types.add(hook_name)
         source_hook_types = sorted(pending_source_hook_types)
         source_codex_events = sorted(pending_source_codex_events)
         source_lineage = source_event_lineage_summary(pending)
@@ -5462,6 +5496,19 @@ class MatrixArkLocalAdapter:
                     continue
                 if amount:
                     source_codex_event_counts[event_name] = int(source_codex_event_counts.get(event_name, 0)) + amount
+        if not source_hook_types:
+            source_hook_types = sorted(
+                {
+                    legacy_hook_type_from_codex_event(codex_event)
+                    for codex_event in source_codex_events
+                    if legacy_hook_type_from_codex_event(codex_event)
+                }
+            )
+            source_hook_type_counts = {
+                hook_type: source_lineage_count
+                for hook_type in source_hook_types
+                if hook_type
+            }
         source_memory_selection_policy_counts: Json = {}
         metadata_selection_counts = (
             envelope_metadata.get("source_memory_selection_policy_counts")

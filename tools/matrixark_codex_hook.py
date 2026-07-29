@@ -2327,9 +2327,8 @@ def codex_agent_hook(
     identity: Json | None = None,
     observed_at_ms: int | None = None,
 ) -> Json:
-    return {
+    hook: Json = {
         "source": "codex",
-        "hook_type": hook_type,
         "hook_id": hook_id,
         "observed_at_ms": observed_at_ms if observed_at_ms is not None else int(time.time() * 1000),
         "idempotency_key": idempotency_key,
@@ -2338,6 +2337,9 @@ def codex_agent_hook(
         "session_id_source": session_id_source,
         **hook_lineage_fields(identity),
     }
+    if hook_type == "session_commit" or _env_bool("MATRIXARK_HOOK_INCLUDE_LEGACY_HOOK_TYPE", False):
+        hook["hook_type"] = hook_type
+    return hook
 
 
 def codex_hook_lineage_from_payload(payload: Json, args: argparse.Namespace, *, session_id_source: str) -> Json:
@@ -3478,7 +3480,6 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
     metadata: Json = {
         "source": "codex_hook_fast_async",
         "codex_event": args.event,
-        "hook_type": hook_type,
         "source_role": role,
         "agent_context": agent_context,
         **lineage,
@@ -3494,7 +3495,6 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "session_binding": "metadata_only_for_backfill_batching",
         "source_kind": "message",
         "source_role": role,
-        "hook_type": hook_type,
         "codex_event": args.event,
         "messages": messages,
         "scope": scope,
@@ -3527,7 +3527,6 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "source_role": role,
         "source_roles": [role] if role else [],
         "source_role_counts": {role: 1} if role else {},
-        "hook_type": hook_type,
         "source_hook_types": [hook_type] if hook_type else [],
         "source_hook_type_counts": {hook_type: 1} if hook_type else {},
         "codex_event": args.event,
@@ -3551,7 +3550,6 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "envelope": {
             "kind": "message",
             "source_role": role,
-            "hook_type": hook_type,
             "codex_event": args.event,
             "messages": messages,
             "scope": scope,
