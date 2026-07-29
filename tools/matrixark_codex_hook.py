@@ -24,6 +24,7 @@ try:
         context_index_posting_record,
         embedding_for_text,
         embedding_model_name,
+        EMBEDDING_LINEAGE_DEBUG_FIELDS,
         local_account_user_id,
         memory_hierarchy_contract_from_recall_policy,
         messages_from_event_record,
@@ -44,6 +45,7 @@ except ModuleNotFoundError:
         context_index_posting_record,
         embedding_for_text,
         embedding_model_name,
+        EMBEDDING_LINEAGE_DEBUG_FIELDS,
         local_account_user_id,
         memory_hierarchy_contract_from_recall_policy,
         messages_from_event_record,
@@ -103,6 +105,13 @@ def normalized_role_counts(counts: Any, fallback_values: Any = None) -> Json:
     for role in normalized_role_list(fallback_values):
         normalized[role] = int(normalized.get(role, 0)) + 1
     return normalized
+
+
+def compact_context_embedding_record(record: Json) -> Json:
+    compacted = dict(record)
+    for field in EMBEDDING_LINEAGE_DEBUG_FIELDS:
+        compacted.pop(field, None)
+    return compacted
 
 
 def merge_role_bucket(target: Json, role: str, bucket: Any) -> None:
@@ -3714,7 +3723,7 @@ def fast_hook_event_projection_records(*, event_record: Json, updated_at_ms: int
     }
     vector = embedding_for_text(text)
     records: list[Json] = [
-        {
+        compact_context_embedding_record({
             "record_type": "context_embedding",
             "embedding_type": "event_text",
             "ref_type": "event",
@@ -3728,7 +3737,7 @@ def fast_hook_event_projection_records(*, event_record: Json, updated_at_ms: int
             **serving_lineage,
             "projection_phase": "fast_hook_pending_async",
             "updated_at_ms": updated_at_ms,
-        }
+        })
     ]
     for index_name in sorted(candidate_index_terms(event_record, {}, {})):
         index_record = context_index_posting_record(
