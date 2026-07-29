@@ -138,7 +138,7 @@ def assistant_decision_memory_text(text: str) -> str:
         return ""
     selected: list[str] = []
     decision_line_pattern = re.compile(
-        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|blocked|next|follow[- ]?up|will|use|keep|remove)\b",
+        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|blocked|next|follow[- ]?up|will|use|keep|remove|updated|changed|validated|verified|profile|cross[- ]session|memory|gap|risk|warning)\b",
         re.IGNORECASE,
     )
     for raw_line in str(text).splitlines():
@@ -153,7 +153,7 @@ def assistant_decision_memory_text(text: str) -> str:
         selected = [
             match.group(0).strip()
             for match in re.finditer(
-                r"[^.!?\n]*(?:decision|decided|done|implemented|fixed|committed|pushed|blocked|next|will)[^.!?\n]*[.!?]?",
+                r"[^.!?\n]*(?:decision|decided|done|implemented|fixed|committed|pushed|blocked|next|will|updated|changed|validated|verified|profile|cross[- ]session|memory|gap|risk|warning)[^.!?\n]*[.!?]?",
                 str(text),
                 flags=re.IGNORECASE,
             )
@@ -253,7 +253,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     ]
     assistant_text = text_from_messages(assistant_messages) if assistant_messages else ""
     if assistant_text and re.search(
-        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|will|next|choose|chose|use|keep|remove|blocked)\b",
+        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|will|next|choose|chose|use|keep|remove|blocked|updated|changed|validated|verified|profile|cross[- ]session|memory|gap|risk|warning)\b",
         assistant_text,
         re.IGNORECASE,
     ):

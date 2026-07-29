@@ -67,6 +67,23 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("/root/src/github-services", preferences[0]["state"])
         self.assertEqual(["123"], preferences[0]["source_refs"])
 
+    def test_modular_extractor_promotes_bounded_assistant_memory_terms(self) -> None:
+        extract_mod = importlib.import_module("tools.matrixark_mcp_extraction_normalization")
+        entities = extract_mod.extract_batch_entities(
+            [
+                {
+                    "role": "assistant",
+                    "content": "Validated profile cross-session memory retrieval and updated the current-state budget.",
+                }
+            ],
+            {"source_event_ids": [456]},
+        )
+
+        decisions = [entity for entity in entities if entity.get("entity_type") == "assistant_decision"]
+        self.assertTrue(decisions)
+        self.assertIn("Validated profile cross-session memory retrieval", decisions[0]["state"])
+        self.assertEqual(["456"], decisions[0]["source_refs"])
+
     def test_memory_phase_and_retrieval_budget_fields_are_public_schema(self) -> None:
         schemas_mod = importlib.import_module("tools.matrixark_mcp_schemas")
         tools_by_name = {tool["name"]: tool for tool in schemas_mod.TOOLS}
