@@ -906,11 +906,14 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(1, request["pre_retrieval_summary_refresh"]["refreshed_count"])
         self.assertEqual("auto", request["source_role_budget_mode"])
         self.assertIn("assistant", request["source_role_budget_tokens"])
-        self.assertEqual("pre_retrieval_summary_refresh_balanced", request["memory_layer_budget_mode"])
+        self.assertEqual("pre_retrieval_summary_refresh_current_state", request["memory_layer_budget_mode"])
         self.assertIn("pending_async_event", request["memory_layer_budget_tokens"])
         self.assertIn("profile_entity", request["memory_layer_budget_tokens"])
         self.assertIn("profile_compression", request["memory_layer_budget_tokens"])
         self.assertIn("cross_session_compression", request["memory_layer_budget_tokens"])
+        self.assertEqual(1045, request["memory_layer_budget_tokens"]["profile_entity"])
+        self.assertEqual(665, request["memory_layer_budget_tokens"]["profile_summary"])
+        self.assertEqual(570, request["memory_layer_budget_tokens"]["cross_session_event"])
         self.assertEqual("auto", request["memory_selection_policy_budget_mode"])
         self.assertEqual(
             {
@@ -922,6 +925,25 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             request["memory_selection_policy_budget_tokens"],
         )
         self.assertEqual(1, len(request["pre_retrieval_refreshed_records"]))
+
+    def test_pre_retrieval_summary_refresh_fallback_prioritizes_profile_memory(self) -> None:
+        pre_refresh = importlib.import_module("tools.matrixark_mcp_retrieve_pre_refresh")
+
+        fact_budgets, fact_mode = pre_refresh.pre_retrieval_summary_refresh_memory_layer_budget_tokens(
+            remote_budget_tokens=100,
+        )
+        self.assertEqual("pre_retrieval_summary_refresh_balanced", fact_mode)
+        self.assertEqual(45, fact_budgets["profile_entity"])
+
+        profile_budgets, profile_mode = pre_refresh.pre_retrieval_summary_refresh_memory_layer_budget_tokens(
+            remote_budget_tokens=100,
+            question_type="profile_memory",
+        )
+        self.assertEqual("pre_retrieval_summary_refresh_profile_memory", profile_mode)
+        self.assertEqual(60, profile_budgets["profile_entity"])
+        self.assertEqual(45, profile_budgets["profile_summary"])
+        self.assertEqual(40, profile_budgets["cross_session_summary"])
+        self.assertEqual(40, profile_budgets["cross_session_event"])
 
     def test_moduleized_request_flushes_due_idle_commit_before_retrieval_cache(self) -> None:
         request_mod = importlib.import_module("tools.matrixark_mcp_retrieve_request")
