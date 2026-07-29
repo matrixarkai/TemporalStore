@@ -120,6 +120,7 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
     pending_source_roles: dict[str, int] = {}
     pending_source_hook_types: dict[str, int] = {}
     pending_source_codex_events: dict[str, int] = {}
+    pending_memory_selection_policies: dict[str, int] = {}
     pending_memory_scopes: dict[str, int] = {}
     pending_session_continuities: dict[str, int] = {}
     pending_extraction_phases: dict[str, int] = {}
@@ -181,6 +182,9 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
             if not add_count_map(pending_source_codex_events, row.get("source_codex_event_counts")):
                 for codex_event in row.get("source_codex_events") if isinstance(row.get("source_codex_events"), list) else []:
                     add_count(pending_source_codex_events, codex_event)
+            if not add_count_map(pending_memory_selection_policies, row.get("source_memory_selection_policy_counts")):
+                for policy in row.get("source_memory_selection_policies") if isinstance(row.get("source_memory_selection_policies"), list) else []:
+                    add_count(pending_memory_selection_policies, policy)
             layers = row.get("memory_layers_written") if isinstance(row.get("memory_layers_written"), dict) else {}
             if int(layers.get("session_entities") or 0) > 0:
                 add_count(pending_memory_scopes, "session")
@@ -226,6 +230,7 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
         "pending_source_roles": dict(sorted(pending_source_roles.items())),
         "pending_source_hook_types": dict(sorted(pending_source_hook_types.items())),
         "pending_source_codex_events": dict(sorted(pending_source_codex_events.items())),
+        "pending_memory_selection_policies": dict(sorted(pending_memory_selection_policies.items())),
         "pending_memory_scopes": dict(sorted(pending_memory_scopes.items())),
         "pending_session_continuities": dict(sorted(pending_session_continuities.items())),
         "pending_extraction_phases": dict(sorted(pending_extraction_phases.items())),

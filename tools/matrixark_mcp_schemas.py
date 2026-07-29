@@ -581,6 +581,7 @@ TOOLS: list[Json] = [
                         "ready_for_retrieval": {"type": "boolean"},
                         "remaining_stages": {"type": "array", "items": {"type": "string"}},
                         "remaining_stage_counts": {"type": "object", "additionalProperties": True},
+                        "pending_memory_selection_policies": {"type": "object", "additionalProperties": True},
                         "freshness_warnings": {"type": "array", "items": {"type": "string"}},
                     },
                     "additionalProperties": True,
