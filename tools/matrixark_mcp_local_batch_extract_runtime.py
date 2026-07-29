@@ -130,6 +130,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         )
     profile_node_hash = stable_hash("/".join(profile_node_path)) if profile_node_path else 0
     profile_promotion_policy = "always_when_profile_scope_available"
+    profile_promotion_importance_gate = False
     profile_promotion_blocker = "" if profile_node_hash else "profile_scope_missing"
     source_session_id = str(envelope["scope"].get("session_id") or "")
     envelope_metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
@@ -296,6 +297,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
 
     entity_hashes = []
     profile_entity_hashes = []
+    profile_promotion_summary: list[Json] = []
     profile_dirty_hashes: list[int] = []
     entity_index_write_count = 0
     for entity in extraction["entities"]:
@@ -443,6 +445,17 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             for codex_event, count in source_codex_event_counts.items():
                 profile_source_codex_event_counts[codex_event] = int(profile_source_codex_event_counts.get(codex_event, 0)) + int(count)
             profile_entity_hashes.append(profile_entity_hash)
+            profile_promotion_summary.append(
+                {
+                    "source_entity_hash": entity_hash,
+                    "profile_entity_hash": profile_entity_hash,
+                    "entity_type": promoted_entity["entity_type"],
+                    "entity_name": promoted_entity["entity_name"],
+                    "source_session_ids": profile_source_session_ids,
+                    "policy": profile_promotion_policy,
+                    "blocker": "",
+                }
+            )
             profile_entity_record = {
                 "record_type": "context_entity",
                 "entity_hash": profile_entity_hash,
@@ -475,6 +488,9 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "memory_scope": "user_profile",
                 "session_continuity": "cross_session",
                 "promoted_from_memory_scope": "session",
+                "profile_promotion_policy": profile_promotion_policy,
+                "profile_promotion_importance_gate": profile_promotion_importance_gate,
+                "profile_promotion_blocker": "",
                 "extraction_phase": extraction_phase,
                 "final_session_boundary": final_session_boundary,
                 "updated_at_ms": envelope["ingestion_time_ms"],
@@ -653,8 +669,10 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "entities": len(entity_hashes),
                 "profile_entities": len(profile_entity_hashes),
                 "profile_promotion_policy": profile_promotion_policy,
+                "profile_promotion_importance_gate": profile_promotion_importance_gate,
                 "profile_promotion_scope_available": bool(profile_node_hash),
                 "profile_promotion_blocker": profile_promotion_blocker,
+                "profile_promotion_summary": profile_promotion_summary[:16],
                 "segments": len(segment_hashes),
                 "summaries": 1,
                 "indexes": len(batch_index_terms) + entity_index_write_count,
@@ -720,8 +738,10 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         "entities_written": len(entity_hashes),
         "profile_entities_written": len(profile_entity_hashes),
         "profile_promotion_policy": profile_promotion_policy,
+        "profile_promotion_importance_gate": profile_promotion_importance_gate,
         "profile_promotion_scope_available": bool(profile_node_hash),
         "profile_promotion_blocker": profile_promotion_blocker,
+        "profile_promotion_summary": profile_promotion_summary[:16],
         "segments_written": len(segment_hashes),
         "summary_hash": summary_hash,
         "summary_refresh": summary_refresh,
