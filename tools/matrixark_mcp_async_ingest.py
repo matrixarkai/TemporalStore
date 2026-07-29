@@ -224,6 +224,8 @@ def lightweight_async_accept(
             },
             hook=hook,
         )
+    elif auto_batch_extract and idle_ready and isinstance(idle_commit_result, dict):
+        auto_batch_result = idle_commit_result
 
     return {
         "status": "accepted",
