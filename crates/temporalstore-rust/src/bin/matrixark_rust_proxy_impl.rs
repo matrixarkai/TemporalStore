@@ -98,6 +98,7 @@ struct CachedRetrieveCandidate {
 #[derive(Clone, Debug)]
 struct RetrieveCandidateSnapshot {
     candidates: Vec<CachedRetrieveCandidate>,
+    memory_inventory: Value,
     scanned_records: usize,
     placement_partitions_touched: usize,
     index_postings_read: usize,
@@ -2071,6 +2072,170 @@ fn native_serving_refs(refs: &[Value]) -> Vec<Value> {
     refs.iter().cloned().map(native_serving_ref).collect()
 }
 
+fn increment_inventory_count(inventory: &mut Value, layer: &str, field: &str) {
+    let Some(bucket) = inventory.get_mut(layer).and_then(Value::as_object_mut) else {
+        return;
+    };
+    let current = bucket.get(field).and_then(Value::as_u64).unwrap_or(0);
+    bucket.insert(field.to_string(), json!(current + 1));
+}
+
+fn inventory_layer_available(inventory: &Value, layer: &str) -> bool {
+    inventory
+        .get(layer)
+        .and_then(Value::as_object)
+        .map(|bucket| bucket.values().any(|value| value.as_u64().unwrap_or(0) > 0))
+        .unwrap_or(false)
+}
+
+fn native_retrieval_memory_inventory(records: &[Value], query_scope: Option<&Value>) -> Value {
+    let mut inventory = json!({
+        "session": {
+            "context_events": 0,
+            "context_segments": 0,
+            "context_entities": 0,
+            "context_embeddings": 0,
+            "context_indexes": 0,
+            "context_summaries": 0,
+            "summary_dirty_markers": 0
+        },
+        "profile": {
+            "context_entities": 0,
+            "context_embeddings": 0,
+            "context_indexes": 0,
+            "context_summaries": 0,
+            "summary_dirty_markers": 0
+        },
+        "shared": {
+            "resource_chunks": 0,
+            "resource_manifests": 0,
+            "skill_sections": 0,
+            "skill_manifests": 0,
+            "context_entities": 0,
+            "context_embeddings": 0,
+            "context_indexes": 0
+        },
+        "available_layers": [],
+        "query_scope": {
+            "session_scope": query_scope.map(session_scope_mode).unwrap_or("prefer"),
+            "has_session_id": query_scope
+                .and_then(|scope| scope.get("session_id"))
+                .and_then(Value::as_str)
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false),
+            "has_user_id": query_scope
+                .and_then(|scope| scope.get("user_id"))
+                .and_then(Value::as_str)
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false),
+            "has_tenant_id": query_scope
+                .and_then(|scope| scope.get("tenant_id"))
+                .and_then(Value::as_str)
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+        },
+        "profile_records_available_but_not_selected": false
+    });
+
+    for record in records {
+        let record_type = string_field(record, "record_type");
+        let memory_scope = string_field(record, "memory_scope")
+            .trim()
+            .to_ascii_lowercase();
+        let session_continuity = string_field(record, "session_continuity")
+            .trim()
+            .to_ascii_lowercase();
+        let data_model = string_field(record, "data_model")
+            .trim()
+            .to_ascii_lowercase();
+        let sharing_scope = record_scope_value(record)
+            .and_then(|scope| scope.get("sharing_scope"))
+            .and_then(Value::as_str)
+            .or_else(|| record.get("sharing_scope").and_then(Value::as_str))
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        let is_shared = matches!(sharing_scope.as_str(), "tenant_shared" | "global_shared")
+            || matches!(
+                record_type,
+                "resource_chunk" | "resource_manifest" | "skill_section" | "skill_manifest" | "skill_registry_update"
+            )
+            || matches!(data_model.as_str(), "resource_chunk" | "skill_section");
+        let is_profile = matches!(
+            memory_scope.as_str(),
+            "user_profile" | "profile" | "cross_session_profile"
+        ) || data_model == "context_profile_entity"
+            || (matches!(
+                record_type,
+                "context_entity" | "context_embedding" | "context_summary" | "context_summary_dirty"
+            ) && session_continuity == "cross_session");
+        let is_session = matches!(memory_scope.as_str(), "session" | "session_memory")
+            || session_continuity == "same_session";
+
+        if is_shared {
+            match record_type {
+                "resource_chunk" => increment_inventory_count(&mut inventory, "shared", "resource_chunks"),
+                "resource_manifest" => increment_inventory_count(&mut inventory, "shared", "resource_manifests"),
+                "skill_section" => increment_inventory_count(&mut inventory, "shared", "skill_sections"),
+                "skill_manifest" | "skill_registry_update" => {
+                    increment_inventory_count(&mut inventory, "shared", "skill_manifests")
+                }
+                "context_entity" => increment_inventory_count(&mut inventory, "shared", "context_entities"),
+                "context_embedding" => increment_inventory_count(&mut inventory, "shared", "context_embeddings"),
+                "context_index" => increment_inventory_count(&mut inventory, "shared", "context_indexes"),
+                _ => {}
+            }
+            continue;
+        }
+
+        if is_profile {
+            match record_type {
+                "context_entity" => increment_inventory_count(&mut inventory, "profile", "context_entities"),
+                "context_embedding" => increment_inventory_count(&mut inventory, "profile", "context_embeddings"),
+                "context_index" => increment_inventory_count(&mut inventory, "profile", "context_indexes"),
+                "context_summary" => increment_inventory_count(&mut inventory, "profile", "context_summaries"),
+                "context_summary_dirty" => {
+                    increment_inventory_count(&mut inventory, "profile", "summary_dirty_markers")
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        if is_session || matches!(record_type, "context_event" | "context_segment") {
+            match record_type {
+                "context_event" => increment_inventory_count(&mut inventory, "session", "context_events"),
+                "context_segment" => increment_inventory_count(&mut inventory, "session", "context_segments"),
+                "context_entity" => increment_inventory_count(&mut inventory, "session", "context_entities"),
+                "context_embedding" => increment_inventory_count(&mut inventory, "session", "context_embeddings"),
+                "context_index" => increment_inventory_count(&mut inventory, "session", "context_indexes"),
+                "context_summary" => increment_inventory_count(&mut inventory, "session", "context_summaries"),
+                "context_summary_dirty" => {
+                    increment_inventory_count(&mut inventory, "session", "summary_dirty_markers")
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut available_layers = Vec::new();
+    for layer in ["session", "profile", "shared"] {
+        if inventory_layer_available(&inventory, layer) {
+            available_layers.push(json!(layer));
+        }
+    }
+    let has_session_memory = inventory_layer_available(&inventory, "session");
+    let has_profile_memory = inventory_layer_available(&inventory, "profile");
+    let has_shared_memory = inventory_layer_available(&inventory, "shared");
+    if let Some(object) = inventory.as_object_mut() {
+        object.insert("available_layers".to_string(), Value::Array(available_layers));
+        object.insert("has_session_memory".to_string(), json!(has_session_memory));
+        object.insert("has_profile_memory".to_string(), json!(has_profile_memory));
+        object.insert("has_shared_memory".to_string(), json!(has_shared_memory));
+    }
+    inventory
+}
+
 fn native_serving_memory_layer_budget(value: &Value) -> Value {
     if context_pack_debug_lineage_enabled() {
         return value.clone();
@@ -3171,6 +3336,8 @@ fn retrieve_context_pack_native(
         .cloned()
         .unwrap_or_default();
     let scope_for_continuity = scan_command.scope.clone();
+    let mut memory_inventory =
+        native_retrieval_memory_inventory(&records, scope_for_continuity.as_ref());
     let cross_policy = parse_cross_session_policy(
         &request,
         scope_for_continuity.as_ref(),
@@ -3187,15 +3354,15 @@ fn retrieve_context_pack_native(
     let mut raw_candidate_class_counts: HashMap<String, u64> = HashMap::new();
     let mut text_candidate_class_counts: HashMap<String, u64> = HashMap::new();
     let mut prepared_records = Vec::with_capacity(records.len());
-    for record in records {
-        let context_class = context_class_name(&record);
+    for record in records.iter() {
+        let context_class = context_class_name(record);
         increment_class_count(&mut raw_candidate_class_counts, &context_class);
-        let text = candidate_text(&record);
+        let text = candidate_text(record);
         let tokens = token_estimate(&text);
         if !text.is_empty() {
             increment_class_count(&mut text_candidate_class_counts, &context_class);
         }
-        prepared_records.push((record, context_class, text, tokens));
+        prepared_records.push((record.clone(), context_class, text, tokens));
     }
     let score_started = Instant::now();
     let mut scored_candidate_class_counts: HashMap<String, u64> = HashMap::new();
@@ -3578,6 +3745,26 @@ fn retrieve_context_pack_native(
     });
     let memory_layer_budget = selected_ref_layer_budget(&selected);
     let serving_selected_refs = native_serving_refs(&selected);
+    let selected_profile_ref_count = selected
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.get("memory_scope").and_then(Value::as_str),
+                Some("user_profile" | "profile" | "cross_session_profile")
+            ) || (item.get("session_continuity").and_then(Value::as_str) == Some("cross_session")
+                && item.get("ref_type").and_then(Value::as_str) == Some("entity"))
+        })
+        .count();
+    let profile_available = memory_inventory
+        .get("has_profile_memory")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if let Some(object) = memory_inventory.as_object_mut() {
+        object.insert(
+            "profile_records_available_but_not_selected".to_string(),
+            json!(profile_available && selected_profile_ref_count == 0),
+        );
+    }
     let source_role_budget_policy = json!({
         "enabled": !source_role_budget_tokens.is_empty(),
         "budget_tokens": json_u64_map(&source_role_budget_tokens),
@@ -3649,6 +3836,7 @@ fn retrieve_context_pack_native(
         "remote_context_refs": serving_selected_refs,
         "selected_refs": serving_selected_refs,
         "dropped_refs": serving_dropped_refs,
+        "memory_inventory": memory_inventory.clone(),
         "used_context_tokens": used_tokens,
         "used_remote_context_tokens": used_tokens,
         "remote_context_budget_tokens": remote_budget,
@@ -3693,6 +3881,7 @@ fn retrieve_context_pack_native(
             "memory_layer_budget": serving_memory_layer_budget,
             "dropped_memory_layer_budget": serving_dropped_memory_layer_budget,
             "memory_layer_pressure": serving_memory_layer_pressure,
+            "memory_inventory": memory_inventory.clone(),
             "source_role_budget": source_role_budget_policy,
             "cross_session": {
                 "enabled": cross_policy.enabled,
@@ -3812,6 +4001,7 @@ fn retrieve_context_pack_native(
             "memory_layer_budget": serving_memory_layer_budget,
             "dropped_memory_layer_budget": serving_dropped_memory_layer_budget,
             "memory_layer_pressure": serving_memory_layer_pressure,
+            "memory_inventory": memory_inventory,
             "broad_scan_used": false,
             "broad_scan_blocked": false,
             "fallback_flags": [],
@@ -4655,6 +4845,7 @@ fn load_retrieve_candidate_snapshot(
         }
     }
 
+    let memory_inventory = native_retrieval_memory_inventory(&records, scope);
     let candidates = records
         .iter()
         .filter(|record| scope_matches_record(record, scope))
@@ -4693,6 +4884,7 @@ fn load_retrieve_candidate_snapshot(
         .collect::<Vec<_>>();
     let snapshot = Arc::new(RetrieveCandidateSnapshot {
         candidates,
+        memory_inventory,
         scanned_records: records.len(),
         placement_partitions_touched: shard_count,
         index_postings_read: shard_count,
@@ -4869,6 +5061,27 @@ fn retrieve_context_pack_output(
         selected_refs.push(selected_ref.clone());
     }
     let selected_count = selected_refs.len();
+    let mut memory_inventory = snapshot.memory_inventory.clone();
+    let selected_profile_ref_count = selected_refs
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.get("memory_scope").and_then(Value::as_str),
+                Some("user_profile" | "profile" | "cross_session_profile")
+            ) || (item.get("session_continuity").and_then(Value::as_str) == Some("cross_session")
+                && item.get("ref_type").and_then(Value::as_str) == Some("entity"))
+        })
+        .count();
+    let profile_available = memory_inventory
+        .get("has_profile_memory")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if let Some(object) = memory_inventory.as_object_mut() {
+        object.insert(
+            "profile_records_available_but_not_selected".to_string(),
+            json!(profile_available && selected_profile_ref_count == 0),
+        );
+    }
     let memory_layer_budget = selected_ref_layer_budget(&selected_refs);
     let dropped_memory_layer_budget = dropped_ref_layer_budget_from_native_counts(
         &[("stale", dropped_stale_ref, dropped_stale_ref_tokens)],
@@ -4896,10 +5109,12 @@ fn retrieve_context_pack_output(
         "native_context_pack": true,
         "selected_refs": serving_selected_refs,
         "dropped_refs": serving_dropped_refs,
+        "memory_inventory": memory_inventory.clone(),
         "recall_policy": {
             "memory_layer_budget": serving_memory_layer_budget,
             "dropped_memory_layer_budget": serving_dropped_memory_layer_budget,
             "memory_layer_pressure": serving_memory_layer_pressure,
+            "memory_inventory": memory_inventory.clone(),
         },
         "retrieval_metrics": {
             "query_plan_ms": 0.0,
@@ -4924,6 +5139,7 @@ fn retrieve_context_pack_output(
             "memory_layer_budget": serving_memory_layer_budget,
             "dropped_memory_layer_budget": serving_dropped_memory_layer_budget,
             "memory_layer_pressure": serving_memory_layer_pressure,
+            "memory_inventory": memory_inventory,
             "broad_scan_used": false,
             "broad_scan_blocked": false,
             "fallback_flags": [],
@@ -5814,7 +6030,7 @@ mod tests {
         append.entries_compact = vec![CompactHashEntry(
             format!("{storage_prefix}:records:000000"),
             "00000000000000000000".to_string(),
-            r#"{"record_bundle":[{"record_type":"context_event","event_id_hash":7,"text":"Alice approved GPU budget and Bob owns procurement","memory_scope":"session","extraction_phase":"provisional","source_roles":["user"],"source_hook_types":["UserPromptSubmit"]},{"record_type":"context_entity","entity_hash":8,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Project Aurora GPU procurement owner is Bob","memory_scope":"user_profile","session_continuity":"cross_session","extraction_phase":"final","final_session_boundary":true,"source_roles":["assistant","tool"],"source_hook_types":["hook_boundary"],"source_codex_events":["Stop"],"source_session_ids":["codex:prior-session"],"source_memory_scopes":["session","user_profile"],"source_session_continuities":["same_session","cross_session"],"source_extraction_phases":["provisional","final"]}]}"#.to_string(),
+            r#"{"record_bundle":[{"record_type":"context_event","event_id_hash":7,"text":"Alice approved GPU budget and Bob owns procurement","memory_scope":"session","extraction_phase":"provisional","source_roles":["user"],"source_hook_types":["UserPromptSubmit"]},{"record_type":"context_entity","entity_hash":8,"entity_type":"decision","entity_name":"gpu procurement owner","state":"Project Aurora GPU procurement owner is Bob","memory_scope":"user_profile","session_continuity":"cross_session","extraction_phase":"final","final_session_boundary":true,"source_roles":["assistant","tool"],"source_hook_types":["hook_boundary"],"source_codex_events":["Stop"],"source_session_ids":["codex:prior-session"],"source_memory_scopes":["session","user_profile"],"source_session_continuities":["same_session","cross_session"],"source_extraction_phases":["provisional","final"]},{"record_type":"resource_chunk","chunk_hash":9,"text":"","sharing_scope":"tenant_shared","resource_type":"runbook","title":"GPU procurement runbook"}]}"#.to_string(),
         )];
 
         let root = record_log_root(&append);
@@ -5826,7 +6042,7 @@ mod tests {
         retrieve.count_key = Some(format!("{storage_prefix}:record_count"));
         retrieve.record_hash_key = Some(format!("{storage_prefix}:records"));
         retrieve.query = "Who approved GPU budget and who owns procurement?".to_string();
-        retrieve.max_selected_refs = 4;
+        retrieve.max_selected_refs = 2;
         let output = execute_record_log_request(&engine, retrieve.clone(), root.clone())
             .expect("native retrieve through proxy op");
         let response: Value = serde_json::from_str(&output.value).expect("context pack json");
@@ -5870,6 +6086,71 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(false)
         );
+        assert_eq!(
+            pack.pointer("/memory_inventory/session/context_events")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/memory_inventory/profile/context_entities")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/memory_inventory/shared/resource_chunks")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            pack.pointer("/memory_inventory/has_session_memory")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            pack.pointer("/memory_inventory/has_profile_memory")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            pack.pointer("/memory_inventory/has_shared_memory")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            pack.pointer("/memory_inventory/profile_records_available_but_not_selected")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        let available_layers: BTreeSet<_> = pack
+            .pointer("/memory_inventory/available_layers")
+            .and_then(Value::as_array)
+            .expect("memory inventory available layers")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(
+            available_layers,
+            BTreeSet::from(["profile", "session", "shared"])
+        );
+        assert_eq!(
+            pack.pointer("/retrieval_metrics/memory_inventory"),
+            pack.pointer("/memory_inventory")
+        );
+        assert_eq!(
+            pack.pointer("/recall_policy/memory_inventory"),
+            pack.pointer("/memory_inventory")
+        );
+        for field in [
+            "/memory_inventory/source_roles",
+            "/memory_inventory/source_hook_types",
+            "/memory_inventory/source_codex_events",
+            "/memory_inventory/source_session_ids",
+        ] {
+            assert!(
+                pack.pointer(field).is_none(),
+                "default memory inventory leaked lineage field {field}"
+            );
+        }
         assert_eq!(
             pack.pointer("/recall_policy/memory_layer_budget/by_memory_scope/user_profile/refs")
                 .and_then(Value::as_u64),
@@ -5963,7 +6244,7 @@ mod tests {
             .pointer("/context_pack/selected_refs")
             .and_then(Value::as_array)
             .expect("default selected refs");
-        assert_eq!(default_refs.len(), 2);
+        assert_eq!(default_refs.len(), 3);
 
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
     }
