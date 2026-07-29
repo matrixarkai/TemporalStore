@@ -439,7 +439,13 @@ def codex_session_identity_policy(session_id_source: str) -> Json:
     }
 
 
-def auto_source_role_budget_tokens(args: Json, ranking: Json, *, remote_budget_tokens: int) -> tuple[Json, str]:
+def auto_source_role_budget_tokens(
+    args: Json,
+    ranking: Json,
+    *,
+    remote_budget_tokens: int,
+    question_type: str = "fact",
+) -> tuple[Json, str]:
     mode = str(
         args.get("source_role_budget_mode")
         or ranking.get("source_role_budget_mode")
@@ -455,6 +461,15 @@ def auto_source_role_budget_tokens(args: Json, ranking: Json, *, remote_budget_t
         return {}, mode
     fractions = optional_object(args, "source_role_budget_fractions") or optional_object(ranking, "source_role_budget_fractions")
     defaults = {"assistant": 0.45, "tool": 0.35, "user": 0.60}
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    if normalized_question_type in {"current_state", "latest"}:
+        defaults.update({"assistant": 0.50, "tool": 0.40, "user": 0.50})
+    elif normalized_question_type == "profile_memory":
+        defaults.update({"assistant": 0.50, "tool": 0.45, "user": 0.50})
+    elif normalized_question_type == "evidence":
+        defaults.update({"assistant": 0.35, "tool": 0.50, "user": 0.45})
+    elif normalized_question_type in {"broad_exploration", "multi_hop", "date"}:
+        defaults.update({"assistant": 0.45, "tool": 0.45, "user": 0.50})
     budgets: Json = {}
     for role, default_fraction in defaults.items():
         raw_fraction = fractions.get(role, default_fraction) if isinstance(fractions, dict) else default_fraction
@@ -7606,6 +7621,7 @@ class MatrixArkLocalAdapter:
                 args,
                 ranking,
                 remote_budget_tokens=remote_context_budget_tokens,
+                question_type=question_type,
             )
         explicit_memory_layer_budget_tokens = optional_object(args, "memory_layer_budget_tokens") or optional_object(ranking, "memory_layer_budget_tokens")
         custom_memory_layer_budget_fractions = optional_object(args, "memory_layer_budget_fractions") or optional_object(ranking, "memory_layer_budget_fractions")
