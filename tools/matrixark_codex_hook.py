@@ -2483,7 +2483,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=os.environ.get("MATRIXARK_API_KEY", ""))
     parser.add_argument("--account-id", default=os.environ.get("MATRIXARK_ACCOUNT_ID", "acct_codex"))
     parser.add_argument("--tenant-id", default=os.environ.get("MATRIXARK_TENANT_ID", "tenant_codex"))
-    parser.add_argument("--user-id", default=os.environ.get("MATRIXARK_USER_ID", os.environ.get("USERNAME", "codex_user")))
+    parser.add_argument("--user-id", default=os.environ.get("MATRIXARK_USER_ID") or local_account_user_id())
     parser.add_argument("--session-id", default=os.environ.get("MATRIXARK_SESSION_ID"))
     parser.add_argument(
         "--session-state-dir",
