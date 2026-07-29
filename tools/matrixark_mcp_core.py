@@ -788,6 +788,24 @@ EMBEDDING_LINEAGE_DEBUG_FIELDS = {
     "extraction_context_event_ids",
     "summary_generation_policy",
 }
+
+
+def legacy_hook_type_from_codex_event(event: Any) -> str:
+    label = str(event or "").strip()
+    if not label:
+        return ""
+    normalized = label.lower()
+    if "tool" in normalized or "permissionrequest" in normalized:
+        return "tool_result"
+    if "previousassistantbackfill" in normalized or normalized.startswith(("stop", "postcompact", "subagentstop")):
+        return "after_llm"
+    if normalized.startswith(("idletimeout", "sessionidle")):
+        return "session_commit"
+    if normalized.startswith("userpromptsubmit"):
+        return "before_llm"
+    return ""
+
+
 CONTEXT_TIMELINE_FANOUT = 1024 * 1024
 
 # Fields that are useful while debugging a request but are derivable from

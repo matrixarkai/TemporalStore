@@ -1609,6 +1609,35 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         )
         self.assertEqual([2], multi_adapter.batch_extract_calls[0]["source_event_ids"])
 
+        codex_only_adapter = Adapter()
+        codex_only_adapter.pending = [
+            {
+                "event_id_hash": 3,
+                "updated_at_ms": 300,
+                "envelope": {
+                    "messages": [{"role": "assistant", "content": "final assistant decision"}],
+                    "metadata": {"codex_event": "Stop"},
+                    "ingestion_time_ms": 300,
+                },
+            }
+        ]
+        codex_only_committed = runtime_mod.session_commit(
+            codex_only_adapter,
+            {"scope": scope, "threshold_messages": 1, "force": False, "commit_reason": "threshold"},
+        )
+        self.assertEqual("committed", codex_only_committed["status"])
+        self.assertEqual({"after_llm": 1}, codex_only_committed["source_hook_type_counts"])
+        self.assertEqual(
+            {"after_llm": 1},
+            codex_only_adapter.batch_extract_calls[0]["metadata"]["source_hook_type_counts"],
+        )
+        codex_only_task = next(
+            record
+            for record in codex_only_adapter.appended
+            if record["record_type"] == "matrixark_async_pipeline_task"
+        )
+        self.assertEqual({"after_llm": 1}, codex_only_task["source_hook_type_counts"])
+
         multi_adapter.pending = []
         finalized = runtime_mod.session_commit(
             multi_adapter,
