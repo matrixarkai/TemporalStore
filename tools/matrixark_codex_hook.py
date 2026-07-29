@@ -62,6 +62,12 @@ CONTEXT_PACK_DEBUG_LINEAGE = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAG
     "true",
     "yes",
 }
+CODEX_HOOK_CAPTURE_RAW_PAYLOAD = os.environ.get("MATRIXARK_CODEX_HOOK_CAPTURE_RAW_PAYLOAD", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 def normalized_role_list(values: Any) -> list[str]:
@@ -2307,6 +2313,8 @@ def hook_idempotency_key(payload: Json, *, event: str, session_id: str | None, f
 
 
 def hook_lineage_fields(hook: Json | None) -> Json:
+    if not CONTEXT_PACK_DEBUG_LINEAGE:
+        return {}
     if not isinstance(hook, dict):
         return {}
     lineage: Json = {}
@@ -3100,7 +3108,7 @@ def agent_context_from_payload(payload: Json, *, event: str, session_id_source: 
     current_url = first_string_at(payload, [["url"], ["current_url"], ["browser_url"], ["metadata", "url"]])
     tool_name = first_string_at(payload, [["tool_name"], ["toolName"], ["tool", "name"], ["params", "tool_name"]])
     tool_status = first_string_at(payload, [["tool_status"], ["status"], ["tool", "status"], ["params", "status"]])
-    return {
+    context = {
         "agent": "codex",
         "event": event,
         "session_id_source": session_id_source,
@@ -3110,8 +3118,29 @@ def agent_context_from_payload(payload: Json, *, event: str, session_id_source: 
         "tool_status": tool_status,
         "local_context": local_context_from_payload(payload),
         "files": payload_list_items(payload, ["files", "open_files", "active_files", "changed_files"], limit=24),
-        "payload_keys": sorted(str(key) for key in payload.keys())[:80],
     }
+    return {key: value for key, value in context.items() if value not in ("", None, [], {})}
+
+
+def codex_hook_metadata(
+    *,
+    source: str,
+    event: str,
+    agent_context: Json,
+    session_id_source: str,
+    payload: Json | None = None,
+    **extra: Any,
+) -> Json:
+    metadata: Json = {
+        "source": source,
+        "codex_event": event,
+        "agent_context": agent_context,
+        "codex_session_id_source": session_id_source,
+        **extra,
+    }
+    if CODEX_HOOK_CAPTURE_RAW_PAYLOAD and payload is not None:
+        metadata["raw_hook_payload"] = payload
+    return {key: value for key, value in metadata.items() if value not in ("", None, [], {})}
 
 
 def role_for_event(event: str) -> str:
@@ -3523,13 +3552,14 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
     source_memory_selection_policy_counts = {
         str(selection_metadata["policy"]): 1,
     } if selection_metadata.get("policy") else {}
-    metadata: Json = {
-        "source": "codex_hook_fast_async",
-        "codex_event": args.event,
-        "source_role": role,
-        "agent_context": agent_context,
+    metadata: Json = codex_hook_metadata(
+        source="codex_hook_fast_async",
+        event=args.event,
+        agent_context=agent_context,
+        session_id_source=str(agent_context.get("session_id_source") or ""),
+        source_role=role,
         **lineage,
-    }
+    )
     if selection_metadata:
         metadata["codex_memory_selection"] = selection_metadata
     retention = hook_retention_fields(text=text, role=role, now_ms=now)
@@ -3919,13 +3949,13 @@ def run_rollout_backfill_only(args: argparse.Namespace, payload: Json, session_i
                 "understanding_provider": args.understanding_provider,
                 "segment_provider": args.segment_provider,
                 "storage_options": hook_storage_options(),
-                "metadata": {
-                    "source": "codex_hook_rollout_async_backfill",
-                    "codex_event": codex_event,
-                    "backfill_reason": "codex_rollout_is_readable_after_synchronous_hook_boundary",
-                    "agent_context": agent_context,
-                    "codex_session_id_source": session_id_source,
-                },
+                "metadata": codex_hook_metadata(
+                    source="codex_hook_rollout_async_backfill",
+                    event=codex_event,
+                    agent_context=agent_context,
+                    session_id_source=session_id_source,
+                    backfill_reason="codex_rollout_is_readable_after_synchronous_hook_boundary",
+                ),
                 "agent_hook": {
                     **codex_agent_hook(
                         hook_type="tool_result" if role == "tool" else "after_llm",
@@ -4046,13 +4076,13 @@ def main() -> int:
                         event=args.event,
                         role="tool",
                         text=previous_tool_output,
-                        metadata={
-                            "source": "codex_hook_rollout_backfill",
-                            "codex_event": "PreviousToolOutputBackfill",
-                            "backfill_reason": "post_tool_hook_payload_can_arrive_before_rollout_tool_output_is_visible",
-                            "agent_context": agent_context,
-                            "codex_session_id_source": session_id_source,
-                        },
+                        metadata=codex_hook_metadata(
+                            source="codex_hook_rollout_backfill",
+                            event="PreviousToolOutputBackfill",
+                            agent_context=agent_context,
+                            session_id_source=session_id_source,
+                            backfill_reason="post_tool_hook_payload_can_arrive_before_rollout_tool_output_is_visible",
+                        ),
                         agent_hook={
                             "source": "codex",
                             "hook_type": "tool_result",
@@ -4078,13 +4108,13 @@ def main() -> int:
                         event=args.event,
                         role="assistant",
                         text=previous_assistant,
-                        metadata={
-                            "source": "codex_hook_rollout_backfill",
-                            "codex_event": "PreviousAssistantBackfill",
-                            "backfill_reason": "stop_hook_runs_before_rollout_final_answer_is_visible",
-                            "agent_context": agent_context,
-                            "codex_session_id_source": session_id_source,
-                        },
+                        metadata=codex_hook_metadata(
+                            source="codex_hook_rollout_backfill",
+                            event="PreviousAssistantBackfill",
+                            agent_context=agent_context,
+                            session_id_source=session_id_source,
+                            backfill_reason="stop_hook_runs_before_rollout_final_answer_is_visible",
+                        ),
                         agent_hook={
                             "source": "codex",
                             "hook_type": "after_llm",
@@ -4107,16 +4137,16 @@ def main() -> int:
                 "messages": [{"role": "user", "content": text or f"{kind} added: {raw_uri}"}],
                 "raw_uri": raw_uri,
                 "resource_type": resource_type or kind,
-                "metadata": {
-                    "source": "codex_hook",
-                    "codex_event": args.event,
-                    "raw_hook_payload": payload,
-                    "agent_context": agent_context,
-                    "compacted_session_summary": False,
-                    "codex_session_id_source": session_id_source,
-                    "raw_uri": raw_uri,
-                    "resource_type": resource_type or kind,
-                },
+                "metadata": codex_hook_metadata(
+                    source="codex_hook",
+                    event=args.event,
+                    agent_context=agent_context,
+                    session_id_source=session_id_source,
+                    payload=payload,
+                    compacted_session_summary=False,
+                    raw_uri=raw_uri,
+                    resource_type=resource_type or kind,
+                ),
                 "understanding_provider": args.understanding_provider,
                 "segment_provider": args.segment_provider,
                 "storage_options": hook_storage_options(),
@@ -4164,14 +4194,14 @@ def main() -> int:
                     event=args.event,
                     role=role_for_event(args.event),
                     text=text,
-                    metadata={
-                        "source": "codex_hook",
-                        "codex_event": args.event,
-                        "raw_hook_payload": payload,
-                        "agent_context": agent_context,
-                        "compacted_session_summary": args.event == "PostCompact",
-                        "codex_session_id_source": session_id_source,
-                    },
+                    metadata=codex_hook_metadata(
+                        source="codex_hook",
+                        event=args.event,
+                        agent_context=agent_context,
+                        session_id_source=session_id_source,
+                        payload=payload,
+                        compacted_session_summary=args.event == "PostCompact",
+                    ),
                     agent_hook=main_hook,
                 )
                 ingest = trace_tool_call(server, "matrixark_ingest", ingest_args, trace)
