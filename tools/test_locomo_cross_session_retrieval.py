@@ -196,6 +196,21 @@ class LocomoCrossSessionRetrievalTest(unittest.TestCase):
             ),
         )
 
+    def test_longmemeval_kitchen_replacement_count_ignores_recipe_numbers(self) -> None:
+        blocks = [
+            {"body": "User: I finally fixed the kitchen shelves last weekend."},
+            {"body": "User: My new kitchen mat in front of the sink is from IKEA."},
+            {"body": "User: I've been loving my new faucet too, it's been a game-changer for washing veggies."},
+            {"body": "User: I got rid of the old toaster and replaced it with a toaster oven."},
+            {"body": "User: I donated my old coffee maker to Goodwill and I'm enjoying the espresso machine upgrade."},
+            {"body": "Assistant: Recipe list: 425 degrees, 220 calories, 20 minutes, 25 grams, 3 servings."},
+        ]
+
+        self.assertEqual(
+            "5",
+            bench.extractive_reader_hint("How many kitchen items did I replace or fix?", blocks),
+        )
+
 
 if __name__ == "__main__":
     raise SystemExit(unittest.main())
