@@ -1202,7 +1202,10 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
 
 
 def compression_context_index_terms(record: Json) -> list[str]:
-    terms = ["operator:TIME_COMPRESS", "context_class:compression"]
+    terms = ["operator:TIME_COMPRESS", "context_class:compression", "source_type:message"]
+    for token in tokens(str(record.get("summary_text") or "")):
+        if token:
+            terms.append(f"keyword:{token}")
     for field, prefix in [
         ("source_roles", "source_role"),
         ("source_hook_types", "hook_type"),
@@ -9134,9 +9137,19 @@ class MatrixArkLocalAdapter:
                 "source_hook_type_counts": record.get("source_hook_type_counts", {}),
                 "source_codex_events": record.get("source_codex_events", []),
                 "source_codex_event_counts": record.get("source_codex_event_counts", {}),
+                "source_memory_selection_policies": record.get("source_memory_selection_policies", []),
+                "source_memory_selection_policy_counts": record.get("source_memory_selection_policy_counts", {}),
+                "source_memory_selection_lossy_count": record.get("source_memory_selection_lossy_count", 0),
+                "source_memory_selection_complete_count": record.get("source_memory_selection_complete_count", 0),
+                "source_memory_selection_dropped_text_chars": record.get("source_memory_selection_dropped_text_chars", 0),
+                "source_memory_selection_dropped_line_count": record.get("source_memory_selection_dropped_line_count", 0),
+                "source_memory_selection_retained_text_ratio_avg": record.get("source_memory_selection_retained_text_ratio_avg", 1.0),
+                "source_memory_selection_retained_line_ratio_avg": record.get("source_memory_selection_retained_line_ratio_avg", 1.0),
                 "source_memory_scopes": record.get("source_memory_scopes", []),
                 "source_session_continuities": record.get("source_session_continuities", []),
                 "source_extraction_phases": record.get("source_extraction_phases", []),
+                "source_profile_promotion_policies": record.get("source_profile_promotion_policies", []),
+                "source_profile_promotion_blockers": record.get("source_profile_promotion_blockers", []),
                 "source_final_session_boundary_count": record.get("source_final_session_boundary_count", 0),
                 "scope": candidate_access_scope(record),
                 "updated_at_ms": record.get("compressed_time_ms", record.get("updated_at_ms", now_ms())),
