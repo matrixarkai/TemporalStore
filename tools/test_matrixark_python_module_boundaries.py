@@ -3078,7 +3078,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "text": "assistant decided to push the local recovery gate after tests passed.",
                 "memory_scope": "session",
                 "session_continuity": "same_session",
-                "extraction_phase": "provisional",
+                "event_type": "pending_async",
+                "extraction_phase": "pending_async",
                 "source_roles": ["llm"],
                 "source_role_counts": {"llm": 1},
                 "source_hook_types": ["hook_boundary"],
@@ -3112,6 +3113,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "source_memory_selection_policies": ["selected_assistant_decision_outcome_only"],
                 "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 2},
                 "source_session_ids": ["session_old", "session_now"],
+                "source_event_ids": [1001],
                 "source_entity_hashes": [10, 11],
             },
             {
@@ -3154,7 +3156,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(pack["partial"])
         self.assertLessEqual(pack["tokens"]["remote"], pack["tokens"]["remote_budget"])
         self.assertEqual(80, pack["tokens"]["remote_budget"])
-        self.assertEqual(2, pack["counts"]["refs"]["entity"] + pack["counts"]["refs"]["event"])
+        self.assertEqual(1, pack["counts"]["refs"]["entity"])
+        self.assertEqual(0, pack["counts"]["refs"].get("event", 0))
         self.assertEqual(1, pack["counts"]["session_continuity"]["cross_session"])
         for field in [
             "memory_layer_budget",
@@ -3169,6 +3172,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(1, budget["by_memory_scope"]["user_profile"]["refs"])
         self.assertEqual(1, budget["by_session_continuity"]["cross_session"]["refs"])
         self.assertEqual(1, budget["by_entity_type"]["assistant_decision"]["refs"])
+        self.assertNotIn("pending_async_event", budget.get("by_memory_layer", {}))
         for field in [
             "by_source_role",
             "by_hook_type",
@@ -3181,7 +3185,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             self.assertNotIn(field, budget)
         self.assertEqual(1, budget["final_session_boundary_ref_count"])
         pressure = audit_record["memory_layer_pressure"]
-        self.assertEqual(2, pressure["selected_refs"])
+        self.assertEqual(1, pressure["selected_refs"])
         self.assertEqual(pack["tokens"]["remote"], pressure["selected_tokens"])
         self.assertEqual(0, pressure["dropped_refs"])
         self.assertFalse(pressure["profile_memory_pressure"])
@@ -3198,10 +3202,12 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertNotIn("memory_hierarchy", pack)
         self.assertNotIn("retrieval_metrics", pack)
         self.assertIn("async_pipeline_followup_pending", pack["warnings"])
+        self.assertIn("pending_async_event_superseded_by_extracted_refs:1", pack["warnings"])
         entity_group = next(group for group in pack["groups"] if group["type"] == "entity")
         entity_item = entity_group["items"][0]
         self.assertEqual("user_profile", entity_item["memory_scope"])
-        self.assertEqual("cross_session", entity_item["session_continuity"])
+        self.assertEqual("cross_session", pack["defaults"]["session_continuity"])
+        self.assertNotIn("session_continuity", entity_item)
         for field in [
             "source_session_ids",
             "source_entity_count",
@@ -3222,7 +3228,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(80, policy_budget["remote_budget_tokens"])
         self.assertEqual(56, policy_budget["budget_tokens"]["selected_assistant_decision_outcome_only"])
         self.assertEqual(
-            2,
+            1,
             policy_budget["selected_ref_count_by_policy"]["selected_assistant_decision_outcome_only"],
         )
         self.assertEqual(pressure, audit_record["recall_policy_summary"]["memory_layer_pressure"])
@@ -3235,6 +3241,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(1, audit_record["selected_ref_counts"]["entity"])
         self.assertIn("retrieval_deadline_exceeded:deadline_after_record_load", audit_record["quality_warnings"])
         self.assertIn("async_pipeline_followup_pending", audit_record["quality_warnings"])
+        self.assertIn("pending_async_event_superseded_by_extracted_refs:1", audit_record["quality_warnings"])
 
     def test_async_readiness_normalizes_llm_role_aliases_to_assistant(self) -> None:
         readiness_mod = importlib.import_module("tools.matrixark_mcp_async_readiness")
