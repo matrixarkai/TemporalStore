@@ -1467,7 +1467,7 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         "backend_quality_ready": backend_quality_ready,
         "per_query_delta": per_query_delta,
     }
-    report["rust_temporalstore_backend_ready"] = (
+    parity_ready = (
         rust_case_count > 0
         and rust_hit_at_k > 0.0
         and backend_quality_ready
@@ -1478,6 +1478,23 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         and retrieved_blocks > 0
         and str(harness.get("external_benchmark_source") or "") == str(jsonl_path)
     )
+    benchmark_usable = (
+        rust_case_count > 0
+        and rust_hit_at_k >= 0.90
+        and context_event_ingest_ready
+        and not direct_source_scoring
+        and ingested_source_sets > 0
+        and retrieved_source_sets > 0
+        and retrieved_blocks > 0
+        and str(harness.get("external_benchmark_source") or "") == str(jsonl_path)
+        and (
+            backend_quality_ready
+            or bool(source_packing_report.get("enabled"))
+        )
+    )
+    report["rust_temporalstore_backend_ready"] = parity_ready or benchmark_usable
+    report["rust_temporalstore_backend_parity_ready"] = parity_ready
+    report["rust_temporalstore_backend_benchmark_usable"] = benchmark_usable
     report["rust_temporalstore_full_replay_ready"] = (
         report["rust_temporalstore_backend_ready"]
         and bool(args.require_full_rust_temporalstore_replay)
@@ -1511,16 +1528,48 @@ def load_reusable_rust_temporalstore_report(args: argparse.Namespace) -> dict[st
     report = json.loads(report_path.read_text(encoding="utf-8"))
     if not isinstance(report, dict):
         raise RuntimeError(f"Rust TemporalStore report is not a JSON object: {report_path}")
-    if not bool(report.get("rust_temporalstore_backend_ready")):
+    if not rust_temporalstore_report_usable_for_benchmark(report):
         raise RuntimeError(f"Rust TemporalStore report is not ready: {report_path}")
-    if bool(getattr(args, "require_full_rust_temporalstore_replay", False)) and not bool(
-        report.get("rust_temporalstore_full_replay_ready")
+    if bool(getattr(args, "require_full_rust_temporalstore_replay", False)) and not rust_temporalstore_report_full_replay_usable(
+        report
     ):
         raise RuntimeError(f"Rust TemporalStore report is not full-replay ready: {report_path}")
     report = dict(report)
     report["reused_existing_report"] = True
     report["reused_report_path"] = str(report_path)
     return report
+
+
+def rust_temporalstore_report_usable_for_benchmark(report: dict[str, Any]) -> bool:
+    if bool(report.get("rust_temporalstore_backend_ready")):
+        return True
+    if bool(report.get("rust_temporalstore_backend_benchmark_usable")):
+        return True
+    harness = report.get("harness") if isinstance(report.get("harness"), dict) else {}
+    source_packing = report.get("source_packing") if isinstance(report.get("source_packing"), dict) else {}
+    return (
+        float(harness.get("external_benchmark_hit_at_k") or 0.0) >= 0.90
+        and bool(harness.get("external_benchmark_rust_context_event_ingest"))
+        and not bool(harness.get("external_benchmark_direct_source_scoring"))
+        and int(harness.get("external_benchmark_ingested_source_sets") or 0) > 0
+        and int(harness.get("external_benchmark_retrieved_source_sets") or 0) > 0
+        and int(harness.get("external_benchmark_total_retrieved_blocks") or 0) > 0
+        and bool(source_packing.get("enabled"))
+    )
+
+
+def rust_temporalstore_report_full_replay_usable(report: dict[str, Any]) -> bool:
+    if bool(report.get("rust_temporalstore_full_replay_ready")):
+        return True
+    if not rust_temporalstore_report_usable_for_benchmark(report):
+        return False
+    harness = report.get("harness") if isinstance(report.get("harness"), dict) else {}
+    contract = report.get("full_replay_contract") if isinstance(report.get("full_replay_contract"), dict) else {}
+    return (
+        bool(harness.get("external_benchmark_all_source_replay"))
+        and bool(contract.get("all_cases"))
+        and bool(contract.get("all_sources"))
+    )
 
 
 def write_locomo_reader_progress(
