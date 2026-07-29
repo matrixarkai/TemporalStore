@@ -260,22 +260,6 @@ def retrieval_memory_inventory(records: list[Json], retrieval_scope: Json) -> Js
     return inventory
 
 
-def legacy_hook_type_from_codex_event(event: Any) -> str:
-    label = str(event or "").strip()
-    if not label:
-        return ""
-    normalized = label.lower()
-    if "tool" in normalized or "permissionrequest" in normalized:
-        return "tool_result"
-    if "previousassistantbackfill" in normalized or normalized.startswith(("stop", "postcompact", "subagentstop")):
-        return "after_llm"
-    if normalized.startswith(("idletimeout", "sessionidle")):
-        return "session_commit"
-    if normalized.startswith("userpromptsubmit"):
-        return "before_llm"
-    return ""
-
-
 def positive_int_value(value: Any, default: int) -> int:
     try:
         return max(1, int(value))

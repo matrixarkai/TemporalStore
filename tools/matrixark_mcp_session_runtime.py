@@ -8,6 +8,7 @@ try:
         Json,
         MatrixArkError,
         canonical_storage_route,
+        legacy_hook_type_from_codex_event,
         messages_from_event_record,
         normalize_message_role,
         normalize_storage_options,
@@ -24,6 +25,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         Json,
         MatrixArkError,
         canonical_storage_route,
+        legacy_hook_type_from_codex_event,
         messages_from_event_record,
         normalize_message_role,
         normalize_storage_options,
@@ -830,12 +832,22 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
     ]
     metadata = optional_object(args, "metadata")
     source_roles = sorted(pending_source_roles)
+    if not pending_source_hook_types:
+        for event_name in pending_source_codex_events:
+            hook_name = legacy_hook_type_from_codex_event(event_name)
+            if hook_name:
+                pending_source_hook_types.add(hook_name)
     source_hook_types = sorted(pending_source_hook_types)
     source_codex_events = sorted(pending_source_codex_events)
     source_counts = _pending_source_count_summary(pending)
     source_role_counts = source_counts["source_role_counts"]
     source_hook_type_counts = source_counts["source_hook_type_counts"]
     source_codex_event_counts = source_counts["source_codex_event_counts"]
+    if not source_hook_type_counts:
+        for codex_event, count in source_codex_event_counts.items():
+            hook_name = legacy_hook_type_from_codex_event(codex_event)
+            if hook_name:
+                source_hook_type_counts[hook_name] = int(source_hook_type_counts.get(hook_name) or 0) + int(count or 0)
     source_memory_selection_policies = source_counts.get("source_memory_selection_policies", [])
     source_memory_selection_policy_counts = source_counts.get("source_memory_selection_policy_counts", {})
     source_memory_selection_retention: Json = {
