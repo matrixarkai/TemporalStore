@@ -5019,12 +5019,12 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
         if ref_type in {"segment", "compression"}:
             return 0.16
         return 0.02 if ref_type in {"resource_chunk", "event", "entity"} else 0.0
-    if ref_type == "compression" and question_type in {"fact", "current_state", "multi_hop"}:
+    if ref_type == "compression" and question_type in {"fact", "current_state", "latest", "multi_hop"}:
         source_count = len(candidate.get("source_event_ids", []) or [])
         # Multi-event TIME_COMPRESS records should win tight fact/current/multi-hop packs
         # because they preserve an old answer-bearing window in fewer tokens.
         return 0.50 if source_count >= 2 else 0.24
-    if question_type == "current_state":
+    if question_type in {"current_state", "latest"}:
         if ref_type == "entity":
             return 0.30
         if context_class == "resource_entity_fact":
