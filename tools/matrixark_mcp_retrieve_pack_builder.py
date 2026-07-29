@@ -519,11 +519,13 @@ def memory_layer_pressure_summary(selected_budget: Json, dropped_budget: Json) -
                 summary["pressure_dimensions"].append(dimension)
     dimension_data = summary["by_dimension"]
     def dropped_in(dimension: str, bucket: str) -> int:
-        return int(dimension_data.get(dimension, {}).get(bucket, {}).get("dropped_refs", 0))
+        bucket_data = dimension_data.get(dimension, {}).get(bucket, {})
+        return int(bucket_data.get("dropped_refs", bucket_data.get("dropped_count", 0)))
     def dropped_count_in(dimension: str, bucket: str) -> int:
         return int(dimension_data.get(dimension, {}).get(bucket, {}).get("dropped_count", 0))
     summary_layer_names = ["summary", "profile_summary", "same_session_summary", "cross_session_summary"]
     summary["profile_entity_pressure"] = dropped_in("by_memory_layer", "profile_entity") > 0
+    summary["pending_async_event_pressure"] = dropped_in("by_memory_layer", "pending_async_event") > 0
     summary["same_session_event_pressure"] = dropped_in("by_memory_layer", "same_session_event") > 0
     summary["cross_session_event_pressure"] = dropped_in("by_memory_layer", "cross_session_event") > 0
     summary["summary_layer_pressure"] = any(dropped_in("by_memory_layer", layer) > 0 for layer in summary_layer_names)

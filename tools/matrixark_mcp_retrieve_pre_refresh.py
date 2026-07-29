@@ -122,6 +122,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
     defaults = {
         "summary": 0.30,
         "compression": 0.25,
+        "pending_async_event": 0.20,
         "same_session_event": 0.45,
         "cross_session_event": 0.25,
         "same_session_segment": 0.35,
@@ -149,6 +150,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(*, remote_budget_to
     fractions = {
         "summary": 0.25,
         "compression": 0.20,
+        "pending_async_event": 0.20,
         "same_session_event": 0.45,
         "cross_session_event": 0.25,
         "same_session_segment": 0.30,
