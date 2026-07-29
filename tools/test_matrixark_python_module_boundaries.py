@@ -1975,6 +1975,137 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertNotIn("by_source_role", metrics_pressure.get("by_dimension", {}))
         self.assertNotIn("tool_source_message_pressure", metrics_pressure)
 
+    def test_modular_budget_pack_caps_memory_selection_policy(self) -> None:
+        budget_mod = importlib.import_module("tools.matrixark_mcp_budget_pack")
+        candidates = [
+            {
+                "ref_type": "entity",
+                "ref_hash": 101,
+                "text": "assistant decided to push the rollout after validation",
+                "score": 0.99,
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "source_memory_selection_policy_counts": {
+                    "selected_assistant_decision_outcome_only": 1
+                },
+            },
+            {
+                "ref_type": "entity",
+                "ref_hash": 202,
+                "text": "tool evidence shows validation passed",
+                "score": 0.8,
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "source_memory_selection_policy_counts": {
+                    "selected_tool_evidence_only": 1
+                },
+            },
+        ]
+
+        selected, used_tokens, dropped = budget_mod.select_token_budgeted_refs(
+            candidates,
+            [],
+            max_context_tokens=40,
+            auxiliary_quota=0,
+            max_selected_refs=2,
+            min_score=0.0,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 40,
+                "max_sessions": 2,
+                "max_candidates": 2,
+            },
+            memory_selection_policy_budget_tokens={
+                "selected_assistant_decision_outcome_only": 1
+            },
+            budget_fill_policy="quality_first",
+        )
+
+        self.assertGreater(used_tokens, 0)
+        self.assertEqual([202], [ref["ref_hash"] for ref in selected])
+        self.assertEqual(["selected_tool_evidence_only"], selected[0]["budget_memory_selection_policies"])
+        self.assertEqual(1, dropped["memory_selection_policy_budget"])
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 1},
+            dropped["memory_selection_policy_budget_policy"]["budget_tokens"],
+        )
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 0},
+            dropped["memory_selection_policy_budget_policy"]["selected_tokens_by_policy"],
+        )
+        self.assertEqual(
+            8,
+            dropped["estimated_tokens"]["memory_selection_policy_budget"],
+        )
+
+    def test_modular_budget_pack_force_fill_respects_memory_selection_policy_cap(self) -> None:
+        budget_mod = importlib.import_module("tools.matrixark_mcp_budget_pack")
+        assistant_candidate = {
+            "ref_type": "summary",
+            "ref_hash": 303,
+            "text": "assistant decision rollout evidence should not bypass retrieval caps",
+            "score": 0.99,
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "source_memory_selection_policies": ["selected_assistant_decision_outcome_only"],
+        }
+
+        selected, used_tokens, dropped = budget_mod.select_token_budgeted_refs(
+            [assistant_candidate],
+            [],
+            max_context_tokens=8,
+            auxiliary_quota=0,
+            min_score=0.0,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 8,
+                "max_sessions": 1,
+                "max_candidates": 1,
+            },
+            memory_selection_policy_budget_tokens={
+                "selected_assistant_decision_outcome_only": 1
+            },
+            budget_fill_policy="force_fill",
+        )
+
+        self.assertEqual([], selected)
+        self.assertEqual(0, used_tokens)
+        self.assertEqual(1, dropped["cross_session_budget"])
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 0},
+            dropped["memory_selection_policy_budget_policy"]["selected_tokens_by_policy"],
+        )
+
+        selected, used_tokens, dropped = budget_mod.select_token_budgeted_refs(
+            [assistant_candidate],
+            [],
+            max_context_tokens=8,
+            auxiliary_quota=0,
+            min_score=0.0,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 8,
+                "max_sessions": 1,
+                "max_candidates": 1,
+            },
+            memory_selection_policy_budget_tokens={
+                "selected_assistant_decision_outcome_only": 8
+            },
+            budget_fill_policy="force_fill",
+        )
+
+        self.assertEqual([303], [ref["ref_hash"] for ref in selected])
+        self.assertEqual(
+            used_tokens,
+            dropped["memory_selection_policy_budget_policy"]["selected_tokens_by_policy"][
+                "selected_assistant_decision_outcome_only"
+            ],
+        )
+        self.assertEqual(
+            ["selected_assistant_decision_outcome_only"],
+            selected[0]["budget_memory_selection_policies"],
+        )
+
     def test_shared_pack_builder_reports_profile_shadowed_dropped_budget(self) -> None:
         builder_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pack_builder")
         metrics_mod = importlib.import_module("tools.matrixark_mcp_retrieve_metrics")
