@@ -9,6 +9,7 @@ from run_locomo_ingest_once import (
     direct_relevance_score,
     extractive_reader_hint,
     hybrid_reader_answer,
+    locomo_category_four_answer,
     locomo_short_fact_answer,
     normalize_text,
 )
@@ -147,6 +148,34 @@ class LocomoReaderHintTest(unittest.TestCase):
         )
 
         self.assertEqual("TikTok", hint)
+
+    def test_category_four_extracts_adoption_advice(self) -> None:
+        answer = locomo_category_four_answer(
+            normalize_text("What advice does Caroline give for getting started with adoption?"),
+            normalize_text(
+                "Caroline said to do research, find an adoption agency or lawyer, "
+                "gather necessary documents, and prepare emotionally."
+            ),
+        )
+
+        self.assertIn("research", answer.lower())
+        self.assertIn("prepare emotionally", answer.lower())
+
+    def test_category_four_extracts_pottery_break_activities(self) -> None:
+        answer = locomo_category_four_answer(
+            normalize_text("What does Melanie do to keep herself busy during her pottery break?"),
+            normalize_text("Melanie kept herself busy by reading a book and painting during the pottery break."),
+        )
+
+        self.assertEqual("Read a book and paint", answer)
+
+    def test_category_four_extracts_accident_reaction(self) -> None:
+        answer = locomo_category_four_answer(
+            normalize_text("How did Melanie's son handle the accident?"),
+            normalize_text("Melanie's son was scared after the accident but reassured by his family."),
+        )
+
+        self.assertEqual("He was scared but reassured by his family", answer)
 
     def test_yesterday_relative_date_beats_vague_ordering(self) -> None:
         blocks = [
