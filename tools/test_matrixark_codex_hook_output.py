@@ -374,6 +374,39 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             hook.payload_text(payload),
         )
 
+    def test_payload_text_reads_common_assistant_stop_fields(self) -> None:
+        self.assertEqual(
+            "Decision: commit assistant response into profile memory.",
+            hook.payload_text(
+                {
+                    "hook_event_name": "Stop",
+                    "last_assistant_message": "Decision: commit assistant response into profile memory.",
+                }
+            ),
+        )
+        self.assertEqual(
+            "Outcome: extracted bounded assistant decision.",
+            hook.payload_text(
+                {
+                    "hook_event_name": "Stop",
+                    "params": {
+                        "last-assistant-message": "Outcome: extracted bounded assistant decision.",
+                    },
+                }
+            ),
+        )
+        self.assertEqual(
+            "Final: profile bridge is ready.",
+            hook.payload_text(
+                {
+                    "hook_event_name": "Stop",
+                    "turn": {
+                        "finalAnswer": "Final: profile bridge is ready.",
+                    },
+                }
+            ),
+        )
+
     def test_rollout_assistant_extraction_flattens_structured_content_parts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             rollout = Path(tmp_dir) / "rollout-test.jsonl"
