@@ -41,6 +41,7 @@ from matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness
 from matrixark_mcp_recovery import matrixark_local_recovery_report
 from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget, memory_layer_pressure_summary, selected_ref_layer_budget
 from matrixark_mcp_local_adapter import (
+    compression_context_index_records,
     quality_first_underfill_summary,
     suppress_extracted_represented_pending_events,
     suppress_profile_shadowed_session_entities,
@@ -1584,6 +1585,47 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("source_role:tool", event_terms)
         self.assertIn("codex_event:posttooluse", event_terms)
         self.assertIn("memory_selection_policy:selected_tool_evidence_only", event_terms)
+
+    def test_compression_index_records_include_memory_selection_and_promotion_lineage(self) -> None:
+        records = compression_context_index_records(
+            {
+                "record_type": "context_compression_event",
+                "compression_id_hash": 903,
+                "node_hash": 904,
+                "summary_text": "compressed assistant and tool evidence",
+                "source_roles": ["assistant", "tool"],
+                "source_hook_types": ["hook_boundary"],
+                "source_codex_events": ["Stop"],
+                "source_memory_selection_policies": [
+                    "selected_assistant_decision_outcome_only",
+                    "selected_tool_evidence_only",
+                ],
+                "source_memory_scopes": ["session", "user_profile"],
+                "source_session_continuities": ["same_session", "cross_session"],
+                "source_extraction_phases": ["final"],
+                "source_profile_promotion_policies": ["always_when_profile_scope_available"],
+                "source_profile_promotion_blockers": ["profile_scope_missing"],
+                "source_final_session_boundary_count": 1,
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "extraction_phase": "final",
+                "scope": {
+                    "account_id": "acct_compression_index",
+                    "tenant_id": "tenant_compression_index",
+                    "user_id": "user_compression_index",
+                },
+                "compressed_time_ms": 1780000000000,
+            }
+        )
+
+        index_names = {record.get("index_name") for record in records}
+        self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", index_names)
+        self.assertIn("memory_selection_policy:selected_tool_evidence_only", index_names)
+        self.assertIn("profile_promotion_policy:always_when_profile_scope_available", index_names)
+        self.assertIn("profile_promotion_blocker:profile_scope_missing", index_names)
+        self.assertIn("final_session_boundary:true", index_names)
+        self.assertTrue(all(record.get("data_model") == "context_compression_event" for record in records))
+        self.assertTrue(all(record.get("ref_type") == "compression" for record in records))
 
     def test_time_compression_preserves_source_lineage_for_budgeting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
