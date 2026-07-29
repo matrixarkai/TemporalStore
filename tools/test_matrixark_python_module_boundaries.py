@@ -1403,6 +1403,65 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             ["tenant:tenant_mod", "user:user_mod", "profile:long_term_memory"],
             profile_entities[0]["node_path"],
         )
+        embeddings = [
+            record
+            for record in adapter.records
+            if record.get("record_type") == "context_embedding"
+        ]
+        embeddings_by_ref = {
+            (record.get("ref_type"), record.get("ref_hash"), record.get("embedding_type")): record
+            for record in embeddings
+        }
+        session_entity_embedding = embeddings_by_ref[
+            ("entity", session_entities[0]["entity_hash"], "entity_state")
+        ]
+        profile_entity_embedding = embeddings_by_ref[
+            ("entity", profile_entities[0]["entity_hash"], "entity_state")
+        ]
+        segment_embedding = embeddings_by_ref[
+            ("segment", session_segments[0]["segment_hash"], "segment_text")
+        ]
+        self.assertEqual("session", session_entity_embedding["memory_scope"])
+        self.assertEqual("same_session", session_entity_embedding["session_continuity"])
+        self.assertEqual("final", session_entity_embedding["extraction_phase"])
+        self.assertTrue(session_entity_embedding["final_session_boundary"])
+        self.assertEqual(session_entities[0]["source_event_ids"], session_entity_embedding["source_event_ids"])
+        self.assertEqual(session_entities[0]["source_role_counts"], session_entity_embedding["source_role_counts"])
+        self.assertEqual("user_profile", profile_entity_embedding["memory_scope"])
+        self.assertEqual("cross_session", profile_entity_embedding["session_continuity"])
+        self.assertEqual("session", profile_entity_embedding["promoted_from_memory_scope"])
+        self.assertEqual(profile_entities[0]["source_session_ids"], profile_entity_embedding["source_session_ids"])
+        self.assertEqual(profile_entities[0]["source_entity_hashes"], profile_entity_embedding["source_entity_hashes"])
+        self.assertEqual(profile_entities[0]["source_role_counts"], profile_entity_embedding["source_role_counts"])
+        self.assertEqual("session", segment_embedding["memory_scope"])
+        self.assertEqual("same_session", segment_embedding["session_continuity"])
+        self.assertEqual(["session"], segment_embedding["source_memory_scopes"])
+        self.assertEqual(["same_session"], segment_embedding["source_session_continuities"])
+        self.assertEqual(session_segments[0]["source_event_ids"], segment_embedding["source_event_ids"])
+        event_embeddings = [
+            record
+            for record in embeddings
+            if record.get("ref_type") == "event" and record.get("embedding_type") == "event_text"
+        ]
+        self.assertTrue(event_embeddings)
+        self.assertTrue(all(record.get("memory_scope") == "session" for record in event_embeddings))
+        self.assertTrue(all(record.get("session_continuity") == "same_session" for record in event_embeddings))
+        summary_records = [
+            record
+            for record in adapter.records
+            if record.get("record_type") == "context_summary" and record.get("summary_type") == "batch_l0"
+        ]
+        self.assertEqual(1, len(summary_records))
+        self.assertEqual("session", summary_records[0]["memory_scope"])
+        self.assertEqual("same_session", summary_records[0]["session_continuity"])
+        summary_embedding = embeddings_by_ref[
+            ("summary", summary_records[0]["summary_hash"], "batch_l0")
+        ]
+        self.assertEqual("session", summary_embedding["memory_scope"])
+        self.assertEqual("same_session", summary_embedding["session_continuity"])
+        self.assertEqual("final", summary_embedding["extraction_phase"])
+        self.assertEqual(summary_records[0]["source_entity_hashes"], summary_embedding["source_entity_hashes"])
+        self.assertEqual(summary_records[0]["source_segment_hashes"], summary_embedding["source_segment_hashes"])
         profile_indexes = [
             record
             for record in adapter.records
