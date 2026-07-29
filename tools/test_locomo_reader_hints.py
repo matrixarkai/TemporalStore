@@ -177,6 +177,124 @@ class LocomoReaderHintTest(unittest.TestCase):
 
         self.assertEqual("He was scared but reassured by his family", answer)
 
+    def test_when_did_event_preserves_vague_relative_time(self) -> None:
+        blocks = [
+            {
+                "title": "conv_30 session_5 turn 15",
+                "body": (
+                    "9:32 am on 8 February, 2023. D5:15 Gina: Got the tattoo "
+                    "a few years ago; it stands for freedom."
+                ),
+            }
+        ]
+
+        hint = extractive_reader_hint("When did Gina get her tattoo?", blocks)
+
+        self.assertEqual("A few years ago", hint)
+
+    def test_when_did_event_uses_matching_session_date(self) -> None:
+        blocks = [
+            {
+                "title": "conv_30 session_6 turn 6",
+                "body": (
+                    "2:35 pm on 16 March, 2023. D6:6 Gina: My online clothes "
+                    "store is open!"
+                ),
+            },
+            {
+                "title": "conv_30 session_13 turn 1",
+                "body": "8:29 pm on 13 June, 2023. D13:1 Jon: thanks for believing in me.",
+            },
+        ]
+
+        hint = extractive_reader_hint("When did Gina open her online clothing store?", blocks)
+
+        self.assertEqual("16 March 2023", hint.replace(",", ""))
+
+    def test_when_did_event_resolves_next_month_from_evidence_date(self) -> None:
+        blocks = [
+            {
+                "title": "conv_30 session_8 turn 13",
+                "body": (
+                    "1:26 pm on 3 April, 2023. D8:13 Jon: I'm expanding my "
+                    "dance studio's social media presence. I'm also hosting "
+                    "a dance competition next month."
+                ),
+            }
+        ]
+
+        hint = extractive_reader_hint("When did Jon host a dance competition?", blocks)
+
+        self.assertEqual("May 2023", hint)
+
+    def test_when_did_event_resolves_yesterday_from_evidence_date(self) -> None:
+        blocks = [
+            {
+                "title": "conv_30 session_10 turn 1",
+                "body": (
+                    "11:24 am on 25 April, 2023. D10:1 Jon: Yesterday, I went "
+                    "to a fair to show off my studio."
+                ),
+            }
+        ]
+
+        hint = extractive_reader_hint("When did Jon go to a fair to get more exposure for his dance studio?", blocks)
+
+        self.assertEqual("24 April 2023", hint.replace(",", ""))
+
+    def test_when_did_event_prefers_networking_sentence(self) -> None:
+        blocks = [
+            {
+                "title": "conv_30 session_5 turn 3",
+                "body": "10:00 am on 23 March, 2023. Jon talked about a store idea.",
+            },
+            {
+                "title": "conv_30 session_16 turn 6",
+                "body": (
+                    "2:15 pm on 21 June, 2023. D16:6 Jon: Yesterday I chose "
+                    "to go to networking events to make things happen."
+                ),
+            },
+        ]
+
+        hint = extractive_reader_hint("When did Jon visit networking events for his store?", blocks)
+
+        self.assertEqual("20 June 2023", hint.replace(",", ""))
+
+    def test_when_did_event_prefers_online_group_relative_date(self) -> None:
+        blocks = [
+            {
+                "title": "conv_41 session_8 turn 1",
+                "body": "3 August 2023. John mentioned another support call.",
+            },
+            {
+                "title": "conv_41 session_3 turn 1",
+                "body": (
+                    "8:30 pm on 1 January, 2023. D3:1 John: I joined a "
+                    "service-focused online group last week."
+                ),
+            },
+        ]
+
+        hint = extractive_reader_hint("When did John join the online support group?", blocks)
+
+        self.assertIn("week before 1 January 2023", hint)
+
+    def test_when_did_event_resolves_last_month_for_boot_camp(self) -> None:
+        blocks = [
+            {
+                "title": "conv_41 session_13 turn 3",
+                "body": (
+                    "3:18 pm on 4 May, 2023. D13:3 John: I just started going "
+                    "to boot camps with my fam last month."
+                ),
+            }
+        ]
+
+        hint = extractive_reader_hint("When did John start boot camp with his family?", blocks)
+
+        self.assertEqual("April 2023", hint)
+
     def test_yesterday_relative_date_beats_vague_ordering(self) -> None:
         blocks = [
             {
