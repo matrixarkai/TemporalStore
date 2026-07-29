@@ -18,6 +18,83 @@ pub(crate) struct RetrievePackRequest {
     pub(crate) scan_command: Command,
 }
 
+fn contains_any(lower: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| lower.contains(needle))
+}
+
+pub(crate) fn infer_native_question_type(query: &str) -> String {
+    let lower = query.to_ascii_lowercase();
+    if contains_any(
+        &lower,
+        &[
+            "when",
+            "what date",
+            "which date",
+            "yesterday",
+            "tomorrow",
+            "last week",
+            "next week",
+            "before",
+            "after",
+            "as of",
+            "valid as of",
+        ],
+    ) {
+        return "date".to_string();
+    }
+    if contains_any(
+        &lower,
+        &[
+            "current",
+            "currently",
+            "latest",
+            "now",
+            "still",
+            "today",
+            "valid",
+            "status",
+            "preference",
+            "prefer",
+            "likes",
+            "where does",
+            "where is",
+        ],
+    ) {
+        return "current_state".to_string();
+    }
+    if contains_any(
+        &lower,
+        &["why", "reason", "because", "feel", "felt", "emotion", "happy", "sad", "angry", "worried", "excited"],
+    ) {
+        return "why_emotion".to_string();
+    }
+    if contains_any(
+        &lower,
+        &["overview", "summarize", "summary", "explore", "broad", "what is in", "what do we know", "topics", "map", "inventory"],
+    ) {
+        return "broad_exploration".to_string();
+    }
+    if contains_any(
+        &lower,
+        &["evidence", "quote", "exactly", "what did ", "conversation", "dialogue", "message"],
+    ) {
+        return "evidence".to_string();
+    }
+    if contains_any(
+        &lower,
+        &["procedure", "step", "steps", "how to", "troubleshoot", "debug", "rollback", "runbook", "playbook", "checklist", "fix", "remediate", "mitigate"],
+    ) {
+        return "procedure".to_string();
+    }
+    if contains_any(
+        &lower,
+        &["both", "together", "across", "between", "compare", "combine", "sessions", "multi-hop", "multi session", "multi-session"],
+    ) {
+        return "multi_hop".to_string();
+    }
+    "fact".to_string()
+}
+
 pub(crate) fn parse_retrieve_pack_request(command: &Command) -> RetrievePackRequest {
     let request = command.record.clone().unwrap_or_else(|| json!({}));
     let query = request
@@ -55,8 +132,9 @@ pub(crate) fn parse_retrieve_pack_request(command: &Command) -> RetrievePackRequ
     let question_type = request
         .get("question_type")
         .and_then(Value::as_str)
-        .unwrap_or("fact")
-        .to_string();
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| infer_native_question_type(&query));
     let mut scan_command = command.clone();
     scan_command.scope = request
         .get("scope")
