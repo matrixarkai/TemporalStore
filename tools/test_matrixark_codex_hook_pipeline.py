@@ -187,7 +187,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             {},
         )
         segment_terms = candidate_index_terms(
-            {"record_type": "context_segment", "topic": "tool_evidence"},
+            {
+                "record_type": "context_segment",
+                "topic": "tool_evidence",
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+                "extraction_phase": "provisional",
+            },
             {},
             {},
         )
@@ -196,6 +202,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("memory_selection_policy:selected_tool_evidence_only", event_terms)
         self.assertIn("memory_selection_quality:lossy", event_terms)
         self.assertIn("segment_topic:tool_evidence", segment_terms)
+        self.assertIn("memory_scope:session", segment_terms)
+        self.assertIn("session_continuity:same_session", segment_terms)
+        self.assertIn("extraction_phase:provisional", segment_terms)
         self.assertNotIn("event_type:tool_evidence", segment_terms)
         self.assertNotIn("source_type:message", segment_terms)
 
@@ -1534,11 +1543,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             {
                 "record_type": "context_summary",
                 "summary_type": "node_l1",
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "extraction_phase": "final",
                 "source_role_counts": {"model": 3},
-                "source_memory_scopes": ["user_profile"],
                 "source_memory_selection_policies": ["selected_tool_evidence_only"],
-                "source_session_continuities": ["cross_session"],
-                "source_extraction_phases": ["final"],
             },
             {},
             {},
