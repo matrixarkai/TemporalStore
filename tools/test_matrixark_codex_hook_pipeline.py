@@ -3001,6 +3001,27 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         )
         self.assertNotIn("verbose build line", summary)
 
+    def test_tool_output_memory_captures_validation_and_rejection_facts(self) -> None:
+        noisy_output = "\n".join(
+            [
+                "building lots of crates that should not become memory",
+                "cargo test -p temporalstore-rust succeeded",
+                "warning: unused debug field was skipped",
+                " ! [rejected] HEAD -> main (non-fast-forward)",
+                *[f"verbose stdout line {index}" for index in range(80)],
+            ]
+        )
+        summary = matrixark_codex_hook.selected_tool_memory_text(
+            noisy_output,
+            {"tool_name": "shell_command", "tool_status": "ok"},
+        )
+
+        self.assertIn("tool_name=shell_command", summary)
+        self.assertIn("tool_status=ok", summary)
+        self.assertIn("Validation: tests passed", summary)
+        self.assertIn("notable=! [rejected] HEAD -> main (non-fast-forward)", summary)
+        self.assertNotIn("verbose stdout line", summary)
+
     def test_fast_hook_tool_message_stores_structured_tool_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-tool-structured.jsonl")
