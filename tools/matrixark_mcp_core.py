@@ -2408,7 +2408,7 @@ QUERY_TYPE_LABELS: dict[str, str] = {
 }
 
 PROFILE_MEMORY_QUERY_RE = re.compile(
-    r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|across sessions?|profile entit(?:y|ies)|profile summar(?:y|ies))\b"
+    r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|across (?:sessions?|tasks?|conversations?)|previous (?:sessions?|tasks?|conversations?)|profile entit(?:y|ies)|profile summar(?:y|ies)|remember about me|know about (?:me|my|the user)|told you before)\b"
 )
 
 QUERY_INDEX_LABELS: dict[str, str] = {
