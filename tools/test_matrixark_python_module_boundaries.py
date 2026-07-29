@@ -67,6 +67,44 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("/root/src/github-services", preferences[0]["state"])
         self.assertEqual(["123"], preferences[0]["source_refs"])
 
+    def test_serving_record_materializer_strips_embedding_dirty_lineage_by_default(self) -> None:
+        serving_mod = importlib.import_module("tools.matrixark_mcp_serving_records")
+        materialized = serving_mod.materialize_serving_records(
+            {
+                "record_type": "context_embedding",
+                "embedding_type": "node_l0",
+                "ref_type": "summary",
+                "ref_hash": 44,
+                "node_hash": 55,
+                "node_path": ["tenant:t", "user:u", "session:s"],
+                "dim": 2,
+                "model": "matrixark-local-token-hash-v1",
+                "vector": [0.1, 0.2],
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+                "dirty_hash": 66,
+                "summary_generation_policy": {"provider": "deterministic"},
+                "source_event_ids": [77],
+                "source_roles": ["user"],
+                "source_role_counts": {"user": 1},
+            }
+        )
+
+        self.assertEqual(1, len(materialized))
+        embedding = materialized[0]
+        self.assertEqual("context_embedding", embedding["record_type"])
+        self.assertEqual("session", embedding["memory_scope"])
+        self.assertEqual("same_session", embedding["session_continuity"])
+        for field in [
+            "dirty_hash",
+            "summary_generation_policy",
+            "source_event_ids",
+            "source_roles",
+            "source_role_counts",
+            "profile_source_event_count",
+        ]:
+            self.assertNotIn(field, embedding)
+
     def test_modular_extractor_promotes_bounded_assistant_memory_terms(self) -> None:
         extract_mod = importlib.import_module("tools.matrixark_mcp_extraction_normalization")
         entities = extract_mod.extract_batch_entities(
