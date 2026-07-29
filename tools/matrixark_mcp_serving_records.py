@@ -109,6 +109,8 @@ EMBEDDING_LINEAGE_DEBUG_FIELDS = {
     "source_profile_promotion_policies",
     "source_profile_promotion_blockers",
     "source_event_count",
+    "extraction_phase",
+    "final_session_boundary",
     "profile_revision",
     "profile_entity_current",
     "supersedes_session_entity_hash",
