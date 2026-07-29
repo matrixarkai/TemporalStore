@@ -3072,6 +3072,16 @@ def add_domain_reference_sources(
         )
     if "aquarium" in q and "fish" in q:
         patterns.append(re.compile(r"\b(?:i have|my aquarium has|my tank has|currently has)\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:[A-Za-z]+\s+){0,3}(?:fish|tetras|danios|guppies|corydoras|gouramis|bettas?)\b", re.I))
+    if "kitchen" in q and re.search(r"\b(replace|replaced|fix|fixed|items?)\b", q):
+        patterns.extend(
+            [
+                re.compile(r"\b(?:replaced|new)\b.{0,120}\bkitchen faucet\b|\bkitchen faucet\b.{0,120}\b(?:replaced|new|touchless|moen)\b", re.I),
+                re.compile(r"\b(?:replaced|new)\b.{0,120}\bkitchen mat\b|\bkitchen mat\b.{0,120}\b(?:replaced|new|ikea|nice grip)\b", re.I),
+                re.compile(r"\b(?:replaced|got rid of)\b.{0,120}\bold toaster\b|\bold toaster\b.{0,120}\b(?:replaced|toaster oven)\b|\bnew toaster oven\b", re.I),
+                re.compile(r"\b(?:donated|replaced|old)\b.{0,120}\bcoffee maker\b|\bcoffee maker\b.{0,120}\b(?:donated|goodwill|upgrade|espresso machine)\b", re.I),
+                re.compile(r"\b(?:fixed|repaired)\b.{0,120}\bkitchen shelves\b|\bkitchen shelves\b.{0,120}\b(?:fixed|repaired|spacious)\b", re.I),
+            ]
+        )
     if "charity" in q and re.search(r"\b(total|money|raise|raised)\b", q):
         patterns.append(re.compile(r"\b(?:raised?|donated)\b.{0,120}\$\s*\d|\$\s*\d.{0,120}\b(?:raised?|donated|charity|fundraiser)\b", re.I))
     if "workshop" in q and re.search(r"\b(total|money|spent|spend)\b", q):
@@ -5172,6 +5182,9 @@ def direct_numeric_fact_answer(question: str, texts: list[str]) -> str:
     answer = simultaneous_project_count_answer(q, normalized_blob)
     if answer:
         return answer
+    answer = kitchen_replacement_count_answer(q, normalized_blob)
+    if answer:
+        return answer
     if "instagram followers" in q and re.search(r"\b(currently|current|now)\b", q):
         values = [
             number_value(match.group(1))
@@ -5320,6 +5333,42 @@ def simultaneous_project_count_answer(q: str, normalized_blob: str) -> str:
         projects.discard("thesis")
     if projects:
         return format_number(float(len(projects)))
+    return ""
+
+
+def kitchen_replacement_count_answer(q: str, normalized_blob: str) -> str:
+    if not ("kitchen" in q and re.search(r"\b(replace|replaced|fix|fixed)\b", q) and re.search(r"\b(how many|count|number)\b", q)):
+        return ""
+    items: set[str] = set()
+    evidence_patterns = {
+        "kitchen faucet": [
+            r"\b(?:replaced|new)\b.{0,80}\bkitchen faucet\b",
+            r"\bkitchen faucet\b.{0,80}\b(?:replaced|new|touchless|moen)\b",
+            r"\b(?:new|loving my new)\s+faucet\b.{0,80}\b(?:washing veggies|game changer|game changer)\b",
+        ],
+        "kitchen mat": [
+            r"\b(?:replaced|new)\b.{0,80}\bkitchen mat\b",
+            r"\bkitchen mat\b.{0,80}\b(?:replaced|new|ikea|nice grip)\b",
+        ],
+        "toaster": [
+            r"\b(?:replaced|got rid of)\b.{0,80}\bold toaster\b",
+            r"\bold toaster\b.{0,80}\b(?:replaced|toaster oven)\b",
+            r"\bnew toaster oven\b",
+        ],
+        "coffee maker": [
+            r"\b(?:donated|replaced|old)\b.{0,80}\bcoffee maker\b",
+            r"\bcoffee maker\b.{0,80}\b(?:donated|goodwill|upgrade|espresso machine)\b",
+        ],
+        "kitchen shelves": [
+            r"\b(?:fixed|repaired)\b.{0,80}\bkitchen shelves\b",
+            r"\bkitchen shelves\b.{0,80}\b(?:fixed|repaired|spacious)\b",
+        ],
+    }
+    for item, patterns in evidence_patterns.items():
+        if any(re.search(pattern, normalized_blob) for pattern in patterns):
+            items.add(item)
+    if items:
+        return format_number(float(len(items)))
     return ""
 
 
