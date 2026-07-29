@@ -150,6 +150,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "profile_memory",
             matrixark_mcp_query.infer_query_type("Show cross-session memories and profile entities"),
         )
+        for query in [
+            "What do you remember about me?",
+            "What do you know about my preferences across tasks?",
+            "Show what you know about the user from previous sessions",
+            "What have I told you before?",
+        ]:
+            self.assertEqual("profile_memory", infer_query_type(query), query)
+            self.assertEqual("profile_memory", matrixark_mcp_query.infer_query_type(query), query)
         groups = infer_secondary_index_filter_groups(
             "Show user profile long-term memory and cross-session entities",
             "profile_memory",
