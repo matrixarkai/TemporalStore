@@ -5124,6 +5124,103 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 dropped,
             )
 
+    def test_retrieve_memory_selection_policy_budget_applies_to_context_segments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-segment-selection-budget.jsonl")
+            scope = {
+                "account_id": "acct_segment_selection_budget",
+                "tenant_id": "tenant_segment_selection_budget",
+                "user_id": "user_segment_selection_budget",
+                "session_id": "session_segment_selection_budget",
+            }
+            scope = {
+                **scope,
+                **identity_hashes(
+                    scope["account_id"],
+                    scope["tenant_id"],
+                    scope["user_id"],
+                    scope["session_id"],
+                ),
+            }
+            node_path = [
+                "tenant:tenant_segment_selection_budget",
+                "user:user_segment_selection_budget",
+                "session:session_segment_selection_budget",
+            ]
+            node_hash = 9123501
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_segment",
+                        "segment_hash": 9123502,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "topic": "tool_evidence",
+                        "summary_text": "tool segment marker: Exit code 0 and hook pipeline passed.",
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "source_roles": ["tool"],
+                        "source_role_counts": {"tool": 1},
+                        "source_memory_selection_policies": ["selected_tool_evidence_only"],
+                        "source_memory_selection_policy_counts": {"selected_tool_evidence_only": 1},
+                        "scope": scope,
+                        "updated_at_ms": 2000,
+                    },
+                    {
+                        "record_type": "context_segment",
+                        "segment_hash": 9123503,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "topic": "assistant_decision",
+                        "summary_text": "assistant segment marker: verbose decision text should exceed the tiny assistant policy budget.",
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "source_roles": ["assistant"],
+                        "source_role_counts": {"assistant": 1},
+                        "source_memory_selection_policies": ["selected_assistant_decision_outcome_only"],
+                        "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 1},
+                        "scope": scope,
+                        "updated_at_ms": 3000,
+                    },
+                ]
+            )
+
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "What segment marker should be remembered?",
+                    "max_context_tokens": 120,
+                    "ranking": {
+                        "max_selected_refs": 2,
+                        "min_similarity_score": 0.0,
+                        "memory_selection_policy_budget_tokens": {
+                            "selected_assistant_decision_outcome_only": 1,
+                        },
+                    },
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "include_debug_refs": True,
+                }
+            )
+
+            selected_segments = [ref for ref in pack["selected_refs"] if ref.get("ref_type") == "segment"]
+            self.assertTrue(any("tool segment marker" in str(ref.get("text") or "") for ref in selected_segments), pack)
+            self.assertFalse(any("assistant segment marker" in str(ref.get("text") or "") for ref in selected_segments), pack)
+            tool_ref = next(ref for ref in selected_segments if "tool segment marker" in str(ref.get("text") or ""))
+            self.assertEqual(["selected_tool_evidence_only"], tool_ref["source_memory_selection_policies"])
+            dropped = pack["dropped_refs"]
+            self.assertEqual(1, dropped.get("memory_selection_policy_budget"))
+            self.assertTrue(
+                any(
+                    ref.get("ref_hash") == 9123503
+                    and ref.get("drop_reason") == "memory_selection_policy_budget"
+                    and ref.get("memory_selection_policy_budget_capped_policies")
+                    == ["selected_assistant_decision_outcome_only"]
+                    for ref in dropped.get("refs", [])
+                ),
+                dropped,
+            )
+
     def test_retrieve_auto_source_role_budget_policy_is_recorded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-auto-role-budget.jsonl")
