@@ -7603,7 +7603,7 @@ class MatrixArkLocalAdapter:
             elif record_type == "context_embedding" and record.get("embedding_type") == "event_text":
                 remember_embedding_metadata(record)
                 event_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
-            elif record_type == "context_embedding" and record.get("embedding_type") == "entity_state":
+            elif record_type == "context_embedding" and record.get("embedding_type") in {"entity_state", "profile_entity_state"}:
                 remember_embedding_metadata(record)
                 entity_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "segment_text":
@@ -8594,6 +8594,158 @@ class MatrixArkLocalAdapter:
             memory_layer_budget_tokens=memory_layer_budget_tokens,
             memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
         )
+        if (
+            (
+                bool(cross_session_policy.get("enabled"))
+                or (
+                    retrieval_session_scope == "prefer"
+                    and question_type in {"current_state", "latest"}
+                )
+            )
+            and (
+                int(cross_session_policy.get("min_entity_bridge_refs") or 0) > 0
+                or question_type in {"current_state", "latest"}
+            )
+            and not any(
+                item.get("ref_type") == "entity"
+                and item.get("memory_scope") == "user_profile"
+                and item.get("session_continuity") == "cross_session"
+                for item in selected
+            )
+        ):
+            profile_candidates = [
+                item
+                for item in merge_ranked_paths(
+                    primary_matches,
+                    auxiliary_matches,
+                    total_limit=max_global_candidates,
+                    auxiliary_quota=auxiliary_quota,
+                )
+                if item.get("ref_type") == "entity"
+                and item.get("memory_scope") == "user_profile"
+                and item.get("session_continuity") == "cross_session"
+                and float(item.get("score", 0.0)) >= min_similarity_score
+            ]
+            if not profile_candidates:
+                for record in records:
+                    if record.get("record_type") != "context_entity":
+                        continue
+                    if str(record.get("memory_scope") or "") != "user_profile":
+                        continue
+                    if str(record.get("session_continuity") or "") != "cross_session":
+                        continue
+                    if not access_scope_matches_before_scoring(record, retrieval_scope):
+                        continue
+                    text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
+                    if not text.strip(" :=\t"):
+                        continue
+                    source_entity_hashes = record.get("source_entity_hashes", [])
+                    source_session_ids = record.get("source_session_ids", [])
+                    sparse_score = sparse_lexical_score(query_terms, text)
+                    keyword_score = len(query_terms.intersection(tokens(text)))
+                    embedding_score = cosine(query_embedding, entity_embedding_vectors.get(record.get("entity_hash"), []))
+                    node_score = node_scores.get(record.get("node_hash"), {}).get("score", 0.0)
+                    origin_score = min(1.0, 0.28 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
+                    if origin_score <= 0:
+                        continue
+                    candidate = annotate_session_continuity(
+                        {
+                            "ref_type": "entity",
+                            "ref_hash": record.get("entity_hash"),
+                            "node_hash": record.get("node_hash"),
+                            "node_path": record.get("node_path", []),
+                            "origin_score": origin_score,
+                            "keyword_score": keyword_score,
+                            "sparse_score": sparse_score,
+                            "embedding_score": embedding_score,
+                            "node_score": node_score,
+                            "matched_index_terms": [],
+                            "selection_reason": "selected by direct cross-session user-profile entity bridge",
+                            "entity_type": record.get("entity_type", ""),
+                            "entity_name": record.get("entity_name", ""),
+                            "context_class": "entity",
+                            "source_roles": record.get("source_roles", []),
+                            "source_role_counts": record.get("source_role_counts", {}),
+                            "source_hook_types": record.get("source_hook_types", []),
+                            "source_hook_type_counts": record.get("source_hook_type_counts", {}),
+                            "source_codex_events": record.get("source_codex_events", []),
+                            "source_codex_event_counts": record.get("source_codex_event_counts", {}),
+                            "source_session_ids": source_session_ids,
+                            "source_event_ids": record.get("source_event_ids", []),
+                            "source_entity_hashes": source_entity_hashes,
+                            "source_memory_scopes": record.get("source_memory_scopes", []),
+                            "source_session_continuities": record.get("source_session_continuities", []),
+                            "source_extraction_phases": record.get("source_extraction_phases", []),
+                            "memory_scope": record.get("memory_scope", ""),
+                            "session_continuity": record.get("session_continuity", ""),
+                            "extraction_phase": record.get("extraction_phase", ""),
+                            "final_session_boundary": bool(record.get("final_session_boundary", False)),
+                            "profile_promotion_policy": record.get("profile_promotion_policy", ""),
+                            "profile_promotion_blocker": record.get("profile_promotion_blocker", ""),
+                            "profile_current_state_representative": True,
+                            "current_state_source_session_count": len(source_session_ids) if isinstance(source_session_ids, list) else 0,
+                            "current_state_source_entity_count": len(source_entity_hashes) if isinstance(source_entity_hashes, list) else 0,
+                            "current_state_policy": "profile_entity_bridge_preferred_over_session_local_history",
+                            "metadata": record.get("metadata", {}),
+                            "scope": candidate_access_scope(record),
+                            "updated_at_ms": record.get("updated_at_ms", now_ms()),
+                            "text": clip_context_text(text),
+                            "recall_path": "direct_profile_entity_bridge",
+                        },
+                        record,
+                    )
+                    scored = score_recall_candidate(candidate, ranking, reference_time_ms=reference_time_ms)
+                    if float(scored.get("score", 0.0)) >= min_similarity_score:
+                        profile_candidates.append(scored)
+            profile_candidates.sort(key=lambda item: packing_sort_key(item, question_type), reverse=True)
+            for candidate in profile_candidates:
+                if context_text_hashes(str(candidate.get("text", ""))).intersection(local_budget["text_hashes"]):
+                    continue
+                ref_tokens = max(1, token_count(str(candidate.get("text", ""))))
+                while selected and (
+                    len(selected) >= max_selected_refs
+                    or used_context_tokens + ref_tokens > remote_context_budget_tokens
+                    or (
+                        question_type in {"current_state", "latest"}
+                        and any(item.get("ref_type") == "summary" for item in selected)
+                    )
+                ):
+                    removable_index = next(
+                        (
+                            index
+                            for index in range(len(selected) - 1, -1, -1)
+                            if selected[index].get("ref_type") in {"summary", "event", "segment"}
+                            and not bool(selected[index].get("profile_current_state_representative"))
+                        ),
+                        None,
+                    )
+                    if removable_index is None:
+                        break
+                    removed = selected.pop(removable_index)
+                    removed_tokens = max(1, token_count(str(removed.get("text", ""))))
+                    used_context_tokens = max(0, used_context_tokens - removed_tokens)
+                    dropped_over_budget.setdefault("profile_entity_bridge_replaced_refs", 0)
+                    dropped_over_budget["profile_entity_bridge_replaced_refs"] += 1
+                    record_dropped_candidate(
+                        dropped_over_budget,
+                        removed,
+                        reason="memory_layer_floor",
+                        token_estimate=removed_tokens,
+                    )
+                if len(selected) >= max_selected_refs or used_context_tokens + ref_tokens > remote_context_budget_tokens:
+                    continue
+                selected.append(
+                    {
+                        **candidate,
+                        "token_estimate": ref_tokens,
+                        "packing_score": round(packing_sort_key(candidate, question_type)[0], 6),
+                        "packing_policy": question_type,
+                        "budget_memory_layer": "profile_entity",
+                    }
+                )
+                used_context_tokens += ref_tokens
+                dropped_over_budget.setdefault("profile_entity_bridge_injected", True)
+                break
         profile_entity_texts_by_role: dict[str, list[str]] = {}
         for item in selected:
             if (

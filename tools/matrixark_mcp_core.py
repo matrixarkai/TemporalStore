@@ -5815,14 +5815,16 @@ def select_token_budgeted_refs(
             for layer in ["summary", "profile_summary", "same_session_summary", "cross_session_summary"]
         )
     )
-    current_state_profile_entity_floor_enabled = bool(
-        question_type in {"current_state", "latest"}
-        and cross_enabled
+    cross_session_profile_entity_floor_enabled = bool(
+        cross_enabled
         and cross_min_entity_bridge_refs > 0
     )
 
     def profile_entity_floor_satisfied() -> bool:
-        return int(memory_layer_selected_ref_counts.get("profile_entity", 0) or 0) > 0
+        return int(memory_layer_selected_ref_counts.get("profile_entity", 0) or 0) > 0 or any(
+            candidate_memory_layer_name(item) == "profile_entity"
+            for item in selected
+        )
 
     def remaining_profile_entity_candidate_exists(start_index: int) -> bool:
         for remaining in candidates[start_index:]:
@@ -6109,8 +6111,9 @@ def select_token_budgeted_refs(
                 and candidate_memory_layer in {"summary", "profile_summary", "same_session_summary", "cross_session_summary"}
             )
             or (
-                current_state_profile_entity_floor_enabled
+                cross_session_profile_entity_floor_enabled
                 and candidate_memory_layer != "profile_entity"
+                and candidate_memory_layer != "profile_summary"
             )
         )
         if (
