@@ -1747,6 +1747,26 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertLessEqual(len(decision["state"]), 260)
         self.assertEqual(["101"], decision["source_refs"])
 
+    def test_assistant_decision_extraction_accepts_llm_role_aliases(self) -> None:
+        result = mcp_core.extract_batch_entities(
+            [
+                {
+                    "role": "model",
+                    "content": "Decision: keep profile memory query budgets visible after summary refresh.",
+                },
+                {
+                    "role": "assistant_response",
+                    "content": "Next: retrieve current profile entities before stale session facts.",
+                },
+            ],
+            {"source_event_ids": [301, 302], "metadata": {}},
+        )
+
+        decision = next(entity for entity in result if entity["entity_type"] == "assistant_decision")
+        self.assertIn("Decision: keep profile memory query budgets", decision["state"])
+        self.assertIn("Next: retrieve current profile entities", decision["state"])
+        self.assertEqual(["301", "302"], decision["source_refs"])
+
     def test_tool_evidence_extraction_keeps_result_lines_not_full_output(self) -> None:
         result = mcp_core.extract_batch_entities(
             [
@@ -1775,6 +1795,27 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertNotIn("unused import", evidence["state"])
         self.assertLessEqual(len(evidence["state"]), 260)
         self.assertEqual(["202"], evidence["source_refs"])
+
+    def test_tool_evidence_extraction_accepts_tool_role_aliases(self) -> None:
+        result = mcp_core.extract_batch_entities(
+            [
+                {
+                    "role": "function",
+                    "content": "Exit code: 0\nRan 12 tests in 0.2s\nOK",
+                },
+                {
+                    "role": "tool_output",
+                    "content": "pushed commit abcdef1 to origin/main",
+                },
+            ],
+            {"source_event_ids": [401, 402], "metadata": {}},
+        )
+
+        evidence = next(entity for entity in result if entity["entity_type"] == "tool_evidence")
+        self.assertIn("Exit code: 0", evidence["state"])
+        self.assertIn("Ran 12 tests", evidence["state"])
+        self.assertIn("pushed commit abcdef1", evidence["state"])
+        self.assertEqual(["401", "402"], evidence["source_refs"])
 
     def test_openai_compatible_batch_extraction_uses_model_entities(self) -> None:
         extraction_globals = mcp_core.one_pass_memory_extraction.__globals__

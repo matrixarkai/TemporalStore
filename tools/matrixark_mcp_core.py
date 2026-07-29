@@ -2654,17 +2654,24 @@ def assistant_decision_memory_text(text: str) -> str:
     if not compact:
         return ""
     selected: list[str] = []
-    decision_line_pattern = re.compile(
-        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|blocked|next|follow[- ]?up|will|use|keep|remove|updated|changed|validated|verified|profile|cross[- ]session|memory|gap|risk|warning)\b",
+    primary_decision_line_pattern = re.compile(
+        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|blocked|next|follow[- ]?up|will|use|keep|remove|updated|changed|validated|verified)\b",
         re.IGNORECASE,
     )
-    for raw_line in str(text).splitlines():
-        line = " ".join(raw_line.split()).strip(" -*")
-        if not line:
-            continue
-        if decision_line_pattern.search(line):
-            selected.append(line)
-        if len(selected) >= 4:
+    secondary_decision_line_pattern = re.compile(
+        r"\b(?:profile|cross[- ]session|memory|gap|risk|warning)\b",
+        re.IGNORECASE,
+    )
+    normalized_lines = [" ".join(raw_line.split()).strip(" -*") for raw_line in str(text).splitlines()]
+    for pattern in [primary_decision_line_pattern, secondary_decision_line_pattern]:
+        for line in normalized_lines:
+            if not line:
+                continue
+            if pattern.search(line):
+                selected.append(line)
+            if len(selected) >= 4:
+                break
+        if selected:
             break
     if not selected:
         selected = [
@@ -2708,6 +2715,23 @@ def tool_evidence_memory_text(text: str) -> str:
     return summarize_text(" ".join(selected) if selected else compact, limit=260)
 
 
+def normalized_extraction_message_role(role: Any) -> str:
+    role_name = str(role or "").strip().lower()
+    return {
+        "human": "user",
+        "prompt": "user",
+        "assistant_response": "assistant",
+        "agent": "assistant",
+        "ai": "assistant",
+        "bot": "assistant",
+        "llm": "assistant",
+        "model": "assistant",
+        "tool_result": "tool",
+        "tool_output": "tool",
+        "function": "tool",
+    }.get(role_name, role_name)
+
+
 def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     entities: list[Json] = []
     text = text_from_messages(messages)
@@ -2717,7 +2741,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     user_messages = [
         item
         for item in messages
-        if str(item.get("role") or "").lower() in {"user", "human"}
+        if normalized_extraction_message_role(item.get("role")) == "user"
         and str(item.get("content") or "").strip()
     ]
     user_text = text_from_messages(user_messages) if user_messages else ""
@@ -2745,7 +2769,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     tool_messages = [
         item
         for item in messages
-        if str(item.get("role") or "").lower() in {"tool", "tool_result"}
+        if normalized_extraction_message_role(item.get("role")) == "tool"
         and str(item.get("content") or "").strip()
     ]
     tool_text = text_from_messages(tool_messages) if tool_messages else ""
@@ -2765,7 +2789,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     assistant_messages = [
         item
         for item in messages
-        if str(item.get("role") or "").lower() in {"assistant", "agent", "llm"}
+        if normalized_extraction_message_role(item.get("role")) == "assistant"
         and str(item.get("content") or "").strip()
     ]
     assistant_text = text_from_messages(assistant_messages) if assistant_messages else ""
