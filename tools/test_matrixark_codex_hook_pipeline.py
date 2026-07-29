@@ -7475,6 +7475,49 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     for record in profile_entities
                 )
             )
+            profile_embeddings = [
+                record
+                for record in records
+                if record.get("record_type") == "context_embedding"
+                and record.get("embedding_type") == "profile_entity_state"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
+            ]
+            self.assertEqual(len(profile_entities), len(profile_embeddings))
+            self.assertTrue(all(record.get("extraction_phase") == "provisional" for record in profile_embeddings))
+            self.assertTrue(all(record.get("final_session_boundary") is False for record in profile_embeddings))
+            self.assertTrue(all("source_event_ids" not in record for record in profile_embeddings))
+            self.assertTrue(all("source_session_ids" not in record for record in profile_embeddings))
+            self.assertTrue(all("source_entity_hashes" not in record for record in profile_embeddings))
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {
+                        "account_id": "acct_promote_all",
+                        "tenant_id": "tenant_promote_all",
+                        "user_id": "user_promote_all",
+                        "session_id": "session_promote_all_followup",
+                    },
+                    "session_scope": "prefer",
+                    "query": "What profile memory mentions durable preference keyword?",
+                    "max_context_tokens": 160,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 4},
+                }
+            )
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "entity"
+                    and ref.get("memory_scope") == "user_profile"
+                    and ref.get("session_continuity") == "cross_session"
+                    for ref in pack["selected_refs"]
+                ),
+                pack["selected_refs"],
+            )
+            self.assertGreaterEqual(
+                pack["retrieval_metrics"]["retrieval_model_coverage"]["entity_embedding_vectors"],
+                len(profile_embeddings),
+            )
             self.assertTrue(result["summary_refresh"]["profile_dirty_hashes"])
 
     def test_retrieve_serving_pack_exposes_memory_inventory_layers(self) -> None:
