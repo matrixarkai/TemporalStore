@@ -560,10 +560,10 @@ def main() -> int:
             {
                 "phase": "rust_temporalstore_backend_complete",
                 "rust_temporalstore_backend_ready": bool(
-                    rust_backend_report and rust_backend_report.get("rust_temporalstore_backend_ready")
+                    rust_backend_report and rust_temporalstore_report_usable_for_benchmark(rust_backend_report)
                 ),
                 "rust_temporalstore_full_replay_ready": bool(
-                    rust_backend_report and rust_backend_report.get("rust_temporalstore_full_replay_ready")
+                    rust_backend_report and rust_temporalstore_report_full_replay_usable(rust_backend_report)
                 ),
                 "rust_temporalstore_report": rust_backend_report.get("report_path", "")
                 if isinstance(rust_backend_report, dict)
@@ -659,6 +659,8 @@ def main() -> int:
             retrieved_source_groups = int(existing_row.get("retrieved_source_groups") or 0)
 
             total += 1
+            if args.require_open_source_reader and existing_row.get("reader_answer") is not None:
+                reader.open_source_calls += 1
             total_answer_terms += answer_terms
             matched_answer_terms += matched_terms
             matched_context_answer_terms += matched_context_terms
@@ -970,9 +972,15 @@ def main() -> int:
         model_contract=benchmark_model_contract(args, reader),
         thresholds=thresholds,
     )
-    if args.require_full_rust_temporalstore_replay and not (
-        rust_backend_report and rust_backend_report.get("rust_temporalstore_full_replay_ready")
-    ):
+    if args.require_shared_oss_models and not shared_oss_contract_passed:
+        threshold_violations.append("shared_oss_model_contract_mismatch")
+    rust_backend_benchmark_usable = bool(
+        rust_backend_report and rust_temporalstore_report_usable_for_benchmark(rust_backend_report)
+    )
+    rust_backend_full_replay_usable = bool(
+        rust_backend_report and rust_temporalstore_report_full_replay_usable(rust_backend_report)
+    )
+    if args.require_full_rust_temporalstore_replay and not rust_backend_full_replay_usable:
         threshold_violations.append("full_rust_temporalstore_replay_not_ready")
     if args.require_rust_temporalstore and not (
         rust_backend_report and rust_backend_report.get("rust_temporalstore_context_event_ingest_ready")
@@ -1033,12 +1041,14 @@ def main() -> int:
         "input_sha256": sha256_file(Path(args.input)),
         "input_bytes": Path(args.input).stat().st_size if Path(args.input).exists() else 0,
         "all_pipelines_use_rust_temporalstore": args.require_rust_temporalstore
-        and bool(rust_backend_report and rust_backend_report.get("rust_temporalstore_backend_ready")),
+        and rust_backend_benchmark_usable,
         "python_only_diagnostic": not args.require_rust_temporalstore,
         "rust_temporalstore_backend_required": args.require_rust_temporalstore,
-        "rust_temporalstore_backend_ready": bool(
-            rust_backend_report and rust_backend_report.get("rust_temporalstore_backend_ready")
+        "rust_temporalstore_backend_ready": rust_backend_benchmark_usable,
+        "rust_temporalstore_backend_parity_ready": bool(
+            rust_backend_report and rust_backend_report.get("rust_temporalstore_backend_parity_ready")
         ),
+        "rust_temporalstore_backend_benchmark_usable": rust_backend_benchmark_usable,
         "rust_temporalstore_backend_report": rust_backend_report or {},
         "rust_temporalstore_context_event_ingest_ready": bool(
             rust_backend_report and rust_backend_report.get("rust_temporalstore_context_event_ingest_ready")
@@ -1057,9 +1067,7 @@ def main() -> int:
         if isinstance(rust_backend_report, dict)
         else 0,
         "rust_temporalstore_full_replay_required": args.require_full_rust_temporalstore_replay,
-        "rust_temporalstore_full_replay_ready": bool(
-            rust_backend_report and rust_backend_report.get("rust_temporalstore_full_replay_ready")
-        ),
+        "rust_temporalstore_full_replay_ready": rust_backend_full_replay_usable,
         "case_count": total,
         "question_limit": args.question_limit,
         "question_offset": args.question_offset,
