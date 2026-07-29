@@ -19,7 +19,8 @@ struct Args {
     agent_name: String,
     event: String,
     root: PathBuf,
-    event_log: PathBuf,
+    event_log: Option<PathBuf>,
+    event_log_enabled: bool,
     account_id: String,
     tenant_id: String,
     user_id: String,
@@ -203,9 +204,10 @@ fn main() {
             "path": session_index_path(&args.root, &args.agent_name),
         },
         "root": args.root,
-        "event_log": args.event_log,
+        "event_log": args.event_log.as_ref().map(|path| path.display().to_string()),
+        "event_log_enabled": args.event_log_enabled,
     });
-    append_event_log(&args.event_log, &report);
+    append_event_log(args.event_log.as_ref(), args.event_log_enabled, &report);
     println!(
         "{}",
         serde_json::to_string(&report).expect("hook report should serialize")
@@ -224,10 +226,11 @@ fn parse_args() -> Args {
             std::env::var("TEMPORALSTORE_RUST_CODEX_HOOK_ROOT")
                 .unwrap_or_else(|_| "/tmp/temporalstore-rust-codex-hook".to_string()),
         ),
-        event_log: PathBuf::from(
-            std::env::var("TEMPORALSTORE_RUST_CODEX_EVENT_LOG")
-                .unwrap_or_else(|_| "/tmp/temporalstore-rust-codex-hook.jsonl".to_string()),
-        ),
+        event_log: std::env::var("TEMPORALSTORE_RUST_CODEX_EVENT_LOG")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from),
+        event_log_enabled: env_bool("TEMPORALSTORE_RUST_CODEX_EVENT_LOG_ENABLE"),
         account_id: std::env::var("MATRIXARK_ACCOUNT_ID")
             .unwrap_or_else(|_| "acct_codex".to_string()),
         tenant_id: std::env::var("MATRIXARK_TENANT_ID")
@@ -250,7 +253,10 @@ fn parse_args() -> Args {
             }
             "--event" => parsed.event = args.next().unwrap_or(parsed.event),
             "--root" => parsed.root = PathBuf::from(args.next().unwrap_or_default()),
-            "--event-log" => parsed.event_log = PathBuf::from(args.next().unwrap_or_default()),
+            "--event-log" => {
+                parsed.event_log = Some(PathBuf::from(args.next().unwrap_or_default()));
+                parsed.event_log_enabled = true;
+            }
             "--account-id" => parsed.account_id = args.next().unwrap_or(parsed.account_id),
             "--tenant-id" => parsed.tenant_id = args.next().unwrap_or(parsed.tenant_id),
             "--user-id" => parsed.user_id = args.next().unwrap_or(parsed.user_id),
@@ -421,7 +427,24 @@ fn agent_profile(agent_name: &str) -> &'static str {
     }
 }
 
-fn append_event_log(path: &PathBuf, report: &Value) {
+fn env_bool(name: &str) -> bool {
+    matches!(
+        std::env::var(name)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn append_event_log(path: Option<&PathBuf>, enabled: bool, report: &Value) {
+    if !enabled {
+        return;
+    }
+    let Some(path) = path else {
+        return;
+    };
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -520,5 +543,23 @@ mod tests {
         );
         assert_eq!(role_for_event("cursor.tool"), "tool");
         assert_eq!(role_for_event("claude.stop"), "assistant");
+    }
+
+    #[test]
+    fn external_event_log_is_debug_opt_in() {
+        let path = std::env::temp_dir().join(format!(
+            "temporalstore-rust-codex-hook-test-{}.jsonl",
+            now_ms()
+        ));
+        let _ = fs::remove_file(&path);
+        let report = json!({"status": "ok", "event": "UserPromptSubmit"});
+
+        append_event_log(Some(&path), false, &report);
+        assert!(!path.exists());
+
+        append_event_log(Some(&path), true, &report);
+        let written = fs::read_to_string(&path).expect("debug event log should be written");
+        assert!(written.contains("UserPromptSubmit"));
+        let _ = fs::remove_file(&path);
     }
 }
