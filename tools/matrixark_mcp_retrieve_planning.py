@@ -293,6 +293,15 @@ def retrieval_query_budget_plan(
         or optional_object(ranking, "extraction_phase_budget_tokens")
     )
     extraction_phase_budget_mode = "explicit" if extraction_phase_budget_tokens else ""
+    if not extraction_phase_budget_tokens:
+        extraction_phase_budget_tokens, extraction_phase_budget_mode = (
+            pre_refresh_helpers.auto_extraction_phase_budget_tokens(
+                args,
+                ranking,
+                remote_budget_tokens=remote_context_budget_tokens,
+                question_type=question_type,
+            )
+        )
     raw_reference_time_ms = args.get("reference_time_ms", now_ms())
     if not isinstance(raw_reference_time_ms, int):
         raise MatrixArkError("reference_time_ms must be an integer")

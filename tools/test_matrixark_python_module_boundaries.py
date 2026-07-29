@@ -896,6 +896,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "ranking": {
                     "source_role_budget_mode": "auto",
                     "memory_selection_policy_budget_mode": "auto",
+                    "extraction_phase_budget_mode": "auto",
                 },
             },
             started_perf=0.0,
@@ -923,6 +924,15 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "selected_profile_current_state": 950,
             },
             request["memory_selection_policy_budget_tokens"],
+        )
+        self.assertEqual("auto", request["extraction_phase_budget_mode"])
+        self.assertEqual(
+            {
+                "pending_async": 228,
+                "provisional": 475,
+                "final": 1425,
+            },
+            request["extraction_phase_budget_tokens"],
         )
         self.assertEqual(1, len(request["pre_retrieval_refreshed_records"]))
 
@@ -1121,6 +1131,33 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             },
             profile_budgets,
         )
+
+        current_phase_budgets, current_phase_mode = helper_mod.auto_extraction_phase_budget_tokens(
+            {"extraction_phase_budget_mode": "auto"},
+            {},
+            remote_budget_tokens=100,
+            question_type="current_state",
+        )
+        self.assertEqual("auto", current_phase_mode)
+        self.assertEqual({"pending_async": 12, "provisional": 25, "final": 75}, current_phase_budgets)
+
+        profile_phase_budgets, profile_phase_mode = helper_mod.auto_extraction_phase_budget_tokens(
+            {"extraction_phase_budget_mode": "auto"},
+            {},
+            remote_budget_tokens=100,
+            question_type="profile_memory",
+        )
+        self.assertEqual("auto", profile_phase_mode)
+        self.assertEqual({"pending_async": 10, "provisional": 20, "final": 80}, profile_phase_budgets)
+
+        evidence_phase_budgets, evidence_phase_mode = helper_mod.auto_extraction_phase_budget_tokens(
+            {"extraction_phase_budget_mode": "auto"},
+            {},
+            remote_budget_tokens=100,
+            question_type="evidence",
+        )
+        self.assertEqual("auto", evidence_phase_mode)
+        self.assertEqual({"pending_async": 15, "provisional": 35, "final": 70}, evidence_phase_budgets)
 
     def test_moduleized_cross_session_policy_matches_profile_memory_core_budget(self) -> None:
         core_mod = importlib.import_module("tools.matrixark_mcp_core")
