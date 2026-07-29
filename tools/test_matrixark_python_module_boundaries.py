@@ -2018,6 +2018,72 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual({"profile": 1}, core_mod.memory_layer_counts(selected))
         self.assertEqual({"profile": 1}, context_pack_mod._memory_layer_counts(selected))
 
+    def test_hot_context_event_records_are_first_class_session_memory(self) -> None:
+        records_mod = importlib.import_module("tools.matrixark_mcp_ingest_message_records")
+        envelope = {
+            "kind": "message",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "why is context event missing from serving memory?",
+                }
+            ],
+            "scope": {
+                "tenant_id": "tenant_hot",
+                "user_id": "user_hot",
+                "session_id": "codex:thread-hot",
+            },
+            "metadata": {
+                "source_hook_type_counts": {"before_llm": 1},
+                "source_codex_event_counts": {"UserPromptSubmit": 1},
+            },
+            "ingestion_time_ms": 1780000000000,
+        }
+        extraction = {
+            "classification": "PENDING_ASYNC_EXTRACTION",
+            "event_type": "pending_async",
+            "status": "observed",
+        }
+
+        event = records_mod.context_event_record(
+            event_id_hash=101,
+            node_hash=202,
+            node_path=["tenant:tenant_hot", "user:user_hot", "session:codex:thread-hot"],
+            text="user: why is context event missing from serving memory?",
+            extraction=extraction,
+            envelope=envelope,
+            prior_context={},
+            hook={"hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
+        )
+        index_terms = records_mod.context_event_index_terms(
+            extraction=extraction,
+            text=event["text"],
+            envelope=envelope,
+        )
+        indexes = records_mod.context_event_index_records(
+            index_terms=index_terms,
+            event_id_hash=101,
+            node_hash=202,
+            scope=envelope["scope"],
+            updated_at_ms=envelope["ingestion_time_ms"],
+        )
+
+        self.assertEqual("context_event", event["record_type"])
+        self.assertEqual("session", event["memory_scope"])
+        self.assertEqual("same_session", event["session_continuity"])
+        self.assertEqual("pending_async", event["extraction_phase"])
+        self.assertEqual(envelope["scope"], event["scope"])
+        self.assertEqual(envelope["scope"], event["access_scope"])
+        self.assertEqual({"user": 1}, event["source_role_counts"])
+        self.assertEqual({"before_llm": 1}, event["source_hook_type_counts"])
+        self.assertEqual({"UserPromptSubmit": 1}, event["source_codex_event_counts"])
+        self.assertEqual(1780000000000, event["updated_at_ms"])
+        self.assertIn("memory_scope:session", index_terms)
+        self.assertIn("session_continuity:same_session", index_terms)
+        self.assertTrue(all(record["memory_scope"] == "session" for record in indexes))
+        self.assertTrue(all(record["session_continuity"] == "same_session" for record in indexes))
+        self.assertTrue(all(record["extraction_phase"] == "pending_async" for record in indexes))
+
     def test_shared_pack_builder_exposes_memory_layer_budget_and_pressure(self) -> None:
         builder_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pack_builder")
         metrics_mod = importlib.import_module("tools.matrixark_mcp_retrieve_metrics")
