@@ -2355,6 +2355,132 @@ class MatrixArkLocalAdapter:
             messages.extend(record_messages)
             source_event_ids.append(record["event_id_hash"])
         if not messages:
+            if force and final_session_boundary:
+                session_key = session_buffer_key_from_scope(scope)
+                records = self.read_all()
+                prior_commits = [
+                    record
+                    for record in records
+                    if record.get("record_type") == "context_batch_commit"
+                    and session_buffer_key_from_scope(record.get("scope", {})) == session_key
+                ]
+                already_finalized = any(
+                    (
+                        record.get("record_type") == "context_session_boundary"
+                        and record.get("final_session_boundary")
+                        and session_buffer_key_from_scope(record.get("scope", {})) == session_key
+                    )
+                    or (
+                        record.get("record_type") == "context_batch_commit"
+                        and record.get("final_session_boundary")
+                        and session_buffer_key_from_scope(record.get("scope", {})) == session_key
+                    )
+                    for record in records
+                )
+                if prior_commits and not already_finalized:
+                    node_path = self.default_session_node_path(scope)
+                    node_hash = stable_hash("/".join(node_path))
+                    committed_event_ids: list[int] = []
+                    for commit in prior_commits:
+                        for event_id in commit.get("source_event_ids", []):
+                            try:
+                                committed_event_ids.append(int(event_id))
+                            except (TypeError, ValueError):
+                                continue
+                    source_lineage = source_event_lineage_summary(prior_commits)
+                    finalized_at_ms = now_ms()
+                    boundary_hash = stable_hash(
+                        f"session_boundary:{session_key}:{ordered_unique_any(committed_event_ids)}:final"
+                    )
+                    boundary_record: Json = {
+                        "record_type": "context_session_boundary",
+                        "boundary_hash": boundary_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "scope": scope,
+                        "summary_text": (
+                            f"Session finalized after {len(prior_commits)} provisional commit(s) "
+                            f"covering {len(ordered_unique_any(committed_event_ids))} event(s)."
+                        ),
+                        "status": "finalized",
+                        "commit_reason": commit_reason,
+                        "trigger_policy": trigger_policy,
+                        "extraction_phase": "final",
+                        "final_session_boundary": True,
+                        "prior_commit_count": len(prior_commits),
+                        "prior_committed_event_count": len(ordered_unique_any(committed_event_ids)),
+                        "source_event_count": len(ordered_unique_any(committed_event_ids)),
+                        **{
+                            key: value
+                            for key, value in source_lineage.items()
+                            if key
+                            in {
+                                "source_roles",
+                                "source_role_counts",
+                                "source_hook_types",
+                                "source_hook_type_counts",
+                                "source_codex_events",
+                                "source_codex_event_counts",
+                                "source_memory_selection_policies",
+                                "source_memory_selection_policy_counts",
+                                "source_memory_selection_lossy_count",
+                                "source_memory_selection_complete_count",
+                                "source_memory_selection_dropped_text_chars",
+                                "source_memory_selection_dropped_line_count",
+                                "source_memory_selection_retained_text_ratio_avg",
+                                "source_memory_selection_retained_line_ratio_avg",
+                                "source_extraction_phases",
+                            }
+                            and value not in (None, "", [], {})
+                        },
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "created_at_ms": finalized_at_ms,
+                        "updated_at_ms": finalized_at_ms,
+                    }
+                    _dirty_hashes, dirty_records = self.node_summary_dirty_records(
+                        node_path=node_path,
+                        scope=scope,
+                        updated_at_ms=finalized_at_ms,
+                        source_ref_type="session_boundary",
+                        source_hash_field="source_boundary_hash",
+                        source_hash=boundary_hash,
+                        dirty_reason="session_finalized",
+                        propagate_depth=0,
+                        source_lineage=boundary_record,
+                    )
+                    self.append_many([boundary_record, *dirty_records])
+                    return {
+                        "status": "finalized",
+                        "pending_event_count": pending_event_count,
+                        "pending_message_count": pending_message_count,
+                        "threshold_messages": threshold,
+                        "commit_reason": commit_reason,
+                        "trigger_policy": trigger_policy,
+                        "idle_timeout_ms": idle_timeout_ms,
+                        "idle_elapsed_ms": idle_elapsed_ms,
+                        "extraction_phase": "final",
+                        "final_session_boundary": True,
+                        "boundary_hash": boundary_hash,
+                        "prior_commit_count": len(prior_commits),
+                        "prior_committed_event_count": len(ordered_unique_any(committed_event_ids)),
+                        "summary_refresh": {
+                            "status": "dirty_marked",
+                            "dirty_hashes": _dirty_hashes,
+                            "dirty_reason": "session_finalized",
+                        },
+                        "trigger_evidence": {
+                            **trigger_evidence,
+                            "already_finalized": False,
+                            "prior_commit_count": len(prior_commits),
+                        },
+                    }
+                if already_finalized:
+                    trigger_evidence = {
+                        **trigger_evidence,
+                        "already_finalized": True,
+                        "prior_commit_count": len(prior_commits),
+                    }
             return {
                 "status": "empty",
                 "pending_event_count": pending_event_count,

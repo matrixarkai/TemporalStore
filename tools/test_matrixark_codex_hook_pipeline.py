@@ -8747,6 +8747,107 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 any("Stop force-drains" in str(record.get("state") or "") for record in assistant_decisions)
             )
 
+    def test_stop_boundary_finalizes_after_threshold_drained_session_without_reextracting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-stop-after-threshold.jsonl")
+            scope = {
+                "account_id": "acct_stop_after_threshold",
+                "tenant_id": "tenant_stop_after_threshold",
+                "user_id": "user_stop_after_threshold",
+                "session_id": "session_stop_after_threshold",
+            }
+            base_args = {
+                "scope": scope,
+                "async_processing": True,
+                "auto_batch_extract": False,
+                "session_buffer_threshold": 20,
+                "skip_prior_context": True,
+            }
+            first = adapter.ingest(
+                {
+                    **base_args,
+                    "messages": [{"role": "user", "content": "User asks whether Stop should duplicate extraction."}],
+                }
+            )
+            second = adapter.ingest(
+                {
+                    **base_args,
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "Decision: threshold extracts provisionally; Stop only finalizes the drained session.",
+                        }
+                    ],
+                }
+            )
+            self.assertEqual(1, first["session_buffer"]["pending_event_count"])
+            self.assertEqual(2, second["session_buffer"]["pending_event_count"])
+
+            threshold = adapter.session_commit(
+                {
+                    "scope": scope,
+                    "threshold_messages": 2,
+                    "force": False,
+                    "commit_reason": "threshold",
+                    "skip_prior_context": True,
+                }
+            )
+            self.assertEqual("committed", threshold["status"])
+            self.assertEqual("threshold", threshold["trigger_policy"])
+            self.assertEqual("provisional", threshold["extraction_phase"])
+            self.assertFalse(threshold["final_session_boundary"])
+            self.assertFalse(adapter.pending_session_events(scope))
+
+            stop = adapter.session_commit(
+                {
+                    "scope": scope,
+                    "threshold_messages": 20,
+                    "force": True,
+                    "commit_reason": "hook_boundary",
+                    "skip_prior_context": True,
+                }
+            )
+            self.assertEqual("finalized", stop["status"])
+            self.assertEqual("force", stop["trigger_policy"])
+            self.assertEqual("final", stop["extraction_phase"])
+            self.assertTrue(stop["final_session_boundary"])
+            self.assertEqual(1, stop["prior_commit_count"])
+            self.assertEqual(2, stop["prior_committed_event_count"])
+            self.assertEqual("dirty_marked", stop["summary_refresh"]["status"])
+
+            second_stop = adapter.session_commit(
+                {
+                    "scope": scope,
+                    "threshold_messages": 20,
+                    "force": True,
+                    "commit_reason": "hook_boundary",
+                    "skip_prior_context": True,
+                }
+            )
+            self.assertEqual("empty", second_stop["status"])
+            self.assertTrue(second_stop["trigger_evidence"]["already_finalized"])
+
+            records = adapter.read_all()
+            commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
+            boundaries = [
+                record
+                for record in records
+                if record.get("record_type") == "context_session_boundary"
+                and record.get("final_session_boundary")
+            ]
+            self.assertEqual(1, len(commits))
+            self.assertEqual(1, len(boundaries))
+            self.assertEqual(2, boundaries[0]["prior_committed_event_count"])
+            self.assertEqual(["assistant", "user"], boundaries[0]["source_roles"])
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_summary_dirty"
+                    and record.get("dirty_reason") == "session_finalized"
+                    and record.get("source_boundary_hash") == boundaries[0]["boundary_hash"]
+                    for record in records
+                )
+            )
+
     def test_threshold_commit_keeps_uncommitted_tail_pending(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-threshold-tail.jsonl")
