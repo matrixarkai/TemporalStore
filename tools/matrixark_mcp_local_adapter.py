@@ -7201,6 +7201,20 @@ class MatrixArkLocalAdapter:
                 if status == "cross_session"
                 else "session-neutral context"
             )
+            source_session_ids = first_list("source_session_ids")
+            source_entity_hashes = first_list("source_entity_hashes")
+            source_event_ids = first_list("source_event_ids")
+            extraction_context_event_ids = first_list("extraction_context_event_ids")
+            current_state_source_session_count = candidate.get("current_state_source_session_count")
+            current_state_source_entity_count = candidate.get("current_state_source_entity_count")
+            try:
+                current_state_source_session_count = int(current_state_source_session_count or 0)
+            except (TypeError, ValueError):
+                current_state_source_session_count = 0
+            try:
+                current_state_source_entity_count = int(current_state_source_entity_count or 0)
+            except (TypeError, ValueError):
+                current_state_source_entity_count = 0
             return {
                 **candidate,
                 "session_continuity": status,
@@ -7209,6 +7223,7 @@ class MatrixArkLocalAdapter:
                 "memory_scope": first_value("memory_scope"),
                 "extraction_phase": first_value("extraction_phase"),
                 "final_session_boundary": bool(first_value("final_session_boundary", False)),
+                "promoted_from_memory_scope": first_value("promoted_from_memory_scope"),
                 "profile_promotion_policy": first_value("profile_promotion_policy"),
                 "profile_promotion_blocker": first_value("profile_promotion_blocker"),
                 "source_roles": first_list("source_roles"),
@@ -7224,6 +7239,14 @@ class MatrixArkLocalAdapter:
                 "source_extraction_phases": first_list("source_extraction_phases"),
                 "source_profile_promotion_policies": first_list("source_profile_promotion_policies"),
                 "source_profile_promotion_blockers": first_list("source_profile_promotion_blockers"),
+                "source_session_ids": source_session_ids,
+                "source_event_ids": source_event_ids,
+                "source_entity_hashes": source_entity_hashes,
+                "source_session_count": len(source_session_ids),
+                "source_entity_count": len(source_entity_hashes),
+                "extraction_context_event_ids": extraction_context_event_ids,
+                "current_state_source_session_count": current_state_source_session_count or len(source_session_ids),
+                "current_state_source_entity_count": current_state_source_entity_count or len(source_entity_hashes),
                 "source_entity_types": first_list("source_entity_types"),
                 "question_type": question_type,
             }

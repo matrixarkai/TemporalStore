@@ -6461,6 +6461,15 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         value = ref.get("source_session_ids")
         if isinstance(value, list) and value:
             item["source_session_ids"] = value[:8]
+        value = ref.get("source_event_ids")
+        if isinstance(value, list) and value:
+            item["source_event_ids"] = value[:8]
+        value = ref.get("extraction_context_event_ids")
+        if isinstance(value, list) and value:
+            item["extraction_context_event_ids"] = value[:8]
+        value = ref.get("source_session_count")
+        if isinstance(value, int) and value > 0:
+            item["source_session_count"] = value
         value = ref.get("source_entity_hashes")
         if isinstance(value, list) and value:
             item["source_entity_count"] = len(value)
