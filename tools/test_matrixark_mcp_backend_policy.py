@@ -2883,6 +2883,33 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 self.assertEqual(["tool", "user"], summary["source_roles"])
                 self.assertEqual(["hook_boundary", "live_ingest"], summary["source_hook_types"])
                 self.assertEqual(["PostToolUse", "UserPromptSubmit"], summary["source_codex_events"])
+            summary_hashes = {record["summary_hash"] for record in summaries}
+            summary_embeddings = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") == "context_embedding"
+                and record.get("ref_type") == "summary"
+                and record.get("ref_hash") in summary_hashes
+            ]
+            self.assertTrue(summary_embeddings)
+            for embedding in summary_embeddings:
+                for field in [
+                    "source_event_ids",
+                    "source_roles",
+                    "source_role_counts",
+                    "source_hook_types",
+                    "source_hook_type_counts",
+                    "source_codex_events",
+                    "source_codex_event_counts",
+                    "source_summary_hashes",
+                    "source_entity_hashes",
+                    "source_operator_hashes",
+                    "summary_generation_policy",
+                    "dirty_hash",
+                    "extraction_phase",
+                    "final_session_boundary",
+                ]:
+                    self.assertNotIn(field, embedding)
 
     def test_context_summary_secondary_terms_include_hook_provenance(self) -> None:
         terms = mcp_core.candidate_index_terms(

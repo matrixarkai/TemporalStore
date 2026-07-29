@@ -3736,13 +3736,9 @@ class MatrixArkLocalAdapter:
                         "dim": len(embedding_for_text(summary_text)),
                         "model": embedding_model_name(),
                         "vector": embedding_for_text(summary_text),
-                        "summary_generation_policy": summary_policy,
-                        "dirty_hash": dirty.get("dirty_hash"),
                         "scope": dirty.get("scope", scope),
                         "memory_scope": summary_record["memory_scope"],
                         "session_continuity": summary_record["session_continuity"],
-                        "extraction_phase": summary_record["extraction_phase"],
-                        "final_session_boundary": summary_record["final_session_boundary"],
                         "updated_at_ms": refreshed_at_ms,
                     }
                 )
