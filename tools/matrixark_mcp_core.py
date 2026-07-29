@@ -4823,13 +4823,16 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     default_enabled = session_scope == "prefer" and remote_budget_tokens > 0
     enabled = bool(config.get("enabled", default_enabled)) and session_scope == "prefer" and remote_budget_tokens > 0
     normalized_question_type = str(question_type or "fact").strip().lower()
-    if normalized_question_type in {"current_state", "latest"}:
+    if normalized_question_type in {"current_state", "latest", "profile_memory"}:
         default_ratio = DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO
-        question_budget_reason = "current_state_or_latest_queries_need_prior entity state and stale blockers"
+        if normalized_question_type == "profile_memory":
+            question_budget_reason = "profile_memory_queries_need_long_term profile and cross-session state"
+        else:
+            question_budget_reason = "current_state_or_latest_queries_need_prior entity state and stale blockers"
     elif normalized_question_type in {"multi_hop", "date"}:
         default_ratio = DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO
         question_budget_reason = "multi_hop_or_date_queries_often_need_multiple sessions"
-    elif normalized_question_type in {"broad_exploration", "evidence", "profile_memory"}:
+    elif normalized_question_type in {"broad_exploration", "evidence"}:
         default_ratio = DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO
         question_budget_reason = "broad_or_evidence_queries_get_extra cross-session exploration"
     else:
@@ -4906,7 +4909,7 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
         "min_entity_bridge_refs": min_entity_bridge_refs if enabled else 0,
         "parallelism": parallelism if enabled else 0,
         "strategy": "same_session_first_entity_bridge_then_bounded_cross_session",
-        "budget_guidance": "cross-session budget is a maximum cap, not a quota: 12% normally, 15% for broad/evidence, 20% for current-state/latest/multi-hop/date; spend it only on high-quality refs, prefer entities/summaries/compressions, and require high-confidence raw events",
+        "budget_guidance": "cross-session budget is a maximum cap, not a quota: 12% normally, 15% for broad/evidence, 20% for current-state/latest/profile-memory/multi-hop/date; spend it only on high-quality refs, prefer entities/summaries/compressions, and require high-confidence raw events",
     }
 
 

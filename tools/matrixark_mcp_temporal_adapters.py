@@ -2978,6 +2978,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "skill_status_watermark": skill_status_watermark,
             "index_posting_watermark": watermark_count,
             "query": query,
+            "question_type": question_type,
             "scope": scope,
             "session_scope": retrieval_session_scope,
             "scope_key": scope_key,
