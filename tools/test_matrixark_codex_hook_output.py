@@ -2462,7 +2462,13 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 session_commit_threshold=2,
                 idle_commit_timeout_ms=300000,
                 understanding_provider="rules",
+                extraction_provider="rules",
                 segment_provider="deterministic",
+                segment_model="codex-memory-segmenter",
+                segment_model_path="/models/codex-memory-segmenter",
+                segment_max_new_tokens=128,
+                segment_provider_fallback="deterministic",
+                skip_prior_context=True,
             )
             server = Server()
             result = hook.fast_async_hook_ingest(
@@ -2483,6 +2489,14 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertFalse(commit_args["force"])
         self.assertEqual(2, commit_args["threshold_messages"])
         self.assertEqual(2, commit_args["max_messages"])
+        self.assertEqual("rules", commit_args["understanding_provider"])
+        self.assertEqual("rules", commit_args["extraction_provider"])
+        self.assertEqual("deterministic", commit_args["segment_provider"])
+        self.assertEqual("codex-memory-segmenter", commit_args["segment_model"])
+        self.assertEqual("/models/codex-memory-segmenter", commit_args["segment_model_path"])
+        self.assertEqual(128, commit_args["segment_max_new_tokens"])
+        self.assertEqual("deterministic", commit_args["segment_provider_fallback"])
+        self.assertTrue(commit_args["skip_prior_context"])
         self.assertEqual("session_commit", commit_hook["hook_type"])
         decision = hook.auto_batch_decision_summary(result)
         self.assertEqual("committed", decision["decision"])
@@ -2580,7 +2594,13 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 session_commit_threshold=20,
                 idle_commit_timeout_ms=1,
                 understanding_provider="rules",
+                extraction_provider="rules",
                 segment_provider="deterministic",
+                segment_model="codex-memory-idle-segmenter",
+                segment_model_path="/models/codex-memory-idle-segmenter",
+                segment_max_new_tokens=64,
+                segment_provider_fallback="deterministic",
+                skip_prior_context=True,
             )
             server = Server()
             result = hook.fast_async_hook_ingest(
@@ -2627,6 +2647,14 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("idle_timeout", commit_args["commit_reason"])
         self.assertFalse(commit_args["force"])
         self.assertEqual(1, commit_args["idle_timeout_ms"])
+        self.assertEqual("rules", commit_args["understanding_provider"])
+        self.assertEqual("rules", commit_args["extraction_provider"])
+        self.assertEqual("deterministic", commit_args["segment_provider"])
+        self.assertEqual("codex-memory-idle-segmenter", commit_args["segment_model"])
+        self.assertEqual("/models/codex-memory-idle-segmenter", commit_args["segment_model_path"])
+        self.assertEqual(64, commit_args["segment_max_new_tokens"])
+        self.assertEqual("deterministic", commit_args["segment_provider_fallback"])
+        self.assertTrue(commit_args["skip_prior_context"])
         self.assertEqual("idle_timeout_before_ingest", commit_hook["trigger"])
         self.assertNotIn("thread_id", commit_hook)
         self.assertNotIn("turn_id", commit_hook)
@@ -2901,7 +2929,13 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 session_commit_threshold=2,
                 idle_commit_timeout_ms=0,
                 understanding_provider="rules",
+                extraction_provider="rules",
                 segment_provider="deterministic",
+                segment_model="codex-memory-tool-segmenter",
+                segment_model_path="/models/codex-memory-tool-segmenter",
+                segment_max_new_tokens=96,
+                segment_provider_fallback="rules",
+                skip_prior_context=True,
             )
             server = Server()
             result = hook.fast_async_hook_ingest(
@@ -2925,6 +2959,14 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("threshold", commit_args["commit_reason"])
         self.assertFalse(commit_args["force"])
         self.assertEqual(2, commit_args["max_messages"])
+        self.assertEqual("rules", commit_args["understanding_provider"])
+        self.assertEqual("rules", commit_args["extraction_provider"])
+        self.assertEqual("deterministic", commit_args["segment_provider"])
+        self.assertEqual("codex-memory-tool-segmenter", commit_args["segment_model"])
+        self.assertEqual("/models/codex-memory-tool-segmenter", commit_args["segment_model_path"])
+        self.assertEqual(96, commit_args["segment_max_new_tokens"])
+        self.assertEqual("rules", commit_args["segment_provider_fallback"])
+        self.assertTrue(commit_args["skip_prior_context"])
         self.assertEqual("session_commit", commit_hook["hook_type"])
         self.assertNotIn("thread_id", commit_hook)
         self.assertEqual(1, len(server.adapter.session_buffer_records))
