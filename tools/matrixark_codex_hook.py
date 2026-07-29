@@ -3011,6 +3011,7 @@ def codex_memory_selection_metadata(*, role: str, event: str, text: str, origina
     selected_text_chars = len(selected_text)
     dropped_text_chars = max(0, original_text_chars - selected_text_chars)
     dropped_line_count = max(0, original_line_count - line_count)
+    selection_transformed = " ".join(selected_text.split()) != " ".join(original.split())
     if normalized_role == "tool":
         policy = "selected_tool_evidence_only"
         truncation_marker = "[tool evidence truncated]"
@@ -3036,13 +3037,18 @@ def codex_memory_selection_metadata(*, role: str, event: str, text: str, origina
         "original_line_count": original_line_count,
         "dropped_text_chars": dropped_text_chars,
         "dropped_line_count": dropped_line_count,
-        "retained_text_ratio": round(selected_text_chars / original_text_chars, 6) if original_text_chars else 1.0,
-        "retained_line_ratio": round(line_count / original_line_count, 6) if original_line_count else 1.0,
+        "retained_text_ratio": min(1.0, round(selected_text_chars / original_text_chars, 6)) if original_text_chars else 1.0,
+        "retained_line_ratio": min(1.0, round(line_count / original_line_count, 6)) if original_line_count else 1.0,
         "max_selected_chars": max_chars,
         "max_selected_lines": max_lines,
         "large_payload_verbatim_stored": False,
         "truncated": truncation_marker in selected_text,
-        "selection_lossy": bool(dropped_text_chars or dropped_line_count or truncation_marker in selected_text),
+        "selection_lossy": bool(
+            selection_transformed
+            or dropped_text_chars
+            or dropped_line_count
+            or truncation_marker in selected_text
+        ),
         "selection_stage": "codex_hook_before_temporalstore_ingest",
     }
 
