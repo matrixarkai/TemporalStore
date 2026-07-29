@@ -629,8 +629,13 @@ def refresh_dirty_node_summaries(
         source_entity_types = summary_refresh_records["source_entity_types"]
         source_operator_hashes = summary_refresh_records["source_operator_hashes"]
         source_roles = summary_refresh_records.get("source_roles", [])
+        source_role_counts = summary_refresh_records.get("source_role_counts", {})
         source_hook_types = summary_refresh_records.get("source_hook_types", [])
+        source_hook_type_counts = summary_refresh_records.get("source_hook_type_counts", {})
         source_codex_events = summary_refresh_records.get("source_codex_events", [])
+        source_codex_event_counts = summary_refresh_records.get("source_codex_event_counts", {})
+        source_memory_selection_policies = summary_refresh_records.get("source_memory_selection_policies", [])
+        source_memory_selection_policy_counts = summary_refresh_records.get("source_memory_selection_policy_counts", {})
         source_memory_scopes = summary_refresh_records.get("source_memory_scopes", [])
         source_session_continuities = summary_refresh_records.get("source_session_continuities", [])
         source_extraction_phases = summary_refresh_records.get("source_extraction_phases", [])
@@ -680,8 +685,11 @@ def refresh_dirty_node_summaries(
                     "source_entity_count": len(source_entity_hashes),
                     "source_entity_types": source_entity_types,
                     "source_roles": source_roles,
+                    "source_role_counts": source_role_counts,
                     "source_hook_types": source_hook_types,
+                    "source_hook_type_counts": source_hook_type_counts,
                     "source_codex_events": source_codex_events,
+                    "source_codex_event_counts": source_codex_event_counts,
                     "source_memory_selection_policies": source_memory_selection_policies,
                     "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                     "source_memory_scopes": source_memory_scopes,
@@ -730,8 +738,11 @@ def refresh_dirty_node_summaries(
                 "source_entity_count": len(source_entity_hashes),
                 "source_entity_types": source_entity_types,
                 "source_roles": source_roles,
+                "source_role_counts": source_role_counts,
                 "source_hook_types": source_hook_types,
+                "source_hook_type_counts": source_hook_type_counts,
                 "source_codex_events": source_codex_events,
+                "source_codex_event_counts": source_codex_event_counts,
                 "source_memory_selection_policies": source_memory_selection_policies,
                 "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                 "source_memory_scopes": source_memory_scopes,
