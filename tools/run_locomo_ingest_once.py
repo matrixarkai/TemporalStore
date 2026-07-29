@@ -950,6 +950,8 @@ def main() -> int:
     reader_answer_coverage = reader_answer_coverage_count / total_answer_terms if total_answer_terms else 0.0
     evidence_coverage = matched_refs / total_refs if total_refs else 0.0
     total_token_reduction = token_reduction_percent(total_source_tokens, total_retrieved_tokens)
+    model_contract = benchmark_model_contract(args, reader)
+    shared_oss_contract_passed = bool(model_contract.get("shared_oss_model_contract_passed"))
     thresholds = {
         "min_case_count": args.min_case_count,
         "min_hit_at_k": args.min_hit_rate,
@@ -969,7 +971,7 @@ def main() -> int:
         retrieval_p95=percentile(retrieval_latencies_ms, 95),
         reader_p95=percentile(reader_latencies_ms, 95),
         open_source_calls=reader.open_source_calls,
-        model_contract=benchmark_model_contract(args, reader),
+        model_contract=model_contract,
         thresholds=thresholds,
     )
     if args.require_shared_oss_models and not shared_oss_contract_passed:
@@ -1096,7 +1098,7 @@ def main() -> int:
         "reader_provider_name": reader.config.provider_name,
         "reader_model": reader.config.model,
         "embedding_model": args.embedding_model,
-        "benchmark_model_contract": benchmark_model_contract(args, reader),
+        "benchmark_model_contract": model_contract,
         "reader_prompt_system": OSS_READER_SYSTEM_PROMPT,
         "reader_prompt_user_template": OSS_READER_USER_PROMPT_TEMPLATE,
         "reader_max_context_chars": reader.config.max_context_chars,
@@ -2840,8 +2842,6 @@ def warm_source_ranking_caches(sources: list[dict[str, str]]) -> None:
         source_group_identity(source)
         source_layer_identity(source)
         source_date(source)
-    if _RETRIEVAL_ENCODER is not None:
-        warm_retrieval_embeddings(source.get("body", "")[:4096] for source in sources)
 
 
 def configure_retrieval_embedding_model(model_name: str, *, require_runtime: bool = False) -> None:
@@ -2879,10 +2879,24 @@ def shared_dense_relevance_score(question: str, text: str) -> int:
         return 0
     q_vec = retrieval_embedding(ACTIVE_RETRIEVAL_EMBEDDING_MODEL, question[:512])
     t_vec = retrieval_embedding(ACTIVE_RETRIEVAL_EMBEDDING_MODEL, text[:4096])
+    return dense_relevance_from_vectors(q_vec, t_vec)
+
+
+def dense_relevance_from_vectors(q_vec: list[float], t_vec: list[float]) -> int:
     if not q_vec or not t_vec:
         return 0
     dot = sum(a * b for a, b in zip(q_vec, t_vec))
     return int(round(dot * 80.0))
+
+
+def dense_rerank_window(max_events: int, source_count: int) -> int:
+    default_window = max(64, min(256, max_events * 3))
+    raw = os.environ.get("MATRIXARK_BENCHMARK_DENSE_RERANK_WINDOW", str(default_window))
+    try:
+        value = int(raw)
+    except ValueError:
+        value = default_window
+    return max(max_events, min(source_count, max(1, value)))
 
 
 def warm_retrieval_embeddings(texts: Any) -> None:
@@ -2938,8 +2952,21 @@ def rank_sources(
     ranked = []
     for index, source in enumerate(sources):
         body = source.get("body", "")
-        ranked.append((direct_relevance_score(question, body), -index, source))
+        ranked.append((lexical_relevance_score(question, body), -index, source))
     ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    if _RETRIEVAL_ENCODER is not None and ranked:
+        window = dense_rerank_window(max(1, max_events), len(ranked))
+        q_vec = retrieval_embedding(ACTIVE_RETRIEVAL_EMBEDDING_MODEL, question[:512])
+        warm_retrieval_embeddings(row[2].get("body", "")[:4096] for row in ranked[:window])
+        reranked = []
+        for lexical_score, neg_index, source in ranked[:window]:
+            dense_score = dense_relevance_from_vectors(
+                q_vec,
+                retrieval_embedding(ACTIVE_RETRIEVAL_EMBEDDING_MODEL, source.get("body", "")[:4096]),
+            )
+            reranked.append((lexical_score + dense_score, neg_index, source))
+        reranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        ranked = [*reranked, *ranked[window:]]
     if should_use_cross_session_diversity(question):
         selected = diverse_ranked_sources(question, ranked, max_events)
     else:
@@ -8899,16 +8926,19 @@ def extractive_reader_hint(question: str, blocks: list[dict[str, str]]) -> str:
     return answer[:220]
 
 
-def direct_relevance_score(question: str, text: str) -> int:
+def lexical_relevance_score(question: str, text: str) -> int:
     q_tokens = answer_tokens(question)
     text_tokens = answer_tokens(text)
     score = sum(10 for token in q_tokens if token_matches(token, text_tokens))
     score += update_semantics_score(question, text, text_tokens)
     score += benchmark_gap_relevance_boost(question, text, text_tokens)
-    score += shared_dense_relevance_score(question, text)
     if exact_question_substring_match(text, question):
         score += 100
     return score
+
+
+def direct_relevance_score(question: str, text: str) -> int:
+    return lexical_relevance_score(question, text) + shared_dense_relevance_score(question, text)
 
 
 def exact_question_substring_match(text: str, question: str) -> bool:
