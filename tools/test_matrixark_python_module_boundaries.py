@@ -1043,6 +1043,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                     "source_codex_event_counts": {"Stop": 1},
                     "source_memory_scopes": ["session"],
                     "source_session_continuities": ["same_session"],
+                    "source_extraction_phases": ["provisional"],
+                    "extraction_phase": "provisional",
+                    "final_session_boundary": False,
                 }
             ],
             {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"},
@@ -1052,6 +1055,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(1, readiness["pending_task_count"])
         self.assertEqual(1, readiness["scheduled_idle_task_count"])
         self.assertEqual(1, readiness["due_idle_task_count"])
+        self.assertEqual({"provisional": 1}, readiness["pending_extraction_phases"])
+        self.assertEqual(0, readiness["pending_final_session_boundary_count"])
         self.assertIn("idle_commit_scheduled", readiness["freshness_warnings"])
 
         resolved = readiness_mod.async_pipeline_retrieval_readiness(
@@ -1475,6 +1480,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(173, scheduled_task["idle_commit_deadline_ms"])
         self.assertEqual(1, scheduled_task["idle_commit_pending_event_count"])
         self.assertEqual(1, scheduled_task["idle_commit_pending_message_count"])
+        self.assertEqual(["provisional"], scheduled_task["source_extraction_phases"])
+        self.assertEqual("provisional", scheduled_task["extraction_phase"])
+        self.assertFalse(scheduled_task["final_session_boundary"])
 
         class BufferAdapter:
             def __init__(self) -> None:
