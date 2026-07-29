@@ -4725,6 +4725,40 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(cross_session["decision"], "always_consider_same_user_cross_session_when_session_scope_prefer")
         self.assertEqual(cross_session["strategy"], "same_session_first_entity_bridge_then_bounded_cross_session")
 
+    def test_production_retrieve_gives_profile_memory_full_cross_session_budget(self) -> None:
+        mcp.MATRIXARK_MCP_PROFILE = "production"
+        mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""
+        client = _NativeEnvelopeContextPackClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._count_key = "matrixark:test:record_count"
+        adapter._record_hash_key = "matrixark:test:records"
+        adapter._shard_size = 128
+        adapter._backend_label = lambda: "temporalstore-direct"
+        adapter._context_pack_cache_max_entries = 0
+        adapter._context_pack_cache_ttl_s = 0
+        adapter._context_pack_cache_lock = threading.RLock()
+        adapter._context_pack_cache = {}
+        adapter._retrieval_records_cache_generation = 0
+        adapter._observe_model_latency = lambda *args, **kwargs: None
+        adapter.native_context_pack_required = lambda: True
+
+        adapter.retrieve({
+            "query": "What do you remember about me across previous sessions?",
+            "scope": {"account_id": "acct", "tenant_id": "tenant", "user_id": "user", "session_id": "s1"},
+            "max_context_tokens": 1000,
+            "audit_mode": "off",
+        })
+
+        request = client.calls[0]["request"]
+        self.assertEqual("profile_memory", request["question_type"])
+        cross_session = request["cross_session"]
+        self.assertTrue(cross_session["enabled"])
+        self.assertEqual(cross_session["budget_ratio"], 0.2)
+        self.assertEqual(cross_session["budget_tokens"], 190)
+        self.assertTrue(cross_session["question_budget_reason"].startswith("profile_memory_queries_need_long_term"))
+        self.assertEqual(["entity", "summary", "compression"], cross_session["preferred_ref_types"])
+
     def test_direct_native_context_pack_accepts_explicit_cross_session_budget(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"
         mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""
@@ -4836,6 +4870,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "evidence": (150, "broad_or_evidence_queries_get_extra"),
             "current_state": (200, "current_state_or_latest_queries_need_prior"),
             "latest": (200, "current_state_or_latest_queries_need_prior"),
+            "profile_memory": (200, "profile_memory_queries_need_long_term"),
             "multi_hop": (200, "multi_hop_or_date_queries_often_need_multiple"),
             "date": (200, "multi_hop_or_date_queries_often_need_multiple"),
         }
