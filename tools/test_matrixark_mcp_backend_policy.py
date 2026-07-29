@@ -3675,6 +3675,10 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         )
         self.assertIn("scope", request["required_output"]["drop_counters"])
         self.assertIn("score_threshold", request["required_output"]["drop_counters"])
+        self.assertIn("source_role_budget", request["required_output"]["drop_counters"])
+        self.assertIn("memory_layer_budget", request["required_output"]["drop_counters"])
+        self.assertIn("memory_selection_policy_budget", request["required_output"]["drop_counters"])
+        self.assertIn("extraction_phase_budget", request["required_output"]["drop_counters"])
         self.assertTrue(request["required_output"]["broad_scan_used"])
         self.assertTrue(request["required_output"]["normal_path_stages"])
         self.assertTrue(request["required_output"]["health_readiness_metrics"])
@@ -4814,6 +4818,40 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(cross_session["raw_evidence_min_score"], 0.45)
         self.assertEqual(cross_session["max_sessions"], 3)
         self.assertEqual(cross_session["parallelism"], 2)
+
+    def test_direct_native_context_pack_accepts_explicit_extraction_phase_budget(self) -> None:
+        mcp.MATRIXARK_MCP_PROFILE = "production"
+        mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""
+        client = _NativeEnvelopeContextPackClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._count_key = "matrixark:test:record_count"
+        adapter._record_hash_key = "matrixark:test:records"
+        adapter._shard_size = 128
+        adapter._backend_label = lambda: "temporalstore-direct"
+        adapter._context_pack_cache_max_entries = 0
+        adapter._context_pack_cache_ttl_s = 0
+        adapter._context_pack_cache_lock = threading.RLock()
+        adapter._context_pack_cache = {}
+        adapter._retrieval_records_cache_generation = 0
+        adapter._observe_model_latency = lambda *args, **kwargs: None
+        adapter.native_context_pack_required = lambda: True
+
+        adapter.retrieve({
+            "query": "show final and provisional Codex memory",
+            "scope": {"account_id": "acct", "tenant_id": "tenant", "user_id": "user", "session_id": "s1"},
+            "max_context_tokens": 1000,
+            "extraction_phase_budget_tokens": {"pending_async": 16, "provisional": 32, "final": 128},
+            "audit_mode": "off",
+        })
+
+        request = client.calls[0]["request"]
+        self.assertEqual(
+            {"pending_async": 16, "provisional": 32, "final": 128},
+            request["extraction_phase_budget_tokens"],
+        )
+        self.assertEqual("explicit", request["extraction_phase_budget_mode"])
+        self.assertIn("extraction_phase_budget", request["required_output"]["drop_counters"])
 
     def test_direct_native_empty_context_pack_is_compacted_by_default(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"

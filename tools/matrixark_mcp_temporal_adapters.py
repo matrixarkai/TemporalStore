@@ -2999,6 +2999,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 remote_budget_tokens=remote_context_budget_tokens,
                 question_type=question_type,
             )
+        extraction_phase_budget_tokens = (
+            optional_object(args, "extraction_phase_budget_tokens")
+            or optional_object(ranking, "extraction_phase_budget_tokens")
+        )
+        extraction_phase_budget_mode = "explicit" if extraction_phase_budget_tokens else ""
         resource_version_watermark = str(
             ranking.get("resource_version_watermark")
             or args.get("resource_version_watermark")
@@ -3052,6 +3057,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "memory_selection_policy_budget_tokens": memory_selection_policy_budget_tokens,
             "memory_selection_policy_budget_mode": memory_selection_policy_budget_mode or (
                 "explicit" if memory_selection_policy_budget_tokens else "disabled"
+            ),
+            "extraction_phase_budget_tokens": extraction_phase_budget_tokens,
+            "extraction_phase_budget_mode": extraction_phase_budget_mode or (
+                "explicit" if extraction_phase_budget_tokens else "disabled"
             ),
             "same_session_priority": bool(ranking.get("same_session_priority", True)),
             "leaf_only": bool(ranking.get("leaf_only", False)),
@@ -3131,6 +3140,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     "stale",
                     "token_budget",
                     "score_threshold",
+                    "source_role_budget",
+                    "memory_layer_budget",
+                    "memory_selection_policy_budget",
+                    "extraction_phase_budget",
                 ],
                 "telemetry": True,
                 "retrieval_metrics": bool(args.get("include_retrieval_metrics")),
