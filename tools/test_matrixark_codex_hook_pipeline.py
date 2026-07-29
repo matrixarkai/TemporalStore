@@ -216,6 +216,40 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertNotIn("event_type:tool_evidence", segment_terms)
         self.assertNotIn("source_type:message", segment_terms)
 
+    def test_secondary_index_cap_preserves_memory_layer_and_selection_terms(self) -> None:
+        from tools.matrixark_mcp_core import limited_index_terms as core_limited_index_terms
+        from tools.matrixark_mcp_indexing import limited_index_terms
+
+        crowded_terms = [
+            "keyword:alpha",
+            "keyword:beta",
+            "keyword:gamma",
+            "keyword:delta",
+            "keyword:epsilon",
+            "keyword:zeta",
+            "keyword:eta",
+            "keyword:theta",
+            "keyword:iota",
+            "keyword:kappa",
+            "memory_scope:user_profile",
+            "session_continuity:cross_session",
+            "extraction_phase:final",
+            "memory_selection_policy:selected_profile_current_state",
+            "memory_selection_quality:complete",
+            "entity_type:assistant_decision",
+        ]
+
+        for selected in [
+            limited_index_terms(crowded_terms, limit=10),
+            core_limited_index_terms(crowded_terms, limit=10),
+        ]:
+            self.assertIn("entity_type:assistant_decision", selected)
+            self.assertIn("memory_scope:user_profile", selected)
+            self.assertIn("session_continuity:cross_session", selected)
+            self.assertIn("extraction_phase:final", selected)
+            self.assertIn("memory_selection_policy:selected_profile_current_state", selected)
+            self.assertIn("memory_selection_quality:complete", selected)
+
     def test_summary_runtime_preserves_event_child_and_entity_lineage_counts(self) -> None:
         result = build_node_summary_refresh_records(
             node_path=["tenant:tenant_runtime", "user:user_runtime", "profile:long_term_memory"],
