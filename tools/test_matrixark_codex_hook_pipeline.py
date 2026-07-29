@@ -4172,6 +4172,46 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 request["memory_layer_budget_tokens"]["profile_entity"],
                 request["memory_layer_budget_tokens"]["summary"],
             )
+            auto_pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "pre refresh summary budget with auto mode",
+                    "max_context_tokens": 100,
+                    "pre_retrieval_summary_refresh": True,
+                    "ranking": {"memory_layer_budget_mode": "auto"},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+            self.assertEqual("local-native-pack", auto_pack["pack_id"])
+            self.assertEqual(2, len(adapter.native_requests))
+            auto_request = adapter.native_requests[1]
+            self.assertEqual(
+                "pre_retrieval_summary_refresh_balanced",
+                auto_request["memory_layer_budget_mode"],
+            )
+            self.assertEqual(14, auto_request["memory_layer_budget_tokens"]["summary"])
+            self.assertEqual(28, auto_request["memory_layer_budget_tokens"]["profile_summary"])
+            self.assertEqual(42, auto_request["memory_layer_budget_tokens"]["profile_entity"])
+            explicit_pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "pre refresh summary budget with explicit tokens",
+                    "max_context_tokens": 100,
+                    "pre_retrieval_summary_refresh": True,
+                    "memory_layer_budget_tokens": {"profile_summary": 7, "profile_entity": 11},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+            self.assertEqual("local-native-pack", explicit_pack["pack_id"])
+            self.assertEqual(3, len(adapter.native_requests))
+            explicit_request = adapter.native_requests[2]
+            self.assertEqual("explicit", explicit_request["memory_layer_budget_mode"])
+            self.assertEqual(
+                {"profile_summary": 7, "profile_entity": 11},
+                explicit_request["memory_layer_budget_tokens"],
+            )
 
     def test_context_pack_cache_key_includes_source_role_budget_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -7082,18 +7082,20 @@ class MatrixArkLocalAdapter:
                 ranking,
                 remote_budget_tokens=remote_context_budget_tokens,
             )
-        memory_layer_budget_tokens = optional_object(args, "memory_layer_budget_tokens") or optional_object(ranking, "memory_layer_budget_tokens")
+        explicit_memory_layer_budget_tokens = optional_object(args, "memory_layer_budget_tokens") or optional_object(ranking, "memory_layer_budget_tokens")
+        custom_memory_layer_budget_fractions = optional_object(args, "memory_layer_budget_fractions") or optional_object(ranking, "memory_layer_budget_fractions")
+        memory_layer_budget_tokens = explicit_memory_layer_budget_tokens
         memory_layer_budget_mode = "explicit" if memory_layer_budget_tokens else ""
-        if not memory_layer_budget_tokens:
+        if pre_retrieval_summary_refresh["enabled"] and not explicit_memory_layer_budget_tokens and not custom_memory_layer_budget_fractions:
+            memory_layer_budget_tokens, memory_layer_budget_mode = pre_retrieval_summary_refresh_memory_layer_budget_tokens(
+                remote_budget_tokens=remote_context_budget_tokens,
+            )
+        elif not memory_layer_budget_tokens:
             memory_layer_budget_tokens, memory_layer_budget_mode = auto_memory_layer_budget_tokens(
                 args,
                 ranking,
                 remote_budget_tokens=remote_context_budget_tokens,
                 question_type=question_type,
-            )
-        if pre_retrieval_summary_refresh["enabled"] and not memory_layer_budget_tokens:
-            memory_layer_budget_tokens, memory_layer_budget_mode = pre_retrieval_summary_refresh_memory_layer_budget_tokens(
-                remote_budget_tokens=remote_context_budget_tokens,
             )
         memory_layer_budget_reason = memory_layer_budget_question_reason(question_type)
         memory_selection_policy_budget_tokens = (
