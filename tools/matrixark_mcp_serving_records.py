@@ -105,8 +105,10 @@ EMBEDDING_LINEAGE_DEBUG_FIELDS = {
     "source_memory_scopes",
     "source_session_continuities",
     "source_extraction_phases",
+    "source_final_session_boundary_count",
     "source_profile_promotion_policies",
     "source_profile_promotion_blockers",
+    "source_event_count",
     "profile_revision",
     "profile_entity_current",
     "supersedes_session_entity_hash",
@@ -114,6 +116,7 @@ EMBEDDING_LINEAGE_DEBUG_FIELDS = {
     "previous_profile_revision",
     "previous_profile_updated_at_ms",
     "extraction_context_event_ids",
+    "final_session_boundary",
 }
 
 COMPACT_DERIVED_SCOPE_FIELDS = {"_explicit_scope_keys"}

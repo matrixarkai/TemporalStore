@@ -2279,6 +2279,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "model": "matrixark-local-token-hash-v1",
                     "memory_scope": "user_profile",
                     "session_continuity": "cross_session",
+                    "extraction_phase": "final",
                     "source_event_ids": [11],
                     "source_session_ids": ["session_old"],
                     "source_role_counts": {"assistant": 1},
@@ -2287,6 +2288,9 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "source_memory_selection_policy_counts": {
                         "selected_assistant_decision_outcome_only": 1,
                     },
+                    "source_event_count": 3,
+                    "source_final_session_boundary_count": 1,
+                    "final_session_boundary": True,
                     "profile_revision": 2,
                     "supersedes_session_entity_hashes": [33],
                 }
@@ -2298,6 +2302,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         embedding = embeddings[0]
         self.assertEqual("user_profile", embedding["memory_scope"])
         self.assertEqual("cross_session", embedding["session_continuity"])
+        self.assertEqual("final", embedding["extraction_phase"])
         for field in [
             "source_event_ids",
             "source_session_ids",
@@ -2305,6 +2310,9 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "source_hook_type_counts",
             "source_codex_event_counts",
             "source_memory_selection_policy_counts",
+            "source_event_count",
+            "source_final_session_boundary_count",
+            "final_session_boundary",
             "profile_revision",
             "supersedes_session_entity_hashes",
         ]:
