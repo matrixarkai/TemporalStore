@@ -517,10 +517,15 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+    rust_replay_slice_diagnostic = bool(args.question_limit or args.question_offset)
     if args.require_full_rust_temporalstore_replay:
         args.require_rust_temporalstore = True
-        args.rust_temporalstore_max_cases = 0
-        args.rust_temporalstore_source_limit = 0
+        if rust_replay_slice_diagnostic:
+            if int(args.rust_temporalstore_max_cases) <= 0 and int(args.question_limit) > 0:
+                args.rust_temporalstore_max_cases = int(args.question_limit)
+        else:
+            args.rust_temporalstore_max_cases = 0
+            args.rust_temporalstore_source_limit = 0
         if args.rust_temporalstore_batch_size <= 0:
             args.rust_temporalstore_batch_size = 64
     retrieval_budget = RetrievalBudgetConfig(
@@ -1070,6 +1075,9 @@ def main() -> int:
         else 0,
         "rust_temporalstore_full_replay_required": args.require_full_rust_temporalstore_replay,
         "rust_temporalstore_full_replay_ready": rust_backend_full_replay_usable,
+        "rust_temporalstore_full_dataset_replay_ready": bool(
+            rust_backend_report and rust_backend_report.get("rust_temporalstore_full_dataset_replay_ready")
+        ),
         "case_count": total,
         "question_limit": args.question_limit,
         "question_offset": args.question_offset,
@@ -1393,13 +1401,17 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         "batch_reports": batch_reports,
         "full_replay_requested": bool(args.require_full_rust_temporalstore_replay),
         "full_replay_contract": {
+            "all_dataset_cases": max_cases == 0,
             "all_cases": max_cases == 0,
+            "all_converted_cases": False,
             "all_sources": int(args.rust_temporalstore_source_limit) == 0,
             "batched": use_batch_replay,
+            "question_slice_diagnostic": bool(args.question_limit or args.question_offset),
         },
     }
     report["harness"] = harness
     rust_case_count = int(harness.get("external_benchmark_case_count") or 0)
+    report["full_replay_contract"]["all_converted_cases"] = rust_case_count == converted_case_count
     rust_hit_at_k = float(harness.get("external_benchmark_hit_at_k") or 0.0)
     python_hit_at_k = float(python_subset_score.get("hit_at_k") or 0.0)
     rust_mean_reciprocal_rank = float(harness.get("external_benchmark_mean_reciprocal_rank") or 0.0)
@@ -1505,14 +1517,16 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
     report["rust_temporalstore_backend_ready"] = parity_ready or benchmark_usable
     report["rust_temporalstore_backend_parity_ready"] = parity_ready
     report["rust_temporalstore_backend_benchmark_usable"] = benchmark_usable
-    report["rust_temporalstore_full_replay_ready"] = (
+    full_converted_replay_ready = (
         report["rust_temporalstore_backend_ready"]
         and bool(args.require_full_rust_temporalstore_replay)
-        and max_cases == 0
         and int(args.rust_temporalstore_source_limit) == 0
         and rust_case_count == converted_case_count
         and all_source_replay_ready
     )
+    full_dataset_replay_ready = full_converted_replay_ready and max_cases == 0
+    report["rust_temporalstore_full_replay_ready"] = full_converted_replay_ready
+    report["rust_temporalstore_full_dataset_replay_ready"] = full_dataset_replay_ready
     report["rust_temporalstore_context_event_ingest_ready"] = context_event_ingest_ready
     report["rust_temporalstore_direct_source_scoring"] = direct_source_scoring
     report["rust_temporalstore_all_source_replay"] = all_source_replay_ready
@@ -1577,7 +1591,7 @@ def rust_temporalstore_report_full_replay_usable(report: dict[str, Any]) -> bool
     contract = report.get("full_replay_contract") if isinstance(report.get("full_replay_contract"), dict) else {}
     return (
         bool(harness.get("external_benchmark_all_source_replay"))
-        and bool(contract.get("all_cases"))
+        and bool(contract.get("all_converted_cases", contract.get("all_cases")))
         and bool(contract.get("all_sources"))
     )
 
@@ -2485,6 +2499,8 @@ def weak_category_reasons(row: dict[str, Any], thresholds: dict[str, float]) -> 
 
 
 def paper_comparable_claim_ready(report: dict[str, Any], thresholds: dict[str, Any]) -> bool:
+    if report.get("question_slice_diagnostic"):
+        return False
     if report.get("gold_evidence_window_used"):
         return False
     if not report.get("benchmark_threshold_passed"):
@@ -2497,7 +2513,7 @@ def paper_comparable_claim_ready(report: dict[str, Any], thresholds: dict[str, A
         return False
     if report.get("rust_temporalstore_direct_source_scoring"):
         return False
-    if not report.get("rust_temporalstore_full_replay_ready"):
+    if not report.get("rust_temporalstore_full_dataset_replay_ready"):
         return False
     if int(report.get("reader_open_source_calls") or 0) <= 0:
         return False
