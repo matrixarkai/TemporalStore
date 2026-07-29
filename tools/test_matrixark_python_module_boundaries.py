@@ -374,6 +374,17 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                             "total_selected_refs": 1,
                             "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 7}},
                             "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 7}},
+                            "by_memory_selection_policy": {
+                                "selected_profile_current_state": {"refs": 1, "tokens": 7}
+                            },
+                        },
+                        "recall_policy": {
+                            "memory_selection_policy_budget_policy": {
+                                "enabled": True,
+                                "mode": "auto",
+                                "budget_tokens": {"selected_profile_current_state": 96},
+                                "selected_ref_count_by_policy": {"selected_profile_current_state": 1},
+                            }
                         },
                     },
                 }
@@ -385,7 +396,52 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual([], coverage["gaps"])
         self.assertEqual(1, coverage["selected_ref_count"])
         self.assertEqual(1, coverage["profile_memory_refs"])
+        self.assertTrue(coverage["memory_selection_policy_budget_enabled"])
+        self.assertEqual(1, coverage["memory_selection_policy_refs"])
+        self.assertEqual(["selected_profile_current_state"], coverage["memory_selection_policy_names"])
         self.assertEqual("ok", backend["retrieval_memory_coverage_status"])
+
+    def test_recent_ingestion_report_flags_missing_memory_selection_policy_budget(self) -> None:
+        report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
+        backend = report_mod.summarize_backend(
+            "test",
+            "matrixark:test",
+            0,
+            0,
+            [],
+            1,
+            0,
+            [
+                {
+                    "sequence": 9,
+                    "record": {
+                        "record_type": "context_pack_audit",
+                        "context_pack_id": "pack-missing-policy-budget",
+                        "query": "latest promoted profile memory",
+                        "selected_refs": [
+                            {
+                                "ref_type": "entity",
+                                "memory_scope": "user_profile",
+                                "session_continuity": "cross_session",
+                            }
+                        ],
+                        "memory_layer_budget": {
+                            "total_selected_refs": 1,
+                            "by_memory_scope": {"user_profile": {"refs": 1, "tokens": 7}},
+                            "by_session_continuity": {"cross_session": {"refs": 1, "tokens": 7}},
+                        },
+                    },
+                }
+            ],
+        )
+
+        coverage = backend["recent_retrieval_memory_coverages"][0]
+        self.assertEqual("gap", coverage["status"])
+        self.assertEqual(1, coverage["selected_ref_count"])
+        self.assertFalse(coverage["memory_selection_policy_budget_enabled"])
+        self.assertEqual(0, coverage["memory_selection_policy_refs"])
+        self.assertIn("retrieval:memory_selection_policy_budget_missing_selected_refs", coverage["gaps"])
+        self.assertEqual("gap", backend["retrieval_memory_coverage_status"])
 
     def test_recent_ingestion_report_flags_retrieval_memory_coverage_gaps(self) -> None:
         report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
