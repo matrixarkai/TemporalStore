@@ -1207,9 +1207,12 @@ def compression_context_index_terms(record: Json) -> list[str]:
         ("source_roles", "source_role"),
         ("source_hook_types", "hook_type"),
         ("source_codex_events", "codex_event"),
+        ("source_memory_selection_policies", "memory_selection_policy"),
         ("source_memory_scopes", "memory_scope"),
         ("source_session_continuities", "session_continuity"),
         ("source_extraction_phases", "extraction_phase"),
+        ("source_profile_promotion_policies", "profile_promotion_policy"),
+        ("source_profile_promotion_blockers", "profile_promotion_blocker"),
     ]:
         values = record.get(field)
         if isinstance(values, list):
@@ -1222,6 +1225,12 @@ def compression_context_index_terms(record: Json) -> list[str]:
         value = str(record.get(field) or "").strip()
         if value:
             terms.append(f"{prefix}:{value}")
+    try:
+        source_final_session_boundary_count = int(record.get("source_final_session_boundary_count") or 0)
+    except (TypeError, ValueError):
+        source_final_session_boundary_count = 0
+    if bool(record.get("final_session_boundary")) or source_final_session_boundary_count > 0:
+        terms.append("final_session_boundary:true")
     return ordered_unique_any(terms)
 
 
