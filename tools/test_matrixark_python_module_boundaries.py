@@ -200,6 +200,63 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(report_mod.parse_args(["--require-serving-visibility"]).require_serving_visibility)
         self.assertFalse(report_mod.parse_args([]).require_serving_visibility)
 
+    def test_ingestion_dashboard_projects_event_and_profile_lineage(self) -> None:
+        adapter_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = adapter_mod.MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-dashboard-profile.jsonl")
+            scope = {
+                "account_id": "acct_dashboard_profile",
+                "tenant_id": "tenant_dashboard_profile",
+                "user_id": "user_dashboard_profile",
+                "session_id": "session_dashboard_profile",
+            }
+            result = adapter.batch_extract(
+                {
+                    "scope": scope,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "above context segment is the same as context event? why no user profile? fix them",
+                        }
+                    ],
+                    "threshold_messages": 1,
+                    "force": True,
+                    "skip_prior_context": True,
+                }
+            )
+            self.assertEqual(1, result["events_written"])
+            self.assertEqual(1, result["segments_written"])
+            self.assertEqual(1, result["profile_entities_written"])
+
+            events = adapter.ingestion_dashboard({"scope": scope, "table": "events"})
+            self.assertEqual(1, events["total"])
+            event = events["rows"][0]
+            self.assertEqual("context_event", event["row_type"])
+            self.assertEqual("session", event["memory_scope"])
+            self.assertEqual("same_session", event["session_continuity"])
+
+            entities = adapter.ingestion_dashboard({"scope": scope, "table": "entities", "page_size": 10})
+            profile_rows = [
+                row
+                for row in entities["rows"]
+                if row.get("memory_scope") == "user_profile"
+                and row.get("session_continuity") == "cross_session"
+            ]
+            self.assertTrue(profile_rows, entities)
+            self.assertEqual("always_when_profile_scope_available", profile_rows[0]["profile_promotion_policy"])
+            self.assertEqual("", profile_rows[0]["profile_promotion_blocker"])
+            self.assertTrue(profile_rows[0]["value"])
+
+            segment_rows = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") == "context_segment"
+            ]
+            self.assertEqual(1, len(segment_rows))
+            self.assertNotEqual("context_event", segment_rows[0]["record_type"])
+            self.assertEqual("context_event", segment_rows[0]["source_record_type"])
+            self.assertTrue(segment_rows[0]["derived_from_context_events"])
+
     def test_recent_ingestion_report_summarizes_extraction_input_coverage_gate(self) -> None:
         report_mod = importlib.import_module("tools.generate_codex_recent_ingestion_workflow_report")
         broken_report = {
