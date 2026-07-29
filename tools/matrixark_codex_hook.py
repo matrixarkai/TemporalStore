@@ -3698,6 +3698,12 @@ def fast_async_hook_ingest(
         source_role=role,
         **lineage,
     )
+    metadata["serving_projection"] = {
+        "record_type": "context_event",
+        "event_id_hash": event_id_hash,
+        "visibility": "serving",
+        "source_raw_record_type": "raw_agent_message",
+    }
     if selection_metadata:
         metadata["codex_memory_selection"] = selection_metadata
     retention = hook_retention_fields(text=text, role=role, now_ms=now)
@@ -3706,6 +3712,9 @@ def fast_async_hook_ingest(
         "raw_record_type": "raw_agent_message",
         "raw_ingestion_visibility": "backfill_only",
         "serving_visible": False,
+        "serving_projection_record_type": "context_event",
+        "serving_context_event_hash": event_id_hash,
+        "serving_event_id_hash": event_id_hash,
         "session_binding": "metadata_only_for_backfill_batching",
         "source_kind": "message",
         "source_role": role,
