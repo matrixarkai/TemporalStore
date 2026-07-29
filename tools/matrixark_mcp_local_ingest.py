@@ -12,6 +12,7 @@ try:
         MatrixArkError,
         context_node_key,
         embedding_for_text,
+        messages_from_event_record,
         now_ms,
         stable_hash,
         summarize_text,
@@ -22,6 +23,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         MatrixArkError,
         context_node_key,
         embedding_for_text,
+        messages_from_event_record,
         now_ms,
         stable_hash,
         summarize_text,
@@ -209,14 +211,17 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
             source_hash=event_id_hash,
         )
     session_buffer_enabled = self.session_buffer_enabled(args, kind=envelope["kind"])
-    pending_event_count = len(self.pending_session_events(envelope["scope"])) if session_buffer_enabled else 0
+    pending_events = self.pending_session_events(envelope["scope"]) if session_buffer_enabled else []
+    pending_event_count = len(pending_events)
+    pending_message_count = sum(len(messages_from_event_record(record)) for record in pending_events)
     auto_batch_result: Json | None = None
     auto_batch_extract = self.auto_batch_extract_enabled(args, kind=envelope["kind"])
     session_boundary_commit = self.session_boundary_commit_requested(args, hook=hook)
     session_buffer_threshold = args.get("session_buffer_threshold", 20)
     if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
         raise MatrixArkError("session_buffer_threshold must be a positive integer")
-    if auto_batch_extract and (session_boundary_commit or pending_event_count >= session_buffer_threshold):
+    threshold_ready = pending_event_count >= session_buffer_threshold or pending_message_count >= session_buffer_threshold
+    if auto_batch_extract and (session_boundary_commit or threshold_ready):
         auto_batch_result = self.session_commit(
             {
                 "scope": hot_record_scope,
@@ -271,7 +276,9 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
         skill_hash=skill_hash,
         session_buffer_enabled=session_buffer_enabled,
         pending_event_count=pending_event_count,
+        pending_message_count=pending_message_count,
         session_buffer_threshold=session_buffer_threshold,
+        threshold_ready=threshold_ready,
         auto_batch_extract=auto_batch_extract,
         session_boundary_commit=session_boundary_commit,
         idle_commit_result=idle_commit_result,

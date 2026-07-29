@@ -1226,6 +1226,118 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(idle_result, idle_visible["idle_commit_result"])
         self.assertEqual([], target.commit_calls)
 
+    def test_modular_local_ingest_threshold_uses_pending_message_count(self) -> None:
+        local_ingest_mod = importlib.import_module("tools.matrixark_mcp_local_ingest")
+
+        class Batch:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class Target:
+            def __init__(self) -> None:
+                self.pending = []
+                self.records = []
+                self.commit_calls = []
+
+            def read_all(self):
+                return []
+
+            def _observe_model_latency(self, *_args):
+                return None
+
+            def write_batch(self, _name):
+                return Batch()
+
+            def default_session_node_path(self, scope):
+                return ["tenant:t", "user:u", f"session:{scope['session_id']}"]
+
+            def ensure_context_node_path(self, **_kwargs):
+                return {"nodes_created": 0, "child_refs_created": 0, "node_hashes": []}
+
+            def append(self, record):
+                self.records.append(record)
+
+            def append_many(self, records):
+                self.records.extend(records)
+
+            def session_buffer_enabled(self, _args, *, kind):
+                return True
+
+            def auto_batch_extract_enabled(self, _args, *, kind):
+                return True
+
+            def session_boundary_commit_requested(self, _args, *, hook=None):
+                return False
+
+            def append_session_buffer_event(self, **kwargs):
+                self.pending.append(
+                    {
+                        "event_id_hash": kwargs["event_id_hash"],
+                        "envelope": kwargs["envelope"],
+                        "agent_hook": kwargs.get("hook"),
+                    }
+                )
+
+            def pending_session_events(self, _scope):
+                return list(self.pending)
+
+            def session_commit(self, args, *, hook=None):
+                self.commit_calls.append(args)
+                self.pending.clear()
+                return {
+                    "status": "committed",
+                    "trigger_policy": "threshold",
+                    "committed_event_count": 1,
+                    "trigger_evidence": {
+                        "pending_event_count": 1,
+                        "pending_message_count": 2,
+                        "threshold_ready": True,
+                    },
+                }
+
+            def append_node_summary_embeddings(self, **_kwargs):
+                return {"status": "dirty_marked", "dirty_hashes": [1]}
+
+        scope = {
+            "account_id": "acct",
+            "tenant_id": "tenant",
+            "user_id": "user",
+            "session_id": "session",
+        }
+        envelope = {
+            "kind": "message",
+            "scope": scope,
+            "metadata": {},
+            "messages": [
+                {"role": "user", "content": "first message in a combined hook event"},
+                {"role": "assistant", "content": "second message should satisfy threshold"},
+            ],
+            "ingestion_time_ms": 123,
+            "storage_options": {},
+            "storage_route": {},
+        }
+        ingest_start = {
+            "envelope": envelope,
+            "hook": None,
+            "backend_readiness": None,
+            "idle_commit_result": None,
+            "lightweight_result": None,
+        }
+
+        result = local_ingest_mod.ingest_after_start(
+            Target(),
+            {"session_buffer_threshold": 2, "skip_prior_context": True},
+            ingest_start,
+        )
+
+        self.assertTrue(result["session_buffer"]["threshold_ready"])
+        self.assertEqual(1, result["session_buffer"]["pending_event_count"])
+        self.assertEqual(2, result["session_buffer"]["pending_message_count"])
+        self.assertEqual("committed", result["auto_batch_extract_result"]["status"])
+
     def test_modular_session_runtime_reports_trigger_evidence(self) -> None:
         runtime_mod = importlib.import_module("tools.matrixark_mcp_session_runtime")
 
