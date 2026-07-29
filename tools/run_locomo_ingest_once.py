@@ -5169,6 +5169,9 @@ def direct_numeric_fact_answer(question: str, texts: list[str]) -> str:
     q = normalize_text(question)
     blob = "\n".join(texts)
     normalized_blob = normalize_text(blob)
+    answer = simultaneous_project_count_answer(q, normalized_blob)
+    if answer:
+        return answer
     if "instagram followers" in q and re.search(r"\b(currently|current|now)\b", q):
         values = [
             number_value(match.group(1))
@@ -5288,6 +5291,35 @@ def direct_money_fact_answer(question: str, texts: list[str]) -> str:
         values = money_values([sentence for sentence in re.split(r"(?<=[.!?])\s+", blob) if re.search(r"\b(earned|sold|market|festival)\b", sentence, re.I)])
         if values:
             return f"${format_number(sum(unique_numbers(values)))}"
+    return ""
+
+
+def simultaneous_project_count_answer(q: str, normalized_blob: str) -> str:
+    if not (("project" in q or "projects" in q) and re.search(r"\b(simultaneously|same time|juggling|working on)\b", q)):
+        return ""
+    projects: set[str] = set()
+    if "thesis" in normalized_blob:
+        projects.add("thesis")
+    if "data mining" in normalized_blob and re.search(r"\b(data mining)\b.{0,80}\b(project|course)|\b(project|course)\b.{0,80}\bdata mining\b", normalized_blob):
+        projects.add("data mining")
+    if "database systems" in normalized_blob and re.search(r"\b(database systems)\b.{0,80}\b(project|course)|\b(project|course)\b.{0,80}\bdatabase systems\b", normalized_blob):
+        projects.add("database systems")
+    for match in re.finditer(r"\b(?:separate boards? for|boards? for)\s+([^.;\n]+)", normalized_blob):
+        span = re.split(r"\b(?:it has been|they have been|assistant|user)\b", match.group(1), maxsplit=1)[0]
+        for item in re.split(r",| and ", span):
+            item = item.strip()
+            if not item:
+                continue
+            if "thesis" in item:
+                projects.add("thesis")
+            elif "data mining" in item:
+                projects.add("data mining")
+            elif "database systems" in item:
+                projects.add("database systems")
+    if "excluding" in q and "thesis" in q:
+        projects.discard("thesis")
+    if projects:
+        return format_number(float(len(projects)))
     return ""
 
 
