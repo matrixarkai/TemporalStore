@@ -166,6 +166,9 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
                 vector=event_embedding,
                 scope=hot_record_scope,
                 updated_at_ms=envelope["ingestion_time_ms"],
+                memory_scope="session",
+                session_continuity="same_session",
+                extraction_phase="pending_async",
             )
         )
         record = message_record_builders.context_event_record(
@@ -190,6 +193,9 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
             node_hash=node_hash,
             scope=envelope["scope"],
             updated_at_ms=envelope["ingestion_time_ms"],
+            memory_scope="session",
+            session_continuity="same_session",
+            extraction_phase="pending_async",
         )
         if event_index_records:
             self.append_many(event_index_records)
