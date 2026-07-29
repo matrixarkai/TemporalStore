@@ -3591,11 +3591,14 @@ def fast_hook_event_projection_records(*, event_record: Json, updated_at_ms: int
     node_hash = int(event_record.get("node_hash") or 0)
     node_path = event_record.get("node_path", []) if isinstance(event_record.get("node_path"), list) else []
     scope = event_record.get("scope", {}) if isinstance(event_record.get("scope"), dict) else {}
-    projection_lineage: Json = {
+    serving_lineage: Json = {
         "memory_scope": event_record.get("memory_scope") or "session",
         "session_continuity": event_record.get("session_continuity") or "same_session",
         "extraction_phase": event_record.get("extraction_phase") or "pending_async",
         "final_session_boundary": bool(event_record.get("final_session_boundary", False)),
+    }
+    projection_lineage: Json = {
+        **serving_lineage,
         "source_roles": event_record.get("source_roles", []),
         "source_role_counts": event_record.get("source_role_counts", {}),
         "source_hook_types": event_record.get("source_hook_types", []),
@@ -3627,7 +3630,7 @@ def fast_hook_event_projection_records(*, event_record: Json, updated_at_ms: int
             "model": embedding_model_name(),
             "vector": vector,
             "scope": scope,
-            **projection_lineage,
+            **serving_lineage,
             "projection_phase": "fast_hook_pending_async",
             "updated_at_ms": updated_at_ms,
         }
