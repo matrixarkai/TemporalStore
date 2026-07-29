@@ -337,6 +337,66 @@ class LocomoReaderHintTest(unittest.TestCase):
 
         self.assertIn("Sunday before 31 July 2023", hint)
 
+    def test_when_did_event_resolves_weekday_abbreviations(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_8 turn 2",
+                "body": (
+                    "1:51 pm on 15 July, 2023. D8:2 Melanie: Last Fri I "
+                    "finally took my kids to a pottery workshop."
+                ),
+            },
+            {
+                "title": "conv_26 session_14 turn 1",
+                "body": "24 August 2023. Melanie talked about a pottery plate.",
+            },
+        ]
+
+        hint = extractive_reader_hint("When did Melanie go to the pottery workshop?", blocks)
+
+        self.assertIn("Friday before 15 July 2023", hint)
+
+    def test_when_did_event_resolves_tuesday_abbreviation(self) -> None:
+        blocks = [
+            {
+                "title": "conv_26 session_10 turn 3",
+                "body": (
+                    "8:56 pm on 20 July, 2023. D10:3 Caroline: I just joined "
+                    "a new LGBTQ activist group last Tues."
+                ),
+            },
+            {
+                "title": "conv_26 session_1 event Caroline 1",
+                "body": (
+                    "7 May 2023. Caroline previously discussed another support "
+                    "group and community event."
+                ),
+            },
+        ]
+
+        hint = extractive_reader_hint("When did Caroline join a new activist group?", blocks)
+
+        self.assertIn("Tuesday before 20 July 2023", hint)
+
+    def test_when_planning_to_open_resolves_tomorrow(self) -> None:
+        blocks = [
+            {
+                "title": "conv_30 session_15 turn 5",
+                "body": (
+                    "10:04 am on 19 June, 2023. D15:5 Jon: The official "
+                    "opening night is tomorrow."
+                ),
+            },
+            {
+                "title": "conv_30 session_2 turn 1",
+                "body": "1 February, 2023. Jon is planning his studio layout.",
+            },
+        ]
+
+        hint = extractive_reader_hint("When Jon is planning to open his dance studio?", blocks)
+
+        self.assertIn("20 June 2023", hint)
+
     def test_when_did_event_resolves_last_month_for_boot_camp(self) -> None:
         blocks = [
             {
