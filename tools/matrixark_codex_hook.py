@@ -3292,6 +3292,19 @@ def apply_hook_auto_batch_ingest_options(
     return ingest_args
 
 
+def hook_session_commit_extraction_options(args: argparse.Namespace) -> Json:
+    return {
+        "understanding_provider": getattr(args, "understanding_provider", None),
+        "extraction_provider": getattr(args, "extraction_provider", None),
+        "segment_provider": getattr(args, "segment_provider", None),
+        "segment_model": getattr(args, "segment_model", None),
+        "segment_model_path": getattr(args, "segment_model_path", None),
+        "segment_max_new_tokens": getattr(args, "segment_max_new_tokens", None),
+        "segment_provider_fallback": getattr(args, "segment_provider_fallback", None),
+        "skip_prior_context": bool(getattr(args, "skip_prior_context", False)),
+    }
+
+
 def hook_async_message_ingest_args(
     common: Json,
     args: argparse.Namespace,
@@ -3873,16 +3886,7 @@ def fast_async_hook_ingest(
         if latest_event_time > 0:
             idle_elapsed_before_ingest_ms = max(0, now - latest_event_time)
     auto_batch_extract_on_ingest = should_auto_batch_extract_on_ingest(args.event)
-    commit_extraction_options: Json = {
-        "understanding_provider": getattr(args, "understanding_provider", None),
-        "extraction_provider": getattr(args, "extraction_provider", None),
-        "segment_provider": getattr(args, "segment_provider", None),
-        "segment_model": getattr(args, "segment_model", None),
-        "segment_model_path": getattr(args, "segment_model_path", None),
-        "segment_max_new_tokens": getattr(args, "segment_max_new_tokens", None),
-        "segment_provider_fallback": getattr(args, "segment_provider_fallback", None),
-        "skip_prior_context": bool(getattr(args, "skip_prior_context", False)),
-    }
+    commit_extraction_options: Json = hook_session_commit_extraction_options(args)
     should_pre_ingest_idle_commit = (
         auto_batch_extract_on_ingest
         and callable(session_commit)
@@ -4394,8 +4398,7 @@ def main() -> int:
                         "threshold_messages": args.session_commit_threshold,
                         "force": commit_reason != "idle_timeout",
                         "commit_reason": commit_reason,
-                        "understanding_provider": args.understanding_provider,
-                        "segment_provider": args.segment_provider,
+                        **hook_session_commit_extraction_options(args),
                         "storage_options": hook_storage_options(),
                         **({"idle_timeout_ms": args.idle_commit_timeout_ms} if commit_reason == "idle_timeout" else {}),
                         "agent_hook": {

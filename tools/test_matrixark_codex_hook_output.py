@@ -3630,6 +3630,32 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         finally:
             hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
+    def test_session_commit_extraction_options_match_fast_and_boundary_paths(self) -> None:
+        args = Namespace(
+            understanding_provider="rules",
+            extraction_provider="rules",
+            segment_provider="deterministic",
+            segment_model="codex-memory-segmenter",
+            segment_model_path="/models/codex-memory-segmenter",
+            segment_max_new_tokens=96,
+            segment_provider_fallback="deterministic",
+            skip_prior_context=True,
+        )
+
+        options = hook.hook_session_commit_extraction_options(args)
+
+        self.assertEqual("rules", options["understanding_provider"])
+        self.assertEqual("rules", options["extraction_provider"])
+        self.assertEqual("deterministic", options["segment_provider"])
+        self.assertEqual("codex-memory-segmenter", options["segment_model"])
+        self.assertEqual("/models/codex-memory-segmenter", options["segment_model_path"])
+        self.assertEqual(96, options["segment_max_new_tokens"])
+        self.assertEqual("deterministic", options["segment_provider_fallback"])
+        self.assertTrue(options["skip_prior_context"])
+        source = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_hook.py").read_text()
+        self.assertIn("commit_extraction_options: Json = hook_session_commit_extraction_options(args)", source)
+        self.assertIn("**hook_session_commit_extraction_options(args),", source)
+
     def test_dual_hook_keeps_derived_context_out_of_raw_ingestion(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_dual_hook.sh").read_text()
 
