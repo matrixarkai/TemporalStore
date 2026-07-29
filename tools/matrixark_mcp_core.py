@@ -780,6 +780,7 @@ EMBEDDING_LINEAGE_DEBUG_FIELDS = {
     "previous_profile_revision",
     "previous_profile_updated_at_ms",
     "extraction_context_event_ids",
+    "summary_generation_policy",
 }
 CONTEXT_TIMELINE_FANOUT = 1024 * 1024
 
