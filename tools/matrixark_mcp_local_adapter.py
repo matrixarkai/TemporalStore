@@ -2470,8 +2470,14 @@ class MatrixArkLocalAdapter:
                                 continue
                     source_lineage = source_event_lineage_summary(prior_commits)
                     finalized_at_ms = now_ms()
+                    unique_event_ids = ordered_unique_any(committed_event_ids)
                     boundary_hash = stable_hash(
-                        f"session_boundary:{session_key}:{ordered_unique_any(committed_event_ids)}:final"
+                        f"session_boundary:{session_key}:{unique_event_ids}:final"
+                    )
+                    summary_hash = stable_hash(f"session_final_summary:{boundary_hash}")
+                    summary_text = (
+                        f"Session finalized after {len(prior_commits)} provisional commit(s) "
+                        f"covering {len(unique_event_ids)} event(s)."
                     )
                     boundary_record: Json = {
                         "record_type": "context_session_boundary",
@@ -2479,18 +2485,15 @@ class MatrixArkLocalAdapter:
                         "node_hash": node_hash,
                         "node_path": node_path,
                         "scope": scope,
-                        "summary_text": (
-                            f"Session finalized after {len(prior_commits)} provisional commit(s) "
-                            f"covering {len(ordered_unique_any(committed_event_ids))} event(s)."
-                        ),
+                        "summary_text": summary_text,
                         "status": "finalized",
                         "commit_reason": commit_reason,
                         "trigger_policy": trigger_policy,
                         "extraction_phase": "final",
                         "final_session_boundary": True,
                         "prior_commit_count": len(prior_commits),
-                        "prior_committed_event_count": len(ordered_unique_any(committed_event_ids)),
-                        "source_event_count": len(ordered_unique_any(committed_event_ids)),
+                        "prior_committed_event_count": len(unique_event_ids),
+                        "source_event_count": len(unique_event_ids),
                         **{
                             key: value
                             for key, value in source_lineage.items()
@@ -2519,6 +2522,71 @@ class MatrixArkLocalAdapter:
                         "created_at_ms": finalized_at_ms,
                         "updated_at_ms": finalized_at_ms,
                     }
+                    summary_record: Json = {
+                        "record_type": "context_summary",
+                        "summary_type": "session_final",
+                        "summary_hash": summary_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "summary_text": summary_text,
+                        "source_event_ids": unique_event_ids,
+                        "source_boundary_hash": boundary_hash,
+                        "source_commit_count": len(prior_commits),
+                        "source_event_count": len(unique_event_ids),
+                        **{
+                            key: value
+                            for key, value in source_lineage.items()
+                            if key
+                            in {
+                                "source_roles",
+                                "source_role_counts",
+                                "source_hook_types",
+                                "source_hook_type_counts",
+                                "source_codex_events",
+                                "source_codex_event_counts",
+                                "source_memory_selection_policies",
+                                "source_memory_selection_policy_counts",
+                                "source_memory_selection_lossy_count",
+                                "source_memory_selection_complete_count",
+                                "source_memory_selection_dropped_text_chars",
+                                "source_memory_selection_dropped_line_count",
+                                "source_memory_selection_retained_text_ratio_avg",
+                                "source_memory_selection_retained_line_ratio_avg",
+                                "source_extraction_phases",
+                            }
+                            and value not in (None, "", [], {})
+                        },
+                        "scope": scope,
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "extraction_phase": "final",
+                        "final_session_boundary": True,
+                        "updated_at_ms": finalized_at_ms,
+                    }
+                    summary_index_names = [
+                        "summary_type:session_final",
+                        "memory_scope:session",
+                        "session_continuity:same_session",
+                        "extraction_phase:final",
+                        "final_session_boundary:true",
+                    ]
+                    for phase in source_lineage.get("source_extraction_phases", []) or []:
+                        phase_name = str(phase or "").strip().lower()
+                        if phase_name:
+                            summary_index_names.append(f"source_extraction_phase:{phase_name}")
+                    summary_indexes = [
+                        context_index_posting_record(
+                            index_name=index_name,
+                            data_model="context_summary",
+                            ref_type="summary",
+                            ref_hashes=[summary_hash],
+                            batch_id_hash=boundary_hash,
+                            node_hash=node_hash,
+                            scope=scope,
+                            updated_at_ms=finalized_at_ms,
+                        )
+                        for index_name in ordered_unique_any(summary_index_names)
+                    ]
                     _dirty_hashes, dirty_records = self.node_summary_dirty_records(
                         node_path=node_path,
                         scope=scope,
@@ -2530,7 +2598,7 @@ class MatrixArkLocalAdapter:
                         propagate_depth=0,
                         source_lineage=boundary_record,
                     )
-                    self.append_many([boundary_record, *dirty_records])
+                    self.append_many([boundary_record, summary_record, *summary_indexes, *dirty_records])
                     return {
                         "status": "finalized",
                         "pending_event_count": pending_event_count,
@@ -2543,8 +2611,17 @@ class MatrixArkLocalAdapter:
                         "extraction_phase": "final",
                         "final_session_boundary": True,
                         "boundary_hash": boundary_hash,
+                        "summary_hash": summary_hash,
                         "prior_commit_count": len(prior_commits),
-                        "prior_committed_event_count": len(ordered_unique_any(committed_event_ids)),
+                        "prior_committed_event_count": len(unique_event_ids),
+                        "memory_layers_written": {
+                            "session_final_summary": 1,
+                            "secondary_indexes": len(summary_indexes),
+                            "summary_dirty_nodes": len(_dirty_hashes),
+                            "summary_refresh_status": "dirty_marked",
+                            "extraction_phase": "final",
+                            "final_session_boundary": True,
+                        },
                         "summary_refresh": {
                             "status": "dirty_marked",
                             "dirty_hashes": _dirty_hashes,
