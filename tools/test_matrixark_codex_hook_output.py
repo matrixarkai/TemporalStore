@@ -980,6 +980,17 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 "selected_tokens_by_layer": {"summary": 12, "profile_entity": 18},
                 "selected_ref_count_by_layer": {"summary": 1, "profile_entity": 1},
             },
+            "memory_selection_policy_budget_policy": {
+                "enabled": True,
+                "mode": "auto",
+                "remote_budget_tokens": 100,
+                "budget_semantics": "independent_per_memory_selection_policy_caps_under_global_remote_budget",
+                "independent_caps": True,
+                "global_remote_budget_enforced": True,
+                "budget_tokens": {"selected_assistant_decision_outcome_only": 32, "selected_tool_evidence_only": 24},
+                "selected_tokens_by_policy": {"selected_assistant_decision_outcome_only": 18},
+                "selected_ref_count_by_policy": {"selected_assistant_decision_outcome_only": 1},
+            },
         }
 
         contract = hook.retrieval_memory_hierarchy_contract_from_retrieve({"recall_policy": recall_policy})
@@ -1001,7 +1012,35 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual({"summary": 30, "profile_entity": 40}, contract["memory_layer_budget_tokens"])
         self.assertEqual({"summary": 12, "profile_entity": 18}, contract["memory_layer_selected_tokens_by_layer"])
         self.assertEqual({"summary": 1, "profile_entity": 1}, contract["memory_layer_selected_ref_count_by_layer"])
+        self.assertTrue(contract["memory_selection_policy_budget_enabled"])
+        self.assertEqual("auto", contract["memory_selection_policy_budget_mode"])
+        self.assertEqual(
+            "independent_per_memory_selection_policy_caps_under_global_remote_budget",
+            contract["memory_selection_policy_budget_semantics"],
+        )
+        self.assertTrue(contract["memory_selection_policy_independent_caps"])
+        self.assertTrue(contract["memory_selection_policy_global_remote_budget_enforced"])
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 32, "selected_tool_evidence_only": 24},
+            contract["memory_selection_policy_budget_tokens"],
+        )
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 18},
+            contract["memory_selection_policy_selected_tokens_by_policy"],
+        )
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 1},
+            contract["memory_selection_policy_selected_ref_count_by_policy"],
+        )
         self.assertIn("memory_layer_budget_gate", contract["selected_ref_flow"])
+        self.assertIn("memory_selection_policy_budget_gate", contract["selected_ref_flow"])
+
+    def test_codex_retrieve_ranking_options_enable_all_auto_memory_budgets(self) -> None:
+        ranking = hook.codex_retrieve_ranking_options()
+
+        self.assertEqual("auto", ranking["source_role_budget_mode"])
+        self.assertEqual("auto", ranking["memory_layer_budget_mode"])
+        self.assertEqual("auto", ranking["memory_selection_policy_budget_mode"])
 
     def test_session_commit_tool_call_trace_records_trigger_evidence(self) -> None:
         class Server:
@@ -1770,6 +1809,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                                 "profile_entity": 12,
                             },
                         },
+                        "memory_selection_policy_budget_policy": {
+                            "budget_tokens": {
+                                "selected_assistant_decision_outcome_only": 36,
+                                "selected_tool_evidence_only": 28,
+                            },
+                            "selected_tokens_by_policy": {
+                                "selected_assistant_decision_outcome_only": 12,
+                            },
+                        },
                         "memory_layer_budget": {
                             "by_memory_scope": {
                                 "user_profile": {"refs": 1, "tokens": 12},
@@ -1803,6 +1851,14 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("floor=256", additional)
         self.assertIn("floor_applied=false", additional)
         self.assertIn("memory_layer_budget[summary=30,profile_entity=40]", additional)
+        self.assertIn(
+            "memory_selection_policy_budget[selected_assistant_decision_outcome_only=36,selected_tool_evidence_only=28]",
+            additional,
+        )
+        self.assertIn(
+            "memory_selection_policy_selected_tokens[selected_assistant_decision_outcome_only=12]",
+            additional,
+        )
         self.assertIn("memory_layer_selected_tokens[profile_entity=12]", additional)
 
     def test_additional_context_layer_summary_falls_back_to_serving_refs(self) -> None:
