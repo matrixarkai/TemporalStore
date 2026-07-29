@@ -251,6 +251,8 @@ def intelligent_memory_segments(messages: list[Json]) -> list[Json]:
                 "summary_text": summarize_text(segment_text, limit=420),
                 "text": segment_text,
                 "non_contiguous": len(coordinate_tuples) > 1,
+                "segment_origin": "semantic_derived_from_events",
+                "derived_from_context_events": True,
             }
         )
     segments.sort(key=lambda item: (-item["saliency_score"], item["topic"]))
