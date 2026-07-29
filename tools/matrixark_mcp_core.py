@@ -4475,6 +4475,20 @@ def candidate_index_terms(
                 except (TypeError, ValueError):
                     continue
                 terms.add(context_index_name(prefix, value))
+        try:
+            lossy_count = int(record.get("source_memory_selection_lossy_count") or 0)
+        except (TypeError, ValueError):
+            lossy_count = 0
+        try:
+            complete_count = int(record.get("source_memory_selection_complete_count") or 0)
+        except (TypeError, ValueError):
+            complete_count = 0
+        if lossy_count > 0:
+            terms.add(context_index_name("memory_selection_quality", "lossy"))
+        if complete_count > 0:
+            terms.add(context_index_name("memory_selection_quality", "complete"))
+        if lossy_count > 0 and complete_count > 0:
+            terms.add(context_index_name("memory_selection_quality", "mixed"))
 
     if record_type == "context_event":
         terms.update(index_terms_by_batch.get(record.get("batch_id_hash"), []))
@@ -6450,6 +6464,12 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
             "source_hook_type_counts",
             "source_codex_event_counts",
             "source_memory_selection_policy_counts",
+            "source_memory_selection_lossy_count",
+            "source_memory_selection_complete_count",
+            "source_memory_selection_dropped_text_chars",
+            "source_memory_selection_dropped_line_count",
+            "source_memory_selection_retained_text_ratio_avg",
+            "source_memory_selection_retained_line_ratio_avg",
             "profile_promotion_policy",
             "profile_promotion_blocker",
             "profile_revision",
@@ -6474,6 +6494,8 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
                     item[field] = value
             elif isinstance(value, int) and value > 0:
                 item[field] = value
+            elif isinstance(value, float) and value > 0:
+                item[field] = round(value, 6)
             elif isinstance(value, str) and value.strip():
                 item[field] = value.strip()
     if CONTEXT_PACK_DEBUG_LINEAGE or include_debug:
