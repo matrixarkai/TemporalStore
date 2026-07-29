@@ -14,6 +14,7 @@ from unittest import mock
 from pathlib import Path
 
 import matrixark_codex_hook
+import matrixark_mcp_query
 import matrixark_mcp_summary_runtime
 from matrixark_mcp_context_pack import (
     compact_context_pack_audit_record,
@@ -134,6 +135,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(
             "profile_memory",
             infer_query_type("Show user profile long-term memory across sessions"),
+        )
+        self.assertEqual(
+            "profile_memory",
+            infer_query_type("What is the latest user profile memory across sessions?"),
+        )
+        self.assertEqual(
+            "profile_memory",
+            matrixark_mcp_query.infer_query_type("Show cross-session memories and profile entities"),
         )
         groups = infer_secondary_index_filter_groups(
             "Show user profile long-term memory and cross-session entities",
