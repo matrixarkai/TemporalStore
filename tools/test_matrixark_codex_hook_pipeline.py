@@ -5022,6 +5022,105 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("tool", memory_budget["by_source_role"])
             self.assertNotIn("assistant", memory_budget["by_source_role"])
 
+    def test_retrieve_source_role_budget_applies_to_raw_context_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-event-source-role-budget.jsonl")
+            scope = {
+                "account_id": "acct_event_source_role_budget",
+                "tenant_id": "tenant_event_source_role_budget",
+                "user_id": "user_event_source_role_budget",
+                "session_id": "session_event_source_role_budget",
+            }
+            scope = {
+                **scope,
+                **identity_hashes(
+                    scope["account_id"],
+                    scope["tenant_id"],
+                    scope["user_id"],
+                    scope["session_id"],
+                ),
+            }
+            node_path = [
+                "tenant:tenant_event_source_role_budget",
+                "user:user_event_source_role_budget",
+                "session:session_event_source_role_budget",
+            ]
+            node_hash = 9123401
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": 9123402,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "text": "tool evidence marker: Exit code 0 and hook pipeline passed.",
+                        "summary_text": "tool evidence marker",
+                        "event_type": "tool_evidence",
+                        "classification": "tool_evidence",
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "source_roles": ["tool"],
+                        "source_role_counts": {"tool": 1},
+                        "source_memory_selection_policies": ["selected_tool_evidence_only"],
+                        "source_memory_selection_policy_counts": {"selected_tool_evidence_only": 1},
+                        "scope": scope,
+                        "updated_at_ms": 2000,
+                    },
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": 9123403,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "text": "assistant evidence marker: decision text is verbose enough to exceed the tiny assistant budget.",
+                        "summary_text": "assistant evidence marker",
+                        "event_type": "assistant_decision",
+                        "classification": "assistant_decision",
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "source_roles": ["assistant"],
+                        "source_role_counts": {"assistant": 1},
+                        "source_memory_selection_policies": ["selected_assistant_decision_outcome_only"],
+                        "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 1},
+                        "scope": scope,
+                        "updated_at_ms": 3000,
+                    },
+                ]
+            )
+
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "What evidence marker passed?",
+                    "max_context_tokens": 120,
+                    "ranking": {
+                        "max_selected_refs": 2,
+                        "min_similarity_score": 0.0,
+                        "source_role_budget_tokens": {"assistant": 1},
+                    },
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "include_debug_refs": True,
+                }
+            )
+
+            selected_events = [ref for ref in pack["selected_refs"] if ref.get("ref_type") == "event"]
+            self.assertTrue(any(ref.get("event_type") == "tool_evidence" for ref in selected_events), pack)
+            self.assertFalse(any(ref.get("event_type") == "assistant_decision" for ref in selected_events), pack)
+            tool_ref = next(ref for ref in selected_events if ref.get("event_type") == "tool_evidence")
+            self.assertEqual(["tool"], tool_ref["budget_source_roles"])
+            self.assertEqual(["selected_tool_evidence_only"], tool_ref["source_memory_selection_policies"])
+            dropped = pack["dropped_refs"]
+            self.assertEqual(1, dropped.get("source_role_budget"))
+            self.assertTrue(
+                any(
+                    ref.get("ref_hash") == 9123403
+                    and ref.get("drop_reason") == "source_role_budget"
+                    and ref.get("source_role_budget_capped_roles") == ["assistant"]
+                    for ref in dropped.get("refs", [])
+                ),
+                dropped,
+            )
+
     def test_retrieve_auto_source_role_budget_policy_is_recorded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-auto-role-budget.jsonl")
