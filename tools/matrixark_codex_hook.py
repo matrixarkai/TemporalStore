@@ -571,11 +571,18 @@ def retrieval_layer_summary_from_retrieve(
             memory_layer_budget,
             include_debug=include_budget_lineage or CONTEXT_PACK_DEBUG_LINEAGE,
         )
-    memory_selection_policy_budget = recall_policy.get("memory_selection_policy_budget_policy")
-    if isinstance(memory_selection_policy_budget, dict):
-        compact_policy_budget = serving_memory_selection_policy_budget(memory_selection_policy_budget)
-        if compact_policy_budget:
-            layer_summary["memory_selection_policy_budget"] = compact_policy_budget
+    memory_selection_policy_budget = (
+        recall_policy.get("memory_selection_policy_budget_policy")
+        if isinstance(recall_policy.get("memory_selection_policy_budget_policy"), dict)
+        else retrieval_metrics.get("memory_selection_policy_budget")
+        if isinstance(retrieval_metrics.get("memory_selection_policy_budget"), dict)
+        else pack_view.get("memory_selection_policy_budget")
+        if isinstance(pack_view.get("memory_selection_policy_budget"), dict)
+        else {}
+    )
+    compact_policy_budget = serving_memory_selection_policy_budget(memory_selection_policy_budget)
+    if compact_policy_budget:
+        layer_summary["memory_selection_policy_budget"] = compact_policy_budget
     memory_layer_pressure = retrieval_memory_layer_pressure_from_retrieve(pack)
     if memory_layer_pressure:
         layer_summary["memory_layer_pressure"] = serving_memory_layer_pressure(

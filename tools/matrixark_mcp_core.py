@@ -6523,6 +6523,9 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
     memory_layer_pressure = recall_summary.get("memory_layer_pressure") if isinstance(recall_summary, dict) else {}
     if (include_debug or CONTEXT_PACK_DEBUG_LINEAGE) and isinstance(memory_layer_pressure, dict) and memory_layer_pressure:
         compact["memory_layer_pressure"] = serving_memory_layer_pressure(memory_layer_pressure, include_debug=include_debug)
+    memory_selection_policy_budget = recall_summary.get("memory_selection_policy_budget") if isinstance(recall_summary, dict) else {}
+    if isinstance(memory_selection_policy_budget, dict) and memory_selection_policy_budget:
+        compact["memory_selection_policy_budget"] = memory_selection_policy_budget
     async_pipeline_readiness = recall_summary.get("async_pipeline_readiness") if isinstance(recall_summary, dict) else {}
     if (include_debug or CONTEXT_PACK_DEBUG_LINEAGE) and isinstance(async_pipeline_readiness, dict) and async_pipeline_readiness:
         compact["async_pipeline_readiness"] = async_pipeline_readiness
@@ -6682,6 +6685,47 @@ def normalize_memory_layer_budget_role_fields(memory_layer_budget: Any) -> Json:
         if normalized_buckets:
             normalized["by_source_role"] = normalized_buckets
     return normalized
+
+
+def serving_memory_selection_policy_budget(policy: Any) -> Json:
+    if not isinstance(policy, dict):
+        return {}
+    compact: Json = {}
+    if "enabled" in policy:
+        compact["enabled"] = bool(policy.get("enabled"))
+    for field in [
+        "mode",
+        "budget_semantics",
+        "independent_caps",
+        "global_remote_budget_enforced",
+    ]:
+        value = policy.get(field)
+        if value not in (None, "", [], {}):
+            compact[field] = value
+    try:
+        remote_budget = int(policy.get("remote_budget_tokens") or 0)
+    except (TypeError, ValueError):
+        remote_budget = 0
+    if remote_budget > 0:
+        compact["remote_budget_tokens"] = remote_budget
+    for field in ["budget_tokens", "selected_tokens_by_policy", "selected_ref_count_by_policy"]:
+        values = policy.get(field)
+        if not isinstance(values, dict):
+            continue
+        normalized: Json = {}
+        for key, raw in values.items():
+            label = str(key or "").strip()
+            if not label:
+                continue
+            try:
+                amount = int(raw or 0)
+            except (TypeError, ValueError):
+                continue
+            if amount > 0:
+                normalized[label] = amount
+        if normalized:
+            compact[field] = normalized
+    return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
 
 
 def serving_memory_layer_budget(memory_layer_budget: Any, *, include_debug: bool = False) -> Json:
@@ -7034,6 +7078,11 @@ def compact_recall_policy_for_audit(recall_policy: Json, *, include_debug: bool 
     memory_layer_pressure = recall_policy.get("memory_layer_pressure")
     if isinstance(memory_layer_pressure, dict):
         compact["memory_layer_pressure"] = serving_memory_layer_pressure(memory_layer_pressure, include_debug=include_debug)
+    memory_selection_policy_budget = recall_policy.get("memory_selection_policy_budget_policy")
+    if isinstance(memory_selection_policy_budget, dict):
+        compact_policy = serving_memory_selection_policy_budget(memory_selection_policy_budget)
+        if compact_policy:
+            compact["memory_selection_policy_budget"] = compact_policy
     async_pipeline_readiness = recall_policy.get("async_pipeline_readiness")
     if isinstance(async_pipeline_readiness, dict):
         compact["async_pipeline_readiness"] = async_pipeline_readiness

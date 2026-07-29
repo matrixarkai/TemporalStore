@@ -195,6 +195,47 @@ def compact_memory_layer_budget_roles(value: Any) -> Json:
     return compact
 
 
+def serving_memory_selection_policy_budget(value: Any) -> Json:
+    if not isinstance(value, dict):
+        return {}
+    compact: Json = {}
+    if "enabled" in value:
+        compact["enabled"] = bool(value.get("enabled"))
+    for field in [
+        "mode",
+        "budget_semantics",
+        "independent_caps",
+        "global_remote_budget_enforced",
+    ]:
+        item = value.get(field)
+        if item not in (None, "", [], {}):
+            compact[field] = item
+    try:
+        remote_budget = int(value.get("remote_budget_tokens") or 0)
+    except (TypeError, ValueError):
+        remote_budget = 0
+    if remote_budget > 0:
+        compact["remote_budget_tokens"] = remote_budget
+    for field in ["budget_tokens", "selected_tokens_by_policy", "selected_ref_count_by_policy"]:
+        values = value.get(field)
+        if not isinstance(values, dict):
+            continue
+        normalized: Json = {}
+        for key, raw in values.items():
+            label = str(key or "").strip()
+            if not label:
+                continue
+            try:
+                amount = int(raw or 0)
+            except (TypeError, ValueError):
+                continue
+            if amount > 0:
+                normalized[label] = amount
+        if normalized:
+            compact[field] = normalized
+    return {key: item for key, item in compact.items() if item not in (None, "", [], {})}
+
+
 def serving_memory_layer_budget(value: Any) -> Json:
     compact = compact_memory_layer_budget_roles(value)
     if DEBUG_LINEAGE_PAYLOAD:
@@ -1280,6 +1321,18 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     retrieval_decision = serving_retrieval_decision(recall_policy)
     if retrieval_decision:
         compact["retrieval_decision"] = retrieval_decision
+    memory_selection_policy_budget = (
+        pack.get("memory_selection_policy_budget")
+        if isinstance(pack.get("memory_selection_policy_budget"), dict)
+        else retrieval_metrics.get("memory_selection_policy_budget")
+        if isinstance(retrieval_metrics.get("memory_selection_policy_budget"), dict)
+        else recall_policy.get("memory_selection_policy_budget_policy")
+        if isinstance(recall_policy.get("memory_selection_policy_budget_policy"), dict)
+        else {}
+    )
+    compact_memory_selection_policy_budget = serving_memory_selection_policy_budget(memory_selection_policy_budget)
+    if compact_memory_selection_policy_budget:
+        compact["memory_selection_policy_budget"] = compact_memory_selection_policy_budget
     memory_layer_budget = (
         retrieval_metrics.get("memory_layer_budget")
         if isinstance(retrieval_metrics.get("memory_layer_budget"), dict)

@@ -8445,6 +8445,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreater(telemetry["remote_context_budget_tokens"], 0)
             self.assertEqual(0, telemetry["used_remote_context_tokens"])
             self.assertIn("memory_layer_budget", telemetry)
+            self.assertEqual("auto", msg["retrieve"]["layers"]["memory_selection_policy_budget"]["mode"])
+            self.assertEqual("auto", telemetry["memory_selection_policy_budget"]["mode"])
+            self.assertTrue(telemetry["memory_selection_policy_budget"]["enabled"])
+            self.assertIn("selected_tool_evidence_only", telemetry["memory_selection_policy_budget"]["budget_tokens"])
             prompt_replay = MatrixArkMcpServer(MatrixArkLocalAdapter(event_log), line_json=True, access_mode="dev").call_tool(
                 "matrixark_replay",
                 {"scope": telemetry["scope"], "context_pack_id": msg["retrieve"]["context_pack_id"], "enable_replay": True},
@@ -8458,6 +8462,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 prompt_replay_telemetry[-1]["retrieval_request_metadata"]["retrieval_source"],
             )
             self.assertIn("memory_layer_budget", prompt_replay_telemetry[-1])
+            self.assertEqual("auto", prompt_replay_telemetry[-1]["memory_selection_policy_budget"]["mode"])
             context_pack_dashboard = MatrixArkLocalAdapter(event_log).ingestion_dashboard(
                 {"scope": telemetry["scope"], "table": "context_packs", "page_size": 5}
             )
