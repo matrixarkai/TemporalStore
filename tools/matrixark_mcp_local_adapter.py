@@ -12,6 +12,7 @@ try:
     from tools.matrixark_mcp_core import compact_context_pack_for_serving_flat as compact_context_pack_for_serving
     from tools.matrixark_mcp_serving_records import (
         compact_latest_context_state_records,
+        context_debug_records_enabled,
         materialize_serving_record_batch,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
@@ -19,6 +20,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import compact_context_pack_for_serving_flat as compact_context_pack_for_serving
     from matrixark_mcp_serving_records import (
         compact_latest_context_state_records,
+        context_debug_records_enabled,
         materialize_serving_record_batch,
     )
 
@@ -3895,35 +3897,39 @@ class MatrixArkLocalAdapter:
                     }
                 )
             elif table == "embeddings" and record_type == "context_embedding":
-                rows.append(
-                    {
-                        "row_type": record_type,
-                        "embedding_type": record.get("embedding_type", ""),
-                        "ref_type": record.get("ref_type", ""),
-                        "ref_hash": record.get("ref_hash", 0),
-                        "node_hash": record.get("node_hash", 0),
-                        "node_path": record.get("node_path", []),
-                        "dim": record.get("dim", len(record.get("vector", [])) if isinstance(record.get("vector"), list) else 0),
-                        "model": record.get("model", record.get("model_ref", "")),
-                        "has_vector": isinstance(record.get("vector"), list) and bool(record.get("vector")),
-                        "scope": record_dashboard_scope,
-                        "memory_scope": record.get("memory_scope", ""),
-                        "session_continuity": record.get("session_continuity", ""),
-                        "promoted_from_memory_scope": record.get("promoted_from_memory_scope", ""),
-                        "profile_promotion_policy": record.get("profile_promotion_policy", ""),
-                        "source_roles": record.get("source_roles", []),
-                        "source_role_counts": record.get("source_role_counts", {}),
-                        "source_hook_types": record.get("source_hook_types", []),
-                        "source_hook_type_counts": record.get("source_hook_type_counts", {}),
-                        "source_codex_events": record.get("source_codex_events", []),
-                        "source_codex_event_counts": record.get("source_codex_event_counts", {}),
-                        "source_memory_scopes": record.get("source_memory_scopes", []),
-                        "source_session_continuities": record.get("source_session_continuities", []),
-                        "extraction_phase": record.get("extraction_phase", ""),
-                        "final_session_boundary": bool(record.get("final_session_boundary", False)),
-                        "updated_at_ms": record.get("updated_at_ms", 0),
-                    }
-                )
+                row = {
+                    "row_type": record_type,
+                    "embedding_type": record.get("embedding_type", ""),
+                    "ref_type": record.get("ref_type", ""),
+                    "ref_hash": record.get("ref_hash", 0),
+                    "node_hash": record.get("node_hash", 0),
+                    "node_path": record.get("node_path", []),
+                    "dim": record.get("dim", len(record.get("vector", [])) if isinstance(record.get("vector"), list) else 0),
+                    "model": record.get("model", record.get("model_ref", "")),
+                    "has_vector": isinstance(record.get("vector"), list) and bool(record.get("vector")),
+                    "scope": record_dashboard_scope,
+                    "memory_scope": record.get("memory_scope", ""),
+                    "session_continuity": record.get("session_continuity", ""),
+                    "promoted_from_memory_scope": record.get("promoted_from_memory_scope", ""),
+                    "profile_promotion_policy": record.get("profile_promotion_policy", ""),
+                    "extraction_phase": record.get("extraction_phase", ""),
+                    "final_session_boundary": bool(record.get("final_session_boundary", False)),
+                    "updated_at_ms": record.get("updated_at_ms", 0),
+                }
+                if context_debug_records_enabled():
+                    row.update(
+                        {
+                            "source_roles": record.get("source_roles", []),
+                            "source_role_counts": record.get("source_role_counts", {}),
+                            "source_hook_types": record.get("source_hook_types", []),
+                            "source_hook_type_counts": record.get("source_hook_type_counts", {}),
+                            "source_codex_events": record.get("source_codex_events", []),
+                            "source_codex_event_counts": record.get("source_codex_event_counts", {}),
+                            "source_memory_scopes": record.get("source_memory_scopes", []),
+                            "source_session_continuities": record.get("source_session_continuities", []),
+                        }
+                    )
+                rows.append(row)
             elif table == "indexes" and record_type == "context_index":
                 ref_hashes = record.get("ref_hashes", []) if isinstance(record.get("ref_hashes"), list) else []
                 rows.append(

@@ -7374,6 +7374,18 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(row.get("dim", 0) > 0 for row in embedding_rows), embeddings_dashboard)
             self.assertTrue(all(row.get("has_vector") for row in embedding_rows), embeddings_dashboard)
             self.assertTrue(all("vector" not in row for row in embedding_rows), embeddings_dashboard)
+            for row in embedding_rows:
+                for field in [
+                    "source_roles",
+                    "source_role_counts",
+                    "source_hook_types",
+                    "source_hook_type_counts",
+                    "source_codex_events",
+                    "source_codex_event_counts",
+                    "source_memory_scopes",
+                    "source_session_continuities",
+                ]:
+                    self.assertNotIn(field, row, embeddings_dashboard)
             self.assertTrue(
                 any(
                     row.get("embedding_type") == "event_text"
