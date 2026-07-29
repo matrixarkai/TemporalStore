@@ -95,9 +95,12 @@ def build_cross_session_policy(
     default_enabled = session_scope == "prefer" and remote_budget_tokens > 0
     enabled = bool(config.get("enabled", default_enabled)) and session_scope == "prefer" and remote_budget_tokens > 0
     normalized_question_type = str(question_type or "fact").strip().lower()
-    if normalized_question_type in {"current_state", "latest"}:
+    if normalized_question_type in {"current_state", "latest", "profile_memory"}:
         default_ratio = DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO
-        question_budget_reason = "current_state_or_latest_queries_need_prior entity state and stale blockers"
+        if normalized_question_type == "profile_memory":
+            question_budget_reason = "profile_memory_queries_need_long_term profile and cross-session state"
+        else:
+            question_budget_reason = "current_state_or_latest_queries_need_prior entity state and stale blockers"
     elif normalized_question_type in {"multi_hop", "date"}:
         default_ratio = DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO
         question_budget_reason = "multi_hop_or_date_queries_often_need_multiple sessions"
@@ -110,11 +113,34 @@ def build_cross_session_policy(
     max_budget_ratio = max(0.0, min(1.0, float(config.get("max_budget_ratio", DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO))))
     budget_ratio = float_arg(config, "budget_ratio", min(default_ratio, max_budget_ratio), minimum=0.0, maximum=max_budget_ratio)
     max_budget_tokens = integer_arg(config, "max_budget_tokens", DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS, minimum=0)
-    computed_budget = int(remote_budget_tokens * budget_ratio)
-    if remote_budget_tokens >= 1200 and computed_budget > 0:
-        computed_budget = max(DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS, computed_budget)
-    budget_tokens = integer_arg(config, "budget_tokens", computed_budget, minimum=0) if "budget_tokens" in config else computed_budget
     ratio_budget_cap = int(remote_budget_tokens * max_budget_ratio) if max_budget_ratio > 0 else 0
+    max_budget_cap = max_budget_tokens if max_budget_tokens > 0 else remote_budget_tokens
+    computed_budget_before_floor = int(remote_budget_tokens * budget_ratio)
+    computed_budget = computed_budget_before_floor
+    budget_floor_tokens = DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS
+    budget_floor_applied = False
+    budget_floor_eligible = (
+        remote_budget_tokens >= 1200
+        and computed_budget > 0
+        and (ratio_budget_cap == 0 or ratio_budget_cap >= budget_floor_tokens)
+        and max_budget_cap >= budget_floor_tokens
+    )
+    if budget_floor_eligible:
+        computed_budget = max(DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS, computed_budget)
+        budget_floor_applied = computed_budget != computed_budget_before_floor
+    budget_floor_status = (
+        "floor_applied"
+        if budget_floor_applied
+        else (
+            "remote_budget_too_small_for_profile_floor"
+            if enabled
+            and remote_budget_tokens > 0
+            and computed_budget_before_floor < budget_floor_tokens
+            and not budget_floor_eligible
+            else "not_needed"
+        )
+    )
+    budget_tokens = integer_arg(config, "budget_tokens", computed_budget, minimum=0) if "budget_tokens" in config else computed_budget
     budget_tokens = min(
         remote_budget_tokens,
         budget_tokens,
@@ -141,6 +167,10 @@ def build_cross_session_policy(
         "max_budget_ratio": round(max_budget_ratio, 6),
         "budget_tokens": budget_tokens if enabled else 0,
         "remote_budget_tokens": remote_budget_tokens,
+        "computed_budget_tokens": computed_budget_before_floor,
+        "budget_floor_tokens": budget_floor_tokens,
+        "budget_floor_applied": budget_floor_applied if enabled else False,
+        "budget_floor_status": budget_floor_status if enabled else "disabled",
         "max_budget_tokens": max_budget_tokens,
         "max_sessions": max_sessions if enabled else 0,
         "max_candidates": max_candidates if enabled else 0,
@@ -150,7 +180,7 @@ def build_cross_session_policy(
         "min_entity_bridge_refs": min_entity_bridge_refs if enabled else 0,
         "parallelism": parallelism if enabled else 0,
         "strategy": "same_session_first_entity_bridge_then_bounded_cross_session",
-        "budget_guidance": "cross-session budget is a maximum cap, not a quota: 12% normally, 15% for broad/evidence, 20% for current-state/latest/multi-hop/date; spend it only on high-quality refs, prefer entities/summaries/compressions, and require high-confidence raw events",
+        "budget_guidance": "cross-session budget is a maximum cap, not a quota: 12% normally, 15% for broad/evidence, 20% for current-state/latest/profile-memory/multi-hop/date; spend it only on high-quality refs, prefer entities/summaries/compressions, and require high-confidence raw events",
     }
 
 

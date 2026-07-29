@@ -1039,6 +1039,41 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             profile_budgets,
         )
 
+    def test_moduleized_cross_session_policy_matches_profile_memory_core_budget(self) -> None:
+        core_mod = importlib.import_module("tools.matrixark_mcp_core")
+        policy_mod = importlib.import_module("tools.matrixark_mcp_budget_policies")
+
+        for remote_budget_tokens in [1000, 1500]:
+            with self.subTest(remote_budget_tokens=remote_budget_tokens):
+                core_policy = core_mod.build_cross_session_policy(
+                    {},
+                    {},
+                    question_type="profile_memory",
+                    session_scope="prefer",
+                    remote_budget_tokens=remote_budget_tokens,
+                )
+                module_policy = policy_mod.build_cross_session_policy(
+                    {},
+                    {},
+                    question_type="profile_memory",
+                    session_scope="prefer",
+                    remote_budget_tokens=remote_budget_tokens,
+                )
+                for field in [
+                    "enabled",
+                    "question_type",
+                    "question_budget_reason",
+                    "budget_ratio",
+                    "budget_tokens",
+                    "computed_budget_tokens",
+                    "budget_floor_tokens",
+                    "budget_floor_applied",
+                    "budget_floor_status",
+                    "preferred_ref_types",
+                    "budget_guidance",
+                ]:
+                    self.assertEqual(core_policy[field], module_policy[field])
+
     def test_moduleized_runtime_merges_pre_refreshed_summaries(self) -> None:
         helper_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pre_refresh")
         base = {
