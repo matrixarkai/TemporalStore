@@ -3269,6 +3269,78 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         event_records = [record for record in server.adapter.serving_records if record.get("record_type") == "context_event"]
         self.assertEqual("selected_tool_evidence_only", event_records[0]["codex_memory_selection"]["policy"])
 
+    def test_fast_async_hook_ingest_schedules_threshold_task_when_commit_api_missing(self) -> None:
+        original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT
+        hook.HOOK_AUTO_BATCH_EXTRACT = True
+
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.serving_records = []
+                self.session_buffer_records = []
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.serving_records.extend(records)
+
+            def append_session_buffer_event(self, **kwargs):
+                self.session_buffer_records.append(kwargs)
+
+            def pending_session_events(self, scope):
+                return [{"event_id_hash": 1}, {"event_id_hash": 2}]
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        try:
+            args = Namespace(
+                event="UserPromptSubmit",
+                account_id="acct_local",
+                tenant_id="tenant_codex",
+                user_id="deeproute",
+                session_id="codex-session-threshold-task",
+                team="codex",
+                project="temporalstore",
+                session_commit_threshold=2,
+                idle_commit_timeout_ms=300000,
+                understanding_provider="rules",
+                segment_provider="deterministic",
+            )
+            server = Server()
+            result = hook.fast_async_hook_ingest(
+                server,
+                args=args,
+                text="We should remember that threshold extraction must still run without a sync commit API.",
+                role="user",
+                agent_context={"workspace_root": "/repo"},
+                hook={"session_id_source": "payload_field"},
+            )
+        finally:
+            hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+
+        self.assertEqual("deferred", result["auto_batch_extract_result"]["status"])
+        self.assertEqual("threshold", result["auto_batch_extract_result"]["trigger_policy"])
+        self.assertTrue(result["auto_batch_extract_result"]["threshold_commit_scheduled"])
+        self.assertTrue(result["session_buffer"]["threshold_ready"])
+        self.assertTrue(result["session_buffer"]["threshold_commit_scheduled"])
+        threshold_tasks = [
+            record
+            for record in server.adapter.serving_records
+            if record.get("record_type") == "matrixark_async_pipeline_task"
+            and record.get("status") == "threshold_commit_scheduled"
+        ]
+        self.assertEqual(1, len(threshold_tasks))
+        task = threshold_tasks[0]
+        self.assertEqual("session_buffer_threshold_reached", task["reason"])
+        self.assertEqual("threshold", task["trigger_policy"])
+        self.assertEqual(2, task["threshold_messages"])
+        self.assertEqual(2, task["threshold_pending_event_count"])
+        self.assertEqual("provisional", task["extraction_phase"])
+        self.assertFalse(task["final_session_boundary"])
+
     def test_fast_async_hook_ingest_preflushes_idle_tail_before_tool_evidence(self) -> None:
         original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT
         hook.HOOK_AUTO_BATCH_EXTRACT = True
