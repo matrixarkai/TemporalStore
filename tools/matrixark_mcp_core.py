@@ -6452,6 +6452,10 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
             "source_memory_selection_policy_counts",
             "profile_promotion_policy",
             "profile_promotion_blocker",
+            "profile_revision",
+            "previous_profile_revision",
+            "previous_profile_updated_at_ms",
+            "supersedes_session_entity_hash",
         ]:
             value = ref.get(field)
             if isinstance(value, list) and value:
@@ -6499,6 +6503,10 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         value = ref.get("source_entity_hashes")
         if isinstance(value, list) and value:
             item["source_entity_count"] = len(value)
+        value = ref.get("supersedes_session_entity_hashes")
+        if isinstance(value, list) and value:
+            item["supersedes_session_entity_hashes"] = value[:8]
+            item["supersedes_session_entity_count"] = len(value)
         value = ref.get("source_entity_count")
         if isinstance(value, int) and value > 0:
             item["source_entity_count"] = value
