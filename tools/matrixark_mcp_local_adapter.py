@@ -6593,7 +6593,7 @@ class MatrixArkLocalAdapter:
                 records_to_append.append(
                     {
                         "record_type": "context_embedding",
-                        "embedding_type": "entity_state",
+                        "embedding_type": "profile_entity_state",
                         "ref_type": "entity",
                         "ref_hash": profile_entity_hash,
                         "node_hash": profile_node_hash,
@@ -8390,7 +8390,7 @@ class MatrixArkLocalAdapter:
                     embedding_type = record.get("embedding_type")
                     if embedding_type == "event_text":
                         event_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
-                    elif embedding_type == "entity_state":
+                    elif embedding_type in {"entity_state", "profile_entity_state"}:
                         entity_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
                     elif embedding_type == "segment_text":
                         segment_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
