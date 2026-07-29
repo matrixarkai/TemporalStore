@@ -2380,6 +2380,11 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "source_hook_types",
             "source_codex_events",
             "source_entity_hashes",
+            "extraction_phase",
+            "final_session_boundary",
+            "source_record_type",
+            "segment_origin",
+            "derived_from_context_events",
         ]:
             self.assertNotIn(field, item)
 
@@ -2435,6 +2440,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "event_type": "pending_async",
                 "classification": "PENDING_ASYNC_EXTRACTION",
                 "extraction_phase": "pending_async",
+                "source_record_type": "context_event",
+                "segment_origin": "live_hook",
+                "derived_from_context_events": True,
                 "source_roles": ["user"],
                 "source_hook_types": ["before_llm"],
                 "source_codex_events": ["UserPromptSubmit"],
@@ -2450,8 +2458,11 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             item = groups[0]["items"][0]
 
             self.assertEqual("pending_async", item["memory_layer"])
-            self.assertEqual("pending_async", item["extraction_phase"])
             self.assertEqual("session", item["memory_scope"])
+            self.assertNotIn("extraction_phase", item)
+            self.assertNotIn("source_record_type", item)
+            self.assertNotIn("segment_origin", item)
+            self.assertNotIn("derived_from_context_events", item)
             self.assertNotIn("source_roles", item)
             self.assertNotIn("source_hook_types", item)
             self.assertNotIn("source_codex_events", item)
@@ -2492,6 +2503,38 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             self.assertNotIn("source_hook_types", item)
         self.assertEqual({"profile": 1}, core_mod.memory_layer_counts(selected))
         self.assertEqual({"profile": 1}, context_pack_mod._memory_layer_counts(selected))
+
+    def test_serving_pack_debug_refs_include_lifecycle_lineage(self) -> None:
+        core_mod = importlib.import_module("tools.matrixark_mcp_core")
+        context_pack_mod = importlib.import_module("tools.matrixark_mcp_context_pack")
+        selected = [
+            {
+                "ref_type": "summary",
+                "text": "profile summary after stop boundary",
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "extraction_phase": "final",
+                "final_session_boundary": True,
+                "source_record_type": "context_summary",
+                "segment_origin": "batch_extract",
+                "derived_from_context_events": True,
+                "source_event_ids": [11, 22],
+            }
+        ]
+
+        for compact_refs in [
+            core_mod.compact_context_pack_refs,
+            context_pack_mod.compact_context_pack_refs,
+        ]:
+            item = compact_refs(selected)[0]
+            self.assertNotIn("extraction_phase", item)
+            self.assertNotIn("final_session_boundary", item)
+            self.assertNotIn("source_record_type", item)
+            debug_item = compact_refs(selected, include_debug=True)[0]
+            self.assertEqual("final", debug_item["extraction_phase"])
+            self.assertTrue(debug_item["final_session_boundary"])
+            self.assertEqual("context_summary", debug_item["source_record_type"])
+            self.assertEqual([11, 22], debug_item["source_event_ids"])
 
     def test_hot_context_event_records_are_first_class_session_memory(self) -> None:
         records_mod = importlib.import_module("tools.matrixark_mcp_ingest_message_records")

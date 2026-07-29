@@ -5401,7 +5401,6 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         ("operator", "operator"),
         ("summary_type", "summary_type"),
         ("memory_scope", "memory_scope"),
-        ("extraction_phase", "extraction_phase"),
         ("resource_version", "version"),
         ("version_state", "version_state"),
     ]
@@ -5415,8 +5414,6 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
     memory_layer = memory_layer_for_serving_ref(ref)
     if memory_layer and memory_layer != default_memory_layer:
         item["memory_layer"] = memory_layer
-    if bool(ref.get("final_session_boundary") or metadata.get("final_session_boundary")):
-        item["final_session_boundary"] = True
     lineage_fields = [
         "source_session_ids",
         "source_roles",
@@ -5462,6 +5459,11 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
             if compact_counts:
                 item[field] = compact_counts
     if CONTEXT_PACK_DEBUG_LINEAGE:
+        extraction_phase = ref.get("extraction_phase", metadata.get("extraction_phase"))
+        if extraction_phase not in (None, "", [], {}):
+            item["extraction_phase"] = extraction_phase
+        if bool(ref.get("final_session_boundary") or metadata.get("final_session_boundary")):
+            item["final_session_boundary"] = True
         source_entity_hashes = ref.get("source_entity_hashes", metadata.get("source_entity_hashes"))
         if isinstance(source_entity_hashes, list) and source_entity_hashes:
             item["source_entity_count"] = len(source_entity_hashes)
@@ -5479,14 +5481,6 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
             item["segment_origin"] = segment_origin.strip()
         if ref.get("derived_from_context_events") is True or metadata.get("derived_from_context_events") is True:
             item["derived_from_context_events"] = True
-    source_record_type = ref.get("source_record_type", metadata.get("source_record_type"))
-    if isinstance(source_record_type, str) and source_record_type.strip():
-        item["source_record_type"] = source_record_type.strip()
-    segment_origin = ref.get("segment_origin", metadata.get("segment_origin"))
-    if isinstance(segment_origin, str) and segment_origin.strip():
-        item["segment_origin"] = segment_origin.strip()
-    if ref.get("derived_from_context_events") is True or metadata.get("derived_from_context_events") is True:
-        item["derived_from_context_events"] = True
     return item
 
 
@@ -6694,8 +6688,6 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         "operator",
         "memory_scope",
         "session_continuity",
-        "extraction_phase",
-        "final_session_boundary",
         "profile_current_state_representative",
     ]:
         value = ref.get(field)
@@ -6712,6 +6704,10 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
                 item[field] = value
     _attach_compact_profile_source_counts(item, ref)
     if CONTEXT_PACK_DEBUG_LINEAGE or include_debug:
+        for field in ["extraction_phase", "final_session_boundary"]:
+            value = ref.get(field)
+            if value not in (None, "", [], {}):
+                item[field] = value
         for field in [
             "current_state_policy",
             "source_roles",
@@ -6803,14 +6799,6 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
             value = ref.get(field)
             if isinstance(value, int) and value > 0:
                 item[field] = value
-    value = ref.get("source_record_type")
-    if isinstance(value, str) and value.strip():
-        item["source_record_type"] = value.strip()
-    value = ref.get("segment_origin")
-    if isinstance(value, str) and value.strip():
-        item["segment_origin"] = value.strip()
-    if ref.get("derived_from_context_events") is True:
-        item["derived_from_context_events"] = True
     context_class = ref.get("context_class")
     if context_class and context_class != item.get("ref_type"):
         item["context_class"] = context_class
