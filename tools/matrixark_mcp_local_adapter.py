@@ -5980,6 +5980,18 @@ class MatrixArkLocalAdapter:
                     profile_source_memory_selection_policy_counts[policy] = int(
                         profile_source_memory_selection_policy_counts.get(policy, 0)
                     ) + int(count)
+                previous_promotion_policy = str(previous_profile.get("profile_promotion_policy") or "").strip()
+                previous_promotion_blocker = str(previous_profile.get("profile_promotion_blocker") or "").strip()
+                profile_source_promotion_policies = ordered_unique_any(
+                    list(previous_profile.get("source_profile_promotion_policies", []))
+                    + ([previous_promotion_policy] if previous_promotion_policy else [])
+                    + ([profile_promotion_policy] if profile_promotion_policy else [])
+                )
+                profile_source_promotion_blockers = ordered_unique_any(
+                    list(previous_profile.get("source_profile_promotion_blockers", []))
+                    + ([previous_promotion_blocker] if previous_promotion_blocker else [])
+                    + ([profile_promotion_blocker] if profile_promotion_blocker else [])
+                )
                 profile_source_memory_scopes = ordered_unique_any(
                     list(previous_profile.get("source_memory_scopes", []))
                     + [previous_profile.get("memory_scope"), "session", "user_profile"]
@@ -5988,6 +6000,9 @@ class MatrixArkLocalAdapter:
                     list(previous_profile.get("source_session_continuities", []))
                     + [previous_profile.get("session_continuity"), "same_session", "cross_session"]
                 )
+                previous_profile_revision = int(previous_profile.get("profile_revision") or 0)
+                profile_revision = previous_profile_revision + 1
+                previous_profile_updated_at_ms = int(previous_profile.get("updated_at_ms") or 0)
                 profile_entity_hashes.append(profile_entity_hash)
                 profile_promotion_summary.append(
                     {
@@ -6007,8 +6022,11 @@ class MatrixArkLocalAdapter:
                         "source_codex_event_counts": profile_source_codex_event_counts,
                         "source_memory_selection_policies": profile_source_memory_selection_policies,
                         "source_memory_selection_policy_counts": profile_source_memory_selection_policy_counts,
+                        "source_profile_promotion_policies": profile_source_promotion_policies,
+                        "source_profile_promotion_blockers": profile_source_promotion_blockers,
                         "source_memory_scopes": profile_source_memory_scopes,
                         "source_session_continuities": profile_source_session_continuities,
+                        "profile_revision": profile_revision,
                     }
                 )
                 profile_entity_record = {
@@ -6037,6 +6055,8 @@ class MatrixArkLocalAdapter:
                     "source_codex_event_counts": profile_source_codex_event_counts,
                     "source_memory_selection_policies": profile_source_memory_selection_policies,
                     "source_memory_selection_policy_counts": profile_source_memory_selection_policy_counts,
+                    "source_profile_promotion_policies": profile_source_promotion_policies,
+                    "source_profile_promotion_blockers": profile_source_promotion_blockers,
                     "source_memory_scopes": profile_source_memory_scopes,
                     "source_session_continuities": profile_source_session_continuities,
                     "source_batch_id_hash": batch_id_hash,
@@ -6050,6 +6070,12 @@ class MatrixArkLocalAdapter:
                     "profile_promotion_policy": profile_promotion_policy,
                     "profile_promotion_importance_gate": profile_promotion_importance_gate,
                     "profile_promotion_blocker": profile_promotion_blocker,
+                    "profile_revision": profile_revision,
+                    "profile_entity_current": True,
+                    "supersedes_session_entity_hash": entity_hash,
+                    "supersedes_session_entity_hashes": profile_source_entity_hashes,
+                    "previous_profile_revision": previous_profile_revision,
+                    "previous_profile_updated_at_ms": previous_profile_updated_at_ms,
                     "extraction_phase": extraction_phase,
                     "final_session_boundary": final_session_boundary,
                     "updated_at_ms": envelope["ingestion_time_ms"],
@@ -6080,6 +6106,8 @@ class MatrixArkLocalAdapter:
                         "source_codex_event_counts": profile_source_codex_event_counts,
                         "source_memory_selection_policies": profile_source_memory_selection_policies,
                         "source_memory_selection_policy_counts": profile_source_memory_selection_policy_counts,
+                        "source_profile_promotion_policies": profile_source_promotion_policies,
+                        "source_profile_promotion_blockers": profile_source_promotion_blockers,
                         "source_memory_scopes": profile_source_memory_scopes,
                         "source_session_continuities": profile_source_session_continuities,
                         "memory_scope": "user_profile",
@@ -6088,6 +6116,12 @@ class MatrixArkLocalAdapter:
                         "profile_promotion_policy": profile_promotion_policy,
                         "profile_promotion_importance_gate": profile_promotion_importance_gate,
                         "profile_promotion_blocker": profile_promotion_blocker,
+                        "profile_revision": profile_revision,
+                        "profile_entity_current": True,
+                        "supersedes_session_entity_hash": entity_hash,
+                        "supersedes_session_entity_hashes": profile_source_entity_hashes,
+                        "previous_profile_revision": previous_profile_revision,
+                        "previous_profile_updated_at_ms": previous_profile_updated_at_ms,
                         "extraction_phase": extraction_phase,
                         "final_session_boundary": final_session_boundary,
                         "extraction_context_event_ids": extraction_context_event_ids,
