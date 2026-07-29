@@ -4394,6 +4394,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "query": "Show user profile long-term memory and cross-session entities",
                     "max_context_tokens": 100,
                     "ranking": {
+                        "source_role_budget_mode": "auto",
                         "memory_layer_budget_mode": "auto",
                         "memory_selection_policy_budget_mode": "auto",
                     },
@@ -4406,6 +4407,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(1, len(adapter.native_requests))
             request = adapter.native_requests[0]
             self.assertEqual("profile_memory", request["question_type"])
+            self.assertEqual({"assistant": 47, "tool": 42, "user": 47}, request["source_role_budget_tokens"])
+            self.assertEqual("auto", request["source_role_budget_mode"])
             self.assertEqual("auto", request["memory_layer_budget_mode"])
             self.assertEqual("profile_memory", request["memory_layer_budget_question_type"])
             self.assertIn("profile_memory_queries_prioritize", request["memory_layer_budget_question_reason"])
@@ -5070,7 +5073,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("independent_per_role_caps_under_global_remote_budget", role_policy["budget_semantics"])
             self.assertTrue(role_policy["independent_caps"])
             self.assertTrue(role_policy["global_remote_budget_enforced"])
-            self.assertEqual({"assistant": 51, "tool": 39, "user": 68}, role_policy["budget_tokens"])
+            self.assertEqual({"assistant": 39, "tool": 57, "user": 51}, role_policy["budget_tokens"])
             self.assertGreater(sum(role_policy["budget_tokens"].values()), role_policy["remote_budget_tokens"])
             layer_policy = pack["recall_policy"]["memory_layer_budget_policy"]
             self.assertTrue(layer_policy["enabled"])
