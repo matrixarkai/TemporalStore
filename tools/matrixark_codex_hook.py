@@ -842,6 +842,46 @@ def session_commit_memory_layers_written(commit: Json | None) -> Json:
     }
 
 
+def session_commit_context_materialization(commit: Json | None) -> Json:
+    if not isinstance(commit, dict) or not commit:
+        return {}
+    commit = normalize_role_lineage_fields(commit)
+    source_event_count = _int_field(commit, "committed_event_count")
+    context_event_count = _int_field(commit, "extraction_context_event_count")
+    segment_count = _int_field(commit, "segments_written")
+    session_entity_count = _int_field(commit, "entities_written")
+    profile_entity_count = _int_field(commit, "profile_entities_written")
+    profile_blocker = str(commit.get("profile_promotion_blocker") or "")
+    return {
+        "context_event": {
+            "count": context_event_count,
+            "role": "per-message serving event",
+            "source_event_count": source_event_count,
+            "scope": "session",
+            "session_continuity": "same_session",
+        },
+        "context_segment": {
+            "count": segment_count,
+            "role": "derived grouping over context_event rows",
+            "derived_from": "context_event",
+            "not_a_context_event_alias": True,
+        },
+        "session_entity": {
+            "count": session_entity_count,
+            "scope": "session",
+            "session_continuity": "same_session",
+        },
+        "profile_entity": {
+            "count": profile_entity_count,
+            "scope": "user_profile",
+            "session_continuity": "cross_session",
+            "policy": commit.get("profile_promotion_policy"),
+            "blocker": profile_blocker,
+            "scope_available": not bool(profile_blocker),
+        },
+    }
+
+
 def session_commit_summary(commit: Json | None) -> Json:
     if not isinstance(commit, dict) or not commit:
         return {}
@@ -873,6 +913,7 @@ def session_commit_summary(commit: Json | None) -> Json:
         "session_entities_written": entities_written,
         "profile_entities_written": profile_entities_written,
         "memory_layers_written": session_commit_memory_layers_written(commit),
+        "context_materialization": session_commit_context_materialization(commit),
         "indexes_written": commit.get("indexes_written", 0),
         "index_total_cap": commit.get("index_total_cap"),
         "index_emitted_count": commit.get("index_emitted_count"),
