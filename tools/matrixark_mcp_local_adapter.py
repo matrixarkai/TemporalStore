@@ -2781,7 +2781,7 @@ class MatrixArkLocalAdapter:
         seen_entity_hashes: set[int] = set()
         seen_operator_hashes: set[int] = set()
         summary_types = {"node_l0", "node_l1", "batch_l0", "session_l0", "resource_l0", "skill_l0"}
-        operator_record_types = {"context_compression_event"}
+        operator_record_types = {"context_compression_event", "context_session_boundary"}
         for record in reversed(records):
             if not scope_matches(candidate_access_scope(record), scope):
                 continue
@@ -2821,7 +2821,12 @@ class MatrixArkLocalAdapter:
                 if len(operator_states) >= max_operator_states:
                     continue
                 try:
-                    operator_hash = int(record.get("compression_id_hash") or record.get("ref_hash") or 0)
+                    operator_hash = int(
+                        record.get("compression_id_hash")
+                        or record.get("boundary_hash")
+                        or record.get("ref_hash")
+                        or 0
+                    )
                 except (TypeError, ValueError):
                     operator_hash = 0
                 if operator_hash and operator_hash in seen_operator_hashes:
@@ -3373,6 +3378,7 @@ class MatrixArkLocalAdapter:
                 for record in operator_states
                 if record.get("summary_text") or record.get("text")
             ]
+            source_state_records = events + entity_states + child_summaries + operator_states
             source_text = " ".join(child_summary_texts + entity_state_texts + operator_state_texts + event_texts)
             if not source_text:
                 source_text = " ".join(node_path)
@@ -3398,7 +3404,7 @@ class MatrixArkLocalAdapter:
             source_roles = sorted(
                 {
                     normalize_message_role(role)
-                    for record in events + entity_states + child_summaries
+                    for record in source_state_records
                     for role in (
                         record.get("source_roles")
                         if isinstance(record.get("source_roles"), list)
@@ -3408,7 +3414,7 @@ class MatrixArkLocalAdapter:
                 }
             )
             source_role_counts: Json = {}
-            for record in events + entity_states + child_summaries:
+            for record in source_state_records:
                 counts = record.get("source_role_counts") if isinstance(record.get("source_role_counts"), dict) else {}
                 for role, count in counts.items():
                     role_name = normalize_message_role(role)
@@ -3431,7 +3437,7 @@ class MatrixArkLocalAdapter:
             source_hook_types = sorted(
                 {
                     str(hook_type).strip()
-                    for record in events + entity_states + child_summaries
+                    for record in source_state_records
                     for hook_type in (
                         record.get("source_hook_types")
                         if isinstance(record.get("source_hook_types"), list)
@@ -3441,7 +3447,7 @@ class MatrixArkLocalAdapter:
                 }
             )
             source_hook_type_counts: Json = {}
-            for record in events + entity_states + child_summaries:
+            for record in source_state_records:
                 counts = record.get("source_hook_type_counts") if isinstance(record.get("source_hook_type_counts"), dict) else {}
                 for hook_type, count in counts.items():
                     hook_name = str(hook_type or "").strip()
@@ -3464,7 +3470,7 @@ class MatrixArkLocalAdapter:
             source_codex_events = sorted(
                 {
                     str(codex_event).strip()
-                    for record in events + entity_states + child_summaries
+                    for record in source_state_records
                     for codex_event in (
                         record.get("source_codex_events")
                         if isinstance(record.get("source_codex_events"), list)
@@ -3474,7 +3480,7 @@ class MatrixArkLocalAdapter:
                 }
             )
             source_codex_event_counts: Json = {}
-            for record in events + entity_states + child_summaries:
+            for record in source_state_records:
                 counts = record.get("source_codex_event_counts") if isinstance(record.get("source_codex_event_counts"), dict) else {}
                 for codex_event, count in counts.items():
                     event_name = str(codex_event or "").strip()
@@ -3495,7 +3501,7 @@ class MatrixArkLocalAdapter:
                         if event_name:
                             source_codex_event_counts[event_name] = int(source_codex_event_counts.get(event_name, 0)) + 1
             source_memory_selection_policy_counts: Json = {}
-            for record in events + entity_states + child_summaries:
+            for record in source_state_records:
                 counts = (
                     record.get("source_memory_selection_policy_counts")
                     if isinstance(record.get("source_memory_selection_policy_counts"), dict)
@@ -3526,7 +3532,7 @@ class MatrixArkLocalAdapter:
             source_memory_selection_policies = sorted(source_memory_selection_policy_counts)
             def source_layer_values(list_field: str, fallback_field: str) -> list[str]:
                 values: set[str] = set()
-                for record in events + entity_states + child_summaries:
+                for record in source_state_records:
                     raw_values = (
                         record.get(list_field)
                         if isinstance(record.get(list_field), list)
@@ -3546,13 +3552,13 @@ class MatrixArkLocalAdapter:
             source_extraction_phases = sorted(
                 {
                     str(record.get("extraction_phase") or "").strip()
-                    for record in entity_states + child_summaries + events
+                    for record in source_state_records
                     if str(record.get("extraction_phase") or "").strip()
                 }
             )
             source_final_session_boundary_count = sum(
                 1
-                for record in entity_states + child_summaries + events
+                for record in source_state_records
                 if bool(record.get("final_session_boundary"))
             )
             source_profile_promotion_policies = sorted(
@@ -3580,9 +3586,13 @@ class MatrixArkLocalAdapter:
                 }
             )
             source_operator_hashes = [
-                int(record.get("compression_id_hash") or record.get("ref_hash"))
+                int(record.get("compression_id_hash") or record.get("boundary_hash") or record.get("ref_hash"))
                 for record in operator_states
-                if record.get("compression_id_hash") is not None or record.get("ref_hash") is not None
+                if (
+                    record.get("compression_id_hash") is not None
+                    or record.get("boundary_hash") is not None
+                    or record.get("ref_hash") is not None
+                )
             ]
             l1_policy = node_l1_generation_policy(
                 source_text=source_text,

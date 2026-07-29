@@ -8847,6 +8847,23 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     for record in records
                 )
             )
+            refresh = adapter.refresh_dirty_node_summaries(
+                scope=scope,
+                limit=4,
+                refreshed_at_ms=1785339000000,
+                min_compression_event_age_ms=0,
+            )
+            self.assertGreaterEqual(refresh["refreshed_count"], 1)
+            refreshed_records = adapter.read_all()
+            boundary_summaries = [
+                record
+                for record in refreshed_records
+                if record.get("record_type") == "context_summary"
+                and record.get("source_final_session_boundary_count", 0) >= 1
+                and boundaries[0]["boundary_hash"] in (record.get("source_operator_hashes") or [])
+            ]
+            self.assertTrue(boundary_summaries)
+            self.assertTrue(any(record.get("final_session_boundary") for record in boundary_summaries))
 
     def test_threshold_commit_keeps_uncommitted_tail_pending(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
