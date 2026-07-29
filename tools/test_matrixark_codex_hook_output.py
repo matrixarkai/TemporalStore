@@ -2101,6 +2101,28 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertLess(policy["retained_line_ratio"], 1.0)
         self.assertTrue(policy["selection_lossy"])
 
+    def test_selected_assistant_memory_normalizes_response_formatting(self) -> None:
+        raw = "\n".join(
+            [
+                "## Summary",
+                "- Decision: promote Codex assistant outcomes into profile memory.",
+                "1. Done. Tests passed and origin/main was pushed.",
+                "> Next: retrieve profile entities across sessions with compact budgets.",
+                "```",
+                "- Decision: code block should not be selected.",
+                "```",
+            ]
+        )
+        evidence = hook.selected_assistant_memory_text(raw)
+
+        self.assertIn("Decision: promote Codex assistant outcomes into profile memory.", evidence)
+        self.assertIn("Done. Tests passed and origin/main was pushed.", evidence)
+        self.assertIn("Next: retrieve profile entities across sessions with compact budgets.", evidence)
+        self.assertNotIn("- Decision:", evidence)
+        self.assertNotIn("1. Done", evidence)
+        self.assertNotIn("> Next", evidence)
+        self.assertNotIn("code block should not be selected", evidence)
+
     def test_hook_async_message_ingest_args_marks_selected_memory_policy(self) -> None:
         args = Namespace(
             event="Stop",
