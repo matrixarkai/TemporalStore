@@ -318,7 +318,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("019efad7-2f87-77e1-b082-c294fcb5e731", identity["thread_id"])
         self.assertEqual("019f-turn", identity["turn_id"])
 
-    def test_codex_agent_hook_preserves_thread_and_turn_lineage(self) -> None:
+    def test_codex_agent_hook_omits_thread_and_turn_lineage_by_default(self) -> None:
         payload = {"thread_id": "thread-main-1", "turn_id": "turn-main-1", "conversation_id": "conversation-main-1"}
         args = Namespace(session_id="codex:thread-main-1")
 
@@ -334,9 +334,27 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         )
 
         self.assertEqual("codex:thread-main-1", identity["session_id"])
-        self.assertEqual("thread-main-1", agent_hook["thread_id"])
-        self.assertEqual("turn-main-1", agent_hook["turn_id"])
-        self.assertEqual("conversation-main-1", agent_hook["conversation_id"])
+        self.assertNotIn("thread_id", agent_hook)
+        self.assertNotIn("turn_id", agent_hook)
+        self.assertNotIn("conversation_id", agent_hook)
+
+        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
+        hook.CONTEXT_PACK_DEBUG_LINEAGE = True
+        try:
+            debug_hook = hook.codex_agent_hook(
+                hook_type="before_llm",
+                hook_id="UserPromptSubmit:1",
+                idempotency_key="turn-main-1",
+                trigger="UserPromptSubmit",
+                session_id_source="payload_field",
+                identity=identity,
+                observed_at_ms=123,
+            )
+        finally:
+            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
+        self.assertEqual("thread-main-1", debug_hook["thread_id"])
+        self.assertEqual("turn-main-1", debug_hook["turn_id"])
+        self.assertEqual("conversation-main-1", debug_hook["conversation_id"])
 
     def test_payload_text_flattens_structured_assistant_content_parts(self) -> None:
         payload = {
@@ -397,6 +415,52 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         identity = extract_identity(payload)
         self.assertEqual("codex:019efad7-2f87-77e1-b082-c294fcb5e731", identity["session_id"])
         self.assertEqual("019f8d12-86c6-7100-9a44-7537cdd30aec", identity["thread_id"])
+
+    def test_codex_hook_persisted_metadata_omits_transport_lineage_by_default(self) -> None:
+        payload = {
+            "hook_event_name": "UserPromptSubmit",
+            "thread_id": "019f8d12-86c6-7100-9a44-7537cdd30aec",
+            "turn_id": "019f-turn",
+            "prompt": "clean memory payload",
+        }
+        args = Namespace(repo_root=Path("/repo"))
+        agent_context = hook.agent_context_from_payload(
+            payload,
+            event="UserPromptSubmit",
+            session_id_source="payload_field",
+            args=args,
+        )
+
+        original_debug_lineage = hook.CONTEXT_PACK_DEBUG_LINEAGE
+        original_capture_raw_payload = hook.CODEX_HOOK_CAPTURE_RAW_PAYLOAD
+        hook.CONTEXT_PACK_DEBUG_LINEAGE = False
+        hook.CODEX_HOOK_CAPTURE_RAW_PAYLOAD = False
+        try:
+            metadata = hook.codex_hook_metadata(
+                source="codex_hook",
+                event="UserPromptSubmit",
+                agent_context=agent_context,
+                session_id_source="payload_field",
+                payload=payload,
+            )
+            agent_hook = hook.codex_agent_hook(
+                hook_type="before_llm",
+                hook_id="UserPromptSubmit:1",
+                idempotency_key="019f-turn",
+                trigger="UserPromptSubmit",
+                session_id_source="payload_field",
+                identity=hook.codex_hook_lineage_from_payload(payload, Namespace(session_id="codex:019f8d12"), session_id_source="payload_field"),
+            )
+        finally:
+            hook.CONTEXT_PACK_DEBUG_LINEAGE = original_debug_lineage
+            hook.CODEX_HOOK_CAPTURE_RAW_PAYLOAD = original_capture_raw_payload
+
+        self.assertEqual("UserPromptSubmit", metadata["codex_event"])
+        self.assertNotIn("raw_hook_payload", metadata)
+        self.assertNotIn("payload_keys", metadata["agent_context"])
+        self.assertNotIn("thread_id", agent_hook)
+        self.assertNotIn("turn_id", agent_hook)
+        self.assertNotIn("hook_type", agent_hook)
 
     def test_user_prompt_payload_unwraps_delegation_input(self) -> None:
         payload = decode_payload(
@@ -2205,15 +2269,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual({"selected_user_prompt": 1}, raw["source_memory_selection_policy_counts"])
         self.assertEqual("selected_user_prompt", raw["codex_memory_selection"]["policy"])
         self.assertEqual("codex-cpp-session-1", raw["scope"]["session_id"])
-        self.assertEqual("thread-fast-1", raw["thread_id"])
-        self.assertEqual("turn-fast-1", raw["turn_id"])
+        self.assertNotIn("thread_id", raw)
+        self.assertNotIn("turn_id", raw)
         self.assertEqual("context_event", serving["record_type"])
         self.assertEqual("codex-cpp-session-1", serving["session_id"])
         self.assertEqual("codex-cpp-session-1", serving["scope"]["session_id"])
-        self.assertEqual("thread-fast-1", serving["thread_id"])
-        self.assertEqual("turn-fast-1", serving["turn_id"])
-        self.assertEqual("conversation-fast-1", serving["metadata"]["conversation_id"])
-        self.assertEqual("turn-fast-1", serving["envelope"]["turn_id"])
+        self.assertNotIn("thread_id", serving)
+        self.assertNotIn("turn_id", serving)
+        self.assertNotIn("conversation_id", serving["metadata"])
+        self.assertNotIn("turn_id", serving["envelope"])
         self.assertEqual("UserPromptSubmit", serving["metadata"]["codex_event"])
         self.assertEqual(["selected_user_prompt"], serving["source_memory_selection_policies"])
         self.assertEqual({"selected_user_prompt": 1}, serving["source_memory_selection_policy_counts"])
@@ -2247,8 +2311,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("codex_event:userpromptsubmit", {record["index_name"] for record in index_records})
         self.assertEqual("matrixark_async_pipeline_task", task["record_type"])
         self.assertEqual(serving["event_id_hash"], task["event_id_hash"])
-        self.assertEqual("thread-fast-1", task["thread_id"])
-        self.assertEqual("turn-fast-1", task["turn_id"])
+        self.assertNotIn("thread_id", task)
+        self.assertNotIn("turn_id", task)
         self.assertEqual("pending", task["status"])
         self.assertEqual(["extraction", "summary", "compression", "embedding"], task["stages"])
         self.assertEqual(task["task_hash"], result["async_pipeline_task_hash"])
@@ -2543,8 +2607,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertFalse(commit_args["force"])
         self.assertEqual(1, commit_args["idle_timeout_ms"])
         self.assertEqual("idle_timeout_before_ingest", commit_hook["trigger"])
-        self.assertEqual("thread-idle-preflush", commit_hook["thread_id"])
-        self.assertEqual("turn-new-prompt", commit_hook["turn_id"])
+        self.assertNotIn("thread_id", commit_hook)
+        self.assertNotIn("turn_id", commit_hook)
         self.assertEqual(1, len(server.adapter.session_buffer_records))
         self.assertEqual("new prompt should not be mixed into the prior idle batch", server.adapter.session_buffer_records[0]["envelope"]["messages"][0]["content"])
         self.assertEqual(1, result["session_buffer"]["pending_event_count"])
@@ -2604,25 +2668,26 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual(1, len(server.adapter.raw_records))
         raw_record = server.adapter.raw_records[0]
         self.assertEqual("assistant", raw_record["messages"][0]["role"])
-        self.assertEqual("thread-stop-1", raw_record["thread_id"])
-        self.assertEqual("turn-stop-1", raw_record["turn_id"])
+        self.assertNotIn("thread_id", raw_record)
+        self.assertNotIn("turn_id", raw_record)
         self.assertEqual("assistant", raw_record["source_role"])
-        self.assertEqual("after_llm", raw_record["hook_type"])
+        self.assertNotIn("hook_type", raw_record)
+        self.assertNotIn("source_hook_types", raw_record)
         self.assertEqual("Stop", raw_record["codex_event"])
         serving_event = next(record for record in server.adapter.serving_records if record["record_type"] == "context_event")
         self.assertEqual("assistant", serving_event["source_role"])
-        self.assertEqual("after_llm", serving_event["hook_type"])
+        self.assertEqual(["after_llm"], serving_event["source_hook_types"])
         self.assertEqual("Stop", serving_event["codex_event"])
         self.assertEqual("assistant", serving_event["envelope"]["source_role"])
-        self.assertEqual("after_llm", serving_event["envelope"]["hook_type"])
-        self.assertEqual("thread-stop-1", serving_event["thread_id"])
-        self.assertEqual("turn-stop-1", serving_event["turn_id"])
+        self.assertNotIn("hook_type", serving_event["envelope"])
+        self.assertNotIn("thread_id", serving_event)
+        self.assertNotIn("turn_id", serving_event)
         self.assertEqual(1, len(server.adapter.commit_calls))
         commit_args, commit_hook = server.adapter.commit_calls[0]
         self.assertEqual("hook_boundary", commit_args["commit_reason"])
         self.assertTrue(commit_args["force"])
-        self.assertEqual("thread-stop-1", commit_hook["thread_id"])
-        self.assertEqual("turn-stop-1", commit_hook["turn_id"])
+        self.assertNotIn("thread_id", commit_hook)
+        self.assertNotIn("turn_id", commit_hook)
 
     def test_fast_async_hook_ingest_uses_local_tenant_fallback_scope(self) -> None:
         class Adapter:
@@ -2734,14 +2799,15 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
 
         raw_record = server.adapter.raw_records[0]
         self.assertEqual("tool", raw_record["source_role"])
-        self.assertEqual("tool_result", raw_record["hook_type"])
+        self.assertNotIn("hook_type", raw_record)
+        self.assertNotIn("source_hook_types", raw_record)
         self.assertEqual("PostToolUse", raw_record["codex_event"])
         serving_event = next(record for record in server.adapter.serving_records if record["record_type"] == "context_event")
         self.assertEqual("tool", serving_event["source_role"])
-        self.assertEqual("tool_result", serving_event["hook_type"])
+        self.assertEqual(["tool_result"], serving_event["source_hook_types"])
         self.assertEqual("PostToolUse", serving_event["codex_event"])
         self.assertEqual("tool", serving_event["envelope"]["source_role"])
-        self.assertEqual("tool_result", serving_event["envelope"]["hook_type"])
+        self.assertNotIn("hook_type", serving_event["envelope"])
 
     def test_fast_async_hook_ingest_threshold_commits_tool_evidence(self) -> None:
         original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT
@@ -2820,7 +2886,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertFalse(commit_args["force"])
         self.assertEqual(2, commit_args["max_messages"])
         self.assertEqual("session_commit", commit_hook["hook_type"])
-        self.assertEqual("thread-tool-threshold", commit_hook["thread_id"])
+        self.assertNotIn("thread_id", commit_hook)
         self.assertEqual(1, len(server.adapter.session_buffer_records))
         self.assertEqual("tool", server.adapter.session_buffer_records[0]["envelope"]["messages"][0]["role"])
         raw_selection = server.adapter.raw_records[0]["metadata"]["codex_memory_selection"]
@@ -3078,11 +3144,11 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertNotIn("max_messages", commit_args)
         self.assertEqual("session_commit", commit_hook["hook_type"])
         self.assertEqual("Stop", commit_hook["trigger"])
-        self.assertEqual("thread-stop", commit_hook["thread_id"])
+        self.assertNotIn("thread_id", commit_hook)
         self.assertEqual(1, len(server.adapter.session_buffer_records))
         buffered = server.adapter.session_buffer_records[0]
         self.assertEqual("assistant", buffered["envelope"]["messages"][0]["role"])
-        self.assertEqual("after_llm", buffered["envelope"]["hook_type"])
+        self.assertNotIn("hook_type", buffered["envelope"])
         self.assertEqual("Stop", buffered["envelope"]["codex_event"])
         selection = buffered["envelope"]["codex_memory_selection"]
         self.assertEqual("selected_assistant_decision_outcome_only", selection["policy"])
