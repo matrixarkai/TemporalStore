@@ -21,8 +21,8 @@ def validate_hook(hook: Json | None) -> Json | None:
         return None
     if not isinstance(hook, dict):
         raise MatrixArkError("agent_hook must be an object")
-    hook_type = require_string(hook, "hook_type")
-    if hook_type not in {
+    hook_type = str(hook.get("hook_type") or "").strip()
+    if hook_type and hook_type not in {
         "before_llm",
         "after_llm",
         "tool_result",
@@ -31,6 +31,10 @@ def validate_hook(hook: Json | None) -> Json | None:
         "session_commit",
     }:
         raise MatrixArkError("agent_hook.hook_type is invalid")
+    if "codex_event" in hook and not isinstance(hook["codex_event"], str):
+        raise MatrixArkError("agent_hook.codex_event must be a string")
+    if "trigger" in hook and not isinstance(hook["trigger"], str):
+        raise MatrixArkError("agent_hook.trigger must be a string")
     require_string(hook, "source")
     require_string(hook, "hook_id")
     if not isinstance(hook.get("observed_at_ms"), int):

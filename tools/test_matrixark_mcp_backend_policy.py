@@ -590,6 +590,20 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         mcp_core._DIRECT_RETRIEVAL_CANDIDATE_CACHE.clear()
         mcp_core._DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.clear()
 
+    def test_agent_hook_validation_accepts_codex_event_without_legacy_hook_type(self) -> None:
+        hook = {
+            "source": "codex",
+            "hook_id": "hook-minimal-1",
+            "observed_at_ms": 123456,
+            "auto_captured": True,
+            "trigger": "UserPromptSubmit",
+            "codex_event": "UserPromptSubmit",
+            "idempotency_key": "hook-minimal-1",
+        }
+
+        self.assertEqual(hook, mcp_core.validate_hook(hook))
+        self.assertNotIn("hook_type", hook)
+
     def test_raw_ingestion_async_queue_persists_hook_write_debug(self) -> None:
         client = _HashStoreClient()
         adapter = _direct_adapter_for_hash_store(client)
