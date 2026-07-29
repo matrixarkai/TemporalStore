@@ -1242,7 +1242,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 return ["tenant:t", "user:u", f"session:{scope['session_id']}"]
 
             def read_all(self):
-                return []
+                return list(self.appended)
 
             def batch_extract(self, args, *, hook=None):
                 self.batch_extract_calls.append(args)
@@ -1261,6 +1261,26 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
 
             def append(self, record):
                 self.appended.append(record)
+
+            def append_many(self, records):
+                self.appended.extend(records)
+
+            def node_summary_dirty_records(self, *, node_path, scope, updated_at_ms, source_ref_type, source_hash_field, source_hash, dirty_reason, propagate_depth, source_lineage):
+                return [
+                    source_hash + 1,
+                ], [
+                    {
+                        "record_type": "context_summary_dirty",
+                        "dirty_hash": source_hash + 1,
+                        "node_path": node_path,
+                        "scope": scope,
+                        "source_ref_type": source_ref_type,
+                        source_hash_field: source_hash,
+                        "dirty_reason": dirty_reason,
+                        "updated_at_ms": updated_at_ms,
+                        "source_role_counts": source_lineage.get("source_role_counts", {}),
+                    }
+                ]
 
         scope = {
             "account_id": "acct",
@@ -1377,6 +1397,34 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             [message["role"] for message in multi_adapter.batch_extract_calls[0]["messages"]],
         )
         self.assertEqual([2], multi_adapter.batch_extract_calls[0]["source_event_ids"])
+
+        multi_adapter.pending = []
+        finalized = runtime_mod.session_commit(
+            multi_adapter,
+            {"scope": scope, "threshold_messages": 20, "force": True, "commit_reason": "hook_boundary"},
+        )
+        self.assertEqual("finalized", finalized["status"])
+        self.assertEqual("force", finalized["trigger_policy"])
+        self.assertEqual("final", finalized["extraction_phase"])
+        self.assertTrue(finalized["final_session_boundary"])
+        self.assertEqual(1, finalized["prior_commit_count"])
+        self.assertEqual(1, finalized["prior_committed_event_count"])
+        self.assertEqual("dirty_marked", finalized["summary_refresh"]["status"])
+        boundaries = [
+            record
+            for record in multi_adapter.appended
+            if record.get("record_type") == "context_session_boundary"
+        ]
+        self.assertEqual(1, len(boundaries))
+        self.assertTrue(boundaries[0]["final_session_boundary"])
+        self.assertEqual({"assistant": 1, "tool": 1, "user": 1}, boundaries[0]["source_role_counts"])
+
+        second_finalized = runtime_mod.session_commit(
+            multi_adapter,
+            {"scope": scope, "threshold_messages": 20, "force": True, "commit_reason": "hook_boundary"},
+        )
+        self.assertEqual("empty", second_finalized["status"])
+        self.assertTrue(second_finalized["trigger_evidence"]["already_finalized"])
 
     def test_modular_batch_extract_promotes_profile_entities(self) -> None:
         batch_mod = importlib.import_module("tools.matrixark_mcp_local_batch_extract_runtime")

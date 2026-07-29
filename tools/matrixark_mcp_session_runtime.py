@@ -14,6 +14,7 @@ try:
         now_ms,
         optional_object,
         optional_string,
+        ordered_unique_any,
         session_buffer_key_from_scope,
         session_buffer_key,
         stable_hash,
@@ -29,6 +30,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         now_ms,
         optional_object,
         optional_string,
+        ordered_unique_any,
         session_buffer_key_from_scope,
         session_buffer_key,
         stable_hash,
@@ -508,6 +510,52 @@ def append_session_commit_task_progress(
             append(record)
 
 
+def _append_records(adapter: object, records: list[Json]) -> None:
+    if not records:
+        return
+    append_many = getattr(adapter, "append_many", None)
+    if callable(append_many):
+        append_many(records)
+        return
+    append = getattr(adapter, "append", None)
+    if callable(append):
+        for record in records:
+            append(record)
+
+
+def _source_lineage_summary(records: list[Json]) -> Json:
+    counts = _pending_source_count_summary(records)
+    lineage: Json = {
+        "source_roles": sorted(counts.get("source_role_counts", {})),
+        "source_role_counts": counts.get("source_role_counts", {}),
+        "source_hook_types": sorted(counts.get("source_hook_type_counts", {})),
+        "source_hook_type_counts": counts.get("source_hook_type_counts", {}),
+        "source_codex_events": sorted(counts.get("source_codex_event_counts", {})),
+        "source_codex_event_counts": counts.get("source_codex_event_counts", {}),
+    }
+    for field in [
+        "source_memory_selection_policies",
+        "source_memory_selection_policy_counts",
+        "source_memory_selection_lossy_count",
+        "source_memory_selection_complete_count",
+        "source_memory_selection_dropped_text_chars",
+        "source_memory_selection_dropped_line_count",
+        "source_memory_selection_retained_text_ratio_avg",
+        "source_memory_selection_retained_line_ratio_avg",
+    ]:
+        value = counts.get(field)
+        if value not in (None, "", [], {}):
+            lineage[field] = value
+    extraction_phases = sorted({
+        str(record.get("extraction_phase") or "").strip()
+        for record in records
+        if str(record.get("extraction_phase") or "").strip()
+    })
+    if extraction_phases:
+        lineage["source_extraction_phases"] = extraction_phases
+    return {key: value for key, value in lineage.items() if value not in (None, "", [], {})}
+
+
 def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> Json:
     scope = optional_object(args, "scope")
     threshold = args.get("threshold_messages", 20)
@@ -601,6 +649,114 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
                 pending_source_roles.update(str(value).strip() for value in values if str(value or "").strip())
         source_event_ids.append(record["event_id_hash"])
     if not messages:
+        if force and final_session_boundary:
+            session_key = session_buffer_key_from_scope(scope)
+            read_all = getattr(adapter, "read_all", None)
+            records = read_all() if callable(read_all) else []
+            prior_commits = [
+                record
+                for record in records
+                if record.get("record_type") == "context_batch_commit"
+                and session_buffer_key_from_scope(record.get("scope", {})) == session_key
+            ]
+            already_finalized = any(
+                (
+                    record.get("record_type") == "context_session_boundary"
+                    and bool(record.get("final_session_boundary"))
+                    and session_buffer_key_from_scope(record.get("scope", {})) == session_key
+                )
+                or (
+                    record.get("record_type") == "context_batch_commit"
+                    and bool(record.get("final_session_boundary"))
+                    and session_buffer_key_from_scope(record.get("scope", {})) == session_key
+                )
+                for record in records
+            )
+            if prior_commits and not already_finalized:
+                node_path = adapter.default_session_node_path(scope)
+                node_hash = stable_hash("/".join(node_path))
+                committed_event_ids: list[int] = []
+                for commit in prior_commits:
+                    for event_id in commit.get("source_event_ids", []):
+                        try:
+                            committed_event_ids.append(int(event_id))
+                        except (TypeError, ValueError):
+                            continue
+                unique_event_ids = ordered_unique_any(committed_event_ids)
+                source_lineage = _source_lineage_summary(prior_commits)
+                finalized_at_ms = now_ms()
+                boundary_hash = stable_hash(f"session_boundary:{session_key}:{unique_event_ids}:final")
+                boundary_record: Json = {
+                    "record_type": "context_session_boundary",
+                    "boundary_hash": boundary_hash,
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "scope": scope,
+                    "summary_text": (
+                        f"Session finalized after {len(prior_commits)} provisional commit(s) "
+                        f"covering {len(unique_event_ids)} event(s)."
+                    ),
+                    "status": "finalized",
+                    "commit_reason": commit_reason,
+                    "trigger_policy": trigger_policy,
+                    "extraction_phase": "final",
+                    "final_session_boundary": True,
+                    "prior_commit_count": len(prior_commits),
+                    "prior_committed_event_count": len(unique_event_ids),
+                    "source_event_count": len(unique_event_ids),
+                    **source_lineage,
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "created_at_ms": finalized_at_ms,
+                    "updated_at_ms": finalized_at_ms,
+                }
+                dirty_hashes: list[int] = []
+                dirty_records: list[Json] = []
+                node_summary_dirty_records = getattr(adapter, "node_summary_dirty_records", None)
+                if callable(node_summary_dirty_records):
+                    dirty_hashes, dirty_records = node_summary_dirty_records(
+                        node_path=node_path,
+                        scope=scope,
+                        updated_at_ms=finalized_at_ms,
+                        source_ref_type="session_boundary",
+                        source_hash_field="source_boundary_hash",
+                        source_hash=boundary_hash,
+                        dirty_reason="session_finalized",
+                        propagate_depth=0,
+                        source_lineage=boundary_record,
+                    )
+                _append_records(adapter, [boundary_record, *dirty_records])
+                return {
+                    "status": "finalized",
+                    "pending_event_count": pending_event_count,
+                    "pending_message_count": pending_message_count,
+                    "threshold_messages": threshold,
+                    "commit_reason": commit_reason,
+                    "trigger_policy": trigger_policy,
+                    "idle_timeout_ms": idle_timeout_ms,
+                    "idle_elapsed_ms": idle_elapsed_ms,
+                    "extraction_phase": "final",
+                    "final_session_boundary": True,
+                    "boundary_hash": boundary_hash,
+                    "prior_commit_count": len(prior_commits),
+                    "prior_committed_event_count": len(unique_event_ids),
+                    "summary_refresh": {
+                        "status": "dirty_marked" if dirty_hashes else "not_available",
+                        "dirty_hashes": dirty_hashes,
+                        "dirty_reason": "session_finalized",
+                    },
+                    "trigger_evidence": {
+                        **trigger_evidence,
+                        "already_finalized": False,
+                        "prior_commit_count": len(prior_commits),
+                    },
+                }
+            if already_finalized:
+                trigger_evidence = {
+                    **trigger_evidence,
+                    "already_finalized": True,
+                    "prior_commit_count": len(prior_commits),
+                }
         return {
             "status": "empty",
             "pending_event_count": pending_event_count,
