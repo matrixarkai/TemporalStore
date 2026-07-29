@@ -2265,6 +2265,51 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(all("model_hash" not in record for record in embeddings))
         self.assertTrue(all("dim" not in record for record in embeddings))
 
+    def test_context_embedding_materialization_strips_bulky_lineage(self) -> None:
+        materialized = mcp.materialize_serving_record_batch(
+            [
+                {
+                    "record_type": "context_embedding",
+                    "embedding_type": "profile_entity_state",
+                    "ref_type": "entity",
+                    "ref_hash": 44,
+                    "node_hash": 55,
+                    "vector": [0.1, 0.2],
+                    "dim": 2,
+                    "model": "matrixark-local-token-hash-v1",
+                    "memory_scope": "user_profile",
+                    "session_continuity": "cross_session",
+                    "source_event_ids": [11],
+                    "source_session_ids": ["session_old"],
+                    "source_role_counts": {"assistant": 1},
+                    "source_hook_type_counts": {"after_llm": 1},
+                    "source_codex_event_counts": {"Stop": 1},
+                    "source_memory_selection_policy_counts": {
+                        "selected_assistant_decision_outcome_only": 1,
+                    },
+                    "profile_revision": 2,
+                    "supersedes_session_entity_hashes": [33],
+                }
+            ]
+        )
+        embeddings = [record for record in materialized if record.get("record_type") == "context_embedding"]
+
+        self.assertEqual(1, len(embeddings))
+        embedding = embeddings[0]
+        self.assertEqual("user_profile", embedding["memory_scope"])
+        self.assertEqual("cross_session", embedding["session_continuity"])
+        for field in [
+            "source_event_ids",
+            "source_session_ids",
+            "source_role_counts",
+            "source_hook_type_counts",
+            "source_codex_event_counts",
+            "source_memory_selection_policy_counts",
+            "profile_revision",
+            "supersedes_session_entity_hashes",
+        ]:
+            self.assertNotIn(field, embedding)
+
     def test_latest_context_state_compacts_summary_and_summary_embedding_versions(self) -> None:
         records = [
             {"record_type": "context_event", "event_id_hash": 7, "text": "keep me"},

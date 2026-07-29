@@ -735,6 +735,39 @@ NODE_PATH_HEAVY_RECORD_TYPES = {
 }
 EVENT_DEBUG_FIELDS = {"envelope", "internal_extraction", "prior_context", "agent_hook", "storage_options"}
 ENTITY_DEBUG_FIELDS = {"previous_state", "field_patches", "patch_results"}
+EMBEDDING_LINEAGE_DEBUG_FIELDS = {
+    "source_event_ids",
+    "source_entity_hashes",
+    "source_summary_hashes",
+    "source_segment_hashes",
+    "source_session_ids",
+    "source_roles",
+    "source_role_counts",
+    "source_hook_types",
+    "source_hook_type_counts",
+    "source_codex_events",
+    "source_codex_event_counts",
+    "source_memory_selection_policies",
+    "source_memory_selection_policy_counts",
+    "source_memory_selection_lossy_count",
+    "source_memory_selection_complete_count",
+    "source_memory_selection_dropped_text_chars",
+    "source_memory_selection_dropped_line_count",
+    "source_memory_selection_retained_text_ratio_avg",
+    "source_memory_selection_retained_line_ratio_avg",
+    "source_memory_scopes",
+    "source_session_continuities",
+    "source_extraction_phases",
+    "source_profile_promotion_policies",
+    "source_profile_promotion_blockers",
+    "profile_revision",
+    "profile_entity_current",
+    "supersedes_session_entity_hash",
+    "supersedes_session_entity_hashes",
+    "previous_profile_revision",
+    "previous_profile_updated_at_ms",
+    "extraction_context_event_ids",
+}
 CONTEXT_TIMELINE_FANOUT = 1024 * 1024
 
 # Fields that are useful while debugging a request but are derivable from
@@ -1016,6 +1049,15 @@ def materialize_serving_records(record: Json) -> list[Json]:
         debug_payload = {field: record[field] for field in ENTITY_DEBUG_FIELDS if field in record and record[field] not in (None, "", [], {})}
         debug_type = "entity_update_detail"
         for field in ENTITY_DEBUG_FIELDS:
+            serving.pop(field, None)
+    elif record_type == "context_embedding":
+        debug_payload = {
+            field: record[field]
+            for field in EMBEDDING_LINEAGE_DEBUG_FIELDS
+            if field in record and record[field] not in (None, "", [], {})
+        }
+        debug_type = "embedding_lineage_detail"
+        for field in EMBEDDING_LINEAGE_DEBUG_FIELDS:
             serving.pop(field, None)
 
     if not debug_payload or not ENABLE_CONTEXT_DEBUG_RECORDS:

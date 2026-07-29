@@ -16,6 +16,7 @@ try:
         TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
         TIME_COMPRESSION_WINDOW_EVENTS,
         ENABLE_SUMMARY_REFRESH_AUDIT,
+        EMBEDDING_LINEAGE_DEBUG_FIELDS,
         candidate_access_scope,
         embedding_for_text,
         embedding_model_name,
@@ -39,6 +40,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
         TIME_COMPRESSION_WINDOW_EVENTS,
         ENABLE_SUMMARY_REFRESH_AUDIT,
+        EMBEDDING_LINEAGE_DEBUG_FIELDS,
         candidate_access_scope,
         embedding_for_text,
         embedding_model_name,
@@ -72,6 +74,13 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         node_summary_dirty_records,
         pending_dirty_node_records,
     )
+
+
+def compact_summary_embedding_record(record: Json) -> Json:
+    compacted = dict(record)
+    for field in EMBEDDING_LINEAGE_DEBUG_FIELDS:
+        compacted.pop(field, None)
+    return compacted
 
 
 def node_summary_source_records(
@@ -378,7 +387,7 @@ def build_node_summary_refresh_records(
             }
         )
         records.append(
-            {
+            compact_summary_embedding_record({
                 "record_type": "context_embedding",
                 "embedding_type": embedding_type,
                 "ref_type": "summary",
@@ -413,7 +422,7 @@ def build_node_summary_refresh_records(
                 "final_session_boundary": source_final_session_boundary_count > 0,
                 "scope": scope,
                 "updated_at_ms": refreshed_at_ms,
-            }
+            })
         )
     return {
         "records": records,

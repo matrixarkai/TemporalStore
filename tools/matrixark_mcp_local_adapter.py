@@ -966,6 +966,7 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
                 memory_selection_complete_count += amount
             record_has_retention_counts = record_has_retention_counts or amount > 0
         if not record_has_retention_counts:
+            seen_selection_sources: set[tuple[Any, ...]] = set()
             for source in [
                 record.get("codex_memory_selection") if isinstance(record.get("codex_memory_selection"), dict) else {},
                 (record.get("envelope") or {}).get("codex_memory_selection")
@@ -980,6 +981,17 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
             ]:
                 if not source:
                     continue
+                selection_key = (
+                    source.get("policy"),
+                    bool(source.get("selection_lossy")),
+                    source.get("dropped_text_chars"),
+                    source.get("dropped_line_count"),
+                    source.get("retained_text_ratio"),
+                    source.get("retained_line_ratio"),
+                )
+                if selection_key in seen_selection_sources:
+                    continue
+                seen_selection_sources.add(selection_key)
                 if bool(source.get("selection_lossy")):
                     memory_selection_lossy_count += 1
                 else:
@@ -2325,6 +2337,18 @@ class MatrixArkLocalAdapter:
         source_codex_event_counts = source_lineage.get("source_codex_event_counts", {})
         source_memory_selection_policies = source_lineage.get("source_memory_selection_policies", [])
         source_memory_selection_policy_counts = source_lineage.get("source_memory_selection_policy_counts", {})
+        source_memory_selection_retention: Json = {
+            key: source_lineage.get(key)
+            for key in [
+                "source_memory_selection_lossy_count",
+                "source_memory_selection_complete_count",
+                "source_memory_selection_dropped_text_chars",
+                "source_memory_selection_dropped_line_count",
+                "source_memory_selection_retained_text_ratio_avg",
+                "source_memory_selection_retained_line_ratio_avg",
+            ]
+            if source_lineage.get(key) not in (None, "", [], {})
+        }
         if source_roles:
             metadata = {**metadata, "source_roles": source_roles, "source_role_counts": source_role_counts}
         if pending_source_hook_types:
@@ -2340,6 +2364,7 @@ class MatrixArkLocalAdapter:
                 **metadata,
                 "source_memory_selection_policies": source_memory_selection_policies,
                 "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                **source_memory_selection_retention,
             }
         storage_options = normalize_storage_options(args, metadata)
         if "node_path" not in metadata:
@@ -2386,6 +2411,7 @@ class MatrixArkLocalAdapter:
             "source_hook_types": source_hook_types,
             "source_codex_events": source_codex_events,
             "source_memory_selection_policies": source_memory_selection_policies,
+            **source_memory_selection_retention,
             "profile_promotion_policy": batch_result.get("profile_promotion_policy"),
             "profile_promotion_importance_gate": bool(batch_result.get("profile_promotion_importance_gate", False)),
             "profile_promotion_blocker": batch_result.get("profile_promotion_blocker"),
@@ -2424,6 +2450,7 @@ class MatrixArkLocalAdapter:
                 "source_codex_event_counts": source_codex_event_counts,
                 "source_memory_selection_policies": source_memory_selection_policies,
                 "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                **source_memory_selection_retention,
                 "profile_promotion_summary": batch_result.get("profile_promotion_summary", []),
                 "profile_promotion_policy": batch_result.get("profile_promotion_policy"),
                 "profile_promotion_importance_gate": bool(batch_result.get("profile_promotion_importance_gate", False)),
@@ -2465,6 +2492,7 @@ class MatrixArkLocalAdapter:
                     "source_codex_event_counts": source_codex_event_counts,
                     "source_memory_selection_policies": source_memory_selection_policies,
                     "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                    **source_memory_selection_retention,
                     "summary_refresh_status": memory_layers_written.get("summary_refresh_status"),
                     "summary_dirty_nodes": memory_layers_written.get("summary_dirty_nodes", 0),
                     "memory_layers_written": memory_layers_written,
@@ -2493,6 +2521,7 @@ class MatrixArkLocalAdapter:
             "source_codex_event_counts": source_codex_event_counts,
             "source_memory_selection_policies": source_memory_selection_policies,
             "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            **source_memory_selection_retention,
             "profile_promotion_summary": batch_result.get("profile_promotion_summary", []),
             "commit_reason": commit_reason,
             "trigger_policy": trigger_policy,
@@ -6002,7 +6031,7 @@ class MatrixArkLocalAdapter:
                 source_memory_selection_policy_counts[policy_name] = source_lineage_count
         source_memory_selection_policies = sorted(source_memory_selection_policy_counts)
         source_memory_selection_retention: Json = {
-            key: source_lineage.get(key)
+            key: envelope_metadata.get(key)
             for key in [
                 "source_memory_selection_lossy_count",
                 "source_memory_selection_complete_count",
@@ -6011,8 +6040,30 @@ class MatrixArkLocalAdapter:
                 "source_memory_selection_retained_text_ratio_avg",
                 "source_memory_selection_retained_line_ratio_avg",
             ]
-            if source_lineage.get(key) not in (None, "", [], {})
+            if envelope_metadata.get(key) not in (None, "", [], {})
         }
+        selection = (
+            envelope_metadata.get("codex_memory_selection")
+            if isinstance(envelope_metadata.get("codex_memory_selection"), dict)
+            else {}
+        )
+        if selection:
+            if "source_memory_selection_lossy_count" not in source_memory_selection_retention:
+                source_memory_selection_retention["source_memory_selection_lossy_count"] = (
+                    1 if bool(selection.get("selection_lossy")) else 0
+                )
+            if "source_memory_selection_complete_count" not in source_memory_selection_retention:
+                source_memory_selection_retention["source_memory_selection_complete_count"] = (
+                    0 if bool(selection.get("selection_lossy")) else 1
+                )
+            for source_key, target_key in [
+                ("dropped_text_chars", "source_memory_selection_dropped_text_chars"),
+                ("dropped_line_count", "source_memory_selection_dropped_line_count"),
+                ("retained_text_ratio", "source_memory_selection_retained_text_ratio_avg"),
+                ("retained_line_ratio", "source_memory_selection_retained_line_ratio_avg"),
+            ]:
+                if target_key not in source_memory_selection_retention and selection.get(source_key) not in (None, ""):
+                    source_memory_selection_retention[target_key] = selection.get(source_key)
 
         event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
         records_to_append: list[Json] = []
@@ -6851,6 +6902,9 @@ class MatrixArkLocalAdapter:
             "source_role_counts": source_role_counts,
             "source_hook_type_counts": source_hook_type_counts,
             "source_codex_event_counts": source_codex_event_counts,
+            "source_memory_selection_policies": source_memory_selection_policies,
+            "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            **source_memory_selection_retention,
             "profile_promotion_summary": profile_promotion_summary[:16],
             "segments_written": len(segment_hashes),
             "summary_hash": summary_hash,
