@@ -1845,6 +1845,64 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             dropped["refs"],
         )
 
+    def test_current_state_floor_keeps_profile_entity_ahead_of_same_session_event(self) -> None:
+        same_session_event = {
+            "ref_type": "event",
+            "ref_hash": 191,
+            "text": "user: latest recovery preference used to wait for Stop only",
+            "score": 0.99,
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "event_type": "preference_update",
+            "updated_at_ms": 1000,
+            "source_roles": ["user"],
+            "source_role_counts": {"user": 1},
+        }
+        profile_entity = {
+            "ref_type": "entity",
+            "ref_hash": 192,
+            "text": "user_preference: recovery_mode = commit memories on threshold or idle timeout; Stop flushes leftovers",
+            "score": 0.05,
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "entity_type": "user_preference",
+            "entity_name": "recovery_mode",
+            "updated_at_ms": 2000,
+            "source_roles": ["user"],
+            "source_role_counts": {"user": 1},
+        }
+
+        selected, _used_tokens, dropped = select_token_budgeted_refs(
+            [same_session_event, profile_entity],
+            [],
+            max_context_tokens=32,
+            auxiliary_quota=0,
+            question_type="current_state",
+            min_score=0.0,
+            max_selected_refs=1,
+            cross_session_policy={
+                "enabled": True,
+                "budget_tokens": 32,
+                "max_sessions": 4,
+                "max_candidates": 4,
+                "min_entity_bridge_refs": 1,
+            },
+        )
+
+        self.assertEqual([192], [ref["ref_hash"] for ref in selected])
+        self.assertEqual("profile_entity", selected[0]["budget_memory_layer"])
+        self.assertEqual(1, dropped["memory_layer_floor"])
+        self.assertTrue(
+            any(
+                ref.get("ref_hash") == 191
+                and ref.get("drop_reason") == "memory_layer_floor"
+                and ref.get("memory_layer_floor_reserved_layer") == "profile_entity"
+                and ref.get("budget_memory_layer") == "same_session_event"
+                for ref in dropped["refs"]
+            ),
+            dropped["refs"],
+        )
+
     def test_current_state_retrieval_prefers_profile_entity_over_stale_session_and_summary(self) -> None:
         session_entity = {
             "ref_type": "entity",

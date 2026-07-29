@@ -5717,12 +5717,17 @@ def select_token_budgeted_refs(
     memory_selection_policy_selected_ref_counts: Json = {
         policy: 0 for policy in normalized_memory_selection_policy_budget_tokens
     }
-    profile_entity_floor_enabled = bool(
+    summary_profile_entity_floor_enabled = bool(
         normalized_memory_layer_budget_tokens.get("profile_entity")
         and any(
             normalized_memory_layer_budget_tokens.get(layer)
             for layer in ["summary", "profile_summary", "same_session_summary", "cross_session_summary"]
         )
+    )
+    current_state_profile_entity_floor_enabled = bool(
+        question_type in {"current_state", "latest"}
+        and cross_enabled
+        and cross_min_entity_bridge_refs > 0
     )
 
     def profile_entity_floor_satisfied() -> bool:
@@ -6007,9 +6012,18 @@ def select_token_budgeted_refs(
             record_dropped_candidate(dropped, candidate, reason="shared_skill_budget", token_estimate=ref_tokens)
             continue
         candidate_memory_layer = candidate_memory_layer_name(candidate)
+        should_reserve_profile_entity_floor = bool(
+            (
+                summary_profile_entity_floor_enabled
+                and candidate_memory_layer in {"summary", "profile_summary", "same_session_summary", "cross_session_summary"}
+            )
+            or (
+                current_state_profile_entity_floor_enabled
+                and candidate_memory_layer != "profile_entity"
+            )
+        )
         if (
-            profile_entity_floor_enabled
-            and candidate_memory_layer in {"summary", "profile_summary", "same_session_summary", "cross_session_summary"}
+            should_reserve_profile_entity_floor
             and not profile_entity_floor_satisfied()
             and remaining_profile_entity_candidate_exists(index + 1)
         ):
