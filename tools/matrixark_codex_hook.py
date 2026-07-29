@@ -2880,6 +2880,14 @@ ASSISTANT_MEMORY_LINE_PATTERNS = [
 ]
 
 
+def normalize_assistant_memory_line(line: str) -> str:
+    stripped = str(line or "").strip()
+    stripped = re.sub(r"^(?:#{1,6}\s+|>\s+)", "", stripped).strip()
+    stripped = re.sub(r"^(?:[-*+]\s+|\d+[.)]\s+)", "", stripped).strip()
+    stripped = stripped.strip("`").strip()
+    return stripped
+
+
 def selected_assistant_memory_text(text: str, *, max_chars: int = 4096, max_lines: int = 48) -> str:
     """Keep decision/outcome lines from assistant responses without storing large answers verbatim."""
     compact = str(text or "").strip()
@@ -2897,12 +2905,13 @@ def selected_assistant_memory_text(text: str, *, max_chars: int = 4096, max_line
             continue
         if in_code_block:
             continue
-        if any(pattern.search(stripped) for pattern in ASSISTANT_MEMORY_LINE_PATTERNS):
-            selected.append(stripped[:420])
+        normalized = normalize_assistant_memory_line(stripped)
+        if normalized and any(pattern.search(normalized) for pattern in ASSISTANT_MEMORY_LINE_PATTERNS):
+            selected.append(normalized[:420])
         if len(selected) >= max_lines:
             break
     if not selected:
-        selected = [line[:420] for line in lines[: min(len(lines), 8)] if line]
+        selected = [normalize_assistant_memory_line(line)[:420] for line in lines[: min(len(lines), 8)] if line]
     evidence = "\n".join(selected).strip()
     if len(evidence) > max_chars:
         evidence = evidence[:max_chars].rstrip() + "\n[assistant memory truncated]"
