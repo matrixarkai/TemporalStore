@@ -1059,6 +1059,8 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         "threshold_messages": session_buffer.get("threshold_messages"),
         "threshold_ready": session_buffer.get("threshold_ready"),
         "idle_timeout_ms": session_buffer.get("idle_commit_timeout_ms"),
+        "idle_commit_deadline_ms": session_buffer.get("idle_commit_deadline_ms"),
+        "idle_commit_scheduled": session_buffer.get("idle_commit_scheduled"),
         "idle_ready": session_buffer.get("idle_ready"),
         "pre_ingest_idle_ready": session_buffer.get("pre_ingest_idle_ready"),
         "pre_ingest_idle_elapsed_ms": session_buffer.get("pre_ingest_idle_elapsed_ms"),
@@ -4144,6 +4146,46 @@ def fast_async_hook_ingest(
         and auto_batch_extract_on_ingest
         and (pending_event_count >= threshold or pending_message_count >= threshold)
     )
+    idle_commit_deadline_ms = now + idle_timeout_ms if idle_timeout_ms > 0 else 0
+    should_schedule_idle_commit = (
+        not should_boundary_commit
+        and not should_threshold_commit
+        and auto_batch_extract_on_ingest
+        and idle_timeout_ms > 0
+        and pending_event_count > 0
+    )
+    if should_schedule_idle_commit:
+        enqueue(
+            [
+                {
+                    "record_type": "matrixark_async_pipeline_task",
+                    "task_hash": stable_int_hash(f"async_pipeline_idle_commit:{event_id_hash}"),
+                    "event_id_hash": event_id_hash,
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "scope": scope,
+                    "status": "idle_commit_scheduled",
+                    "stages": ["extraction", "summary", "compression", "embedding"],
+                    "reason": "session_buffer_idle_deadline",
+                    "trigger_policy": "idle_timeout",
+                    "auto_batch_extract": auto_batch_extract_on_ingest,
+                    "threshold_messages": threshold,
+                    "idle_commit_timeout_ms": idle_timeout_ms,
+                    "idle_commit_deadline_ms": idle_commit_deadline_ms,
+                    "idle_commit_pending_event_count": pending_event_count,
+                    "idle_commit_pending_message_count": pending_message_count,
+                    "source_roles": [role] if role else [],
+                    "source_role_counts": {role: 1} if role else {},
+                    "source_hook_types": [hook_type] if hook_type else [],
+                    "source_hook_type_counts": {hook_type: 1} if hook_type else {},
+                    "source_codex_events": [args.event] if args.event else [],
+                    "source_codex_event_counts": {args.event: 1} if args.event else {},
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "updated_at_ms": now,
+                }
+            ]
+        )
     should_idle_commit = should_boundary_commit and commit_reason_for_event(args.event) == "idle_timeout"
     if callable(session_commit) and (should_threshold_commit or should_boundary_commit):
         commit_reason = commit_reason_for_event(args.event) if should_boundary_commit else "threshold"
@@ -4218,6 +4260,8 @@ def fast_async_hook_ingest(
             "threshold_messages": threshold,
             "threshold_ready": should_threshold_commit,
             "idle_commit_timeout_ms": idle_timeout_ms,
+            "idle_commit_deadline_ms": idle_commit_deadline_ms if should_schedule_idle_commit else 0,
+            "idle_commit_scheduled": should_schedule_idle_commit,
             "idle_ready": should_idle_commit,
             "pre_ingest_idle_ready": should_pre_ingest_idle_commit,
             "pre_ingest_idle_elapsed_ms": idle_elapsed_before_ingest_ms,

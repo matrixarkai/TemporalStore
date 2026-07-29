@@ -60,6 +60,22 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
+def idle_commit_schedule(args: Json, envelope: Json, pending_event_count: int, pending_message_count: int) -> Json:
+    idle_timeout_ms = args.get("idle_commit_timeout_ms")
+    if idle_timeout_ms is None:
+        return {}
+    if not isinstance(idle_timeout_ms, int) or idle_timeout_ms < 0:
+        raise MatrixArkError("idle_commit_timeout_ms must be a non-negative integer")
+    deadline_ms = int(envelope.get("ingestion_time_ms") or 0) + idle_timeout_ms
+    return {
+        "idle_commit_timeout_ms": idle_timeout_ms,
+        "idle_commit_deadline_ms": deadline_ms,
+        "idle_commit_pending_event_count": pending_event_count,
+        "idle_commit_pending_message_count": pending_message_count,
+        "idle_commit_due": idle_timeout_ms == 0,
+    }
+
+
 def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
     envelope = ingest_start["envelope"]
     hook = ingest_start["hook"]
@@ -221,6 +237,11 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
     if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
         raise MatrixArkError("session_buffer_threshold must be a positive integer")
     threshold_ready = pending_event_count >= session_buffer_threshold or pending_message_count >= session_buffer_threshold
+    idle_schedule = (
+        idle_commit_schedule(args, envelope, pending_event_count, pending_message_count)
+        if session_buffer_enabled and auto_batch_extract and pending_event_count and not threshold_ready
+        else {}
+    )
     if auto_batch_extract and (session_boundary_commit or threshold_ready):
         auto_batch_result = self.session_commit(
             {
@@ -241,6 +262,26 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
                 "storage_options": envelope.get("storage_options", {}),
             },
             hook=hook,
+        )
+    if idle_schedule and auto_batch_result is None:
+        self.append(
+            {
+                "record_type": "matrixark_async_pipeline_task",
+                "task_hash": stable_hash(f"async_pipeline_idle_commit:{event_id_hash}"),
+                "event_id_hash": event_id_hash,
+                "node_hash": node_hash,
+                "node_path": node_path,
+                "scope": envelope["scope"],
+                "status": "idle_commit_scheduled",
+                "stages": ["extraction", "summary", "compression", "embedding"],
+                "reason": "session_buffer_idle_deadline",
+                "trigger_policy": "idle_timeout",
+                "auto_batch_extract": auto_batch_extract,
+                "threshold_messages": session_buffer_threshold,
+                **idle_schedule,
+                "created_at_ms": envelope["ingestion_time_ms"],
+                "updated_at_ms": envelope["ingestion_time_ms"],
+            }
         )
     return build_ingest_response(
         envelope=envelope,
@@ -279,6 +320,7 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
         pending_message_count=pending_message_count,
         session_buffer_threshold=session_buffer_threshold,
         threshold_ready=threshold_ready,
+        idle_schedule=idle_schedule,
         auto_batch_extract=auto_batch_extract,
         session_boundary_commit=session_boundary_commit,
         idle_commit_result=idle_commit_result,
