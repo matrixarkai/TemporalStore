@@ -715,6 +715,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("auto", request["source_role_budget_mode"])
         self.assertIn("assistant", request["source_role_budget_tokens"])
         self.assertEqual("pre_retrieval_summary_refresh_balanced", request["memory_layer_budget_mode"])
+        self.assertIn("pending_async_event", request["memory_layer_budget_tokens"])
         self.assertIn("profile_entity", request["memory_layer_budget_tokens"])
         self.assertEqual("auto", request["memory_selection_policy_budget_mode"])
         self.assertEqual(
@@ -2385,6 +2386,18 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(1, metrics_pressure["dropped_refs"])
         self.assertNotIn("by_source_role", metrics_pressure.get("by_dimension", {}))
         self.assertNotIn("tool_source_message_pressure", metrics_pressure)
+
+    def test_memory_layer_pressure_reports_pending_async_event_drops(self) -> None:
+        builder_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pack_builder")
+
+        pressure = builder_mod.memory_layer_pressure_summary(
+            {"total_selected_refs": 1, "by_memory_layer": {"pending_async_event": {"refs": 1, "tokens": 5}}},
+            {"total_dropped_refs": 1, "by_memory_layer": {"pending_async_event": {"refs": 1, "tokens": 7}}},
+        )
+
+        self.assertTrue(pressure["pending_async_event_pressure"])
+        self.assertIn("by_memory_layer", pressure["dropped_dimensions"])
+        self.assertEqual(1, pressure["by_dimension"]["by_memory_layer"]["pending_async_event"]["dropped_refs"])
 
     def test_deadline_fallback_hides_memory_layer_lineage_by_default(self) -> None:
         deadline_mod = importlib.import_module("tools.matrixark_mcp_deadline_pack")
