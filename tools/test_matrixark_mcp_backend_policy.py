@@ -4747,6 +4747,11 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "query": "What do you remember about me across previous sessions?",
             "scope": {"account_id": "acct", "tenant_id": "tenant", "user_id": "user", "session_id": "s1"},
             "max_context_tokens": 1000,
+            "ranking": {
+                "source_role_budget_mode": "auto",
+                "memory_layer_budget_mode": "auto",
+                "memory_selection_policy_budget_mode": "auto",
+            },
             "audit_mode": "off",
         })
 
@@ -4758,6 +4763,22 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(cross_session["budget_tokens"], 190)
         self.assertTrue(cross_session["question_budget_reason"].startswith("profile_memory_queries_need_long_term"))
         self.assertEqual(["entity", "summary", "compression"], cross_session["preferred_ref_types"])
+        self.assertEqual("auto", request["source_role_budget_mode"])
+        self.assertEqual({"assistant": 475, "tool": 427, "user": 475}, request["source_role_budget_tokens"])
+        self.assertEqual("auto", request["memory_layer_budget_mode"])
+        self.assertEqual(570, request["memory_layer_budget_tokens"]["profile_entity"])
+        self.assertEqual(427, request["memory_layer_budget_tokens"]["profile_summary"])
+        self.assertEqual(380, request["memory_layer_budget_tokens"]["cross_session_event"])
+        self.assertEqual("auto", request["memory_selection_policy_budget_mode"])
+        self.assertEqual(
+            {
+                "selected_user_prompt": 332,
+                "selected_assistant_decision_outcome_only": 380,
+                "selected_tool_evidence_only": 285,
+                "selected_profile_current_state": 617,
+            },
+            request["memory_selection_policy_budget_tokens"],
+        )
 
     def test_direct_native_context_pack_accepts_explicit_cross_session_budget(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"
