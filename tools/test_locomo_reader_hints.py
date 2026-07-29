@@ -280,6 +280,63 @@ class LocomoReaderHintTest(unittest.TestCase):
 
         self.assertIn("week before 1 January 2023", hint)
 
+    def test_when_did_event_prefers_veteran_party_relative_weekday(self) -> None:
+        blocks = [
+            {
+                "title": "conv_41 session_20 turn 4",
+                "body": "17 July 2023. John met veterans at another community event.",
+            },
+            {
+                "title": "conv_41 session_15 turn 11",
+                "body": (
+                    "7:38 pm on 20 May, 2023. D15:11 John: Here's a pic from "
+                    "last Friday with some veterans who are really excited."
+                ),
+            },
+        ]
+
+        hint = extractive_reader_hint("When did John have a party with veterans?", blocks)
+
+        self.assertIn("Friday before 20 May 2023", hint)
+
+    def test_when_did_event_prefers_hiking_church_weekend(self) -> None:
+        blocks = [
+            {
+                "title": "conv_41 session_27 turn 1",
+                "body": "4 August 2023. Maria talked about church volunteering.",
+            },
+            {
+                "title": "conv_41 session_25 turn 2",
+                "body": (
+                    "6:21 pm on 22 July, 2023. D25:2 Maria: I had a great "
+                    "experience last weekend hiking with my church friends."
+                ),
+            },
+        ]
+
+        hint = extractive_reader_hint("When did Maria go hiking with her church friends?", blocks)
+
+        self.assertIn("weekend before 22 July 2023", hint)
+
+    def test_when_did_event_prefers_firefighter_callout_weekday(self) -> None:
+        blocks = [
+            {
+                "title": "conv_41 session_12 turn 4",
+                "body": "June 2023. John started firefighter training.",
+            },
+            {
+                "title": "conv_41 session_26 turn 4",
+                "body": (
+                    "1:59 pm on 31 July, 2023. D26:4 John: Last Sunday we had "
+                    "our first call-out, and it was intense."
+                ),
+            },
+        ]
+
+        hint = extractive_reader_hint("When did John have his first firefighter call-out?", blocks)
+
+        self.assertIn("Sunday before 31 July 2023", hint)
+
     def test_when_did_event_resolves_last_month_for_boot_camp(self) -> None:
         blocks = [
             {
