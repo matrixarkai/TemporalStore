@@ -33,6 +33,7 @@ from matrixark_mcp_core import (
 from matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness
 from matrixark_mcp_recovery import matrixark_local_recovery_report
 from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget, memory_layer_pressure_summary, selected_ref_layer_budget
+from matrixark_mcp_local_adapter import suppress_extracted_represented_pending_events
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 from matrixark_mcp_summary_runtime import build_node_summary_refresh_records
 
@@ -2188,6 +2189,44 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         dropped_budget = dropped_ref_layer_budget(dropped)
         self.assertEqual(1, dropped_budget["by_memory_layer"]["pending_async_event"]["refs"])
 
+    def test_pending_async_cleanup_only_suppresses_represented_events(self) -> None:
+        represented_pending = {
+            "ref_type": "event",
+            "ref_hash": 501,
+            "event_type": "pending_async",
+            "classification": "PENDING_ASYNC_EXTRACTION",
+            "extraction_phase": "pending_async",
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "token_estimate": 6,
+            "text": "user: represented pending live hook message",
+        }
+        unrelated_pending = {
+            **represented_pending,
+            "ref_hash": 502,
+            "text": "user: unrelated pending live hook message that still has no extracted memory",
+        }
+        extracted_entity = {
+            "ref_type": "entity",
+            "ref_hash": 601,
+            "entity_type": "user_requirement",
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "source_event_ids": [501],
+            "token_estimate": 7,
+            "text": "user_requirement: represented pending live hook message",
+        }
+        dropped: dict = {}
+
+        selected, removed_tokens = suppress_extracted_represented_pending_events(
+            [represented_pending, unrelated_pending, extracted_entity],
+            dropped,
+        )
+
+        self.assertEqual([502, 601], [item["ref_hash"] for item in selected])
+        self.assertEqual(6, removed_tokens)
+        self.assertEqual(1, dropped["pending_async_event_superseded_by_extracted_refs"])
+
     def test_fast_hook_pending_event_is_retrievable_before_batch_extraction(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-pending-retrieval.jsonl")
@@ -3497,7 +3536,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 memory_budget = pack["recall_policy"]["memory_layer_budget"]
                 self.assertIn("user_profile", memory_budget["by_memory_scope"])
                 self.assertIn("cross_session", memory_budget["by_session_continuity"])
-                self.assertEqual({"tool": 1}, memory_budget["source_message_counts_by_role"])
+                self.assertEqual({"tool": 1, "user": 1}, memory_budget["source_message_counts_by_role"])
                 session_only_pack = adapter.retrieve(
                     {
                         "scope": {
@@ -3680,7 +3719,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 budget = pack["recall_policy"]["memory_layer_budget"]
                 self.assertGreaterEqual(budget["by_memory_scope"]["user_profile"]["refs"], 1)
                 self.assertGreaterEqual(budget["by_session_continuity"]["cross_session"]["refs"], 1)
-                self.assertEqual({"tool": 1}, budget["source_message_counts_by_role"])
+                self.assertEqual({"tool": 1, "user": 1}, budget["source_message_counts_by_role"])
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
@@ -3783,6 +3822,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "same_session_summary": 19,
                     "cross_session_summary": 19,
                     "compression": 23,
+                    "pending_async_event": 19,
                     "same_session_event": 42,
                     "cross_session_event": 23,
                     "same_session_segment": 33,
@@ -3870,6 +3910,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "same_session_summary": 14,
                     "cross_session_summary": 14,
                     "compression": 19,
+                    "pending_async_event": 14,
                     "same_session_event": 33,
                     "cross_session_event": 28,
                     "same_session_segment": 28,

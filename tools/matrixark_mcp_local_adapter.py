@@ -120,6 +120,61 @@ def profile_promotion_decision(profile_node_hash: int) -> Json:
     }
 
 
+def suppress_extracted_represented_pending_events(selected: list[Json], dropped_over_budget: Json) -> tuple[list[Json], int]:
+    extracted_selected_event_ids: set[int] = set()
+    for item in selected:
+        if candidate_memory_layer_name(item) == "pending_async_event":
+            continue
+        for field in [
+            "source_event_ids",
+            "extraction_context_event_ids",
+            "source_ref_hashes",
+        ]:
+            values = item.get(field)
+            if not isinstance(values, list):
+                continue
+            for value in values:
+                try:
+                    event_id = int(value or 0)
+                except (TypeError, ValueError):
+                    event_id = 0
+                if event_id:
+                    extracted_selected_event_ids.add(event_id)
+        if str(item.get("ref_type") or "") == "event":
+            try:
+                event_id = int(item.get("ref_hash") or 0)
+            except (TypeError, ValueError):
+                event_id = 0
+            if event_id:
+                extracted_selected_event_ids.add(event_id)
+    if not extracted_selected_event_ids:
+        return selected, 0
+    extracted_preferred_selected: list[Json] = []
+    removed_tokens = 0
+    removed_pending_count = 0
+    for item in selected:
+        try:
+            pending_event_id = int(item.get("ref_hash") or 0)
+        except (TypeError, ValueError):
+            pending_event_id = 0
+        if (
+            candidate_memory_layer_name(item) == "pending_async_event"
+            and pending_event_id
+            and pending_event_id in extracted_selected_event_ids
+        ):
+            removed_pending_count += 1
+            removed_tokens += int(item.get("token_estimate") or max(1, token_count(str(item.get("text") or ""))))
+            continue
+        extracted_preferred_selected.append(item)
+    if removed_pending_count and extracted_preferred_selected:
+        dropped_over_budget["pending_async_event_superseded_by_extracted_refs"] = (
+            int(dropped_over_budget.get("pending_async_event_superseded_by_extracted_refs") or 0)
+            + removed_pending_count
+        )
+        return extracted_preferred_selected, removed_tokens
+    return selected, 0
+
+
 def codex_session_identity_policy(session_id_source: str) -> Json:
     source = str(session_id_source or "").strip()
     strong_sources = {"explicit", "payload_field", "payload_path_hash"}
@@ -8400,23 +8455,9 @@ class MatrixArkLocalAdapter:
                 selected = deduped_selected
                 used_context_tokens = max(0, used_context_tokens - removed_tokens)
 
-        if selected and any(candidate_memory_layer_name(item) != "pending_async_event" for item in selected):
-            extracted_preferred_selected: list[Json] = []
-            removed_tokens = 0
-            removed_pending_count = 0
-            for item in selected:
-                if candidate_memory_layer_name(item) == "pending_async_event":
-                    removed_pending_count += 1
-                    removed_tokens += int(item.get("token_estimate") or max(1, token_count(str(item.get("text") or ""))))
-                    continue
-                extracted_preferred_selected.append(item)
-            if removed_pending_count and extracted_preferred_selected:
-                selected = extracted_preferred_selected
-                used_context_tokens = max(0, used_context_tokens - removed_tokens)
-                dropped_over_budget["pending_async_event_superseded_by_extracted_refs"] = (
-                    int(dropped_over_budget.get("pending_async_event_superseded_by_extracted_refs") or 0)
-                    + removed_pending_count
-                )
+        selected, removed_pending_tokens = suppress_extracted_represented_pending_events(selected, dropped_over_budget)
+        if removed_pending_tokens:
+            used_context_tokens = max(0, used_context_tokens - removed_pending_tokens)
 
         if (
             question_type in {"broad_exploration", "evidence", "current_state", "latest", "multi_hop", "date"}
