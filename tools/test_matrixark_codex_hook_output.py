@@ -2123,6 +2123,28 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertNotIn("> Next", evidence)
         self.assertNotIn("code block should not be selected", evidence)
 
+    def test_selected_assistant_memory_synthesizes_outcome_facts(self) -> None:
+        raw = "\n".join(
+            [
+                "background explanation " * 120,
+                "Implemented compact profile memory retrieval and pushed commit abc1234 to origin/main.",
+                "Validation ran 73 tests passed and py_compile stayed clean.",
+                "MatrixArk mirror push rejected as non-fast-forward.",
+                "Changed context embedding lineage to count-only fields.",
+                "Next: continue retrieval budget tuning.",
+            ]
+        )
+
+        evidence = hook.selected_assistant_memory_text(raw, max_chars=1000)
+
+        self.assertIn("Outcome: pushed commit abc1234 to origin/main", evidence)
+        self.assertIn("Validation: 73 tests passed", evidence)
+        self.assertIn("Blocker: MatrixArk mirror push rejected as non-fast-forward", evidence)
+        self.assertIn("Changed: context embedding lineage to count-only fields", evidence)
+        self.assertIn("Next: continue retrieval budget tuning", evidence)
+        self.assertNotIn("background explanation background explanation", evidence)
+        self.assertLess(len(evidence), 1000)
+
     def test_hook_async_message_ingest_args_marks_selected_memory_policy(self) -> None:
         args = Namespace(
             event="Stop",

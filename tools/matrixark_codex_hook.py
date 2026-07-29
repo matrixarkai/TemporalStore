@@ -2888,6 +2888,53 @@ def normalize_assistant_memory_line(line: str) -> str:
     return stripped
 
 
+def selected_assistant_outcome_facts(text: str, *, max_facts: int = 6) -> list[str]:
+    """Extract durable assistant outcome facts without keeping full LLM output."""
+    compact = " ".join(str(text or "").split())
+    if not compact:
+        return []
+    facts: list[str] = []
+
+    def add_fact(value: str) -> None:
+        fact = " ".join(str(value or "").split()).strip(" ;,.")
+        if not fact:
+            return
+        if fact not in facts:
+            facts.append(fact[:220])
+
+    commit_match = re.search(r"\b(?:commit|pushed commit)\s+([0-9a-f]{7,40})\b", compact, re.IGNORECASE)
+    if not commit_match:
+        commit_match = re.search(r"\b([0-9a-f]{7,40})\s+(?:to\s+)?(?:origin/main|refs/heads/main)\b", compact, re.IGNORECASE)
+    if commit_match:
+        target = " to origin/main" if re.search(r"\b(?:origin/main|refs/heads/main)\b", compact, re.IGNORECASE) else ""
+        add_fact(f"Outcome: pushed commit {commit_match.group(1)}{target}")
+
+    tests_match = re.search(r"\b(?:ran\s+)?(\d+)\s+tests?\s+(?:passed|ok|succeeded)\b", compact, re.IGNORECASE)
+    if not tests_match:
+        tests_match = re.search(r"\bran\s+(\d+)\s+tests?\b", compact, re.IGNORECASE)
+    if tests_match:
+        add_fact(f"Validation: {tests_match.group(1)} tests passed")
+    elif re.search(r"\b(?:tests?|validation|py_compile|unittest|pytest|cargo test|cargo check)\b.{0,80}\b(?:passed|ok|succeeded|clean)\b", compact, re.IGNORECASE):
+        add_fact("Validation: tests passed")
+
+    if re.search(r"\b(?:blocked|blocker|failed|failure|error|missing|rejected)\b", compact, re.IGNORECASE):
+        blocker_match = re.search(r"[^.?!]*(?:blocked|blocker|failed|failure|error|missing|rejected)[^.?!]*[.?!]?", compact, re.IGNORECASE)
+        if blocker_match:
+            add_fact("Blocker: " + blocker_match.group(0).strip(" .?!")[:180])
+
+    changed_match = re.search(r"\bchanged:?\s+([^.;]{8,180})", compact, re.IGNORECASE)
+    if not changed_match:
+        changed_match = re.search(r"\b(?:updated|implemented|added|removed|fixed)\s+([^.;]{8,180})", compact, re.IGNORECASE)
+    if changed_match:
+        add_fact("Changed: " + changed_match.group(1).strip())
+
+    next_match = re.search(r"\bnext:\s*([^.;]{8,180})", compact, re.IGNORECASE)
+    if next_match:
+        add_fact("Next: " + next_match.group(1).strip())
+
+    return facts[:max_facts]
+
+
 def selected_assistant_memory_text(text: str, *, max_chars: int = 4096, max_lines: int = 48) -> str:
     """Keep decision/outcome lines from assistant responses without storing large answers verbatim."""
     compact = str(text or "").strip()
@@ -2912,6 +2959,10 @@ def selected_assistant_memory_text(text: str, *, max_chars: int = 4096, max_line
             break
     if not selected:
         selected = [normalize_assistant_memory_line(line)[:420] for line in lines[: min(len(lines), 8)] if line]
+    outcome_facts = selected_assistant_outcome_facts(compact)
+    if outcome_facts:
+        outcome_line = "; ".join(outcome_facts)
+        selected = [outcome_line] + [line for line in selected if line not in outcome_facts and line != outcome_line]
     evidence = "\n".join(selected).strip()
     if len(evidence) > max_chars:
         evidence = evidence[:max_chars].rstrip() + "\n[assistant memory truncated]"
