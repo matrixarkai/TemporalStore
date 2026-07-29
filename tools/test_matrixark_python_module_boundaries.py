@@ -134,6 +134,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("cross_session_budget_floor_status", hierarchy_props)
         self.assertIn("selected_ref_flow", hierarchy_props)
         self.assertIn("freshness_warnings", retrieve_output_props["async_pipeline_readiness"]["properties"])
+        self.assertIn("pending_memory_selection_policies", retrieve_output_props["async_pipeline_readiness"]["properties"])
         self.assertIn("debug-only", retrieve_output_props["async_pipeline_readiness"]["description"])
         self.assertIn("debug-only", retrieve_output_props["memory_layer_budget"]["description"])
         self.assertIn("summary_refresh", dashboard_table_enum)
@@ -3359,6 +3360,11 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                     "source_hook_types": ["prompt_submit"],
                     "source_codex_event_counts": {"Stop": 2, "PostToolUse": 1},
                     "source_codex_events": ["UserPromptSubmit"],
+                    "source_memory_selection_policy_counts": {
+                        "selected_assistant_decision_outcome_only": 2,
+                        "selected_tool_evidence_only": 1,
+                    },
+                    "source_memory_selection_policies": ["selected_user_prompt"],
                     "memory_layers_written": {
                         "session_entities": 1,
                         "profile_entities": 1,
@@ -3378,6 +3384,14 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertNotIn("prompt_submit", readiness["pending_source_hook_types"])
         self.assertEqual({"PostToolUse": 1, "Stop": 2}, readiness["pending_source_codex_events"])
         self.assertNotIn("UserPromptSubmit", readiness["pending_source_codex_events"])
+        self.assertEqual(
+            {
+                "selected_assistant_decision_outcome_only": 2,
+                "selected_tool_evidence_only": 1,
+            },
+            readiness["pending_memory_selection_policies"],
+        )
+        self.assertNotIn("selected_user_prompt", readiness["pending_memory_selection_policies"])
 
     def test_compact_serving_pack_exposes_async_summary_readiness(self) -> None:
         core_mod = importlib.import_module("tools.matrixark_mcp_core")
