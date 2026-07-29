@@ -205,6 +205,17 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual("user_profile", summary["memory_scope"])
         self.assertEqual("cross_session", summary["session_continuity"])
         self.assertEqual(summary["source_role_counts"], result["source_role_counts"])
+        embeddings = [record for record in result["records"] if record.get("record_type") == "context_embedding"]
+        self.assertTrue(embeddings)
+        for embedding in embeddings:
+            self.assertEqual("summary", embedding["ref_type"])
+            self.assertEqual("user_profile", embedding["memory_scope"])
+            self.assertEqual("cross_session", embedding["session_continuity"])
+            self.assertEqual(["session", "user_profile"], embedding["source_memory_scopes"])
+            self.assertEqual(["cross_session", "same_session"], embedding["source_session_continuities"])
+            self.assertEqual(summary["source_role_counts"], embedding["source_role_counts"])
+            self.assertEqual(summary["source_hook_type_counts"], embedding["source_hook_type_counts"])
+            self.assertEqual(summary["source_codex_event_counts"], embedding["source_codex_event_counts"])
 
     def assert_no_default_context_pack_debug_lineage(self, value: object) -> None:
         hidden_keys = {
