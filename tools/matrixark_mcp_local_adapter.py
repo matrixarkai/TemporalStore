@@ -7123,11 +7123,72 @@ class MatrixArkLocalAdapter:
                         return compact_context_pack_for_serving(pack, include_debug=debug_refs)
                     self._context_pack_cache.pop(pack_cache_key, None)
         auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
+        embedding_metadata_by_ref: dict[tuple[Any, Any], Json] = {}
+
+        def remember_embedding_metadata(record: Json) -> None:
+            ref_type = record.get("ref_type")
+            ref_hash = record.get("ref_hash")
+            if ref_type in (None, "") or ref_hash in (None, ""):
+                return
+            metadata_fields = [
+                "memory_scope",
+                "session_continuity",
+                "promoted_from_memory_scope",
+                "profile_promotion_policy",
+                "profile_promotion_blocker",
+                "extraction_phase",
+                "final_session_boundary",
+                "source_roles",
+                "source_role_counts",
+                "source_hook_types",
+                "source_hook_type_counts",
+                "source_codex_events",
+                "source_codex_event_counts",
+                "source_memory_selection_policies",
+                "source_memory_selection_policy_counts",
+                "source_memory_scopes",
+                "source_session_continuities",
+                "source_extraction_phases",
+                "source_profile_promotion_policies",
+                "source_profile_promotion_blockers",
+                "source_session_ids",
+                "source_entity_hashes",
+                "source_event_ids",
+                "extraction_context_event_ids",
+            ]
+            metadata = {
+                field: record[field]
+                for field in metadata_fields
+                if record.get(field) not in (None, "", [], {})
+            }
+            if metadata:
+                embedding_metadata_by_ref[(ref_type, ref_hash)] = metadata
+
         def annotate_session_continuity(candidate: Json, record: Json) -> Json:
+            embedding_metadata = embedding_metadata_by_ref.get(
+                (candidate.get("ref_type"), candidate.get("ref_hash")),
+                {},
+            )
+
+            def first_value(key: str, default: object = "") -> object:
+                for source in (candidate, record, embedding_metadata):
+                    value = source.get(key) if isinstance(source, dict) else None
+                    if value not in (None, "", [], {}):
+                        return value
+                return default
+
+            def first_list(key: str) -> list[Any]:
+                value = first_value(key, [])
+                return value if isinstance(value, list) else []
+
+            def first_dict(key: str) -> Json:
+                value = first_value(key, {})
+                return value if isinstance(value, dict) else {}
+
             record_scope = candidate_access_scope(record)
             status = session_continuity_status(record_scope, retrieval_scope)
-            explicit_status = str(record.get("session_continuity") or candidate.get("session_continuity") or "")
-            explicit_memory_scope = str(record.get("memory_scope") or candidate.get("memory_scope") or "")
+            explicit_status = str(first_value("session_continuity") or "")
+            explicit_memory_scope = str(first_value("memory_scope") or "")
             if explicit_status in {"same_session", "cross_session"} and explicit_memory_scope == "user_profile":
                 status = explicit_status
             elif status in {"", "unscoped"} and explicit_status in {"same_session", "cross_session"}:
@@ -7145,77 +7206,25 @@ class MatrixArkLocalAdapter:
                 "session_continuity": status,
                 "continuity_boost": round(boost, 6),
                 "continuity_reason": reason,
-                "memory_scope": candidate.get("memory_scope") or record.get("memory_scope", ""),
-                "extraction_phase": candidate.get("extraction_phase") or record.get("extraction_phase", ""),
-                "final_session_boundary": bool(candidate.get("final_session_boundary", record.get("final_session_boundary", False))),
-                "profile_promotion_policy": candidate.get("profile_promotion_policy") or record.get("profile_promotion_policy", ""),
-                "profile_promotion_blocker": candidate.get("profile_promotion_blocker") or record.get("profile_promotion_blocker", ""),
-                "source_roles": candidate.get("source_roles") if isinstance(candidate.get("source_roles"), list) else record.get("source_roles", []),
-                "source_role_counts": (
-                    candidate.get("source_role_counts")
-                    if isinstance(candidate.get("source_role_counts"), dict)
-                    else record.get("source_role_counts", {})
-                ),
-                "source_hook_types": (
-                    candidate.get("source_hook_types")
-                    if isinstance(candidate.get("source_hook_types"), list)
-                    else record.get("source_hook_types", [])
-                ),
-                "source_hook_type_counts": (
-                    candidate.get("source_hook_type_counts")
-                    if isinstance(candidate.get("source_hook_type_counts"), dict)
-                    else record.get("source_hook_type_counts", {})
-                ),
-                "source_codex_events": (
-                    candidate.get("source_codex_events")
-                    if isinstance(candidate.get("source_codex_events"), list)
-                    else record.get("source_codex_events", [])
-                ),
-                "source_codex_event_counts": (
-                    candidate.get("source_codex_event_counts")
-                    if isinstance(candidate.get("source_codex_event_counts"), dict)
-                    else record.get("source_codex_event_counts", {})
-                ),
-                "source_memory_selection_policies": (
-                    candidate.get("source_memory_selection_policies")
-                    if isinstance(candidate.get("source_memory_selection_policies"), list)
-                    else record.get("source_memory_selection_policies", [])
-                ),
-                "source_memory_selection_policy_counts": (
-                    candidate.get("source_memory_selection_policy_counts")
-                    if isinstance(candidate.get("source_memory_selection_policy_counts"), dict)
-                    else record.get("source_memory_selection_policy_counts", {})
-                ),
-                "source_memory_scopes": (
-                    candidate.get("source_memory_scopes")
-                    if isinstance(candidate.get("source_memory_scopes"), list)
-                    else record.get("source_memory_scopes", [])
-                ),
-                "source_session_continuities": (
-                    candidate.get("source_session_continuities")
-                    if isinstance(candidate.get("source_session_continuities"), list)
-                    else record.get("source_session_continuities", [])
-                ),
-                "source_extraction_phases": (
-                    candidate.get("source_extraction_phases")
-                    if isinstance(candidate.get("source_extraction_phases"), list)
-                    else record.get("source_extraction_phases", [])
-                ),
-                "source_profile_promotion_policies": (
-                    candidate.get("source_profile_promotion_policies")
-                    if isinstance(candidate.get("source_profile_promotion_policies"), list)
-                    else record.get("source_profile_promotion_policies", [])
-                ),
-                "source_profile_promotion_blockers": (
-                    candidate.get("source_profile_promotion_blockers")
-                    if isinstance(candidate.get("source_profile_promotion_blockers"), list)
-                    else record.get("source_profile_promotion_blockers", [])
-                ),
-                "source_entity_types": (
-                    candidate.get("source_entity_types")
-                    if isinstance(candidate.get("source_entity_types"), list)
-                    else record.get("source_entity_types", [])
-                ),
+                "memory_scope": first_value("memory_scope"),
+                "extraction_phase": first_value("extraction_phase"),
+                "final_session_boundary": bool(first_value("final_session_boundary", False)),
+                "profile_promotion_policy": first_value("profile_promotion_policy"),
+                "profile_promotion_blocker": first_value("profile_promotion_blocker"),
+                "source_roles": first_list("source_roles"),
+                "source_role_counts": first_dict("source_role_counts"),
+                "source_hook_types": first_list("source_hook_types"),
+                "source_hook_type_counts": first_dict("source_hook_type_counts"),
+                "source_codex_events": first_list("source_codex_events"),
+                "source_codex_event_counts": first_dict("source_codex_event_counts"),
+                "source_memory_selection_policies": first_list("source_memory_selection_policies"),
+                "source_memory_selection_policy_counts": first_dict("source_memory_selection_policy_counts"),
+                "source_memory_scopes": first_list("source_memory_scopes"),
+                "source_session_continuities": first_list("source_session_continuities"),
+                "source_extraction_phases": first_list("source_extraction_phases"),
+                "source_profile_promotion_policies": first_list("source_profile_promotion_policies"),
+                "source_profile_promotion_blockers": first_list("source_profile_promotion_blockers"),
+                "source_entity_types": first_list("source_entity_types"),
                 "question_type": question_type,
             }
 
@@ -7535,6 +7544,7 @@ class MatrixArkLocalAdapter:
             if record_type == "context_embedding" and not recovered_scope_matches(record, retrieval_scope):
                 continue
             if record_type == "context_embedding" and record.get("embedding_type") in {"node_l0", "node_l1"}:
+                remember_embedding_metadata(record)
                 dense_score = cosine(query_embedding, record.get("vector", []))
                 node_hash = record["node_hash"]
                 node_text = " ".join(record.get("node_path", [])) + " " + node_summary_text_by_hash.get(node_hash, "")
@@ -7553,18 +7563,25 @@ class MatrixArkLocalAdapter:
                         "embedding_type": record.get("embedding_type"),
                     }
             elif record_type == "context_embedding" and record.get("embedding_type") == "event_text":
+                remember_embedding_metadata(record)
                 event_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "entity_state":
+                remember_embedding_metadata(record)
                 entity_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "segment_text":
+                remember_embedding_metadata(record)
                 segment_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "compression_summary":
+                remember_embedding_metadata(record)
                 compression_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "resource_chunk":
+                remember_embedding_metadata(record)
                 resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "skill_section":
+                remember_embedding_metadata(record)
                 resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "skill_summary":
+                remember_embedding_metadata(record)
                 skill_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
         for record in records:
             if record.get("record_type") != "context_node":
@@ -7704,6 +7721,7 @@ class MatrixArkLocalAdapter:
                             else:
                                 index_terms_by_node.setdefault(record.get("node_hash"), []).append(index_name)
                 elif record_type == "context_embedding" and recovered_scope_matches(record, retrieval_scope):
+                    remember_embedding_metadata(record)
                     embedding_type = record.get("embedding_type")
                     if embedding_type == "event_text":
                         event_embedding_vectors[record["ref_hash"]] = record.get("vector", [])

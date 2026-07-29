@@ -26,6 +26,7 @@ from matrixark_mcp_core import (
     compact_context_pack_audit_record as core_compact_context_pack_audit_record,
     compact_context_pack_for_serving as core_compact_context_pack_for_serving,
     compact_context_pack_for_serving_flat,
+    embedding_for_text,
     identity_hashes,
     packing_sort_key,
     select_token_budgeted_refs,
@@ -8422,6 +8423,116 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("current_state_source_entity_count", default_current_ref)
             self.assertNotIn("dropped_memory_layer_budget", default_current_pack)
             self.assertNotIn("memory_layer_pressure", default_current_pack)
+
+    def test_retrieval_recovers_profile_layer_from_embedding_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-embedding-recovery.jsonl")
+            scope = {
+                "account_id": "acct_embed_recovery",
+                "tenant_id": "tenant_embed_recovery",
+                "user_id": "user_embed_recovery",
+                "session_id": "session_current",
+            }
+            profile_scope = {
+                "account_id": "acct_embed_recovery",
+                "tenant_id": "tenant_embed_recovery",
+                "user_id": "user_embed_recovery",
+            }
+            node_path = ["tenant:tenant_embed_recovery", "user:user_embed_recovery", "profile:long_term_memory"]
+            node_hash = 91001
+            entity_hash = 91002
+            profile_text = "assistant_decision: latest_profile_marker_991 = Keep threshold and idle extraction enabled."
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_entity",
+                        "entity_hash": entity_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "scope": profile_scope,
+                        "access_scope": profile_scope,
+                        "entity_type": "assistant_decision",
+                        "entity_name": "latest_profile_marker_991",
+                        "state": "Keep threshold and idle extraction enabled.",
+                        "updated_at_ms": 1000,
+                    },
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "entity_state",
+                        "ref_type": "entity",
+                        "ref_hash": entity_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "dim": len(embedding_for_text(profile_text)),
+                        "model": "deterministic-test",
+                        "vector": embedding_for_text(profile_text),
+                        "scope": profile_scope,
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "promoted_from_memory_scope": "session",
+                        "profile_promotion_policy": "always_when_profile_scope_available",
+                        "source_roles": ["assistant"],
+                        "source_role_counts": {"assistant": 1},
+                        "source_hook_types": ["after_llm"],
+                        "source_hook_type_counts": {"after_llm": 1},
+                        "source_codex_events": ["Stop"],
+                        "source_codex_event_counts": {"Stop": 1},
+                        "source_session_ids": ["session_prior"],
+                        "source_memory_scopes": ["session", "user_profile"],
+                        "source_session_continuities": ["same_session", "cross_session"],
+                        "extraction_phase": "final",
+                        "final_session_boundary": True,
+                        "updated_at_ms": 1000,
+                    },
+                ]
+            )
+
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "session_scope": "prefer",
+                    "query": "latest profile marker 991 threshold idle extraction",
+                    "max_context_tokens": 500,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 3, "min_similarity_score": 0.0},
+                }
+            )
+            profile_refs = [
+                ref
+                for ref in pack["selected_refs"]
+                if ref.get("ref_type") == "entity"
+                and ref.get("entity_type") == "assistant_decision"
+                and "latest_profile_marker_991" in ref.get("text", "")
+            ]
+            self.assertTrue(profile_refs, pack["selected_refs"])
+            profile_ref = profile_refs[0]
+            self.assertEqual("user_profile", profile_ref["memory_scope"])
+            self.assertEqual("cross_session", profile_ref["session_continuity"])
+            self.assertNotIn("source_session_ids", profile_ref)
+            self.assertNotIn("source_role_counts", profile_ref)
+            budget = pack["retrieval_metrics"]["memory_layer_budget"]
+            self.assertGreaterEqual(budget["by_memory_scope"]["user_profile"]["refs"], 1)
+            self.assertGreaterEqual(budget["by_session_continuity"]["cross_session"]["refs"], 1)
+            self.assertNotIn("by_source_role", budget)
+
+            debug_pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "session_scope": "prefer",
+                    "query": "latest profile marker 991 threshold idle extraction",
+                    "max_context_tokens": 500,
+                    "audit_mode": "off",
+                    "include_debug_refs": True,
+                    "ranking": {"max_selected_refs": 3, "min_similarity_score": 0.0},
+                }
+            )
+            debug_ref = next(
+                ref
+                for ref in debug_pack["selected_refs"]
+                if ref.get("ref_type") == "entity"
+                and "latest_profile_marker_991" in ref.get("text", "")
+            )
+            self.assertEqual({"assistant": 1}, debug_ref["source_role_counts"])
 
     def test_retrieval_flags_state_file_session_identity_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
