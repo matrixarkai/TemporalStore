@@ -857,10 +857,40 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "selected_user_prompt": 760,
                 "selected_assistant_decision_outcome_only": 855,
                 "selected_tool_evidence_only": 570,
+                "selected_profile_current_state": 950,
             },
             request["memory_selection_policy_budget_tokens"],
         )
         self.assertEqual(1, len(request["pre_retrieval_refreshed_records"]))
+
+    def test_auto_memory_selection_budget_prioritizes_profile_memory_current_state(self) -> None:
+        helper_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pre_refresh")
+
+        current_budgets, current_mode = helper_mod.auto_memory_selection_policy_budget_tokens(
+            {"memory_selection_policy_budget_mode": "auto"},
+            {},
+            remote_budget_tokens=100,
+            question_type="current_state",
+        )
+        self.assertEqual("auto", current_mode)
+        self.assertEqual(50, current_budgets["selected_profile_current_state"])
+
+        profile_budgets, profile_mode = helper_mod.auto_memory_selection_policy_budget_tokens(
+            {"memory_selection_policy_budget_mode": "auto"},
+            {},
+            remote_budget_tokens=100,
+            question_type="profile_memory",
+        )
+        self.assertEqual("auto", profile_mode)
+        self.assertEqual(
+            {
+                "selected_user_prompt": 35,
+                "selected_assistant_decision_outcome_only": 40,
+                "selected_tool_evidence_only": 30,
+                "selected_profile_current_state": 65,
+            },
+            profile_budgets,
+        )
 
     def test_moduleized_runtime_merges_pre_refreshed_summaries(self) -> None:
         helper_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pre_refresh")

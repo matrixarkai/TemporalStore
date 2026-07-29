@@ -549,14 +549,16 @@ def auto_memory_selection_policy_budget_tokens(
                 "selected_user_prompt": 0.40,
                 "selected_assistant_decision_outcome_only": 0.45,
                 "selected_tool_evidence_only": 0.30,
+                "selected_profile_current_state": 0.50,
             }
         )
     elif normalized_question_type == "profile_memory":
         defaults.update(
             {
-                "selected_user_prompt": 0.40,
+                "selected_user_prompt": 0.35,
                 "selected_assistant_decision_outcome_only": 0.40,
-                "selected_tool_evidence_only": 0.35,
+                "selected_tool_evidence_only": 0.30,
+                "selected_profile_current_state": 0.65,
             }
         )
     elif normalized_question_type in {"multi_hop", "date", "broad_exploration", "evidence"}:
