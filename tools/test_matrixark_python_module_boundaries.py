@@ -1758,8 +1758,40 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             quality_warnings=[],
             audit_mode="off",
             audit_sample_rate=0.0,
+            source_role_budget_tokens={"tool": 32},
+            source_role_budget_mode="auto",
+            memory_layer_budget_tokens={"profile_entity": 48},
+            memory_layer_budget_mode="auto",
+            memory_selection_policy_budget_tokens={"selected_tool_evidence_only": 40},
+            memory_selection_policy_budget_mode="auto",
             debug_refs=False,
         )
+        source_role_policy = pack["recall_policy"]["source_role_budget_policy"]
+        self.assertTrue(source_role_policy["enabled"])
+        self.assertEqual("auto", source_role_policy["mode"])
+        self.assertEqual(100, source_role_policy["remote_budget_tokens"])
+        self.assertTrue(source_role_policy["derived"])
+        self.assertTrue(source_role_policy["independent_caps"])
+        self.assertTrue(source_role_policy["global_remote_budget_enforced"])
+        self.assertEqual("independent_per_role_caps_under_global_remote_budget", source_role_policy["budget_semantics"])
+        self.assertEqual({"tool": 32}, source_role_policy["budget_tokens"])
+        memory_policy = pack["recall_policy"]["memory_layer_budget_policy"]
+        self.assertTrue(memory_policy["enabled"])
+        self.assertEqual("auto", memory_policy["mode"])
+        self.assertEqual("fact", memory_policy["question_type"])
+        self.assertEqual(100, memory_policy["remote_budget_tokens"])
+        self.assertEqual({"profile_entity": 48}, memory_policy["budget_tokens"])
+        selection_policy = pack["recall_policy"]["memory_selection_policy_budget_policy"]
+        self.assertTrue(selection_policy["enabled"])
+        self.assertEqual("auto", selection_policy["mode"])
+        self.assertEqual(100, selection_policy["remote_budget_tokens"])
+        self.assertTrue(selection_policy["independent_caps"])
+        self.assertTrue(selection_policy["global_remote_budget_enforced"])
+        self.assertEqual(
+            "independent_per_memory_selection_policy_caps_under_global_remote_budget",
+            selection_policy["budget_semantics"],
+        )
+        self.assertEqual({"selected_tool_evidence_only": 40}, selection_policy["budget_tokens"])
         layer_budget = pack["recall_policy"]["memory_layer_budget"]
         self.assertEqual(1, layer_budget["by_memory_scope"]["user_profile"]["refs"])
         self.assertEqual(1, layer_budget["by_session_continuity"]["cross_session"]["refs"])

@@ -648,6 +648,29 @@ def build_context_pack(
     memory_layer_budget = selected_ref_layer_budget(selected)
     dropped_memory_layer_budget = dropped_ref_layer_budget(dropped_over_budget)
     memory_layer_pressure = memory_layer_pressure_summary(memory_layer_budget, dropped_memory_layer_budget)
+    source_role_policy = (
+        dropped_over_budget.get("source_role_budget_policy", {"enabled": False})
+        if isinstance(dropped_over_budget.get("source_role_budget_policy"), dict)
+        else {"enabled": False}
+    )
+    memory_layer_policy = (
+        dropped_over_budget.get("memory_layer_budget_policy", {"enabled": False})
+        if isinstance(dropped_over_budget.get("memory_layer_budget_policy"), dict)
+        else {"enabled": False}
+    )
+    memory_selection_policy = (
+        dropped_over_budget.get("memory_selection_policy_budget_policy", {"enabled": False})
+        if isinstance(dropped_over_budget.get("memory_selection_policy_budget_policy"), dict)
+        else {"enabled": False}
+    )
+    source_role_policy = dict(source_role_policy)
+    memory_layer_policy = dict(memory_layer_policy)
+    memory_selection_policy = dict(memory_selection_policy)
+    source_role_policy["enabled"] = bool(source_role_policy.get("enabled") or source_role_budget_tokens)
+    memory_layer_policy["enabled"] = bool(memory_layer_policy.get("enabled") or memory_layer_budget_tokens)
+    memory_selection_policy["enabled"] = bool(
+        memory_selection_policy.get("enabled") or memory_selection_policy_budget_tokens
+    )
     return {
         "context_pack_id": str(context_pack_id),
         "context_sources_order": ["local_context", "matrixark_remote_context"],
@@ -681,23 +704,43 @@ def build_context_pack(
             "memory_layer_pressure": memory_layer_pressure,
             "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
             "shared_context": dropped_over_budget.get("shared_context_policy", shared_context_policy),
-            "source_role_budget_policy": dropped_over_budget.get("source_role_budget_policy", {
-                "enabled": bool(source_role_budget_tokens),
+            "source_role_budget_policy": {
+                **source_role_policy,
                 "mode": source_role_budget_mode or ("explicit" if source_role_budget_tokens else "disabled"),
-                "budget_tokens": source_role_budget_tokens or {},
-            }),
-            "memory_layer_budget_policy": dropped_over_budget.get("memory_layer_budget_policy", {
-                "enabled": bool(memory_layer_budget_tokens),
+                "remote_budget_tokens": remote_context_budget_tokens,
+                "derived": source_role_budget_mode in {"auto", "balanced", "codex_auto"},
+                "budget_semantics": "independent_per_role_caps_under_global_remote_budget",
+                "independent_caps": True,
+                "global_remote_budget_enforced": True,
+                "budget_tokens": source_role_policy.get("budget_tokens", source_role_budget_tokens or {}),
+            },
+            "memory_layer_budget_policy": {
+                **memory_layer_policy,
                 "mode": memory_layer_budget_mode or ("explicit" if memory_layer_budget_tokens else "disabled"),
-                "budget_tokens": memory_layer_budget_tokens or {},
-            }),
-            "memory_selection_policy_budget_policy": dropped_over_budget.get("memory_selection_policy_budget_policy", {
-                "enabled": bool(memory_selection_policy_budget_tokens),
+                "remote_budget_tokens": remote_context_budget_tokens,
+                "question_type": question_type,
+                "derived": memory_layer_budget_mode in {
+                    "auto",
+                    "balanced",
+                    "codex_auto",
+                    "pre_retrieval_summary_refresh_balanced",
+                },
+                "budget_semantics": "independent_per_layer_caps_under_global_remote_budget",
+                "independent_caps": True,
+                "global_remote_budget_enforced": True,
+                "budget_tokens": memory_layer_policy.get("budget_tokens", memory_layer_budget_tokens or {}),
+            },
+            "memory_selection_policy_budget_policy": {
+                **memory_selection_policy,
                 "mode": memory_selection_policy_budget_mode or (
                     "explicit" if memory_selection_policy_budget_tokens else "disabled"
                 ),
-                "budget_tokens": memory_selection_policy_budget_tokens or {},
-            }),
+                "remote_budget_tokens": remote_context_budget_tokens,
+                "budget_semantics": "independent_per_memory_selection_policy_caps_under_global_remote_budget",
+                "independent_caps": True,
+                "global_remote_budget_enforced": True,
+                "budget_tokens": memory_selection_policy.get("budget_tokens", memory_selection_policy_budget_tokens or {}),
+            },
             "pre_retrieval_summary_refresh": pre_retrieval_summary_refresh or {"enabled": False, "status": "disabled"},
             "backend_retrieval_pushdown": retrieval_scan_stats,
             "ranking": {
