@@ -43,12 +43,24 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 try:
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
+    from tools.matrixark_mcp_local_adapter import (
+        auto_memory_layer_budget_tokens,
+        auto_memory_selection_policy_budget_tokens,
+        auto_source_role_budget_tokens,
+        memory_layer_budget_question_reason,
+    )
     from tools.matrixark_mcp_metrics import MatrixArkServiceMetrics
     from tools.matrixark_mcp_raw_ingestion import normalize_raw_ingestion_record
     from tools.matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
+    from matrixark_mcp_local_adapter import (
+        auto_memory_layer_budget_tokens,
+        auto_memory_selection_policy_budget_tokens,
+        auto_source_role_budget_tokens,
+        memory_layer_budget_question_reason,
+    )
     from matrixark_mcp_metrics import MatrixArkServiceMetrics
     from matrixark_mcp_raw_ingestion import normalize_raw_ingestion_record
     from matrixark_mcp_retrieval import native_retrieve_fallback_allowed
@@ -2958,6 +2970,35 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             remote_budget_tokens=remote_context_budget_tokens,
         )
         source_role_budget_tokens = optional_object(args, "source_role_budget_tokens") or optional_object(ranking, "source_role_budget_tokens")
+        source_role_budget_mode = "explicit" if source_role_budget_tokens else ""
+        if not source_role_budget_tokens:
+            source_role_budget_tokens, source_role_budget_mode = auto_source_role_budget_tokens(
+                args,
+                ranking,
+                remote_budget_tokens=remote_context_budget_tokens,
+                question_type=question_type,
+            )
+        memory_layer_budget_tokens = optional_object(args, "memory_layer_budget_tokens") or optional_object(ranking, "memory_layer_budget_tokens")
+        memory_layer_budget_mode = "explicit" if memory_layer_budget_tokens else ""
+        if not memory_layer_budget_tokens:
+            memory_layer_budget_tokens, memory_layer_budget_mode = auto_memory_layer_budget_tokens(
+                args,
+                ranking,
+                remote_budget_tokens=remote_context_budget_tokens,
+                question_type=question_type,
+            )
+        memory_selection_policy_budget_tokens = (
+            optional_object(args, "memory_selection_policy_budget_tokens")
+            or optional_object(ranking, "memory_selection_policy_budget_tokens")
+        )
+        memory_selection_policy_budget_mode = "explicit" if memory_selection_policy_budget_tokens else ""
+        if not memory_selection_policy_budget_tokens:
+            memory_selection_policy_budget_tokens, memory_selection_policy_budget_mode = auto_memory_selection_policy_budget_tokens(
+                args,
+                ranking,
+                remote_budget_tokens=remote_context_budget_tokens,
+                question_type=question_type,
+            )
         resource_version_watermark = str(
             ranking.get("resource_version_watermark")
             or args.get("resource_version_watermark")
@@ -3004,6 +3045,14 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "cross_session_rerank": bool(ranking.get("cross_session_rerank", True)),
             "cross_session": cross_session_policy,
             "source_role_budget_tokens": source_role_budget_tokens,
+            "source_role_budget_mode": source_role_budget_mode or ("explicit" if source_role_budget_tokens else "disabled"),
+            "memory_layer_budget_tokens": memory_layer_budget_tokens,
+            "memory_layer_budget_mode": memory_layer_budget_mode or ("explicit" if memory_layer_budget_tokens else "disabled"),
+            "memory_layer_budget_question_reason": memory_layer_budget_question_reason(question_type),
+            "memory_selection_policy_budget_tokens": memory_selection_policy_budget_tokens,
+            "memory_selection_policy_budget_mode": memory_selection_policy_budget_mode or (
+                "explicit" if memory_selection_policy_budget_tokens else "disabled"
+            ),
             "same_session_priority": bool(ranking.get("same_session_priority", True)),
             "leaf_only": bool(ranking.get("leaf_only", False)),
             "allow_broad_scan_fallback": bool(native_retrieve_fallback_allowed(args)),
