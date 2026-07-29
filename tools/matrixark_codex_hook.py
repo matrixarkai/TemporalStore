@@ -3777,6 +3777,16 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         if latest_event_time > 0:
             idle_elapsed_before_ingest_ms = max(0, now - latest_event_time)
     auto_batch_extract_on_ingest = should_auto_batch_extract_on_ingest(args.event)
+    commit_extraction_options: Json = {
+        "understanding_provider": getattr(args, "understanding_provider", None),
+        "extraction_provider": getattr(args, "extraction_provider", None),
+        "segment_provider": getattr(args, "segment_provider", None),
+        "segment_model": getattr(args, "segment_model", None),
+        "segment_model_path": getattr(args, "segment_model_path", None),
+        "segment_max_new_tokens": getattr(args, "segment_max_new_tokens", None),
+        "segment_provider_fallback": getattr(args, "segment_provider_fallback", None),
+        "skip_prior_context": bool(getattr(args, "skip_prior_context", False)),
+    }
     should_pre_ingest_idle_commit = (
         auto_batch_extract_on_ingest
         and callable(session_commit)
@@ -3799,8 +3809,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
             "force": False,
             "commit_reason": "idle_timeout",
             "idle_timeout_ms": idle_timeout_ms,
-            "understanding_provider": getattr(args, "understanding_provider", None),
-            "segment_provider": getattr(args, "segment_provider", None),
+            **commit_extraction_options,
             "storage_options": storage_options,
             "agent_hook": pre_idle_hook,
         }
@@ -3866,8 +3875,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
             "threshold_messages": threshold,
             "force": should_boundary_commit and commit_reason != "idle_timeout",
             "commit_reason": commit_reason,
-            "understanding_provider": getattr(args, "understanding_provider", None),
-            "segment_provider": getattr(args, "segment_provider", None),
+            **commit_extraction_options,
             "storage_options": storage_options,
             "agent_hook": {
                 **codex_agent_hook(
