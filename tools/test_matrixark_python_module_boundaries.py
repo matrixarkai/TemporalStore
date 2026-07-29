@@ -1946,6 +1946,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(finalized["final_session_boundary"])
         self.assertEqual(1, finalized["prior_commit_count"])
         self.assertEqual(1, finalized["prior_committed_event_count"])
+        self.assertIn("summary_hash", finalized)
+        self.assertEqual(1, finalized["memory_layers_written"]["session_final_summary"])
+        self.assertGreaterEqual(finalized["memory_layers_written"]["secondary_indexes"], 5)
         self.assertEqual("dirty_marked", finalized["summary_refresh"]["status"])
         boundaries = [
             record
@@ -1955,6 +1958,28 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(1, len(boundaries))
         self.assertTrue(boundaries[0]["final_session_boundary"])
         self.assertEqual({"assistant": 1, "tool": 1, "user": 1}, boundaries[0]["source_role_counts"])
+        final_summaries = [
+            record
+            for record in multi_adapter.appended
+            if record.get("record_type") == "context_summary"
+            and record.get("summary_type") == "session_final"
+        ]
+        self.assertEqual(1, len(final_summaries))
+        self.assertEqual("final", final_summaries[0]["extraction_phase"])
+        self.assertTrue(final_summaries[0]["final_session_boundary"])
+        self.assertEqual(["provisional"], final_summaries[0]["source_extraction_phases"])
+        self.assertEqual([2], final_summaries[0]["source_event_ids"])
+        summary_indexes = [
+            record
+            for record in multi_adapter.appended
+            if record.get("record_type") == "context_index"
+            and record.get("data_model") == "context_summary"
+            and record.get("ref_hashes") == [final_summaries[0]["summary_hash"]]
+        ]
+        summary_index_names = {str(record.get("index_name") or "") for record in summary_indexes}
+        self.assertIn("summary_type:session_final", summary_index_names)
+        self.assertIn("extraction_phase:final", summary_index_names)
+        self.assertIn("source_extraction_phase:provisional", summary_index_names)
 
         second_finalized = runtime_mod.session_commit(
             multi_adapter,
