@@ -3478,6 +3478,7 @@ def codex_retrieve_ranking_options() -> Json:
         "source_role_budget_mode": "auto",
         "memory_layer_budget_mode": "auto",
         "memory_selection_policy_budget_mode": "auto",
+        "extraction_phase_budget_mode": "auto",
     }
 
 

@@ -1098,6 +1098,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("auto", ranking["source_role_budget_mode"])
         self.assertEqual("auto", ranking["memory_layer_budget_mode"])
         self.assertEqual("auto", ranking["memory_selection_policy_budget_mode"])
+        self.assertEqual("auto", ranking["extraction_phase_budget_mode"])
 
     def test_session_commit_tool_call_trace_records_trigger_evidence(self) -> None:
         class Server:

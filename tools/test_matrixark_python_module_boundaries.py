@@ -1159,6 +1159,14 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("auto", evidence_phase_mode)
         self.assertEqual({"pending_async": 15, "provisional": 35, "final": 70}, evidence_phase_budgets)
 
+        inferred_phase_budgets, inferred_phase_mode = helper_mod.auto_extraction_phase_budget_tokens(
+            {},
+            {"memory_layer_budget_mode": "auto"},
+            remote_budget_tokens=100,
+        )
+        self.assertEqual("auto", inferred_phase_mode)
+        self.assertEqual({"pending_async": 12, "provisional": 25, "final": 70}, inferred_phase_budgets)
+
     def test_moduleized_cross_session_policy_matches_profile_memory_core_budget(self) -> None:
         core_mod = importlib.import_module("tools.matrixark_mcp_core")
         policy_mod = importlib.import_module("tools.matrixark_mcp_budget_policies")
