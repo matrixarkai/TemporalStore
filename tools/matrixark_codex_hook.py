@@ -1868,6 +1868,30 @@ def additional_context_from_retrieve(
                         selected_bits.append(f"{layer}={amount}")
                 if selected_bits:
                     hierarchy_bits.append("memory_layer_selected_tokens[" + ",".join(selected_bits) + "]")
+            policy_budget_tokens = hierarchy.get("memory_selection_policy_budget_tokens")
+            if isinstance(policy_budget_tokens, dict) and policy_budget_tokens:
+                policy_bits = []
+                for policy, value in sorted(policy_budget_tokens.items()):
+                    try:
+                        amount = int(value or 0)
+                    except (TypeError, ValueError):
+                        amount = 0
+                    if amount > 0:
+                        policy_bits.append(f"{policy}={amount}")
+                if policy_bits:
+                    hierarchy_bits.append("memory_selection_policy_budget[" + ",".join(policy_bits) + "]")
+            selected_by_policy = hierarchy.get("memory_selection_policy_selected_tokens_by_policy")
+            if isinstance(selected_by_policy, dict) and selected_by_policy:
+                selected_policy_bits = []
+                for policy, value in sorted(selected_by_policy.items()):
+                    try:
+                        amount = int(value or 0)
+                    except (TypeError, ValueError):
+                        amount = 0
+                    if amount > 0:
+                        selected_policy_bits.append(f"{policy}={amount}")
+                if selected_policy_bits:
+                    hierarchy_bits.append("memory_selection_policy_selected_tokens[" + ",".join(selected_policy_bits) + "]")
         lines.append("Memory hierarchy: " + "; ".join(hierarchy_bits) + ".")
     if budget_pressure.get("budget_pressure"):
         dropped_by_reason = budget_pressure.get("dropped_by_reason")
@@ -3356,6 +3380,14 @@ def hook_session_commit_extraction_options(args: argparse.Namespace) -> Json:
     }
 
 
+def codex_retrieve_ranking_options() -> Json:
+    return {
+        "source_role_budget_mode": "auto",
+        "memory_layer_budget_mode": "auto",
+        "memory_selection_policy_budget_mode": "auto",
+    }
+
+
 def hook_async_message_ingest_args(
     common: Json,
     args: argparse.Namespace,
@@ -4491,10 +4523,7 @@ def main() -> int:
                         if HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH and args.event == "UserPromptSubmit"
                         else {}
                     ),
-                    "ranking": {
-                        "source_role_budget_mode": "auto",
-                        "memory_layer_budget_mode": "auto",
-                    },
+                    "ranking": codex_retrieve_ranking_options(),
                     "metadata": {
                         "retrieval_source": "codex_hook_retrieve",
                         "codex_event": args.event,
