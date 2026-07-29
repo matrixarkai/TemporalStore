@@ -1856,7 +1856,13 @@ def additional_context_from_retrieve(
                 layer_bits = []
                 for layer in [
                     "summary",
+                    "profile_summary",
+                    "same_session_summary",
+                    "cross_session_summary",
                     "compression",
+                    "profile_compression",
+                    "same_session_compression",
+                    "cross_session_compression",
                     "profile_entity",
                     "same_session_event",
                     "cross_session_event",
