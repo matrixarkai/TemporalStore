@@ -35,6 +35,7 @@ AUTO_BUDGET_QUERY_TYPES = {
     "date",
     "broad_exploration",
     "evidence",
+    "benchmark_quality",
 }
 
 
@@ -88,6 +89,8 @@ def auto_source_role_budget_tokens(
         defaults.update({"assistant": 0.50, "tool": 0.45, "user": 0.50})
     elif normalized_question_type == "evidence":
         defaults.update({"assistant": 0.35, "tool": 0.50, "user": 0.45})
+    elif normalized_question_type == "benchmark_quality":
+        defaults.update({"assistant": 0.50, "tool": 0.60, "user": 0.30})
     elif normalized_question_type in {"broad_exploration", "multi_hop", "date"}:
         defaults.update({"assistant": 0.45, "tool": 0.45, "user": 0.50})
     budgets: Json = {}
@@ -158,6 +161,15 @@ def auto_memory_selection_policy_budget_tokens(
                 "selected_assistant_decision_outcome_only": 0.40,
                 "selected_tool_evidence_only": 0.30,
                 "selected_profile_current_state": 0.65,
+            }
+        )
+    elif normalized_question_type == "benchmark_quality":
+        defaults.update(
+            {
+                "selected_user_prompt": 0.25,
+                "selected_assistant_decision_outcome_only": 0.50,
+                "selected_tool_evidence_only": 0.65,
+                "selected_profile_current_state": 0.40,
             }
         )
     elif normalized_question_type in {"multi_hop", "date", "broad_exploration", "evidence"}:
@@ -269,6 +281,25 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "profile_entity": 0.45,
             }
         )
+    elif normalized_question_type == "benchmark_quality":
+        defaults.update(
+            {
+                "summary": 0.20,
+                "profile_summary": 0.35,
+                "same_session_summary": 0.20,
+                "cross_session_summary": 0.35,
+                "compression": 0.30,
+                "profile_compression": 0.35,
+                "same_session_compression": 0.20,
+                "cross_session_compression": 0.35,
+                "pending_async_event": 0.20,
+                "same_session_event": 0.35,
+                "cross_session_event": 0.35,
+                "same_session_segment": 0.30,
+                "cross_session_segment": 0.35,
+                "profile_entity": 0.50,
+            }
+        )
     elif normalized_question_type in {"broad_exploration", "evidence"}:
         defaults.update(
             {
@@ -348,6 +379,8 @@ def auto_extraction_phase_budget_tokens(
         defaults.update({"pending_async": 0.10, "provisional": 0.20, "final": 0.80})
     elif normalized_question_type in {"multi_hop", "date"}:
         defaults.update({"pending_async": 0.15, "provisional": 0.30, "final": 0.70})
+    elif normalized_question_type == "benchmark_quality":
+        defaults.update({"pending_async": 0.12, "provisional": 0.25, "final": 0.75})
     elif normalized_question_type in {"broad_exploration", "evidence"}:
         defaults.update({"pending_async": 0.15, "provisional": 0.35, "final": 0.70})
     budgets: Json = {}
@@ -378,6 +411,8 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
         mode = "pre_retrieval_summary_refresh_profile_memory"
     elif normalized_question_type in {"multi_hop", "date"}:
         mode = "pre_retrieval_summary_refresh_multi_hop"
+    elif normalized_question_type == "benchmark_quality":
+        mode = "pre_retrieval_summary_refresh_benchmark_quality"
     elif normalized_question_type in {"broad_exploration", "evidence"}:
         mode = "pre_retrieval_summary_refresh_evidence"
     if remote_budget <= 0:
@@ -436,6 +471,19 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_compression": 0.35,
                 "cross_session_event": 0.35,
                 "cross_session_segment": 0.35,
+            }
+        )
+    elif normalized_question_type == "benchmark_quality":
+        fractions.update(
+            {
+                "summary": 0.20,
+                "profile_summary": 0.35,
+                "cross_session_summary": 0.35,
+                "profile_compression": 0.35,
+                "cross_session_compression": 0.35,
+                "cross_session_event": 0.35,
+                "cross_session_segment": 0.35,
+                "profile_entity": 0.50,
             }
         )
     elif normalized_question_type in {"broad_exploration", "evidence"}:

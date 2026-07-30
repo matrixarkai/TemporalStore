@@ -2381,6 +2381,7 @@ UNDERSTANDING_LABELS: dict[str, str] = {
 
 QUERY_TYPE_LABELS: dict[str, str] = {
     "profile_memory": "question asks user profile long term memory profile entities profile summaries cross session memories across sessions",
+    "benchmark_quality": "question asks benchmark quality hit rate latency p50 p99 throughput locomo longmemeval memory evaluation",
     "date": "question asks when date before after yesterday tomorrow week month year",
     "current_state": "question asks current latest now still status preference location role valid state",
     "why_emotion": "question asks why reason feeling emotion because",
@@ -4247,6 +4248,8 @@ def infer_query_type(query: str) -> str:
     lower = query.lower()
     if PROFILE_MEMORY_QUERY_RE.search(lower):
         return "profile_memory"
+    if re.search(r"\b(benchmark|workload|latency|p50|p90|p95|p99|throughput|qps|ops/s|req/s|hit[- ]?rate|read[- ]?hit|quality|recall|precision|locomo|longmemeval|memory[- ]?quality)\b", lower):
+        return "benchmark_quality"
     if understanding_provider() == "oss_encoder":
         return oss_encoder_query_type(query)
     if re.search(r"\b(both|together|across|between|compare|combine|sessions|multi-hop|multi session|multi-session|cross session|cross-session|previous sessions|other sessions)\b", lower):
@@ -4402,6 +4405,20 @@ def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[
             context_index_name("source_role", "assistant"),
             context_index_name("source_type", "message"),
         )
+    if re.search(r"\b(benchmark|workload|latency|p50|p90|p95|p99|throughput|qps|ops/s|req/s|hit[- ]?rate|read[- ]?hit|quality|recall|precision|locomo|longmemeval|memory[- ]?quality)\b", lower):
+        add_group(
+            context_index_name("entity_type", "tool_evidence"),
+            context_index_name("event_type", "tool_evidence"),
+            context_index_name("entity_type", "assistant_decision"),
+            context_index_name("event_type", "assistant_response"),
+        )
+        add_group(context_index_name("source_role", "tool"), context_index_name("source_role", "assistant"))
+        add_group(
+            context_index_name("memory_selection_policy", "selected_tool_evidence_only"),
+            context_index_name("memory_selection_policy", "selected_assistant_decision_outcome_only"),
+        )
+        if re.search(r"\b(hit[- ]?rate|read[- ]?hit|quality|recall|precision|locomo|longmemeval|memory[- ]?quality)\b", lower):
+            add_group(context_index_name("memory_scope", "user_profile"), context_index_name("session_continuity", "cross_session"))
     if re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
         add_group(
             context_index_name("entity_type", "tool_evidence"),
