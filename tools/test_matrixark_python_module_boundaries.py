@@ -2373,6 +2373,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                         "dirty_reason": kwargs["dirty_reason"],
                         "source_ref_type": kwargs["source_ref_type"],
                         "scope": kwargs["scope"],
+                        **kwargs.get("source_lineage", {}),
                     }
                 ]
 
@@ -2650,6 +2651,21 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             ["tenant:tenant_mod", "user:user_mod", "profile:long_term_memory"],
             profile_dirty[0]["node_path"],
         )
+        self.assertEqual("user_profile", profile_dirty[0]["memory_scope"])
+        self.assertEqual("cross_session", profile_dirty[0]["session_continuity"])
+        self.assertEqual(["session_mod"], profile_dirty[0]["source_session_ids"])
+        self.assertEqual([session_entities[0]["entity_hash"]], profile_dirty[0]["source_entity_hashes"])
+        self.assertEqual([101], profile_dirty[0]["source_event_ids"])
+        self.assertEqual(session_entities[0]["source_role_counts"], profile_dirty[0]["source_role_counts"])
+        self.assertEqual(session_entities[0]["source_hook_type_counts"], profile_dirty[0]["source_hook_type_counts"])
+        self.assertEqual(session_entities[0]["source_codex_event_counts"], profile_dirty[0]["source_codex_event_counts"])
+        self.assertEqual(
+            session_entities[0]["source_memory_selection_policy_counts"],
+            profile_dirty[0]["source_memory_selection_policy_counts"],
+        )
+        self.assertEqual("always_when_profile_scope_available", profile_dirty[0]["profile_promotion_policy"])
+        self.assertEqual("final", profile_dirty[0]["extraction_phase"])
+        self.assertTrue(profile_dirty[0]["final_session_boundary"])
 
     def test_modular_batch_extract_writes_distinct_segments_and_profile_entities(self) -> None:
         batch_mod = importlib.import_module("tools.matrixark_mcp_local_batch_extract_runtime")
