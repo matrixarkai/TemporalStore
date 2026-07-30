@@ -4233,6 +4233,12 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         source = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_hook.py").read_text()
         self.assertIn("commit_extraction_options: Json = hook_session_commit_extraction_options(args)", source)
         self.assertIn("**hook_session_commit_extraction_options(args),", source)
+        retrieve_call = source[
+            source.index("\"matrixark_retrieve\"") : source.index(
+                "append_hook_trace(server, trace, output=output, status=\"ok\")"
+            )
+        ]
+        self.assertIn("**hook_session_commit_extraction_options(args),", retrieve_call)
 
     def test_dual_hook_keeps_derived_context_out_of_raw_ingestion(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_dual_hook.sh").read_text()
