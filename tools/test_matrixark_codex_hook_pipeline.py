@@ -174,6 +174,77 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("memory_scope:session", session_flattened)
         self.assertIn("session_continuity:same_session", session_flattened)
 
+    def test_retrieval_records_use_secondary_index_posting_prefilter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-secondary-prefilter.jsonl")
+            scope = {
+                "account_id": "acct_prefilter",
+                "tenant_id": "tenant_prefilter",
+                "user_id": "user_prefilter",
+                "session_id": "session_prefilter",
+            }
+            wanted_entity_hash = matrixark_mcp_core.stable_hash("wanted-profile-prefilter-entity")
+            unrelated_entity_hash = matrixark_mcp_core.stable_hash("unrelated-profile-prefilter-entity")
+            wanted_node_hash = matrixark_mcp_core.stable_hash("wanted-profile-node")
+            unrelated_node_hash = matrixark_mcp_core.stable_hash("unrelated-profile-node")
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_entity",
+                        "entity_hash": wanted_entity_hash,
+                        "node_hash": wanted_node_hash,
+                        "entity_type": "assistant_decision",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "state": "Codex selected the durable rollout decision.",
+                        "text": "assistant decision rollout metadata selected",
+                        "access_scope": scope,
+                        "scope": scope,
+                    },
+                    {
+                        "record_type": "context_entity",
+                        "entity_hash": unrelated_entity_hash,
+                        "node_hash": unrelated_node_hash,
+                        "entity_type": "tool_evidence",
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "state": "Unrelated tool evidence should not pass the profile index prefilter.",
+                        "text": "unrelated tool evidence",
+                        "access_scope": scope,
+                        "scope": scope,
+                    },
+                    matrixark_mcp_core.context_index_posting_record(
+                        index_name="memory_scope:user_profile",
+                        data_model="context_profile_entity",
+                        ref_type="entity",
+                        ref_hashes=[wanted_entity_hash],
+                        node_hash=wanted_node_hash,
+                        scope=scope,
+                    ),
+                ]
+            )
+
+            result = adapter.retrieval_records(
+                scope={**scope, "_session_scope": "prefer"},
+                secondary_index_groups=[{"memory_scope:user_profile"}],
+            )
+            records = result["records"]
+            stats = result["scan_stats"]
+            self.assertTrue(stats["secondary_index_prefilter_enabled"], stats)
+            self.assertFalse(stats["broad_scan_used"], stats)
+            self.assertEqual("local_secondary_index_prefilter", stats["broad_scan_reason"])
+            self.assertGreaterEqual(stats["dropped_by_secondary_index"], 1)
+            self.assertTrue(any(record.get("entity_hash") == wanted_entity_hash for record in records), records)
+            self.assertFalse(any(record.get("entity_hash") == unrelated_entity_hash for record in records), records)
+
+            fallback = adapter.retrieval_records(
+                scope={**scope, "_session_scope": "prefer"},
+                secondary_index_groups=[{"memory_scope:missing_profile"}],
+            )
+            self.assertFalse(fallback["scan_stats"]["secondary_index_prefilter_enabled"], fallback)
+            self.assertTrue(fallback["scan_stats"]["broad_scan_used"], fallback)
+            self.assertEqual("no_matching_secondary_index_postings", fallback["scan_stats"]["broad_scan_reason"])
+
     def test_profile_memory_queries_stay_profile_memory_in_oss_understanding_mode(self) -> None:
         query = "Show user profile long-term memory and cross-session entities"
         with mock.patch("matrixark_mcp_core.understanding_provider", return_value="oss_encoder"):
