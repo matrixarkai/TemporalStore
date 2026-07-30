@@ -2503,7 +2503,49 @@ fn benchmark_source_ref_matches(
     }
     let text_normalized = normalize_benchmark_text(&block.text);
     let source_ref_normalized = normalize_benchmark_text(&block.source_ref);
-    text_normalized.contains(normalized_ref) || source_ref_normalized.contains(normalized_ref)
+    let uri_normalized = normalize_benchmark_text(&block.uri);
+    let text_compact_ref = normalize_benchmark_ref(&block.text);
+    let source_ref_compact = normalize_benchmark_ref(&block.source_ref);
+    let uri_compact = normalize_benchmark_ref(&block.uri);
+    let normalized_ref_compact = normalize_benchmark_ref(expected_ref);
+    let converted_ref = converted_locomo_source_ref(expected_ref);
+    let converted_ref_normalized = normalize_benchmark_text(&converted_ref);
+    let converted_ref_normalized = converted_ref_normalized.trim();
+    let converted_ref_compact = normalize_benchmark_ref(&converted_ref);
+    text_normalized.contains(normalized_ref)
+        || source_ref_normalized.contains(normalized_ref)
+        || (!normalized_ref_compact.is_empty()
+            && text_compact_ref.contains(&normalized_ref_compact))
+        || (!normalized_ref_compact.is_empty()
+            && source_ref_compact.contains(&normalized_ref_compact))
+        || (!converted_ref_normalized.is_empty()
+            && text_normalized.contains(converted_ref_normalized))
+        || (!converted_ref_normalized.is_empty()
+            && source_ref_normalized.contains(converted_ref_normalized))
+        || (!converted_ref_normalized.is_empty()
+            && uri_normalized.contains(converted_ref_normalized))
+        || (!converted_ref_compact.is_empty() && text_compact_ref.contains(&converted_ref_compact))
+        || (!converted_ref_compact.is_empty()
+            && source_ref_compact.contains(&converted_ref_compact))
+        || (!converted_ref_compact.is_empty() && uri_compact.contains(&converted_ref_compact))
+}
+
+fn converted_locomo_source_ref(expected_ref: &str) -> String {
+    let trimmed = expected_ref.trim();
+    let Some(rest) = trimmed
+        .strip_prefix('D')
+        .or_else(|| trimmed.strip_prefix('d'))
+    else {
+        return String::new();
+    };
+    let Some((session, turn)) = rest.split_once(':') else {
+        return String::new();
+    };
+    if session.chars().all(|ch| ch.is_ascii_digit()) && turn.chars().all(|ch| ch.is_ascii_digit()) {
+        format!("session {session} turn {turn}")
+    } else {
+        String::new()
+    }
 }
 
 fn count_matched_expected_refs(
