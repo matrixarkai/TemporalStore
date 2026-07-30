@@ -378,8 +378,15 @@ class _NativeAppendClient:
     def get_string(self, key: str) -> str:
         return "0"
 
-    def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None) -> None:
-        self.calls.append({"entries": list(entries), "count_key": count_key, "count_value": count_value})
+    def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None, append_options=None) -> None:
+        self.calls.append(
+            {
+                "entries": list(entries),
+                "count_key": count_key,
+                "count_value": count_value,
+                "append_options": append_options or {},
+            }
+        )
 
 
 
@@ -2572,6 +2579,55 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             self.assertEqual("new session summary", summaries[0]["summary_text"])
             self.assertNotIn("summary_version_hash", summaries[0])
 
+    def test_local_temporalstore_restart_reloads_hot_state_from_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = Path(tmpdir) / "events.jsonl"
+            scope = {
+                "account_id": "acct_local",
+                "tenant_id": "tenant_codex",
+                "user_id": "codex_user",
+                "session_id": "reload-test",
+            }
+            writer = mcp.MatrixArkLocalAdapter(store_path)
+            writer.append_many(
+                [
+                    {
+                        "record_type": "context_node",
+                        "node_hash": 501,
+                        "scope": scope,
+                        "updated_at_ms": 1780000000000,
+                    },
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": 601,
+                        "node_hash": 501,
+                        "scope": scope,
+                        "text": "disk backed event survives restart",
+                        "updated_at_ms": 1780000000001,
+                    },
+                    {
+                        "record_type": "context_entity",
+                        "entity_hash": 701,
+                        "entity_type": "decision",
+                        "entity_name": "fallback",
+                        "scope": scope,
+                        "state": "load this entity back into memory",
+                        "updated_at_ms": 1780000000002,
+                    },
+                ]
+            )
+
+            restarted = mcp.MatrixArkLocalAdapter(store_path)
+            result = restarted.reload_context_hot_state_from_disk(scope=scope)
+
+            self.assertEqual(result["status"], "reloaded")
+            self.assertEqual(result["records_scanned"], 3)
+            self.assertEqual(result["records_warmed"], 3)
+            self.assertEqual(result["context_events_loaded"], 1)
+            self.assertIn(501, restarted._context_node_hashes)
+            self.assertIn(601, restarted._context_event_by_hash)
+            self.assertIn(701, restarted._latest_entity_by_hash)
+
     def test_temporalstore_direct_writes_context_summary_as_latest_state(self) -> None:
         client = _HashStoreClient()
         adapter = _direct_adapter_for_hash_store(client)
@@ -3267,6 +3323,33 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual({payload["timestamp_key_ms"] for payload in time_index_payloads}, {1780000000000})
         self.assertEqual(len({payload["context_event_key"] for payload in time_index_payloads}), 2)
         self.assertTrue(all("text" not in payload for payload in time_index_payloads))
+
+    def test_direct_append_shadows_records_to_disk_fallback_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store_path = Path(tmpdir) / "fallback.jsonl"
+            adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+            adapter._disk_fallback_adapter = None
+            adapter._disk_fallback_path = str(store_path)
+            adapter._disk_fallback_enabled = True
+            adapter._disk_fallback_write_failures = 0
+
+            adapter._append_disk_fallback_records(
+                [
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": 808,
+                        "scope": {"tenant_id": "tenant_codex", "session_id": "shadow-test"},
+                        "text": "shadow copy survives native crash",
+                        "updated_at_ms": 1780000000100,
+                    }
+                ]
+            )
+
+            reloaded = mcp.MatrixArkLocalAdapter(store_path)
+            records = reloaded.read_all()
+            self.assertEqual(0, adapter._disk_fallback_write_failures)
+            self.assertEqual(1, len(records))
+            self.assertEqual("shadow copy survives native crash", records[0]["text"])
 
     def test_direct_append_dual_writes_raw_and_serving_records(self) -> None:
         client = _NativeAppendClient()
@@ -5830,6 +5913,16 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn("def matrixark_retrieve_context_pack", proxy_client)
         self.assertIn("MATRIXARK_TEMPORALSTORE_CPP_PROXY_ENDPOINT", adapter)
         self.assertIn("cpp_proxy_matrixark_batch_append_records", adapter)
+
+    def test_cpp_and_rust_wrappers_offer_disk_fallback_when_native_backend_is_down(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        for script_name in ["matrixark_mcp_cpp_server.sh", "matrixark_mcp_rust_server.sh"]:
+            source = (repo / "tools" / script_name).read_text()
+            self.assertIn("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", source)
+            self.assertIn("MATRIXARK_TEMPORALSTORE_DISK_FALLBACK", source)
+            self.assertIn("start_disk_fallback", source)
+            self.assertIn("--backend temporalstore-local", source)
+            self.assertIn("falling back to disk-backed retrieval", source)
 
     def test_direct_readiness_reports_metaserver_failure(self) -> None:
         adapter = _direct_adapter_for_readiness(metaserver="127.0.0.1:1")

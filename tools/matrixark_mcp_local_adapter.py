@@ -1543,6 +1543,7 @@ class MatrixArkLocalAdapter:
                 for item in records:
                     handle.write(json.dumps(item, separators=(",", ":")) + "\n")
         self._update_latest_entity_cache(records)
+        self._update_read_cache_after_append(records)
 
     def append_many(self, records: list[Json]) -> None:
         records = materialize_serving_record_batch(records)
@@ -1555,6 +1556,7 @@ class MatrixArkLocalAdapter:
                 for record in records:
                     handle.write(json.dumps(record, separators=(",", ":")) + "\n")
         self._update_latest_entity_cache(records)
+        self._update_read_cache_after_append(records)
 
     def _update_latest_entity_cache(self, records: list[Json]) -> None:
         if not hasattr(self, "_session_buffer_cache_lock"):
@@ -1921,6 +1923,27 @@ class MatrixArkLocalAdapter:
             with _LOCAL_READ_CACHE_LOCK:
                 _LOCAL_READ_CACHE.pop(cache_key, None)
             return []
+        size = int(stat.st_size)
+        mtime_ns = int(stat.st_mtime_ns)
+        with self._read_cache_lock:
+            if (
+                self._read_cache_records is not None
+                and self._read_cache_size == size
+                and self._read_cache_mtime_ns == mtime_ns
+            ):
+                return list(self._read_cache_records)
+        with _LOCAL_READ_CACHE_LOCK:
+            cached = _LOCAL_READ_CACHE.get(cache_key)
+            if cached is not None:
+                cached_size, cached_mtime_ns, cached_records = cached
+                if cached_size == size and cached_mtime_ns == mtime_ns:
+                    records = list(cached_records)
+                    with self._read_cache_lock:
+                        self._read_cache_records = records
+                        self._read_cache_size = size
+                        self._read_cache_mtime_ns = mtime_ns
+                    return list(records)
+                _LOCAL_READ_CACHE.pop(cache_key, None)
         records = []
         with self._event_log_lock:
             with self.event_log.open("r", encoding="utf-8") as handle:
@@ -1928,7 +1951,72 @@ class MatrixArkLocalAdapter:
                     line = line.strip()
                     if line:
                         records.append(json.loads(line))
-        return compact_latest_value_records(records)
+        records = compact_latest_context_state_records(compact_latest_value_records(records))
+        with self._read_cache_lock:
+            cache_changed = (
+                self._read_cache_records is None
+                or self._read_cache_size != size
+                or self._read_cache_mtime_ns != mtime_ns
+            )
+            self._read_cache_records = list(records)
+            self._read_cache_size = size
+            self._read_cache_mtime_ns = mtime_ns
+        with _LOCAL_READ_CACHE_LOCK:
+            _LOCAL_READ_CACHE[cache_key] = (size, mtime_ns, list(records))
+        if cache_changed:
+            with self._retrieval_records_cache_lock:
+                self._retrieval_records_cache_generation += 1
+                self._retrieval_records_cache.clear()
+            with self._context_pack_cache_lock:
+                self._context_pack_cache.clear()
+        return list(records)
+
+    def reload_context_hot_state_from_disk(self, *, scope: Json | None = None) -> Json:
+        """Rebuild process-local serving state from the durable JSONL record log."""
+
+        records = self.read_all()
+        if scope:
+            warm_records = [
+                record
+                for record in records
+                if (
+                    not isinstance(record, dict)
+                    or not record.get("scope")
+                    or access_scope_matches_before_scoring(record, scope)
+                    or scope_matches(candidate_access_scope(record), scope)
+                )
+            ]
+        else:
+            warm_records = records
+
+        with self._session_buffer_cache_lock:
+            self._context_event_by_hash = {}
+            self._session_pending_event_ids_by_key = {}
+            self._session_committed_event_ids_by_key = {}
+        self._latest_entity_by_hash = {}
+        self._context_node_hashes = set()
+        self._context_child_ref_hashes = set()
+        self._entity_cache_loaded = not bool(scope)
+        self._context_node_cache_loaded = not bool(scope)
+        self._update_latest_entity_cache(warm_records)
+        with self._retrieval_records_cache_lock:
+            self._retrieval_records_cache_generation += 1
+            self._retrieval_records_cache.clear()
+        with self._context_pack_cache_lock:
+            self._context_pack_cache.clear()
+        return {
+            "status": "reloaded",
+            "backend": getattr(self, "_backend_label", lambda: "local")(),
+            "source": "disk_jsonl",
+            "event_log": str(self.event_log),
+            "records_scanned": len(records),
+            "records_warmed": len(warm_records),
+            "context_events_loaded": len(self._context_event_by_hash),
+            "context_nodes_loaded": len(self._context_node_hashes),
+            "context_child_refs_loaded": len(self._context_child_ref_hashes),
+            "context_entities_loaded": len(self._latest_entity_by_hash),
+            "scope_limited": bool(scope),
+        }
 
     def retrieval_records(
         self,

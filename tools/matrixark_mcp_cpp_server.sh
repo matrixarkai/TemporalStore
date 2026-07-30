@@ -30,6 +30,12 @@ export MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_IO_TIMEO
 export MATRIXARK_MCP_AUTOSTART_CPP="${MATRIXARK_MCP_AUTOSTART_CPP:-1}"
 export MATRIXARK_CPP_DEPLOY_DIR="${MATRIXARK_CPP_DEPLOY_DIR:-$ROOT/.local/runtime/matrixark-cpp-live}"
 export MATRIXARK_LOCAL_MODE="${MATRIXARK_LOCAL_MODE:-cluster}"
+export MATRIXARK_TEMPORALSTORE_LOCAL_STORE="${MATRIXARK_TEMPORALSTORE_LOCAL_STORE:-$ROOT/.local/runtime/matrixark-cpp-disk-fallback.jsonl}"
+fallback_default=1
+case "${MATRIXARK_MCP_PROFILE:-dev}" in
+  prod|production|benchmark|bench|parity) fallback_default=0 ;;
+esac
+export MATRIXARK_TEMPORALSTORE_DISK_FALLBACK="${MATRIXARK_TEMPORALSTORE_DISK_FALLBACK:-$fallback_default}"
 
 export MATRIXARK_EMBEDDING_PROVIDER="${MATRIXARK_EMBEDDING_PROVIDER:-oss}"
 export MATRIXARK_REQUIRE_OSS_EMBEDDINGS="${MATRIXARK_REQUIRE_OSS_EMBEDDINGS:-1}"
@@ -38,9 +44,17 @@ export MATRIXARK_UNDERSTANDING_PROVIDER="${MATRIXARK_UNDERSTANDING_PROVIDER:-oss
 export MATRIXARK_REQUIRE_OSS_UNDERSTANDING="${MATRIXARK_REQUIRE_OSS_UNDERSTANDING:-1}"
 export MATRIXARK_RETRIEVAL_TIMEOUT_MS="${MATRIXARK_RETRIEVAL_TIMEOUT_MS:-20000}"
 
+start_disk_fallback() {
+  mkdir -p "$(dirname "$MATRIXARK_TEMPORALSTORE_LOCAL_STORE")"
+  echo "MatrixArk MCP: serving from disk-backed temporalstore-local store $MATRIXARK_TEMPORALSTORE_LOCAL_STORE" >&2
+  exec python3 "$ROOT/tools/matrixark_mcp_server.py" \
+    --backend temporalstore-local \
+    --local-store "$MATRIXARK_TEMPORALSTORE_LOCAL_STORE" \
+    "$@"
+}
+
 if [[ "$MATRIXARK_LOCAL_MODE" == "no-metaserver" || "$MATRIXARK_LOCAL_MODE" == "embedded" || "$MATRIXARK_LOCAL_MODE" == "1" ]]; then
-  echo "MatrixArk MCP: local JSONL/no-metaserver record-log mode is retired; start a C++/Rust TemporalStore backend instead." >&2
-  exit 2
+  start_disk_fallback "$@"
 fi
 
 if [[ "$MATRIXARK_MCP_BACKEND" == "temporalstore-direct" && "$MATRIXARK_MCP_AUTOSTART_CPP" == "1" ]]; then
@@ -52,14 +66,20 @@ if [[ "$MATRIXARK_MCP_BACKEND" == "temporalstore-direct" && "$MATRIXARK_MCP_AUTO
   fi
 fi
 
-bash "$ROOT/tools/wait_temporalstore_topology_ready.sh" \
+if ! bash "$ROOT/tools/wait_temporalstore_topology_ready.sh" \
   --backend cpp \
   --metaserver "$MATRIXARK_TEMPORALSTORE_METASERVER" \
   --namespace "$MATRIXARK_TEMPORALSTORE_NAMESPACE" \
   --table "$MATRIXARK_TEMPORALSTORE_TABLE" \
   --prefix "$MATRIXARK_TEMPORALSTORE_PREFIX" \
   --temporalstore-lib "$TEMPORALSTORE_LIB" \
-  --timeout-ms "${MATRIXARK_BACKEND_READINESS_TIMEOUT_MS:-30000}" >&2
+  --timeout-ms "${MATRIXARK_BACKEND_READINESS_TIMEOUT_MS:-30000}" >&2; then
+  if [[ "$MATRIXARK_TEMPORALSTORE_DISK_FALLBACK" == "1" || "$MATRIXARK_TEMPORALSTORE_DISK_FALLBACK" == "true" || "$MATRIXARK_TEMPORALSTORE_DISK_FALLBACK" == "yes" ]]; then
+    echo "MatrixArk MCP: C++ TemporalStore is not ready; falling back to disk-backed retrieval." >&2
+    start_disk_fallback "$@"
+  fi
+  exit 2
+fi
 
 exec python3 "$ROOT/tools/matrixark_mcp_server.py" \
   --backend temporalstore-direct \
