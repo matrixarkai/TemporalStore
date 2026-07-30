@@ -6192,6 +6192,9 @@ def best_percent_near(normalized_blob: str, anchors: tuple[str, ...]) -> float |
 def insufficient_info_answer(question: str, texts: list[str]) -> str:
     q = normalize_text(question)
     blob = normalize_text("\n".join(texts))
+    absent = absent_fact_answer(question, texts)
+    if absent:
+        return absent
     explicit = explicit_absence_or_contradiction_answer(q, blob)
     if explicit:
         return explicit
@@ -6236,8 +6239,11 @@ def absent_fact_answer(question: str, texts: list[str]) -> str:
         or "tokyo" in blob
     ):
         return "You did not mention this information. You mentioned staying in Japan, but not in Korea."
-    if "dad" in q and re.search(r"\b(gave|gift|birthday gift)\b", q) and "dad" not in blob and "sister" in blob:
-        return "You did not mention this information. You mentioned receiving a birthday gift from your sister, but not your dad."
+    if "dad" in q and re.search(r"\b(gave|gift|birthday gift)\b", q):
+        sister_gift = re.search(r"\b(?:birthday gift|gift)\b.{0,80}\bsister\b|\bsister\b.{0,80}\b(?:birthday gift|gift)\b", blob)
+        dad_gift = re.search(r"\b(?:dad|father)\b.{0,80}\b(?:gave|gift|birthday gift)\b|\b(?:gave|gift|birthday gift)\b.{0,80}\b(?:dad|father)\b", blob)
+        if sister_gift and not dad_gift:
+            return "You did not mention this information. You mentioned receiving a birthday gift from your sister, but not your dad."
     return ""
 
 
