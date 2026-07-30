@@ -180,6 +180,19 @@ void OpLogger::Commit(Controller* ctrl, Closure<void>* callback) {
     }
     if (callback != nullptr) {
         stream_->Commit(ctrl, callback);
+        return;
+    }
+
+    if (ctrl == nullptr) {
+        Controller* async_ctrl = new Controller();
+        stream_->Commit(async_ctrl, NewFuncClosure([this, async_ctrl] {
+            if (!async_ctrl->status().ok() && !async_ctrl->status().IsStreamAbort()) {
+                LOG_WARNING("Async oplog commit failed")
+                    .put("PartitionId", partition_->GetPartitionID())
+                    .put("Status", async_ctrl->status());
+            }
+            delete async_ctrl;
+        }));
     }
 }
 

@@ -4,6 +4,9 @@ find_package(CURL)
 if (NOT CURL_FOUND)
     list(REMOVE_ITEM SRCS "${CMAKE_CURRENT_SOURCE_DIR}/store/s3_store.cc")
 endif()
+if (NOT EXISTS "${OBJECT_STORE_COMPAT_INCLUDE_DIR}/matrixobjectstore/matrixobjectstore.h")
+    list(REMOVE_ITEM SRCS "${CMAKE_CURRENT_SOURCE_DIR}/store/matrixobjectstore_store.cc")
+endif()
 add_library(recordstream ${HDRS} ${SRCS})
 target_link_libraries(recordstream
     common
