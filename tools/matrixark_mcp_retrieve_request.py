@@ -64,6 +64,7 @@ IDLE_COMMIT_RESOLUTION_LINEAGE_FIELDS = [
     "node_path",
     "idle_commit_timeout_ms",
     "idle_commit_deadline_ms",
+    "idle_commit_cutoff_ms",
     "idle_commit_pending_event_count",
     "idle_commit_pending_message_count",
     "threshold_messages",
@@ -166,12 +167,17 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
         timeout_ms = int(task.get("idle_commit_timeout_ms") or args.get("idle_commit_timeout_ms") or 0)
     except (TypeError, ValueError):
         timeout_ms = 0
+    try:
+        cutoff_ms = int(task.get("idle_commit_cutoff_ms") or 0)
+    except (TypeError, ValueError):
+        cutoff_ms = 0
     commit_args: Json = {
         "scope": scope,
         "metadata": optional_object(args, "metadata"),
         "threshold_messages": max(1, threshold),
         "force": False,
         "idle_timeout_ms": max(0, timeout_ms),
+        "commit_before_ms": cutoff_ms or None,
         "commit_reason": "idle_timeout",
         "skip_prior_context": bool(args.get("skip_prior_context", False)),
         "storage_options": normalize_storage_options(args),
@@ -271,6 +277,9 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
             "profile_promotion_summary",
             "profile_promotion_policy",
             "profile_promotion_blocker",
+            "commit_before_ms",
+            "pending_deferred_event_count",
+            "pending_deferred_message_count",
         ]:
             value = commit_result.get(field)
             if value not in (None, "", [], {}):
@@ -330,6 +339,9 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
         "due_task_count": len(due_tasks),
         "resolved_scheduled_task_count": resolved_task_count,
         "committed_event_count": committed_event_count,
+        "commit_before_ms": commit_result.get("commit_before_ms") if isinstance(commit_result, dict) else cutoff_ms,
+        "pending_deferred_event_count": int(commit_result.get("pending_deferred_event_count") or 0) if isinstance(commit_result, dict) else 0,
+        "pending_deferred_message_count": int(commit_result.get("pending_deferred_message_count") or 0) if isinstance(commit_result, dict) else 0,
         "trigger_policy": commit_result.get("trigger_policy") if isinstance(commit_result, dict) else "",
         "commit_result_status": commit_status,
         **cache_invalidation,
@@ -399,6 +411,8 @@ def prepare_retrieval_request(target: Any, args: Json, *, started_perf: float) -
             "enabled": bool(pre_retrieval_idle_commit.get("enabled")),
             "status": pre_retrieval_idle_commit.get("status"),
             "committed_event_count": int(pre_retrieval_idle_commit.get("committed_event_count") or 0),
+            "commit_before_ms": pre_retrieval_idle_commit.get("commit_before_ms"),
+            "pending_deferred_event_count": int(pre_retrieval_idle_commit.get("pending_deferred_event_count") or 0),
         },
     }
     pack_cache_key = retrieve_cache_helpers.context_pack_cache_key(
