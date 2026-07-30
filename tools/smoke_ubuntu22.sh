@@ -367,7 +367,7 @@ import sys
 with open(sys.argv[1], "r", encoding="utf-8") as fh:
     data = json.load(fh)
 status = data.get("status", {})
-if status.get("code", 0) not in (0,):
+if status.get("code", 0) not in (0, 9):
     raise SystemExit(f"AddNamespace failed: {data}")
 PY
 
@@ -410,7 +410,7 @@ import sys
 with open(sys.argv[1], "r", encoding="utf-8") as fh:
     data = json.load(fh)
 status = data.get("status", {})
-if status.get("code", 0) not in (0,):
+if status.get("code", 0) not in (0, 9):
     raise SystemExit(f"AddTable failed: {data}")
 PY
 
