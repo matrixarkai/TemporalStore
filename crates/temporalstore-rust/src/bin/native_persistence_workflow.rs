@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -32,6 +33,7 @@ struct WorkflowReport {
     query_refill_after_restart: ReadProbe,
     block_cache_read_after_restart: ReadProbe,
     async_warmup_before_query: ResidencyProbe,
+    serving_during_async_warmup: ReadProbe,
     async_warmup: AsyncWarmupProbe,
     after_async_warmup: ResidencyProbe,
     verification: Verification,
@@ -115,6 +117,7 @@ struct Verification {
     query_refilled_memory_after_restart: bool,
     restart_reloaded_from_physical_store: bool,
     disk_block_cache_used_after_restart: bool,
+    serving_available_while_async_warmup_running: bool,
     async_warmup_loaded_pages_without_foreground_query: bool,
     no_python_jsonl_fallback: bool,
 }
@@ -167,8 +170,12 @@ fn main() {
     );
     async_restarted.load_shard(SHARD_ID);
     let async_warmup_before_query = residency_probe("async_warmup_before_query", &async_restarted);
-    let async_warmup =
-        run_gradual_async_warmup(async_restarted.clone(), 4, Duration::from_millis(2));
+    let (async_warmup, serving_during_async_warmup, warmup_active_during_serving) =
+        run_gradual_async_warmup_with_serving(
+            async_restarted.clone(),
+            4,
+            Duration::from_millis(20),
+        );
     let after_async_warmup = residency_probe("after_async_warmup", &async_restarted);
 
     let verification = Verification {
@@ -183,6 +190,8 @@ fn main() {
         disk_block_cache_used_after_restart: block_cache_read_after_restart.ok
             && block_cache_read_after_restart.cache_disk_hits
                 > query_refill_after_restart.cache_disk_hits,
+        serving_available_while_async_warmup_running: warmup_active_during_serving
+            && serving_during_async_warmup.ok,
         async_warmup_loaded_pages_without_foreground_query: async_warmup.warmed_page_refs > 0
             && after_async_warmup.cache_memory_entry_count
                 > async_warmup_before_query.cache_memory_entry_count,
@@ -202,6 +211,7 @@ fn main() {
         query_refill_after_restart,
         block_cache_read_after_restart,
         async_warmup_before_query,
+        serving_during_async_warmup,
         async_warmup,
         after_async_warmup,
         verification,
@@ -327,11 +337,14 @@ fn force_eviction_pressure(engine: &TemporalEngine) {
     }
 }
 
-fn run_gradual_async_warmup(
+fn run_gradual_async_warmup_with_serving(
     engine: TemporalEngine,
     batch_size: usize,
     pause_between_batches: Duration,
-) -> AsyncWarmupProbe {
+) -> (AsyncWarmupProbe, ReadProbe, bool) {
+    let serving_engine = engine.clone();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
     let start = Instant::now();
     let handle = thread::spawn(move || {
         let mut slots = engine
@@ -342,15 +355,23 @@ fn run_gradual_async_warmup(
         slots.sort_unstable();
         slots.dedup();
         let mut reports = Vec::new();
-        for batch in slots.chunks(batch_size.max(1)) {
+        for (index, batch) in slots.chunks(batch_size.max(1)).enumerate() {
+            if index == 0 {
+                let _ = started_tx.send(());
+            }
             reports.push(engine.storage_cache_warmup_report(SHARD_ID, batch.iter().copied()));
             thread::sleep(pause_between_batches);
         }
+        let _ = done_tx.send(());
         reports
     });
+    let _ = started_rx.recv_timeout(Duration::from_secs(1));
+    let warmup_active_before_serving = done_rx.try_recv().is_err();
+    let serving_during_warmup = read_context_probe("serving_during_async_warmup", &serving_engine);
+    let warmup_active_after_serving = done_rx.try_recv().is_err();
     let reports = handle.join().expect("async warmup thread should complete");
     let latency_us = start.elapsed().as_micros();
-    AsyncWarmupProbe {
+    let async_warmup = AsyncWarmupProbe {
         name: "gradual_async_page_index_warmup".to_string(),
         batches: reports.len(),
         batch_size,
@@ -368,7 +389,12 @@ fn run_gradual_async_warmup(
         failed_page_refs: reports.iter().map(|report| report.failed_page_refs).sum(),
         warmed_bytes: reports.iter().map(|report| report.warmed_bytes).sum(),
         reports,
-    }
+    };
+    (
+        async_warmup,
+        serving_during_warmup,
+        warmup_active_before_serving && warmup_active_after_serving,
+    )
 }
 
 fn read_context_probe(name: &str, engine: &TemporalEngine) -> ReadProbe {
