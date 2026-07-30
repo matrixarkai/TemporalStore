@@ -27,6 +27,27 @@ PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT = _positive_int_env(
     "MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT", 2
 )
 
+AUTO_BUDGET_QUERY_TYPES = {
+    "current_state",
+    "latest",
+    "profile_memory",
+    "multi_hop",
+    "date",
+    "broad_exploration",
+    "evidence",
+}
+
+
+def _default_memory_budget_mode(args: Json, ranking: Json, *, field: str, question_type: str) -> str:
+    mode = str(args.get(field) or ranking.get(field) or "").strip().lower()
+    if mode:
+        return mode
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    if normalized_question_type in AUTO_BUDGET_QUERY_TYPES:
+        return "auto"
+    return ""
+
+
 
 def auto_source_role_budget_tokens(
     args: Json,
@@ -35,7 +56,12 @@ def auto_source_role_budget_tokens(
     remote_budget_tokens: int,
     question_type: str = "fact",
 ) -> tuple[Json, str]:
-    mode = str(args.get("source_role_budget_mode") or ranking.get("source_role_budget_mode") or "").strip().lower()
+    mode = _default_memory_budget_mode(
+        args,
+        ranking,
+        field="source_role_budget_mode",
+        question_type=question_type,
+    )
     if mode not in {"auto", "balanced", "codex_auto"}:
         return {}, ""
     try:
@@ -73,11 +99,12 @@ def auto_memory_selection_policy_budget_tokens(
     remote_budget_tokens: int,
     question_type: str = "fact",
 ) -> tuple[Json, str]:
-    mode = str(
-        args.get("memory_selection_policy_budget_mode")
-        or ranking.get("memory_selection_policy_budget_mode")
-        or ""
-    ).strip().lower()
+    mode = _default_memory_budget_mode(
+        args,
+        ranking,
+        field="memory_selection_policy_budget_mode",
+        question_type=question_type,
+    )
     if mode not in {"auto", "balanced", "codex_auto"}:
         sibling_mode = str(
             args.get("source_role_budget_mode")
@@ -144,7 +171,12 @@ def auto_memory_selection_policy_budget_tokens(
 
 
 def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_tokens: int, question_type: str = "fact") -> tuple[Json, str]:
-    mode = str(args.get("memory_layer_budget_mode") or ranking.get("memory_layer_budget_mode") or "").strip().lower()
+    mode = _default_memory_budget_mode(
+        args,
+        ranking,
+        field="memory_layer_budget_mode",
+        question_type=question_type,
+    )
     if mode not in {"auto", "balanced", "codex_auto"}:
         return {}, ""
     try:
@@ -265,7 +297,12 @@ def auto_extraction_phase_budget_tokens(
     remote_budget_tokens: int,
     question_type: str = "fact",
 ) -> tuple[Json, str]:
-    mode = str(args.get("extraction_phase_budget_mode") or ranking.get("extraction_phase_budget_mode") or "").strip().lower()
+    mode = _default_memory_budget_mode(
+        args,
+        ranking,
+        field="extraction_phase_budget_mode",
+        question_type=question_type,
+    )
     if not mode:
         sibling_mode = str(
             args.get("source_role_budget_mode")
