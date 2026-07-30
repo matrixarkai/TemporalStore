@@ -419,6 +419,19 @@ def selected_context_class_counts(refs: list[Json]) -> Json:
     return counts
 
 
+
+def _context_memory_source_ref_is_debug_only(ref: Json) -> bool:
+    ref_type = str(ref.get("ref_type") or "").strip().lower()
+    memory_scope = str(ref.get("memory_scope") or "").strip().lower()
+    session_continuity = str(ref.get("session_continuity") or "").strip().lower()
+    context_class = str(ref.get("context_class") or "").strip().lower()
+    return (
+        ref_type in {"event", "entity", "segment", "summary"}
+        or context_class in {"event", "entity", "segment", "summary"}
+        or memory_scope in {"session", "session_memory", "user_profile", "profile", "cross_session_profile"}
+        or session_continuity in {"same_session", "cross_session"}
+    )
+
 def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
     """Return the prompt-facing ContextPack ref shape.
 
@@ -445,6 +458,8 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         "profile_current_state_representative",
     ]:
         value = ref.get(field)
+        if field == "source_ref" and _context_memory_source_ref_is_debug_only(ref) and not include_debug:
+            continue
         if value not in (None, "", [], {}):
             item[field] = value
     memory_layer = _memory_layer_for_ref(ref)
@@ -1021,9 +1036,16 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
     item: Json = {
         "text": ref.get("text", ""),
     }
-    source = ref.get("citation") or ref.get("source_ref") or ref.get("source_locator") or metadata.get("source_locator")
+    memory_source_ref_debug_only = _context_memory_source_ref_is_debug_only(ref)
+    source = ref.get("citation") or ref.get("source_locator") or metadata.get("source_locator")
+    if not source and not memory_source_ref_debug_only:
+        source = ref.get("source_ref")
     if source:
         item["source"] = source
+    if debug_lineage_enabled(include_debug=include_debug) and memory_source_ref_debug_only:
+        source_ref = ref.get("source_ref") or metadata.get("source_ref")
+        if source_ref not in (None, "", [], {}):
+            item["source_ref"] = source_ref
     optional_field_aliases = [
         ("resource_type", "resource_type"),
         ("unit_kind", "unit_kind"),

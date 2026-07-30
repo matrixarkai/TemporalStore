@@ -6745,6 +6745,19 @@ def _attach_compact_profile_source_counts(item: Json, ref: Json) -> None:
         item["profile_source_entity_count"] = entity_count
 
 
+
+def _context_memory_source_ref_is_debug_only(ref: Json) -> bool:
+    ref_type = str(ref.get("ref_type") or "").strip().lower()
+    memory_scope = str(ref.get("memory_scope") or "").strip().lower()
+    session_continuity = str(ref.get("session_continuity") or "").strip().lower()
+    context_class = str(ref.get("context_class") or "").strip().lower()
+    return (
+        ref_type in {"event", "entity", "segment", "summary"}
+        or context_class in {"event", "entity", "segment", "summary"}
+        or memory_scope in {"session", "session_memory", "user_profile", "profile", "cross_session_profile"}
+        or session_continuity in {"same_session", "cross_session"}
+    )
+
 def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
     """Return the prompt-facing ContextPack ref shape.
 
@@ -6771,6 +6784,8 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         "profile_current_state_representative",
     ]:
         value = ref.get(field)
+        if field == "source_ref" and _context_memory_source_ref_is_debug_only(ref) and not include_debug:
+            continue
         if value not in (None, "", [], {}):
             if field in {"source_roles", "budget_source_roles"} and isinstance(value, list):
                 roles = ordered_normalized_role_list(value)
