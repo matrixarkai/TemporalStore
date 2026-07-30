@@ -1332,6 +1332,30 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 self.assertEqual(local_mode, helper_mode)
                 self.assertEqual(local_budget, helper_budget)
 
+    def test_moduleized_memory_selection_budget_infers_from_related_auto_modes(self) -> None:
+        helper_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pre_refresh")
+        local_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
+
+        for budget_mode_field in ["source_role_budget_mode", "memory_layer_budget_mode"]:
+            with self.subTest(budget_mode_field=budget_mode_field):
+                args = {budget_mode_field: "auto"}
+                helper_budget, helper_mode = helper_mod.auto_memory_selection_policy_budget_tokens(
+                    args,
+                    {},
+                    remote_budget_tokens=100,
+                    question_type="profile_memory",
+                )
+                local_budget, local_mode = local_mod.auto_memory_selection_policy_budget_tokens(
+                    args,
+                    {},
+                    remote_budget_tokens=100,
+                    question_type="profile_memory",
+                )
+                self.assertEqual("auto", helper_mode)
+                self.assertEqual(local_mode, helper_mode)
+                self.assertEqual(local_budget, helper_budget)
+                self.assertEqual(65, helper_budget["selected_profile_current_state"])
+
     def test_auto_memory_selection_budget_prioritizes_profile_memory_current_state(self) -> None:
         helper_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pre_refresh")
 
