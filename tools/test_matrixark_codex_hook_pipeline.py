@@ -311,6 +311,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "memory_scope": "session",
                 "session_continuity": "same_session",
                 "extraction_phase": "provisional",
+                "source_roles": ["tool"],
+                "source_role_counts": {"tool": 1},
+                "source_hook_types": ["tool_result"],
+                "source_memory_selection_policy_counts": {"selected_tool_evidence_only": 1},
+                "source_memory_selection_lossy_count": 1,
             },
             {},
             {},
@@ -323,6 +328,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("memory_scope:session", segment_terms)
         self.assertIn("session_continuity:same_session", segment_terms)
         self.assertIn("extraction_phase:provisional", segment_terms)
+        self.assertIn("source_role:tool", segment_terms)
+        self.assertIn("hook_type:tool_result", segment_terms)
+        self.assertIn("memory_selection_policy:selected_tool_evidence_only", segment_terms)
+        self.assertIn("memory_selection_quality:lossy", segment_terms)
         self.assertNotIn("event_type:tool_evidence", segment_terms)
         self.assertNotIn("source_type:message", segment_terms)
 
@@ -7489,6 +7498,18 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("codex_event:previousassistantbackfill", index_names)
             self.assertIn("codex_event:stop:async_rollout_backfill", index_names)
             self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", index_names)
+            segment_index_names = {
+                str(record.get("index_name") or "")
+                for record in records
+                if record.get("record_type") == "context_index"
+                and record.get("data_model") == "context_segment"
+            }
+            self.assertIn("source_role:assistant", segment_index_names)
+            self.assertIn("hook_type:after_llm", segment_index_names)
+            self.assertIn(
+                "memory_selection_policy:selected_assistant_decision_outcome_only",
+                segment_index_names,
+            )
 
             scope = {
                 "account_id": "acct_hook",
