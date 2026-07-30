@@ -103,7 +103,10 @@ def build_cross_session_policy(
             question_budget_reason = "current_state_or_latest_queries_need_prior entity state and stale blockers"
     elif normalized_question_type in {"multi_hop", "date"}:
         default_ratio = DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO
-        question_budget_reason = "multi_hop_or_date_queries_often_need_multiple sessions"
+        question_budget_reason = (
+            "multi_hop_or_date_queries_need cross-session memory for comparisons, timelines, "
+            "and facts that may live outside the active session"
+        )
     elif normalized_question_type in {"broad_exploration", "evidence"}:
         default_ratio = DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO
         question_budget_reason = "broad_or_evidence_queries_get_extra cross-session exploration"
