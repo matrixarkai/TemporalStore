@@ -478,15 +478,46 @@ def pre_retrieval_summary_refresh_limit(args: Json, ranking: Json) -> int:
         return PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT
 
 
-def run_pre_retrieval_summary_refresh(target: Any, args: Json, ranking: Json, *, scope: Json) -> tuple[Json, list[Json]]:
+def fresh_idle_commit_summary_refresh_state(idle_commit: Json | None) -> Json:
+    if not isinstance(idle_commit, dict):
+        return {}
+    summary_refresh = idle_commit.get("summary_refresh") if isinstance(idle_commit.get("summary_refresh"), dict) else {}
+    memory_layers = idle_commit.get("memory_layers_written") if isinstance(idle_commit.get("memory_layers_written"), dict) else {}
+    committed_count = int(idle_commit.get("committed_event_count") or 0)
+    dirty_hashes = summary_refresh.get("dirty_hashes") if isinstance(summary_refresh.get("dirty_hashes"), list) else []
+    session_dirty_hashes = summary_refresh.get("session_dirty_hashes") if isinstance(summary_refresh.get("session_dirty_hashes"), list) else []
+    profile_dirty_hashes = summary_refresh.get("profile_dirty_hashes") if isinstance(summary_refresh.get("profile_dirty_hashes"), list) else []
+    summary_required = bool(
+        committed_count > 0
+        and (
+            dirty_hashes
+            or session_dirty_hashes
+            or profile_dirty_hashes
+            or summary_refresh.get("profile_summary_refresh_required")
+            or memory_layers.get("summary_dirty_nodes")
+        )
+    )
+    return {
+        "fresh_idle_commit_dirty": summary_required,
+        "fresh_idle_commit_summary_required": summary_required,
+        "fresh_idle_commit_committed_event_count": committed_count,
+        "fresh_idle_commit_summary_dirty_nodes": int(memory_layers.get("summary_dirty_nodes") or 0),
+        "fresh_idle_commit_profile_summary_required": bool(summary_refresh.get("profile_summary_refresh_required", False)),
+    }
+
+
+def run_pre_retrieval_summary_refresh(target: Any, args: Json, ranking: Json, *, scope: Json, idle_commit: Json | None = None) -> tuple[Json, list[Json]]:
     refresh: Json = {
         "enabled": pre_retrieval_summary_refresh_enabled(args, ranking),
         "requested_limit": pre_retrieval_summary_refresh_limit(args, ranking),
         "refreshed_count": 0,
         "status": "disabled",
+        **fresh_idle_commit_summary_refresh_state(idle_commit),
     }
     refreshed_records: list[Json] = []
     if not refresh["enabled"]:
+        if refresh.get("fresh_idle_commit_summary_required"):
+            refresh["status_reason"] = "fresh_idle_commit_dirty_summary_pending"
         return refresh, refreshed_records
     started = time.perf_counter()
     try:

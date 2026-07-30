@@ -393,6 +393,7 @@ def prepare_retrieval_request(target: Any, args: Json, *, started_perf: float) -
         args,
         ranking,
         scope=scope,
+        idle_commit=pre_retrieval_idle_commit,
     )
     debug_refs = bool(args.get("include_debug_refs") or ranking.get("include_debug_refs") or CONTEXT_PACK_DEBUG_REFS)
     cache_ranking = {

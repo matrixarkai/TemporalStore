@@ -4826,6 +4826,15 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertGreaterEqual(preflush["memory_layers_written"]["profile_entities"], 1)
                 self.assertGreaterEqual(preflush["memory_layers_written"]["secondary_indexes"], 1)
                 self.assertTrue(preflush["summary_refresh"]["profile_summary_refresh_required"])
+                refresh_metrics = pack["retrieval_metrics"]["pre_retrieval_summary_refresh"]
+                self.assertFalse(refresh_metrics["enabled"])
+                self.assertEqual("disabled", refresh_metrics["status"])
+                self.assertEqual("fresh_idle_commit_dirty_summary_pending", refresh_metrics["status_reason"])
+                self.assertTrue(refresh_metrics["fresh_idle_commit_dirty"])
+                self.assertTrue(refresh_metrics["fresh_idle_commit_summary_required"])
+                self.assertEqual(1, refresh_metrics["fresh_idle_commit_committed_event_count"])
+                self.assertTrue(refresh_metrics["fresh_idle_commit_profile_summary_required"])
+                self.assertGreaterEqual(refresh_metrics["fresh_idle_commit_summary_dirty_nodes"], 1)
                 self.assertTrue(
                     any(
                         ref.get("entity_type") == "assistant_decision"
@@ -6547,10 +6556,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             opt_in_refresh = debug_msg["retrieve"]["pre_retrieval_summary_refresh"]
             self.assertTrue(opt_in_refresh["enabled"])
             self.assertEqual(3, opt_in_refresh["requested_limit"])
-            self.assertEqual("no_dirty_nodes", opt_in_refresh["status"])
-            self.assertEqual(0, opt_in_refresh["refreshed_count"])
-            self.assertGreaterEqual(opt_in_refresh["skipped_dirty_count"], 1)
-            self.assertGreaterEqual(opt_in_refresh["skipped_dirty_reasons"]["new_event"], 1)
+            self.assertEqual("refreshed", opt_in_refresh["status"])
+            self.assertGreaterEqual(opt_in_refresh["refreshed_count"], 1)
+            self.assertLessEqual(opt_in_refresh["refreshed_count"], 3)
+            self.assertEqual(0, opt_in_refresh["skipped_dirty_count"])
             self.assertEqual(
                 debug_msg["retrieve"]["pre_retrieval_summary_refresh"],
                 debug_msg["retrieve"]["layers"]["pre_retrieval_summary_refresh"],
@@ -6559,7 +6568,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "summary_refresh[enabled=true",
                 debug_msg["hookSpecificOutput"]["additionalContext"],
             )
-            self.assertIn("skipped_reasons[new_event=", debug_msg["hookSpecificOutput"]["additionalContext"])
+            self.assertIn("status=refreshed", debug_msg["hookSpecificOutput"]["additionalContext"])
 
     def run_hook(self, repo: Path, event_log: Path, *, event: str, payload: dict, query: str = "", extra_env: dict | None = None) -> dict:
         cmd = [
