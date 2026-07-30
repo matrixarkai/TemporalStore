@@ -596,6 +596,11 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self._old_profile = mcp.MATRIXARK_MCP_PROFILE
         self._old_allow_local = mcp.MATRIXARK_ALLOW_LOCAL_BACKEND
         self._old_require_ready = mcp.MATRIXARK_REQUIRE_BACKEND_READY
+        self._old_local_jsonl_enabled = mcp_local.LOCAL_JSONL_ENABLED
+        self._old_local_jsonl_include_bulky_fields = mcp_local.LOCAL_JSONL_INCLUDE_BULKY_FIELDS
+        self._old_local_jsonl_max_bytes = mcp_local.LOCAL_JSONL_MAX_BYTES
+        self._old_local_jsonl_retention_count = mcp_local.LOCAL_JSONL_RETENTION_COUNT
+        self._old_local_jsonl_retention_age_ms = mcp_local.LOCAL_JSONL_RETENTION_AGE_MS
         mcp_core._DIRECT_RETRIEVAL_CANDIDATE_CACHE.clear()
         mcp_core._DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.clear()
 
@@ -604,6 +609,11 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         mcp.MATRIXARK_ALLOW_LOCAL_BACKEND = self._old_allow_local
         mcp.MATRIXARK_REQUIRE_BACKEND_READY = self._old_require_ready
         mcp_local.CONTEXT_TELEMETRY_WRITE_MODE = mcp_core.CONTEXT_TELEMETRY_WRITE_MODE
+        mcp_local.LOCAL_JSONL_ENABLED = self._old_local_jsonl_enabled
+        mcp_local.LOCAL_JSONL_INCLUDE_BULKY_FIELDS = self._old_local_jsonl_include_bulky_fields
+        mcp_local.LOCAL_JSONL_MAX_BYTES = self._old_local_jsonl_max_bytes
+        mcp_local.LOCAL_JSONL_RETENTION_COUNT = self._old_local_jsonl_retention_count
+        mcp_local.LOCAL_JSONL_RETENTION_AGE_MS = self._old_local_jsonl_retention_age_ms
         mcp_core._DIRECT_RETRIEVAL_CANDIDATE_CACHE.clear()
         mcp_core._DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.clear()
 
@@ -3456,6 +3466,106 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         mcp.MATRIXARK_ALLOW_LOCAL_BACKEND = True
         with self.assertRaises(mcp.MatrixArkError):
             mcp.validate_mcp_backend_policy(self._args("local"))
+
+    def test_local_jsonl_guardrails_strip_bulky_fields_by_default(self) -> None:
+        mcp_local.LOCAL_JSONL_INCLUDE_BULKY_FIELDS = False
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            adapter.append(
+                {
+                    "record_type": "agent_message",
+                    "role": "tool",
+                    "text": "compact tool result summary",
+                    "raw_payload": {"very": "large"},
+                    "debug_payload": {"trace": "large"},
+                    "tool_result": "x" * 1024,
+                    "updated_at_ms": 1780000000000,
+                }
+            )
+
+            records = adapter.read_all()
+            self.assertEqual(1, len(records))
+            self.assertEqual("tool", records[0]["role"])
+            self.assertEqual("compact tool result summary", records[0]["text"])
+            self.assertNotIn("raw_payload", records[0])
+            self.assertNotIn("debug_payload", records[0])
+            self.assertNotIn("tool_result", records[0])
+            self.assertEqual(
+                ["debug_payload", "raw_payload", "tool_result"],
+                records[0]["jsonl_guardrails"]["dropped_bulky_fields"],
+            )
+
+    def test_local_jsonl_can_keep_bulky_fields_for_explicit_debug(self) -> None:
+        mcp_local.LOCAL_JSONL_INCLUDE_BULKY_FIELDS = True
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            adapter.append(
+                {
+                    "record_type": "agent_message",
+                    "role": "tool",
+                    "text": "debug capture",
+                    "raw_payload": {"keep": True},
+                    "debug_payload": {"keep": True},
+                    "updated_at_ms": 1780000000000,
+                }
+            )
+
+            records = adapter.read_all()
+            self.assertEqual({"keep": True}, records[0]["raw_payload"])
+            self.assertEqual({"keep": True}, records[0]["debug_payload"])
+
+    def test_local_jsonl_rotates_and_retains_by_count(self) -> None:
+        mcp_local.LOCAL_JSONL_MAX_BYTES = 180
+        mcp_local.LOCAL_JSONL_RETENTION_COUNT = 2
+        mcp_local.LOCAL_JSONL_RETENTION_AGE_MS = 7 * 24 * 60 * 60 * 1000
+        with tempfile.TemporaryDirectory() as tmpdir:
+            event_log = Path(tmpdir) / "events.jsonl"
+            adapter = mcp.MatrixArkLocalAdapter(event_log)
+            for index in range(4):
+                adapter.append(
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": index,
+                        "text": f"retained event {index} " + ("x" * 80),
+                        "updated_at_ms": 1780000000000 + index,
+                    }
+                )
+
+            retained_files = sorted(path.name for path in Path(tmpdir).glob("events.jsonl*"))
+            self.assertLessEqual(len(retained_files), 2)
+            self.assertIn("events.jsonl", retained_files)
+            self.assertIn("events.jsonl.1", retained_files)
+            retained_ids = [record["event_id_hash"] for record in adapter.read_all()]
+            self.assertEqual([2, 3], retained_ids)
+
+    def test_local_jsonl_retains_by_age(self) -> None:
+        mcp_local.LOCAL_JSONL_MAX_BYTES = 180
+        mcp_local.LOCAL_JSONL_RETENTION_COUNT = 3
+        mcp_local.LOCAL_JSONL_RETENTION_AGE_MS = 7 * 24 * 60 * 60 * 1000
+        with tempfile.TemporaryDirectory() as tmpdir:
+            event_log = Path(tmpdir) / "events.jsonl"
+            adapter = mcp.MatrixArkLocalAdapter(event_log)
+            adapter.append({"record_type": "context_event", "event_id_hash": 1, "text": "x" * 220})
+            adapter.append({"record_type": "context_event", "event_id_hash": 2, "text": "x" * 220})
+            rotated = event_log.with_name("events.jsonl.1")
+            self.assertTrue(rotated.exists())
+            os.utime(rotated, (0, 0))
+            mcp_local.LOCAL_JSONL_RETENTION_AGE_MS = 1
+            with adapter._event_log_lock:
+                adapter._prune_jsonl_retention_locked()
+            self.assertFalse(rotated.exists())
+            mcp_local.LOCAL_JSONL_RETENTION_AGE_MS = 7 * 24 * 60 * 60 * 1000
+            adapter.append({"record_type": "context_event", "event_id_hash": 3, "text": "tiny"})
+            self.assertEqual([2, 3], [record["event_id_hash"] for record in adapter.read_all()])
+
+    def test_local_jsonl_reports_testing_debug_guardrails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            guardrails = adapter.backend_metrics()["metrics"]["jsonl_guardrails"]
+            self.assertEqual("testing_debug_only", guardrails["usage"])
+            self.assertIn("max_bytes", guardrails)
+            self.assertIn("retention_count", guardrails)
+            self.assertIn("retention_age_ms", guardrails)
 
     def test_backend_readiness_default_policy(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "benchmark"
