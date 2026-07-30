@@ -521,6 +521,15 @@ def append_session_commit_task_progress(
                 "trigger_policy": trigger_policy,
                 "extraction_phase": extraction_phase,
                 "final_session_boundary": final_session_boundary,
+                "source_roles": source_roles,
+                "source_role_counts": source_role_counts,
+                "source_hook_types": source_hook_types,
+                "source_hook_type_counts": source_hook_type_counts,
+                "source_codex_events": source_codex_events,
+                "source_codex_event_counts": source_codex_event_counts,
+                "source_memory_selection_policies": source_memory_selection_policies,
+                "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                **source_memory_selection_retention,
                 "updated_at_ms": updated_at_ms,
             }
         )

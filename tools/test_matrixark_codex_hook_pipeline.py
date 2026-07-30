@@ -8867,6 +8867,81 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(layer_budget["by_session_continuity"]["cross_session"]["refs"], 1)
             self.assertGreaterEqual(layer_budget["by_memory_scope"]["user_profile"]["refs"], 1)
 
+    def test_session_buffer_events_preserve_memory_selection_lineage_after_threshold_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-buffer-selection-lineage.jsonl")
+            scope = {
+                "account_id": "acct_buffer_lineage",
+                "tenant_id": "tenant_buffer_lineage",
+                "user_id": "user_buffer_lineage",
+                "session_id": "session_buffer_lineage",
+            }
+            base_args = {
+                "scope": scope,
+                "async_processing": True,
+                "auto_batch_extract": False,
+                "session_buffer_threshold": 20,
+                "skip_prior_context": True,
+            }
+            first = adapter.ingest(
+                {
+                    **base_args,
+                    "messages": [{"role": "user", "content": "Capture the Codex user prompt for memory."}],
+                    "metadata": {"hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
+                }
+            )
+            self.assertEqual(1, first["session_buffer"]["pending_event_count"])
+            pending_rows = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") == "session_buffer_event"
+                and record.get("status") == "pending"
+            ]
+            self.assertEqual(1, len(pending_rows))
+            self.assertEqual({"selected_user_prompt": 1}, pending_rows[0]["source_memory_selection_policy_counts"])
+
+            second = adapter.ingest(
+                {
+                    **base_args,
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "Decision: threshold extraction should include assistant decisions.",
+                        }
+                    ],
+                    "metadata": {"hook_type": "after_llm", "codex_event": "Stop"},
+                }
+            )
+            self.assertEqual(2, second["session_buffer"]["pending_event_count"])
+            threshold = adapter.session_commit(
+                {
+                    "scope": scope,
+                    "threshold_messages": 2,
+                    "force": False,
+                    "commit_reason": "threshold",
+                    "skip_prior_context": True,
+                }
+            )
+            self.assertEqual("committed", threshold["status"])
+            self.assertEqual(
+                {"selected_assistant_decision_outcome_only": 1, "selected_user_prompt": 1},
+                threshold["source_memory_selection_policy_counts"],
+            )
+            committed_rows = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") == "session_buffer_event"
+                and record.get("commit_id_hash") == threshold["commit_id_hash"]
+            ]
+            self.assertEqual(2, len(committed_rows))
+            self.assertTrue(
+                all(
+                    record.get("source_memory_selection_policy_counts")
+                    == {"selected_assistant_decision_outcome_only": 1, "selected_user_prompt": 1}
+                    for record in committed_rows
+                )
+            )
+
     def test_stop_boundary_force_commits_full_live_conversation_tail_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-stop-boundary.jsonl")
