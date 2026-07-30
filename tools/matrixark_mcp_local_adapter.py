@@ -53,6 +53,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_summary_runtime import async_summary_progress_records
 
 try:
+    from tools.matrixark_mcp_summary_dirty import pending_dirty_node_records
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_summary_dirty import pending_dirty_node_records
+
+try:
     from tools.matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness, latest_async_pipeline_rows
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_async_readiness import async_pipeline_retrieval_readiness, latest_async_pipeline_rows
@@ -3958,96 +3963,18 @@ class MatrixArkLocalAdapter:
         refreshed_at_ms = refreshed_at_ms or now_ms()
         skip_dirty_reasons = skip_dirty_reasons or set()
         records = self.read_all()
-        completed_dirty_hashes = {
-            int(record.get("dirty_hash"))
-            for record in records
-            if record.get("record_type") in {"context_summary_refresh_audit", "context_summary_dirty"}
-            and record.get("status") in {"refreshed", "completed"}
-            and record.get("dirty_hash") is not None
-        }
-        pending_by_node: dict[int, Json] = {}
         skipped_dirty_reasons: Json = {}
-        for record in records:
-            if record.get("record_type") != "context_summary_dirty":
-                continue
-            if not scope_matches(candidate_access_scope(record), scope):
-                continue
-            try:
-                dirty_hash = int(record.get("dirty_hash"))
-                node_hash = int(record.get("node_hash"))
-            except (TypeError, ValueError):
-                continue
-            if dirty_hash in completed_dirty_hashes:
-                continue
-            dirty_reason = str(record.get("dirty_reason") or "").strip()
-            if dirty_reason in skip_dirty_reasons:
-                skipped_dirty_reasons[dirty_reason] = int(skipped_dirty_reasons.get(dirty_reason, 0)) + 1
-                continue
-            current = pending_by_node.get(node_hash)
-            if current is None or int(record.get("updated_at_ms") or 0) >= int(current.get("updated_at_ms") or 0):
-                pending_by_node[node_hash] = record
-        if len(pending_by_node) < limit:
-            event_counts_by_node: dict[int, int] = {}
-            event_path_by_node: dict[int, list[str]] = {}
-            event_scope_by_node: dict[int, Json] = {}
-            oldest_event_time_by_node: dict[int, int] = {}
-            debug_by_ref = {
-                record.get("ref_hash"): record.get("debug_payload", {})
-                for record in records
-                if record.get("record_type") == "context_debug_record" and record.get("ref_type") == "event"
-            }
-            for record in records:
-                if record.get("record_type") != "context_event":
-                    continue
-                if record.get("source_chunk_hash"):
-                    continue
-                if not scope_matches(candidate_access_scope(record), scope):
-                    continue
-                try:
-                    event_node_hash = int(record.get("node_hash"))
-                except (TypeError, ValueError):
-                    continue
-                event_counts_by_node[event_node_hash] = event_counts_by_node.get(event_node_hash, 0) + 1
-                event_path_by_node[event_node_hash] = [str(part) for part in record.get("node_path", [])]
-                event_scope_by_node[event_node_hash] = candidate_access_scope(record)
-                event_time = self.context_event_ingestion_time_ms(record, debug_by_ref)
-                if event_time > 0:
-                    existing_time = oldest_event_time_by_node.get(event_node_hash)
-                    if existing_time is None or event_time < existing_time:
-                        oldest_event_time_by_node[event_node_hash] = event_time
-            cold_cutoff_ms = refreshed_at_ms - max(0, int(min_compression_event_age_ms))
-            for node_hash, event_count in sorted(event_counts_by_node.items(), key=lambda item: item[1], reverse=True):
-                if len(pending_by_node) >= limit:
-                    break
-                if node_hash in pending_by_node:
-                    continue
-                if event_count <= max_raw_events_per_node:
-                    continue
-                if min_compression_event_age_ms > 0 and oldest_event_time_by_node.get(node_hash, refreshed_at_ms) > cold_cutoff_ms:
-                    continue
-                node_path = event_path_by_node.get(node_hash, [])
-                if not node_path:
-                    continue
-                synthetic_dirty_hash = stable_hash(
-                    f"scheduled_time_compression:{node_hash}:{event_count}:{oldest_event_time_by_node.get(node_hash, 0)}:{refreshed_at_ms}"
-                )
-                if synthetic_dirty_hash in completed_dirty_hashes:
-                    continue
-                pending_by_node[node_hash] = {
-                    "record_type": "context_summary_dirty",
-                    "dirty_hash": synthetic_dirty_hash,
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "depth": len(node_path),
-                    "dirty_reason": "scheduled_time_compression",
-                    "source_ref_type": "event_window",
-                    "changed_ref_count": event_count,
-                    "propagate_depth": 0,
-                    "scope": event_scope_by_node.get(node_hash, scope),
-                    "status": "pending",
-                    "created_at_ms": refreshed_at_ms,
-                    "updated_at_ms": refreshed_at_ms,
-                }
+        pending_by_node = pending_dirty_node_records(
+            records=records,
+            scope=scope,
+            limit=limit,
+            refreshed_at_ms=refreshed_at_ms,
+            max_raw_events_per_node=max_raw_events_per_node,
+            min_compression_event_age_ms=min_compression_event_age_ms,
+            context_event_ingestion_time_ms=self.context_event_ingestion_time_ms,
+            skip_dirty_reasons=skip_dirty_reasons,
+            skipped_dirty_reasons=skipped_dirty_reasons,
+        )
         refreshed = []
         for dirty in sorted(pending_by_node.values(), key=lambda item: int(item.get("updated_at_ms") or 0))[:limit]:
             node_path = [str(part) for part in dirty.get("node_path", [])]
@@ -4416,6 +4343,10 @@ class MatrixArkLocalAdapter:
                 "node_hash": node_hash,
                 "node_path": node_path,
                 "scope": dirty.get("scope", scope),
+                "dirty_reason": dirty.get("dirty_reason", ""),
+                "source_ref_type": dirty.get("source_ref_type", ""),
+                "changed_ref_count": dirty.get("changed_ref_count", 0),
+                "empty_summary_seen": bool(dirty.get("empty_summary_seen", False)),
                 "status": "completed",
                 "created_at_ms": refreshed_at_ms,
                 "updated_at_ms": refreshed_at_ms,
