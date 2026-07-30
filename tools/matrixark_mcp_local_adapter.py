@@ -281,7 +281,37 @@ def positive_int_env(name: str, default: int) -> int:
     return positive_int_value(os.environ.get(name, str(default)), default)
 
 
+def bool_env(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT = positive_int_env("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT", 2)
+LOCAL_JSONL_ENABLED = bool_env("MATRIXARK_LOCAL_JSONL_ENABLED", True)
+LOCAL_JSONL_INCLUDE_BULKY_FIELDS = bool_env("MATRIXARK_LOCAL_JSONL_INCLUDE_BULKY_FIELDS", False)
+LOCAL_JSONL_MAX_BYTES = positive_int_env("MATRIXARK_LOCAL_JSONL_MAX_BYTES", 64 * 1024 * 1024)
+LOCAL_JSONL_RETENTION_COUNT = positive_int_env("MATRIXARK_LOCAL_JSONL_RETENTION_COUNT", 4)
+LOCAL_JSONL_RETENTION_AGE_MS = positive_int_env("MATRIXARK_LOCAL_JSONL_RETENTION_AGE_MS", 7 * 24 * 60 * 60 * 1000)
+LOCAL_JSONL_BULKY_FIELDS = {
+    "agent_debug",
+    "debug",
+    "debug_payload",
+    "full_tool_output",
+    "internal_extraction",
+    "raw",
+    "raw_hook_payload",
+    "raw_payload",
+    "raw_request",
+    "raw_response",
+    "replay_payload",
+    "tool_payload",
+    "tool_result",
+    "tool_stdout",
+    "tool_stderr",
+    "transcript",
+}
 PROFILE_PROMOTION_POLICY_ALWAYS = "always_when_profile_scope_available"
 PROFILE_PROMOTION_SCOPE_MISSING_BLOCKER = "profile_scope_missing"
 
@@ -1624,6 +1654,116 @@ class MatrixArkLocalAdapter:
         batch.extend(records)
         return True
 
+    def _local_jsonl_guardrails(self) -> Json:
+        return {
+            "enabled": LOCAL_JSONL_ENABLED,
+            "max_bytes": LOCAL_JSONL_MAX_BYTES,
+            "retention_count": LOCAL_JSONL_RETENTION_COUNT,
+            "retention_age_ms": LOCAL_JSONL_RETENTION_AGE_MS,
+            "include_bulky_fields": LOCAL_JSONL_INCLUDE_BULKY_FIELDS,
+            "usage": "testing_debug_only",
+        }
+
+    def _sanitize_jsonl_record(self, record: Json) -> Json:
+        if LOCAL_JSONL_INCLUDE_BULKY_FIELDS:
+            return record
+        sanitized = dict(record)
+        dropped = sorted(field for field in LOCAL_JSONL_BULKY_FIELDS if field in sanitized)
+        for field in dropped:
+            sanitized.pop(field, None)
+        if dropped:
+            metadata = dict(sanitized.get("jsonl_guardrails", {})) if isinstance(sanitized.get("jsonl_guardrails"), dict) else {}
+            metadata["dropped_bulky_fields"] = dropped
+            sanitized["jsonl_guardrails"] = metadata
+        return sanitized
+
+    def _jsonl_rotated_path(self, index: int) -> Path:
+        return self.event_log.with_name(f"{self.event_log.name}.{index}")
+
+    def _retained_jsonl_paths(self) -> list[Path]:
+        max_rotated = max(0, LOCAL_JSONL_RETENTION_COUNT - 1)
+        paths = [self._jsonl_rotated_path(index) for index in range(max_rotated, 0, -1)]
+        paths.append(self.event_log)
+        return [path for path in paths if path.exists()]
+
+    def _jsonl_cache_signature(self) -> tuple[int, int]:
+        total_size = 0
+        max_mtime_ns = -1
+        for path in self._retained_jsonl_paths():
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            total_size += int(stat.st_size)
+            max_mtime_ns = max(max_mtime_ns, int(stat.st_mtime_ns))
+        if total_size <= 0 and max_mtime_ns < 0:
+            return -1, -1
+        return total_size, max_mtime_ns
+
+    def _clear_jsonl_read_caches(self) -> None:
+        cache_key = str(self.event_log.resolve())
+        with self._read_cache_lock:
+            self._read_cache_records = None
+            self._read_cache_size = -1
+            self._read_cache_mtime_ns = -1
+        with _LOCAL_READ_CACHE_LOCK:
+            _LOCAL_READ_CACHE.pop(cache_key, None)
+
+    def _prune_jsonl_retention_locked(self) -> None:
+        max_rotated = max(0, LOCAL_JSONL_RETENTION_COUNT - 1)
+        now_timestamp = max(0.0, now_ms() / 1000.0)
+        max_age_s = max(0.0, LOCAL_JSONL_RETENTION_AGE_MS / 1000.0)
+        index = max_rotated + 1
+        while True:
+            path = self._jsonl_rotated_path(index)
+            if not path.exists():
+                break
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            index += 1
+        if max_age_s <= 0:
+            return
+        for path in [self._jsonl_rotated_path(index) for index in range(1, max_rotated + 1)]:
+            try:
+                if now_timestamp - float(path.stat().st_mtime) > max_age_s:
+                    path.unlink()
+            except FileNotFoundError:
+                continue
+
+    def _rotate_jsonl_if_needed_locked(self, incoming_bytes: int) -> None:
+        if not LOCAL_JSONL_ENABLED:
+            return
+        self._prune_jsonl_retention_locked()
+        max_bytes = max(1, LOCAL_JSONL_MAX_BYTES)
+        try:
+            current_size = int(self.event_log.stat().st_size)
+        except FileNotFoundError:
+            current_size = 0
+        if current_size <= 0 or current_size + max(0, incoming_bytes) <= max_bytes:
+            return
+        max_rotated = max(0, LOCAL_JSONL_RETENTION_COUNT - 1)
+        if max_rotated <= 0:
+            try:
+                self.event_log.unlink()
+            except FileNotFoundError:
+                pass
+            self._clear_jsonl_read_caches()
+            return
+        oldest = self._jsonl_rotated_path(max_rotated)
+        try:
+            oldest.unlink()
+        except FileNotFoundError:
+            pass
+        for index in range(max_rotated - 1, 0, -1):
+            source = self._jsonl_rotated_path(index)
+            if source.exists():
+                source.replace(self._jsonl_rotated_path(index + 1))
+        if self.event_log.exists():
+            self.event_log.replace(self._jsonl_rotated_path(1))
+        self._clear_jsonl_read_caches()
+
     @contextmanager
     def write_batch(self, label: str = "hot_path"):
         stack = self._write_batch_stack()
@@ -1646,7 +1786,7 @@ class MatrixArkLocalAdapter:
             "reason": reason,
             "probe": bool(probe),
             "attempts": 1,
-            "topology": {"mode": "local-jsonl", "event_log": str(self.event_log)},
+            "topology": {"mode": "local-jsonl", "event_log": str(self.event_log), "jsonl_guardrails": self._local_jsonl_guardrails()},
             "checks": {
                 "mcp_process_started": True,
                 "namespace_table_opened": True,
@@ -1661,6 +1801,7 @@ class MatrixArkLocalAdapter:
             "metrics": {
                 "mode": "local-jsonl",
                 "event_log": str(self.event_log),
+                "jsonl_guardrails": self._local_jsonl_guardrails(),
             },
         }
 
@@ -1680,11 +1821,11 @@ class MatrixArkLocalAdapter:
             if self._read_cache_records is not None:
                 self._read_cache_records.extend(records)
                 self._read_cache_records = compact_latest_context_state_records(self._read_cache_records)
-            try:
-                stat = self.event_log.stat()
-                self._read_cache_size = int(stat.st_size)
-                self._read_cache_mtime_ns = int(stat.st_mtime_ns)
-            except FileNotFoundError:
+            size, mtime_ns = self._jsonl_cache_signature()
+            if size >= 0:
+                self._read_cache_size = size
+                self._read_cache_mtime_ns = mtime_ns
+            else:
                 self._read_cache_records = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
@@ -1707,12 +1848,17 @@ class MatrixArkLocalAdapter:
         records = materialize_serving_record_batch([record])
         if self._queue_batched_records(records):
             return
-        with self._event_log_lock:
-            with self.event_log.open("a", encoding="utf-8") as handle:
-                for item in records:
-                    handle.write(json.dumps(item, separators=(",", ":")) + "\n")
+        jsonl_records = [self._sanitize_jsonl_record(item) for item in records]
+        jsonl_lines = [json.dumps(item, separators=(",", ":")) + "\n" for item in jsonl_records]
+        if LOCAL_JSONL_ENABLED:
+            with self._event_log_lock:
+                self._rotate_jsonl_if_needed_locked(sum(len(line.encode("utf-8")) for line in jsonl_lines))
+                with self.event_log.open("a", encoding="utf-8") as handle:
+                    for line in jsonl_lines:
+                        handle.write(line)
+                self._prune_jsonl_retention_locked()
         self._update_latest_entity_cache(records)
-        self._update_read_cache_after_append(records)
+        self._update_read_cache_after_append(jsonl_records)
 
     def append_many(self, records: list[Json]) -> None:
         records = materialize_serving_record_batch(records)
@@ -1720,12 +1866,17 @@ class MatrixArkLocalAdapter:
             return
         if self._queue_batched_records(records):
             return
-        with self._event_log_lock:
-            with self.event_log.open("a", encoding="utf-8") as handle:
-                for record in records:
-                    handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+        jsonl_records = [self._sanitize_jsonl_record(record) for record in records]
+        jsonl_lines = [json.dumps(record, separators=(",", ":")) + "\n" for record in jsonl_records]
+        if LOCAL_JSONL_ENABLED:
+            with self._event_log_lock:
+                self._rotate_jsonl_if_needed_locked(sum(len(line.encode("utf-8")) for line in jsonl_lines))
+                with self.event_log.open("a", encoding="utf-8") as handle:
+                    for line in jsonl_lines:
+                        handle.write(line)
+                self._prune_jsonl_retention_locked()
         self._update_latest_entity_cache(records)
-        self._update_read_cache_after_append(records)
+        self._update_read_cache_after_append(jsonl_records)
 
     def _update_latest_entity_cache(self, records: list[Json]) -> None:
         if not hasattr(self, "_session_buffer_cache_lock"):
@@ -2082,9 +2233,8 @@ class MatrixArkLocalAdapter:
 
     def read_all(self) -> list[Json]:
         cache_key = str(self.event_log.resolve())
-        try:
-            stat = self.event_log.stat()
-        except FileNotFoundError:
+        paths = self._retained_jsonl_paths()
+        if not paths:
             with self._read_cache_lock:
                 self._read_cache_records = []
                 self._read_cache_size = -1
@@ -2092,8 +2242,7 @@ class MatrixArkLocalAdapter:
             with _LOCAL_READ_CACHE_LOCK:
                 _LOCAL_READ_CACHE.pop(cache_key, None)
             return []
-        size = int(stat.st_size)
-        mtime_ns = int(stat.st_mtime_ns)
+        size, mtime_ns = self._jsonl_cache_signature()
         with self._read_cache_lock:
             if (
                 self._read_cache_records is not None
@@ -2115,11 +2264,12 @@ class MatrixArkLocalAdapter:
                 _LOCAL_READ_CACHE.pop(cache_key, None)
         records = []
         with self._event_log_lock:
-            with self.event_log.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    line = line.strip()
-                    if line:
-                        records.append(json.loads(line))
+            for path in self._retained_jsonl_paths():
+                with path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        line = line.strip()
+                        if line:
+                            records.append(json.loads(line))
         records = compact_latest_context_state_records(compact_latest_value_records(records))
         with self._read_cache_lock:
             cache_changed = (
