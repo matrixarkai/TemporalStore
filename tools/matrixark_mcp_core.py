@@ -4435,10 +4435,15 @@ def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[
         add_group(
             context_index_name("entity_type", "assistant_decision"),
             context_index_name("event_type", "assistant_response"),
+            context_index_name("source_role", "assistant"),
             context_index_name("source_type", "message"),
         )
     if re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
-        add_group(context_index_name("entity_type", "tool_evidence"), context_index_name("event_type", "tool_evidence"))
+        add_group(
+            context_index_name("entity_type", "tool_evidence"),
+            context_index_name("event_type", "tool_evidence"),
+            context_index_name("source_role", "tool"),
+        )
     if re.search(r"\b(user prompt|prompt|user request|user asked|request|asked codex)\b", lower):
         add_group(context_index_name("event_type", "user_prompt"), context_index_name("source_role", "user"))
     if re.search(r"\b(selected|bounded|retained|extracted|memory selection|memory-selection)\b", lower):

@@ -173,6 +173,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         flattened = {term for group in groups for term in group}
         self.assertIn("entity_type:tool_evidence", flattened)
         self.assertIn("event_type:tool_evidence", flattened)
+        self.assertIn("source_role:tool", flattened)
         self.assertIn("memory_selection_policy:selected_tool_evidence_only", flattened)
         self.assertIn("memory_selection_quality:lossy", flattened)
 
@@ -194,6 +195,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         assistant_flattened = {term for group in assistant_groups for term in group}
         self.assertIn("entity_type:assistant_decision", assistant_flattened)
         self.assertIn("event_type:assistant_response", assistant_flattened)
+        self.assertIn("source_role:assistant", assistant_flattened)
         self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", assistant_flattened)
 
         user_flattened = {
