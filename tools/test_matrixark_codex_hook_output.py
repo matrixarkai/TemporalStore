@@ -2302,6 +2302,25 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertLess(policy["retained_text_ratio"], 1.0)
         self.assertTrue(policy["selection_lossy"])
 
+    def test_selected_tool_and_assistant_memory_capture_git_push_head_range(self) -> None:
+        raw = "\n".join(
+            [
+                "Enumerating objects: 7, done.",
+                "To https://github.com/bjmeetsfo/TemporalStore.git",
+                "   b223ca8c..4eafaf9c  HEAD -> main",
+            ]
+        )
+        tool_memory = hook.selected_tool_memory_text(raw, {"tool_name": "shell_command", "tool_status": "ok"})
+        self.assertIn("pushed commit 4eafaf9c to origin/main", tool_memory)
+        self.assertIn("tool_name=shell_command", tool_memory)
+        self.assertIn("tool_status=ok", tool_memory)
+
+        assistant_memory = hook.selected_assistant_memory_text(
+            "Done. Git push output was b223ca8c..4eafaf9c  HEAD -> main after validation passed."
+        )
+        self.assertIn("Outcome: pushed commit 4eafaf9c to origin/main", assistant_memory)
+        self.assertIn("Validation: tests passed", assistant_memory)
+
     def test_selected_assistant_memory_filters_large_response(self) -> None:
         raw = "\n".join(
             [f"background explanation line {index}" for index in range(40)]

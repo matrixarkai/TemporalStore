@@ -2855,6 +2855,23 @@ TOOL_EVIDENCE_LINE_PATTERNS = [
 ]
 
 
+def pushed_main_commit_from_text(text: str) -> str:
+    compact = str(text or "")
+    match = re.search(r"\bpushed commit\s+([0-9a-f]{7,40})\b", compact, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    match = re.search(r"\b([0-9a-f]{7,40})\s+(?:refs/heads/main|origin/main)\b", compact, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    match = re.search(r"\b[0-9a-f]{7,40}\.\.([0-9a-f]{7,40})\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)\b", compact, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    match = re.search(r"\b([0-9a-f]{7,40})\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)\b", compact, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return ""
+
+
 def selected_tool_evidence_text(text: str, *, max_chars: int = 4096, max_lines: int = 80) -> str:
     """Keep memory-worthy tool evidence without storing huge stdout verbatim."""
     compact = str(text or "").strip()
@@ -2903,12 +2920,10 @@ def selected_tool_memory_text(text: str, payload: Json | None = None, *, max_cha
         re.IGNORECASE,
     ):
         facts.append("Validation: tests passed")
-    commit_match = re.search(r"\bpushed commit\s+([0-9a-f]{7,40})\b", source, re.IGNORECASE)
-    if not commit_match:
-        commit_match = re.search(r"\b([0-9a-f]{7,40})\s+refs/heads/main\b", source, re.IGNORECASE)
-    if commit_match:
-        target = " to origin/main" if re.search(r"\b(?:origin/main|refs/heads/main)\b", source, re.IGNORECASE) else ""
-        facts.append(f"pushed commit {commit_match.group(1)}{target}")
+    pushed_commit = pushed_main_commit_from_text(source)
+    if pushed_commit:
+        target = " to origin/main" if re.search(r"\b(?:origin/main|refs/heads/main|HEAD\s*->\s*main)\b", source, re.IGNORECASE) else ""
+        facts.append(f"pushed commit {pushed_commit}{target}")
     failure_match = None
     for notable_pattern in [
         r"^.*\b(?:blocked|rejected|failed|failure|fatal|panic|exception|traceback|error)\b.*$",
@@ -2966,12 +2981,10 @@ def selected_assistant_outcome_facts(text: str, *, max_facts: int = 6) -> list[s
         if fact not in facts:
             facts.append(fact[:220])
 
-    commit_match = re.search(r"\b(?:commit|pushed commit)\s+([0-9a-f]{7,40})\b", compact, re.IGNORECASE)
-    if not commit_match:
-        commit_match = re.search(r"\b([0-9a-f]{7,40})\s+(?:to\s+)?(?:origin/main|refs/heads/main)\b", compact, re.IGNORECASE)
-    if commit_match:
-        target = " to origin/main" if re.search(r"\b(?:origin/main|refs/heads/main)\b", compact, re.IGNORECASE) else ""
-        add_fact(f"Outcome: pushed commit {commit_match.group(1)}{target}")
+    pushed_commit = pushed_main_commit_from_text(compact)
+    if pushed_commit:
+        target = " to origin/main" if re.search(r"\b(?:origin/main|refs/heads/main|HEAD\s*->\s*main)\b", compact, re.IGNORECASE) else ""
+        add_fact(f"Outcome: pushed commit {pushed_commit}{target}")
 
     tests_match = re.search(r"\b(?:ran\s+)?(\d+)\s+tests?\s+(?:passed|ok|succeeded)\b", compact, re.IGNORECASE)
     if not tests_match:
