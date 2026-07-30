@@ -4597,6 +4597,9 @@ def candidate_index_terms(
 
     def add_source_lineage_terms() -> None:
         role_values: set[str] = set()
+        scalar_role = normalize_message_role(record.get("source_role"))
+        if scalar_role:
+            role_values.add(scalar_role)
         if isinstance(record.get("source_roles"), list):
             role_values.update(
                 normalize_message_role(role)
