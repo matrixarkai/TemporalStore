@@ -8038,6 +8038,64 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertTrue(result["summary_refresh"]["profile_dirty_hashes"])
 
+    def test_batch_extract_assigns_role_specific_event_types(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-role-event-types.jsonl")
+            result = adapter.batch_extract(
+                {
+                    "scope": {
+                        "account_id": "acct_role_event_types",
+                        "tenant_id": "tenant_role_event_types",
+                        "user_id": "user_role_event_types",
+                        "session_id": "session_role_event_types",
+                    },
+                    "messages": [
+                        {"role": "user", "content": "User asks Codex to keep role-specific event types."},
+                        {"role": "assistant", "content": "Assistant decision: implement compact event typing."},
+                        {"role": "tool", "content": "Tool evidence: tests passed for role-specific event typing."},
+                    ],
+                    "metadata": {
+                        "source_role_counts": {"user": 1, "assistant": 1, "tool": 1},
+                        "source_memory_selection_policy_counts": {
+                            "selected_user_prompt": 1,
+                            "selected_assistant_decision_outcome_only": 1,
+                            "selected_tool_evidence_only": 1,
+                        },
+                        "hook_type": "hook_boundary",
+                        "codex_event": "Stop",
+                    },
+                    "threshold_messages": 1,
+                    "skip_prior_context": True,
+                }
+            )
+
+            self.assertEqual("accepted", result["status"])
+            records = adapter.read_all()
+            events = [
+                record
+                for record in records
+                if record.get("record_type") == "context_event"
+                and record.get("batch_id_hash") == result["batch_id_hash"]
+            ]
+            by_role = {record.get("source_role"): record for record in events}
+            self.assertEqual("user_prompt", by_role["user"]["event_type"])
+            self.assertEqual("assistant_response", by_role["assistant"]["event_type"])
+            self.assertEqual("tool_evidence", by_role["tool"]["event_type"])
+            self.assertTrue(all(record.get("batch_event_type") for record in events))
+
+            event_embeddings = [
+                record
+                for record in records
+                if record.get("record_type") == "context_embedding"
+                and record.get("embedding_type") == "event_text"
+            ]
+            embedding_types = {record.get("source_role"): record.get("event_type") for record in event_embeddings}
+            self.assertEqual(
+                {"user": "user_prompt", "assistant": "assistant_response", "tool": "tool_evidence"},
+                embedding_types,
+            )
+            self.assertTrue(all("source_role_counts" not in record for record in event_embeddings))
+
     def test_retrieve_serving_pack_exposes_memory_inventory_layers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = Path(tmp_dir)
