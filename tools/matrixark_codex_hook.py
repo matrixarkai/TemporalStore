@@ -2944,6 +2944,14 @@ def normalize_assistant_memory_line(line: str) -> str:
     return stripped
 
 
+def assistant_memory_line_too_repetitive(line: str) -> bool:
+    tokens = re.findall(r"\b[a-z0-9_/-]{3,}\b", str(line or "").lower())
+    if len(tokens) < 24:
+        return False
+    unique_ratio = len(set(tokens)) / max(1, len(tokens))
+    return unique_ratio < 0.35
+
+
 def selected_assistant_outcome_facts(text: str, *, max_facts: int = 6) -> list[str]:
     """Extract durable assistant outcome facts without keeping full LLM output."""
     compact = " ".join(str(text or "").split())
@@ -3058,6 +3066,8 @@ def selected_assistant_memory_text(text: str, *, max_chars: int = 4096, max_line
         if in_code_block:
             continue
         normalized = normalize_assistant_memory_line(stripped)
+        if assistant_memory_line_too_repetitive(normalized):
+            continue
         if normalized and any(pattern.search(normalized) for pattern in ASSISTANT_MEMORY_LINE_PATTERNS):
             selected.append(normalized[:420])
         if len(selected) >= max_lines:
@@ -4351,14 +4361,16 @@ def fast_async_hook_ingest(
     }
 
 
-def rollout_role_and_text(event: str, payload: Json) -> tuple[str, str, str, str]:
+def rollout_role_and_text(event: str, payload: Json) -> tuple[str, str, str, str, str]:
     if event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
-        text = selected_tool_memory_text(latest_codex_tool_output_from_rollout(payload), payload)
-        return "tool", text, "PreviousToolOutputBackfill", "previous-tool-output"
+        original_text = latest_codex_tool_output_from_rollout(payload)
+        text = selected_tool_memory_text(original_text, payload)
+        return "tool", text, original_text, "PreviousToolOutputBackfill", "previous-tool-output"
     if event in {"Stop", "PostCompact", "SubagentStop"}:
-        text = latest_codex_assistant_message_from_rollout(payload)
-        return "assistant", text, "PreviousAssistantBackfill", "previous-assistant"
-    return "", "", "", ""
+        original_text = latest_codex_assistant_message_from_rollout_raw(payload)
+        text = selected_assistant_memory_text(original_text)
+        return "assistant", text, original_text, "PreviousAssistantBackfill", "previous-assistant"
+    return "", "", "", "", ""
 
 
 def spawn_rollout_backfill_child(args: argparse.Namespace) -> None:
@@ -4383,7 +4395,7 @@ def spawn_rollout_backfill_child(args: argparse.Namespace) -> None:
 def run_rollout_backfill_only(args: argparse.Namespace, payload: Json, session_id_source: str) -> int:
     if args.rollout_backfill_delay_ms > 0:
         time.sleep(args.rollout_backfill_delay_ms / 1000.0)
-    role, text, codex_event, idempotency_prefix = rollout_role_and_text(args.event, payload)
+    role, text, original_text, codex_event, idempotency_prefix = rollout_role_and_text(args.event, payload)
     if not role or not text:
         return 0
     codex_identity = codex_hook_lineage_from_payload(payload, args, session_id_source=session_id_source)
@@ -4396,22 +4408,21 @@ def run_rollout_backfill_only(args: argparse.Namespace, payload: Json, session_i
         call_tool(
             server,
             "matrixark_ingest",
-            {
-                **common,
-                "messages": [{"role": role, "content": text}],
-                "wait": False,
-                "async_processing": True,
-                "understanding_provider": args.understanding_provider,
-                "segment_provider": args.segment_provider,
-                "storage_options": hook_storage_options(),
-                "metadata": codex_hook_metadata(
+            hook_async_message_ingest_args(
+                common,
+                args,
+                event=codex_event,
+                role=role,
+                text=text,
+                original_text=original_text,
+                metadata=codex_hook_metadata(
                     source="codex_hook_rollout_async_backfill",
                     event=codex_event,
                     agent_context=agent_context,
                     session_id_source=session_id_source,
                     backfill_reason="codex_rollout_is_readable_after_synchronous_hook_boundary",
                 ),
-                "agent_hook": {
+                agent_hook={
                     **codex_agent_hook(
                         hook_type="tool_result" if role == "tool" else "after_llm",
                         hook_id=f"Async{codex_event}:{stable_short_hash(text)}",
@@ -4421,7 +4432,7 @@ def run_rollout_backfill_only(args: argparse.Namespace, payload: Json, session_i
                         identity=codex_identity,
                     ),
                 },
-            },
+            ),
         )
         if should_commit_session(args.event) or bool(text):
             call_tool(

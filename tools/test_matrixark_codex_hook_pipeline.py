@@ -7042,7 +7042,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "payload": {
                             "type": "message",
                             "role": "assistant",
-                            "content": "Assistant decision: delayed rollout backfill commits profile memory.",
+                            "content": "\n".join(
+                                [
+                                    "Verbose answer body that should not become durable memory. " * 80,
+                                    "```",
+                                    "large_code_block_that_should_not_be_ingested_as_memory()",
+                                    "```",
+                                    "Assistant decision: delayed rollout backfill commits profile memory.",
+                                    "Validation ran 64 tests passed.",
+                                ]
+                            ),
                         }
                     }
                 )
@@ -7088,12 +7097,33 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
 
             adapter = MatrixArkLocalAdapter(event_log)
             records = adapter.read_all()
+            assistant_events = [
+                record
+                for record in records
+                if record.get("record_type") == "context_event"
+                and record.get("source_role") == "assistant"
+            ]
+            self.assertTrue(assistant_events, records)
+            self.assertTrue(all("large_code_block" not in str(record.get("text") or "") for record in assistant_events))
+            self.assertTrue(all("Verbose answer body" not in str(record.get("text") or "") for record in assistant_events))
+            self.assertTrue(
+                any(
+                    record.get("source_memory_selection_policy_counts", {}).get(
+                        "selected_assistant_decision_outcome_only"
+                    ) == 1
+                    and record.get("source_memory_selection_lossy_count") == 1
+                    and record.get("source_memory_selection_dropped_text_chars", 0) > 0
+                    for record in assistant_events
+                ),
+                assistant_events,
+            )
             self.assertTrue(
                 any(
                     record.get("record_type") == "context_batch_commit"
                     and record.get("commit_reason") == "async_rollout_backfill"
                     and "PreviousAssistantBackfill" in record.get("source_codex_events", [])
                     and "Stop:async_rollout_backfill" in record.get("source_codex_events", [])
+                    and record.get("source_memory_selection_policy_counts", {}).get("selected_assistant_decision_outcome_only") == 1
                     and record.get("memory_layers_written", {}).get("profile_entities", 0) >= 1
                     for record in records
                 ),
@@ -7108,6 +7138,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     and "delayed rollout backfill" in str(record.get("state") or "")
                     and "PreviousAssistantBackfill" in record.get("source_codex_events", [])
                     and "Stop:async_rollout_backfill" in record.get("source_codex_events", [])
+                    and record.get("source_memory_selection_policy_counts", {}).get("selected_assistant_decision_outcome_only") == 1
                     for record in records
                 ),
                 records,
@@ -7124,6 +7155,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("hook_type:session_commit", index_names)
             self.assertIn("codex_event:previousassistantbackfill", index_names)
             self.assertIn("codex_event:stop:async_rollout_backfill", index_names)
+            self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", index_names)
 
             scope = {
                 "account_id": "acct_hook",
