@@ -4859,6 +4859,7 @@ def main() -> int:
                         else {}
                     ),
                     "ranking": codex_retrieve_ranking_options(),
+                    **hook_session_commit_extraction_options(args),
                     "metadata": {
                         "retrieval_source": "codex_hook_retrieve",
                         "codex_event": args.event,
