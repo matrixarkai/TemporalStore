@@ -7,10 +7,10 @@ import re
 from typing import Any
 
 try:
-    from tools.matrixark_mcp_indexing import context_index_name, normalized_index_value
+    from tools.matrixark_mcp_indexing import benchmark_quality_index_terms, context_index_name, normalized_index_value
     from tools.matrixark_mcp_scoring import tokens
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_indexing import context_index_name, normalized_index_value
+    from matrixark_mcp_indexing import benchmark_quality_index_terms, context_index_name, normalized_index_value
     from matrixark_mcp_scoring import tokens
 
 
@@ -210,6 +210,9 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("memory_selection_policy", "selected_tool_evidence_only"),
             context_index_name("memory_selection_policy", "selected_assistant_decision_outcome_only"),
         )
+        metric_terms = benchmark_quality_index_terms(query)
+        if metric_terms:
+            add_group(*metric_terms)
         if re.search(r"\b(hit[- ]?rate|read[- ]?hit|quality|recall|precision|locomo|longmemeval|memory[- ]?quality)\b", lower):
             add_group(context_index_name("memory_scope", "user_profile"), context_index_name("session_continuity", "cross_session"))
     if re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
@@ -389,9 +392,9 @@ def candidate_index_terms(
     index_terms_by_ref: dict[Any, list[str]] | None = None,
 ) -> set[str]:
     try:
-        from tools.matrixark_mcp_indexing import metadata_index_terms, non_default_classification
+        from tools.matrixark_mcp_indexing import benchmark_quality_index_terms, metadata_index_terms, non_default_classification
     except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_indexing import metadata_index_terms, non_default_classification
+        from matrixark_mcp_indexing import benchmark_quality_index_terms, metadata_index_terms, non_default_classification
     core = _core_query_runtime()
     terms: set[str] = set()
     index_terms_by_ref = index_terms_by_ref or {}
@@ -418,21 +421,26 @@ def candidate_index_terms(
             terms.add(context_index_name("classification", classification))
         terms.add(context_index_name("status", record.get("status") or "observed"))
         terms.add(context_index_name("source_type", record.get("source_type") or "message"))
+        terms.update(benchmark_quality_index_terms(record.get("text"), record.get("summary_text"), record.get("event_type"), record.get("metadata")))
         add_direct_layer_terms()
     elif record_type == "context_entity":
         terms.add(context_index_name("entity_type", record.get("entity_type")))
+        terms.update(benchmark_quality_index_terms(record.get("entity_name"), record.get("entity_type"), record.get("state"), record.get("text")))
         add_direct_layer_terms()
     elif record_type == "context_segment":
         terms.add(context_index_name("segment_topic", record.get("topic")))
+        terms.update(benchmark_quality_index_terms(record.get("topic"), record.get("text"), record.get("summary_text")))
         add_direct_layer_terms()
     elif record_type == "context_summary":
         terms.add(context_index_name("summary_type", record.get("summary_type")))
+        terms.update(benchmark_quality_index_terms(record.get("summary_type"), record.get("summary_text"), record.get("text")))
         add_direct_layer_terms()
     elif record_type == "context_compression_event":
         terms.update(index_terms_by_ref.get(record.get("compression_id_hash"), []))
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))
         terms.add(context_index_name("context_class", "compression"))
         terms.add(context_index_name("operator", record.get("operator") or "TIME_COMPRESS"))
+        terms.update(benchmark_quality_index_terms(record.get("summary_text"), record.get("text")))
         add_direct_layer_terms()
     elif record_type == "resource_chunk":
         terms.update(index_terms_by_ref.get(record.get("chunk_hash"), []))

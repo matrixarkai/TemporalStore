@@ -3375,6 +3375,14 @@ def non_default_classification(value: Any) -> str:
     return "" if classification in {"", "NEW_EVENT"} else classification
 
 
+def benchmark_quality_index_terms(*values: Any) -> list[str]:
+    try:
+        from tools.matrixark_mcp_indexing import benchmark_quality_index_terms as shared_benchmark_quality_index_terms
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_indexing import benchmark_quality_index_terms as shared_benchmark_quality_index_terms
+    return shared_benchmark_quality_index_terms(*values)
+
+
 def metadata_index_terms(metadata: Json, *, keyword_limit: int = MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK) -> list[str]:
     terms: list[str] = []
     for field in ["unit_kind", "heading_slug", "relative_path"]:
@@ -4417,6 +4425,9 @@ def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[
             context_index_name("memory_selection_policy", "selected_tool_evidence_only"),
             context_index_name("memory_selection_policy", "selected_assistant_decision_outcome_only"),
         )
+        metric_terms = benchmark_quality_index_terms(query)
+        if metric_terms:
+            add_group(*metric_terms)
         if re.search(r"\b(hit[- ]?rate|read[- ]?hit|quality|recall|precision|locomo|longmemeval|memory[- ]?quality)\b", lower):
             add_group(context_index_name("memory_scope", "user_profile"), context_index_name("session_continuity", "cross_session"))
     if re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
@@ -4657,16 +4668,19 @@ def candidate_index_terms(
             terms.add(context_index_name("classification", classification))
         terms.add(context_index_name("status", record.get("status") or "observed"))
         terms.add(context_index_name("source_type", record.get("source_type") or "message"))
+        terms.update(benchmark_quality_index_terms(record.get("text"), record.get("summary_text"), record.get("event_type"), record.get("metadata")))
         add_source_lineage_terms()
         add_direct_layer_terms()
     elif record_type == "context_entity":
         terms.add(context_index_name("entity_type", record.get("entity_type")))
+        terms.update(benchmark_quality_index_terms(record.get("entity_name"), record.get("entity_type"), record.get("state"), record.get("text")))
         add_direct_layer_terms()
         add_source_lineage_terms()
     elif record_type == "context_summary":
         terms.add(context_index_name("summary_type", record.get("summary_type")))
         for entity_type in record.get("source_entity_types", [])[:16]:
             terms.add(context_index_name("entity_type", entity_type))
+        terms.update(benchmark_quality_index_terms(record.get("summary_type"), record.get("summary_text"), record.get("text")))
         add_direct_layer_terms()
         add_source_lineage_terms()
     elif record_type == "context_compression_event":
@@ -4674,10 +4688,12 @@ def candidate_index_terms(
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))
         terms.add(context_index_name("context_class", "compression"))
         terms.add(context_index_name("operator", record.get("operator") or "TIME_COMPRESS"))
+        terms.update(benchmark_quality_index_terms(record.get("summary_text"), record.get("text")))
         add_source_lineage_terms()
         add_direct_layer_terms()
     elif record_type == "context_segment":
         terms.add(context_index_name("segment_topic", record.get("topic")))
+        terms.update(benchmark_quality_index_terms(record.get("topic"), record.get("text"), record.get("summary_text")))
         add_direct_layer_terms()
         add_source_lineage_terms()
     elif record_type == "resource_chunk":

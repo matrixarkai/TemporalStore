@@ -191,6 +191,45 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertGreater(budgets["selected_tool_evidence_only"], budgets["selected_user_prompt"])
         self.assertGreater(budgets["selected_assistant_decision_outcome_only"], budgets["selected_user_prompt"])
 
+    def test_benchmark_quality_records_emit_metric_index_terms(self) -> None:
+        record = {
+            "record_type": "context_event",
+            "event_type": "tool_evidence",
+            "source_type": "message",
+            "text": "LoCoMo workload: read-index reads p50 latency: 8.4 ms p99 latency=22.8ms throughput: 12500 ops/s read hit rate: 91.7%",
+        }
+
+        core_terms = candidate_index_terms(record, {}, {})
+        query_terms = matrixark_mcp_query.candidate_index_terms(record, {}, {})
+        for terms in [core_terms, query_terms]:
+            self.assertIn("benchmark:locomo", terms)
+            self.assertIn("metric:p50_latency", terms)
+            self.assertIn("metric:p99_latency", terms)
+            self.assertIn("metric:throughput", terms)
+            self.assertIn("metric:hit_rate", terms)
+            self.assertIn("workload:read-index_reads", terms)
+
+        groups = infer_secondary_index_filter_groups(
+            "Show LoCoMo p99 latency throughput and read hit rate quality",
+            "benchmark_quality",
+        )
+        flattened = {term for group in groups for term in group}
+        self.assertIn("benchmark:locomo", flattened)
+        self.assertIn("metric:p99_latency", flattened)
+        self.assertIn("metric:throughput", flattened)
+        self.assertIn("metric:hit_rate", flattened)
+
+        query_flattened = {
+            term
+            for group in matrixark_mcp_query.infer_secondary_index_filter_groups(
+                "Show LoCoMo p99 latency throughput and read hit rate quality",
+                "benchmark_quality",
+            )
+            for term in group
+        }
+        self.assertIn("benchmark:locomo", query_flattened)
+        self.assertIn("metric:p99_latency", query_flattened)
+
     def test_secondary_index_filters_understand_selected_evidence_quality(self) -> None:
         groups = infer_secondary_index_filter_groups(
             "Show lossy selected tool evidence with exit code and pushed commit details",
