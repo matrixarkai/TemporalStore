@@ -594,7 +594,9 @@ def main() -> int:
             timeout_seconds=args.reader_timeout_seconds,
             max_context_chars=args.reader_max_context_chars,
             allow_fallback=not args.reader_no_fallback,
-            include_extractive_hint=args.reader_include_extractive_hint,
+            include_extractive_hint=args.reader_include_extractive_hint
+            or args.reader_candidate_hybrid
+            or args.reader_candidate_only,
             focus_evidence=args.reader_focus_evidence,
             candidate_first=args.reader_candidate_first or args.reader_candidate_hybrid,
             candidate_only=args.reader_candidate_only,
@@ -2815,9 +2817,42 @@ def hybrid_reader_answer(question: str, candidate: str, answer: str) -> str:
     normalized_answer = normalize_text(answer)
     if normalized_answer.startswith("not enough context") or normalized_answer.startswith("insufficient context"):
         return candidate
-    if reader_answer_is_noisy(question, answer, candidate):
+    if reader_answer_should_use_candidate(question, answer, candidate):
         return candidate
     return answer
+
+
+def reader_answer_should_use_candidate(question: str, answer: str, candidate: str) -> bool:
+    if reader_answer_is_noisy(question, answer, candidate):
+        return True
+    q = normalize_text(question)
+    normalized_answer = normalize_text(answer)
+    normalized_candidate = normalize_text(candidate)
+    if not normalized_answer or not normalized_candidate:
+        return False
+    temporal_question = bool(re.search(r"\b(when|date|year|month|day|before|after|week)\b", q))
+    relative_temporal = bool(
+        re.search(
+            r"\b(yesterday|today|tomorrow|last year|this year|next year|last month|this month|next month|last week|this week|next week)\b",
+            normalized_answer,
+        )
+    )
+    candidate_has_concrete_time = bool(date_regex().search(candidate) or re.search(r"\b\d{4}\b", candidate))
+    if temporal_question and relative_temporal and candidate_has_concrete_time:
+        return True
+    if normalized_answer in normalized_candidate and len(normalized_candidate) <= 120:
+        return True
+    generic_answers = {
+        "home country",
+        "not enough context",
+        "unknown",
+        "unclear",
+        "yes",
+        "no",
+    }
+    if normalized_answer in generic_answers and len(normalized_candidate) <= 120:
+        return True
+    return False
 
 
 def reader_answer_is_noisy(question: str, answer: str, candidate: str) -> bool:
