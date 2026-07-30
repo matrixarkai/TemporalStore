@@ -144,6 +144,22 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(by_type["assistant_decision"]["field_patches"])
         self.assertTrue(by_type["tool_evidence"]["field_patches"])
 
+    def test_modular_extractor_uses_role_specific_source_refs_for_assistant_and_tool(self) -> None:
+        extract_mod = importlib.import_module("tools.matrixark_mcp_extraction_normalization")
+        entities = extract_mod.extract_batch_entities(
+            [
+                {"role": "user", "content": "Remember: use compact profile budgets."},
+                {"role": "assistant", "content": "Decision: keep profile extraction enabled."},
+                {"role": "tool", "content": "Exit code: 0; Ran 42 tests; pushed commit abc1234 to origin/main."},
+            ],
+            {"source_event_ids": [111, 222, 333]},
+        )
+        by_type = {entity.get("entity_type"): entity for entity in entities}
+
+        self.assertEqual(["222"], by_type["assistant_decision"]["source_refs"])
+        self.assertEqual(["333"], by_type["tool_evidence"]["source_refs"])
+        self.assertEqual(["111", "222", "333"], by_type["preference"]["source_refs"])
+
     def test_memory_phase_and_retrieval_budget_fields_are_public_schema(self) -> None:
         schemas_mod = importlib.import_module("tools.matrixark_mcp_schemas")
         tools_by_name = {tool["name"]: tool for tool in schemas_mod.TOOLS}
