@@ -895,6 +895,49 @@ def session_events_by_message_limit(records: list[Json], limit: int | None) -> l
     return selected
 
 
+def deferred_idle_auto_batch_result(
+    *,
+    idle_commit_result: Json | None,
+    pending_event_count: int,
+    pending_message_count: int,
+    threshold_messages: int,
+    idle_commit_timeout_ms: int | None,
+) -> Json | None:
+    if not isinstance(idle_commit_result, dict):
+        return None
+    if idle_commit_result.get("status") != "deferred":
+        return None
+    if str(idle_commit_result.get("commit_reason") or "") != "idle_timeout":
+        return None
+    if idle_commit_timeout_ms is None or idle_commit_timeout_ms <= 0:
+        return None
+    return {
+        "status": "deferred",
+        "trigger_policy": "idle_timeout",
+        "commit_reason": "idle_timeout",
+        "reason": "session_buffer_idle_deadline_armed",
+        "pending_event_count": pending_event_count,
+        "pending_message_count": pending_message_count,
+        "threshold_messages": threshold_messages,
+        "idle_commit_timeout_ms": idle_commit_timeout_ms,
+        "idle_elapsed_ms": idle_commit_result.get("idle_elapsed_ms", 0),
+        "idle_commit_scheduled": pending_event_count > 0,
+        "extraction_phase": "provisional",
+        "final_session_boundary": False,
+        "trigger_evidence": {
+            **(idle_commit_result.get("trigger_evidence") if isinstance(idle_commit_result.get("trigger_evidence"), dict) else {}),
+            "pending_event_count": pending_event_count,
+            "pending_message_count": pending_message_count,
+            "threshold_messages": threshold_messages,
+            "threshold_ready": False,
+            "idle_timeout_ms": idle_commit_timeout_ms,
+            "idle_ready": False,
+            "force": False,
+            "commit_reason": "idle_timeout",
+        },
+    }
+
+
 def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
     metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
     role_counts: Json = {}
@@ -5518,6 +5561,20 @@ class MatrixArkLocalAdapter:
                 )
             elif auto_batch_extract and idle_ready and isinstance(idle_commit_result, dict):
                 auto_batch_result = idle_commit_result
+            elif auto_batch_extract:
+                auto_batch_result = deferred_idle_auto_batch_result(
+                    idle_commit_result=idle_commit_result,
+                    pending_event_count=pending_event_count,
+                    pending_message_count=pending_message_count,
+                    threshold_messages=session_buffer_threshold,
+                    idle_commit_timeout_ms=idle_commit_timeout_ms,
+                )
+            idle_commit_scheduled = bool(
+                isinstance(auto_batch_result, dict)
+                and auto_batch_result.get("status") == "deferred"
+                and auto_batch_result.get("trigger_policy") == "idle_timeout"
+                and auto_batch_result.get("idle_commit_scheduled")
+            )
             return {
                 "status": "accepted",
                 "sync_write_mode": "lightweight_event",
@@ -5542,6 +5599,7 @@ class MatrixArkLocalAdapter:
                     "threshold_messages": session_buffer_threshold,
                     "threshold_ready": threshold_ready,
                     "idle_ready": idle_ready,
+                    "idle_commit_scheduled": idle_commit_scheduled,
                     "auto_batch_extract": auto_batch_extract,
                 },
                 "idle_commit_result": idle_commit_result,
@@ -6581,6 +6639,20 @@ class MatrixArkLocalAdapter:
             )
         elif auto_batch_extract and idle_ready and isinstance(idle_commit_result, dict):
             auto_batch_result = idle_commit_result
+        elif auto_batch_extract:
+            auto_batch_result = deferred_idle_auto_batch_result(
+                idle_commit_result=idle_commit_result,
+                pending_event_count=pending_event_count,
+                pending_message_count=pending_message_count,
+                threshold_messages=session_buffer_threshold,
+                idle_commit_timeout_ms=idle_commit_timeout_ms,
+            )
+        idle_commit_scheduled = bool(
+            isinstance(auto_batch_result, dict)
+            and auto_batch_result.get("status") == "deferred"
+            and auto_batch_result.get("trigger_policy") == "idle_timeout"
+            and auto_batch_result.get("idle_commit_scheduled")
+        )
         return {
             "status": "accepted",
             "event_id_hash": event_id_hash,
@@ -6655,6 +6727,7 @@ class MatrixArkLocalAdapter:
                 "threshold_messages": session_buffer_threshold,
                 "threshold_ready": threshold_ready,
                 "idle_ready": idle_ready,
+                "idle_commit_scheduled": idle_commit_scheduled,
                 "auto_batch_extract": auto_batch_extract,
             },
             "idle_commit_result": idle_commit_result,
