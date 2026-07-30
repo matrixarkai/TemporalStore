@@ -433,6 +433,57 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             hook.payload_text(payload, event="PostToolUse"),
         )
 
+    def test_payload_text_prefers_assistant_role_from_mixed_stop_messages(self) -> None:
+        payload = {
+            "hook_event_name": "Stop",
+            "messages": [
+                {"role": "user", "content": "original prompt should stay out of assistant memory"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "Decision: keep role-filtered assistant memory."},
+                        {"type": "text", "text": "Done. Mixed payload no longer stores the prompt."},
+                    ],
+                },
+            ],
+        }
+
+        text = hook.payload_text(payload, event="Stop")
+
+        self.assertIn("Decision: keep role-filtered assistant memory.", text)
+        self.assertIn("Done. Mixed payload no longer stores the prompt.", text)
+        self.assertNotIn("original prompt should stay out", text)
+
+    def test_payload_text_prefers_tool_role_from_mixed_tool_messages(self) -> None:
+        payload = {
+            "hook_event_name": "PostToolUse",
+            "messages": [
+                {"role": "user", "content": "run the tests"},
+                {"role": "assistant", "content": "I will run validation."},
+                {"role": "tool", "content": "Exit code: 0\nRan 11 tests\nOK"},
+            ],
+        }
+
+        self.assertEqual(
+            "Exit code: 0\nRan 11 tests\nOK",
+            hook.payload_text(payload, event="PostToolUse"),
+        )
+
+    def test_payload_text_prefers_user_role_from_mixed_prompt_messages(self) -> None:
+        payload = {
+            "hook_event_name": "UserPromptSubmit",
+            "messages": [
+                {"role": "system", "content": "system context"},
+                {"role": "assistant", "content": "old answer"},
+                {"role": "user", "content": "new user prompt should be ingested"},
+            ],
+        }
+
+        self.assertEqual(
+            "new user prompt should be ingested",
+            hook.payload_text(payload, event="UserPromptSubmit"),
+        )
+
     def test_rollout_assistant_extraction_flattens_structured_content_parts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             rollout = Path(tmp_dir) / "rollout-test.jsonl"

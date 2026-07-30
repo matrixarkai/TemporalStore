@@ -3208,6 +3208,28 @@ def identity_only_payload(value: Any) -> bool:
     return True
 
 
+def text_from_payload_messages(value: Any, *, preferred_roles: set[str] | None = None) -> str:
+    if not isinstance(value, list):
+        return ""
+    preferred_roles = preferred_roles or set()
+    all_parts: list[str] = []
+    preferred_parts: list[str] = []
+    for item in value:
+        role = ""
+        text = ""
+        if isinstance(item, str):
+            text = item
+        elif isinstance(item, dict):
+            role = str(item.get("role") or item.get("type") or "").strip().lower()
+            text = text_from_content_value(item.get("content")) or first_string_at(item, [["text"], ["message"], ["output"]])
+        if not text:
+            continue
+        all_parts.append(text)
+        if role in preferred_roles:
+            preferred_parts.append(text)
+    return "\n".join(preferred_parts or all_parts).strip()
+
+
 def payload_text(payload: Json, *, event: str = "") -> str:
     assistant_paths = [
         ["last_agent_message"],
@@ -3289,19 +3311,17 @@ def payload_text(payload: Json, *, event: str = "") -> str:
         text = text_from_content_value(payload.get(key))
         if text:
             return text
+    preferred_roles: set[str] = set()
+    if normalized_event in {"Stop", "PostCompact", "SubagentStop"}:
+        preferred_roles = {"assistant"}
+    elif normalized_event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
+        preferred_roles = {"tool", "function_call_output", "custom_tool_call_output"}
+    elif normalized_event == "UserPromptSubmit":
+        preferred_roles = {"user"}
     for key in ["messages", "items", "input"]:
-        value = payload.get(key)
-        if isinstance(value, list):
-            parts = []
-            for item in value:
-                if isinstance(item, str):
-                    parts.append(item)
-                elif isinstance(item, dict):
-                    text = text_from_content_value(item.get("content")) or first_string_at(item, [["text"], ["message"]])
-                    if text:
-                        parts.append(text)
-            if parts:
-                return "\n".join(parts)
+        text = text_from_payload_messages(payload.get(key), preferred_roles=preferred_roles)
+        if text:
+            return text
     if payload and not identity_only_payload(payload):
         return json.dumps(payload, sort_keys=True)[:4000]
     return ""
