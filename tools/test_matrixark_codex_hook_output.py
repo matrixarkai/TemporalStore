@@ -2691,6 +2691,84 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("turn-fast-1", server.adapter.session_buffer_records[0]["hook"]["turn_id"])
         self.assertTrue(result["session_buffer"]["registered"])
 
+    def test_fast_async_hook_ingest_increments_raw_and_serving_for_all_message_roles(self) -> None:
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.materialized_records = []
+                self.session_buffer_records = []
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.materialized_records.extend(records)
+
+            def _append_many_materialized(self, records, *, allow_queue=True):
+                self.materialized_records.extend(records)
+
+            def append_session_buffer_event(self, **kwargs):
+                self.session_buffer_records.append(kwargs)
+
+            def pending_session_events(self, scope):
+                return []
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        server = Server()
+        cases = [
+            ("UserPromptSubmit", "user", "TemporalStore user prompt count marker"),
+            ("PostToolUse", "tool", "Exit code: 0\nTemporalStore tool returned count marker"),
+            ("Stop", "assistant", "TemporalStore assistant response count marker"),
+        ]
+
+        for event, role, text in cases:
+            args = Namespace(
+                event=event,
+                account_id="acct_local",
+                tenant_id="tenant_codex",
+                user_id="deeproute",
+                session_id="codex-cpp-session-1",
+                team="codex",
+                project="temporalstore",
+                session_commit_threshold=20,
+                idle_commit_timeout_ms=0,
+                understanding_provider="rules",
+                segment_provider="deterministic",
+            )
+            hook.fast_async_hook_ingest(
+                server,
+                args=args,
+                text=text,
+                role=role,
+                agent_context={"workspace_root": "/repo"},
+                hook={"session_id_source": "payload_field"},
+            )
+
+        serving_events = [
+            record
+            for record in server.adapter.materialized_records
+            if record.get("record_type") == "context_event"
+        ]
+
+        self.assertEqual(3, len(server.adapter.raw_records))
+        self.assertEqual(3, len(serving_events))
+        self.assertEqual(3, len(server.adapter.session_buffer_records))
+        self.assertEqual(["assistant", "tool", "user"], sorted(record["role"] for record in server.adapter.raw_records))
+        self.assertEqual(["assistant", "tool", "user"], sorted(record["role"] for record in serving_events))
+        self.assertEqual(
+            ["PostToolUse", "Stop", "UserPromptSubmit"],
+            sorted(record["codex_api_event"] for record in server.adapter.raw_records),
+        )
+        self.assertEqual(
+            ["PostToolUse", "Stop", "UserPromptSubmit"],
+            sorted(record["codex_api_event"] for record in serving_events),
+        )
+        self.assertEqual(3, len({record["serving_event_id_hash"] for record in server.adapter.raw_records}))
+        self.assertEqual(3, len({record["event_id_hash"] for record in serving_events}))
+
     def test_fast_async_hook_ingest_reports_raw_append_fallback_as_accepted(self) -> None:
         class Adapter:
             def __init__(self) -> None:
@@ -3073,7 +3151,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertNotIn("thread_id", raw_record)
         self.assertNotIn("turn_id", raw_record)
         self.assertEqual("assistant", raw_record["source_role"])
-        self.assertNotIn("hook_type", raw_record)
+        self.assertEqual("after_llm", raw_record["hook_type"])
         self.assertNotIn("source_hook_types", raw_record)
         self.assertEqual("Stop", raw_record["codex_event"])
         serving_event = next(record for record in server.adapter.serving_records if record["record_type"] == "context_event")
