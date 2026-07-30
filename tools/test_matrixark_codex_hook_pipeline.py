@@ -11369,12 +11369,186 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("extraction_context_event_ids", debug_ref)
             self.assertNotIn("source_event_count", debug_ref)
             self.assertNotIn("source_entity_count", debug_ref)
-            self.assertNotIn("source_role_counts", debug_ref)
-            self.assertNotIn("source_hook_type_counts", debug_ref)
-            self.assertNotIn("source_codex_event_counts", debug_ref)
-            self.assertNotIn("source_memory_selection_policy_counts", debug_ref)
-            self.assertNotIn("profile_source_session_count", debug_ref)
-            self.assertNotIn("profile_source_entity_count", debug_ref)
+            self.assertEqual({"assistant": 1, "tool": 1}, debug_ref["source_role_counts"])
+            self.assertEqual({"after_llm": 1, "tool_result": 1}, debug_ref["source_hook_type_counts"])
+            self.assertEqual({"Stop": 1, "PostToolUse": 1}, debug_ref["source_codex_event_counts"])
+            self.assertEqual(
+                {"selected_assistant_decision_outcome_only": 1, "selected_tool_evidence_only": 1},
+                debug_ref["source_memory_selection_policy_counts"],
+            )
+            self.assertEqual(1, debug_ref["profile_source_session_count"])
+            self.assertEqual(1, debug_ref["profile_source_entity_count"])
+
+
+    def test_retrieval_prefilter_recovers_summary_from_compact_embedding_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-summary-prefilter-recovery.jsonl")
+            scope = {
+                "account_id": "acct_summary_prefilter",
+                "tenant_id": "tenant_summary_prefilter",
+                "user_id": "user_summary_prefilter",
+                "session_id": "session_summary_prefilter",
+            }
+            profile_scope = {
+                "account_id": "acct_summary_prefilter",
+                "tenant_id": "tenant_summary_prefilter",
+                "user_id": "user_summary_prefilter",
+            }
+            summary_text = "summary prefilter marker 993 keeps profile summary rows reachable from embeddings."
+            summary_hash = 93001
+            node_hash = 93002
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_summary",
+                        "summary_type": "node_l0",
+                        "summary_hash": summary_hash,
+                        "node_hash": node_hash,
+                        "node_path": ["profile:long_term_memory"],
+                        "summary_text": summary_text,
+                        "updated_at_ms": 1000,
+                    },
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "node_l0",
+                        "ref_type": "summary",
+                        "ref_hash": summary_hash,
+                        "node_hash": node_hash,
+                        "node_path": ["profile:long_term_memory"],
+                        "summary_type": "node_l0",
+                        "dim": len(embedding_for_text(summary_text)),
+                        "model": "deterministic-test",
+                        "vector": embedding_for_text(summary_text),
+                        "access_scope": profile_scope,
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "source_entity_types": ["assistant_decision"],
+                        "source_roles": ["assistant"],
+                        "source_hook_types": ["after_llm"],
+                        "source_codex_events": ["Stop"],
+                        "updated_at_ms": 1000,
+                    },
+                ]
+            )
+
+            result = adapter.retrieval_records(
+                scope=scope,
+                record_types={"context_summary"},
+                secondary_index_groups=[{"summary_type:node_l0"}],
+            )
+            self.assertEqual(0, result["scan_stats"]["secondary_index_matched_posting_count"])
+            self.assertGreaterEqual(result["scan_stats"]["secondary_embedding_matched_posting_count"], 1)
+            summaries = [record for record in result["records"] if record.get("record_type") == "context_summary"]
+            self.assertTrue(any(record.get("summary_hash") == summary_hash for record in summaries), result)
+
+    def test_retrieval_prefilter_recovers_segment_from_compact_embedding_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-segment-prefilter-recovery.jsonl")
+            scope = {
+                "account_id": "acct_segment_prefilter",
+                "tenant_id": "tenant_segment_prefilter",
+                "user_id": "user_segment_prefilter",
+                "session_id": "session_segment_prefilter",
+            }
+            segment_text = "segment prefilter marker 994 records threshold and idle extraction decisions."
+            segment_hash = 94001
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_segment",
+                        "segment_hash": segment_hash,
+                        "segment_text": segment_text,
+                        "topic": "threshold_idle_extraction",
+                        "scope": scope,
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "updated_at_ms": 1000,
+                    },
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "segment_text",
+                        "ref_type": "segment",
+                        "ref_hash": segment_hash,
+                        "topic": "threshold_idle_extraction",
+                        "dim": len(embedding_for_text(segment_text)),
+                        "model": "deterministic-test",
+                        "vector": embedding_for_text(segment_text),
+                        "access_scope": scope,
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "source_roles": ["user", "assistant"],
+                        "source_hook_types": ["before_llm", "after_llm"],
+                        "updated_at_ms": 1000,
+                    },
+                ]
+            )
+
+            result = adapter.retrieval_records(
+                scope=scope,
+                record_types={"context_segment"},
+                secondary_index_groups=[{"segment_topic:threshold_idle_extraction"}],
+            )
+            self.assertEqual(0, result["scan_stats"]["secondary_index_matched_posting_count"])
+            self.assertGreaterEqual(result["scan_stats"]["secondary_embedding_matched_posting_count"], 1)
+            segments = [record for record in result["records"] if record.get("record_type") == "context_segment"]
+            self.assertTrue(any(record.get("segment_hash") == segment_hash for record in segments), result)
+
+    def test_retrieval_prefilter_recovers_compression_from_compact_embedding_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-compression-prefilter-recovery.jsonl")
+            scope = {
+                "account_id": "acct_compression_prefilter",
+                "tenant_id": "tenant_compression_prefilter",
+                "user_id": "user_compression_prefilter",
+                "session_id": "session_compression_prefilter",
+            }
+            compression_text = "compression prefilter marker 995 keeps time compression rows reachable."
+            compression_hash = 95001
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_compression_event",
+                        "compression_id_hash": compression_hash,
+                        "summary_text": compression_text,
+                        "operator": "TIME_COMPRESS",
+                        "scope": scope,
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "updated_at_ms": 1000,
+                    },
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "compression_summary",
+                        "ref_type": "compression",
+                        "ref_hash": compression_hash,
+                        "operator": "TIME_COMPRESS",
+                        "dim": len(embedding_for_text(compression_text)),
+                        "model": "deterministic-test",
+                        "vector": embedding_for_text(compression_text),
+                        "access_scope": scope,
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "source_roles": ["assistant"],
+                        "source_hook_types": ["after_llm"],
+                        "updated_at_ms": 1000,
+                    },
+                ]
+            )
+
+            result = adapter.retrieval_records(
+                scope=scope,
+                record_types={"context_compression_event"},
+                secondary_index_groups=[{"context_class:compression"}],
+            )
+            self.assertEqual(0, result["scan_stats"]["secondary_index_matched_posting_count"])
+            self.assertGreaterEqual(result["scan_stats"]["secondary_embedding_matched_posting_count"], 1)
+            compressions = [
+                record for record in result["records"] if record.get("record_type") == "context_compression_event"
+            ]
+            self.assertTrue(
+                any(record.get("compression_id_hash") == compression_hash for record in compressions),
+                result,
+            )
 
     def test_retrieval_flags_state_file_session_identity_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

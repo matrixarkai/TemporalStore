@@ -2415,16 +2415,13 @@ class MatrixArkLocalAdapter:
                 return {"records": cached.get("records", []), "scan_stats": scan_stats}
         raw_records = self.read_all()
         node_scope_by_hash: dict[int, Json] = {}
-        summary_embedding_scope_by_ref: dict[Any, Json] = {}
+        embedding_scope_by_ref: dict[tuple[str, Any], Json] = {}
         for source_record in raw_records:
-            if (
-                source_record.get("record_type") == "context_embedding"
-                and source_record.get("ref_type") == "summary"
-                and source_record.get("ref_hash") not in (None, "")
-            ):
+            if source_record.get("record_type") == "context_embedding" and source_record.get("ref_hash") not in (None, ""):
                 embedding_scope = candidate_access_scope(source_record)
                 if embedding_scope:
-                    summary_embedding_scope_by_ref[source_record.get("ref_hash")] = embedding_scope
+                    ref_type = str(source_record.get("ref_type") or "")
+                    embedding_scope_by_ref[(ref_type, source_record.get("ref_hash"))] = embedding_scope
             try:
                 source_node_hash = int(source_record.get("node_hash") or 0)
             except (TypeError, ValueError):
@@ -2453,9 +2450,20 @@ class MatrixArkLocalAdapter:
             record_scope = candidate_access_scope(record)
             if record_scope:
                 return record_scope
-            if record.get("record_type") == "context_summary":
-                summary_ref_hash = record.get("summary_hash") or record.get("node_hash")
-                embedding_scope = summary_embedding_scope_by_ref.get(summary_ref_hash)
+            ref_scope_fields = {
+                "context_event": ("event", "event_id_hash"),
+                "context_entity": ("entity", "entity_hash"),
+                "context_segment": ("segment", "segment_hash"),
+                "context_compression_event": ("compression", "compression_id_hash"),
+                "context_summary": ("summary", "summary_hash"),
+            }
+            ref_scope_field = ref_scope_fields.get(str(record.get("record_type") or ""))
+            if ref_scope_field is not None:
+                ref_type, hash_field = ref_scope_field
+                ref_hash = record.get(hash_field)
+                if ref_hash in (None, "") and hash_field == "summary_hash":
+                    ref_hash = record.get("node_hash")
+                embedding_scope = embedding_scope_by_ref.get((ref_type, ref_hash))
                 if embedding_scope:
                     return embedding_scope
             try:
@@ -2549,6 +2557,35 @@ class MatrixArkLocalAdapter:
                         "entity_hash": ref_hash,
                         "entity_type": embedding_record.get("entity_type", ""),
                         "entity_name": embedding_record.get("entity_name", ""),
+                    }
+                elif embedding_type == "segment_text" and embedding_record.get("ref_type") in {"segment", None, ""}:
+                    synthetic_record = {
+                        **embedding_record,
+                        "record_type": "context_segment",
+                        "segment_hash": ref_hash,
+                        "topic": embedding_record.get("topic", ""),
+                    }
+                elif embedding_type == "compression_summary" and embedding_record.get("ref_type") in {"compression", None, ""}:
+                    synthetic_record = {
+                        **embedding_record,
+                        "record_type": "context_compression_event",
+                        "compression_id_hash": ref_hash,
+                        "operator": embedding_record.get("operator") or "TIME_COMPRESS",
+                    }
+                elif embedding_record.get("ref_type") == "summary" and str(embedding_type or "") in {
+                    "node_l0",
+                    "node_l1",
+                    "batch_l0",
+                    "session_l0",
+                    "session_final",
+                    "resource_l0",
+                    "skill_l0",
+                }:
+                    synthetic_record = {
+                        **embedding_record,
+                        "record_type": "context_summary",
+                        "summary_hash": ref_hash,
+                        "summary_type": embedding_record.get("summary_type") or embedding_type,
                     }
                 if synthetic_record is None:
                     continue
@@ -3898,6 +3935,18 @@ class MatrixArkLocalAdapter:
                 "model": embedding_model_name(),
                 "vector": summary_vector,
                 "scope": scope,
+                "operator": record.get("operator") or "TIME_COMPRESS",
+                "source_roles": record.get("source_roles", []),
+                "source_role_counts": record.get("source_role_counts", {}),
+                "source_hook_types": record.get("source_hook_types", []),
+                "source_hook_type_counts": record.get("source_hook_type_counts", {}),
+                "source_codex_events": record.get("source_codex_events", []),
+                "source_codex_event_counts": record.get("source_codex_event_counts", {}),
+                "source_memory_selection_policies": record.get("source_memory_selection_policies", []),
+                "source_memory_selection_policy_counts": record.get("source_memory_selection_policy_counts", {}),
+                "source_memory_scopes": record.get("source_memory_scopes", []),
+                "source_session_continuities": record.get("source_session_continuities", []),
+                "source_extraction_phases": record.get("source_extraction_phases", []),
                 "memory_scope": record.get("memory_scope", ""),
                 "session_continuity": record.get("session_continuity", ""),
                 "updated_at_ms": compressed_time_ms,
@@ -4557,8 +4606,25 @@ class MatrixArkLocalAdapter:
                         "model": embedding_model_name(),
                         "vector": summary_vector,
                         "scope": dirty.get("scope", scope),
+                        "summary_type": level,
+                        "source_entity_types": source_entity_types,
+                        "source_roles": source_roles,
+                        "source_role_counts": source_role_counts,
+                        "source_hook_types": source_hook_types,
+                        "source_hook_type_counts": source_hook_type_counts,
+                        "source_codex_events": source_codex_events,
+                        "source_codex_event_counts": source_codex_event_counts,
+                        "source_memory_selection_policies": source_memory_selection_policies,
+                        "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                        "source_memory_scopes": source_memory_scopes,
+                        "source_session_continuities": source_session_continuities,
+                        "source_extraction_phases": source_extraction_phases,
+                        "source_profile_promotion_policies": source_profile_promotion_policies,
+                        "source_profile_promotion_blockers": source_profile_promotion_blockers,
                         "memory_scope": summary_record["memory_scope"],
                         "session_continuity": summary_record["session_continuity"],
+                        "extraction_phase": summary_record["extraction_phase"],
+                        "final_session_boundary": summary_record["final_session_boundary"],
                         "updated_at_ms": refreshed_at_ms,
                     }
                 )
@@ -7851,6 +7917,7 @@ class MatrixArkLocalAdapter:
                     "model": embedding_model_name(),
                     "vector": segment_vector,
                     "scope": envelope["scope"],
+                    "topic": segment["topic"],
                     "source_event_ids": [event_hashes[index] for index in segment["message_indexes"] if index < len(event_hashes)],
                     "source_roles": source_roles,
                     "source_role_counts": source_role_counts,
@@ -8198,6 +8265,18 @@ class MatrixArkLocalAdapter:
                 "model": embedding_model_name(),
                 "vector": compression_vector,
                 "scope": compression_scope,
+                "operator": record.get("operator") or "TIME_COMPRESS",
+                "source_roles": record.get("source_roles", []),
+                "source_role_counts": record.get("source_role_counts", {}),
+                "source_hook_types": record.get("source_hook_types", []),
+                "source_hook_type_counts": record.get("source_hook_type_counts", {}),
+                "source_codex_events": record.get("source_codex_events", []),
+                "source_codex_event_counts": record.get("source_codex_event_counts", {}),
+                "source_memory_selection_policies": record.get("source_memory_selection_policies", []),
+                "source_memory_selection_policy_counts": record.get("source_memory_selection_policy_counts", {}),
+                "source_memory_scopes": record.get("source_memory_scopes", []),
+                "source_session_continuities": record.get("source_session_continuities", []),
+                "source_extraction_phases": record.get("source_extraction_phases", []),
                 "memory_scope": record.get("memory_scope", ""),
                 "session_continuity": record.get("session_continuity", ""),
                 "updated_at_ms": compressed_time_ms,
