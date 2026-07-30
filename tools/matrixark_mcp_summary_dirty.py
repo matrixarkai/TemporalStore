@@ -8,6 +8,9 @@ from typing import Any, Callable
 try:
     from tools.matrixark_mcp_core import (
         Json,
+        ENABLE_CONTEXT_DEBUG_RECORDS,
+        ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS,
+        ENABLE_SUMMARY_REFRESH_AUDIT,
         candidate_access_scope,
         scope_matches,
         stable_hash,
@@ -16,6 +19,9 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         Json,
+        ENABLE_CONTEXT_DEBUG_RECORDS,
+        ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS,
+        ENABLE_SUMMARY_REFRESH_AUDIT,
         candidate_access_scope,
         scope_matches,
         stable_hash,
@@ -61,24 +67,28 @@ def node_summary_dirty_records(
             f"summary_dirty:{node_hash}:{dirty_reason}:{source_ref_type}:{source_hash}:{updated_at_ms}"
         )
         dirty_hashes.append(dirty_hash)
-        records.append(
-            {
-                "record_type": "context_summary_dirty",
-                "dirty_hash": dirty_hash,
-                "node_hash": node_hash,
-                "node_path": prefix,
-                "depth": len(prefix),
-                "dirty_reason": dirty_reason,
-                "source_ref_type": source_ref_type,
-                source_hash_field: source_hash,
-                "changed_ref_count": 1,
-                "propagate_depth": propagate_depth if propagate_depth is not None else len(node_path),
-                "scope": scope,
-                "status": "pending",
-                "created_at_ms": updated_at_ms,
-                "updated_at_ms": updated_at_ms,
-            }
-        )
+        record = {
+            "record_type": "context_summary_dirty",
+            "dirty_hash": dirty_hash,
+            "node_hash": node_hash,
+            "node_path": prefix,
+            "scope": scope,
+            "status": "pending",
+            "created_at_ms": updated_at_ms,
+            "updated_at_ms": updated_at_ms,
+        }
+        if ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS or ENABLE_SUMMARY_REFRESH_AUDIT or ENABLE_CONTEXT_DEBUG_RECORDS:
+            record.update(
+                {
+                    "depth": len(prefix),
+                    "dirty_reason": dirty_reason,
+                    "source_ref_type": source_ref_type,
+                    source_hash_field: source_hash,
+                    "changed_ref_count": 1,
+                    "propagate_depth": propagate_depth if propagate_depth is not None else len(node_path),
+                }
+            )
+        records.append(record)
     return dirty_hashes, records
 
 
@@ -219,22 +229,28 @@ def pending_dirty_node_records(
         synthetic_dirty_hash = stable_hash(f"missing_or_empty_summary:{node_hash}:{event_count}:{oldest_event_time}")
         if synthetic_dirty_hash in completed_dirty_hashes:
             continue
-        pending_by_node[node_hash] = {
+        synthetic_dirty = {
             "record_type": "context_summary_dirty",
             "dirty_hash": synthetic_dirty_hash,
             "node_hash": node_hash,
             "node_path": node_path,
-            "depth": len(node_path),
-            "dirty_reason": dirty_reason,
-            "source_ref_type": "summary_state",
-            "changed_ref_count": event_count,
-            "empty_summary_seen": node_hash in summary_nodes_empty,
-            "propagate_depth": 0,
             "scope": event_scope_by_node.get(node_hash, scope),
             "status": "pending",
             "created_at_ms": refreshed_at_ms,
             "updated_at_ms": refreshed_at_ms,
         }
+        if ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS or ENABLE_SUMMARY_REFRESH_AUDIT or ENABLE_CONTEXT_DEBUG_RECORDS:
+            synthetic_dirty.update(
+                {
+                    "depth": len(node_path),
+                    "dirty_reason": dirty_reason,
+                    "source_ref_type": "summary_state",
+                    "changed_ref_count": event_count,
+                    "empty_summary_seen": node_hash in summary_nodes_empty,
+                    "propagate_depth": 0,
+                }
+            )
+        pending_by_node[node_hash] = synthetic_dirty
     cold_cutoff_ms = refreshed_at_ms - max(0, int(min_compression_event_age_ms))
     for node_hash, event_count in sorted(event_counts_by_node.items(), key=lambda item: item[1], reverse=True):
         if len(pending_by_node) >= limit:
@@ -258,19 +274,25 @@ def pending_dirty_node_records(
         )
         if synthetic_dirty_hash in completed_dirty_hashes:
             continue
-        pending_by_node[node_hash] = {
+        synthetic_dirty = {
             "record_type": "context_summary_dirty",
             "dirty_hash": synthetic_dirty_hash,
             "node_hash": node_hash,
             "node_path": node_path,
-            "depth": len(node_path),
-            "dirty_reason": dirty_reason,
-            "source_ref_type": "event_window",
-            "changed_ref_count": event_count,
-            "propagate_depth": 0,
             "scope": event_scope_by_node.get(node_hash, scope),
             "status": "pending",
             "created_at_ms": refreshed_at_ms,
             "updated_at_ms": refreshed_at_ms,
         }
+        if ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS or ENABLE_SUMMARY_REFRESH_AUDIT or ENABLE_CONTEXT_DEBUG_RECORDS:
+            synthetic_dirty.update(
+                    {
+                        "depth": len(node_path),
+                        "dirty_reason": dirty_reason,
+                        "source_ref_type": "event_window",
+                        "changed_ref_count": event_count,
+                        "propagate_depth": 0,
+                }
+            )
+        pending_by_node[node_hash] = synthetic_dirty
     return pending_by_node
