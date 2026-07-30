@@ -410,6 +410,15 @@ def message_text(message: Any) -> str:
         or message.get("utterance")
         or ""
     ).strip()
+    visual_parts = []
+    visual_query = str(message.get("query") or "").strip()
+    visual_caption = str(message.get("blip_caption") or "").strip()
+    if visual_query:
+        visual_parts.append(f"visual query: {visual_query}")
+    if visual_caption:
+        visual_parts.append(f"visual caption: {visual_caption}")
+    if visual_parts:
+        text = " ".join(part for part in (text, " ".join(visual_parts)) if part)
     prefix_parts = [part for part in (dia_id, role) if part]
     prefix = " ".join(prefix_parts)
     return f"{prefix}: {text}" if prefix and text else text
