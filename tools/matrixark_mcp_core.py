@@ -4690,6 +4690,7 @@ def candidate_index_terms(
     elif record_type == "context_segment":
         terms.add(context_index_name("segment_topic", record.get("topic")))
         add_direct_layer_terms()
+        add_source_lineage_terms()
     elif record_type == "resource_chunk":
         terms.update(index_terms_by_ref.get(record.get("chunk_hash"), []))
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))

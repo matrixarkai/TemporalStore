@@ -7601,6 +7601,21 @@ class MatrixArkLocalAdapter:
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
+            for index_name in candidate_index_terms(records_to_append[-1], {}, {}):
+                segment_index = context_index_posting_record(
+                    index_name=index_name,
+                    data_model="context_segment",
+                    ref_type="segment",
+                    ref_hashes=[segment_hash],
+                    batch_id_hash=batch_id_hash,
+                    node_hash=node_hash,
+                    scope=envelope["scope"],
+                    updated_at_ms=envelope["ingestion_time_ms"],
+                )
+                segment_index["access_scope"] = envelope["scope"]
+                segment_index.pop("index_hash", None)
+                records_to_append.append(segment_index)
+                entity_index_write_count += 1
             segment_embedding_text = segment["topic"] + " " + segment["summary_text"]
             segment_vector = embedding_for_text(segment_embedding_text)
             records_to_append.append(
