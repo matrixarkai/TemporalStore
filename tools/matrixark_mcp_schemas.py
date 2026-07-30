@@ -424,6 +424,16 @@ TOOLS: list[Json] = [
                     "default": 2592000000,
                     "description": "TTL marker for raw source events after compression. Events are not deleted inline; eviction workers must also check recall reinforcement markers.",
                 },
+                "ensure_embeddings": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Also repair missing or stale embeddings for events, segments, entities/profiles, nodes, summaries, and compression summaries after dirty summary refresh.",
+                },
+                "embedding_backfill_limit": {
+                    "type": "integer",
+                    "default": 512,
+                    "description": "Maximum source records whose missing or stale embeddings should be generated in this refresh call.",
+                },
             },
             "additionalProperties": True,
         },

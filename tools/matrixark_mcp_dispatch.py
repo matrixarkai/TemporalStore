@@ -116,7 +116,19 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
             server.metrics.observe_operation("summary_refresh", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
             raise
         server.metrics.observe_operation("summary_refresh", "ok", (time.perf_counter() - started_perf) * 1000.0)
-        server.append_audit_policy("context.refresh_summaries", identity, status="ok", details={"refreshed_count": result.get("refreshed_count")}, args=args, hot_path=True)
+        server.append_audit_policy(
+            "context.refresh_summaries",
+            identity,
+            status="ok",
+            details={
+                "refreshed_count": result.get("refreshed_count"),
+                "embedding_generated_count": (result.get("embedding_refresh") or {}).get("generated_count")
+                if isinstance(result.get("embedding_refresh"), dict)
+                else None,
+            },
+            args=args,
+            hot_path=True,
+        )
         response = {**result, "access": args.get("_matrixark_auth", {})}
         return server._finalize_write_response(name, args, identity, hook, response)
     if name == "matrixark_retrieve":
