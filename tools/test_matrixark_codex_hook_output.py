@@ -2563,6 +2563,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("agent_message", raw["record_type"])
         self.assertEqual("raw_agent_message", raw["raw_record_type"])
         self.assertEqual("backfill_only", raw["raw_ingestion_visibility"])
+        self.assertEqual("user", raw["role"])
+        self.assertEqual("real hooked Codex message", raw["text"])
+        self.assertEqual("UserPromptSubmit", raw["codex_api_event"])
+        self.assertEqual("before_llm", raw["hook_type"])
         self.assertFalse(raw["serving_visible"])
         self.assertEqual("context_event", raw["serving_projection_record_type"])
         self.assertEqual(serving["event_id_hash"], raw["serving_context_event_hash"])
@@ -2578,6 +2582,9 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertNotIn("thread_id", raw)
         self.assertNotIn("turn_id", raw)
         self.assertEqual("context_event", serving["record_type"])
+        self.assertEqual("user", serving["role"])
+        self.assertEqual("UserPromptSubmit", serving["codex_api_event"])
+        self.assertEqual("before_llm", serving["hook_type"])
         self.assertEqual("codex-cpp-session-1", serving["session_id"])
         self.assertEqual("codex-cpp-session-1", serving["scope"]["session_id"])
         self.assertNotIn("thread_id", serving)
@@ -3269,15 +3276,82 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
 
         raw_record = server.adapter.raw_records[0]
         self.assertEqual("tool", raw_record["source_role"])
-        self.assertNotIn("hook_type", raw_record)
+        self.assertEqual("tool", raw_record["role"])
+        self.assertEqual("PostToolUse", raw_record["codex_api_event"])
+        self.assertEqual("tool_result", raw_record["hook_type"])
         self.assertNotIn("source_hook_types", raw_record)
         self.assertEqual("PostToolUse", raw_record["codex_event"])
         serving_event = next(record for record in server.adapter.serving_records if record["record_type"] == "context_event")
         self.assertEqual("tool", serving_event["source_role"])
+        self.assertEqual("tool", serving_event["role"])
+        self.assertEqual("PostToolUse", serving_event["codex_api_event"])
+        self.assertEqual("tool_result", serving_event["hook_type"])
         self.assertEqual(["tool_result"], serving_event["source_hook_types"])
         self.assertEqual("PostToolUse", serving_event["codex_event"])
         self.assertEqual("tool", serving_event["envelope"]["source_role"])
         self.assertNotIn("hook_type", serving_event["envelope"])
+
+    def test_fast_async_hook_ingest_flushes_serving_projection_before_hook_exit(self) -> None:
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.queued_records = []
+                self.materialized_records = []
+                self.materialized_batches = []
+                self.session_buffer_records = []
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.queued_records.extend(records)
+
+            def _append_many_materialized(self, records, *, allow_queue=True):
+                self.materialized_batches.append(list(records))
+                self.materialized_records.extend(records)
+
+            def append_session_buffer_event(self, **kwargs):
+                self.session_buffer_records.append(kwargs)
+
+            def pending_session_events(self, scope):
+                return []
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        args = Namespace(
+            event="Stop",
+            account_id="acct_local",
+            tenant_id="tenant_codex",
+            user_id="deeproute",
+            session_id="codex-session-sync-serving",
+            team="codex",
+            project="temporalstore",
+            session_commit_threshold=20,
+            idle_commit_timeout_ms=0,
+            understanding_provider="rules",
+            segment_provider="deterministic",
+        )
+        server = Server()
+        hook.fast_async_hook_ingest(
+            server,
+            args=args,
+            text="Final assistant answer must be visible in serving before hook exit.",
+            role="assistant",
+            agent_context={"workspace_root": "/repo"},
+            hook={"session_id_source": "payload_field"},
+        )
+
+        self.assertEqual([], server.adapter.queued_records)
+        self.assertEqual("context_event", server.adapter.materialized_batches[0][0]["record_type"])
+        serving_event = next(
+            record for record in server.adapter.materialized_records if record["record_type"] == "context_event"
+        )
+        self.assertEqual("assistant", serving_event["role"])
+        self.assertEqual("Stop", serving_event["codex_api_event"])
+        self.assertEqual("after_llm", serving_event["hook_type"])
+        self.assertIn("assistant: Final assistant answer", serving_event["text"])
 
     def test_fast_async_hook_ingest_threshold_commits_tool_evidence(self) -> None:
         original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT
