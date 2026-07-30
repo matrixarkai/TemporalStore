@@ -77,6 +77,52 @@ def _source_value_counts(envelope: Json, metadata_count_field: str, metadata_lis
     return counts
 
 
+def _source_memory_selection_policy_counts(envelope: Json) -> Json:
+    metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
+    metadata_counts = _positive_count_map(metadata.get("source_memory_selection_policy_counts"))
+    if metadata_counts:
+        return metadata_counts
+    envelope_counts = _positive_count_map(envelope.get("source_memory_selection_policy_counts"))
+    if envelope_counts:
+        return envelope_counts
+    values: list[object] = []
+    for source in [metadata, envelope]:
+        if isinstance(source.get("source_memory_selection_policies"), list):
+            values.extend(source["source_memory_selection_policies"])
+        selection = source.get("codex_memory_selection")
+        if isinstance(selection, dict):
+            values.append(selection.get("policy"))
+    counts: Json = {}
+    for value in values:
+        name = str(value or "").strip()
+        if name:
+            counts[name] = int(counts.get(name, 0)) + 1
+    return counts
+
+
+def _context_event_source_index_terms(envelope: Json) -> list[str]:
+    terms: list[str] = []
+    for role in _source_role_counts(envelope):
+        terms.append(context_index_name("source_role", role))
+    for hook_type in _source_value_counts(
+        envelope,
+        "source_hook_type_counts",
+        "source_hook_types",
+        "hook_type",
+    ):
+        terms.append(context_index_name("hook_type", hook_type))
+    for codex_event in _source_value_counts(
+        envelope,
+        "source_codex_event_counts",
+        "source_codex_events",
+        "codex_event",
+    ):
+        terms.append(context_index_name("codex_event", codex_event))
+    for policy in _source_memory_selection_policy_counts(envelope):
+        terms.append(context_index_name("memory_selection_policy", policy))
+    return ordered_unique(terms)
+
+
 def session_l0_summary_record(
     *,
     summary_hash: int,
@@ -203,17 +249,19 @@ def context_event_record(
 
 
 def context_event_index_terms(*, extraction: Json, text: str, envelope: Json) -> list[str]:
-    return ordered_unique(
+    terms = list(
         extraction.get("indexes")
         or [
             context_index_name("event_type", extraction.get("event_type") or infer_event_type(text)),
             context_index_name("classification", non_default_classification(extraction.get("classification"))),
             context_index_name("status", extraction.get("status") or "observed"),
-            context_index_name("source_type", envelope["kind"]),
+            context_index_name("source_type", envelope.get("kind", "message")),
             context_index_name("memory_scope", "session"),
             context_index_name("session_continuity", "same_session"),
         ]
     )
+    terms.extend(_context_event_source_index_terms(envelope))
+    return ordered_unique(terms)
 
 
 def context_event_index_records(
@@ -232,7 +280,6 @@ def context_event_index_records(
             **context_index_posting_record(
                 index_name=index_name,
                 data_model="context_event",
-                capability="context_event",
                 ref_type="event",
                 ref_hashes=[event_id_hash],
                 node_hash=node_hash,

@@ -3056,6 +3056,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "metadata": {
                 "source_hook_type_counts": {"before_llm": 1},
                 "source_codex_event_counts": {"UserPromptSubmit": 1},
+                "source_memory_selection_policy_counts": {"selected_user_prompt": 1},
             },
             "ingestion_time_ms": 1780000000000,
         }
@@ -3100,6 +3101,10 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(1780000000000, event["updated_at_ms"])
         self.assertIn("memory_scope:session", index_terms)
         self.assertIn("session_continuity:same_session", index_terms)
+        self.assertIn("source_role:user", index_terms)
+        self.assertIn("hook_type:before_llm", index_terms)
+        self.assertIn("codex_event:userpromptsubmit", index_terms)
+        self.assertIn("memory_selection_policy:selected_user_prompt", index_terms)
         self.assertTrue(all(record["memory_scope"] == "session" for record in indexes))
         self.assertTrue(all(record["session_continuity"] == "same_session" for record in indexes))
         self.assertTrue(all(record["extraction_phase"] == "pending_async" for record in indexes))
