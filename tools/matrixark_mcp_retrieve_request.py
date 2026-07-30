@@ -187,29 +187,33 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
     commit_status = commit_result.get("status") if isinstance(commit_result, dict) else ""
     status = "committed" if commit_status == "committed" else "attempted"
     append = getattr(target, "append", None)
+    resolved_task_count = 0
     if callable(append):
-        try:
-            append(
-                {
-                    "record_type": "matrixark_async_pipeline_task",
-                    "task_hash": int(task.get("task_hash") or 0),
-                    "scheduled_task_hash": task.get("task_hash"),
-                    "event_id_hash": task.get("event_id_hash"),
-                    "scope": task.get("scope", scope),
-                    "status": f"idle_commit_{status}",
-                    "trigger_policy": "idle_timeout",
-                    "reason": "pre_retrieval_idle_commit_flush",
-                    "commit_result_status": commit_status,
-                    "committed_event_count": int(commit_result.get("committed_event_count") or 0) if isinstance(commit_result, dict) else 0,
-                    "updated_at_ms": current_time_ms,
-                }
-            )
-        except Exception:
-            pass
+        for scheduled_task in due_tasks:
+            try:
+                append(
+                    {
+                        "record_type": "matrixark_async_pipeline_task",
+                        "task_hash": int(scheduled_task.get("task_hash") or 0),
+                        "scheduled_task_hash": scheduled_task.get("task_hash"),
+                        "event_id_hash": scheduled_task.get("event_id_hash"),
+                        "scope": scheduled_task.get("scope", scope),
+                        "status": f"idle_commit_{status}",
+                        "trigger_policy": "idle_timeout",
+                        "reason": "pre_retrieval_idle_commit_flush",
+                        "commit_result_status": commit_status,
+                        "committed_event_count": int(commit_result.get("committed_event_count") or 0) if isinstance(commit_result, dict) else 0,
+                        "updated_at_ms": current_time_ms,
+                    }
+                )
+                resolved_task_count += 1
+            except Exception:
+                pass
     return {
         **result,
         "status": status,
         "due_task_count": len(due_tasks),
+        "resolved_scheduled_task_count": resolved_task_count,
         "committed_event_count": int(commit_result.get("committed_event_count") or 0) if isinstance(commit_result, dict) else 0,
         "trigger_policy": commit_result.get("trigger_policy") if isinstance(commit_result, dict) else "",
         "commit_result_status": commit_status,
