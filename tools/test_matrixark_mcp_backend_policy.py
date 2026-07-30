@@ -601,6 +601,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self._old_local_jsonl_max_bytes = mcp_local.LOCAL_JSONL_MAX_BYTES
         self._old_local_jsonl_retention_count = mcp_local.LOCAL_JSONL_RETENTION_COUNT
         self._old_local_jsonl_retention_age_ms = mcp_local.LOCAL_JSONL_RETENTION_AGE_MS
+        self._old_recover_any_mode = os.environ.get("MATRIXARK_TEMPORALSTORE_RECOVER_LOCAL_STORE_ANY_MODE")
         mcp_core._DIRECT_RETRIEVAL_CANDIDATE_CACHE.clear()
         mcp_core._DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.clear()
 
@@ -614,6 +615,10 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         mcp_local.LOCAL_JSONL_MAX_BYTES = self._old_local_jsonl_max_bytes
         mcp_local.LOCAL_JSONL_RETENTION_COUNT = self._old_local_jsonl_retention_count
         mcp_local.LOCAL_JSONL_RETENTION_AGE_MS = self._old_local_jsonl_retention_age_ms
+        if self._old_recover_any_mode is None:
+            os.environ.pop("MATRIXARK_TEMPORALSTORE_RECOVER_LOCAL_STORE_ANY_MODE", None)
+        else:
+            os.environ["MATRIXARK_TEMPORALSTORE_RECOVER_LOCAL_STORE_ANY_MODE"] = self._old_recover_any_mode
         mcp_core._DIRECT_RETRIEVAL_CANDIDATE_CACHE.clear()
         mcp_core._DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.clear()
 
@@ -3887,6 +3892,112 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             self.assertEqual(client.strings[adapter._count_key], "1")
             self.assertTrue(any(record.get("event_id_hash") == 995 for record in records))
             self.assertFalse(any(record.get("record_type") == "context_compression_event" for record in records))
+
+    def test_direct_disk_fallback_recovery_skips_shared_store_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fallback_log = Path(tmpdir) / "fallback.jsonl"
+            fallback = mcp.MatrixArkLocalAdapter(fallback_log)
+            fallback.append(
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 997,
+                    "tenant_hash": 9,
+                    "scope": {"tenant_hash": 9},
+                    "scope_key": mcp_core.scope_key_from_hashes(9, 0, 0),
+                    "node_hash": 10,
+                    "updated_at_ms": 1780000008000,
+                    "text": "must not become authoritative in shared store mode",
+                }
+            )
+            client = _HashStoreClient()
+            adapter = _direct_adapter_for_hash_store(client)
+            adapter._disk_fallback_adapter = None
+            adapter._disk_fallback_path = str(fallback_log)
+            adapter._disk_fallback_enabled = True
+            adapter._disk_fallback_recovery_enabled = True
+            adapter._disk_fallback_recovery_attempted = False
+            adapter._disk_fallback_recovery_in_progress = False
+            adapter._disk_fallback_recovery_status = {"status": "not_attempted"}
+            adapter._storage_family = "shared_store"
+            adapter._storage_mode = "shared_store"
+            adapter._replication_mode = "shared_store"
+
+            report = adapter._recover_serving_from_disk_fallback_if_needed(reason="unit_restart")
+
+            self.assertEqual("skipped", report["status"])
+            self.assertFalse(report["replay_gate"]["allowed"])
+            self.assertEqual("distributed_storage_uses_replication_or_shared_store_recovery", report["replay_gate"]["skip_reason"])
+            self.assertNotIn(adapter._count_key, client.strings)
+            self.assertEqual([], adapter.read_all_without_disk_fallback_recovery())
+
+    def test_direct_disk_fallback_recovery_allows_single_node_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fallback_log = Path(tmpdir) / "fallback.jsonl"
+            mcp.MatrixArkLocalAdapter(fallback_log).append(
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 998,
+                    "tenant_hash": 9,
+                    "scope": {"tenant_hash": 9},
+                    "scope_key": mcp_core.scope_key_from_hashes(9, 0, 0),
+                    "node_hash": 10,
+                    "updated_at_ms": 1780000009000,
+                    "text": "single node can replay local guard",
+                }
+            )
+            client = _HashStoreClient()
+            adapter = _direct_adapter_for_hash_store(client)
+            adapter._disk_fallback_adapter = None
+            adapter._disk_fallback_path = str(fallback_log)
+            adapter._disk_fallback_enabled = True
+            adapter._disk_fallback_recovery_enabled = True
+            adapter._disk_fallback_recovery_attempted = False
+            adapter._disk_fallback_recovery_in_progress = False
+            adapter._disk_fallback_recovery_status = {"status": "not_attempted"}
+            adapter._storage_family = "local"
+            adapter._storage_mode = "single_node"
+            adapter._replication_mode = "none"
+
+            report = adapter._recover_serving_from_disk_fallback_if_needed(reason="unit_restart")
+
+            self.assertEqual("recovered", report["status"])
+            self.assertEqual(1, report["recovered_records"])
+            self.assertEqual(client.strings[adapter._count_key], "1")
+
+    def test_direct_disk_fallback_recovery_override_allows_test_replay_any_mode(self) -> None:
+        os.environ["MATRIXARK_TEMPORALSTORE_RECOVER_LOCAL_STORE_ANY_MODE"] = "1"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fallback_log = Path(tmpdir) / "fallback.jsonl"
+            mcp.MatrixArkLocalAdapter(fallback_log).append(
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 999,
+                    "tenant_hash": 9,
+                    "scope": {"tenant_hash": 9},
+                    "scope_key": mcp_core.scope_key_from_hashes(9, 0, 0),
+                    "node_hash": 10,
+                    "updated_at_ms": 1780000010000,
+                    "text": "test override can replay shared store fallback",
+                }
+            )
+            client = _HashStoreClient()
+            adapter = _direct_adapter_for_hash_store(client)
+            adapter._disk_fallback_adapter = None
+            adapter._disk_fallback_path = str(fallback_log)
+            adapter._disk_fallback_enabled = True
+            adapter._disk_fallback_recovery_enabled = True
+            adapter._disk_fallback_recovery_attempted = False
+            adapter._disk_fallback_recovery_in_progress = False
+            adapter._disk_fallback_recovery_status = {"status": "not_attempted"}
+            adapter._storage_family = "shared_store"
+            adapter._storage_mode = "shared_store"
+            adapter._replication_mode = "shared_store"
+
+            report = adapter._recover_serving_from_disk_fallback_if_needed(reason="unit_restart")
+
+            self.assertEqual("recovered", report["status"])
+            self.assertTrue(report["replay_gate"]["override"])
+            self.assertEqual(1, report["recovered_records"])
 
     def test_direct_append_supports_matrixkv_raw_backend_option(self) -> None:
         client = _NativeAppendClient()

@@ -1051,6 +1051,50 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             setattr(self, "_disk_fallback_write_failures", int(getattr(self, "_disk_fallback_write_failures", 0) or 0) + 1)
             _mcp_debug_log(f"matrixark disk fallback shadow append failed: {exc}")
 
+    def _disk_fallback_replay_gate(self) -> Json:
+        override = os.environ.get("MATRIXARK_TEMPORALSTORE_RECOVER_LOCAL_STORE_ANY_MODE", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        storage_family = str(
+            getattr(self, "_storage_family", "")
+            or os.environ.get("MATRIXARK_STORAGE_FAMILY", "")
+            or os.environ.get("MATRIXARK_TEMPORALSTORE_STORAGE_FAMILY", "")
+            or "default"
+        ).strip().lower().replace("-", "_")
+        storage_mode = str(
+            getattr(self, "_storage_mode", "")
+            or os.environ.get("MATRIXARK_STORAGE_MODE", "")
+            or os.environ.get("MATRIXARK_TEMPORALSTORE_STORAGE_MODE", "")
+            or "default"
+        ).strip().lower().replace("-", "_")
+        replication_mode = str(
+            getattr(self, "_replication_mode", "")
+            or os.environ.get("MATRIXARK_REPLICATION_MODE", "")
+            or os.environ.get("MATRIXARK_TEMPORALSTORE_REPLICATION_MODE", "")
+            or "default"
+        ).strip().lower().replace("-", "_")
+        distributed_values = {"multi_node", "shared_store", "raft", "replicated", "distributed"}
+        local_values = {"default", "local", "single_node", "none", ""}
+        distributed = (
+            storage_family in {"shared_store", "raft", "replicated", "distributed"}
+            or storage_mode in distributed_values
+            or replication_mode in {"shared_store", "raft", "replicated", "distributed"}
+        )
+        local_direct = storage_family in local_values and storage_mode in local_values and replication_mode in local_values
+        allowed = bool(override or (local_direct and not distributed))
+        return {
+            "allowed": allowed,
+            "override": override,
+            "storage_family": storage_family or "default",
+            "storage_mode": storage_mode or "default",
+            "replication_mode": replication_mode or "default",
+            "policy": "local_single_node_only",
+            "skip_reason": "" if allowed else "distributed_storage_uses_replication_or_shared_store_recovery",
+        }
+
     def _recover_serving_from_disk_fallback_if_needed(self, *, reason: str) -> Json:
         self._ensure_backend_metric_fields()
         if not bool(getattr(self, "_disk_fallback_recovery_enabled", False)):
@@ -1060,6 +1104,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         if bool(getattr(self, "_disk_fallback_recovery_attempted", False)):
             return dict(getattr(self, "_disk_fallback_recovery_status", {"status": "already_attempted", "reason": reason}))
         self._disk_fallback_recovery_attempted = True
+        replay_gate = self._disk_fallback_replay_gate()
+        if not bool(replay_gate.get("allowed", False)):
+            status = {"status": "skipped", "reason": reason, "replay_gate": replay_gate}
+            self._disk_fallback_recovery_status = status
+            return status
         path = str(getattr(self, "_disk_fallback_path", "") or "").strip()
         if not path:
             status = {"status": "missing_path", "reason": reason}
@@ -1104,6 +1153,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "status": "recovered" if missing_records else "up_to_date",
                 "reason": reason,
                 "path": path,
+                "replay_gate": replay_gate,
                 "fallback_records": len(fallback_records),
                 "recoverable_serving_records": len(serving_records),
                 "existing_serving_records": len(existing_records),
