@@ -30,7 +30,7 @@ QUERY_TYPE_LABELS: dict[str, str] = {
 }
 
 PROFILE_MEMORY_QUERY_RE = re.compile(
-    r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|remember about me|know about (?:me|my|the user)|told you before)\b"
+    r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|remember about me|know about (?:me|my|the user)|what (?:have|did) i (?:tell|told) you|what (?:are|were) my preferences|my preferences|told you before)\b"
 )
 
 QUERY_INDEX_LABELS: dict[str, str] = {

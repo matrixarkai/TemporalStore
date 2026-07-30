@@ -155,6 +155,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "What do you know about my preferences across tasks?",
             "Show what you know about the user from previous sessions",
             "What have I told you before?",
+            "What have I told you about myself?",
+            "What did I tell you before?",
+            "What are my preferences?",
         ]:
             self.assertEqual("profile_memory", infer_query_type(query), query)
             self.assertEqual("profile_memory", matrixark_mcp_query.infer_query_type(query), query)
