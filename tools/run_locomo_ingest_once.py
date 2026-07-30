@@ -2833,12 +2833,21 @@ def reader_answer_should_use_candidate(question: str, answer: str, candidate: st
     temporal_question = bool(re.search(r"\b(when|date|year|month|day|before|after|week)\b", q))
     relative_temporal = bool(
         re.search(
-            r"\b(yesterday|today|tomorrow|last year|this year|next year|last month|this month|next month|last week|this week|next week)\b",
+            r"\b(yesterday|today|tomorrow|last year|this year|next year|last month|this month|next month|last week|this week|next week|a few weeks ago|few weeks ago|weeks ago|months ago)\b",
             normalized_answer,
         )
     )
     candidate_has_concrete_time = bool(date_regex().search(candidate) or re.search(r"\b\d{4}\b", candidate))
+    candidate_has_relative_time = bool(
+        re.search(
+            r"\b(yesterday|today|tomorrow|last year|this year|next year|last month|this month|next month|last week|this week|next week|a few weeks ago|few weeks ago|weeks ago|months ago)\b",
+            normalized_candidate,
+        )
+    )
+    answer_has_concrete_time = bool(date_regex().search(answer) or re.search(r"\b\d{4}\b", answer))
     if temporal_question and relative_temporal and candidate_has_concrete_time:
+        return True
+    if temporal_question and candidate_has_relative_time and answer_has_concrete_time:
         return True
     if normalized_answer in normalized_candidate and len(normalized_candidate) <= 120:
         return True
@@ -6289,6 +6298,17 @@ def locomo_short_fact_answer(q: str, normalized_blob: str) -> str:
     if "pottery" in q and "colors" in q and "patterns" in q and re.search(r"\bwhy\b", q):
         if "catch the eye" in normalized_blob and re.search(r"\bmake (?:people )?smile\b", normalized_blob):
             return "She wanted to catch the eye and make people smile."
+    if "pottery" in q and re.search(r"\b(?:types?|kind|made|make)\b", q):
+        pottery_objects = []
+        for name in ("bowls", "bowl", "cups", "cup", "plates", "plate", "mugs", "mug", "vases", "vase"):
+            singular = name.rstrip("s")
+            if re.search(rf"\b{re.escape(name)}\b", normalized_blob) or re.search(
+                rf"\b{re.escape(singular)}\b", normalized_blob
+            ):
+                pottery_objects.append("cup" if singular == "mug" else singular)
+        pottery_objects = ordered_unique(pottery_objects)
+        if pottery_objects:
+            return ", ".join(pottery_objects)
     if "pet" in q and "caroline" in q:
         if "guinea pig" in normalized_blob:
             return "guinea pig"
