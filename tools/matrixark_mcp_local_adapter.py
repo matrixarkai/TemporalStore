@@ -3149,14 +3149,36 @@ class MatrixArkLocalAdapter:
         max_messages = args.get("max_messages")
         if max_messages is not None and (not isinstance(max_messages, int) or max_messages <= 0):
             raise MatrixArkError("max_messages must be a positive integer")
-        pending_all = self.pending_session_events(scope)
+        pending_all_unfiltered = self.pending_session_events(scope)
+        commit_before_ms = args.get("commit_before_ms")
+        if commit_before_ms is None:
+            commit_before_ms = args.get("idle_commit_cutoff_ms")
+        if commit_before_ms is not None and (not isinstance(commit_before_ms, int) or commit_before_ms < 0):
+            raise MatrixArkError("commit_before_ms must be a non-negative integer")
+
+        def pending_event_time_ms(record: Json) -> int:
+            try:
+                return int(record.get("envelope", {}).get("ingestion_time_ms") or record.get("updated_at_ms") or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        if commit_before_ms:
+            pending_all = [
+                record
+                for record in pending_all_unfiltered
+                if pending_event_time_ms(record) <= commit_before_ms
+            ]
+        else:
+            pending_all = pending_all_unfiltered
         pending_event_count = len(pending_all)
         pending_message_count = session_event_message_count(pending_all)
+        pending_deferred_event_count = max(0, len(pending_all_unfiltered) - pending_event_count)
+        pending_deferred_message_count = max(0, session_event_message_count(pending_all_unfiltered) - pending_message_count)
         idle_elapsed_ms = 0
         idle_ready = False
         if pending_all and idle_timeout_ms is not None:
             latest_event_time = max(
-                int(record.get("envelope", {}).get("ingestion_time_ms") or record.get("updated_at_ms") or 0)
+                pending_event_time_ms(record)
                 for record in pending_all
             )
             idle_elapsed_ms = max(0, now_ms() - latest_event_time)
@@ -3172,6 +3194,9 @@ class MatrixArkLocalAdapter:
             "idle_ready": idle_ready,
             "force": force,
             "commit_reason": commit_reason,
+            "commit_before_ms": commit_before_ms,
+            "pending_deferred_event_count": pending_deferred_event_count,
+            "pending_deferred_message_count": pending_deferred_message_count,
         }
         if not force and not threshold_ready and not idle_ready:
             return {
@@ -3182,6 +3207,9 @@ class MatrixArkLocalAdapter:
                 "commit_reason": commit_reason,
                 "idle_timeout_ms": idle_timeout_ms,
                 "idle_elapsed_ms": idle_elapsed_ms,
+                "commit_before_ms": commit_before_ms,
+                "pending_deferred_event_count": pending_deferred_event_count,
+                "pending_deferred_message_count": pending_deferred_message_count,
                 "trigger_evidence": trigger_evidence,
                 "reason": "session buffer below extraction threshold and idle timeout not reached",
             }
@@ -3437,6 +3465,9 @@ class MatrixArkLocalAdapter:
                 "commit_reason": commit_reason,
                 "idle_timeout_ms": idle_timeout_ms,
                 "idle_elapsed_ms": idle_elapsed_ms,
+                "commit_before_ms": commit_before_ms,
+                "pending_deferred_event_count": pending_deferred_event_count,
+                "pending_deferred_message_count": pending_deferred_message_count,
                 "trigger_evidence": trigger_evidence,
             }
         try:
@@ -3598,6 +3629,9 @@ class MatrixArkLocalAdapter:
                 "final_session_boundary": final_session_boundary,
                 "pending_event_count_before_commit": pending_event_count,
                 "pending_message_count_before_commit": pending_message_count,
+                "pending_deferred_event_count": pending_deferred_event_count,
+                "pending_deferred_message_count": pending_deferred_message_count,
+                "commit_before_ms": commit_before_ms,
                 "committed_event_count": len(source_event_ids),
                 "extraction_context_event_ids": extraction_context_event_ids,
                 "extraction_context_event_count": len(extraction_context_event_ids),
@@ -3696,6 +3730,9 @@ class MatrixArkLocalAdapter:
             "storage_route": canonical_storage_route(storage_options),
             "pending_event_count": pending_event_count,
             "pending_message_count": pending_message_count,
+            "pending_deferred_event_count": pending_deferred_event_count,
+            "pending_deferred_message_count": pending_deferred_message_count,
+            "commit_before_ms": commit_before_ms,
             "committed_event_count": len(source_event_ids),
             "source_event_ids": source_event_ids,
             "extraction_context_event_ids": extraction_context_event_ids,

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import matrixark_codex_hook
 import matrixark_mcp_core
+import matrixark_mcp_local_adapter
 import matrixark_mcp_query
 import matrixark_mcp_summary_runtime
 from matrixark_mcp_context_pack import (
@@ -4256,6 +4257,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     storage_prefix="matrixark:codex-hook",
                     session_state_dir=Path(tmp_dir) / "sessions",
                     idle_commit_worker_only=False,
+                    idle_commit_cutoff_ms=0,
                 )
                 result = matrixark_codex_hook.spawn_idle_commit_worker_child(
                     args,
@@ -4263,10 +4265,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "session_buffer": {
                             "idle_commit_scheduled": True,
                             "idle_commit_deadline_ms": 1000250,
+                            "idle_commit_cutoff_ms": 1000000,
                         },
                         "auto_batch_extract_result": {
                             "trigger_policy": "idle_timeout",
                             "idle_commit_deadline_ms": 1000250,
+                            "idle_commit_cutoff_ms": 1000000,
                         },
                     },
                     session_id_source="payload_field",
@@ -4280,12 +4284,116 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("IdleTimeout", cmd)
             self.assertIn("--session-id", cmd)
             self.assertIn("session_idle_worker", cmd)
+            self.assertIn("--idle-commit-cutoff-ms", cmd)
+            self.assertIn("1000000", cmd)
             env = launched[0]["kwargs"]["env"]
             self.assertEqual("250", env["MATRIXARK_IDLE_COMMIT_WORKER_DELAY_MS"])
+            self.assertEqual("1000000", env["MATRIXARK_IDLE_COMMIT_CUTOFF_MS"])
             self.assertEqual("UserPromptSubmit", env["MATRIXARK_IDLE_COMMIT_WORKER_PARENT_EVENT"])
         finally:
             matrixark_codex_hook.subprocess.Popen = original_popen
             matrixark_codex_hook.time.time = original_time
+
+
+    def test_idle_commit_cutoff_leaves_newer_pending_events_uncommitted(self) -> None:
+        original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
+        original_hook_time = matrixark_codex_hook.time.time
+        session_commit_globals = FastHookLocalAdapter.session_commit.__globals__
+        original_adapter_now_ms = session_commit_globals["now_ms"]
+        matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-idle-cutoff.jsonl")
+
+                class Server:
+                    def __init__(self) -> None:
+                        self.adapter = adapter
+
+                scope = {
+                    "account_id": "acct_idle_cutoff",
+                    "tenant_id": "tenant_idle_cutoff",
+                    "user_id": "user_idle_cutoff",
+                    "session_id": "session_idle_cutoff",
+                }
+                args = Namespace(
+                    event="UserPromptSubmit",
+                    **scope,
+                    team="codex",
+                    project="temporalstore",
+                    session_commit_threshold=20,
+                    idle_commit_timeout_ms=100,
+                    understanding_provider="rules",
+                    segment_provider="deterministic",
+                )
+                matrixark_codex_hook.time.time = lambda: 1000.0
+                first = matrixark_codex_hook.fast_async_hook_ingest(
+                    Server(),
+                    args=args,
+                    text="Older idle event should be committed alone after the cutoff.",
+                    role="tool",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={"session_id_source": "payload_field", "hook_type": "tool_result"},
+                )
+                self.assertTrue(first["session_buffer"]["idle_commit_scheduled"])
+                cutoff_ms = first["session_buffer"]["idle_commit_cutoff_ms"]
+                self.assertEqual(1000000, cutoff_ms)
+
+                node_path = adapter.default_session_node_path(scope)
+                node_hash = matrixark_mcp_core.stable_hash("/".join(node_path))
+                newer_event_hash = matrixark_mcp_core.stable_hash("idle-cutoff-newer-event")
+                newer_envelope = {
+                    "kind": "message",
+                    "scope": scope,
+                    "messages": [{"role": "user", "content": "Newer prompt must remain pending for the next batch."}],
+                    "metadata": {"source": "test", "hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
+                    "ingestion_time_ms": cutoff_ms + 50,
+                }
+                adapter.append(
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": newer_event_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "text": "Newer prompt must remain pending for the next batch.",
+                        "summary_text": "Newer prompt must remain pending for the next batch.",
+                        "classification": "PENDING_ASYNC_EXTRACTION",
+                        "event_type": "pending_async",
+                        "status": "pending",
+                        "source_kind": "message",
+                        "envelope": newer_envelope,
+                        "updated_at_ms": cutoff_ms + 50,
+                    }
+                )
+                adapter.append_session_buffer_event(
+                    envelope=newer_envelope,
+                    event_id_hash=newer_event_hash,
+                    node_hash=node_hash,
+                    node_path=node_path,
+                    hook={"hook_type": "before_llm", "trigger": "UserPromptSubmit"},
+                )
+
+                session_commit_globals["now_ms"] = lambda: cutoff_ms + 150
+                commit = adapter.session_commit(
+                    {
+                        "scope": scope,
+                        "threshold_messages": 20,
+                        "force": False,
+                        "commit_reason": "idle_timeout",
+                        "idle_timeout_ms": 100,
+                        "commit_before_ms": cutoff_ms,
+                    }
+                )
+                self.assertEqual("committed", commit["status"])
+                self.assertEqual(1, commit["committed_event_count"])
+                self.assertEqual(1, commit["pending_deferred_event_count"])
+                self.assertEqual(cutoff_ms, commit["commit_before_ms"])
+                self.assertNotIn(newer_event_hash, {int(event_id) for event_id in commit["source_event_ids"]})
+                pending_after = adapter.pending_session_events(scope)
+                self.assertEqual([newer_event_hash], [record.get("event_id_hash") for record in pending_after])
+        finally:
+            matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+            matrixark_codex_hook.time.time = original_hook_time
+            session_commit_globals["now_ms"] = original_adapter_now_ms
 
     def test_fast_hook_idle_preflush_persists_real_adapter_memory_layers(self) -> None:
         original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT

@@ -1078,6 +1078,7 @@ def auto_batch_decision_summary(result: Json | None) -> Json:
         "threshold_ready": session_buffer.get("threshold_ready"),
         "idle_timeout_ms": session_buffer.get("idle_commit_timeout_ms"),
         "idle_commit_deadline_ms": session_buffer.get("idle_commit_deadline_ms"),
+        "idle_commit_cutoff_ms": session_buffer.get("idle_commit_cutoff_ms"),
         "idle_commit_scheduled": session_buffer.get("idle_commit_scheduled"),
         "idle_ready": session_buffer.get("idle_ready"),
         "pre_ingest_idle_ready": session_buffer.get("pre_ingest_idle_ready"),
@@ -2577,6 +2578,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo-root", type=Path, default=root)
     parser.add_argument("--rollout-backfill-only", action="store_true", default=False)
     parser.add_argument("--idle-commit-worker-only", action="store_true", default=False)
+    parser.add_argument("--idle-commit-cutoff-ms", type=int, default=int(os.environ.get("MATRIXARK_IDLE_COMMIT_CUTOFF_MS", "0") or 0))
     parser.add_argument(
         "--rollout-backfill-delay-ms",
         type=int,
@@ -4275,6 +4277,7 @@ def fast_async_hook_ingest(
         and (pending_event_count >= threshold or pending_message_count >= threshold)
     )
     idle_commit_deadline_ms = now + idle_timeout_ms if idle_timeout_ms > 0 else 0
+    idle_commit_cutoff_ms = now if idle_timeout_ms > 0 else 0
     should_schedule_idle_commit = (
         not should_boundary_commit
         and not should_threshold_commit
@@ -4301,6 +4304,7 @@ def fast_async_hook_ingest(
                     "threshold_messages": threshold,
                     "idle_commit_timeout_ms": idle_timeout_ms,
                     "idle_commit_deadline_ms": idle_commit_deadline_ms,
+                    "idle_commit_cutoff_ms": idle_commit_cutoff_ms,
                     "idle_commit_pending_event_count": pending_event_count,
                     "idle_commit_pending_message_count": pending_message_count,
                     "source_roles": [role] if role else [],
@@ -4426,6 +4430,7 @@ def fast_async_hook_ingest(
             "threshold_messages": threshold,
             "idle_commit_timeout_ms": idle_timeout_ms,
             "idle_commit_deadline_ms": idle_commit_deadline_ms,
+            "idle_commit_cutoff_ms": idle_commit_cutoff_ms,
             "idle_commit_scheduled": True,
             "extraction_phase": "provisional",
             "final_session_boundary": False,
@@ -4456,6 +4461,7 @@ def fast_async_hook_ingest(
             "threshold_ready": should_threshold_commit,
             "idle_commit_timeout_ms": idle_timeout_ms,
             "idle_commit_deadline_ms": idle_commit_deadline_ms if should_schedule_idle_commit else 0,
+            "idle_commit_cutoff_ms": idle_commit_cutoff_ms if should_schedule_idle_commit else 0,
             "idle_commit_scheduled": should_schedule_idle_commit,
             "threshold_commit_scheduled": threshold_commit_scheduled,
             "idle_ready": should_idle_commit,
@@ -4509,6 +4515,7 @@ def spawn_idle_commit_worker_child(args: argparse.Namespace, *, ingest: Json, se
         return {"status": "skipped", "reason": "idle_commit_timeout_disabled"}
     deadline_ms = int(session_buffer.get("idle_commit_deadline_ms") or auto_batch.get("idle_commit_deadline_ms") or 0)
     now_ms_value = int(time.time() * 1000)
+    cutoff_ms = int(session_buffer.get("idle_commit_cutoff_ms") or auto_batch.get("idle_commit_cutoff_ms") or now_ms_value)
     delay_ms = max(0, deadline_ms - now_ms_value) if deadline_ms > 0 else timeout_ms
     cmd = [
         sys.executable,
@@ -4534,6 +4541,8 @@ def spawn_idle_commit_worker_child(args: argparse.Namespace, *, ingest: Json, se
         str(getattr(args, "session_commit_threshold", 20)),
         "--idle-commit-timeout-ms",
         str(timeout_ms),
+        "--idle-commit-cutoff-ms",
+        str(cutoff_ms),
         "--understanding-provider",
         str(getattr(args, "understanding_provider", "rules")),
         "--segment-provider",
@@ -4563,6 +4572,7 @@ def spawn_idle_commit_worker_child(args: argparse.Namespace, *, ingest: Json, se
         cmd.extend(["--query", f"idle commit worker for {session_id_source}"])
     env = os.environ.copy()
     env["MATRIXARK_IDLE_COMMIT_WORKER_DELAY_MS"] = str(delay_ms)
+    env["MATRIXARK_IDLE_COMMIT_CUTOFF_MS"] = str(cutoff_ms)
     env["MATRIXARK_IDLE_COMMIT_WORKER_PARENT_EVENT"] = str(getattr(args, "event", ""))
     try:
         subprocess.Popen(
@@ -4587,6 +4597,7 @@ def spawn_idle_commit_worker_child(args: argparse.Namespace, *, ingest: Json, se
         "delay_ms": delay_ms,
         "idle_commit_timeout_ms": timeout_ms,
         "idle_commit_deadline_ms": deadline_ms,
+        "idle_commit_cutoff_ms": cutoff_ms,
     }
 
 
@@ -4608,6 +4619,7 @@ def run_idle_commit_worker_only(args: argparse.Namespace, session_id_source: str
                 "force": False,
                 "commit_reason": "idle_timeout",
                 "idle_timeout_ms": args.idle_commit_timeout_ms,
+                "commit_before_ms": args.idle_commit_cutoff_ms or None,
                 **hook_session_commit_extraction_options(args),
                 "storage_options": hook_storage_options(),
                 "agent_hook": {
