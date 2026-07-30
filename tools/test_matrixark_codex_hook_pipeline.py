@@ -7541,6 +7541,29 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("codex_event:previousassistantbackfill", index_names)
             self.assertIn("codex_event:stop:async_rollout_backfill", index_names)
             self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", index_names)
+            self.assertIn("memory_selection_policy:selected_profile_current_state", index_names)
+            profile_embeddings = [
+                record
+                for record in records
+                if record.get("record_type") == "context_embedding"
+                and record.get("embedding_type") == "profile_entity_state"
+                and record.get("memory_scope") == "user_profile"
+            ]
+            self.assertTrue(profile_embeddings, records)
+            self.assertTrue(
+                any(
+                    "selected_profile_current_state" in record.get("source_memory_selection_policies", [])
+                    and record.get("source_memory_selection_policy_counts", {}).get(
+                        "selected_assistant_decision_outcome_only"
+                    ) == 1
+                    and record.get("source_memory_selection_policy_counts", {}).get(
+                        "selected_profile_current_state"
+                    ) == 1
+                    and "PreviousAssistantBackfill" in record.get("source_codex_events", [])
+                    for record in profile_embeddings
+                ),
+                profile_embeddings,
+            )
             segment_index_names = {
                 str(record.get("index_name") or "")
                 for record in records

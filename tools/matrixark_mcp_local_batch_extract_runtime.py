@@ -518,6 +518,14 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 profile_source_memory_selection_policy_counts[policy] = int(
                     profile_source_memory_selection_policy_counts.get(policy, 0)
                 ) + int(count)
+            if profile_node_hash:
+                profile_source_memory_selection_policies = ordered_unique_any(
+                    profile_source_memory_selection_policies + ["selected_profile_current_state"]
+                )
+                profile_source_memory_selection_policy_counts["selected_profile_current_state"] = max(
+                    1,
+                    int(profile_source_memory_selection_policy_counts.get("selected_profile_current_state", 0) or 0),
+                )
             profile_entity_hashes.append(profile_entity_hash)
             profile_promotion_summary.append(
                 {
@@ -595,6 +603,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "source_hook_type_counts": profile_source_hook_type_counts,
                     "source_codex_events": profile_source_codex_events,
                     "source_codex_event_counts": profile_source_codex_event_counts,
+                    "source_memory_selection_policies": profile_source_memory_selection_policies,
+                    "source_memory_selection_policy_counts": profile_source_memory_selection_policy_counts,
                     "memory_scope": "user_profile",
                     "session_continuity": "cross_session",
                     "promoted_from_memory_scope": "session",
