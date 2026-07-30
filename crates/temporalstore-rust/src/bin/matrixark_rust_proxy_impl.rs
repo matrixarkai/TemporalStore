@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
@@ -2126,6 +2128,7 @@ fn native_serving_ref(mut item: Value) -> Value {
                 "source_extraction_phases",
                 "source_profile_promotion_policies",
                 "source_profile_promotion_blockers",
+                "source_ref",
             ] {
                 object.remove(field);
             }
@@ -6898,6 +6901,7 @@ mod tests {
             .expect("selected refs");
         assert!(selected_refs.iter().all(|value| value.get("ref_hash").is_none()));
         assert!(selected_refs.iter().all(|value| value.get("source_session_ids").is_none()));
+        assert!(selected_refs.iter().all(|value| value.get("source_ref").is_none()));
         assert!(selected_refs.iter().any(|value| value
             .get("text")
             .and_then(Value::as_str)
@@ -7003,6 +7007,7 @@ mod tests {
             .expect("selected refs");
         assert!(selected_refs.iter().all(|value| value.get("ref_hash").is_none()));
         assert!(selected_refs.iter().all(|value| value.get("source_session_ids").is_none()));
+        assert!(selected_refs.iter().all(|value| value.get("source_ref").is_none()));
         assert!(selected_refs.iter().any(|value| value
             .get("text")
             .and_then(Value::as_str)
