@@ -2881,6 +2881,56 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     self.assertNotIn("child_path", record)
                     self.assertNotIn("child_name", record)
 
+    def test_context_node_embeddings_are_generated_by_embedding_model(self) -> None:
+        calls: list[str] = []
+
+        def fake_embedding_for_text(text: str) -> list[float]:
+            calls.append(text)
+            return [0.25, 0.75]
+
+        old_embedding_for_text = mcp_local.embedding_for_text
+        old_embedding_model_name = mcp_local.embedding_model_name
+        mcp_local.embedding_for_text = fake_embedding_for_text
+        mcp_local.embedding_model_name = lambda: "unit-node-embedding-model"
+        self.addCleanup(lambda: setattr(mcp_local, "embedding_for_text", old_embedding_for_text))
+        self.addCleanup(lambda: setattr(mcp_local, "embedding_model_name", old_embedding_model_name))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            scope = {"tenant_id": "tenant_codex", "user_id": "codex_user", "session_id": "node-embedding-test"}
+            result = adapter.ensure_context_node_path(
+                node_path=["tenant:tenant_codex", "user:codex_user", "session:node-embedding-test"],
+                scope=scope,
+                updated_at_ms=1780000000000,
+            )
+            second_result = adapter.ensure_context_node_path(
+                node_path=["tenant:tenant_codex", "user:codex_user", "session:node-embedding-test"],
+                scope=scope,
+                updated_at_ms=1780000001000,
+            )
+
+            records = adapter.read_all()
+            node_embeddings = [
+                record
+                for record in records
+                if record.get("record_type") == "context_embedding"
+                and record.get("embedding_type") == "context_node"
+                and record.get("ref_type") == "node"
+            ]
+
+            self.assertEqual(3, result["node_embeddings_created"])
+            self.assertEqual(0, second_result["node_embeddings_created"])
+            self.assertEqual(3, len(node_embeddings))
+            self.assertEqual(3, len(calls))
+            self.assertTrue(all(record.get("vector") == [0.25, 0.75] for record in node_embeddings))
+            self.assertTrue(
+                all(
+                    record.get("model_ref") == mcp.embedding_model_ref_for_name("unit-node-embedding-model")
+                    for record in node_embeddings
+                )
+            )
+            self.assertTrue(any("session:node-embedding-test" in text for text in calls))
+
     def test_parent_summary_uses_child_summaries_and_state_not_recursive_raw_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
