@@ -5732,7 +5732,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
 
             sparse_records = []
             for record in adapter.read_all():
-                if record.get("record_type") == "context_index" and record.get("data_model") == "context_event":
+                if record.get("record_type") == "context_index":
                     continue
                 if record.get("record_type") == "context_summary":
                     continue
@@ -5753,8 +5753,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             pack = adapter.retrieve(
                 {
                     "scope": {**scope, "_session_scope": "prefer"},
-                    "query": "recover hot event embedding metadata",
-                    "question_type": "broad_exploration",
+                    "query": "What selected assistant decision outcome did Codex implement?",
+                    "question_type": "current_state",
                     "max_context_tokens": 240,
                     "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
                     "include_retrieval_debug": True,
@@ -5766,6 +5766,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(selected_events, pack["selected_refs"])
             recovered = selected_events[0]
             self.assertEqual("assistant_response", recovered.get("event_type"))
+            pushdown = pack["recall_policy"]["backend_retrieval_pushdown"]
+            self.assertTrue(pushdown["secondary_index_prefilter_enabled"], pushdown)
+            self.assertEqual(0, pushdown["secondary_index_matched_posting_count"])
+            self.assertGreaterEqual(pushdown["secondary_embedding_matched_posting_count"], 1)
 
     def test_retrieval_metrics_expose_shared_local_remote_budget(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

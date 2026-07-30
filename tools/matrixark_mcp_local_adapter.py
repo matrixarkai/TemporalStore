@@ -2492,6 +2492,7 @@ class MatrixArkLocalAdapter:
             return scope_matches(path_scope, query_scope)
 
         secondary_matched_index_count = 0
+        secondary_embedding_matched_count = 0
         secondary_posting_ref_hashes: set[str] = set()
         secondary_posting_node_hashes: set[str] = set()
         secondary_posting_batch_hashes: set[str] = set()
@@ -2521,7 +2522,39 @@ class MatrixArkLocalAdapter:
                 if batch_hash is not None:
                     secondary_posting_batch_hashes.add(str(batch_hash))
 
-        secondary_prefilter_enabled = bool(required_index_terms and secondary_matched_index_count > 0)
+            for embedding_record in raw_records:
+                if str(embedding_record.get("record_type") or "") != "context_embedding":
+                    continue
+                if embedding_record.get("embedding_type") != "event_text":
+                    continue
+                if embedding_record.get("ref_type") not in {"event", None, ""}:
+                    continue
+                ref_hash = embedding_record.get("ref_hash")
+                if ref_hash in (None, ""):
+                    continue
+                if not recovered_scope_matches(embedding_record, scope):
+                    continue
+                synthetic_event = {
+                    **embedding_record,
+                    "record_type": "context_event",
+                    "event_id_hash": ref_hash,
+                    "event_type": embedding_record.get("event_type", ""),
+                    "classification": embedding_record.get("classification", ""),
+                    "status": embedding_record.get("status", ""),
+                    "source_type": embedding_record.get("source_type") or embedding_record.get("source_kind") or "message",
+                }
+                synthetic_terms = candidate_index_terms(synthetic_event, {}, {})
+                if not synthetic_terms.intersection(required_index_terms):
+                    continue
+                secondary_embedding_matched_count += 1
+                secondary_posting_ref_hashes.add(str(ref_hash))
+                node_hash = embedding_record.get("node_hash")
+                if node_hash is not None:
+                    secondary_posting_node_hashes.add(str(node_hash))
+
+        secondary_prefilter_enabled = bool(
+            required_index_terms and (secondary_matched_index_count > 0 or secondary_embedding_matched_count > 0)
+        )
 
         def record_matches_secondary_postings(record: Json) -> bool:
             if not secondary_prefilter_enabled:
@@ -2619,6 +2652,7 @@ class MatrixArkLocalAdapter:
                 "secondary_index_groups_supplied": len(secondary_index_groups or []),
                 "secondary_index_prefilter_enabled": secondary_prefilter_enabled,
                 "secondary_index_matched_posting_count": secondary_matched_index_count,
+                "secondary_embedding_matched_posting_count": secondary_embedding_matched_count,
                 "secondary_index_posting_ref_hash_count": len(secondary_posting_ref_hashes),
                 "secondary_index_posting_node_hash_count": len(secondary_posting_node_hashes),
                 "secondary_index_posting_batch_hash_count": len(secondary_posting_batch_hashes),
