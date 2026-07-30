@@ -2872,8 +2872,56 @@ TOOL_EVIDENCE_LINE_PATTERNS = [
         r"\b(?:commit|pushed|push|rebase|rebased|branch|origin/main|refs/heads/main)\b",
         r"\b(?:test|tests|unittest|pytest|cargo test|cargo check|bash -n|py_compile)\b",
         r"\b(?:warning|blocked|rejected|missing|skipped|non-fast-forward)\b",
+        r"\b(?:benchmark|workload|latency|p50|p90|p95|p99|throughput|qps|ops/s|req/s|writes/s|reads/s)\b",
+        r"\b(?:hit[- ]?rate|read[- ]?hit|quality|recall|precision|locomo|longmemeval|memory[- ]?quality)\b",
     ]
 ]
+
+
+def benchmark_quality_facts_from_text(text: str, *, max_facts: int = 6) -> list[str]:
+    source = " ".join(str(text or "").split())
+    if not source:
+        return []
+    facts: list[str] = []
+
+    def add_fact(value: str) -> None:
+        fact = " ".join(str(value or "").split()).strip(" ;,.")
+        if fact and fact not in facts:
+            facts.append(fact[:180])
+
+    workload_match = re.search(
+        r"\b(?:workload|benchmark)\s*[:=]\s*([a-z0-9_./ -]{3,80}?)(?=\s+(?:p50|p90|p95|p99|throughput|qps|ops/s|req/s|hit[- ]?rate|read[- ]?hit|recall|precision|quality)\b|$)",
+        source,
+        re.IGNORECASE,
+    )
+    if workload_match:
+        add_fact("workload=" + workload_match.group(1).strip())
+    for percentile in ["p50", "p90", "p95", "p99"]:
+        match = re.search(
+            rf"\b{percentile}\b(?:\s+latency)?\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?\s*(?:ms|s|us|µs)?)",
+            source,
+            re.IGNORECASE,
+        )
+        if match:
+            add_fact(f"{percentile} latency={match.group(1)}")
+    throughput_match = re.search(
+        r"\b(?:throughput|qps|ops/s|req/s)\b\s*[:=]?\s*([0-9][0-9,]*(?:\.[0-9]+)?\s*(?:ops/s|qps|req/s|writes/s|reads/s)?)",
+        source,
+        re.IGNORECASE,
+    )
+    if throughput_match:
+        add_fact("throughput=" + throughput_match.group(1).strip())
+    hit_rate_match = re.search(
+        r"\b(?:hit[- ]?rate|read[- ]?hit(?:[- ]?rate)?|recall|precision|quality)\b\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?\s*%?)",
+        source,
+        re.IGNORECASE,
+    )
+    if hit_rate_match:
+        add_fact("hit_rate=" + hit_rate_match.group(1).strip())
+    benchmark_name_match = re.search(r"\b(locomo|longmemeval)\b", source, re.IGNORECASE)
+    if benchmark_name_match:
+        add_fact("benchmark=" + benchmark_name_match.group(1).lower())
+    return facts[:max_facts]
 
 
 def pushed_main_commit_from_text(text: str) -> str:
@@ -2941,6 +2989,7 @@ def selected_tool_memory_text(text: str, payload: Json | None = None, *, max_cha
         re.IGNORECASE,
     ):
         facts.append("Validation: tests passed")
+    facts.extend(fact for fact in benchmark_quality_facts_from_text(source) if fact not in facts)
     pushed_commit = pushed_main_commit_from_text(source)
     if pushed_commit:
         target = " to origin/main" if re.search(r"\b(?:origin/main|refs/heads/main|HEAD\s*->\s*main)\b", source, re.IGNORECASE) else ""
@@ -2967,6 +3016,7 @@ ASSISTANT_MEMORY_LINE_PATTERNS = [
         r"\b(?:done|fixed|implemented|added|removed|changed|updated|validated|verified)\b",
         r"\b(?:commit|pushed|push|rebased|origin/main|refs/heads/main|branch)\b",
         r"\b(?:test|tests|passed|failed|blocked|missing|gap|risk|warning)\b",
+        r"\b(?:benchmark|workload|latency|p50|p90|p95|p99|throughput|qps|hit[- ]?rate|quality|locomo|longmemeval)\b",
         r"\b(?:temporalstore|matrixark|codex|context|profile|cross[- ]session|memory)\b",
     ]
 ]
@@ -3019,6 +3069,10 @@ def selected_assistant_outcome_facts(text: str, *, max_facts: int = 6) -> list[s
         blocker_match = re.search(r"[^.?!]*(?:blocked|blocker|failed|failure|error|missing|rejected)[^.?!]*[.?!]?", compact, re.IGNORECASE)
         if blocker_match:
             add_fact("Blocker: " + blocker_match.group(0).strip(" .?!")[:180])
+
+    benchmark_facts = benchmark_quality_facts_from_text(compact, max_facts=6)
+    if benchmark_facts:
+        add_fact("Benchmark: " + "; ".join(benchmark_facts))
 
     changed_match = re.search(r"\bchanged:?\s+([^.;]{8,180})", compact, re.IGNORECASE)
     if not changed_match:

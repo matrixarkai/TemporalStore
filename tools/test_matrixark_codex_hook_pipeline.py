@@ -3207,6 +3207,45 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         )
         self.assertNotIn("verbose build line", summary)
 
+    def test_tool_output_memory_captures_benchmark_quality_facts(self) -> None:
+        noisy_output = "\n".join(
+            [
+                "large benchmark payload row that should not become memory",
+                "LoCoMo benchmark workload: read-index reads",
+                "p50 latency: 8.4 ms",
+                "p99 latency=22.8ms",
+                "throughput: 12,500 ops/s",
+                "read hit rate: 91.7%",
+                *[f"verbose benchmark row {index}" for index in range(120)],
+            ]
+        )
+        summary = matrixark_codex_hook.selected_tool_memory_text(
+            noisy_output,
+            {"tool_name": "shell_command", "tool_status": "ok"},
+        )
+
+        self.assertIn("tool_name=shell_command", summary)
+        self.assertIn("workload=read-index reads", summary)
+        self.assertIn("p50 latency=8.4 ms", summary)
+        self.assertIn("p99 latency=22.8ms", summary)
+        self.assertIn("throughput=12,500 ops/s", summary)
+        self.assertIn("hit_rate=91.7%", summary)
+        self.assertIn("benchmark=locomo", summary)
+        self.assertNotIn("verbose benchmark row", summary)
+
+    def test_assistant_memory_captures_benchmark_outcome_facts(self) -> None:
+        selected = matrixark_codex_hook.selected_assistant_memory_text(
+            "Done. LoCoMo workload: profile retrieval p50 latency: 7ms p99 latency: 19ms throughput: 900 qps hit rate: 88%. "
+            "Next: tune cross-session profile budget."
+        )
+
+        self.assertIn("Benchmark:", selected)
+        self.assertIn("p50 latency=7ms", selected)
+        self.assertIn("p99 latency=19ms", selected)
+        self.assertIn("throughput=900 qps", selected)
+        self.assertIn("hit_rate=88%", selected)
+        self.assertIn("Next: tune cross-session profile budget", selected)
+
     def test_tool_output_memory_captures_validation_and_rejection_facts(self) -> None:
         noisy_output = "\n".join(
             [
