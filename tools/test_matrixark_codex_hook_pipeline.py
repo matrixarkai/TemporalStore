@@ -5597,6 +5597,80 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertFalse(first.get("context_pack_cache_hit", False))
             self.assertFalse(second.get("context_pack_cache_hit", False))
 
+    def test_hot_ingest_embeddings_preserve_serving_layer_lineage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-hot-embedding-lineage.jsonl")
+            scope = {
+                "account_id": "acct_hot_embedding",
+                "tenant_id": "tenant_hot_embedding",
+                "user_id": "user_hot_embedding",
+                "session_id": "session_hot_embedding",
+            }
+            adapter.ingest(
+                {
+                    "scope": scope,
+                    "metadata": {
+                        "codex_memory_selection": {
+                            "policy": "selected_assistant_decision_outcome_only",
+                            "source_role": "assistant",
+                            "codex_event": "Stop",
+                            "selected_text_chars": 42,
+                            "selected_line_count": 1,
+                            "original_text_chars": 420,
+                            "original_line_count": 10,
+                            "dropped_text_chars": 378,
+                            "dropped_line_count": 9,
+                            "selection_lossy": True,
+                        }
+                    },
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "Decision: keep hot embeddings recoverable for profile/session budgets.",
+                        }
+                    ],
+                },
+                hook={
+                    "source": "codex",
+                    "hook_type": "after_llm",
+                    "hook_id": "Stop:hot-embedding-lineage",
+                    "observed_at_ms": 1000,
+                    "idempotency_key": "hot-embedding-lineage",
+                    "trigger": "Stop",
+                    "auto_captured": True,
+                },
+            )
+
+            embeddings = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") == "context_embedding"
+                and record.get("embedding_type") in {"event_text", "session_l0"}
+            ]
+            self.assertEqual({"event_text", "session_l0"}, {record.get("embedding_type") for record in embeddings})
+            for embedding in embeddings:
+                self.assertEqual("session", embedding["memory_scope"])
+                self.assertEqual("same_session", embedding["session_continuity"])
+                self.assertEqual(["session"], embedding["source_memory_scopes"])
+                self.assertEqual(["same_session"], embedding["source_session_continuities"])
+                self.assertEqual(["hot_path"], embedding["source_extraction_phases"])
+                self.assertEqual(["assistant"], embedding["source_roles"])
+                self.assertEqual({"assistant": 1}, embedding["source_role_counts"])
+                self.assertEqual(["after_llm"], embedding["source_hook_types"])
+                self.assertEqual({"after_llm": 1}, embedding["source_hook_type_counts"])
+                self.assertEqual(["Stop"], embedding["source_codex_events"])
+                self.assertEqual({"Stop": 1}, embedding["source_codex_event_counts"])
+                self.assertEqual(
+                    ["selected_assistant_decision_outcome_only"],
+                    embedding["source_memory_selection_policies"],
+                )
+                self.assertEqual(
+                    {"selected_assistant_decision_outcome_only": 1},
+                    embedding["source_memory_selection_policy_counts"],
+                )
+                self.assertNotIn("source_event_ids", embedding)
+                self.assertNotIn("source_session_ids", embedding)
+
     def test_retrieval_metrics_expose_shared_local_remote_budget(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-retrieval-budget.jsonl")
