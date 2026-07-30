@@ -23,6 +23,10 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
         mcp.SUMMARY_REFRESH_LIMIT = self._old_limit
 
     def test_pending_dirty_uses_sets_for_missing_or_empty_summaries(self) -> None:
+        dirty_globals = pending_dirty_node_records.__globals__
+        old_debug = dirty_globals["ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS"]
+        dirty_globals["ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS"] = True
+        self.addCleanup(lambda: dirty_globals.__setitem__("ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS", old_debug))
         scope = {
             "account_id": "acct_local",
             "tenant_id": "tenant_summary_dirty_set",
@@ -97,6 +101,11 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
         self.assertEqual({}, pending_after_refresh)
 
     def test_refresh_dirty_node_summaries_refreshes_missing_summary_without_marker_spam(self) -> None:
+        dirty_helper = mcp.MatrixArkLocalAdapter.refresh_dirty_node_summaries.__globals__["pending_dirty_node_records"]
+        dirty_globals = dirty_helper.__globals__
+        old_debug = dirty_globals["ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS"]
+        dirty_globals["ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS"] = True
+        self.addCleanup(lambda: dirty_globals.__setitem__("ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS", old_debug))
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
             scope = {
@@ -146,12 +155,80 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
             self.assertTrue(any(record.get("dirty_reason") == "missing_or_empty_summary" for record in dirty_markers))
             self.assertTrue(any(record.get("status") == "completed" for record in dirty_markers))
 
+    def test_summary_dirty_markers_are_compact_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            dirty_globals = adapter.node_summary_dirty_records.__globals__
+            old_debug = dirty_globals["ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS"]
+            dirty_globals["ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS"] = False
+            self.addCleanup(lambda: dirty_globals.__setitem__("ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS", old_debug))
+            scope = {
+                "account_id": "acct_local",
+                "tenant_id": "tenant_summary_compact",
+                "user_id": "worker_user",
+                "session_id": "worker_session",
+                "agent_name": "test",
+            }
+
+            adapter.mark_node_summary_dirty(
+                node_path=["tenant:summary", "user:worker", "session:compact"],
+                scope=scope,
+                updated_at_ms=1780000000000,
+                source_ref_type="event",
+                source_hash_field="source_event_hash",
+                source_hash=stable_hash("compact-dirty-event"),
+                dirty_reason="new_event",
+            )
+
+            dirty_markers = [r for r in adapter.read_all() if r.get("record_type") == "context_summary_dirty"]
+            self.assertTrue(dirty_markers)
+            for marker in dirty_markers:
+                self.assertNotIn("dirty_reason", marker)
+                self.assertNotIn("source_ref_type", marker)
+                self.assertNotIn("source_event_hash", marker)
+                self.assertNotIn("changed_ref_count", marker)
+                self.assertNotIn("empty_summary_seen", marker)
+
+    def test_summary_dirty_debug_fields_are_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            dirty_globals = adapter.node_summary_dirty_records.__globals__
+            old_debug = dirty_globals["ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS"]
+            dirty_globals["ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS"] = True
+            self.addCleanup(lambda: dirty_globals.__setitem__("ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS", old_debug))
+            scope = {
+                "account_id": "acct_local",
+                "tenant_id": "tenant_summary_debug",
+                "user_id": "worker_user",
+                "session_id": "worker_session",
+                "agent_name": "test",
+            }
+
+            adapter.mark_node_summary_dirty(
+                node_path=["tenant:summary", "user:worker", "session:debug"],
+                scope=scope,
+                updated_at_ms=1780000000000,
+                source_ref_type="event",
+                source_hash_field="source_event_hash",
+                source_hash=stable_hash("debug-dirty-event"),
+                dirty_reason="new_event",
+            )
+
+            dirty_markers = [r for r in adapter.read_all() if r.get("record_type") == "context_summary_dirty"]
+            self.assertTrue(dirty_markers)
+            for marker in dirty_markers:
+                self.assertEqual("new_event", marker.get("dirty_reason"))
+                self.assertEqual("event", marker.get("source_ref_type"))
+                self.assertIn("source_event_hash", marker)
+                self.assertEqual(1, marker.get("changed_ref_count"))
+
     def test_background_worker_refreshes_dirty_nodes_and_embeddings(self) -> None:
         mcp.SUMMARY_REFRESH_INTERVAL_MS = 100
         mcp.SUMMARY_REFRESH_LIMIT = 64
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
             server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
+            self.addCleanup(server.close, timeout_s=1.0)
             scope = {
                 "account_id": "acct_local",
                 "tenant_id": "tenant_summary_worker",
@@ -199,9 +276,14 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
         self.addCleanup(lambda: os.environ.__setitem__("MATRIXARK_SUMMARY_PROVIDER", old_provider) if old_provider is not None else os.environ.pop("MATRIXARK_SUMMARY_PROVIDER", None))
         self.addCleanup(lambda: os.environ.__setitem__("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", old_require) if old_require is not None else os.environ.pop("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", None))
 
-        summary_globals = mcp.MatrixArkLocalAdapter.refresh_summaries.__globals__["synthesize_context_node_summary"].__globals__
-        old_call = summary_globals["openai_compatible_json_call"]
-        self.addCleanup(lambda: summary_globals.__setitem__("openai_compatible_json_call", old_call))
+        summary_func = mcp.MatrixArkLocalAdapter.refresh_dirty_node_summaries.__globals__["synthesize_context_node_summary"]
+        summary_globals = summary_func.__globals__
+        old_call = summary_globals.get("openai_compatible_json_call")
+        self.addCleanup(
+            lambda: summary_globals.__setitem__("openai_compatible_json_call", old_call)
+            if old_call is not None
+            else summary_globals.pop("openai_compatible_json_call", None)
+        )
 
         def fake_json_call(*, system: str, user: str, model: str | None = None, max_tokens: int | None = None) -> dict:
             payload = json.loads(user)
@@ -236,12 +318,13 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
             os.environ["MATRIXARK_SUMMARY_PROVIDER"] = "openai_compatible"
             os.environ["MATRIXARK_REQUIRE_OSS_UNDERSTANDING"] = "1"
             adapter.refresh_summaries({"scope": scope, "force": True})
-            summaries = [record for record in adapter.read_all() if record.get("record_type") == "context_summary"]
-            l1 = [record for record in summaries if record.get("summary_type") == "node_l1"]
+            summary_records = [record for record in adapter.read_all() if record.get("record_type") == "context_summary"]
+            l1 = [record for record in summary_records if record.get("summary_type") == "node_l1"]
             self.assertTrue(l1)
             self.assertTrue(any(str(record.get("summary_text", "")).startswith("OSS node_l1 synthesis") for record in l1))
             for record in l1:
-                provider = record.get("summary_generation_policy", {})
+                policy = record.get("summary_generation_policy", {})
+                provider = policy.get("summary_provider", policy)
                 self.assertEqual("openai_compatible", provider.get("provider"))
                 self.assertEqual("llm_json", provider.get("execution_mode"))
                 self.assertFalse(provider.get("fallback_used"))

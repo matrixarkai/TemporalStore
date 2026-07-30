@@ -4038,41 +4038,46 @@ class MatrixArkLocalAdapter:
                 "dirty_hash": dirty_hash,
                 "node_hash": node_hash,
                 "node_path": prefix,
-                "depth": len(prefix),
-                "dirty_reason": dirty_reason,
-                "source_ref_type": source_ref_type,
-                source_hash_field: source_hash,
-                "changed_ref_count": 1,
-                "propagate_depth": propagate_depth if propagate_depth is not None else len(node_path),
                 "scope": scope,
                 "status": "pending",
                 "created_at_ms": updated_at_ms,
                 "updated_at_ms": updated_at_ms,
             }
-            for field in [
-                "source_role",
-                "source_roles",
-                "source_role_counts",
-                "source_hook_types",
-                "source_hook_type_counts",
-                "source_codex_events",
-                "source_codex_event_counts",
-                "source_memory_selection_policies",
-                "source_memory_selection_policy_counts",
-                "source_memory_scopes",
-                "source_session_continuities",
-                "source_extraction_phases",
-                "source_profile_promotion_policies",
-                "source_profile_promotion_blockers",
-                "source_final_session_boundary_count",
-                "memory_scope",
-                "session_continuity",
-                "extraction_phase",
-                "final_session_boundary",
-            ]:
-                value = lineage.get(field)
-                if value not in (None, "", [], {}):
-                    record[field] = value
+            if ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS or ENABLE_SUMMARY_REFRESH_AUDIT or ENABLE_CONTEXT_DEBUG_RECORDS:
+                record.update(
+                    {
+                        "depth": len(prefix),
+                        "dirty_reason": dirty_reason,
+                        "source_ref_type": source_ref_type,
+                        source_hash_field: source_hash,
+                        "changed_ref_count": 1,
+                        "propagate_depth": propagate_depth if propagate_depth is not None else len(node_path),
+                    }
+                )
+                for field in [
+                    "source_role",
+                    "source_roles",
+                    "source_role_counts",
+                    "source_hook_types",
+                    "source_hook_type_counts",
+                    "source_codex_events",
+                    "source_codex_event_counts",
+                    "source_memory_selection_policies",
+                    "source_memory_selection_policy_counts",
+                    "source_memory_scopes",
+                    "source_session_continuities",
+                    "source_extraction_phases",
+                    "source_profile_promotion_policies",
+                    "source_profile_promotion_blockers",
+                    "source_final_session_boundary_count",
+                    "memory_scope",
+                    "session_continuity",
+                    "extraction_phase",
+                    "final_session_boundary",
+                ]:
+                    value = lineage.get(field)
+                    if value not in (None, "", [], {}):
+                        record[field] = value
             records.append(record)
         return dirty_hashes, records
 
