@@ -259,6 +259,7 @@ def retrieval_query_budget_plan(
             args,
             ranking,
             remote_budget_tokens=remote_context_budget_tokens,
+            question_type=question_type,
         )
     memory_layer_budget_tokens = optional_object(args, "memory_layer_budget_tokens") or optional_object(ranking, "memory_layer_budget_tokens")
     memory_layer_budget_mode = "explicit" if memory_layer_budget_tokens else ""

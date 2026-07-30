@@ -1310,6 +1310,28 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertNotIn("idle_commit_scheduled", resolved["freshness_warnings"])
         self.assertIn("idle_commit_due", readiness["freshness_warnings"])
 
+    def test_moduleized_source_role_budget_matches_local_question_type_defaults(self) -> None:
+        helper_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pre_refresh")
+        local_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
+
+        for question_type in ["fact", "current_state", "profile_memory", "evidence", "multi_hop", "date"]:
+            with self.subTest(question_type=question_type):
+                helper_budget, helper_mode = helper_mod.auto_source_role_budget_tokens(
+                    {"source_role_budget_mode": "auto"},
+                    {},
+                    remote_budget_tokens=100,
+                    question_type=question_type,
+                )
+                local_budget, local_mode = local_mod.auto_source_role_budget_tokens(
+                    {"source_role_budget_mode": "auto"},
+                    {},
+                    remote_budget_tokens=100,
+                    question_type=question_type,
+                )
+                self.assertEqual("auto", helper_mode)
+                self.assertEqual(local_mode, helper_mode)
+                self.assertEqual(local_budget, helper_budget)
+
     def test_auto_memory_selection_budget_prioritizes_profile_memory_current_state(self) -> None:
         helper_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pre_refresh")
 
