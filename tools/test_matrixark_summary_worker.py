@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 
 import matrixark_mcp_server as mcp
+from matrixark_mcp_core import scope_key_from_hashes, stable_hash
+from matrixark_mcp_summary_dirty import pending_dirty_node_records
 
 
 class MatrixArkSummaryWorkerTest(unittest.TestCase):
@@ -19,6 +21,130 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
     def tearDown(self) -> None:
         mcp.SUMMARY_REFRESH_INTERVAL_MS = self._old_interval
         mcp.SUMMARY_REFRESH_LIMIT = self._old_limit
+
+    def test_pending_dirty_uses_sets_for_missing_or_empty_summaries(self) -> None:
+        scope = {
+            "account_id": "acct_local",
+            "tenant_id": "tenant_summary_dirty_set",
+            "user_id": "worker_user",
+            "session_id": "worker_session",
+            "agent_name": "test",
+        }
+        node_path = ["tenant:summary", "user:worker", "session:worker"]
+        node_hash = stable_hash("/".join(node_path))
+        event = {
+            "record_type": "context_event",
+            "event_id_hash": 101,
+            "node_hash": node_hash,
+            "node_path": node_path,
+            "scope": scope,
+            "text": "summary source event",
+            "updated_at_ms": 1780000000000,
+        }
+
+        pending = pending_dirty_node_records(
+            records=[event],
+            scope=scope,
+            limit=8,
+            refreshed_at_ms=1780000001000,
+            max_raw_events_per_node=100,
+            min_compression_event_age_ms=0,
+            context_event_ingestion_time_ms=lambda record, _debug=None: int(record.get("updated_at_ms") or 0),
+        )
+        self.assertEqual(["missing_or_empty_summary"], [record["dirty_reason"] for record in pending.values()])
+        dirty_hash = next(iter(pending.values()))["dirty_hash"]
+
+        empty_summary = {
+            "record_type": "context_summary",
+            "summary_type": "node_l0",
+            "summary_hash": stable_hash(f"context_summary:node_l0:{node_hash}"),
+            "node_hash": node_hash,
+            "node_path": node_path,
+            "scope": scope,
+            "summary_text": "",
+            "updated_at_ms": 1780000000500,
+        }
+        pending_with_empty = pending_dirty_node_records(
+            records=[event, empty_summary],
+            scope=scope,
+            limit=8,
+            refreshed_at_ms=1780000001000,
+            max_raw_events_per_node=100,
+            min_compression_event_age_ms=0,
+            context_event_ingestion_time_ms=lambda record, _debug=None: int(record.get("updated_at_ms") or 0),
+        )
+        self.assertTrue(next(iter(pending_with_empty.values()))["empty_summary_seen"])
+
+        completed = {
+            "record_type": "context_summary_dirty",
+            "dirty_hash": dirty_hash,
+            "node_hash": node_hash,
+            "node_path": node_path,
+            "scope": scope,
+            "status": "completed",
+            "updated_at_ms": 1780000002000,
+        }
+        non_empty_summary = {**empty_summary, "summary_text": "fresh summary", "updated_at_ms": 1780000002000}
+        pending_after_refresh = pending_dirty_node_records(
+            records=[event, empty_summary, completed, non_empty_summary],
+            scope=scope,
+            limit=8,
+            refreshed_at_ms=1780000003000,
+            max_raw_events_per_node=100,
+            min_compression_event_age_ms=0,
+            context_event_ingestion_time_ms=lambda record, _debug=None: int(record.get("updated_at_ms") or 0),
+        )
+        self.assertEqual({}, pending_after_refresh)
+
+    def test_refresh_dirty_node_summaries_refreshes_missing_summary_without_marker_spam(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            scope = {
+                "tenant_hash": 4242,
+                "scope_key": scope_key_from_hashes(4242, 0, 0),
+            }
+            node_path = ["tenant:summary", "user:worker", "session:missing"]
+            node_hash = stable_hash("/".join(node_path))
+            adapter.append(
+                {
+                    "record_type": "context_node",
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "scope": scope,
+                    "scope_key": scope["scope_key"],
+                    "tenant_hash": scope["tenant_hash"],
+                    "updated_at_ms": 1780000000000,
+                }
+            )
+            adapter.append(
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 202,
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "scope": scope,
+                    "scope_key": scope["scope_key"],
+                    "tenant_hash": scope["tenant_hash"],
+                    "text": "A node with events but no summary should refresh once.",
+                    "updated_at_ms": 1780000000000,
+                }
+            )
+
+            result = adapter.refresh_dirty_node_summaries(
+                scope=scope,
+                limit=8,
+                refreshed_at_ms=1780000001000,
+                max_raw_events_per_node=100,
+                min_compression_event_age_ms=0,
+            )
+            records = adapter.read_all()
+            summaries = [record for record in records if record.get("record_type") == "context_summary"]
+            dirty_markers = [record for record in records if record.get("record_type") == "context_summary_dirty"]
+
+            self.assertEqual(1, result["refreshed_count"])
+            self.assertTrue(summaries)
+            self.assertTrue(any(record.get("dirty_reason") == "missing_or_empty_summary" for record in dirty_markers))
+            self.assertTrue(any(record.get("status") == "completed" for record in dirty_markers))
 
     def test_background_worker_refreshes_dirty_nodes_and_embeddings(self) -> None:
         mcp.SUMMARY_REFRESH_INTERVAL_MS = 100
