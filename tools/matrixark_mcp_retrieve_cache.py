@@ -76,6 +76,25 @@ def get_cached_context_pack(target: Any, cache_key: tuple[Any, ...], *, include_
         return compact_context_pack_for_serving(pack, include_debug=include_debug)
 
 
+def invalidate_context_pack_cache(target: Any) -> Json:
+    """Clear ContextPack cache after retrieval-visible writes."""
+    cleared_count = 0
+    lock = getattr(target, "_context_pack_cache_lock", None)
+    cache = getattr(target, "_context_pack_cache", None)
+    if lock is not None and isinstance(cache, dict):
+        with lock:
+            cleared_count = len(cache)
+            cache.clear()
+    try:
+        target._retrieval_records_cache_generation = int(getattr(target, "_retrieval_records_cache_generation", 0)) + 1
+    except (TypeError, ValueError):
+        target._retrieval_records_cache_generation = 1
+    return {
+        "cleared_context_pack_cache_count": cleared_count,
+        "retrieval_records_cache_generation": int(getattr(target, "_retrieval_records_cache_generation", 0)),
+    }
+
+
 def put_cached_context_pack(target: Any, cache_key: tuple[Any, ...], pack: Json) -> None:
     if not context_pack_cache_enabled(target) or pack.get("partial_context_pack"):
         return
