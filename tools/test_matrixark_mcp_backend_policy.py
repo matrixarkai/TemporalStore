@@ -3700,6 +3700,84 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(serving_payloads[0]["record_type"], "context_event")
         self.assertEqual(serving_payloads[0]["placement_key"], "context:tenant=7:node=9")
 
+    def test_direct_fast_paths_shadow_raw_and_serving_records_to_disk_fallback_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fallback_log = Path(tmpdir) / "fallback.jsonl"
+            client = _HashStoreClient()
+            adapter = _direct_adapter_for_hash_store(client)
+            adapter._disk_fallback_adapter = None
+            adapter._disk_fallback_path = str(fallback_log)
+            adapter._disk_fallback_enabled = True
+            adapter._disk_fallback_recovery_in_progress = False
+
+            raw_record = {
+                "record_type": "agent_message",
+                "role": "tool",
+                "text": "tool returned message must shadow to disk",
+                "updated_at_ms": 1780000004000,
+            }
+            serving_record = {
+                "record_type": "context_event",
+                "event_id_hash": 994,
+                "tenant_hash": 9,
+                "scope": {"tenant_hash": 9},
+                "scope_key": mcp_core.scope_key_from_hashes(9, 0, 0),
+                "node_hash": 10,
+                "updated_at_ms": 1780000005000,
+                "text": "serving context should shadow to disk",
+            }
+
+            adapter._append_raw_ingestion_records([raw_record], allow_queue=False)
+            adapter._append_many_materialized([serving_record], allow_queue=False)
+
+            fallback_records = mcp.MatrixArkLocalAdapter(fallback_log).read_all()
+            self.assertTrue(any(record.get("role") == "tool" for record in fallback_records))
+            self.assertTrue(any(record.get("event_id_hash") == 994 for record in fallback_records))
+
+    def test_direct_disk_fallback_recovery_rebuilds_serving_count_and_skips_compressed_old_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fallback_log = Path(tmpdir) / "fallback.jsonl"
+            fallback = mcp.MatrixArkLocalAdapter(fallback_log)
+            fallback.append_many(
+                [
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": 995,
+                        "tenant_hash": 9,
+                        "scope": {"tenant_hash": 9},
+                        "scope_key": mcp_core.scope_key_from_hashes(9, 0, 0),
+                        "node_hash": 10,
+                        "updated_at_ms": 1780000006000,
+                        "text": "recover me after native restart",
+                    },
+                    {
+                        "record_type": "context_compression_event",
+                        "event_id_hash": 996,
+                        "tenant_hash": 9,
+                        "updated_at_ms": 1780000007000,
+                        "text": "compressed old data should not refill hot memory",
+                    },
+                ]
+            )
+            client = _HashStoreClient()
+            adapter = _direct_adapter_for_hash_store(client)
+            adapter._disk_fallback_adapter = None
+            adapter._disk_fallback_path = str(fallback_log)
+            adapter._disk_fallback_enabled = True
+            adapter._disk_fallback_recovery_enabled = True
+            adapter._disk_fallback_recovery_attempted = False
+            adapter._disk_fallback_recovery_in_progress = False
+            adapter._disk_fallback_recovery_status = {"status": "not_attempted"}
+
+            report = adapter._recover_serving_from_disk_fallback_if_needed(reason="unit_restart")
+            records = adapter.read_all_without_disk_fallback_recovery()
+
+            self.assertEqual(report["status"], "recovered")
+            self.assertEqual(report["recovered_records"], 1)
+            self.assertEqual(client.strings[adapter._count_key], "1")
+            self.assertTrue(any(record.get("event_id_hash") == 995 for record in records))
+            self.assertFalse(any(record.get("record_type") == "context_compression_event" for record in records))
+
     def test_direct_append_supports_matrixkv_raw_backend_option(self) -> None:
         client = _NativeAppendClient()
         adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)

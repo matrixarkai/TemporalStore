@@ -151,6 +151,33 @@ def matrixark_record_retention_filtered(record: Json, *, now_ms: int | None = No
     return deleted_at_ms > 0
 
 
+TEMPORAL_COMPRESSED_OLD_RECORD_TYPES = {
+    "context_compression_event",
+    "context_temporal_compression",
+}
+
+
+def _durable_recovery_record_identity(record: Json) -> tuple[Any, ...]:
+    record_type = str(record.get("record_type") or "")
+    for field in (
+        "event_id_hash",
+        "entity_hash",
+        "segment_hash",
+        "summary_hash",
+        "node_hash",
+        "chunk_hash",
+        "section_hash",
+        "task_hash",
+        "batch_id_hash",
+        "ref_hash",
+        "context_event_key",
+    ):
+        value = record.get(field)
+        if value not in (None, "", [], {}):
+            return (record_type, field, value)
+    payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    return (record_type, "payload_hash", stable_hash(payload))
+
 
 def _native_scope_with_hashes(scope: Json) -> Json:
     if not isinstance(scope, dict):
@@ -315,15 +342,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         MatrixArkLocalAdapter._init_local_runtime_state(self)
         self._entity_cache_loaded = True
         self._context_node_cache_loaded = True
-        self._disk_fallback_adapter: MatrixArkLocalAdapter | None = None
-        self._disk_fallback_path = os.environ.get("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", "").strip()
-        self._disk_fallback_enabled = os.environ.get("MATRIXARK_TEMPORALSTORE_SHADOW_LOCAL_STORE", "1").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-        self._disk_fallback_write_failures = 0
         sdk_root = Path(__file__).resolve().parents[1] / "sdk" / "python"
         sys.path.insert(0, str(sdk_root))
         from temporalstore import Client, Options, ProxyClient, ProxyOptions  # type: ignore
@@ -459,6 +477,19 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._append_queue_wait_count = 0
         self._append_engine_ms_total = 0.0
         self._append_engine_count = 0
+        self._disk_fallback_adapter: MatrixArkLocalAdapter | None = None
+        self._disk_fallback_path = os.environ.get("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", "").strip()
+        self._disk_fallback_enabled = bool(self._disk_fallback_path) and os.environ.get(
+            "MATRIXARK_TEMPORALSTORE_SHADOW_LOCAL_STORE",
+            "1",
+        ).strip().lower() not in {"0", "false", "no", "off"}
+        self._disk_fallback_recovery_enabled = bool(self._disk_fallback_path) and os.environ.get(
+            "MATRIXARK_TEMPORALSTORE_RECOVER_LOCAL_STORE",
+            "1",
+        ).strip().lower() not in {"0", "false", "no", "off"}
+        self._disk_fallback_recovery_attempted = False
+        self._disk_fallback_recovery_in_progress = False
+        self._disk_fallback_recovery_status: Json = {"status": "not_attempted"}
 
     def __post_init__(self) -> None:
         # Direct adapter does not use the inherited JSONL path.
@@ -582,6 +613,26 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._context_pack_cache_max_entries = max(0, int(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_MAX_ENTRIES", "256")))
         if not hasattr(self, "_context_pack_cache_ttl_s"):
             self._context_pack_cache_ttl_s = max(0.0, float(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_TTL_S", "30")))
+        if not hasattr(self, "_disk_fallback_adapter"):
+            self._disk_fallback_adapter = None
+        if not hasattr(self, "_disk_fallback_path"):
+            self._disk_fallback_path = os.environ.get("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", "").strip()
+        if not hasattr(self, "_disk_fallback_enabled"):
+            self._disk_fallback_enabled = bool(self._disk_fallback_path) and os.environ.get(
+                "MATRIXARK_TEMPORALSTORE_SHADOW_LOCAL_STORE",
+                "1",
+            ).strip().lower() not in {"0", "false", "no", "off"}
+        if not hasattr(self, "_disk_fallback_recovery_enabled"):
+            self._disk_fallback_recovery_enabled = bool(self._disk_fallback_path) and os.environ.get(
+                "MATRIXARK_TEMPORALSTORE_RECOVER_LOCAL_STORE",
+                "1",
+            ).strip().lower() not in {"0", "false", "no", "off"}
+        if not hasattr(self, "_disk_fallback_recovery_attempted"):
+            self._disk_fallback_recovery_attempted = False
+        if not hasattr(self, "_disk_fallback_recovery_in_progress"):
+            self._disk_fallback_recovery_in_progress = False
+        if not hasattr(self, "_disk_fallback_recovery_status"):
+            self._disk_fallback_recovery_status = {"status": "not_attempted"}
         self._ensure_direct_write_queue_fields()
 
     def _matrixark_batch_append_records_with_options(
@@ -842,6 +893,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "entry_count_cache": self._entry_count_cache,
                 "python_hot_cache_allowed": self.python_hot_cache_enabled(),
                 "records_cache_ready": self._records_cache is not None,
+                "disk_fallback_enabled": bool(getattr(self, "_disk_fallback_enabled", False)),
+                "disk_fallback_path": str(getattr(self, "_disk_fallback_path", "") or ""),
+                "disk_fallback_recovery": dict(getattr(self, "_disk_fallback_recovery_status", {"status": "unknown"})),
                 "commands_total": self._commands_total,
                 "errors_total": self._errors_total,
                 "timeouts_total": self._timeouts_total,
@@ -965,7 +1019,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
     def append(self, record: Json) -> None:
         self._ensure_backend_metric_fields()
-        self._append_disk_fallback_records([record])
         self._append_raw_ingestion_records([record])
         records = materialize_serving_records(record)
         if self._queue_batched_records(records):
@@ -974,7 +1027,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
     def append_many(self, records: list[Json]) -> None:
         self._ensure_backend_metric_fields()
-        self._append_disk_fallback_records(records)
         self._append_raw_ingestion_records(records)
         materialized = materialize_serving_record_batch(records)
         if self._queue_batched_records(materialized):
@@ -982,20 +1034,91 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._append_many_materialized(materialized)
 
     def _append_disk_fallback_records(self, records: list[Json]) -> None:
-        if (
-            not getattr(self, "_disk_fallback_enabled", False)
-            or not getattr(self, "_disk_fallback_path", "")
-            or not records
-        ):
+        if not records or not bool(getattr(self, "_disk_fallback_enabled", False)):
+            return
+        if bool(getattr(self, "_disk_fallback_recovery_in_progress", False)):
+            return
+        path = str(getattr(self, "_disk_fallback_path", "") or "").strip()
+        if not path:
             return
         try:
-            if self._disk_fallback_adapter is None:
-                self._disk_fallback_adapter = MatrixArkLocalAdapter(Path(self._disk_fallback_path))
-            self._disk_fallback_adapter.append_many(records)
-        except Exception as exc:  # pragma: no cover - best-effort crash recovery path
-            self._disk_fallback_write_failures += 1
-            if os.environ.get("MATRIXARK_DEBUG_DISK_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}:
-                print(f"MatrixArk TemporalStore disk fallback shadow write failed: {exc}", file=sys.stderr)
+            adapter = getattr(self, "_disk_fallback_adapter", None)
+            if adapter is None or str(adapter.event_log) != path:
+                adapter = MatrixArkLocalAdapter(Path(path))
+                self._disk_fallback_adapter = adapter
+            adapter.append_many(records)
+        except Exception as exc:
+            setattr(self, "_disk_fallback_write_failures", int(getattr(self, "_disk_fallback_write_failures", 0) or 0) + 1)
+            _mcp_debug_log(f"matrixark disk fallback shadow append failed: {exc}")
+
+    def _recover_serving_from_disk_fallback_if_needed(self, *, reason: str) -> Json:
+        self._ensure_backend_metric_fields()
+        if not bool(getattr(self, "_disk_fallback_recovery_enabled", False)):
+            status = {"status": "disabled", "reason": reason}
+            self._disk_fallback_recovery_status = status
+            return status
+        if bool(getattr(self, "_disk_fallback_recovery_attempted", False)):
+            return dict(getattr(self, "_disk_fallback_recovery_status", {"status": "already_attempted", "reason": reason}))
+        self._disk_fallback_recovery_attempted = True
+        path = str(getattr(self, "_disk_fallback_path", "") or "").strip()
+        if not path:
+            status = {"status": "missing_path", "reason": reason}
+            self._disk_fallback_recovery_status = status
+            return status
+        fallback_path = Path(path)
+        if not fallback_path.exists():
+            status = {"status": "missing_file", "reason": reason, "path": path}
+            self._disk_fallback_recovery_status = status
+            return status
+        started_perf = time.perf_counter()
+        try:
+            fallback_adapter = MatrixArkLocalAdapter(fallback_path)
+            fallback_records = fallback_adapter.read_all()
+            serving_records = materialize_serving_record_batch(fallback_records)
+            serving_records = compact_latest_context_state_records(
+                [
+                    record
+                    for record in serving_records
+                    if str(record.get("record_type") or "") not in TEMPORAL_COMPRESSED_OLD_RECORD_TYPES
+                    and not matrixark_record_retention_filtered(record)
+                ]
+            )
+            existing_records = self.read_all_without_disk_fallback_recovery()
+            existing_ids = {_durable_recovery_record_identity(record) for record in existing_records}
+            missing_records = [
+                record
+                for record in serving_records
+                if _durable_recovery_record_identity(record) not in existing_ids
+            ]
+            if missing_records:
+                self._disk_fallback_recovery_in_progress = True
+                try:
+                    self._append_many_materialized(missing_records, allow_queue=False)
+                finally:
+                    self._disk_fallback_recovery_in_progress = False
+                self._records_cache = None
+                self._drop_direct_record_cache()
+                self._entry_count_cache = self._get_count()
+            elapsed_ms = round((time.perf_counter() - started_perf) * 1000.0, 3)
+            status = {
+                "status": "recovered" if missing_records else "up_to_date",
+                "reason": reason,
+                "path": path,
+                "fallback_records": len(fallback_records),
+                "recoverable_serving_records": len(serving_records),
+                "existing_serving_records": len(existing_records),
+                "recovered_records": len(missing_records),
+                "entry_count_after": self._entry_count_cache,
+                "elapsed_ms": elapsed_ms,
+            }
+            self._disk_fallback_recovery_status = status
+            return status
+        except Exception as exc:
+            self._disk_fallback_recovery_in_progress = False
+            status = {"status": "failed", "reason": reason, "path": path, "error": str(exc)}
+            self._disk_fallback_recovery_status = status
+            _mcp_debug_log(f"matrixark disk fallback serving recovery failed: {exc}")
+            return status
 
     def _storage_route_for_bundle(self, bundle: list[Json]) -> Json:
         fallback: Json = {}
@@ -1136,6 +1259,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             write_path="direct_append" if allow_queue else "async_queue_flush",
             append_started_at_ms=append_started_at_ms,
         )
+        self._append_disk_fallback_records(records_to_write)
         with self._records_lock:
             count = self._raw_entry_count_cache if self._raw_entry_count_cache is not None else self._get_raw_count()
             sequence = count
@@ -1878,6 +2002,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             return
         self._ensure_backend_metric_fields()
         records = compact_latest_context_state_records(records)
+        self._append_disk_fallback_records(records)
         latest_state_entries, append_records_for_log = self._split_compacted_latest_context_state(records)
         self._validate_storage_routes_available(records)
         if latest_state_entries and not append_records_for_log:
@@ -2255,6 +2380,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return bundles
 
     def read_all(self) -> list[Json]:
+        self._recover_serving_from_disk_fallback_if_needed(reason="read_all")
+        return self.read_all_without_disk_fallback_recovery()
+
+    def read_all_without_disk_fallback_recovery(self) -> list[Json]:
         with self._records_lock:
             hot_cache_enabled = self.python_hot_cache_enabled()
             if hot_cache_enabled and self._records_cache is not None:
@@ -2308,6 +2437,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         """
 
         allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
+        self._recover_serving_from_disk_fallback_if_needed(reason="retrieval_records")
         native_candidates = self._native_candidate_scan(
             scope=scope,
             record_types=allowed_types,
@@ -2462,6 +2592,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def native_context_pack(self, request: Json) -> Json | None:
         if getattr(self, "_native_context_pack_fallback_active", False):
             return None
+        self._recover_serving_from_disk_fallback_if_needed(reason="native_context_pack")
         retriever = getattr(getattr(self, "_client", None), "matrixark_retrieve_context_pack", None)
         if not callable(retriever):
             return None
