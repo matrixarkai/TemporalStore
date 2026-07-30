@@ -174,6 +174,15 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("memory_scope:session", session_flattened)
         self.assertIn("session_continuity:same_session", session_flattened)
 
+    def test_cross_session_query_words_override_latest_and_date_classifiers(self) -> None:
+        for query in [
+            "Compare the latest Codex decisions across sessions",
+            "What changed today between previous sessions?",
+            "Show current blockers from other sessions together",
+        ]:
+            self.assertEqual("multi_hop", infer_query_type(query), query)
+            self.assertEqual("multi_hop", matrixark_mcp_query.infer_query_type(query), query)
+
     def test_retrieval_records_use_secondary_index_posting_prefilter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-secondary-prefilter.jsonl")
