@@ -446,12 +446,21 @@ AUTO_BUDGET_QUERY_TYPES = {
 }
 
 
+def _explicit_cross_session_requested(args: Json, ranking: Json) -> bool:
+    raw = args.get("cross_session", ranking.get("cross_session"))
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, dict):
+        return bool(raw.get("enabled"))
+    return False
+
+
 def _default_memory_budget_mode(args: Json, ranking: Json, *, field: str, question_type: str) -> str:
     mode = str(args.get(field) or ranking.get(field) or "").strip().lower()
     if mode:
         return mode
     normalized_question_type = str(question_type or "fact").strip().lower()
-    if normalized_question_type in AUTO_BUDGET_QUERY_TYPES:
+    if normalized_question_type in AUTO_BUDGET_QUERY_TYPES or _explicit_cross_session_requested(args, ranking):
         return "auto"
     return ""
 

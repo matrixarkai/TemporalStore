@@ -1356,6 +1356,80 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 self.assertEqual(local_mode, helper_mode)
                 self.assertEqual(local_budget, helper_budget)
 
+    def test_moduleized_budget_helpers_default_to_auto_for_explicit_cross_session(self) -> None:
+        helper_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pre_refresh")
+        local_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
+
+        args = {"cross_session": True}
+        helper_source_budget, helper_source_mode = helper_mod.auto_source_role_budget_tokens(
+            args,
+            {},
+            remote_budget_tokens=100,
+            question_type="fact",
+        )
+        local_source_budget, local_source_mode = local_mod.auto_source_role_budget_tokens(
+            args,
+            {},
+            remote_budget_tokens=100,
+            question_type="fact",
+        )
+        self.assertEqual("auto", helper_source_mode)
+        self.assertEqual(local_source_mode, helper_source_mode)
+        self.assertEqual(local_source_budget, helper_source_budget)
+        self.assertEqual({"assistant": 45, "tool": 35, "user": 60}, helper_source_budget)
+
+        helper_layer_budget, helper_layer_mode = helper_mod.auto_memory_layer_budget_tokens(
+            args,
+            {},
+            remote_budget_tokens=100,
+            question_type="fact",
+        )
+        local_layer_budget, local_layer_mode = local_mod.auto_memory_layer_budget_tokens(
+            args,
+            {},
+            remote_budget_tokens=100,
+            question_type="fact",
+        )
+        self.assertEqual("auto", helper_layer_mode)
+        self.assertEqual(local_layer_mode, helper_layer_mode)
+        self.assertEqual(local_layer_budget, helper_layer_budget)
+        self.assertEqual(40, helper_layer_budget["profile_entity"])
+        self.assertEqual(25, helper_layer_budget["cross_session_event"])
+
+        helper_selection_budget, helper_selection_mode = helper_mod.auto_memory_selection_policy_budget_tokens(
+            args,
+            {},
+            remote_budget_tokens=100,
+            question_type="fact",
+        )
+        local_selection_budget, local_selection_mode = local_mod.auto_memory_selection_policy_budget_tokens(
+            args,
+            {},
+            remote_budget_tokens=100,
+            question_type="fact",
+        )
+        self.assertEqual("auto", helper_selection_mode)
+        self.assertEqual(local_selection_mode, helper_selection_mode)
+        self.assertEqual(local_selection_budget, helper_selection_budget)
+        self.assertEqual(45, helper_selection_budget["selected_user_prompt"])
+
+        helper_phase_budget, helper_phase_mode = helper_mod.auto_extraction_phase_budget_tokens(
+            args,
+            {},
+            remote_budget_tokens=100,
+            question_type="fact",
+        )
+        local_phase_budget, local_phase_mode = local_mod.auto_extraction_phase_budget_tokens(
+            args,
+            {},
+            remote_budget_tokens=100,
+            question_type="fact",
+        )
+        self.assertEqual("auto", helper_phase_mode)
+        self.assertEqual(local_phase_mode, helper_phase_mode)
+        self.assertEqual(local_phase_budget, helper_phase_budget)
+        self.assertEqual({"pending_async": 12, "provisional": 25, "final": 70}, helper_phase_budget)
+
     def test_moduleized_memory_selection_budget_infers_from_related_auto_modes(self) -> None:
         helper_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pre_refresh")
         local_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
