@@ -1017,6 +1017,10 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
         if role:
             role_counts[role] = int(role_counts.get(role, 0)) + 1
     roles = set(role_counts)
+    metadata_scalar_role = normalize_message_role(metadata.get("source_role"))
+    if metadata_scalar_role:
+        roles.add(metadata_scalar_role)
+        role_counts[metadata_scalar_role] = max(1, int(role_counts.get(metadata_scalar_role, 0)))
     for value in metadata.get("source_roles", []) if isinstance(metadata.get("source_roles"), list) else []:
         role = normalize_message_role(value)
         if role:
@@ -1200,6 +1204,11 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
         if amount:
             counts[label] = int(counts.get(label, 0)) + amount
 
+    def add_role_count(name: Any, count: Any = 1) -> None:
+        role = normalize_message_role(name)
+        if role:
+            add_count(role_counts, role, count)
+
     def add_values(values: list[str], source: Any) -> None:
         if isinstance(source, list):
             for item in source:
@@ -1218,22 +1227,22 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
         existing_role_counts = record.get("source_role_counts") if isinstance(record.get("source_role_counts"), dict) else {}
         if len(record_messages) > 1:
             for message in record_messages:
-                add_count(role_counts, message.get("role"), 1)
+                add_role_count(message.get("role"), 1)
         elif existing_role_counts:
             for role, count in existing_role_counts.items():
-                add_count(role_counts, role, count)
+                add_role_count(role, count)
         else:
             roles = record.get("source_roles") if isinstance(record.get("source_roles"), list) else []
             if roles:
                 for role in roles:
-                    add_count(role_counts, role, 1)
+                    add_role_count(role, 1)
             else:
                 event_role = str(record.get("source_role") or "").strip()
                 if event_role:
-                    add_count(role_counts, event_role, 1)
+                    add_role_count(event_role, 1)
                 else:
                     for message in record_messages:
-                        add_count(role_counts, message.get("role"), 1)
+                        add_role_count(message.get("role"), 1)
 
         existing_hook_counts = record.get("source_hook_type_counts") if isinstance(record.get("source_hook_type_counts"), dict) else {}
         if existing_hook_counts:
@@ -4041,6 +4050,7 @@ class MatrixArkLocalAdapter:
                 "updated_at_ms": updated_at_ms,
             }
             for field in [
+                "source_role",
                 "source_roles",
                 "source_role_counts",
                 "source_hook_types",
@@ -8847,6 +8857,7 @@ class MatrixArkLocalAdapter:
                 "promoted_from_memory_scope": first_value("promoted_from_memory_scope"),
                 "profile_promotion_policy": first_value("profile_promotion_policy"),
                 "profile_promotion_blocker": first_value("profile_promotion_blocker"),
+                "source_role": normalize_message_role(first_value("source_role")),
                 "source_roles": first_list("source_roles"),
                 "source_role_counts": first_dict("source_role_counts"),
                 "source_hook_types": first_list("source_hook_types"),

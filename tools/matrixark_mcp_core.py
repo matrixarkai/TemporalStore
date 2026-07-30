@@ -6070,6 +6070,9 @@ def select_token_budgeted_refs(
         if isinstance(metadata, dict):
             sources.append(metadata)
         for source in sources:
+            scalar_role = normalize_message_role(source.get("source_role"))
+            if scalar_role:
+                role_names.add(scalar_role)
             roles = source.get("source_roles")
             if isinstance(roles, list):
                 role_names.update(normalize_message_role(role) for role in roles if normalize_message_role(role))
@@ -6108,6 +6111,9 @@ def select_token_budgeted_refs(
         if isinstance(metadata, dict):
             sources.append(metadata)
         for source in sources:
+            scalar_role = normalize_message_role(source.get("source_role"))
+            if scalar_role:
+                normalized_source_counts[scalar_role] = max(1, int(normalized_source_counts.get(scalar_role, 0) or 0))
             source_counts = source.get("source_role_counts") if isinstance(source.get("source_role_counts"), dict) else {}
             for role, count in source_counts.items():
                 role_name = normalize_message_role(role)
