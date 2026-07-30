@@ -2042,11 +2042,75 @@ class MatrixArkLocalAdapter:
                 path_scope = {**path_scope, "account_id": query_scope.get("account_id")}
             return scope_matches(path_scope, query_scope)
 
+        secondary_matched_index_count = 0
+        secondary_posting_ref_hashes: set[str] = set()
+        secondary_posting_node_hashes: set[str] = set()
+        secondary_posting_batch_hashes: set[str] = set()
+        required_index_terms = {term for group in (secondary_index_groups or []) for term in group if term}
+        if required_index_terms:
+            for index_record in raw_records:
+                if str(index_record.get("record_type") or "") != "context_index":
+                    continue
+                index_name = str(index_record.get("index_name") or "")
+                if index_name not in required_index_terms:
+                    continue
+                if not recovered_scope_matches(index_record, scope) and not profile_summary_path_matches(index_record, scope):
+                    continue
+                secondary_matched_index_count += 1
+                for ref_hash in context_index_record_ref_hashes(index_record):
+                    if ref_hash is not None:
+                        secondary_posting_ref_hashes.add(str(ref_hash))
+                for node_hash in context_index_record_node_hashes(index_record):
+                    if node_hash is not None:
+                        secondary_posting_node_hashes.add(str(node_hash))
+                batch_hashes = index_record.get("batch_id_hashes", [])
+                if isinstance(batch_hashes, list):
+                    for batch_hash in batch_hashes:
+                        if batch_hash is not None:
+                            secondary_posting_batch_hashes.add(str(batch_hash))
+                batch_hash = index_record.get("batch_id_hash")
+                if batch_hash is not None:
+                    secondary_posting_batch_hashes.add(str(batch_hash))
+
+        secondary_prefilter_enabled = bool(required_index_terms and secondary_matched_index_count > 0)
+
+        def record_matches_secondary_postings(record: Json) -> bool:
+            if not secondary_prefilter_enabled:
+                return True
+            if str(record.get("record_type") or "") == "context_index":
+                return str(record.get("index_name") or "") in required_index_terms
+            for field in ("node_hash", "parent_segment_hash"):
+                value = record.get(field)
+                if value is not None and str(value) in secondary_posting_node_hashes:
+                    return True
+            for field in (
+                "ref_hash",
+                "event_id_hash",
+                "entity_hash",
+                "summary_hash",
+                "segment_hash",
+                "compression_id_hash",
+                "chunk_hash",
+                "section_hash",
+                "skill_hash",
+            ):
+                value = record.get(field)
+                if value is not None and str(value) in secondary_posting_ref_hashes:
+                    return True
+            value = record.get("batch_id_hash")
+            if value is not None and str(value) in secondary_posting_batch_hashes:
+                return True
+            refs = record.get("ref_hashes")
+            if isinstance(refs, list) and any(str(ref) in secondary_posting_ref_hashes for ref in refs if ref is not None):
+                return True
+            return False
+
         filtered: list[Json] = []
         scanned = 0
         dropped_type = 0
         dropped_scope = 0
         dropped_node = 0
+        dropped_secondary_index = 0
         selected_nodes = selected_node_hashes or set()
         for record in raw_records:
             scanned += 1
@@ -2062,6 +2126,9 @@ class MatrixArkLocalAdapter:
                 if record_node_hash is not None and record_node_hash not in selected_nodes:
                     dropped_node += 1
                     continue
+            if not record_matches_secondary_postings(record):
+                dropped_secondary_index += 1
+                continue
             if (
                 record_type in {
                     "context_embedding",
@@ -2091,15 +2158,21 @@ class MatrixArkLocalAdapter:
                 "execution_mode": "adapter_prefilter_cached",
                 "native_pushdown": False,
                 "broad_scan_fallback_allowed": True if allow_broad_scan_fallback is None else bool(allow_broad_scan_fallback),
-                "broad_scan_used": True,
-                "broad_scan_reason": "local_reference_adapter",
+                "broad_scan_used": not secondary_prefilter_enabled,
+                "broad_scan_reason": "no_matching_secondary_index_postings" if required_index_terms and not secondary_prefilter_enabled else ("local_secondary_index_prefilter" if secondary_prefilter_enabled else "local_reference_adapter"),
                 "record_types": sorted(allowed_types),
                 "scanned_records": scanned,
                 "returned_records": len(filtered),
                 "dropped_by_type": dropped_type,
                 "dropped_by_scope": dropped_scope,
                 "dropped_by_node": dropped_node,
+                "dropped_by_secondary_index": dropped_secondary_index,
                 "secondary_index_groups_supplied": len(secondary_index_groups or []),
+                "secondary_index_prefilter_enabled": secondary_prefilter_enabled,
+                "secondary_index_matched_posting_count": secondary_matched_index_count,
+                "secondary_index_posting_ref_hash_count": len(secondary_posting_ref_hashes),
+                "secondary_index_posting_node_hash_count": len(secondary_posting_node_hashes),
+                "secondary_index_posting_batch_hash_count": len(secondary_posting_batch_hashes),
                 "selected_node_hashes_supplied": len(selected_node_hashes or set()),
             },
         }
