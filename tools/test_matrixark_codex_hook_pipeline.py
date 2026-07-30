@@ -8910,6 +8910,48 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(summary_layer_readiness["layers"]["summary"]["ready"])
             self.assertEqual([], summary_readiness["freshness_warnings"])
 
+    def test_lightweight_async_ingest_reports_scheduled_idle_auto_batch_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-async-idle-scheduled.jsonl")
+            scope = {
+                "account_id": "acct_async_idle_scheduled",
+                "tenant_id": "tenant_async_idle_scheduled",
+                "user_id": "user_async_idle_scheduled",
+                "session_id": "session_async_idle_scheduled",
+            }
+            result = adapter.ingest(
+                {
+                    "scope": scope,
+                    "async_processing": True,
+                    "auto_batch_extract": True,
+                    "session_buffer_threshold": 20,
+                    "idle_commit_timeout_ms": 60000,
+                    "skip_prior_context": True,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Remember this live prompt and arm idle extraction without waiting for Stop.",
+                        }
+                    ],
+                    "metadata": {"hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
+                }
+            )
+
+            self.assertEqual("accepted", result["status"])
+            self.assertFalse(result["session_buffer"]["threshold_ready"])
+            self.assertFalse(result["session_buffer"]["idle_ready"])
+            self.assertTrue(result["session_buffer"]["idle_commit_scheduled"])
+            self.assertEqual("deferred", result["idle_commit_result"]["status"])
+            self.assertEqual("deferred", result["auto_batch_extract_result"]["status"])
+            self.assertEqual("idle_timeout", result["auto_batch_extract_result"]["trigger_policy"])
+            self.assertEqual("session_buffer_idle_deadline_armed", result["auto_batch_extract_result"]["reason"])
+            self.assertEqual(1, result["auto_batch_extract_result"]["pending_event_count"])
+            self.assertEqual(1, result["auto_batch_extract_result"]["pending_message_count"])
+            self.assertTrue(result["auto_batch_extract_result"]["idle_commit_scheduled"])
+            self.assertEqual("provisional", result["auto_batch_extract_result"]["extraction_phase"])
+            self.assertFalse(result["auto_batch_extract_result"]["final_session_boundary"])
+            self.assertEqual(1, len(adapter.pending_session_events(scope)))
+
     def test_lightweight_async_ingest_reports_idle_commit_as_auto_batch_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-async-idle-auto.jsonl")
