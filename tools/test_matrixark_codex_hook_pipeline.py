@@ -5011,6 +5011,79 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(pack["memory_inventory"]["has_profile_memory"])
             self.assertFalse(pack["memory_inventory"]["profile_records_available_but_not_selected"])
 
+    def test_normal_query_warns_when_profile_memory_is_available_but_not_selected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-memory-not-selected.jsonl")
+            base_scope = {
+                "account_id": "acct_profile_not_selected",
+                "tenant_id": "tenant_profile_not_selected",
+                "user_id": "user_profile_not_selected",
+            }
+            session_scope = {**base_scope, "session_id": "session_profile_not_selected_current"}
+            profile_scope = {**base_scope, "session_id": "session_profile_not_selected_prior"}
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": 4301,
+                        "node_hash": 5301,
+                        "node_path": [
+                            "tenant:tenant_profile_not_selected",
+                            "user:user_profile_not_selected",
+                            "session:session_profile_not_selected_current",
+                        ],
+                        "text": "The current session task is checking the live hook retrieval budget warning path.",
+                        "summary_text": "current session retrieval budget task",
+                        "event_type": "user_prompt",
+                        "classification": "request",
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "source_roles": ["user"],
+                        "source_role_counts": {"user": 1},
+                        "scope": session_scope,
+                        "updated_at_ms": 2000,
+                    },
+                    {
+                        "record_type": "context_entity",
+                        "entity_hash": 4302,
+                        "node_hash": 5302,
+                        "node_path": [
+                            "tenant:tenant_profile_not_selected",
+                            "user:user_profile_not_selected",
+                            "profile:long_term_memory",
+                        ],
+                        "entity_type": "user_preference",
+                        "entity_name": "workspace_location",
+                        "state": "User profile says TemporalStore work should stay under /root/src/github-services.",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "profile_current_state_representative": True,
+                        "source_session_ids": ["session_profile_not_selected_prior"],
+                        "source_roles": ["user"],
+                        "source_role_counts": {"user": 1},
+                        "scope": profile_scope,
+                        "updated_at_ms": 3000,
+                    },
+                ]
+            )
+
+            pack = adapter.retrieve(
+                {
+                    "scope": session_scope,
+                    "session_scope": "only",
+                    "query": "What is the current session task?",
+                    "max_context_tokens": 160,
+                    "ranking": {"max_selected_refs": 1, "min_similarity_score": 0.0},
+                    "audit_mode": "off",
+                }
+            )
+
+            self.assertTrue(pack["insufficient_context"])
+            self.assertEqual([], pack.get("selected_refs", []))
+            self.assertTrue(pack["memory_inventory"]["has_profile_memory"])
+            self.assertTrue(pack["memory_inventory"]["profile_records_available_but_not_selected"])
+            self.assertIn("profile_memory_available_but_not_selected", pack["quality_warnings"])
+
     def test_profile_memory_query_selects_existing_profile_summary_without_refresh(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-summary-existing.jsonl")
