@@ -11143,6 +11143,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "model": "deterministic-test",
                         "vector": embedding_for_text(profile_text),
                         "scope": profile_scope,
+                        "entity_type": "assistant_decision",
+                        "entity_name": "latest_profile_marker_991",
                         "memory_scope": "user_profile",
                         "session_continuity": "cross_session",
                         "promoted_from_memory_scope": "session",
@@ -11170,9 +11172,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 {
                     "scope": scope,
                     "session_scope": "prefer",
-                    "query": "latest profile marker 991 threshold idle extraction",
+                    "query": "What is the latest assistant decision for profile marker 991 threshold idle extraction?",
+                    "question_type": "current_state",
                     "max_context_tokens": 500,
                     "audit_mode": "off",
+                    "include_retrieval_debug": True,
                     "ranking": {"max_selected_refs": 3, "min_similarity_score": 0.0},
                 }
             )
@@ -11193,6 +11197,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("source_role_counts", profile_ref)
             self.assertNotIn("profile_source_session_count", profile_ref)
             self.assertNotIn("profile_source_entity_count", profile_ref)
+            pushdown = pack["recall_policy"]["backend_retrieval_pushdown"]
+            self.assertTrue(pushdown["secondary_index_prefilter_enabled"], pushdown)
+            self.assertEqual(0, pushdown["secondary_index_matched_posting_count"])
+            self.assertGreaterEqual(pushdown["secondary_embedding_matched_posting_count"], 1)
             budget = pack["retrieval_metrics"]["memory_layer_budget"]
             self.assertGreaterEqual(budget["by_memory_scope"]["user_profile"]["refs"], 1)
             self.assertGreaterEqual(budget["by_session_continuity"]["cross_session"]["refs"], 1)
@@ -11215,14 +11223,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 if ref.get("ref_type") == "entity"
                 and "latest_profile_marker_991" in ref.get("text", "")
             )
-            self.assertNotIn("source_role_counts", debug_ref)
-            self.assertNotIn("source_session_ids", debug_ref)
-            self.assertNotIn("source_event_ids", debug_ref)
-            self.assertNotIn("extraction_context_event_ids", debug_ref)
-            self.assertNotIn("source_entity_count", debug_ref)
-            self.assertNotIn("source_session_count", debug_ref)
-            self.assertNotIn("profile_source_session_count", debug_ref)
-            self.assertNotIn("profile_source_entity_count", debug_ref)
+            self.assertEqual({"assistant": 1}, debug_ref["source_role_counts"])
+            self.assertEqual({"after_llm": 1}, debug_ref["source_hook_type_counts"])
+            self.assertEqual({"Stop": 1}, debug_ref["source_codex_event_counts"])
+            self.assertEqual(1, debug_ref["profile_source_session_count"])
+            self.assertEqual(1, debug_ref["profile_source_entity_count"])
+            self.assertEqual(1, debug_ref["current_state_source_session_count"])
+            self.assertEqual(1, debug_ref["current_state_source_entity_count"])
 
     def test_retrieval_recovers_profile_summary_layer_from_compact_embedding_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

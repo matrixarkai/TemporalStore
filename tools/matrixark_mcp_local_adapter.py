@@ -2525,25 +2525,34 @@ class MatrixArkLocalAdapter:
             for embedding_record in raw_records:
                 if str(embedding_record.get("record_type") or "") != "context_embedding":
                     continue
-                if embedding_record.get("embedding_type") != "event_text":
-                    continue
-                if embedding_record.get("ref_type") not in {"event", None, ""}:
-                    continue
+                embedding_type = embedding_record.get("embedding_type")
                 ref_hash = embedding_record.get("ref_hash")
                 if ref_hash in (None, ""):
                     continue
                 if not recovered_scope_matches(embedding_record, scope):
                     continue
-                synthetic_event = {
-                    **embedding_record,
-                    "record_type": "context_event",
-                    "event_id_hash": ref_hash,
-                    "event_type": embedding_record.get("event_type", ""),
-                    "classification": embedding_record.get("classification", ""),
-                    "status": embedding_record.get("status", ""),
-                    "source_type": embedding_record.get("source_type") or embedding_record.get("source_kind") or "message",
-                }
-                synthetic_terms = candidate_index_terms(synthetic_event, {}, {})
+                synthetic_record: Json | None = None
+                if embedding_type == "event_text" and embedding_record.get("ref_type") in {"event", None, ""}:
+                    synthetic_record = {
+                        **embedding_record,
+                        "record_type": "context_event",
+                        "event_id_hash": ref_hash,
+                        "event_type": embedding_record.get("event_type", ""),
+                        "classification": embedding_record.get("classification", ""),
+                        "status": embedding_record.get("status", ""),
+                        "source_type": embedding_record.get("source_type") or embedding_record.get("source_kind") or "message",
+                    }
+                elif embedding_type in {"entity_state", "profile_entity_state"} and embedding_record.get("ref_type") in {"entity", None, ""}:
+                    synthetic_record = {
+                        **embedding_record,
+                        "record_type": "context_entity",
+                        "entity_hash": ref_hash,
+                        "entity_type": embedding_record.get("entity_type", ""),
+                        "entity_name": embedding_record.get("entity_name", ""),
+                    }
+                if synthetic_record is None:
+                    continue
+                synthetic_terms = candidate_index_terms(synthetic_record, {}, {})
                 if not synthetic_terms.intersection(required_index_terms):
                     continue
                 secondary_embedding_matched_count += 1
@@ -7474,6 +7483,8 @@ class MatrixArkLocalAdapter:
                     "model": embedding_model_name(),
                     "vector": entity_vector,
                     "scope": envelope["scope"],
+                    "entity_type": updated_entity["entity_type"],
+                    "entity_name": updated_entity["entity_name"],
                     "source_event_ids": source_event_ids,
                     "source_roles": source_roles,
                     "source_role_counts": source_role_counts,
@@ -7705,6 +7716,8 @@ class MatrixArkLocalAdapter:
                         "model": embedding_model_name(),
                         "vector": profile_entity_vector,
                         "scope": profile_scope,
+                        "entity_type": promoted_entity["entity_type"],
+                        "entity_name": promoted_entity["entity_name"],
                         "source_event_ids": profile_source_event_ids,
                         "source_session_ids": profile_source_session_ids,
                         "source_entity_hashes": profile_source_entity_hashes,
