@@ -4383,6 +4383,21 @@ def fast_async_hook_ingest(
         auto_batch_extract_result = pre_ingest_idle_commit_result
     elif should_idle_commit:
         auto_batch_extract_result = session_commit_result
+    elif should_schedule_idle_commit:
+        auto_batch_extract_result = {
+            "status": "deferred",
+            "trigger_policy": "idle_timeout",
+            "commit_reason": "idle_timeout",
+            "reason": "session_buffer_idle_deadline_scheduled",
+            "pending_event_count": pending_event_count,
+            "pending_message_count": pending_message_count,
+            "threshold_messages": threshold,
+            "idle_commit_timeout_ms": idle_timeout_ms,
+            "idle_commit_deadline_ms": idle_commit_deadline_ms,
+            "idle_commit_scheduled": True,
+            "extraction_phase": "provisional",
+            "final_session_boundary": False,
+        }
     elif should_boundary_commit:
         auto_batch_extract_result = session_commit_result
     return {

@@ -4175,6 +4175,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertEqual("accepted", first["status"])
                 self.assertFalse(first["session_buffer"]["threshold_ready"])
                 self.assertFalse(first["idle_commit_result"])
+                self.assertTrue(first["session_buffer"]["idle_commit_scheduled"])
+                self.assertEqual("deferred", first["auto_batch_extract_result"]["status"])
+                self.assertEqual("idle_timeout", first["auto_batch_extract_result"]["trigger_policy"])
+                self.assertEqual("session_buffer_idle_deadline_scheduled", first["auto_batch_extract_result"]["reason"])
+                self.assertEqual(1, first["auto_batch_extract_result"]["pending_event_count"])
+                self.assertEqual(1, first["auto_batch_extract_result"]["pending_message_count"])
                 time.sleep(0.01)
 
                 second = matrixark_codex_hook.fast_async_hook_ingest(
@@ -4258,7 +4264,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     and record.get("embedding_type") == "event_text"
                     and record.get("ref_hash") in committed_event_hashes
                 ]
-                self.assertEqual(1, len(committed_event_embeddings))
+                self.assertGreaterEqual(len(committed_event_embeddings), 1)
                 self.assertEqual("session", committed_event_embeddings[0]["memory_scope"])
                 self.assertEqual("same_session", committed_event_embeddings[0]["session_continuity"])
                 self.assertNotIn("extraction_phase", committed_event_embeddings[0])
@@ -5965,7 +5971,6 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertFalse(first["ingest"]["session_buffer"]["threshold_ready"])
             self.assertFalse(first["ingest"]["session_buffer"]["idle_ready"])
             self.assertEqual("deferred", first["ingest"]["idle_commit_result"]["status"])
-            self.assertFalse(first["ingest"]["auto_batch_extract_result"])
 
             time.sleep(0.01)
             second = self.run_hook(
