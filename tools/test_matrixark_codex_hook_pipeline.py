@@ -5117,7 +5117,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             pack = adapter.retrieve(
                 {
                     "scope": scope,
-                    "query": "pre refresh summary budget",
+                    "query": "plain memory lookup budget",
                     "max_context_tokens": 100,
                     "pre_retrieval_summary_refresh": True,
                     "audit_mode": "off",
@@ -5144,7 +5144,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             auto_pack = adapter.retrieve(
                 {
                     "scope": scope,
-                    "query": "pre refresh summary budget with auto mode",
+                    "query": "plain memory lookup budget with auto mode",
                     "max_context_tokens": 100,
                     "pre_retrieval_summary_refresh": True,
                     "ranking": {"memory_layer_budget_mode": "auto"},
@@ -5164,10 +5164,36 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(23, auto_request["memory_layer_budget_tokens"]["profile_compression"])
             self.assertEqual(23, auto_request["memory_layer_budget_tokens"]["cross_session_compression"])
             self.assertEqual(42, auto_request["memory_layer_budget_tokens"]["profile_entity"])
+            profile_pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "show user profile long term memory across sessions",
+                    "max_context_tokens": 100,
+                    "pre_retrieval_summary_refresh": True,
+                    "ranking": {"memory_layer_budget_mode": "auto"},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+            self.assertEqual("local-native-pack", profile_pack["pack_id"])
+            self.assertEqual(3, len(adapter.native_requests))
+            profile_request = adapter.native_requests[2]
+            self.assertEqual("profile_memory", profile_request["question_type"])
+            self.assertEqual(
+                "pre_retrieval_summary_refresh_profile_memory",
+                profile_request["memory_layer_budget_mode"],
+            )
+            self.assertEqual(42, profile_request["memory_layer_budget_tokens"]["profile_summary"])
+            self.assertEqual(57, profile_request["memory_layer_budget_tokens"]["profile_entity"])
+            self.assertEqual(38, profile_request["memory_layer_budget_tokens"]["cross_session_event"])
+            self.assertGreater(
+                profile_request["memory_layer_budget_tokens"]["profile_entity"],
+                profile_request["memory_layer_budget_tokens"]["same_session_event"],
+            )
             explicit_pack = adapter.retrieve(
                 {
                     "scope": scope,
-                    "query": "pre refresh summary budget with explicit tokens",
+                    "query": "plain memory lookup budget with explicit tokens",
                     "max_context_tokens": 100,
                     "pre_retrieval_summary_refresh": True,
                     "memory_layer_budget_tokens": {"profile_summary": 7, "profile_entity": 11},
@@ -5176,8 +5202,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 }
             )
             self.assertEqual("local-native-pack", explicit_pack["pack_id"])
-            self.assertEqual(3, len(adapter.native_requests))
-            explicit_request = adapter.native_requests[2]
+            self.assertEqual(4, len(adapter.native_requests))
+            explicit_request = adapter.native_requests[3]
             self.assertEqual("explicit", explicit_request["memory_layer_budget_mode"])
             self.assertEqual(
                 {"profile_summary": 7, "profile_entity": 11},
