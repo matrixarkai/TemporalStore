@@ -6655,6 +6655,12 @@ class MatrixArkLocalAdapter:
         embedding_started_perf = time.perf_counter()
         event_embedding = embedding_for_text(text)
         self._observe_model_latency("embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
+        hot_messages = [message for message in envelope.get("messages", []) if isinstance(message, dict)]
+        hot_event_type = (
+            context_event_type_for_message(hot_messages[0], str(extraction.get("event_type") or ""))
+            if len(hot_messages) == 1
+            else str(extraction.get("event_type") or infer_event_type(text))
+        )
         with self.write_batch("message_ingest_hot_path"):
             session_key_parts = [str(part) for part in context_node_key(envelope)]
             if any(session_key_parts):
@@ -6733,6 +6739,10 @@ class MatrixArkLocalAdapter:
                     "model": embedding_model_name(),
                     "vector": event_embedding,
                     "scope": hot_record_scope,
+                    "classification": extraction.get("classification", ""),
+                    "event_type": hot_event_type,
+                    "status": extraction.get("status", "observed"),
+                    "source_kind": envelope.get("kind", "message"),
                     **source_lineage,
                     "source_memory_scopes": source_lineage.get("source_memory_scopes", ["session"]),
                     "source_session_continuities": source_lineage.get("source_session_continuities", ["same_session"]),
@@ -6750,7 +6760,7 @@ class MatrixArkLocalAdapter:
                 "node_path": node_path,
                 "text": text,
                 "classification": extraction.get("classification", ""),
-                "event_type": extraction.get("event_type", ""),
+                "event_type": hot_event_type,
                 "entity_type": extraction.get("entity_type", ""),
                 "status": extraction.get("status", "observed"),
                 "source_kind": envelope.get("kind", "message"),
@@ -6765,7 +6775,7 @@ class MatrixArkLocalAdapter:
             event_index_terms = ordered_unique(
                 extraction.get("indexes")
                 or [
-                    context_index_name("event_type", extraction.get("event_type") or infer_event_type(text)),
+                    context_index_name("event_type", hot_event_type),
                     context_index_name("classification", non_default_classification(extraction.get("classification"))),
                     context_index_name("status", extraction.get("status") or "observed"),
                     context_index_name("source_type", envelope["kind"]),
