@@ -167,6 +167,30 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(1, budget["source_message_counts_by_role"]["assistant"])
         self.assertEqual(1, budget["source_message_counts_by_role"]["tool"])
 
+    def test_benchmark_quality_queries_use_evidence_and_profile_budgets(self) -> None:
+        query = "Compare LoCoMo hit rate p50 p99 latency and throughput quality across sessions"
+        self.assertEqual("benchmark_quality", infer_query_type(query))
+        self.assertEqual("benchmark_quality", matrixark_mcp_query.infer_query_type(query))
+
+        groups = infer_secondary_index_filter_groups(query, "benchmark_quality")
+        flattened = {term for group in groups for term in group}
+        self.assertIn("entity_type:tool_evidence", flattened)
+        self.assertIn("event_type:tool_evidence", flattened)
+        self.assertIn("entity_type:assistant_decision", flattened)
+        self.assertIn("memory_selection_policy:selected_tool_evidence_only", flattened)
+        self.assertIn("memory_scope:user_profile", flattened)
+        self.assertIn("session_continuity:cross_session", flattened)
+
+        budgets, mode = matrixark_mcp_retrieve_request.pre_refresh_helpers.auto_memory_selection_policy_budget_tokens(
+            {},
+            {},
+            remote_budget_tokens=1000,
+            question_type="benchmark_quality",
+        )
+        self.assertEqual("auto", mode)
+        self.assertGreater(budgets["selected_tool_evidence_only"], budgets["selected_user_prompt"])
+        self.assertGreater(budgets["selected_assistant_decision_outcome_only"], budgets["selected_user_prompt"])
+
     def test_secondary_index_filters_understand_selected_evidence_quality(self) -> None:
         groups = infer_secondary_index_filter_groups(
             "Show lossy selected tool evidence with exit code and pushed commit details",
