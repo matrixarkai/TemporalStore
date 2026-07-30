@@ -1730,7 +1730,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             {
                 "record_type": "context_event",
                 "event_type": "dialogue_batch",
-                "source_role_counts": {"tool_output": 1},
+                "source_role": "tool_result",
                 "source_codex_event_counts": {"PostToolUse": 1},
                 "source_memory_selection_policy_counts": {"selected_tool_evidence_only": 1},
             },
