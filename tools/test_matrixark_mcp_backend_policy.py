@@ -5015,6 +5015,25 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual("auto", plan["source_role_budget_mode"])
         self.assertEqual({"assistant": 190, "tool": 171, "user": 190}, plan["source_role_budget_tokens"])
 
+    def test_retrieval_plan_infers_memory_selection_budget_from_memory_layer_auto(self) -> None:
+        plan = retrieve_planning.retrieval_query_budget_plan(
+            {
+                "query": "what do you remember about me",
+                "scope": {"tenant_id": "tenant", "user_id": "user", "session_id": "session"},
+                "max_context_tokens": 400,
+                "ranking": {"memory_layer_budget_mode": "auto"},
+            },
+            {"memory_layer_budget_mode": "auto"},
+            query="what do you remember about me",
+            scope={"tenant_id": "tenant", "user_id": "user", "session_id": "session"},
+            default_max_context_tokens=400,
+        )
+
+        self.assertEqual("profile_memory", plan["question_type"])
+        self.assertEqual("auto", plan["memory_layer_budget_mode"])
+        self.assertEqual("auto", plan["memory_selection_policy_budget_mode"])
+        self.assertEqual(247, plan["memory_selection_policy_budget_tokens"]["selected_profile_current_state"])
+
     def test_compression_scan_honors_secondary_memory_layer_filters(self) -> None:
         scope = {"tenant_id": "tenant", "user_id": "user", "session_id": "session"}
         records = [
