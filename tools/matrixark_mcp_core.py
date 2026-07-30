@@ -2451,7 +2451,10 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "classification:correction": "correction wrong changed update",
     "segment_topic:correction": "correction updated stale changed",
     "entity_type:assistant_decision": "assistant decision final answer done implemented chose decided next action",
+    "event_type:assistant_response": "assistant response final answer outcome done implemented fixed decision",
+    "event_type:user_prompt": "user prompt request asks asked requirement instruction",
     "entity_type:tool_evidence": "tool evidence tests passed failed exit code commit push rebase validation benchmark blocker",
+    "event_type:tool_evidence": "tool event evidence tests passed failed exit code commit push rebase validation benchmark blocker",
     "source_type:message": "raw message dialogue evidence",
     "source_type:feedback": "feedback accepted rejected final answer",
     "source_type:resource": "resource document file pdf markdown text csv table runbook policy docs",
@@ -4429,9 +4432,15 @@ def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[
         add_group(context_index_name("memory_scope", "session"))
         add_group(context_index_name("session_continuity", "same_session"))
     if re.search(r"\b(assistant|decision|decided|done|implemented|fixed|final answer|what did codex|what was done|next action)\b", lower):
-        add_group(context_index_name("entity_type", "assistant_decision"), context_index_name("source_type", "message"))
+        add_group(
+            context_index_name("entity_type", "assistant_decision"),
+            context_index_name("event_type", "assistant_response"),
+            context_index_name("source_type", "message"),
+        )
     if re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
-        add_group(context_index_name("entity_type", "tool_evidence"))
+        add_group(context_index_name("entity_type", "tool_evidence"), context_index_name("event_type", "tool_evidence"))
+    if re.search(r"\b(user prompt|prompt|user request|user asked|request|asked codex)\b", lower):
+        add_group(context_index_name("event_type", "user_prompt"), context_index_name("source_role", "user"))
     if re.search(r"\b(selected|bounded|retained|extracted|memory selection|memory-selection)\b", lower):
         if re.search(r"\b(user prompt|prompt|user request|request)\b", lower):
             add_group(context_index_name("memory_selection_policy", "selected_user_prompt"))

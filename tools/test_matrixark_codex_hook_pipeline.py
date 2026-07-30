@@ -126,8 +126,20 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         )
         flattened = {term for group in groups for term in group}
         self.assertIn("entity_type:tool_evidence", flattened)
+        self.assertIn("event_type:tool_evidence", flattened)
         self.assertIn("memory_selection_policy:selected_tool_evidence_only", flattened)
         self.assertIn("memory_selection_quality:lossy", flattened)
+
+        query_flattened = {
+            term
+            for group in matrixark_mcp_query.infer_secondary_index_filter_groups(
+                "Show lossy selected tool evidence with exit code and pushed commit details",
+                "evidence",
+            )
+            for term in group
+        }
+        self.assertIn("entity_type:tool_evidence", query_flattened)
+        self.assertIn("event_type:tool_evidence", query_flattened)
 
         assistant_groups = infer_secondary_index_filter_groups(
             "What selected assistant decision outcome did Codex implement?",
@@ -135,7 +147,19 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         )
         assistant_flattened = {term for group in assistant_groups for term in group}
         self.assertIn("entity_type:assistant_decision", assistant_flattened)
+        self.assertIn("event_type:assistant_response", assistant_flattened)
         self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", assistant_flattened)
+
+        user_flattened = {
+            term
+            for group in infer_secondary_index_filter_groups(
+                "Show the original user prompt and user request Codex handled",
+                "evidence",
+            )
+            for term in group
+        }
+        self.assertIn("event_type:user_prompt", user_flattened)
+        self.assertIn("source_role:user", user_flattened)
 
     def test_profile_memory_queries_target_profile_and_cross_session_indexes(self) -> None:
         self.assertEqual(
