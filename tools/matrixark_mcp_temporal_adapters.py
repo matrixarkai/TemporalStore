@@ -315,6 +315,15 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         MatrixArkLocalAdapter._init_local_runtime_state(self)
         self._entity_cache_loaded = True
         self._context_node_cache_loaded = True
+        self._disk_fallback_adapter: MatrixArkLocalAdapter | None = None
+        self._disk_fallback_path = os.environ.get("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", "").strip()
+        self._disk_fallback_enabled = os.environ.get("MATRIXARK_TEMPORALSTORE_SHADOW_LOCAL_STORE", "1").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self._disk_fallback_write_failures = 0
         sdk_root = Path(__file__).resolve().parents[1] / "sdk" / "python"
         sys.path.insert(0, str(sdk_root))
         from temporalstore import Client, Options, ProxyClient, ProxyOptions  # type: ignore
@@ -956,6 +965,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
     def append(self, record: Json) -> None:
         self._ensure_backend_metric_fields()
+        self._append_disk_fallback_records([record])
         self._append_raw_ingestion_records([record])
         records = materialize_serving_records(record)
         if self._queue_batched_records(records):
@@ -964,11 +974,28 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
     def append_many(self, records: list[Json]) -> None:
         self._ensure_backend_metric_fields()
+        self._append_disk_fallback_records(records)
         self._append_raw_ingestion_records(records)
         materialized = materialize_serving_record_batch(records)
         if self._queue_batched_records(materialized):
             return
         self._append_many_materialized(materialized)
+
+    def _append_disk_fallback_records(self, records: list[Json]) -> None:
+        if (
+            not getattr(self, "_disk_fallback_enabled", False)
+            or not getattr(self, "_disk_fallback_path", "")
+            or not records
+        ):
+            return
+        try:
+            if self._disk_fallback_adapter is None:
+                self._disk_fallback_adapter = MatrixArkLocalAdapter(Path(self._disk_fallback_path))
+            self._disk_fallback_adapter.append_many(records)
+        except Exception as exc:  # pragma: no cover - best-effort crash recovery path
+            self._disk_fallback_write_failures += 1
+            if os.environ.get("MATRIXARK_DEBUG_DISK_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}:
+                print(f"MatrixArk TemporalStore disk fallback shadow write failed: {exc}", file=sys.stderr)
 
     def _storage_route_for_bundle(self, bundle: list[Json]) -> Json:
         fallback: Json = {}
@@ -5139,6 +5166,15 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         self._context_node_cache_loaded = True
         self._retrieval_candidate_cache: dict[str, Json] = {}
         self._retrieval_candidate_cache_lock = threading.RLock()
+        self._disk_fallback_adapter: MatrixArkLocalAdapter | None = None
+        self._disk_fallback_path = os.environ.get("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", "").strip()
+        self._disk_fallback_enabled = os.environ.get("MATRIXARK_TEMPORALSTORE_SHADOW_LOCAL_STORE", "1").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self._disk_fallback_write_failures = 0
         self._metaserver = metaserver
         self._namespace = namespace
         self._table = table
