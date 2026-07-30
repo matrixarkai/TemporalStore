@@ -3085,10 +3085,7 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": finalized_at_ms,
                     }
                     summary_index_names = [
-                        "summary_type:session_final",
-                        "memory_scope:session",
-                        "session_continuity:same_session",
-                        "extraction_phase:final",
+                        *sorted(candidate_index_terms(summary_record, {}, {})),
                         "final_session_boundary:true",
                     ]
                     for phase in source_lineage.get("source_extraction_phases", []) or []:
