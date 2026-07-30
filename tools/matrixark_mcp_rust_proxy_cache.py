@@ -115,8 +115,8 @@ def mark_context_pack_response_cache_hit(response: Json) -> Json:
         metrics = dict(metrics)
         cached["retrieval_metrics"] = metrics
         metrics["cache_hit"] = True
-        metrics["candidate_cache_hit"] = True
         metrics["context_pack_response_cache_hit"] = True
+        metrics.setdefault("candidate_cache_hit", False)
     pack = cached.get("context_pack")
     if isinstance(pack, dict):
         pack = dict(pack)
@@ -126,8 +126,8 @@ def mark_context_pack_response_cache_hit(response: Json) -> Json:
             pack_metrics = dict(pack_metrics)
             pack["retrieval_metrics"] = pack_metrics
             pack_metrics["cache_hit"] = True
-            pack_metrics["candidate_cache_hit"] = True
             pack_metrics["context_pack_response_cache_hit"] = True
+            pack_metrics.setdefault("candidate_cache_hit", False)
     return cached
 
 
