@@ -2644,6 +2644,8 @@ class BenchmarkReader:
         candidate_hint = ""
         if self.config.include_extractive_hint and (self.config.candidate_only or self.config.candidate_hybrid):
             candidate_hint = extractive_reader_hint(question, blocks).strip()
+        if self.config.candidate_only and candidate_hint and self.open_source_calls > 0:
+            return candidate_hint
         endpoint = self.config.base_url.rstrip("/")
         if not endpoint.endswith("/chat/completions"):
             endpoint = f"{endpoint}/chat/completions"
