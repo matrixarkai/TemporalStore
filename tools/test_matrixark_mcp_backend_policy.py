@@ -4997,6 +4997,24 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual({"final": 80, "provisional": 20}, plan["extraction_phase_budget_tokens"])
         self.assertEqual("explicit", plan["extraction_phase_budget_mode"])
 
+    def test_retrieval_plan_uses_question_type_source_role_budget_defaults(self) -> None:
+        plan = retrieve_planning.retrieval_query_budget_plan(
+            {
+                "query": "what do you remember about me",
+                "scope": {"tenant_id": "tenant", "user_id": "user", "session_id": "session"},
+                "max_context_tokens": 400,
+                "ranking": {"source_role_budget_mode": "auto"},
+            },
+            {"source_role_budget_mode": "auto"},
+            query="what do you remember about me",
+            scope={"tenant_id": "tenant", "user_id": "user", "session_id": "session"},
+            default_max_context_tokens=400,
+        )
+
+        self.assertEqual("profile_memory", plan["question_type"])
+        self.assertEqual("auto", plan["source_role_budget_mode"])
+        self.assertEqual({"assistant": 190, "tool": 171, "user": 190}, plan["source_role_budget_tokens"])
+
     def test_compression_scan_honors_secondary_memory_layer_filters(self) -> None:
         scope = {"tenant_id": "tenant", "user_id": "user", "session_id": "session"}
         records = [

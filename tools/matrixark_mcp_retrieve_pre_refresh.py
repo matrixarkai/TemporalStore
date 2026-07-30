@@ -28,7 +28,13 @@ PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT = _positive_int_env(
 )
 
 
-def auto_source_role_budget_tokens(args: Json, ranking: Json, *, remote_budget_tokens: int) -> tuple[Json, str]:
+def auto_source_role_budget_tokens(
+    args: Json,
+    ranking: Json,
+    *,
+    remote_budget_tokens: int,
+    question_type: str = "fact",
+) -> tuple[Json, str]:
     mode = str(args.get("source_role_budget_mode") or ranking.get("source_role_budget_mode") or "").strip().lower()
     if mode not in {"auto", "balanced", "codex_auto"}:
         return {}, ""
@@ -40,6 +46,15 @@ def auto_source_role_budget_tokens(args: Json, ranking: Json, *, remote_budget_t
         return {}, mode
     fractions = optional_object(args, "source_role_budget_fractions") or optional_object(ranking, "source_role_budget_fractions")
     defaults = {"assistant": 0.45, "tool": 0.35, "user": 0.60}
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    if normalized_question_type in {"current_state", "latest"}:
+        defaults.update({"assistant": 0.50, "tool": 0.40, "user": 0.50})
+    elif normalized_question_type == "profile_memory":
+        defaults.update({"assistant": 0.50, "tool": 0.45, "user": 0.50})
+    elif normalized_question_type == "evidence":
+        defaults.update({"assistant": 0.35, "tool": 0.50, "user": 0.45})
+    elif normalized_question_type in {"broad_exploration", "multi_hop", "date"}:
+        defaults.update({"assistant": 0.45, "tool": 0.45, "user": 0.50})
     budgets: Json = {}
     for role, default_fraction in defaults.items():
         raw_fraction = fractions.get(role, default_fraction) if isinstance(fractions, dict) else default_fraction
