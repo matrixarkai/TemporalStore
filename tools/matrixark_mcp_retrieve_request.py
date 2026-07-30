@@ -59,6 +59,38 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_pre_refresh as pre_refresh_helpers
 
 
+IDLE_COMMIT_RESOLUTION_LINEAGE_FIELDS = [
+    "node_hash",
+    "node_path",
+    "idle_commit_timeout_ms",
+    "idle_commit_deadline_ms",
+    "idle_commit_pending_event_count",
+    "idle_commit_pending_message_count",
+    "threshold_messages",
+    "source_roles",
+    "source_role_counts",
+    "source_hook_types",
+    "source_hook_type_counts",
+    "source_codex_events",
+    "source_codex_event_counts",
+    "source_memory_scopes",
+    "source_session_continuities",
+    "source_extraction_phases",
+    "source_memory_selection_policies",
+    "source_memory_selection_policy_counts",
+    "extraction_phase",
+    "final_session_boundary",
+]
+
+
+def idle_commit_resolution_lineage(task: Json) -> Json:
+    return {
+        field: task[field]
+        for field in IDLE_COMMIT_RESOLUTION_LINEAGE_FIELDS
+        if field in task and task[field] not in (None, "", [], {})
+    }
+
+
 def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, scope: Json) -> Json:
     enabled = (
         args.get("pre_retrieval_idle_commit_flush")
@@ -159,29 +191,34 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
         commit_result = session_commit(commit_args)
     except Exception as exc:
         append = getattr(target, "append", None)
+        failed_task_count = 0
         if callable(append):
-            try:
-                append(
-                    {
-                        "record_type": "matrixark_async_pipeline_task",
-                        "task_hash": int(task.get("task_hash") or 0),
-                        "scheduled_task_hash": task.get("task_hash"),
-                        "event_id_hash": task.get("event_id_hash"),
-                        "scope": task.get("scope", scope),
-                        "status": "idle_commit_failed",
-                        "trigger_policy": "idle_timeout",
-                        "reason": "pre_retrieval_idle_commit_flush_failed",
-                        "error": str(exc)[:240],
-                        "updated_at_ms": current_time_ms,
-                    }
-                )
-            except Exception:
-                pass
+            for scheduled_task in due_tasks:
+                try:
+                    append(
+                        {
+                            "record_type": "matrixark_async_pipeline_task",
+                            "task_hash": int(scheduled_task.get("task_hash") or 0),
+                            "scheduled_task_hash": scheduled_task.get("task_hash"),
+                            "event_id_hash": scheduled_task.get("event_id_hash"),
+                            "scope": scheduled_task.get("scope", scope),
+                            "status": "idle_commit_failed",
+                            "trigger_policy": "idle_timeout",
+                            "reason": "pre_retrieval_idle_commit_flush_failed",
+                            "error": str(exc)[:240],
+                            **idle_commit_resolution_lineage(scheduled_task),
+                            "updated_at_ms": current_time_ms,
+                        }
+                    )
+                    failed_task_count += 1
+                except Exception:
+                    pass
         return {
             **result,
             "status": "error",
             "reason": "session_commit_failed",
             "due_task_count": len(due_tasks),
+            "resolved_scheduled_task_count": failed_task_count,
             "error": str(exc)[:240],
         }
     commit_status = commit_result.get("status") if isinstance(commit_result, dict) else ""
@@ -203,6 +240,7 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
                         "reason": "pre_retrieval_idle_commit_flush",
                         "commit_result_status": commit_status,
                         "committed_event_count": int(commit_result.get("committed_event_count") or 0) if isinstance(commit_result, dict) else 0,
+                        **idle_commit_resolution_lineage(scheduled_task),
                         "updated_at_ms": current_time_ms,
                     }
                 )

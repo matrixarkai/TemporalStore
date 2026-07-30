@@ -1084,12 +1084,22 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                         "record_type": "matrixark_async_pipeline_task",
                         "task_hash": 101,
                         "event_id_hash": 201,
+                        "node_hash": 301,
+                        "node_path": ["tenant:t", "user:u", "session:s"],
                         "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"},
                         "status": "idle_commit_scheduled",
                         "trigger_policy": "idle_timeout",
                         "threshold_messages": 20,
                         "idle_commit_timeout_ms": 1,
                         "idle_commit_deadline_ms": 1,
+                        "source_role_counts": {"assistant": 1},
+                        "source_hook_type_counts": {"after_llm": 1},
+                        "source_codex_event_counts": {"Stop": 1},
+                        "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 1},
+                        "source_memory_scopes": ["session", "user_profile"],
+                        "source_session_continuities": ["same_session", "cross_session"],
+                        "source_extraction_phases": ["provisional"],
+                        "extraction_phase": "provisional",
                         "updated_at_ms": 1,
                     },
                     {
@@ -1139,6 +1149,94 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             if record.get("status") == "idle_commit_committed"
         }
         self.assertEqual({101, 102}, resolved_hashes)
+        first_resolution = next(
+            record
+            for record in target.records
+            if record.get("status") == "idle_commit_committed"
+            and record.get("scheduled_task_hash") == 101
+        )
+        self.assertEqual(301, first_resolution["node_hash"])
+        self.assertEqual(["tenant:t", "user:u", "session:s"], first_resolution["node_path"])
+        self.assertEqual({"assistant": 1}, first_resolution["source_role_counts"])
+        self.assertEqual({"after_llm": 1}, first_resolution["source_hook_type_counts"])
+        self.assertEqual({"Stop": 1}, first_resolution["source_codex_event_counts"])
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 1},
+            first_resolution["source_memory_selection_policy_counts"],
+        )
+        self.assertEqual(["session", "user_profile"], first_resolution["source_memory_scopes"])
+        self.assertEqual(["same_session", "cross_session"], first_resolution["source_session_continuities"])
+        self.assertEqual(["provisional"], first_resolution["source_extraction_phases"])
+        self.assertEqual("provisional", first_resolution["extraction_phase"])
+
+        second = request_mod.pre_retrieval_idle_commit_flush(target, {"scope": scope}, {}, scope=scope)
+        self.assertEqual("no_due_idle_commits", second["status"])
+
+    def test_moduleized_request_flush_marks_all_due_idle_schedules_failed_with_lineage(self) -> None:
+        request_mod = importlib.import_module("tools.matrixark_mcp_retrieve_request")
+
+        class FakeTarget:
+            def __init__(self) -> None:
+                self.records = [
+                    {
+                        "record_type": "matrixark_async_pipeline_task",
+                        "task_hash": 201,
+                        "event_id_hash": 301,
+                        "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"},
+                        "status": "idle_commit_scheduled",
+                        "trigger_policy": "idle_timeout",
+                        "threshold_messages": 20,
+                        "idle_commit_timeout_ms": 1,
+                        "idle_commit_deadline_ms": 1,
+                        "source_role_counts": {"tool": 1},
+                        "source_memory_selection_policy_counts": {"selected_tool_evidence_only": 1},
+                        "source_extraction_phases": ["provisional"],
+                    },
+                    {
+                        "record_type": "matrixark_async_pipeline_task",
+                        "task_hash": 202,
+                        "event_id_hash": 302,
+                        "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"},
+                        "status": "idle_commit_scheduled",
+                        "trigger_policy": "idle_timeout",
+                        "threshold_messages": 20,
+                        "idle_commit_timeout_ms": 1,
+                        "idle_commit_deadline_ms": 1,
+                    },
+                ]
+
+            def read_all(self):
+                return list(self.records)
+
+            def append(self, record):
+                self.records.append(record)
+
+            def session_commit(self, _request):
+                raise RuntimeError("commit backend unavailable")
+
+        target = FakeTarget()
+        scope = {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"}
+        result = request_mod.pre_retrieval_idle_commit_flush(target, {"scope": scope}, {}, scope=scope)
+
+        self.assertEqual("error", result["status"])
+        self.assertEqual("session_commit_failed", result["reason"])
+        self.assertEqual(2, result["due_task_count"])
+        self.assertEqual(2, result["resolved_scheduled_task_count"])
+        failed_hashes = {
+            record.get("scheduled_task_hash")
+            for record in target.records
+            if record.get("status") == "idle_commit_failed"
+        }
+        self.assertEqual({201, 202}, failed_hashes)
+        first_failure = next(
+            record
+            for record in target.records
+            if record.get("status") == "idle_commit_failed"
+            and record.get("scheduled_task_hash") == 201
+        )
+        self.assertEqual({"tool": 1}, first_failure["source_role_counts"])
+        self.assertEqual({"selected_tool_evidence_only": 1}, first_failure["source_memory_selection_policy_counts"])
+        self.assertEqual(["provisional"], first_failure["source_extraction_phases"])
 
         second = request_mod.pre_retrieval_idle_commit_flush(target, {"scope": scope}, {}, scope=scope)
         self.assertEqual("no_due_idle_commits", second["status"])
