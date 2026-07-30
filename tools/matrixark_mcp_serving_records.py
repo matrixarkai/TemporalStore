@@ -235,19 +235,10 @@ def compact_record_lifecycle_fields(record: Json) -> Json:
     if record_type == "context_event":
         compacted.pop("context_event_key", None)
     if record_type == "context_embedding":
-        vector = compacted.get("vector")
-        if isinstance(vector, list) and compacted.get("dim") is not None:
-            try:
-                dim = int(compacted.get("dim"))
-            except (TypeError, ValueError):
-                dim = None
-            if dim == len(vector):
-                compacted.pop("dim", None)
         model_name = str(compacted.get("model") or "")
         if model_name:
             compacted.setdefault("model_ref", embedding_model_ref_for_name(model_name))
             compacted.pop("model_hash", None)
-            compacted.pop("model", None)
     if compacted.get("created_at_ms") is not None and compacted.get("updated_at_ms") is not None:
         try:
             created_at_ms = int(compacted.get("created_at_ms"))
