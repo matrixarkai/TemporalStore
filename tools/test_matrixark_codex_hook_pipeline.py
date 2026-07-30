@@ -8062,6 +8062,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "memory_scope": segment["memory_scope"],
                 "session_continuity": segment["session_continuity"],
                 "source_event_ids": segment["source_event_ids"],
+                "source_ref": "context_event:debug-only-source-ref",
                 "source_event_count": len(segment["source_event_ids"]),
                 "source_record_type": segment["source_record_type"],
                 "segment_origin": segment["segment_origin"],
@@ -8069,11 +8070,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             }
             compact_default = compact_context_pack_ref(ref)
             self.assertNotIn("source_event_ids", compact_default)
+            self.assertNotIn("source_ref", compact_default)
             self.assertNotIn("source_record_type", compact_default)
             self.assertNotIn("derived_from_context_events", compact_default)
             self.assertNotIn("segment_origin", compact_default)
 
             compact_debug = compact_context_pack_ref(ref, include_debug=True)
+            self.assertEqual("context_event:debug-only-source-ref", compact_debug["source_ref"])
             self.assertEqual(segment["source_event_ids"][:8], compact_debug["source_event_ids"])
             self.assertEqual(len(segment["source_event_ids"]), compact_debug["source_event_count"])
             self.assertEqual("context_event", compact_debug["source_record_type"])
@@ -8091,12 +8094,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             grouped_default = compact_context_pack_for_serving(grouped_pack)
             grouped_default_item = grouped_default["groups"][0]["items"][0]
             self.assertNotIn("source_event_ids", grouped_default_item)
+            self.assertNotIn("source_ref", grouped_default_item)
             self.assertNotIn("source_record_type", grouped_default_item)
             self.assertNotIn("derived_from_context_events", grouped_default_item)
             self.assertNotIn("segment_origin", grouped_default_item)
 
             grouped_debug = compact_context_pack_for_serving(grouped_pack, include_debug=True)
             grouped_debug_item = grouped_debug["groups"][0]["items"][0]
+            self.assertEqual("context_event:debug-only-source-ref", grouped_debug_item["source_ref"])
             self.assertEqual(segment["source_event_ids"][:8], grouped_debug_item["source_event_ids"])
             self.assertEqual(len(segment["source_event_ids"]), grouped_debug_item["source_event_count"])
             self.assertEqual("context_event", grouped_debug_item["source_record_type"])
