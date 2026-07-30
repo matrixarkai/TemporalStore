@@ -3208,52 +3208,84 @@ def identity_only_payload(value: Any) -> bool:
     return True
 
 
-def payload_text(payload: Json) -> str:
-    direct = first_string_at(
-        payload,
-        [
-            ["prompt"],
-            ["user_prompt"],
-            ["input"],
-            ["text"],
-            ["message"],
-            ["last_agent_message"],
-            ["last_assistant_message"],
-            ["last-assistant-message"],
-            ["lastAssistantMessage"],
-            ["assistant_message"],
-            ["assistant-message"],
-            ["assistantMessage"],
-            ["final_answer"],
-            ["final-answer"],
-            ["finalAnswer"],
-            ["response"],
-            ["output"],
-            ["params", "prompt"],
-            ["params", "input"],
-            ["params", "text"],
-            ["params", "last_assistant_message"],
-            ["params", "last-assistant-message"],
-            ["params", "lastAssistantMessage"],
-            ["params", "assistant_message"],
-            ["params", "assistant-message"],
-            ["params", "assistantMessage"],
-            ["params", "final_answer"],
-            ["params", "final-answer"],
-            ["params", "finalAnswer"],
-            ["turn", "input"],
-            ["turn", "last_assistant_message"],
-            ["turn", "lastAssistantMessage"],
-            ["turn", "assistant_message"],
-            ["turn", "assistantMessage"],
-            ["turn", "final_answer"],
-            ["turn", "finalAnswer"],
-            ["raw_text"],
-        ],
-    )
+def payload_text(payload: Json, *, event: str = "") -> str:
+    assistant_paths = [
+        ["last_agent_message"],
+        ["last_assistant_message"],
+        ["last-assistant-message"],
+        ["lastAssistantMessage"],
+        ["assistant_message"],
+        ["assistant-message"],
+        ["assistantMessage"],
+        ["final_answer"],
+        ["final-answer"],
+        ["finalAnswer"],
+        ["response"],
+        ["output"],
+        ["params", "last_assistant_message"],
+        ["params", "last-assistant-message"],
+        ["params", "lastAssistantMessage"],
+        ["params", "assistant_message"],
+        ["params", "assistant-message"],
+        ["params", "assistantMessage"],
+        ["params", "final_answer"],
+        ["params", "final-answer"],
+        ["params", "finalAnswer"],
+        ["turn", "last_assistant_message"],
+        ["turn", "lastAssistantMessage"],
+        ["turn", "assistant_message"],
+        ["turn", "assistantMessage"],
+        ["turn", "final_answer"],
+        ["turn", "finalAnswer"],
+    ]
+    tool_paths = [
+        ["tool_output"],
+        ["tool-output"],
+        ["toolOutput"],
+        ["tool_result"],
+        ["tool-result"],
+        ["toolResult"],
+        ["result"],
+        ["stdout"],
+        ["stderr"],
+        ["output"],
+        ["params", "tool_output"],
+        ["params", "tool-output"],
+        ["params", "toolOutput"],
+        ["params", "tool_result"],
+        ["params", "tool-result"],
+        ["params", "toolResult"],
+        ["params", "result"],
+        ["params", "stdout"],
+        ["params", "stderr"],
+    ]
+    prompt_paths = [
+        ["prompt"],
+        ["user_prompt"],
+        ["input"],
+        ["text"],
+        ["message"],
+        ["params", "prompt"],
+        ["params", "input"],
+        ["params", "text"],
+        ["turn", "input"],
+        ["raw_text"],
+    ]
+    normalized_event = str(event or payload.get("hook_event_name") or payload.get("hookEventName") or "").strip()
+    if normalized_event in {"Stop", "PostCompact", "SubagentStop"}:
+        direct = first_string_at(payload, assistant_paths + prompt_paths)
+    elif normalized_event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
+        direct = first_string_at(payload, tool_paths + prompt_paths)
+    else:
+        direct = first_string_at(payload, prompt_paths + assistant_paths + tool_paths)
     if direct:
         return direct
-    for key in ["content", "output", "response"]:
+    structured_keys = ["content", "output", "response"]
+    if normalized_event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
+        structured_keys = ["tool_output", "tool_result", "result", "output", "stderr", "stdout", "content", "response"]
+    elif normalized_event in {"Stop", "PostCompact", "SubagentStop"}:
+        structured_keys = ["last_assistant_message", "assistant_message", "final_answer", "response", "output", "content"]
+    for key in structured_keys:
         text = text_from_content_value(payload.get(key))
         if text:
             return text
@@ -4476,7 +4508,7 @@ def main() -> int:
     codex_identity = codex_hook_lineage_from_payload(payload, args, session_id_source=session_id_source)
     if args.rollout_backfill_only:
         return run_rollout_backfill_only(args, payload, session_id_source)
-    text = payload_text(payload) or args.query
+    text = payload_text(payload, event=args.event) or args.query
     original_hook_text = text
     if args.event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
         fallback_text = text
