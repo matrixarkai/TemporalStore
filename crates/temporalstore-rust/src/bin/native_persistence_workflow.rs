@@ -16,6 +16,7 @@ const SHARD_ID: u64 = 1;
 const TENANT: u64 = 42;
 const NODE: u64 = 9001;
 const MODEL: u64 = 77;
+const APPEND_EMBEDDING_REF: u64 = NODE + 1;
 const TINY_CACHE_BYTES: usize = 64;
 const ASYNC_WARMUP_CACHE_BYTES: usize = 4096;
 
@@ -26,17 +27,33 @@ struct WorkflowReport {
     records_written: usize,
     write_page_store_writes: u64,
     write_page_store_bytes: u64,
+    context_count_before_restart: ContextDataCount,
     hot_read: ReadProbe,
     before_restart_memory: ResidencyProbe,
     after_eviction_pressure: ResidencyProbe,
     after_restart_before_query: ResidencyProbe,
     query_refill_after_restart: ReadProbe,
+    context_count_after_restart_query: ContextDataCount,
+    post_restart_append_records: usize,
+    context_count_after_post_restart_append: ContextDataCount,
+    context_count_after_second_restart: ContextDataCount,
     block_cache_read_after_restart: ReadProbe,
     async_warmup_before_query: ResidencyProbe,
     serving_during_async_warmup: ReadProbe,
     async_warmup: AsyncWarmupProbe,
     after_async_warmup: ResidencyProbe,
     verification: Verification,
+}
+
+#[derive(Debug, Serialize)]
+struct ContextDataCount {
+    name: String,
+    total_context_data_count: usize,
+    node_count: usize,
+    event_count: usize,
+    summary_dirty_count: usize,
+    summary_count: usize,
+    embedding_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,6 +136,9 @@ struct Verification {
     disk_block_cache_used_after_restart: bool,
     serving_available_while_async_warmup_running: bool,
     async_warmup_loaded_pages_without_foreground_query: bool,
+    context_total_count_survives_restart: bool,
+    post_restart_append_increased_total_count: bool,
+    second_restart_preserved_increased_total_count: bool,
     no_python_jsonl_fallback: bool,
 }
 
@@ -143,6 +163,7 @@ fn main() {
     let write_stats = engine.block_store().stats();
 
     let hot_read = read_context_probe("hot_memory_read", &engine);
+    let context_count_before_restart = count_context_data("before_restart", &engine, &[NODE]);
     let before_restart_memory = residency_probe("before_restart_memory_after_hot_query", &engine);
     force_eviction_pressure(&engine);
     let after_eviction_pressure = residency_probe("after_eviction_pressure", &engine);
@@ -158,9 +179,32 @@ fn main() {
     restarted.load_shard(SHARD_ID);
     let after_restart_before_query = residency_probe("after_restart_before_query", &restarted);
     let query_refill_after_restart = read_context_probe("query_refill_after_restart", &restarted);
+    let context_count_after_restart_query =
+        count_context_data("after_restart_query", &restarted, &[NODE]);
+    let post_restart_append_records = append_context_records_after_restart(&restarted);
+    let context_count_after_post_restart_append = count_context_data(
+        "after_post_restart_append",
+        &restarted,
+        &[NODE, APPEND_EMBEDDING_REF],
+    );
     restarted.cache().clear_memory_for_test();
     let block_cache_read_after_restart =
         read_context_probe("restart_disk_block_cache_read", &restarted);
+
+    drop(restarted);
+
+    let second_restarted = TemporalEngine::with_local_dirs(
+        TINY_CACHE_BYTES,
+        root.join("cache-d"),
+        root.join("pages"),
+        root.join("indexes"),
+    );
+    second_restarted.load_shard(SHARD_ID);
+    let context_count_after_second_restart = count_context_data(
+        "after_second_restart",
+        &second_restarted,
+        &[NODE, APPEND_EMBEDDING_REF],
+    );
 
     let async_restarted = TemporalEngine::with_local_dirs(
         ASYNC_WARMUP_CACHE_BYTES,
@@ -195,6 +239,15 @@ fn main() {
         async_warmup_loaded_pages_without_foreground_query: async_warmup.warmed_page_refs > 0
             && after_async_warmup.cache_memory_entry_count
                 > async_warmup_before_query.cache_memory_entry_count,
+        context_total_count_survives_restart: context_count_after_restart_query
+            .total_context_data_count
+            >= context_count_before_restart.total_context_data_count,
+        post_restart_append_increased_total_count: context_count_after_post_restart_append
+            .total_context_data_count
+            > context_count_after_restart_query.total_context_data_count,
+        second_restart_preserved_increased_total_count: context_count_after_second_restart
+            .total_context_data_count
+            >= context_count_after_post_restart_append.total_context_data_count,
         no_python_jsonl_fallback: true,
     };
 
@@ -204,11 +257,16 @@ fn main() {
         records_written,
         write_page_store_writes: write_stats.writes,
         write_page_store_bytes: write_stats.bytes_written,
+        context_count_before_restart,
         hot_read,
         before_restart_memory,
         after_eviction_pressure,
         after_restart_before_query,
         query_refill_after_restart,
+        context_count_after_restart_query,
+        post_restart_append_records,
+        context_count_after_post_restart_append,
+        context_count_after_second_restart,
         block_cache_read_after_restart,
         async_warmup_before_query,
         serving_during_async_warmup,
@@ -334,6 +392,175 @@ fn force_eviction_pressure(engine: &TemporalEngine) {
             shard_id: SHARD_ID,
             command: Command::StringGet { key },
         }));
+    }
+}
+
+fn append_context_records_after_restart(engine: &TemporalEngine) -> usize {
+    for index in 0..3_u64 {
+        assert_ok(engine.execute(ExecuteRequest {
+            shard_id: SHARD_ID,
+            command: Command::ContextWriteEvent {
+                tenant_hash: TENANT,
+                node_hash: NODE,
+                event: ContextEvent {
+                    event_id_hash: 20_000 + index,
+                    event_time_ms: 2_100 + index,
+                    ingestion_time_ms: 3_100 + index,
+                    kind: 0,
+                    event_type: 2,
+                    actor_hash: 0,
+                    status: 0,
+                    valid_until_ms: 0,
+                    confidence: 0.96,
+                    importance: 0.85,
+                    text: format!("post restart monotonic context append {index}"),
+                    source_ref: String::new(),
+                    related_node_hashes: Vec::new(),
+                    compact_attrs: Vec::new(),
+                },
+                first_write_only: true,
+                cold_storage: false,
+            },
+        }));
+    }
+    assert_ok(engine.execute(ExecuteRequest {
+        shard_id: SHARD_ID,
+        command: Command::ContextMarkSummaryDirty {
+            tenant_hash: TENANT,
+            marker: ContextSummaryDirtyMarker {
+                node_hash: NODE,
+                event_time_ms: 3_200,
+                reason: 2,
+                propagate_depth: 1,
+            },
+        },
+    }));
+    assert_ok(engine.execute(ExecuteRequest {
+        shard_id: SHARD_ID,
+        command: Command::ContextUpsertSummary {
+            tenant_hash: TENANT,
+            summary: ContextSummary {
+                node_hash: NODE,
+                level: 1,
+                text: "Post restart monotonic summary append.".to_string(),
+                valid_from_ms: 3_300,
+            },
+        },
+    }));
+    assert_ok(engine.execute(ExecuteRequest {
+        shard_id: SHARD_ID,
+        command: Command::ContextUpsertEmbedding {
+            tenant_hash: TENANT,
+            embedding: ContextEmbedding {
+                ref_hash: APPEND_EMBEDDING_REF,
+                level: 1,
+                model_hash: MODEL,
+                vector: vec![0.5, 0.6, 0.7, 0.8],
+                updated_at_ms: 3_300,
+            },
+        },
+    }));
+    6
+}
+
+fn count_context_data(
+    name: &str,
+    engine: &TemporalEngine,
+    embedding_refs: &[u64],
+) -> ContextDataCount {
+    let node_count = match engine
+        .execute(ExecuteRequest {
+            shard_id: SHARD_ID,
+            command: Command::ContextGetNode {
+                tenant_hash: TENANT,
+                node_hash: NODE,
+            },
+        })
+        .response
+    {
+        CommandResponse::ContextNode { node: Some(_), .. } => 1,
+        _ => 0,
+    };
+    let event_count = match engine
+        .execute(ExecuteRequest {
+            shard_id: SHARD_ID,
+            command: Command::ContextQueryEvents {
+                tenant_hash: TENANT,
+                node_hash: NODE,
+                start_time_ms: 0,
+                end_time_ms: 4_000,
+                limit: Some(100),
+                current_valid_only: false,
+                as_of_ms: 0,
+                kinds: Vec::new(),
+                statuses: Vec::new(),
+                min_confidence: 0.0,
+                min_importance: 0.0,
+            },
+        })
+        .response
+    {
+        CommandResponse::ContextEvents { events, .. } => events.len(),
+        _ => 0,
+    };
+    let summary_dirty_count = match engine
+        .execute(ExecuteRequest {
+            shard_id: SHARD_ID,
+            command: Command::ContextQuerySummaryDirty {
+                tenant_hash: TENANT,
+                node_hash: NODE,
+                start_time_ms: 0,
+                end_time_ms: 4_000,
+                limit: Some(100),
+            },
+        })
+        .response
+    {
+        CommandResponse::ContextSummaryDirtyMarkers { markers, .. } => markers.len(),
+        _ => 0,
+    };
+    let summary_count = match engine
+        .execute(ExecuteRequest {
+            shard_id: SHARD_ID,
+            command: Command::ContextQuerySummaries {
+                tenant_hash: TENANT,
+                node_hash: NODE,
+                level: 1,
+                as_of_ms: 4_000,
+                limit: Some(100),
+            },
+        })
+        .response
+    {
+        CommandResponse::ContextSummaries { summaries, .. } => summaries.len(),
+        _ => 0,
+    };
+    let embedding_count = match engine
+        .execute(ExecuteRequest {
+            shard_id: SHARD_ID,
+            command: Command::ContextQueryEmbeddings {
+                tenant_hash: TENANT,
+                ref_hashes: embedding_refs.to_vec(),
+                limit: Some(100),
+            },
+        })
+        .response
+    {
+        CommandResponse::ContextEmbeddings { embeddings } => embeddings.len(),
+        _ => 0,
+    };
+    ContextDataCount {
+        name: name.to_string(),
+        total_context_data_count: node_count
+            + event_count
+            + summary_dirty_count
+            + summary_count
+            + embedding_count,
+        node_count,
+        event_count,
+        summary_dirty_count,
+        summary_count,
+        embedding_count,
     }
 }
 
