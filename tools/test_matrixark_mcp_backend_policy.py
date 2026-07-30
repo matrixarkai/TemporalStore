@@ -5553,8 +5553,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "current_state": (200, "current_state_or_latest_queries_need_prior"),
             "latest": (200, "current_state_or_latest_queries_need_prior"),
             "profile_memory": (200, "profile_memory_queries_need_long_term"),
-            "multi_hop": (200, "multi_hop_or_date_queries_often_need_multiple"),
-            "date": (200, "multi_hop_or_date_queries_often_need_multiple"),
+            "multi_hop": (200, "multi_hop_or_date_queries_need cross-session memory"),
+            "date": (200, "multi_hop_or_date_queries_need cross-session memory"),
         }
         for question_type, (budget_tokens, reason_prefix) in expected.items():
             with self.subTest(question_type=question_type):
