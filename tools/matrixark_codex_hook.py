@@ -2576,6 +2576,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--segment-provider", default=os.environ.get("MATRIXARK_SEGMENT_PROVIDER", "deterministic"))
     parser.add_argument("--repo-root", type=Path, default=root)
     parser.add_argument("--rollout-backfill-only", action="store_true", default=False)
+    parser.add_argument("--idle-commit-worker-only", action="store_true", default=False)
     parser.add_argument(
         "--rollout-backfill-delay-ms",
         type=int,
@@ -4485,6 +4486,148 @@ def rollout_role_and_text(event: str, payload: Json) -> tuple[str, str, str, str
     return "", "", "", "", ""
 
 
+
+def _append_cli_value(cmd: list[str], flag: str, value: Any) -> None:
+    if value in (None, ""):
+        return
+    cmd.extend([flag, str(value)])
+
+
+def spawn_idle_commit_worker_child(args: argparse.Namespace, *, ingest: Json, session_id_source: str) -> Json:
+    if getattr(args, "idle_commit_worker_only", False):
+        return {"status": "skipped", "reason": "already_idle_commit_worker"}
+    if os.environ.get("MATRIXARK_DISABLE_IDLE_COMMIT_WORKER", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return {"status": "disabled", "reason": "MATRIXARK_DISABLE_IDLE_COMMIT_WORKER"}
+    session_buffer = ingest.get("session_buffer") if isinstance(ingest, dict) else {}
+    if not isinstance(session_buffer, dict) or not session_buffer.get("idle_commit_scheduled"):
+        return {"status": "skipped", "reason": "idle_commit_not_scheduled"}
+    auto_batch = ingest.get("auto_batch_extract_result") if isinstance(ingest.get("auto_batch_extract_result"), dict) else {}
+    if auto_batch and auto_batch.get("trigger_policy") != "idle_timeout":
+        return {"status": "skipped", "reason": "scheduled_trigger_is_not_idle_timeout"}
+    timeout_ms = int(getattr(args, "idle_commit_timeout_ms", 0) or 0)
+    if timeout_ms <= 0:
+        return {"status": "skipped", "reason": "idle_commit_timeout_disabled"}
+    deadline_ms = int(session_buffer.get("idle_commit_deadline_ms") or auto_batch.get("idle_commit_deadline_ms") or 0)
+    now_ms_value = int(time.time() * 1000)
+    delay_ms = max(0, deadline_ms - now_ms_value) if deadline_ms > 0 else timeout_ms
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--idle-commit-worker-only",
+        "--event",
+        "IdleTimeout",
+        "--backend",
+        str(getattr(args, "backend", default_hook_backend())),
+        "--account-id",
+        str(getattr(args, "account_id", "")),
+        "--tenant-id",
+        str(getattr(args, "tenant_id", "")),
+        "--user-id",
+        str(getattr(args, "user_id", "")),
+        "--session-id",
+        str(getattr(args, "session_id", "")),
+        "--team",
+        str(getattr(args, "team", "codex")),
+        "--project",
+        str(getattr(args, "project", "local")),
+        "--session-commit-threshold",
+        str(getattr(args, "session_commit_threshold", 20)),
+        "--idle-commit-timeout-ms",
+        str(timeout_ms),
+        "--understanding-provider",
+        str(getattr(args, "understanding_provider", "rules")),
+        "--segment-provider",
+        str(getattr(args, "segment_provider", "deterministic")),
+        "--request-timeout-ms",
+        str(getattr(args, "request_timeout_ms", 60000)),
+        "--io-timeout-ms",
+        str(getattr(args, "io_timeout_ms", 60000)),
+        "--repo-root",
+        str(getattr(args, "repo_root", Path(__file__).resolve().parents[1])),
+    ]
+    for flag, attr in [
+        ("--event-log", "event_log"),
+        ("--api-key", "api_key"),
+        ("--metaserver", "metaserver"),
+        ("--namespace", "namespace"),
+        ("--table", "table"),
+        ("--temporalstore-lib", "temporalstore_lib"),
+        ("--rust-proxy", "rust_proxy"),
+        ("--rust-direct-sdk", "rust_direct_sdk"),
+        ("--rust-cli", "rust_cli"),
+        ("--storage-prefix", "storage_prefix"),
+        ("--session-state-dir", "session_state_dir"),
+    ]:
+        _append_cli_value(cmd, flag, getattr(args, attr, ""))
+    if session_id_source:
+        cmd.extend(["--query", f"idle commit worker for {session_id_source}"])
+    env = os.environ.copy()
+    env["MATRIXARK_IDLE_COMMIT_WORKER_DELAY_MS"] = str(delay_ms)
+    env["MATRIXARK_IDLE_COMMIT_WORKER_PARENT_EVENT"] = str(getattr(args, "event", ""))
+    try:
+        subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=str(getattr(args, "repo_root", Path(__file__).resolve().parents[1])),
+            env=env,
+        )
+    except OSError as exc:
+        return {
+            "status": "error",
+            "reason": "idle_commit_worker_spawn_failed",
+            "error": _compact_one_line(str(exc), max_chars=300),
+            "delay_ms": delay_ms,
+        }
+    return {
+        "status": "spawned",
+        "reason": "session_buffer_idle_deadline_worker",
+        "delay_ms": delay_ms,
+        "idle_commit_timeout_ms": timeout_ms,
+        "idle_commit_deadline_ms": deadline_ms,
+    }
+
+
+def run_idle_commit_worker_only(args: argparse.Namespace, session_id_source: str, codex_identity: Json) -> int:
+    delay_ms = int(os.environ.get("MATRIXARK_IDLE_COMMIT_WORKER_DELAY_MS", "0") or 0)
+    if delay_ms > 0:
+        time.sleep(delay_ms / 1000.0)
+    server = build_server(args)
+    try:
+        common: Json = {"scope": scope_from_args(args)}
+        if args.api_key:
+            common["api_key"] = args.api_key
+        result = call_tool(
+            server,
+            "matrixark_session_commit",
+            {
+                **common,
+                "threshold_messages": args.session_commit_threshold,
+                "force": False,
+                "commit_reason": "idle_timeout",
+                "idle_timeout_ms": args.idle_commit_timeout_ms,
+                **hook_session_commit_extraction_options(args),
+                "storage_options": hook_storage_options(),
+                "agent_hook": {
+                    **codex_agent_hook(
+                        hook_type="session_commit",
+                        hook_id=f"idle_commit_worker:{args.session_id}:{int(time.time() * 1000)}",
+                        idempotency_key=f"idle-commit-worker:{args.session_id}",
+                        trigger="IdleTimeout:worker",
+                        session_id_source=session_id_source,
+                        identity=codex_identity,
+                    ),
+                },
+            },
+        )
+        print(json.dumps({"status": "ok", "worker": "idle_commit", "result": session_commit_summary(result)}, sort_keys=True))
+    finally:
+        close_server_best_effort(server)
+    return 0
+
+
 def spawn_rollout_backfill_child(args: argparse.Namespace) -> None:
     if args.rollout_backfill_only:
         return
@@ -4586,6 +4729,8 @@ def main() -> int:
     resolved_session_id, session_id_source = resolve_session_id(payload, args)
     args.session_id = resolved_session_id
     codex_identity = codex_hook_lineage_from_payload(payload, args, session_id_source=session_id_source)
+    if args.idle_commit_worker_only:
+        return run_idle_commit_worker_only(args, session_id_source, codex_identity)
     if args.rollout_backfill_only:
         return run_rollout_backfill_only(args, payload, session_id_source)
     text = payload_text(payload, event=args.event) or args.query
@@ -4802,6 +4947,16 @@ def main() -> int:
                 ingest = trace_tool_call(server, "matrixark_ingest", ingest_args, trace)
                 hook_warning = timeout_warning(ingest)
 
+        idle_commit_worker: Json = {}
+        if ingest and not hook_warning:
+            worker_result = spawn_idle_commit_worker_child(
+                args,
+                ingest=ingest,
+                session_id_source=session_id_source,
+            )
+            if isinstance(worker_result, dict) and worker_result.get("status") != "skipped":
+                idle_commit_worker = worker_result
+
         commit = {}
         fast_async_boundary_commit = fast_async_boundary_commit_from_ingest(ingest)
         if fast_async_boundary_commit:
@@ -4836,6 +4991,9 @@ def main() -> int:
                     trace,
                 )
                 hook_warning = timeout_warning(commit)
+
+        if idle_commit_worker:
+            trace.setdefault("idle_commit_worker", idle_commit_worker)
 
         retrieve = {}
         query = args.query or text[:500]
@@ -4888,6 +5046,8 @@ def main() -> int:
             query=query,
             error=hook_warning,
         )
+        if idle_commit_worker:
+            output["idle_commit_worker"] = idle_commit_worker
         append_hook_trace(server, trace, output=output, status="ok")
         if args.codex_strict_output:
             output = strict_codex_stdout(output)

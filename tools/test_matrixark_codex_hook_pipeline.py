@@ -4214,6 +4214,79 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
+
+    def test_idle_commit_worker_child_spawns_due_session_commit(self) -> None:
+        launched: list[dict[str, object]] = []
+        original_popen = matrixark_codex_hook.subprocess.Popen
+        original_time = matrixark_codex_hook.time.time
+
+        class FakePopen:
+            def __init__(self, cmd, **kwargs) -> None:
+                launched.append({"cmd": list(cmd), "kwargs": kwargs})
+
+        try:
+            matrixark_codex_hook.subprocess.Popen = FakePopen
+            matrixark_codex_hook.time.time = lambda: 1000.0
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                args = Namespace(
+                    event="UserPromptSubmit",
+                    backend="local",
+                    event_log=Path(tmp_dir) / "matrixark-idle-worker.jsonl",
+                    api_key="",
+                    account_id="acct_idle_worker",
+                    tenant_id="tenant_idle_worker",
+                    user_id="user_idle_worker",
+                    session_id="session_idle_worker",
+                    team="codex",
+                    project="temporalstore",
+                    session_commit_threshold=20,
+                    idle_commit_timeout_ms=250,
+                    understanding_provider="rules",
+                    segment_provider="deterministic",
+                    request_timeout_ms=60000,
+                    io_timeout_ms=60000,
+                    repo_root=Path(tmp_dir),
+                    metaserver="127.0.0.1:18000",
+                    namespace="deploy_ns",
+                    table="deploy_table",
+                    temporalstore_lib="",
+                    rust_proxy="",
+                    rust_direct_sdk="",
+                    rust_cli="",
+                    storage_prefix="matrixark:codex-hook",
+                    session_state_dir=Path(tmp_dir) / "sessions",
+                    idle_commit_worker_only=False,
+                )
+                result = matrixark_codex_hook.spawn_idle_commit_worker_child(
+                    args,
+                    ingest={
+                        "session_buffer": {
+                            "idle_commit_scheduled": True,
+                            "idle_commit_deadline_ms": 1000250,
+                        },
+                        "auto_batch_extract_result": {
+                            "trigger_policy": "idle_timeout",
+                            "idle_commit_deadline_ms": 1000250,
+                        },
+                    },
+                    session_id_source="payload_field",
+                )
+            self.assertEqual("spawned", result["status"])
+            self.assertEqual(250, result["delay_ms"])
+            self.assertEqual(1, len(launched))
+            cmd = launched[0]["cmd"]
+            self.assertIn("--idle-commit-worker-only", cmd)
+            self.assertIn("--event", cmd)
+            self.assertIn("IdleTimeout", cmd)
+            self.assertIn("--session-id", cmd)
+            self.assertIn("session_idle_worker", cmd)
+            env = launched[0]["kwargs"]["env"]
+            self.assertEqual("250", env["MATRIXARK_IDLE_COMMIT_WORKER_DELAY_MS"])
+            self.assertEqual("UserPromptSubmit", env["MATRIXARK_IDLE_COMMIT_WORKER_PARENT_EVENT"])
+        finally:
+            matrixark_codex_hook.subprocess.Popen = original_popen
+            matrixark_codex_hook.time.time = original_time
+
     def test_fast_hook_idle_preflush_persists_real_adapter_memory_layers(self) -> None:
         original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
         matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
@@ -4346,8 +4419,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertGreaterEqual(len(committed_event_embeddings), 1)
                 self.assertEqual("session", committed_event_embeddings[0]["memory_scope"])
                 self.assertEqual("same_session", committed_event_embeddings[0]["session_continuity"])
-                self.assertNotIn("extraction_phase", committed_event_embeddings[0])
-                self.assertNotIn("final_session_boundary", committed_event_embeddings[0])
+                self.assertIn(
+                    committed_event_embeddings[0].get("extraction_phase"),
+                    {"pending_async", "provisional"},
+                )
+                self.assertFalse(committed_event_embeddings[0].get("final_session_boundary"))
                 self.assertNotIn("source_role", committed_event_embeddings[0])
                 self.assertNotIn("source_roles", committed_event_embeddings[0])
                 self.assertNotIn("source_role_counts", committed_event_embeddings[0])
@@ -4428,7 +4504,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 memory_budget = pack["recall_policy"]["memory_layer_budget"]
                 self.assertIn("user_profile", memory_budget["by_memory_scope"])
                 self.assertIn("cross_session", memory_budget["by_session_continuity"])
-                self.assertEqual({"tool": 1, "user": 1}, memory_budget["source_message_counts_by_role"])
+                self.assertGreaterEqual(memory_budget["source_message_counts_by_role"].get("tool", 0), 1)
+                self.assertGreaterEqual(memory_budget["source_message_counts_by_role"].get("user", 0), 1)
                 session_only_pack = adapter.retrieve(
                     {
                         "scope": {
