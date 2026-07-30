@@ -8095,6 +8095,44 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 embedding_types,
             )
             self.assertTrue(all("source_role_counts" not in record for record in event_embeddings))
+            self.assertGreaterEqual(result["event_indexes_written"], 3)
+
+            event_index_names = {
+                record.get("index_name")
+                for record in records
+                if record.get("record_type") == "context_index"
+                and record.get("data_model") == "context_event"
+                and record.get("batch_id_hash") == result["batch_id_hash"]
+            }
+            self.assertIn("event_type:user_prompt", event_index_names)
+            self.assertIn("event_type:assistant_response", event_index_names)
+            self.assertIn("event_type:tool_evidence", event_index_names)
+            self.assertIn("source_role:user", event_index_names)
+            self.assertIn("source_role:assistant", event_index_names)
+            self.assertIn("source_role:tool", event_index_names)
+
+            prefiltered = adapter.retrieval_records(
+                scope={
+                    "account_id": "acct_role_event_types",
+                    "tenant_id": "tenant_role_event_types",
+                    "user_id": "user_role_event_types",
+                    "session_id": "session_role_event_types",
+                    "_session_scope": "prefer",
+                },
+                record_types={"context_event"},
+                secondary_index_groups=[{"event_type:tool_evidence"}],
+            )
+            self.assertTrue(prefiltered["scan_stats"]["secondary_index_prefilter_enabled"], prefiltered)
+            self.assertGreaterEqual(prefiltered["scan_stats"]["index_postings_read"], 1)
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_event"
+                    and record.get("event_type") == "tool_evidence"
+                    and record.get("source_role") == "tool"
+                    for record in prefiltered["records"]
+                ),
+                prefiltered["records"],
+            )
 
     def test_retrieve_serving_pack_exposes_memory_inventory_layers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
