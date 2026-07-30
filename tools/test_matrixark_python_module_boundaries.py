@@ -1103,7 +1103,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(1, readiness["pending_task_count"])
         self.assertEqual(1, readiness["scheduled_idle_task_count"])
         self.assertEqual(1, readiness["due_idle_task_count"])
-        self.assertEqual({"provisional": 1}, readiness["pending_extraction_phases"])
+        self.assertEqual({}, readiness["pending_extraction_phases"])
+        self.assertEqual({}, readiness["pending_source_roles"])
+        self.assertEqual({}, readiness["remaining_stage_counts"])
         self.assertEqual(0, readiness["pending_final_session_boundary_count"])
         self.assertIn("idle_commit_scheduled", readiness["freshness_warnings"])
 
@@ -1139,7 +1141,6 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(0, resolved["due_idle_task_count"])
         self.assertNotIn("idle_commit_scheduled", resolved["freshness_warnings"])
         self.assertIn("idle_commit_due", readiness["freshness_warnings"])
-        self.assertEqual({"assistant": 1}, readiness["pending_source_roles"])
 
     def test_auto_memory_selection_budget_prioritizes_profile_memory_current_state(self) -> None:
         helper_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pre_refresh")
