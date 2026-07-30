@@ -8306,6 +8306,22 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "segment_origin": segment["segment_origin"],
                 "derived_from_context_events": segment["derived_from_context_events"],
             }
+            event_ref = {
+                "ref_type": "event",
+                "text": "tool evidence marker: Exit code 0 and hook pipeline passed.",
+                "event_type": "tool_evidence",
+                "source_role": "tool",
+                "source_roles": ["tool"],
+                "source_role_counts": {"tool": 1},
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+            }
+            compact_event = compact_context_pack_ref(event_ref)
+            self.assertEqual("tool", compact_event["source_role"])
+            self.assertEqual("tool_evidence", compact_event["event_type"])
+            self.assertNotIn("source_roles", compact_event)
+            self.assertNotIn("source_role_counts", compact_event)
+
             compact_default = compact_context_pack_ref(ref)
             self.assertNotIn("source_event_ids", compact_default)
             self.assertNotIn("source_ref", compact_default)
