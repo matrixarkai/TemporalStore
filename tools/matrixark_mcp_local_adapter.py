@@ -10515,6 +10515,8 @@ class MatrixArkLocalAdapter:
         memory_inventory["profile_records_available_but_not_selected"] = bool(
             memory_inventory.get("has_profile_memory") and profile_selected_ref_count == 0
         )
+        if memory_inventory["profile_records_available_but_not_selected"]:
+            quality_warnings.append("profile_memory_available_but_not_selected")
         selected_pending_async_refs = [
             item
             for item in selected
