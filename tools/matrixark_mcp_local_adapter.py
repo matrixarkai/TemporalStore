@@ -8792,12 +8792,40 @@ class MatrixArkLocalAdapter:
             ranking,
             scope=scope,
         )
+        idle_summary_refresh = (
+            pre_retrieval_idle_commit.get("summary_refresh")
+            if isinstance(pre_retrieval_idle_commit.get("summary_refresh"), dict)
+            else {}
+        )
+        idle_memory_layers = (
+            pre_retrieval_idle_commit.get("memory_layers_written")
+            if isinstance(pre_retrieval_idle_commit.get("memory_layers_written"), dict)
+            else {}
+        )
+        idle_committed_event_count = int(pre_retrieval_idle_commit.get("committed_event_count") or 0)
+        fresh_idle_summary_required = bool(
+            idle_committed_event_count > 0
+            and (
+                idle_summary_refresh.get("dirty_hashes")
+                or idle_summary_refresh.get("session_dirty_hashes")
+                or idle_summary_refresh.get("profile_dirty_hashes")
+                or idle_summary_refresh.get("profile_summary_refresh_required")
+                or idle_memory_layers.get("summary_dirty_nodes")
+            )
+        )
         pre_retrieval_summary_refresh: Json = {
             "enabled": pre_retrieval_summary_refresh_enabled(args, ranking),
             "requested_limit": pre_retrieval_summary_refresh_limit(args, ranking),
             "refreshed_count": 0,
             "status": "disabled",
+            "fresh_idle_commit_dirty": fresh_idle_summary_required,
+            "fresh_idle_commit_summary_required": fresh_idle_summary_required,
+            "fresh_idle_commit_committed_event_count": idle_committed_event_count,
+            "fresh_idle_commit_summary_dirty_nodes": int(idle_memory_layers.get("summary_dirty_nodes") or 0),
+            "fresh_idle_commit_profile_summary_required": bool(idle_summary_refresh.get("profile_summary_refresh_required", False)),
         }
+        if not pre_retrieval_summary_refresh["enabled"] and fresh_idle_summary_required:
+            pre_retrieval_summary_refresh["status_reason"] = "fresh_idle_commit_dirty_summary_pending"
         pre_retrieval_refreshed_records: list[Json] = []
         if pre_retrieval_summary_refresh["enabled"]:
             refresh_started_perf = time.perf_counter()
