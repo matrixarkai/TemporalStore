@@ -169,6 +169,7 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
         status = str(row.get("status") or "unknown")
         status_counts[status] = status_counts.get(status, 0) + 1
         is_pending_status = status in {"pending", "idle_commit_scheduled"}
+        contributes_to_extraction_readiness = status in {"pending", "extraction_committed"}
         pending_task_count += int(is_pending_status)
         scheduled_idle_task_count += int(status == "idle_commit_scheduled")
         try:
@@ -180,7 +181,7 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
         extraction_committed_task_count += int(status == "extraction_committed")
         summary_completed_task_count += int(status == "summary_completed")
         row_remaining_stages = row.get("remaining_stages") if isinstance(row.get("remaining_stages"), list) else []
-        if is_pending_status and not row_remaining_stages and isinstance(row.get("stages"), list):
+        if contributes_to_extraction_readiness and not row_remaining_stages and isinstance(row.get("stages"), list):
             row_remaining_stages = row.get("stages") or []
         for stage in row_remaining_stages:
             stage_name = str(stage or "").strip()
@@ -191,7 +192,7 @@ def async_pipeline_retrieval_readiness(records: list[Json], scope: Json) -> Json
             stage_name = str(stage or "").strip()
             if stage_name:
                 completed_stages.add(stage_name)
-        if row_remaining_stages or status in {"pending", "idle_commit_scheduled", "extraction_committed"}:
+        if row_remaining_stages or contributes_to_extraction_readiness:
             if not add_count_map(pending_source_roles, row.get("source_role_counts"), normalize_roles=True):
                 for role in row.get("source_roles") if isinstance(row.get("source_roles"), list) else []:
                     add_count(pending_source_roles, normalize_message_role(role))
