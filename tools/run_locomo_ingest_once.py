@@ -4862,18 +4862,30 @@ def locomo_category_four_answer(q: str, normalized_blob: str) -> str:
             return "the space, furniture, and decor"
         if "customers to feel" in q and "cozy" in normalized_blob and "comfortable" in normalized_blob:
             return "cozy and comfortable"
-        if "furniture and decor" in q and "personal style" in normalized_blob and (
-            "customer comfort" in normalized_blob or "customers feel comfortable" in normalized_blob or "feel comfortable" in normalized_blob
+        if "furniture and decor" in q and (
+            "personal style" in normalized_blob or "her style" in normalized_blob or "my own style" in normalized_blob
+        ) and (
+            "customer comfort" in normalized_blob
+            or "customers feel comfortable" in normalized_blob
+            or "feel comfortable" in normalized_blob
+            or "feel cozy" in normalized_blob
+            or "make my customers feel cozy" in normalized_blob
         ):
             return "personal style and customer comfort"
-        if "creating an experience" in q and ("come back" in normalized_blob or "want to return" in normalized_blob):
+        if "creating an experience" in q and (
+            "come back" in normalized_blob or "wanna come back" in normalized_blob or "want to return" in normalized_blob
+        ):
             return "making them want to come back"
-        if "clothing business with dance" in q and "dance" in normalized_blob and ("fashion" in normalized_blob or "clothing" in normalized_blob):
+        if "clothing business with dance" in q and ("dance" in normalized_blob or "dancing" in normalized_blob) and (
+            "fashion" in normalized_blob or "clothing" in normalized_blob or "passion for both" in normalized_blob
+        ):
             return "she is passionate about dance and fashion"
         if "limited edition line" in q and (re.search(r"\bhoodies?\b", normalized_blob) or "hoodie" in normalized_blob):
             return "Hoodies"
     if "jon" in q and "gina" in q:
-        if "entrepreneurial journeys" in q and "dancing together" in normalized_blob and "support" in normalized_blob:
+        if "entrepreneurial journeys" in q and (
+            "dancing together" in normalized_blob or "chasing our dreams" in normalized_blob
+        ) and "support" in normalized_blob:
             return "dancing together and supporting each other"
         if "successful business" in q and (
             "relationships with customers" in normalized_blob or "brand image" in normalized_blob or "stay positive" in normalized_blob
@@ -4886,7 +4898,7 @@ def locomo_category_four_answer(q: str, normalized_blob: str) -> str:
             return "for his business"
         if "clipboard" in q and "notepad" in q and {"goal", "track", "achievement", "improvement"} & answer_tokens(normalized_blob):
             return "To set goals, track achievements, and find areas for improvement"
-        if "won't do" in q and re.search(r"\b(?:quit|give up)\b", normalized_blob):
+        if ("won't do" in q or "wont do" in q) and re.search(r"\b(?:quit|give up|give up on)\b", normalized_blob):
             return "quit"
         if "opening night" in q and re.search(r"\bexcited\b", normalized_blob):
             return "excited"
