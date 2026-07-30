@@ -490,6 +490,16 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._disk_fallback_recovery_attempted = False
         self._disk_fallback_recovery_in_progress = False
         self._disk_fallback_recovery_status: Json = {"status": "not_attempted"}
+        self._async_context_warmup_enabled = os.environ.get(
+            "MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP",
+            "1",
+        ).strip().lower() not in {"0", "false", "no", "off"}
+        self._async_context_warmup_lock = threading.RLock()
+        self._async_context_warmup_in_progress = False
+        self._async_context_warmup_started_total = 0
+        self._async_context_warmup_completed_total = 0
+        self._async_context_warmup_failed_total = 0
+        self._async_context_warmup_status: Json = {"status": "not_started"}
 
     def __post_init__(self) -> None:
         # Direct adapter does not use the inherited JSONL path.
@@ -893,6 +903,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "entry_count_cache": self._entry_count_cache,
                 "python_hot_cache_allowed": self.python_hot_cache_enabled(),
                 "records_cache_ready": self._records_cache is not None,
+                "async_context_warmup_enabled": bool(getattr(self, "_async_context_warmup_enabled", False)),
+                "async_context_warmup_in_progress": bool(getattr(self, "_async_context_warmup_in_progress", False)),
+                "async_context_warmup_started_total": int(getattr(self, "_async_context_warmup_started_total", 0) or 0),
+                "async_context_warmup_completed_total": int(getattr(self, "_async_context_warmup_completed_total", 0) or 0),
+                "async_context_warmup_failed_total": int(getattr(self, "_async_context_warmup_failed_total", 0) or 0),
+                "async_context_warmup": dict(getattr(self, "_async_context_warmup_status", {"status": "unknown"})),
                 "disk_fallback_enabled": bool(getattr(self, "_disk_fallback_enabled", False)),
                 "disk_fallback_path": str(getattr(self, "_disk_fallback_path", "") or ""),
                 "disk_fallback_recovery": dict(getattr(self, "_disk_fallback_recovery_status", {"status": "unknown"})),
@@ -2471,6 +2487,127 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             bundles.append(current)
         return bundles
 
+    def _async_context_warmup_storage_mode(self) -> str:
+        for name in (
+            "MATRIXARK_TEMPORALSTORE_STORAGE_MODE",
+            "MATRIXARK_NATIVE_STORAGE_MODE",
+            "MATRIXARK_STORAGE_MODE",
+            "MATRIXARK_BENCHMARK_STORAGE_MODE",
+        ):
+            value = os.environ.get(name, "").strip().lower().replace("-", "_")
+            if value:
+                return value
+        return "local"
+
+    def _async_context_warmup_allowed(self) -> tuple[bool, str]:
+        if not bool(getattr(self, "_async_context_warmup_enabled", False)):
+            return False, "disabled"
+        if os.environ.get("MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP_FORCE", "").strip().lower() in {"1", "true", "yes"}:
+            return True, "env_force"
+        mode = self._async_context_warmup_storage_mode()
+        replication_mode = os.environ.get("MATRIXARK_BENCHMARK_REPLICATION_MODE", "").strip().lower().replace("-", "_")
+        distributed_modes = {"distributed", "multi_node", "shared_store", "replicated", "replication", "raft"}
+        if mode in distributed_modes or replication_mode in distributed_modes:
+            return False, f"storage_mode_{mode}_replication_{replication_mode or 'unset'}"
+        if mode in {"local", "single_node", "single", "standalone", "dev", "debug", "default"}:
+            return True, f"storage_mode_{mode}"
+        return False, f"storage_mode_{mode}"
+
+    def start_async_context_memory_warmup(self, *, reason: str = "manual", max_records: int | None = None) -> Json:
+        self._ensure_backend_metric_fields()
+        allowed, gate_reason = self._async_context_warmup_allowed()
+        if not allowed:
+            status = {"status": "skipped", "reason": reason, "gate": gate_reason, "nonblocking": True}
+            self._async_context_warmup_status = status
+            return status
+        with self._async_context_warmup_lock:
+            if self._async_context_warmup_in_progress:
+                return dict(self._async_context_warmup_status)
+            self._async_context_warmup_in_progress = True
+            self._async_context_warmup_started_total += 1
+            status = {
+                "status": "running",
+                "reason": reason,
+                "gate": gate_reason,
+                "started_at_ms": now_ms(),
+                "nonblocking": True,
+                "source": "temporalstore_durable_record_log",
+            }
+            self._async_context_warmup_status = status
+        thread = threading.Thread(
+            target=self._async_context_memory_warmup_loop,
+            kwargs={"reason": reason, "max_records": max_records},
+            name="matrixark-context-memory-warmup",
+            daemon=True,
+        )
+        thread.start()
+        return dict(status)
+
+    def _async_context_memory_warmup_loop(self, *, reason: str, max_records: int | None) -> None:
+        started_perf = time.perf_counter()
+        count = 0
+        try:
+            count = self._get_count()
+            load_count = min(count, int(max_records)) if max_records is not None and int(max_records) > 0 else count
+            raw_records = self._load_records_by_count(load_count) if load_count > 0 else []
+            latest_state_records = self._load_latest_context_state_records()
+            now = int(time.time() * 1000)
+            skipped_old_compressed = 0
+            skipped_retention = 0
+            warm_records: list[Json] = []
+            for record in list(raw_records) + list(latest_state_records):
+                record_type = str(record.get("record_type") or "")
+                if record_type in TEMPORAL_COMPRESSED_OLD_RECORD_TYPES:
+                    skipped_old_compressed += 1
+                    continue
+                if matrixark_record_retention_filtered(record, now_ms=now):
+                    skipped_retention += 1
+                    continue
+                warm_records.append(record)
+            warm_records = compact_latest_context_state_records(warm_records)
+            with self._records_lock:
+                self._entry_count_cache = count
+                self._records_cache = list(warm_records)
+                self._put_direct_record_cache(count, self._records_cache)
+            elapsed_ms = round((time.perf_counter() - started_perf) * 1000.0, 3)
+            status = {
+                "status": "completed",
+                "reason": reason,
+                "source": "temporalstore_durable_record_log",
+                "count_key": getattr(self, "_count_key", ""),
+                "record_hash_key": getattr(self, "_record_hash_key", ""),
+                "target_count": count,
+                "loaded_log_records": len(raw_records),
+                "loaded_latest_state_records": len(latest_state_records),
+                "warmed_records": len(warm_records),
+                "skipped_old_compressed_records": skipped_old_compressed,
+                "skipped_retention_records": skipped_retention,
+                "records_cache_count": len(self._records_cache or []),
+                "elapsed_ms": elapsed_ms,
+                "nonblocking": True,
+            }
+            with self._async_context_warmup_lock:
+                self._async_context_warmup_completed_total += 1
+                self._async_context_warmup_status = status
+        except Exception as exc:
+            elapsed_ms = round((time.perf_counter() - started_perf) * 1000.0, 3)
+            status = {
+                "status": "failed",
+                "reason": reason,
+                "source": "temporalstore_durable_record_log",
+                "target_count": count,
+                "error": str(exc),
+                "elapsed_ms": elapsed_ms,
+                "nonblocking": True,
+            }
+            with self._async_context_warmup_lock:
+                self._async_context_warmup_failed_total += 1
+                self._async_context_warmup_status = status
+            _mcp_debug_log(f"matrixark async context memory warmup failed: {exc}")
+        finally:
+            with self._async_context_warmup_lock:
+                self._async_context_warmup_in_progress = False
+
     def read_all(self) -> list[Json]:
         self._recover_serving_from_disk_fallback_if_needed(reason="read_all")
         return self.read_all_without_disk_fallback_recovery()
@@ -2685,6 +2822,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         if getattr(self, "_native_context_pack_fallback_active", False):
             return None
         self._recover_serving_from_disk_fallback_if_needed(reason="native_context_pack")
+        self.start_async_context_memory_warmup(reason="native_context_pack")
         retriever = getattr(getattr(self, "_client", None), "matrixark_retrieve_context_pack", None)
         if not callable(retriever):
             return None
