@@ -7022,6 +7022,7 @@ class MatrixArkLocalAdapter:
         event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
         records_to_append: list[Json] = []
         event_records_to_append: list[Json] = []
+        event_index_write_count = 0
         event_rows: list[tuple[int, Json, str, int]] = []
         segment_hash_by_position: dict[int, int] = {}
         segment_hashes_by_position: dict[int, list[int]] = {}
@@ -7128,6 +7129,29 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     })
                 )
+        if event_records_to_append:
+            indexed_event_records: list[Json] = []
+            for event_record in event_records_to_append:
+                indexed_event_records.append(event_record)
+                if event_record.get("record_type") != "context_event":
+                    continue
+                event_hash = event_record.get("event_id_hash")
+                for index_name in candidate_index_terms(event_record, {}, {}):
+                    event_index = context_index_posting_record(
+                        index_name=index_name,
+                        data_model="context_event",
+                        ref_type="event",
+                        ref_hashes=[event_hash],
+                        batch_id_hash=batch_id_hash,
+                        node_hash=node_hash,
+                        scope=envelope["scope"],
+                        updated_at_ms=envelope["ingestion_time_ms"],
+                    )
+                    event_index["access_scope"] = envelope["scope"]
+                    event_index.pop("index_hash", None)
+                    indexed_event_records.append(event_index)
+                    event_index_write_count += 1
+            event_records_to_append = indexed_event_records
 
         profile_scope = {
             key: value
@@ -7726,7 +7750,8 @@ class MatrixArkLocalAdapter:
                     **source_memory_selection_retention,
                     "segments": len(segment_hashes),
                     "summaries": 1,
-                    "indexes": len(batch_index_terms) + entity_index_write_count + summary_index_write_count,
+                    "indexes": len(batch_index_terms) + event_index_write_count + entity_index_write_count + summary_index_write_count,
+                    "event_indexes": event_index_write_count,
                     "entity_indexes": entity_index_write_count,
                     "summary_indexes": summary_index_write_count,
                     **secondary_index_budget_summary(secondary_index_budget),
@@ -7827,7 +7852,8 @@ class MatrixArkLocalAdapter:
             "summary_hash": summary_hash,
             "summary_refresh": summary_refresh,
             "node_materialization": node_materialization,
-            "indexes_written": len(batch_index_terms) + entity_index_write_count + summary_index_write_count,
+            "indexes_written": len(batch_index_terms) + event_index_write_count + entity_index_write_count + summary_index_write_count,
+            "event_indexes_written": event_index_write_count,
             "entity_indexes_written": entity_index_write_count,
             "summary_indexes_written": summary_index_write_count,
             **secondary_index_budget_summary(secondary_index_budget),
