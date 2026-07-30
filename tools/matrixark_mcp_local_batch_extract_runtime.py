@@ -622,6 +622,25 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 profile_index.pop("index_hash", None)
                 records_to_append.append(profile_index)
                 entity_index_write_count += 1
+            profile_dirty_lineage: Json = {
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "source_session_ids": profile_source_session_ids,
+                "source_entity_hashes": profile_source_entity_hashes,
+                "source_event_ids": profile_source_event_ids,
+                "source_roles": profile_source_roles,
+                "source_role_counts": profile_source_role_counts,
+                "source_hook_types": profile_source_hook_types,
+                "source_hook_type_counts": profile_source_hook_type_counts,
+                "source_codex_events": profile_source_codex_events,
+                "source_codex_event_counts": profile_source_codex_event_counts,
+                "source_memory_selection_policies": profile_source_memory_selection_policies,
+                "source_memory_selection_policy_counts": profile_source_memory_selection_policy_counts,
+                "profile_promotion_policy": profile_promotion_policy,
+                "profile_promotion_blocker": "",
+                "extraction_phase": extraction_phase,
+                "final_session_boundary": final_session_boundary,
+            }
             new_profile_dirty_hashes, profile_dirty_records = self.node_summary_dirty_records(
                 node_path=profile_node_path,
                 scope=profile_scope,
@@ -631,6 +650,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 source_hash=profile_entity_hash,
                 dirty_reason="profile_entity_promoted",
                 propagate_depth=0,
+                source_lineage=profile_dirty_lineage,
             )
             profile_dirty_hashes.extend(int(item) for item in new_profile_dirty_hashes)
             records_to_append.extend(profile_dirty_records)
