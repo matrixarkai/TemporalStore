@@ -119,6 +119,52 @@ class NativeCaptureLocalAdapter(MatrixArkLocalAdapter):
 
 
 class MatrixArkCodexHookPipelineTest(unittest.TestCase):
+    def test_hook_lineage_summary_counts_scalar_source_roles(self) -> None:
+        summary = matrixark_codex_hook.memory_lineage_summary(
+            {
+                "source_role": "assistant_response",
+                "source_hook_type_counts": {"after_llm": 1},
+                "source_codex_event_counts": {"Stop": 1},
+            },
+            {
+                "source_role": "tool_result",
+                "source_hook_types": ["tool_result"],
+                "source_codex_events": ["PostToolUse"],
+            },
+        )
+
+        self.assertEqual({"assistant": 1, "tool": 1}, summary["source_role_counts"])
+        self.assertTrue(summary["assistant_response_captured"])
+        self.assertTrue(summary["tool_evidence_captured"])
+
+    def test_hook_budget_summary_counts_scalar_source_roles(self) -> None:
+        budget = matrixark_codex_hook.inferred_live_ref_layer_budget(
+            [
+                {
+                    "ref_type": "event",
+                    "source_role": "assistant_response",
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "text": "assistant: selected decision",
+                    "token_estimate": 4,
+                },
+                {
+                    "ref_type": "event",
+                    "source_role": "tool_result",
+                    "source_hook_types": ["tool_result"],
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "text": "tool: Exit code: 0",
+                    "token_estimate": 3,
+                },
+            ]
+        )
+
+        self.assertEqual(4, budget["by_source_role"]["assistant"]["tokens"])
+        self.assertEqual(3, budget["by_source_role"]["tool"]["tokens"])
+        self.assertEqual(1, budget["source_message_counts_by_role"]["assistant"])
+        self.assertEqual(1, budget["source_message_counts_by_role"]["tool"])
+
     def test_secondary_index_filters_understand_selected_evidence_quality(self) -> None:
         groups = infer_secondary_index_filter_groups(
             "Show lossy selected tool evidence with exit code and pushed commit details",

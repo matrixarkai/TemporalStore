@@ -159,12 +159,19 @@ def normalize_memory_layer_budget_roles(memory_layer_budget: Json) -> Json:
 
 def normalize_role_lineage_fields(record: Json) -> Json:
     normalized = dict(record)
-    roles = normalized_role_list(normalized.get("source_roles"))
-    role_counts = normalized_role_counts(normalized.get("source_role_counts"), normalized.get("source_roles"))
+    scalar_role = normalize_message_role(normalized.get("source_role"))
+    roles = set(normalized_role_list(normalized.get("source_roles")))
+    if scalar_role:
+        roles.add(scalar_role)
+    role_counts = normalized_role_counts(normalized.get("source_role_counts"), list(roles))
+    if scalar_role and scalar_role not in role_counts:
+        role_counts[scalar_role] = 1
     if roles:
-        normalized["source_roles"] = roles
+        normalized["source_roles"] = sorted(roles)
     if role_counts:
         normalized["source_role_counts"] = role_counts
+    if scalar_role:
+        normalized["source_role"] = scalar_role
     promotions = normalized.get("profile_promotion_summary")
     if isinstance(promotions, list):
         normalized["profile_promotion_summary"] = [
@@ -758,7 +765,11 @@ def inferred_live_ref_layer_budget(refs: list[Json]) -> Json:
         if any(phase != "final" for phase in source_extraction_phases):
             budget["provisional_ref_count"] += 1
         entity_type = str(_ref_value(ref, "entity_type") or "")
-        source_roles = normalized_role_list(_ref_list(ref, "source_roles"))
+        source_roles = set(normalized_role_list(_ref_list(ref, "source_roles")))
+        scalar_role = normalize_message_role(_ref_value(ref, "source_role"))
+        if scalar_role:
+            source_roles.add(scalar_role)
+        source_roles = sorted(source_roles)
         hook_types = _ref_list(ref, "source_hook_types")
         codex_events = _ref_list(ref, "source_codex_events")
         tool_evidence_terms = (
@@ -990,12 +1001,19 @@ def memory_lineage_summary(*sources: Json | None) -> Json:
     for source in sources:
         if not isinstance(source, dict) or not source:
             continue
+        scalar_role = normalize_message_role(source.get("source_role"))
         role_counts = source.get("source_role_counts")
         role_values = source.get("source_roles")
         if not isinstance(role_counts, dict) or not role_counts:
             role_counts = source.get("budget_source_role_counts")
         if not isinstance(role_values, list) or not role_values:
             role_values = source.get("budget_source_roles")
+        if scalar_role:
+            role_values = list(role_values) if isinstance(role_values, list) else []
+            if scalar_role not in {normalize_message_role(value) for value in role_values}:
+                role_values.append(scalar_role)
+            if not isinstance(role_counts, dict) or not role_counts:
+                role_counts = {scalar_role: 1}
         entity_role = {
             "assistant_decision": "assistant",
             "assistant_response": "assistant",
