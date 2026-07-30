@@ -1013,11 +1013,15 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         request_mod = importlib.import_module("tools.matrixark_mcp_retrieve_request")
 
         class FakeTarget:
-            _context_pack_cache_max_entries = 0
-            _context_pack_cache_ttl_s = 0
+            _context_pack_cache_max_entries = 2
+            _context_pack_cache_ttl_s = 60
             _retrieval_records_cache_generation = 11
 
             def __init__(self) -> None:
+                import threading
+
+                self._context_pack_cache_lock = threading.RLock()
+                self._context_pack_cache = {("stale",): (0.0, {"selected_refs": []})}
                 self.commit_requests = []
                 self.records = [
                     {
@@ -1068,6 +1072,10 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertFalse(target.commit_requests[0]["force"])
         self.assertEqual("committed", request["pre_retrieval_idle_commit"]["status"])
         self.assertEqual(1, request["pre_retrieval_idle_commit"]["committed_event_count"])
+        self.assertEqual(1, request["pre_retrieval_idle_commit"]["cleared_context_pack_cache_count"])
+        self.assertEqual(12, request["pre_retrieval_idle_commit"]["retrieval_records_cache_generation"])
+        self.assertEqual({}, target._context_pack_cache)
+        self.assertEqual(12, target._retrieval_records_cache_generation)
         self.assertTrue(
             any(
                 record.get("status") == "idle_commit_committed"

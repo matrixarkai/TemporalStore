@@ -247,6 +247,10 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
                 resolved_task_count += 1
             except Exception:
                 pass
+    cache_invalidation: Json = {}
+    committed_event_count = int(commit_result.get("committed_event_count") or 0) if isinstance(commit_result, dict) else 0
+    if status == "committed" and committed_event_count > 0:
+        cache_invalidation = retrieve_cache_helpers.invalidate_context_pack_cache(target)
     commit_summary: Json = {}
     if isinstance(commit_result, dict):
         for field in [
@@ -325,9 +329,10 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
         "status": status,
         "due_task_count": len(due_tasks),
         "resolved_scheduled_task_count": resolved_task_count,
-        "committed_event_count": int(commit_result.get("committed_event_count") or 0) if isinstance(commit_result, dict) else 0,
+        "committed_event_count": committed_event_count,
         "trigger_policy": commit_result.get("trigger_policy") if isinstance(commit_result, dict) else "",
         "commit_result_status": commit_status,
+        **cache_invalidation,
         **commit_summary,
     }
 
