@@ -52,6 +52,10 @@ path = "src/bin/matrixark_rust_datanode.rs"
 name = "matrixark_rust_service_proxy"
 path = "src/bin/matrixark_rust_service_proxy.rs"
 
+[[bin]]
+name = "native_persistence_workflow"
+path = "src/bin/native_persistence_workflow.rs"
+
 [dev-dependencies]
 async-trait = "0.1"
 tempfile = "=3.10.1"
