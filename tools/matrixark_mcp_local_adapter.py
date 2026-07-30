@@ -8834,6 +8834,11 @@ class MatrixArkLocalAdapter:
             metadata_fields = [
                 "memory_scope",
                 "session_continuity",
+                "event_type",
+                "classification",
+                "status",
+                "source_kind",
+                "source_type",
                 "promoted_from_memory_scope",
                 "profile_promotion_policy",
                 "profile_promotion_blocker",
@@ -8870,6 +8875,16 @@ class MatrixArkLocalAdapter:
             }
             if metadata:
                 embedding_metadata_by_ref[(ref_type, ref_hash)] = metadata
+
+        def record_with_embedding_defaults(record: Json, ref_type: object, ref_hash: object) -> Json:
+            embedding_metadata = embedding_metadata_by_ref.get((ref_type, ref_hash), {})
+            if not embedding_metadata:
+                return record
+            recovered = dict(record)
+            for key, value in embedding_metadata.items():
+                if recovered.get(key) in (None, "", [], {}):
+                    recovered[key] = value
+            return recovered
 
         def annotate_session_continuity(candidate: Json, record: Json) -> Json:
             embedding_metadata = embedding_metadata_by_ref.get(
@@ -8938,6 +8953,10 @@ class MatrixArkLocalAdapter:
                 "continuity_boost": round(boost, 6),
                 "continuity_reason": reason,
                 "memory_scope": first_value("memory_scope"),
+                "event_type": first_value("event_type"),
+                "classification": first_value("classification"),
+                "extraction_status": first_value("extraction_status", first_value("status")),
+                "source_kind": first_value("source_kind", first_value("source_type")),
                 "extraction_phase": first_value("extraction_phase"),
                 "final_session_boundary": bool(first_value("final_session_boundary", False)),
                 "promoted_from_memory_scope": first_value("promoted_from_memory_scope"),
@@ -9787,7 +9806,8 @@ class MatrixArkLocalAdapter:
                 continue
             if not selected_by_tree(record):
                 continue
-            index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
+            index_record = record_with_embedding_defaults(record, "event", record.get("event_id_hash"))
+            index_terms = candidate_index_terms(index_record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
             if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
                 secondary_index_dropped_count += 1
                 continue

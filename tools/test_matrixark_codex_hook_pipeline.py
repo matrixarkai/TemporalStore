@@ -5423,7 +5423,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "query": "GPU budget",
                     "max_context_tokens": 256,
                     "source_role_budget_tokens": {"assistant": 128},
-                    "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
+                    "ranking": {
+                        "max_selected_refs": 8,
+                        "min_similarity_score": 0.0,
+                        "budget_fill_policy": "force_fill",
+                    },
                     "audit_mode": "off",
                     "debug_context_pack": True,
                 }
@@ -5686,6 +5690,82 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 )
                 self.assertNotIn("source_event_ids", embedding)
                 self.assertNotIn("source_session_ids", embedding)
+
+    def test_retrieve_recovers_hot_event_type_from_embedding_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            event_log = Path(tmp_dir) / "matrixark-hot-event-embedding-recovery.jsonl"
+            adapter = MatrixArkLocalAdapter(event_log)
+            scope = {
+                "account_id": "acct_hot_event_recovery",
+                "tenant_id": "tenant_hot_event_recovery",
+                "user_id": "user_hot_event_recovery",
+                "session_id": "session_hot_event_recovery",
+            }
+            adapter.ingest(
+                {
+                    "scope": scope,
+                    "metadata": {
+                        "codex_memory_selection": {
+                            "policy": "selected_assistant_decision_outcome_only",
+                            "source_role": "assistant",
+                            "codex_event": "Stop",
+                            "selection_lossy": True,
+                        }
+                    },
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "Decision: recover assistant response type from hot event embedding metadata.",
+                        }
+                    ],
+                },
+                hook={
+                    "source": "codex",
+                    "hook_type": "after_llm",
+                    "hook_id": "Stop:hot-event-embedding-recovery",
+                    "observed_at_ms": 1000,
+                    "idempotency_key": "hot-event-embedding-recovery",
+                    "trigger": "Stop",
+                    "auto_captured": True,
+                },
+            )
+
+            sparse_records = []
+            for record in adapter.read_all():
+                if record.get("record_type") == "context_index" and record.get("data_model") == "context_event":
+                    continue
+                if record.get("record_type") == "context_summary":
+                    continue
+                if record.get("record_type") == "context_embedding" and record.get("ref_type") == "summary":
+                    continue
+                if record.get("record_type") == "context_event":
+                    record = dict(record)
+                    for key in ("event_type", "classification", "status", "source_kind"):
+                        record.pop(key, None)
+                    record["scope"] = scope
+                sparse_records.append(record)
+            event_log.write_text(
+                "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in sparse_records),
+                encoding="utf-8",
+            )
+            adapter = MatrixArkLocalAdapter(event_log)
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "_session_scope": "prefer"},
+                    "query": "recover hot event embedding metadata",
+                    "question_type": "broad_exploration",
+                    "max_context_tokens": 240,
+                    "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
+                    "include_retrieval_debug": True,
+                    "include_debug_refs": True,
+                    "audit_mode": "off",
+                }
+            )
+            selected_events = [ref for ref in pack["selected_refs"] if ref.get("ref_type") == "event"]
+            self.assertTrue(selected_events, pack["selected_refs"])
+            recovered = selected_events[0]
+            self.assertEqual("assistant_response", recovered.get("event_type"))
 
     def test_retrieval_metrics_expose_shared_local_remote_budget(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
