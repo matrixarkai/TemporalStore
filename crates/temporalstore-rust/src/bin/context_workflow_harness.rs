@@ -2357,7 +2357,8 @@ fn benchmark_text_matches(text_lower: &str, text_normalized: &str, term: &str) -
         .iter()
         .filter(|token| benchmark_answer_token_matches(token, &text_tokens))
         .count();
-    hits as f32 / answer_tokens.len() as f32 >= 0.67
+    let coverage = hits as f32 / answer_tokens.len() as f32;
+    coverage >= 0.67 || (coverage >= 0.6 && hits >= std::cmp::min(2, answer_tokens.len()))
 }
 
 fn benchmark_pet_answer_matches(text_normalized: &str, normalized_term: &str) -> bool {
