@@ -1073,6 +1073,76 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(1, len(target.commit_requests))
         self.assertEqual("no_due_idle_commits", second["pre_retrieval_idle_commit"]["status"])
 
+    def test_moduleized_request_flush_resolves_all_due_idle_schedules_for_scope(self) -> None:
+        request_mod = importlib.import_module("tools.matrixark_mcp_retrieve_request")
+
+        class FakeTarget:
+            def __init__(self) -> None:
+                self.commit_requests = []
+                self.records = [
+                    {
+                        "record_type": "matrixark_async_pipeline_task",
+                        "task_hash": 101,
+                        "event_id_hash": 201,
+                        "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"},
+                        "status": "idle_commit_scheduled",
+                        "trigger_policy": "idle_timeout",
+                        "threshold_messages": 20,
+                        "idle_commit_timeout_ms": 1,
+                        "idle_commit_deadline_ms": 1,
+                        "updated_at_ms": 1,
+                    },
+                    {
+                        "record_type": "matrixark_async_pipeline_task",
+                        "task_hash": 102,
+                        "event_id_hash": 202,
+                        "scope": {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"},
+                        "status": "idle_commit_scheduled",
+                        "trigger_policy": "idle_timeout",
+                        "threshold_messages": 20,
+                        "idle_commit_timeout_ms": 1,
+                        "idle_commit_deadline_ms": 1,
+                        "updated_at_ms": 1,
+                    },
+                ]
+
+            def read_all(self):
+                return list(self.records)
+
+            def append(self, record):
+                self.records.append(record)
+
+            def session_commit(self, request):
+                self.commit_requests.append(request)
+                return {
+                    "status": "committed",
+                    "trigger_policy": "idle_timeout",
+                    "committed_event_count": 2,
+                }
+
+        target = FakeTarget()
+        scope = {"account_id": "a", "tenant_id": "t", "user_id": "u", "session_id": "s"}
+        result = request_mod.pre_retrieval_idle_commit_flush(
+            target,
+            {"scope": scope},
+            {},
+            scope=scope,
+        )
+
+        self.assertEqual("committed", result["status"])
+        self.assertEqual(2, result["due_task_count"])
+        self.assertEqual(2, result["resolved_scheduled_task_count"])
+        self.assertEqual(1, len(target.commit_requests))
+        resolved_hashes = {
+            record.get("scheduled_task_hash")
+            for record in target.records
+            if record.get("status") == "idle_commit_committed"
+        }
+        self.assertEqual({101, 102}, resolved_hashes)
+
+        second = request_mod.pre_retrieval_idle_commit_flush(target, {"scope": scope}, {}, scope=scope)
+        self.assertEqual("no_due_idle_commits", second["status"])
+
     def test_async_readiness_tracks_scheduled_and_due_idle_commits(self) -> None:
         readiness_mod = importlib.import_module("tools.matrixark_mcp_async_readiness")
         readiness = readiness_mod.async_pipeline_retrieval_readiness(
