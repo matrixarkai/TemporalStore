@@ -1112,6 +1112,26 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
     }
 
 
+def context_event_type_for_message(message: Json, default_event_type: str) -> str:
+    role = normalize_message_role(message.get("role")) if isinstance(message, dict) else ""
+    by_role = {
+        "user": "user_prompt",
+        "assistant": "assistant_response",
+        "tool": "tool_evidence",
+    }
+    if role in by_role:
+        return by_role[role]
+    metadata = message.get("metadata") if isinstance(message, dict) and isinstance(message.get("metadata"), dict) else {}
+    selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
+    policy = str(selection.get("policy") or "").strip()
+    by_policy = {
+        "selected_user_prompt": "user_prompt",
+        "selected_assistant_decision_outcome_only": "assistant_response",
+        "selected_tool_evidence_only": "tool_evidence",
+    }
+    return by_policy.get(policy, default_event_type or "conversation_event")
+
+
 def source_event_lineage_summary(records: list[Json]) -> Json:
     role_counts: Json = {}
     hook_type_counts: Json = {}
@@ -7030,6 +7050,7 @@ class MatrixArkLocalAdapter:
                 event_time_ms = int(envelope["ingestion_time_ms"])
                 event_role = normalize_message_role(message.get("role"))
                 original_event_role = str(message.get("original_role") or message.get("role") or "").strip().lower()
+                event_type = context_event_type_for_message(message, str(extraction["event_type"] or ""))
                 event_records_to_append.append(
                     {
                         "record_type": "context_event",
@@ -7047,7 +7068,8 @@ class MatrixArkLocalAdapter:
                         "text": event_text,
                         "summary_text": summarize_text(event_text),
                         "classification": extraction["classification"],
-                        "event_type": extraction["event_type"],
+                        "event_type": event_type,
+                        "batch_event_type": extraction["event_type"],
                         "status": "extraction_committed" if derive_from_existing_events else "observed",
                         "source_kind": envelope.get("kind", "message"),
                         "envelope": {
@@ -7057,7 +7079,8 @@ class MatrixArkLocalAdapter:
                         "internal_extraction": {
                             "mode": extraction["mode"],
                             "classification": extraction["classification"],
-                            "event_type": extraction["event_type"],
+                            "event_type": event_type,
+                            "batch_event_type": extraction["event_type"],
                             "batch_id_hash": batch_id_hash,
                         },
                         "prior_context": prior_context,
@@ -7097,6 +7120,9 @@ class MatrixArkLocalAdapter:
                         "scope": envelope["scope"],
                         "memory_scope": "session",
                         "session_continuity": "same_session",
+                        "event_type": event_type,
+                        "batch_event_type": extraction["event_type"],
+                        "source_role": event_role,
                         "extraction_phase": extraction_phase,
                         "final_session_boundary": final_session_boundary,
                         "updated_at_ms": envelope["ingestion_time_ms"],
