@@ -896,6 +896,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "disk_fallback_enabled": bool(getattr(self, "_disk_fallback_enabled", False)),
                 "disk_fallback_path": str(getattr(self, "_disk_fallback_path", "") or ""),
                 "disk_fallback_recovery": dict(getattr(self, "_disk_fallback_recovery_status", {"status": "unknown"})),
+                "recovery_status": self._recovery_status_snapshot(),
+                "cache_state": self._cache_state_snapshot(),
                 "commands_total": self._commands_total,
                 "errors_total": self._errors_total,
                 "timeouts_total": self._timeouts_total,
@@ -1050,6 +1052,46 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         except Exception as exc:
             setattr(self, "_disk_fallback_write_failures", int(getattr(self, "_disk_fallback_write_failures", 0) or 0) + 1)
             _mcp_debug_log(f"matrixark disk fallback shadow append failed: {exc}")
+
+    def _cache_state_snapshot(self) -> Json:
+        lock = getattr(self, "_retrieval_candidate_cache_lock", None)
+        if lock is None:
+            local_candidate_entries = len(getattr(self, "_retrieval_candidate_cache", {}) or {})
+        else:
+            with lock:
+                local_candidate_entries = len(getattr(self, "_retrieval_candidate_cache", {}) or {})
+        return {
+            "backend": self._backend_label(),
+            "entry_count_cache": getattr(self, "_entry_count_cache", None),
+            "records_cache_ready": getattr(self, "_records_cache", None) is not None,
+            "records_cache_count": len(getattr(self, "_records_cache", []) or []),
+            "index_cache_ready": getattr(self, "_index_cache", None) is not None,
+            "index_cache_count": len(getattr(self, "_index_cache", []) or []),
+            "python_hot_cache_allowed": self.python_hot_cache_enabled(),
+            "local_candidate_cache_entries": local_candidate_entries,
+            "process_global_record_cache_enabled": self.python_hot_cache_enabled(),
+        }
+
+    def _recovery_status_snapshot(self, native_metrics: Json | None = None) -> Json:
+        native_metrics = native_metrics or {}
+        disk_status = dict(getattr(self, "_disk_fallback_recovery_status", {"status": "unknown"}))
+        recovery_source = "local_disk_fallback_replay"
+        if disk_status.get("status") == "skipped":
+            recovery_source = "distributed_replication_or_shared_store"
+        return {
+            "backend": self._backend_label(),
+            "status": disk_status.get("status", "unknown"),
+            "recovery_source": recovery_source,
+            "disk_fallback_recovery": disk_status,
+            "disk_fallback_enabled": bool(getattr(self, "_disk_fallback_enabled", False)),
+            "disk_fallback_recovery_enabled": bool(getattr(self, "_disk_fallback_recovery_enabled", False)),
+            "read_through_cache_warmup": False,
+            "replicated_storage_recovery": False,
+            "shared_store_read_throughs": int(native_metrics.get("shared_store_read_throughs") or native_metrics.get("shared_store_read_through_count") or 0),
+            "page_store_reads": int(native_metrics.get("page_store_reads") or native_metrics.get("page_reads") or 0),
+            "cache_hits_total": int(native_metrics.get("cache_hits_total") or 0),
+            "cache_misses_total": int(native_metrics.get("cache_misses_total") or 0),
+        }
 
     def _disk_fallback_replay_gate(self) -> Json:
         override = os.environ.get("MATRIXARK_TEMPORALSTORE_RECOVER_LOCAL_STORE_ANY_MODE", "").strip().lower() in {
@@ -5567,7 +5609,40 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
     def supports_native_context_pack(self) -> bool:
         return True
 
+    def _recovery_status_snapshot(self, native_metrics: Json | None = None) -> Json:
+        snapshot = super()._recovery_status_snapshot(native_metrics=native_metrics)
+        native_metrics = native_metrics or {}
+        shared_read_throughs = int(
+            native_metrics.get("shared_store_read_throughs")
+            or native_metrics.get("shared_store_read_through_count")
+            or native_metrics.get("read_through_count")
+            or 0
+        )
+        page_reads = int(native_metrics.get("page_store_reads") or native_metrics.get("page_reads") or 0)
+        cache_warmups = int(native_metrics.get("cache_warmup_page_refs") or native_metrics.get("cache_warmup_warmed_page_refs") or 0)
+        replicated_recovery = bool(
+            shared_read_throughs
+            or page_reads
+            or cache_warmups
+            or str(native_metrics.get("storage_family") or "").strip().lower() in {"shared_store", "raft"}
+        )
+        snapshot.update(
+            {
+                "status": "native_replicated_storage_ready" if replicated_recovery else snapshot.get("status", "unknown"),
+                "recovery_source": "rust_replicated_page_store_read_through",
+                "read_through_cache_warmup": bool(shared_read_throughs or cache_warmups),
+                "replicated_storage_recovery": replicated_recovery,
+                "shared_store_read_throughs": shared_read_throughs,
+                "page_store_reads": page_reads,
+                "cache_warmup_page_refs": cache_warmups,
+                "cache_hits_total": int(native_metrics.get("cache_hits_total") or 0),
+                "cache_misses_total": int(native_metrics.get("cache_misses_total") or 0),
+            }
+        )
+        return snapshot
+
     def native_context_pack(self, request: Json) -> Json | None:
+        self._recover_serving_from_disk_fallback_if_needed(reason="native_context_pack")
         retriever = self._native_retrieve_client().matrixark_retrieve_context_pack
         try:
             response = retriever(
@@ -5842,6 +5917,8 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
                 "rust_write_client": rust_client_metrics,
                 "rust_retrieve_client": rust_retrieve_metrics,
                 "rust_summary_client": rust_summary_metrics,
+                "recovery_status": self._recovery_status_snapshot(native_metrics=rust_client_metrics),
+                "cache_state": self._cache_state_snapshot(),
                 "rust_proxy_lanes": {
                     "write": not self._rust_direct_cdylib_enabled,
                     "retrieve": self._retrieve_client is not None,

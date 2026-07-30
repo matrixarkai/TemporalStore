@@ -331,6 +331,39 @@ class _NativeContextPackClient:
         }
 
 
+class _RustRecoveryParityClient(_NativeContextPackClient):
+    sdk_mode = "proxy"
+    metaserver = "127.0.0.1:18000"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.metrics = {
+            "gateway_mode": "rust_proxy",
+            "proxy_mode": "rust_proxy_stdio",
+            "sdk_mode": "proxy",
+            "transport": "rust_proxy_stdio",
+            "storage_family": "shared_store",
+            "shared_store_read_throughs": 4,
+            "page_store_reads": 6,
+            "cache_hits_total": 2,
+            "cache_misses_total": 1,
+            "cache_warmup_page_refs": 3,
+            "matrixark_context_records_total": 7,
+        }
+
+    def health(self) -> dict:
+        return {"ok": True}
+
+    def readiness(self) -> dict:
+        return {"ok": True, "status": "ready"}
+
+    def metrics_snapshot(self) -> dict:
+        return dict(self.metrics)
+
+    def metrics_prometheus(self) -> str:
+        return ""
+
+
 class _FailingNativeContextPackClient:
     def __init__(self, mode: str) -> None:
         self.mode = mode
@@ -451,6 +484,9 @@ def _direct_adapter_for_hash_store(client: _HashStoreClient) -> mcp.MatrixArkTem
     adapter._raw_count_key = f"{adapter._raw_ingestion_prefix}:record_count"
     adapter._raw_entry_count_cache = None
     adapter._pending_visibility_keys = set()
+    adapter._audit_mode = "buffered"
+    adapter._audit_buffer = []
+    adapter._audit_flush_failures = 0
     adapter._metrics_lock = threading.RLock()
     adapter._metrics_started_at_ms = mcp.now_ms()
     adapter._commands_total = 0
@@ -461,6 +497,51 @@ def _direct_adapter_for_hash_store(client: _HashStoreClient) -> mcp.MatrixArkTem
     adapter._latency_buckets = [0 for _ in mcp.MatrixArkServiceMetrics.LATENCY_BUCKETS_MS]
     adapter._records_written_total = 0
     adapter._records_read_total = 0
+    return adapter
+
+
+def _rust_adapter_for_recovery_parity(client: _RustRecoveryParityClient) -> mcp.MatrixArkTemporalStoreRustAdapter:
+    adapter = mcp.MatrixArkTemporalStoreRustAdapter.__new__(mcp.MatrixArkTemporalStoreRustAdapter)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        adapter.event_log = Path(tmpdir) / "unused-rust.jsonl"
+        mcp.MatrixArkLocalAdapter._init_local_runtime_state(adapter)
+    adapter._client = client
+    adapter._retrieve_client = None
+    adapter._summary_client = None
+    adapter._retrieve_client_lock = threading.RLock()
+    adapter._summary_client_lock = threading.RLock()
+    adapter._dedicated_proxy_clients_enabled = False
+    adapter._rust_direct_cdylib_enabled = False
+    adapter._publish_visibility_after_flush = False
+    adapter._metaserver = "127.0.0.1:18000"
+    adapter._namespace = "deploy_ns"
+    adapter._table = "deploy_table"
+    adapter._storage_prefix = "matrixark:test:rust-recovery"
+    adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+    adapter._index_key = f"{adapter._storage_prefix}:record_index"
+    adapter._count_key = f"{adapter._storage_prefix}:record_count"
+    adapter._shard_size = mcp_core.DIRECT_RECORD_LOG_SHARD_SIZE
+    adapter._entry_count_cache = None
+    adapter._records_cache = None
+    adapter._index_cache = None
+    adapter._retrieval_candidate_cache = {}
+    adapter._retrieval_candidate_cache_lock = threading.RLock()
+    adapter._records_lock = threading.RLock()
+    adapter._audit_lock = threading.RLock()
+    adapter._audit_buffer = []
+    adapter._audit_mode = "buffered"
+    adapter._audit_flush_failures = 0
+    adapter._backend_ready = True
+    adapter._disk_fallback_adapter = None
+    adapter._disk_fallback_path = ""
+    adapter._disk_fallback_enabled = False
+    adapter._disk_fallback_recovery_enabled = False
+    adapter._disk_fallback_recovery_attempted = False
+    adapter._disk_fallback_recovery_in_progress = False
+    adapter._disk_fallback_recovery_status = {"status": "not_attempted"}
+    adapter._storage_family = "shared_store"
+    adapter._storage_mode = "shared_store"
+    adapter._replication_mode = "shared_store"
     return adapter
 
 
@@ -3998,6 +4079,58 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             self.assertEqual("recovered", report["status"])
             self.assertTrue(report["replay_gate"]["override"])
             self.assertEqual(1, report["recovered_records"])
+
+    def test_cpp_backend_metrics_report_recovery_and_cache_state(self) -> None:
+        client = _HashStoreClient()
+        adapter = _direct_adapter_for_hash_store(client)
+        adapter._disk_fallback_recovery_status = {
+            "status": "recovered",
+            "recovered_records": 3,
+            "replay_gate": {"policy": "local_single_node_only", "allowed": True},
+        }
+        adapter._entry_count_cache = 3
+        adapter._records_cache = [{"record_type": "context_event", "event_id_hash": 1}]
+
+        metrics = adapter.backend_metrics()["metrics"]
+
+        self.assertEqual("recovered", metrics["recovery_status"]["status"])
+        self.assertEqual("local_disk_fallback_replay", metrics["recovery_status"]["recovery_source"])
+        self.assertEqual(3, metrics["recovery_status"]["disk_fallback_recovery"]["recovered_records"])
+        self.assertTrue(metrics["cache_state"]["records_cache_ready"])
+        self.assertEqual(1, metrics["cache_state"]["records_cache_count"])
+
+    def test_rust_backend_metrics_report_replicated_recovery_and_cache_state(self) -> None:
+        client = _RustRecoveryParityClient()
+        adapter = _rust_adapter_for_recovery_parity(client)
+        adapter._entry_count_cache = 7
+        adapter._records_cache = [{"record_type": "context_event", "event_id_hash": 1}]
+
+        metrics = adapter.backend_metrics()["metrics"]
+
+        self.assertEqual("native_replicated_storage_ready", metrics["recovery_status"]["status"])
+        self.assertEqual("rust_replicated_page_store_read_through", metrics["recovery_status"]["recovery_source"])
+        self.assertTrue(metrics["recovery_status"]["replicated_storage_recovery"])
+        self.assertTrue(metrics["recovery_status"]["read_through_cache_warmup"])
+        self.assertEqual(4, metrics["recovery_status"]["shared_store_read_throughs"])
+        self.assertEqual(6, metrics["recovery_status"]["page_store_reads"])
+        self.assertEqual(7, metrics["cache_state"]["entry_count_cache"])
+        self.assertTrue(metrics["cache_state"]["records_cache_ready"])
+
+    def test_rust_native_context_pack_invokes_shared_recovery_hook_before_read(self) -> None:
+        client = _RustRecoveryParityClient()
+        adapter = _rust_adapter_for_recovery_parity(client)
+        adapter._disk_fallback_recovery_enabled = True
+        adapter._disk_fallback_path = "/tmp/matrixark-rust-recovery-parity-unused.jsonl"
+
+        pack = adapter.native_context_pack({"query": "gpu budget"})
+
+        self.assertIsNotNone(pack)
+        self.assertEqual("skipped", adapter._disk_fallback_recovery_status["status"])
+        self.assertEqual(
+            "distributed_storage_uses_replication_or_shared_store_recovery",
+            adapter._disk_fallback_recovery_status["replay_gate"]["skip_reason"],
+        )
+        self.assertEqual(1, len(client.requests))
 
     def test_direct_append_supports_matrixkv_raw_backend_option(self) -> None:
         client = _NativeAppendClient()
