@@ -2931,6 +2931,180 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             )
             self.assertTrue(any("session:node-embedding-test" in text for text in calls))
 
+    def test_embedding_backfill_maps_all_context_source_records(self) -> None:
+        calls: list[str] = []
+
+        def fake_embeddings_for_texts(texts: list[str]) -> list[list[float]]:
+            calls.extend(texts)
+            return [[round(index + 0.1, 1), round(index + 0.2, 1)] for index, _text in enumerate(texts)]
+
+        old_embeddings_for_texts = mcp_local.embeddings_for_texts
+        old_embedding_model_name = mcp_local.embedding_model_name
+        mcp_local.embeddings_for_texts = fake_embeddings_for_texts
+        mcp_local.embedding_model_name = lambda: "unit-completeness-model"
+        self.addCleanup(lambda: setattr(mcp_local, "embeddings_for_texts", old_embeddings_for_texts))
+        self.addCleanup(lambda: setattr(mcp_local, "embedding_model_name", old_embedding_model_name))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            scope = {"tenant_id": "tenant_codex", "user_id": "codex_user", "session_id": "embedding-completeness-test"}
+            node_path = ["tenant:tenant_codex", "user:codex_user", "session:embedding-completeness-test"]
+            node_hash = mcp_core.stable_hash("/".join(node_path))
+            summary_hash = mcp_core.stable_hash("summary-needs-refresh")
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": 11,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "text": "event text should be embedded",
+                        "scope": scope,
+                        "updated_at_ms": 100,
+                    },
+                    {
+                        "record_type": "context_segment",
+                        "segment_hash": 22,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "topic": "segment topic",
+                        "summary_text": "segment summary should be embedded",
+                        "scope": scope,
+                        "updated_at_ms": 110,
+                    },
+                    {
+                        "record_type": "context_entity",
+                        "entity_hash": 33,
+                        "entity_type": "preference",
+                        "entity_name": "editor",
+                        "state": "prefers precise answers",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "scope": scope,
+                        "updated_at_ms": 120,
+                    },
+                    {
+                        "record_type": "context_node",
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "node_name": "session:embedding-completeness-test",
+                        "depth": len(node_path),
+                        "scope": scope,
+                        "updated_at_ms": 130,
+                    },
+                    {
+                        "record_type": "context_summary",
+                        "summary_type": "node_l0",
+                        "summary_hash": summary_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "summary_text": "fresh summary should replace stale embedding",
+                        "scope": scope,
+                        "updated_at_ms": 200,
+                    },
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "node_l0",
+                        "ref_type": "summary",
+                        "ref_hash": summary_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "model": "unit-completeness-model",
+                        "vector": [9.9, 9.8],
+                        "scope": scope,
+                        "updated_at_ms": 100,
+                    },
+                    {
+                        "record_type": "context_compression_event",
+                        "compression_id_hash": 44,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "summary_text": "compression summary should be embedded",
+                        "scope": scope,
+                        "updated_at_ms": 140,
+                    },
+                ]
+            )
+
+            result = adapter.ensure_context_embeddings(limit=16, updated_at_ms=300)
+            records = adapter.read_all()
+            embeddings = {
+                (record.get("embedding_type"), record.get("ref_type"), record.get("ref_hash")): record
+                for record in records
+                if record.get("record_type") == "context_embedding"
+            }
+
+            expected_keys = {
+                ("event_text", "event", 11),
+                ("segment_text", "segment", 22),
+                ("profile_entity_state", "entity", 33),
+                ("context_node", "node", node_hash),
+                ("node_l0", "summary", summary_hash),
+                ("compression_summary", "compression", 44),
+            }
+            self.assertEqual(6, result["generated_count"])
+            self.assertEqual(expected_keys, set(embeddings).intersection(expected_keys))
+            self.assertEqual(6, len(calls))
+            self.assertEqual([4.1, 4.2], embeddings[("node_l0", "summary", summary_hash)]["vector"])
+            self.assertEqual(300, embeddings[("node_l0", "summary", summary_hash)]["updated_at_ms"])
+            self.assertTrue(
+                all(
+                    embeddings[key].get("model_ref") == mcp.embedding_model_ref_for_name("unit-completeness-model")
+                    for key in expected_keys
+                )
+            )
+
+    def test_refresh_summaries_runs_embedding_completeness_after_dirty_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            scope = {"tenant_id": "tenant_codex", "user_id": "codex_user", "session_id": "dirty-refresh-embedding-test"}
+            node_path = ["tenant:tenant_codex", "user:codex_user", "session:dirty-refresh-embedding-test"]
+            node_hash = mcp_core.stable_hash("/".join(node_path))
+            event_hash = mcp_core.stable_hash("dirty-refresh-source-event")
+            adapter.append(
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": event_hash,
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "text": "dirty summary refresh source event",
+                    "scope": scope,
+                    "updated_at_ms": 1780000000000,
+                }
+            )
+            adapter.mark_node_summary_dirty(
+                node_path=node_path,
+                scope=scope,
+                updated_at_ms=1780000000001,
+                source_ref_type="event",
+                source_hash_field="source_event_hash",
+                source_hash=event_hash,
+                dirty_reason="unit_dirty_summary",
+            )
+            calls: list[dict] = []
+            adapter.ensure_context_embeddings = lambda **kwargs: calls.append(dict(kwargs)) or {
+                "status": "ok",
+                "generated_count": 3,
+            }
+
+            result = adapter.refresh_summaries(
+                {
+                    "scope": scope,
+                    "limit": 4,
+                    "refreshed_at_ms": 1780000000100,
+                    "embedding_backfill_limit": 12,
+                }
+            )
+
+            self.assertGreaterEqual(result["refreshed_count"], 1)
+            self.assertEqual({"status": "ok", "generated_count": 3}, result["embedding_refresh"])
+            self.assertEqual(1, len(calls))
+            self.assertEqual(scope, calls[0]["scope"])
+            self.assertEqual(12, calls[0]["limit"])
+            self.assertEqual(1780000000100, calls[0]["updated_at_ms"])
+
     def test_parent_summary_uses_child_summaries_and_state_not_recursive_raw_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
