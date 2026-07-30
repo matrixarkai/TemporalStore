@@ -7462,6 +7462,14 @@ class MatrixArkLocalAdapter:
                     profile_source_memory_selection_policy_counts[policy] = int(
                         profile_source_memory_selection_policy_counts.get(policy, 0)
                     ) + int(count)
+                if profile_promotion_scope_available:
+                    profile_source_memory_selection_policies = ordered_unique_any(
+                        profile_source_memory_selection_policies + ["selected_profile_current_state"]
+                    )
+                    profile_source_memory_selection_policy_counts["selected_profile_current_state"] = max(
+                        1,
+                        int(profile_source_memory_selection_policy_counts.get("selected_profile_current_state", 0) or 0),
+                    )
                 profile_source_memory_selection_retention: Json = {}
                 for key in [
                     "source_memory_selection_lossy_count",
@@ -7606,6 +7614,22 @@ class MatrixArkLocalAdapter:
                         "model": embedding_model_name(),
                         "vector": profile_entity_vector,
                         "scope": profile_scope,
+                        "source_event_ids": profile_source_event_ids,
+                        "source_session_ids": profile_source_session_ids,
+                        "source_entity_hashes": profile_source_entity_hashes,
+                        "source_roles": profile_source_roles,
+                        "source_role_counts": profile_source_role_counts,
+                        "source_hook_types": profile_source_hook_types,
+                        "source_hook_type_counts": profile_source_hook_type_counts,
+                        "source_codex_events": profile_source_codex_events,
+                        "source_codex_event_counts": profile_source_codex_event_counts,
+                        "source_memory_selection_policies": profile_source_memory_selection_policies,
+                        "source_memory_selection_policy_counts": profile_source_memory_selection_policy_counts,
+                        **profile_source_memory_selection_retention,
+                        "source_profile_promotion_policies": profile_source_promotion_policies,
+                        "source_profile_promotion_blockers": profile_source_promotion_blockers,
+                        "source_memory_scopes": profile_source_memory_scopes,
+                        "source_session_continuities": profile_source_session_continuities,
                         "memory_scope": "user_profile",
                         "session_continuity": "cross_session",
                         "promoted_from_memory_scope": "session",
