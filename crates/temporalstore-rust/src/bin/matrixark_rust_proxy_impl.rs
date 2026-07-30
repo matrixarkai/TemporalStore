@@ -835,8 +835,19 @@ fn mark_scan_cache_hit(mut value: Value) -> Value {
     if let Some(object) = value.as_object_mut() {
         object.insert("cache_hit".to_string(), json!(true));
         if let Some(stats) = object.get_mut("scan_stats").and_then(Value::as_object_mut) {
+            let cache_entries = matrixark_scan_cache()
+                .lock()
+                .map(|cache| cache.len())
+                .unwrap_or(0);
             stats.insert("candidate_cache_hit".to_string(), json!(true));
             stats.insert("cache_hit".to_string(), json!(true));
+            stats.insert("candidate_cache_scope".to_string(), json!("process_global"));
+            stats.insert("native_placement_candidate_cache_hit".to_string(), json!(true));
+            stats.insert("native_placement_candidate_cache_entries".to_string(), json!(cache_entries));
+            stats.insert("native_candidate_cache_key_shape".to_string(), json!("storage_prefix+count+scope+record_types+selected_node_hashes+secondary_index_groups+return_index_records"));
+            stats.insert("native_candidate_cache_payload".to_string(), json!("compact_struct"));
+            stats.insert("serving_memory_cache_layer".to_string(), json!("rust_proxy_scan_cache"));
+            stats.insert("serving_memory_promoted".to_string(), json!(true));
         }
     }
     value
@@ -1864,6 +1875,10 @@ fn scan_matrixark_candidates(
         + selected_node_dropped
         + secondary_dropped
         + non_serving_dropped;
+    let scan_cache_entries_before_store = matrixark_scan_cache()
+        .lock()
+        .map(|cache| cache.len())
+        .unwrap_or(0);
     let output = json!({
         "ok": true,
         "count": returned_records.len(),
@@ -1878,7 +1893,15 @@ fn scan_matrixark_candidates(
             "native_prefix_scan": true,
             "native_secondary_index_prefilter": !secondary_groups.is_empty(),
             "candidate_cache_hit": false,
+            "candidate_cache_scope": "process_global",
             "cache_hit": false,
+            "native_placement_candidate_cache_hit": false,
+            "native_placement_candidate_cache_entries": scan_cache_entries_before_store,
+            "native_candidate_cache_key_shape": "storage_prefix+count+scope+record_types+selected_node_hashes+secondary_index_groups+return_index_records",
+            "native_candidate_cache_payload": "compact_struct",
+            "serving_memory_cache_layer": "rust_proxy_scan_cache",
+            "serving_memory_promoted": true,
+            "serving_memory_promoted_record_count": returned_records.len(),
             "placement_partitions_touched": placement_partitions_touched,
             "index_postings_read": placement_partitions_touched,
             "scanned_records": scanned_records,
@@ -4190,6 +4213,35 @@ fn retrieve_context_pack_native(
         .or_else(|| scan_stats.get("cache_hit"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let candidate_cache_scope = scan_stats.get("candidate_cache_scope").and_then(Value::as_str).unwrap_or("process_global");
+    let native_placement_candidate_cache_hit = scan_stats
+        .get("native_placement_candidate_cache_hit")
+        .and_then(Value::as_bool)
+        .unwrap_or(candidate_cache_hit);
+    let native_placement_candidate_cache_entries = scan_stats
+        .get("native_placement_candidate_cache_entries")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let native_candidate_cache_key_shape = scan_stats
+        .get("native_candidate_cache_key_shape")
+        .and_then(Value::as_str)
+        .unwrap_or("storage_prefix+count+scope+record_types+selected_node_hashes+secondary_index_groups+return_index_records");
+    let native_candidate_cache_payload = scan_stats
+        .get("native_candidate_cache_payload")
+        .and_then(Value::as_str)
+        .unwrap_or("compact_struct");
+    let serving_memory_cache_layer = scan_stats
+        .get("serving_memory_cache_layer")
+        .and_then(Value::as_str)
+        .unwrap_or("rust_proxy_scan_cache");
+    let serving_memory_promoted = scan_stats
+        .get("serving_memory_promoted")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let serving_memory_promoted_record_count = scan_stats
+        .get("serving_memory_promoted_record_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     let scanned_records = scan_stats
         .get("scanned_records")
         .and_then(Value::as_u64)
@@ -4232,6 +4284,14 @@ fn retrieve_context_pack_native(
             "placement_partitions_touched": placement_partitions_touched,
             "candidate_cache_hit": candidate_cache_hit,
             "cache_hit": candidate_cache_hit,
+            "candidate_cache_scope": candidate_cache_scope,
+            "native_placement_candidate_cache_hit": native_placement_candidate_cache_hit,
+            "native_placement_candidate_cache_entries": native_placement_candidate_cache_entries,
+            "native_candidate_cache_key_shape": native_candidate_cache_key_shape,
+            "native_candidate_cache_payload": native_candidate_cache_payload,
+            "serving_memory_cache_layer": serving_memory_cache_layer,
+            "serving_memory_promoted": serving_memory_promoted,
+            "serving_memory_promoted_record_count": serving_memory_promoted_record_count,
             "compact_index_bucket_used": index_postings_read > 0,
             "compact_index_bucket_count": index_postings_read,
             "native_pack_assembly": true,
@@ -5335,6 +5395,10 @@ fn retrieve_context_pack_output(
         native_serving_memory_layer_budget(&dropped_memory_layer_budget);
     let serving_memory_layer_pressure =
         native_serving_memory_layer_pressure(&memory_layer_pressure);
+    let retrieve_candidate_cache_entries = retrieve_candidate_cache()
+        .lock()
+        .map(|cache| cache.len())
+        .unwrap_or(0);
     let elapsed_ms = started.elapsed().as_millis() as u64;
     let correctness = selected_count > 0;
     let serving_selected_refs = native_serving_refs(&selected_refs);
@@ -5372,6 +5436,14 @@ fn retrieve_context_pack_output(
             "placement_partitions_touched": snapshot.placement_partitions_touched,
             "candidate_cache_hit": candidate_cache_hit,
             "cache_hit": candidate_cache_hit,
+            "candidate_cache_scope": "process_global",
+            "native_placement_candidate_cache_hit": candidate_cache_hit,
+            "native_placement_candidate_cache_entries": retrieve_candidate_cache_entries,
+            "native_candidate_cache_key_shape": "storage_prefix+count+scope+secondary_index_groups",
+            "native_candidate_cache_payload": "compact_struct",
+            "serving_memory_cache_layer": "rust_proxy_retrieve_candidate_snapshot",
+            "serving_memory_promoted": true,
+            "serving_memory_promoted_record_count": snapshot.candidates.len(),
             "native_pack_assembly": true,
             "python_pack_fallback": false,
             "raw_candidate_tables_returned": false,
@@ -6326,6 +6398,21 @@ mod tests {
             Some(false)
         );
         assert_eq!(
+            pack.pointer("/retrieval_metrics/serving_memory_cache_layer")
+                .and_then(Value::as_str),
+            Some("rust_proxy_retrieve_candidate_snapshot")
+        );
+        assert_eq!(
+            pack.pointer("/retrieval_metrics/serving_memory_promoted")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            pack.pointer("/retrieval_metrics/native_candidate_cache_payload")
+                .and_then(Value::as_str),
+            Some("compact_struct")
+        );
+        assert_eq!(
             pack.pointer("/memory_inventory/session/context_events")
                 .and_then(Value::as_u64),
             Some(1)
@@ -6471,6 +6558,37 @@ mod tests {
                 .pointer("/retrieval_metrics/candidate_cache_hit")
                 .and_then(Value::as_bool),
             Some(true)
+        );
+        assert_eq!(
+            cached_response
+                .pointer("/retrieval_metrics/native_placement_candidate_cache_hit")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            cached_response
+                .pointer("/retrieval_metrics/serving_memory_promoted")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            cached_response
+                .pointer("/retrieval_metrics/serving_memory_cache_layer")
+                .and_then(Value::as_str),
+            Some("rust_proxy_retrieve_candidate_snapshot")
+        );
+        assert_eq!(
+            cached_response
+                .pointer("/retrieval_metrics/native_candidate_cache_payload")
+                .and_then(Value::as_str),
+            Some("compact_struct")
+        );
+        assert!(
+            cached_response
+                .pointer("/retrieval_metrics/native_placement_candidate_cache_entries")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                > 0
         );
 
         let mut default_ref_limit = retrieve.clone();
