@@ -9493,6 +9493,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 {
                     **base_args,
                     "messages": [{"role": "user", "content": "User asks whether Stop should duplicate extraction."}],
+                    "metadata": {"hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
                 }
             )
             second = adapter.ingest(
@@ -9504,6 +9505,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                             "content": "Decision: threshold extracts provisionally; Stop only finalizes the drained session.",
                         }
                     ],
+                    "metadata": {"hook_type": "after_llm", "codex_event": "Stop"},
                 }
             )
             self.assertEqual(1, first["session_buffer"]["pending_event_count"])
@@ -9565,6 +9567,26 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(1, len(boundaries))
             self.assertEqual(2, boundaries[0]["prior_committed_event_count"])
             self.assertEqual(["assistant", "user"], boundaries[0]["source_roles"])
+            session_final_index_names = {
+                str(record.get("index_name") or "")
+                for record in records
+                if record.get("record_type") == "context_index"
+                and record.get("data_model") == "context_summary"
+                and record.get("ref_type") == "summary"
+            }
+            self.assertIn("summary_type:session_final", session_final_index_names)
+            self.assertIn("memory_scope:session", session_final_index_names)
+            self.assertIn("session_continuity:same_session", session_final_index_names)
+            self.assertIn("extraction_phase:final", session_final_index_names)
+            self.assertIn("final_session_boundary:true", session_final_index_names)
+            self.assertIn("source_role:assistant", session_final_index_names)
+            self.assertIn("source_role:user", session_final_index_names)
+            self.assertIn("hook_type:after_llm", session_final_index_names)
+            self.assertIn("hook_type:before_llm", session_final_index_names)
+            self.assertIn("codex_event:stop", session_final_index_names)
+            self.assertIn("codex_event:userpromptsubmit", session_final_index_names)
+            self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", session_final_index_names)
+            self.assertIn("memory_selection_policy:selected_user_prompt", session_final_index_names)
             self.assertTrue(
                 any(
                     record.get("record_type") == "context_summary_dirty"
