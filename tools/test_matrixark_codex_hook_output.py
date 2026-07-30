@@ -407,6 +407,32 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             ),
         )
 
+    def test_payload_text_prefers_assistant_fields_for_stop_payloads(self) -> None:
+        payload = {
+            "hook_event_name": "Stop",
+            "prompt": "original user prompt should not become assistant memory",
+            "last_assistant_message": "Decision: assistant outcome should be extracted.",
+        }
+
+        self.assertEqual(
+            "Decision: assistant outcome should be extracted.",
+            hook.payload_text(payload, event="Stop"),
+        )
+
+    def test_payload_text_prefers_tool_fields_for_tool_payloads(self) -> None:
+        payload = {
+            "hook_event_name": "PostToolUse",
+            "prompt": "original user prompt should not become tool evidence",
+            "params": {
+                "tool_result": "Exit code: 0\nRan 9 tests\nOK",
+            },
+        }
+
+        self.assertEqual(
+            "Exit code: 0\nRan 9 tests\nOK",
+            hook.payload_text(payload, event="PostToolUse"),
+        )
+
     def test_rollout_assistant_extraction_flattens_structured_content_parts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             rollout = Path(tmp_dir) / "rollout-test.jsonl"
