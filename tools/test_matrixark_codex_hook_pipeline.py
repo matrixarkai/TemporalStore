@@ -4925,6 +4925,43 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 request["memory_selection_policy_budget_tokens"],
             )
 
+    def test_profile_memory_query_defaults_to_bounded_auto_memory_budgets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-profile-memory-default-budget.jsonl")
+            scope = {
+                "account_id": "acct_native_profile_memory_default_budget",
+                "tenant_id": "tenant_native_profile_memory_default_budget",
+                "user_id": "user_native_profile_memory_default_budget",
+                "session_id": "session_native_profile_memory_default_budget",
+            }
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "Show user profile long-term memory and cross-session entities",
+                    "max_context_tokens": 100,
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertEqual("local-native-pack", pack["pack_id"])
+            self.assertEqual(1, len(adapter.native_requests))
+            request = adapter.native_requests[0]
+            self.assertEqual("profile_memory", request["question_type"])
+            self.assertEqual("auto", request["source_role_budget_mode"])
+            self.assertEqual("auto", request["memory_layer_budget_mode"])
+            self.assertEqual("auto", request["memory_selection_policy_budget_mode"])
+            self.assertEqual("auto", request["extraction_phase_budget_mode"])
+            self.assertEqual({"assistant": 47, "tool": 42, "user": 47}, request["source_role_budget_tokens"])
+            self.assertEqual(57, request["memory_layer_budget_tokens"]["profile_entity"])
+            self.assertEqual(42, request["memory_layer_budget_tokens"]["profile_summary"])
+            self.assertEqual(38, request["memory_layer_budget_tokens"]["cross_session_event"])
+            self.assertEqual(61, request["memory_selection_policy_budget_tokens"]["selected_profile_current_state"])
+            self.assertEqual(76, request["extraction_phase_budget_tokens"]["final"])
+            self.assertTrue(request["cross_session"]["enabled"])
+            self.assertEqual(19, request["cross_session"]["budget_tokens"])
+            self.assertEqual("profile_memory", request["cross_session"]["question_type"])
+
     def test_profile_memory_query_rescues_profile_entity_when_single_ref_budget_competes_with_session_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-memory-bridge-rescue.jsonl")
