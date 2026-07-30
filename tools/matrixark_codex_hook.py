@@ -3992,7 +3992,11 @@ def fast_async_hook_ingest(
         "session_binding": "metadata_only_for_backfill_batching",
         "source_kind": "message",
         "source_role": role,
+        "role": role,
+        "text": text,
         "codex_event": args.event,
+        "codex_api_event": args.event,
+        "hook_type": hook_type,
         **tool_fields,
         "messages": messages,
         "scope": scope,
@@ -4023,12 +4027,15 @@ def fast_async_hook_ingest(
         "status": "pending",
         "source_kind": "message",
         "source_role": role,
+        "role": role,
         **tool_fields,
         "source_roles": [role] if role else [],
         "source_role_counts": {role: 1} if role else {},
         "source_hook_types": [hook_type] if hook_type else [],
         "source_hook_type_counts": {hook_type: 1} if hook_type else {},
         "codex_event": args.event,
+        "codex_api_event": args.event,
+        "hook_type": hook_type,
         "source_codex_events": [args.event] if args.event else [],
         "source_codex_event_counts": {args.event: 1} if args.event else {},
         "source_memory_scopes": source_memory_scopes,
@@ -4202,7 +4209,14 @@ def fast_async_hook_ingest(
             append_raw([raw_record])
             raw_ingestion_status = "accepted"
     serving_records = [record, pipeline_task, *projection_records, *summary_dirty_records]
-    enqueue(serving_records)
+    append_many_materialized = getattr(adapter, "_append_many_materialized", None)
+    if callable(append_many_materialized):
+        append_many_materialized([record], allow_queue=False)
+        remaining_serving_records = serving_records[1:]
+        if remaining_serving_records:
+            append_many_materialized(remaining_serving_records, allow_queue=False)
+    else:
+        enqueue(serving_records)
     append_session_buffer = getattr(adapter, "append_session_buffer_event", None)
     if callable(append_session_buffer):
         append_session_buffer(
