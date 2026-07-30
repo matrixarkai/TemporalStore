@@ -755,13 +755,27 @@ def auto_extraction_phase_budget_tokens(
     return budgets, mode
 
 
-def pre_retrieval_summary_refresh_memory_layer_budget_tokens(*, remote_budget_tokens: int) -> tuple[Json, str]:
+def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
+    *,
+    remote_budget_tokens: int,
+    question_type: str = "fact",
+) -> tuple[Json, str]:
     try:
         remote_budget = max(0, int(remote_budget_tokens or 0))
     except (TypeError, ValueError):
         remote_budget = 0
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    mode = "pre_retrieval_summary_refresh_balanced"
+    if normalized_question_type in {"current_state", "latest"}:
+        mode = "pre_retrieval_summary_refresh_current_state"
+    elif normalized_question_type == "profile_memory":
+        mode = "pre_retrieval_summary_refresh_profile_memory"
+    elif normalized_question_type in {"multi_hop", "date"}:
+        mode = "pre_retrieval_summary_refresh_multi_hop"
+    elif normalized_question_type in {"broad_exploration", "evidence"}:
+        mode = "pre_retrieval_summary_refresh_evidence"
     if remote_budget <= 0:
-        return {}, "pre_retrieval_summary_refresh_balanced"
+        return {}, mode
     fractions = {
         "summary": 0.15,
         "profile_summary": 0.30,
@@ -778,10 +792,63 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(*, remote_budget_to
         "cross_session_segment": 0.25,
         "profile_entity": 0.45,
     }
+    if normalized_question_type in {"current_state", "latest"}:
+        fractions.update(
+            {
+                "profile_summary": 0.35,
+                "cross_session_summary": 0.30,
+                "profile_compression": 0.35,
+                "cross_session_compression": 0.30,
+                "cross_session_event": 0.30,
+                "cross_session_segment": 0.30,
+                "profile_entity": 0.55,
+            }
+        )
+    elif normalized_question_type == "profile_memory":
+        fractions.update(
+            {
+                "summary": 0.15,
+                "profile_summary": 0.45,
+                "same_session_summary": 0.15,
+                "cross_session_summary": 0.40,
+                "profile_compression": 0.40,
+                "cross_session_compression": 0.35,
+                "same_session_event": 0.25,
+                "cross_session_event": 0.40,
+                "same_session_segment": 0.25,
+                "cross_session_segment": 0.40,
+                "profile_entity": 0.60,
+            }
+        )
+    elif normalized_question_type in {"multi_hop", "date"}:
+        fractions.update(
+            {
+                "cross_session_summary": 0.35,
+                "cross_session_compression": 0.35,
+                "cross_session_event": 0.35,
+                "cross_session_segment": 0.35,
+                "profile_entity": 0.50,
+            }
+        )
+    elif normalized_question_type in {"broad_exploration", "evidence"}:
+        fractions.update(
+            {
+                "summary": 0.20,
+                "profile_summary": 0.35,
+                "cross_session_summary": 0.30,
+                "profile_compression": 0.30,
+                "cross_session_compression": 0.30,
+                "same_session_event": 0.35,
+                "cross_session_event": 0.30,
+                "same_session_segment": 0.35,
+                "cross_session_segment": 0.30,
+                "profile_entity": 0.50,
+            }
+        )
     return {
         layer: max(1, int(remote_budget * fraction))
         for layer, fraction in fractions.items()
-    }, "pre_retrieval_summary_refresh_balanced"
+    }, mode
 
 
 def pre_retrieval_summary_refresh_enabled(args: Json, ranking: Json) -> bool:
@@ -8301,6 +8368,7 @@ class MatrixArkLocalAdapter:
         if pre_retrieval_summary_refresh["enabled"] and not explicit_memory_layer_budget_tokens and not custom_memory_layer_budget_fractions:
             memory_layer_budget_tokens, memory_layer_budget_mode = pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 remote_budget_tokens=remote_context_budget_tokens,
+                question_type=question_type,
             )
         elif not memory_layer_budget_tokens:
             memory_layer_budget_tokens, memory_layer_budget_mode = auto_memory_layer_budget_tokens(
