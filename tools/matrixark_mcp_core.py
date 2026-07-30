@@ -2733,6 +2733,18 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     lower = text.lower()
     source_event_ids = envelope.get("source_event_ids", [])
     source_refs = [str(ref) for ref in source_event_ids] if isinstance(source_event_ids, list) and source_event_ids else [str(index) for index, _ in enumerate(messages)]
+    def source_refs_for_role(role_name: str) -> list[str]:
+        refs: list[str] = []
+        for index, item in enumerate(messages):
+            if normalized_extraction_message_role(item.get("role")) != role_name:
+                continue
+            if not str(item.get("content") or "").strip():
+                continue
+            if isinstance(source_event_ids, list) and index < len(source_event_ids):
+                refs.append(str(source_event_ids[index]))
+            else:
+                refs.append(str(index))
+        return refs or source_refs
     user_messages = [
         item
         for item in messages
@@ -2776,7 +2788,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "entity_name": "tool_evidence",
                 "state": evidence_state,
                 "confidence": 0.86,
-                "source_refs": source_refs,
+                "source_refs": source_refs_for_role("tool"),
                 "operator": normalize_entity_operator(None, "tool_evidence"),
                 "field_patches": [entity_patch("", summarize_text(evidence_state, limit=180))],
             }
@@ -2800,7 +2812,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "entity_name": "assistant_decision",
                 "state": decision_state,
                 "confidence": 0.82,
-                "source_refs": source_refs,
+                "source_refs": source_refs_for_role("assistant"),
                 "operator": normalize_entity_operator(None, "assistant_decision"),
                 "field_patches": [entity_patch("", summarize_text(decision_state, limit=180))],
             }
