@@ -470,6 +470,18 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         "source_hook_type_counts",
         "source_codex_event_counts",
         "source_memory_selection_policy_counts",
+        "source_memory_selection_lossy_count",
+        "source_memory_selection_complete_count",
+        "source_memory_selection_dropped_text_chars",
+        "source_memory_selection_dropped_line_count",
+        "source_memory_selection_retained_text_ratio_avg",
+        "source_memory_selection_retained_line_ratio_avg",
+        "profile_promotion_policy",
+        "profile_promotion_blocker",
+        "profile_revision",
+        "previous_profile_revision",
+        "previous_profile_updated_at_ms",
+        "supersedes_session_entity_hash",
     ] if debug_lineage_enabled(include_debug=include_debug) else []
     if debug_lineage_enabled(include_debug=include_debug):
         value = ref.get("extraction_phase")
@@ -494,11 +506,24 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
             )
             if compact_counts:
                 item[field] = compact_counts
+        elif isinstance(value, int) and value > 0:
+            item[field] = value
+        elif isinstance(value, float) and value > 0:
+            item[field] = round(value, 6)
+        elif isinstance(value, str) and value.strip():
+            item[field] = value.strip()
 
     if debug_lineage_enabled(include_debug=include_debug):
+        value = ref.get("extraction_context_event_ids")
+        if isinstance(value, list) and value:
+            item["extraction_context_event_ids"] = value[:8]
         value = ref.get("source_entity_hashes")
         if isinstance(value, list) and value:
             item["source_entity_count"] = len(value)
+        value = ref.get("supersedes_session_entity_hashes")
+        if isinstance(value, list) and value:
+            item["supersedes_session_entity_hashes"] = value[:8]
+            item["supersedes_session_entity_count"] = len(value)
         value = ref.get("source_entity_count")
         if isinstance(value, int) and value > 0:
             item["source_entity_count"] = value
