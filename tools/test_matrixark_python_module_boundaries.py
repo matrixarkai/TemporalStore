@@ -2142,6 +2142,14 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "source_hook_type_counts": {"after_llm": 3, "hook_boundary": 2},
                 "source_codex_events": ["Stop", "PostToolUse"],
                 "source_codex_event_counts": {"Stop": 3, "PostToolUse": 2},
+                "source_memory_selection_policies": [
+                    "selected_assistant_decision_outcome_only",
+                    "selected_tool_evidence_only",
+                ],
+                "source_memory_selection_policy_counts": {
+                    "selected_assistant_decision_outcome_only": 3,
+                    "selected_tool_evidence_only": 2,
+                },
             },
             "messages": [{"role": "llm", "content": "Commit abc123 was pushed."}],
             "ingestion_time_ms": 123,
@@ -2244,15 +2252,31 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(session_entities[0]["source_role_counts"], session_segments[0]["source_role_counts"])
         self.assertEqual(session_entities[0]["source_hook_type_counts"], session_segments[0]["source_hook_type_counts"])
         self.assertEqual(session_entities[0]["source_codex_event_counts"], session_segments[0]["source_codex_event_counts"])
+        self.assertEqual(
+            session_entities[0]["source_memory_selection_policy_counts"],
+            session_segments[0]["source_memory_selection_policy_counts"],
+        )
         self.assertEqual(["assistant", "tool"], session_entities[0]["source_roles"])
         self.assertEqual({"assistant": 3, "tool": 2}, session_entities[0]["source_role_counts"])
         self.assertEqual(["after_llm", "hook_boundary"], session_entities[0]["source_hook_types"])
         self.assertEqual({"after_llm": 3, "hook_boundary": 2}, session_entities[0]["source_hook_type_counts"])
         self.assertEqual(["PostToolUse", "Stop"], session_entities[0]["source_codex_events"])
         self.assertEqual({"PostToolUse": 2, "Stop": 3}, session_entities[0]["source_codex_event_counts"])
+        self.assertEqual(
+            ["selected_assistant_decision_outcome_only", "selected_tool_evidence_only"],
+            session_entities[0]["source_memory_selection_policies"],
+        )
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 3, "selected_tool_evidence_only": 2},
+            session_entities[0]["source_memory_selection_policy_counts"],
+        )
         self.assertEqual(session_entities[0]["source_role_counts"], profile_entities[0]["source_role_counts"])
         self.assertEqual(session_entities[0]["source_hook_type_counts"], profile_entities[0]["source_hook_type_counts"])
         self.assertEqual(session_entities[0]["source_codex_event_counts"], profile_entities[0]["source_codex_event_counts"])
+        self.assertEqual(
+            session_entities[0]["source_memory_selection_policy_counts"],
+            profile_entities[0]["source_memory_selection_policy_counts"],
+        )
         self.assertEqual(["session_mod"], profile_entities[0]["source_session_ids"])
         self.assertEqual([session_entities[0]["entity_hash"]], profile_entities[0]["source_entity_hashes"])
         self.assertEqual("always_when_profile_scope_available", profile_entities[0]["profile_promotion_policy"])
@@ -2288,17 +2312,20 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertNotIn("final_session_boundary", session_entity_embedding)
         self.assertNotIn("source_event_ids", session_entity_embedding)
         self.assertNotIn("source_role_counts", session_entity_embedding)
+        self.assertNotIn("source_memory_selection_policy_counts", session_entity_embedding)
         self.assertEqual("user_profile", profile_entity_embedding["memory_scope"])
         self.assertEqual("cross_session", profile_entity_embedding["session_continuity"])
         self.assertNotIn("promoted_from_memory_scope", profile_entity_embedding)
         self.assertNotIn("source_session_ids", profile_entity_embedding)
         self.assertNotIn("source_entity_hashes", profile_entity_embedding)
         self.assertNotIn("source_role_counts", profile_entity_embedding)
+        self.assertNotIn("source_memory_selection_policy_counts", profile_entity_embedding)
         self.assertEqual("session", segment_embedding["memory_scope"])
         self.assertEqual("same_session", segment_embedding["session_continuity"])
         self.assertNotIn("source_memory_scopes", segment_embedding)
         self.assertNotIn("source_session_continuities", segment_embedding)
         self.assertNotIn("source_event_ids", segment_embedding)
+        self.assertNotIn("source_memory_selection_policy_counts", segment_embedding)
         event_embeddings = [
             record
             for record in embeddings
@@ -2318,6 +2345,10 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(1, len(summary_records))
         self.assertEqual("session", summary_records[0]["memory_scope"])
         self.assertEqual("same_session", summary_records[0]["session_continuity"])
+        self.assertEqual(
+            session_entities[0]["source_memory_selection_policy_counts"],
+            summary_records[0]["source_memory_selection_policy_counts"],
+        )
         summary_embedding = embeddings_by_ref[
             ("summary", summary_records[0]["summary_hash"], "batch_l0")
         ]
@@ -2326,6 +2357,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertNotIn("extraction_phase", summary_embedding)
         self.assertNotIn("source_entity_hashes", summary_embedding)
         self.assertNotIn("source_segment_hashes", summary_embedding)
+        self.assertNotIn("source_memory_selection_policy_counts", summary_embedding)
         profile_indexes = [
             record
             for record in adapter.records
@@ -2354,6 +2386,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             self.assertIn("hook_type:hook_boundary", index_names)
             self.assertIn("codex_event:posttooluse", index_names)
             self.assertIn("codex_event:stop", index_names)
+            self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", index_names)
+            self.assertIn("memory_selection_policy:selected_tool_evidence_only", index_names)
         dirty_records = [record for record in adapter.records if record.get("record_type") == "context_summary_dirty"]
         self.assertTrue(any(record.get("dirty_reason") == "new_event" for record in dirty_records))
         profile_dirty = [

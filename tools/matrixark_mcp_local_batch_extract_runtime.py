@@ -217,6 +217,40 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             if amount:
                 source_codex_event_counts[event_name] = int(source_codex_event_counts.get(event_name, 0)) + amount
         source_codex_events = sorted(source_codex_event_counts)
+    source_memory_selection_policy_counts: Json = {}
+    metadata_selection_counts = (
+        envelope_metadata.get("source_memory_selection_policy_counts")
+        if isinstance(envelope_metadata.get("source_memory_selection_policy_counts"), dict)
+        else {}
+    )
+    if metadata_selection_counts:
+        for policy, count in metadata_selection_counts.items():
+            policy_name = str(policy or "").strip()
+            if not policy_name:
+                continue
+            try:
+                amount = max(0, int(count or 0))
+            except (TypeError, ValueError):
+                continue
+            if amount:
+                source_memory_selection_policy_counts[policy_name] = int(
+                    source_memory_selection_policy_counts.get(policy_name, 0)
+                ) + amount
+    else:
+        selection_values: list[str] = []
+        if isinstance(envelope_metadata.get("source_memory_selection_policies"), list):
+            selection_values.extend(envelope_metadata["source_memory_selection_policies"])
+        selection = (
+            envelope_metadata.get("codex_memory_selection")
+            if isinstance(envelope_metadata.get("codex_memory_selection"), dict)
+            else {}
+        )
+        selection_policy = str(selection.get("policy") or "").strip()
+        if selection_policy:
+            selection_values.append(selection_policy)
+        for policy_name in ordered_unique_any(selection_values):
+            source_memory_selection_policy_counts[policy_name] = 1
+    source_memory_selection_policies = sorted(source_memory_selection_policy_counts)
     batch_summary = extraction["batch_summary"]
 
     event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
@@ -284,6 +318,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "source_hook_type_counts": source_hook_type_counts,
                     "source_codex_events": source_codex_events,
                     "source_codex_event_counts": source_codex_event_counts,
+                    "source_memory_selection_policies": source_memory_selection_policies,
+                    "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                     "extraction_context_event_ids": extraction_context_event_ids,
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
@@ -346,6 +382,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             "source_hook_type_counts": source_hook_type_counts,
             "source_codex_events": source_codex_events,
             "source_codex_event_counts": source_codex_event_counts,
+            "source_memory_selection_policies": source_memory_selection_policies,
+            "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
             "field_patches": updated_entity.get("field_patches", []),
             "patch_results": updated_entity.get("patch_results", []),
             "update_mode": updated_entity.get("update_mode", ""),
@@ -469,6 +507,17 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             profile_source_codex_event_counts: Json = dict(previous_profile.get("source_codex_event_counts", {}))
             for codex_event, count in source_codex_event_counts.items():
                 profile_source_codex_event_counts[codex_event] = int(profile_source_codex_event_counts.get(codex_event, 0)) + int(count)
+            profile_source_memory_selection_policies = ordered_unique_any(
+                list(previous_profile.get("source_memory_selection_policies", []))
+                + source_memory_selection_policies
+            )
+            profile_source_memory_selection_policy_counts: Json = dict(
+                previous_profile.get("source_memory_selection_policy_counts", {})
+            )
+            for policy, count in source_memory_selection_policy_counts.items():
+                profile_source_memory_selection_policy_counts[policy] = int(
+                    profile_source_memory_selection_policy_counts.get(policy, 0)
+                ) + int(count)
             profile_entity_hashes.append(profile_entity_hash)
             profile_promotion_summary.append(
                 {
@@ -505,6 +554,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "source_hook_type_counts": profile_source_hook_type_counts,
                 "source_codex_events": profile_source_codex_events,
                 "source_codex_event_counts": profile_source_codex_event_counts,
+                "source_memory_selection_policies": profile_source_memory_selection_policies,
+                "source_memory_selection_policy_counts": profile_source_memory_selection_policy_counts,
                 "source_batch_id_hash": batch_id_hash,
                 "extraction_context_event_ids": extraction_context_event_ids,
                 "field_patches": promoted_entity.get("field_patches", []),
@@ -609,6 +660,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "source_hook_type_counts": source_hook_type_counts,
                 "source_codex_events": source_codex_events,
                 "source_codex_event_counts": source_codex_event_counts,
+                "source_memory_selection_policies": source_memory_selection_policies,
+                "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                 "source_memory_scopes": ["session"],
                 "source_session_continuities": ["same_session"],
                 "source_extraction_phases": [extraction_phase],
@@ -676,6 +729,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             "source_hook_type_counts": source_hook_type_counts,
             "source_codex_events": source_codex_events,
             "source_codex_event_counts": source_codex_event_counts,
+            "source_memory_selection_policies": source_memory_selection_policies,
+            "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
             "scope": envelope["scope"],
             "memory_scope": "session",
             "session_continuity": "same_session",
@@ -765,6 +820,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             "source_hook_type_counts": source_hook_type_counts,
             "source_codex_events": source_codex_events,
             "source_codex_event_counts": source_codex_event_counts,
+            "source_memory_selection_policies": source_memory_selection_policies,
+            "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
             "extraction_context_event_ids": extraction_context_event_ids,
             "extraction_phase": extraction_phase,
             "final_session_boundary": final_session_boundary,
@@ -836,4 +893,6 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         "source_hook_type_counts": source_hook_type_counts,
         "source_codex_events": source_codex_events,
         "source_codex_event_counts": source_codex_event_counts,
+        "source_memory_selection_policies": source_memory_selection_policies,
+        "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
     }
