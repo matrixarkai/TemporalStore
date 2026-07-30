@@ -2923,6 +2923,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             self.assertEqual(3, len(node_embeddings))
             self.assertEqual(3, len(calls))
             self.assertTrue(all(record.get("vector") == [0.25, 0.75] for record in node_embeddings))
+            self.assertTrue(all(record.get("dim") == 2 for record in node_embeddings))
+            self.assertTrue(all(record.get("model") == "unit-node-embedding-model" for record in node_embeddings))
             self.assertTrue(
                 all(
                     record.get("model_ref") == mcp.embedding_model_ref_for_name("unit-node-embedding-model")
@@ -2930,6 +2932,78 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 )
             )
             self.assertTrue(any("session:node-embedding-test" in text for text in calls))
+
+    def test_context_node_embedding_regenerates_stale_model_ref(self) -> None:
+        calls: list[str] = []
+
+        def fake_embedding_for_text(text: str) -> list[float]:
+            calls.append(text)
+            return [0.5, 0.6, 0.7]
+
+        old_embedding_for_text = mcp_local.embedding_for_text
+        old_embedding_model_name = mcp_local.embedding_model_name
+        mcp_local.embedding_for_text = fake_embedding_for_text
+        mcp_local.embedding_model_name = lambda: "unit-node-current-model"
+        self.addCleanup(lambda: setattr(mcp_local, "embedding_for_text", old_embedding_for_text))
+        self.addCleanup(lambda: setattr(mcp_local, "embedding_model_name", old_embedding_model_name))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            scope = {"tenant_id": "tenant_codex", "user_id": "codex_user", "session_id": "node-stale-embedding-test"}
+            node_path = ["tenant:tenant_codex", "user:codex_user", "session:node-stale-embedding-test"]
+            node_hash = mcp_core.stable_hash("/".join(node_path))
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_node",
+                        "node_hash": node_hash,
+                        "node_name": "session:node-stale-embedding-test",
+                        "node_path": node_path,
+                        "depth": len(node_path),
+                        "scope": scope,
+                        "updated_at_ms": 1780000000000,
+                    },
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "context_node",
+                        "ref_type": "node",
+                        "ref_hash": node_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "model": "legacy-node-model",
+                        "vector": [0.1, 0.2],
+                        "scope": scope,
+                        "updated_at_ms": 1780000000000,
+                    },
+                ]
+            )
+
+            result = adapter.ensure_context_node_path(
+                node_path=node_path,
+                scope=scope,
+                updated_at_ms=1780000001000,
+            )
+
+            records = adapter.read_all()
+            current_model_ref = mcp.embedding_model_ref_for_name("unit-node-current-model")
+            current_embeddings = [
+                record
+                for record in records
+                if record.get("record_type") == "context_embedding"
+                and record.get("embedding_type") == "context_node"
+                and record.get("ref_type") == "node"
+                and record.get("ref_hash") == node_hash
+                and record.get("model_ref") == current_model_ref
+            ]
+
+            self.assertEqual(3, result["node_embeddings_created"])
+            self.assertEqual(3, len(calls))
+            self.assertEqual(1, len(current_embeddings))
+            self.assertEqual([0.5, 0.6, 0.7], current_embeddings[0]["vector"])
+            self.assertEqual(3, current_embeddings[0]["dim"])
+            self.assertEqual("unit-node-current-model", current_embeddings[0]["model"])
+            self.assertEqual("context_node", current_embeddings[0]["source_record_type"])
+            self.assertEqual(1780000001000, current_embeddings[0]["source_updated_at_ms"])
 
     def test_embedding_backfill_maps_all_context_source_records(self) -> None:
         calls: list[str] = []

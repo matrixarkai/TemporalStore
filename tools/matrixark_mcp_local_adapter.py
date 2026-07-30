@@ -2436,12 +2436,21 @@ class MatrixArkLocalAdapter:
         self._ensure_context_node_cache_loaded()
         existing_nodes = self._context_node_hashes
         existing_child_refs = self._context_child_ref_hashes
+        current_model = embedding_model_name()
+        current_model_ref = embedding_model_ref_for_name(current_model)
         existing_node_embeddings: set[int] = set()
         for record in self.read_all():
             if (
                 record.get("record_type") != "context_embedding"
                 or record.get("ref_type") != "node"
                 or record.get("ref_hash") is None
+            ):
+                continue
+            if (
+                record.get("embedding_type") != "context_node"
+                or str(record.get("model_ref") or "") != current_model_ref
+                or not isinstance(record.get("vector"), list)
+                or not record.get("vector")
             ):
                 continue
             try:
@@ -2477,7 +2486,7 @@ class MatrixArkLocalAdapter:
                 embedding_text = " ".join([*prefix, f"depth:{len(prefix)}"])
                 node_vector = embedding_for_text(embedding_text)
                 self.append(
-                    {
+                    compact_context_embedding_record({
                         "record_type": "context_embedding",
                         "embedding_type": "context_node",
                         "ref_type": "node",
@@ -2485,11 +2494,14 @@ class MatrixArkLocalAdapter:
                         "node_hash": node_hash,
                         "node_path": prefix,
                         "dim": len(node_vector),
-                        "model": embedding_model_name(),
+                        "model": current_model,
+                        "model_ref": current_model_ref,
                         "vector": node_vector,
                         "scope": scope,
+                        "source_record_type": "context_node",
+                        "source_updated_at_ms": updated_at_ms,
                         "updated_at_ms": updated_at_ms,
-                    }
+                    })
                 )
                 existing_node_embeddings.add(node_hash)
                 node_embeddings_created += 1
