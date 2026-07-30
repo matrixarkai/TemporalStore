@@ -1293,6 +1293,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "source_hook_type_counts": {"session_commit": 1},
             "source_codex_events": ["PreviousAssistantBackfill"],
             "source_codex_event_counts": {"PreviousAssistantBackfill": 1},
+            "source_memory_selection_policies": ["selected_assistant_decision_outcome_only"],
+            "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 2},
             "source_memory_scopes": ["user_profile"],
             "source_session_continuities": ["cross_session"],
             "source_extraction_phases": ["final"],
@@ -1332,6 +1334,14 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("summary", annotated["ref_type"])
         self.assertEqual("user_profile", annotated["memory_scope"])
         self.assertEqual("cross_session", annotated["session_continuity"])
+        self.assertEqual(
+            ["selected_assistant_decision_outcome_only"],
+            annotated["source_memory_selection_policies"],
+        )
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 2},
+            annotated["source_memory_selection_policy_counts"],
+        )
         self.assertTrue(annotated["final_session_boundary"])
         self.assertEqual(["assistant"], annotated["source_roles"])
         self.assertEqual({"assistant": 2}, annotated["source_role_counts"])
@@ -2523,8 +2533,13 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "source_session_ids": ["session-a", "session-b"],
             "source_entity_hashes": [11, 22],
             "source_roles": ["assistant"],
+            "source_role_counts": {"assistant": 1},
             "source_hook_types": ["hook_boundary"],
+            "source_hook_type_counts": {"hook_boundary": 1},
             "source_codex_events": ["Stop"],
+            "source_codex_event_counts": {"Stop": 1},
+            "source_memory_selection_policies": ["selected_assistant_decision_outcome_only"],
+            "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 1},
             "updated_at_ms": 200,
         }
 
@@ -2563,6 +2578,11 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("cross_session", candidate["session_continuity"])
         self.assertEqual(["session-a", "session-b"], candidate["source_session_ids"])
         self.assertEqual([11, 22], candidate["source_entity_hashes"])
+        self.assertEqual(["selected_assistant_decision_outcome_only"], candidate["source_memory_selection_policies"])
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 1},
+            candidate["source_memory_selection_policy_counts"],
+        )
         self.assertEqual("selected as cross-session user-profile entity bridge", candidate["selection_reason"])
 
     def test_mcp_entrypoint_reexports_split_modules(self) -> None:
