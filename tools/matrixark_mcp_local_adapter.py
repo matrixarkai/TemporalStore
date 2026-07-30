@@ -2459,9 +2459,22 @@ class MatrixArkLocalAdapter:
         self._ensure_context_node_cache_loaded()
         existing_nodes = self._context_node_hashes
         existing_child_refs = self._context_child_ref_hashes
+        existing_node_embeddings: set[int] = set()
+        for record in self.read_all():
+            if (
+                record.get("record_type") != "context_embedding"
+                or record.get("ref_type") != "node"
+                or record.get("ref_hash") is None
+            ):
+                continue
+            try:
+                existing_node_embeddings.add(int(record.get("ref_hash")))
+            except (TypeError, ValueError):
+                continue
         node_hashes: list[int] = []
         nodes_created = 0
         child_refs_created = 0
+        node_embeddings_created = 0
         for prefix in prefixes:
             node_hash = stable_hash("/".join(prefix))
             node_hashes.append(node_hash)
@@ -2483,6 +2496,26 @@ class MatrixArkLocalAdapter:
                 )
                 existing_nodes.add(node_hash)
                 nodes_created += 1
+            if node_hash not in existing_node_embeddings:
+                embedding_text = " ".join([*prefix, f"depth:{len(prefix)}"])
+                node_vector = embedding_for_text(embedding_text)
+                self.append(
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "context_node",
+                        "ref_type": "node",
+                        "ref_hash": node_hash,
+                        "node_hash": node_hash,
+                        "node_path": prefix,
+                        "dim": len(node_vector),
+                        "model": embedding_model_name(),
+                        "vector": node_vector,
+                        "scope": scope,
+                        "updated_at_ms": updated_at_ms,
+                    }
+                )
+                existing_node_embeddings.add(node_hash)
+                node_embeddings_created += 1
             if parent_path:
                 child_ref_hash = stable_hash(f"child:{parent_hash}:{node_hash}")
                 if child_ref_hash not in existing_child_refs:
@@ -2506,6 +2539,7 @@ class MatrixArkLocalAdapter:
         return {
             "nodes_created": nodes_created,
             "child_refs_created": child_refs_created,
+            "node_embeddings_created": node_embeddings_created,
             "node_hashes": node_hashes,
         }
 
@@ -4019,6 +4053,7 @@ class MatrixArkLocalAdapter:
                             updated_at_ms=refreshed_at_ms,
                         )
                     )
+                summary_vector = embedding_for_text(summary_text)
                 self.append(
                     {
                         "record_type": "context_embedding",
@@ -4028,9 +4063,9 @@ class MatrixArkLocalAdapter:
                         "node_hash": node_hash,
                         "node_path": node_path,
                         "depth": len(node_path),
-                        "dim": len(embedding_for_text(summary_text)),
+                        "dim": len(summary_vector),
                         "model": embedding_model_name(),
-                        "vector": embedding_for_text(summary_text),
+                        "vector": summary_vector,
                         "scope": dirty.get("scope", scope),
                         "memory_scope": summary_record["memory_scope"],
                         "session_continuity": summary_record["session_continuity"],
@@ -6184,6 +6219,7 @@ class MatrixArkLocalAdapter:
                     )
                     session_summary_index["access_scope"] = hot_record_scope
                     self.append(session_summary_index)
+                session_summary_vector = embedding_for_text(session_summary_text)
                 self.append(
                     {
                         "record_type": "context_embedding",
@@ -6192,9 +6228,9 @@ class MatrixArkLocalAdapter:
                         "ref_hash": session_summary_hash,
                         "node_hash": node_hash,
                         "node_path": node_path,
-                        "dim": len(embedding_for_text(session_summary_text)),
+                        "dim": len(session_summary_vector),
                         "model": embedding_model_name(),
-                        "vector": embedding_for_text(session_summary_text),
+                        "vector": session_summary_vector,
                         "scope": hot_record_scope,
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
@@ -7513,6 +7549,7 @@ class MatrixArkLocalAdapter:
             "updated_at_ms": compressed_time_ms,
         }
         self.append(record)
+        compression_vector = embedding_for_text(record["summary_text"])
         self.append(
             {
                 "record_type": "context_embedding",
@@ -7521,9 +7558,9 @@ class MatrixArkLocalAdapter:
                 "ref_hash": compression_id_hash,
                 "node_hash": node_hash,
                 "node_path": node_path,
-                "dim": len(embedding_for_text(record["summary_text"])),
+                "dim": len(compression_vector),
                 "model": embedding_model_name(),
-                "vector": embedding_for_text(record["summary_text"]),
+                "vector": compression_vector,
                 "scope": compression_scope,
                 "memory_scope": record.get("memory_scope", ""),
                 "session_continuity": record.get("session_continuity", ""),
