@@ -30,7 +30,7 @@ QUERY_TYPE_LABELS: dict[str, str] = {
 }
 
 PROFILE_MEMORY_QUERY_RE = re.compile(
-    r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|across (?:sessions?|tasks?|conversations?)|previous (?:sessions?|tasks?|conversations?)|profile entit(?:y|ies)|profile summar(?:y|ies)|remember about me|know about (?:me|my|the user)|told you before)\b"
+    r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|remember about me|know about (?:me|my|the user)|told you before)\b"
 )
 
 QUERY_INDEX_LABELS: dict[str, str] = {
@@ -304,6 +304,8 @@ def infer_query_type(query: str) -> str:
         return "profile_memory"
     if core.understanding_provider() == "oss_encoder":
         return oss_encoder_query_type(query)
+    if re.search(r"\b(both|together|across|between|compare|combine|sessions|multi-hop|multi session|multi-session|cross session|cross-session|previous sessions|other sessions)\b", lower):
+        return "multi_hop"
     if re.search(r"\b(when|what date|which date|day|month|year|yesterday|tomorrow|last week|next week|before|after|as of|valid as of)\b", lower):
         return "date"
     if re.search(r"\b(current|currently|latest|now|still|today|valid|status|preference|prefer|likes|where does|where is)\b", lower):
@@ -316,8 +318,6 @@ def infer_query_type(query: str) -> str:
         return "evidence"
     if re.search(r"\b(procedure|steps?|how to|troubleshoot|debug|rollback|runbook|playbook|checklist|fix|remediate|mitigate)\b", lower):
         return "procedure"
-    if re.search(r"\b(both|together|across|between|compare|combine|sessions|multi-hop|multi session|multi-session)\b", lower):
-        return "multi_hop"
     return "fact"
 
 

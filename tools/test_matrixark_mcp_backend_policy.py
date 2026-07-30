@@ -5365,6 +5365,48 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             request["memory_selection_policy_budget_tokens"],
         )
 
+    def test_production_retrieve_routes_multi_session_current_queries_to_multi_hop_budget(self) -> None:
+        mcp.MATRIXARK_MCP_PROFILE = "production"
+        mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""
+        client = _NativeEnvelopeContextPackClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._count_key = "matrixark:test:record_count"
+        adapter._record_hash_key = "matrixark:test:records"
+        adapter._shard_size = 128
+        adapter._backend_label = lambda: "temporalstore-direct"
+        adapter._context_pack_cache_max_entries = 0
+        adapter._context_pack_cache_ttl_s = 0
+        adapter._context_pack_cache_lock = threading.RLock()
+        adapter._context_pack_cache = {}
+        adapter._retrieval_records_cache_generation = 0
+        adapter._observe_model_latency = lambda *args, **kwargs: None
+        adapter.native_context_pack_required = lambda: True
+
+        adapter.retrieve({
+            "query": "Compare the latest Codex decisions across sessions",
+            "scope": {"account_id": "acct", "tenant_id": "tenant", "user_id": "user", "session_id": "s1"},
+            "max_context_tokens": 1000,
+            "ranking": {
+                "source_role_budget_mode": "auto",
+                "memory_layer_budget_mode": "auto",
+                "memory_selection_policy_budget_mode": "auto",
+            },
+            "audit_mode": "off",
+        })
+
+        request = client.calls[0]["request"]
+        self.assertEqual("multi_hop", request["question_type"])
+        cross_session = request["cross_session"]
+        self.assertTrue(cross_session["enabled"])
+        self.assertEqual(0.2, cross_session["budget_ratio"])
+        self.assertEqual(190, cross_session["budget_tokens"])
+        self.assertIn("cross-session memory for comparisons", cross_session["question_budget_reason"])
+        self.assertEqual("auto", request["memory_layer_budget_mode"])
+        self.assertEqual(332, request["memory_layer_budget_tokens"]["cross_session_event"])
+        self.assertEqual(332, request["memory_layer_budget_tokens"]["cross_session_segment"])
+        self.assertEqual(427, request["memory_layer_budget_tokens"]["profile_entity"])
+
     def test_direct_native_context_pack_accepts_explicit_cross_session_budget(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"
         mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""
