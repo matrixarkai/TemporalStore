@@ -40,6 +40,9 @@ SECONDARY_INDEX_PRIORITY_PREFIXES = (
     "memory_selection_policy:",
     "memory_selection_quality:",
     "profile_promotion_policy:",
+    "benchmark:",
+    "metric:",
+    "workload:",
     "skill_name:",
     "skill_trigger:",
     "skill_tool:",
@@ -83,6 +86,52 @@ def metadata_index_terms(metadata: Json, *, keyword_limit: int = MAX_METADATA_KE
         terms.append(context_index_name(field, metadata.get(field)))
     for keyword in metadata.get("keywords", [])[: max(0, keyword_limit)]:
         terms.append(context_index_name("keyword", keyword))
+    return _ordered_unique(terms)
+
+
+
+def _joined_index_text(*values: Any) -> str:
+    parts: list[str] = []
+    for value in values:
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, (dict, list, tuple, set)):
+            try:
+                parts.append(json.dumps(value, sort_keys=True))
+            except TypeError:
+                parts.append(str(value))
+        else:
+            parts.append(str(value))
+    return " ".join(parts)
+
+
+def benchmark_quality_index_terms(*values: Any) -> list[str]:
+    text = _joined_index_text(*values).lower()
+    if not text:
+        return []
+    terms: list[str] = []
+    for benchmark in ["locomo", "longmemeval"]:
+        if re.search(rf"\b{benchmark}\b", text):
+            terms.append(context_index_name("benchmark", benchmark))
+    metric_patterns = {
+        "p50_latency": r"\bp50(?:\s+latency)?\b",
+        "p90_latency": r"\bp90(?:\s+latency)?\b",
+        "p95_latency": r"\bp95(?:\s+latency)?\b",
+        "p99_latency": r"\bp99(?:\s+latency)?\b",
+        "throughput": r"\b(throughput|qps|ops/s|req/s|requests/s|ops per second)\b",
+        "hit_rate": r"\b(hit[- ]?rate|read[- ]?hit)\b",
+        "recall": r"\brecall\b",
+        "precision": r"\bprecision\b",
+    }
+    for metric, pattern in metric_patterns.items():
+        if re.search(pattern, text):
+            terms.append(context_index_name("metric", metric))
+    workload_match = re.search(
+        r"\bworkload\s*[:=]\s*([a-z0-9_.:/ -]{3,80}?)(?=\s+(?:p50|p90|p95|p99|throughput|qps|ops/s|req/s|hit[- ]?rate|read[- ]?hit|recall|precision)\b|[.;,\n]|$)",
+        text,
+    )
+    if workload_match:
+        terms.append(context_index_name("workload", workload_match.group(1)))
     return _ordered_unique(terms)
 
 

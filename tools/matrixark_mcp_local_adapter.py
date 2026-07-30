@@ -1572,7 +1572,12 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
 
 
 def compression_context_index_terms(record: Json) -> list[str]:
+    try:
+        from tools.matrixark_mcp_indexing import benchmark_quality_index_terms
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_indexing import benchmark_quality_index_terms
     terms = ["operator:TIME_COMPRESS", "context_class:compression", "source_type:message"]
+    terms.extend(benchmark_quality_index_terms(record.get("summary_text"), record.get("text")))
     for token in tokens(str(record.get("summary_text") or "")):
         if token:
             terms.append(f"keyword:{token}")
