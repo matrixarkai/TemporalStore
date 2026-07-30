@@ -247,6 +247,79 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
                 resolved_task_count += 1
             except Exception:
                 pass
+    commit_summary: Json = {}
+    if isinstance(commit_result, dict):
+        for field in [
+            "commit_id_hash",
+            "batch_id_hash",
+            "committed_event_count",
+            "source_event_ids",
+            "source_roles",
+            "source_role_counts",
+            "source_hook_types",
+            "source_hook_type_counts",
+            "source_codex_events",
+            "source_codex_event_counts",
+            "source_memory_selection_policies",
+            "source_memory_selection_policy_counts",
+            "memory_layers_written",
+            "summary_refresh",
+            "profile_promotion_summary",
+            "profile_promotion_policy",
+            "profile_promotion_blocker",
+        ]:
+            value = commit_result.get(field)
+            if value not in (None, "", [], {}):
+                commit_summary[field] = value
+    task_lineage = idle_commit_resolution_lineage(task)
+    for field in [
+        "source_roles",
+        "source_role_counts",
+        "source_hook_types",
+        "source_hook_type_counts",
+        "source_codex_events",
+        "source_codex_event_counts",
+        "source_memory_selection_policies",
+        "source_memory_selection_policy_counts",
+    ]:
+        if commit_summary.get(field) in (None, "", [], {}) and task_lineage.get(field) not in (None, "", [], {}):
+            commit_summary[field] = task_lineage[field]
+    memory_layers = commit_summary.get("memory_layers_written") if isinstance(commit_summary.get("memory_layers_written"), dict) else {}
+    for field in [
+        "source_roles",
+        "source_hook_types",
+        "source_codex_events",
+        "source_memory_selection_policies",
+        "source_memory_selection_policy_counts",
+    ]:
+        if commit_summary.get(field) in (None, "", [], {}) and memory_layers.get(field) not in (None, "", [], {}):
+            commit_summary[field] = memory_layers[field]
+    promotions = (
+        commit_summary.get("profile_promotion_summary")
+        if isinstance(commit_summary.get("profile_promotion_summary"), list)
+        else []
+    )
+    for promotion in promotions:
+        if not isinstance(promotion, dict):
+            continue
+        for field in [
+            "source_role_counts",
+            "source_hook_type_counts",
+            "source_codex_event_counts",
+            "source_memory_selection_policy_counts",
+        ]:
+            value = promotion.get(field)
+            if commit_summary.get(field) in (None, "", [], {}) and value not in (None, "", [], {}):
+                commit_summary[field] = value
+        for field in [
+            "source_roles",
+            "source_hook_types",
+            "source_codex_events",
+            "source_memory_selection_policies",
+        ]:
+            value = promotion.get(field)
+            if commit_summary.get(field) in (None, "", [], {}) and value not in (None, "", [], {}):
+                commit_summary[field] = value
     return {
         **result,
         "status": status,
@@ -255,6 +328,7 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
         "committed_event_count": int(commit_result.get("committed_event_count") or 0) if isinstance(commit_result, dict) else 0,
         "trigger_policy": commit_result.get("trigger_policy") if isinstance(commit_result, dict) else "",
         "commit_result_status": commit_status,
+        **commit_summary,
     }
 
 

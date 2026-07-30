@@ -4366,6 +4366,88 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
+    def test_retrieval_idle_preflush_reports_committed_memory_layers_and_selection_budget(self) -> None:
+        original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
+        matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-retrieve-idle-preflush.jsonl")
+
+                class Server:
+                    def __init__(self) -> None:
+                        self.adapter = adapter
+
+                scope_args = {
+                    "event": "UserPromptSubmit",
+                    "account_id": "acct_retrieve_idle",
+                    "tenant_id": "tenant_retrieve_idle",
+                    "user_id": "user_retrieve_idle",
+                    "session_id": "session_retrieve_idle",
+                    "team": "codex",
+                    "project": "temporalstore",
+                    "session_commit_threshold": 20,
+                    "idle_commit_timeout_ms": 1,
+                    "understanding_provider": "rules",
+                    "segment_provider": "deterministic",
+                }
+                matrixark_codex_hook.fast_async_hook_ingest(
+                    Server(),
+                    args=Namespace(**scope_args),
+                    text="Decision: retrieval idle preflush must expose profile memory layers and assistant selection budgets.",
+                    role="assistant",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={
+                        "session_id_source": "payload_field",
+                        "thread_id": "thread-retrieve-idle",
+                        "turn_id": "turn-retrieve-idle-1",
+                    },
+                )
+                time.sleep(0.01)
+                scope = {
+                    "account_id": "acct_retrieve_idle",
+                    "tenant_id": "tenant_retrieve_idle",
+                    "user_id": "user_retrieve_idle",
+                    "session_id": "session_retrieve_idle",
+                }
+                pack = adapter.retrieve(
+                    {
+                        "scope": scope,
+                        "session_scope": "prefer",
+                        "query": "What did retrieval idle preflush decide about profile memory layers?",
+                        "max_context_tokens": 220,
+                        "audit_mode": "off",
+                        "debug_context_pack": True,
+                        "ranking": {
+                            "max_selected_refs": 4,
+                            "min_similarity_score": 0.0,
+                            "budget_fill_policy": "force_fill",
+                        },
+                    }
+                )
+                preflush = pack["retrieval_metrics"]["pre_retrieval_idle_commit"]
+                self.assertEqual("committed", preflush["status"])
+                self.assertEqual("idle_timeout", preflush["trigger_policy"])
+                self.assertEqual(1, preflush["committed_event_count"])
+                self.assertEqual({"assistant": 1}, preflush["source_role_counts"])
+                self.assertEqual(
+                    {"selected_assistant_decision_outcome_only": 1},
+                    preflush["source_memory_selection_policy_counts"],
+                )
+                self.assertGreaterEqual(preflush["memory_layers_written"]["session_entities"], 1)
+                self.assertGreaterEqual(preflush["memory_layers_written"]["profile_entities"], 1)
+                self.assertGreaterEqual(preflush["memory_layers_written"]["secondary_indexes"], 1)
+                self.assertTrue(preflush["summary_refresh"]["profile_summary_refresh_required"])
+                self.assertTrue(
+                    any(
+                        ref.get("entity_type") == "assistant_decision"
+                        and ref.get("memory_scope") == "user_profile"
+                        for ref in pack["selected_refs"]
+                    ),
+                    pack["selected_refs"],
+                )
+        finally:
+            matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+
     def test_fast_hook_idle_preflush_recovers_pending_buffer_after_restart(self) -> None:
         original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
         matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
