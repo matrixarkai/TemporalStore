@@ -4218,6 +4218,21 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                     "source_codex_event_counts": {"Stop": 3},
                     "source_session_ids": ["session_summary_1", "session_summary_2"],
                     "source_entity_hashes": [101, 102],
+                    "extraction_context_event_ids": [201, 202, 203],
+                    "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 2},
+                    "source_memory_selection_lossy_count": 1,
+                    "source_memory_selection_complete_count": 2,
+                    "source_memory_selection_dropped_text_chars": 120,
+                    "source_memory_selection_dropped_line_count": 3,
+                    "source_memory_selection_retained_text_ratio_avg": 0.75,
+                    "source_memory_selection_retained_line_ratio_avg": 0.8,
+                    "profile_promotion_policy": "always_when_profile_scope_available",
+                    "profile_promotion_blocker": "",
+                    "profile_revision": 3,
+                    "previous_profile_revision": 2,
+                    "previous_profile_updated_at_ms": 123456,
+                    "supersedes_session_entity_hash": 301,
+                    "supersedes_session_entity_hashes": [301, 302, 303],
                     "current_state_policy": "merged_profile_state",
                     "source_lineage": {"source_role_counts": {"assistant": 1}},
                 }
@@ -4356,6 +4371,30 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(["profile_summary_stale"], readiness["freshness_warnings"])
         self.assertEqual({"user_profile": 1}, readiness["pending_memory_scopes"])
         self.assertEqual({"cross_session": 1}, readiness["pending_session_continuities"])
+        debug_item = debug_compact["selected_refs"][0]
+        self.assertEqual(["assistant", "tool"], debug_item["source_roles"])
+        self.assertEqual({"assistant": 2, "tool": 1}, debug_item["source_role_counts"])
+        self.assertEqual({"hook_boundary": 3}, debug_item["source_hook_type_counts"])
+        self.assertEqual({"Stop": 3}, debug_item["source_codex_event_counts"])
+        self.assertEqual(["session_summary_1", "session_summary_2"], debug_item["source_session_ids"])
+        self.assertEqual([201, 202, 203], debug_item["extraction_context_event_ids"])
+        self.assertEqual(2, debug_item["source_entity_count"])
+        self.assertEqual([301, 302, 303], debug_item["supersedes_session_entity_hashes"])
+        self.assertEqual(3, debug_item["supersedes_session_entity_count"])
+        self.assertEqual(1, debug_item["source_memory_selection_lossy_count"])
+        self.assertEqual(2, debug_item["source_memory_selection_complete_count"])
+        self.assertEqual(120, debug_item["source_memory_selection_dropped_text_chars"])
+        self.assertEqual(3, debug_item["source_memory_selection_dropped_line_count"])
+        self.assertEqual(0.75, debug_item["source_memory_selection_retained_text_ratio_avg"])
+        self.assertEqual(0.8, debug_item["source_memory_selection_retained_line_ratio_avg"])
+        self.assertEqual("always_when_profile_scope_available", debug_item["profile_promotion_policy"])
+        self.assertEqual(3, debug_item["profile_revision"])
+        self.assertEqual(2, debug_item["previous_profile_revision"])
+        self.assertEqual(123456, debug_item["previous_profile_updated_at_ms"])
+        self.assertEqual(301, debug_item["supersedes_session_entity_hash"])
+        self.assertEqual("merged_profile_state", debug_item["current_state_policy"])
+        self.assertNotIn("source_entity_hashes", debug_item)
+        self.assertNotIn("source_lineage", debug_item)
         self.assertEqual({"user_profile": {"refs": 1, "tokens": 7}}, debug_compact["memory_layer_budget"]["by_memory_scope"])
         self.assertTrue(debug_compact["memory_layer_pressure"]["profile_memory_pressure"])
         self.assertTrue(debug_compact["memory_layer_pressure"]["cross_session_pressure"])
