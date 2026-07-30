@@ -1067,6 +1067,37 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
             legacy_hook_type = legacy_hook_type_from_codex_event(event)
             if legacy_hook_type:
                 hook_types.add(legacy_hook_type)
+    source_lineage_count = max(1, sum(int(value or 0) for value in role_counts.values()))
+    hook_type_counts: Json = {}
+    if isinstance(metadata.get("source_hook_type_counts"), dict):
+        for value, count in metadata["source_hook_type_counts"].items():
+            hook_name = str(value or "").strip()
+            if not hook_name:
+                continue
+            try:
+                amount = max(0, int(count or 0))
+            except (TypeError, ValueError):
+                amount = 0
+            if amount:
+                hook_types.add(hook_name)
+                hook_type_counts[hook_name] = max(int(hook_type_counts.get(hook_name, 0)), amount)
+    for hook_name in hook_types:
+        hook_type_counts.setdefault(hook_name, source_lineage_count)
+    codex_event_counts: Json = {}
+    if isinstance(metadata.get("source_codex_event_counts"), dict):
+        for value, count in metadata["source_codex_event_counts"].items():
+            event_name = str(value or "").strip()
+            if not event_name:
+                continue
+            try:
+                amount = max(0, int(count or 0))
+            except (TypeError, ValueError):
+                amount = 0
+            if amount:
+                codex_events.add(event_name)
+                codex_event_counts[event_name] = max(int(codex_event_counts.get(event_name, 0)), amount)
+    for event_name in codex_events:
+        codex_event_counts.setdefault(event_name, source_lineage_count)
     memory_selection_policy_counts: Json = {}
     explicit_policy_counts = (
         metadata.get("source_memory_selection_policy_counts")
@@ -1139,7 +1170,9 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
         "source_roles": sorted(roles),
         "source_role_counts": {role: int(role_counts.get(role, 0)) for role in sorted(roles) if int(role_counts.get(role, 0)) > 0},
         "source_hook_types": sorted(hook_types),
+        "source_hook_type_counts": {name: int(hook_type_counts.get(name, 0)) for name in sorted(hook_types) if int(hook_type_counts.get(name, 0)) > 0},
         "source_codex_events": sorted(codex_events),
+        "source_codex_event_counts": {name: int(codex_event_counts.get(name, 0)) for name in sorted(codex_events) if int(codex_event_counts.get(name, 0)) > 0},
         "source_memory_selection_policies": sorted(memory_selection_policy_counts),
         "source_memory_selection_policy_counts": memory_selection_policy_counts,
         "source_memory_selection_lossy_count": selection_lossy_count,
@@ -6667,7 +6700,7 @@ class MatrixArkLocalAdapter:
                     self.append(session_summary_index)
                 session_summary_vector = embedding_for_text(session_summary_text)
                 self.append(
-                    {
+                    compact_context_embedding_record({
                         "record_type": "context_embedding",
                         "embedding_type": "session_l0",
                         "ref_type": "summary",
@@ -6678,11 +6711,18 @@ class MatrixArkLocalAdapter:
                         "model": embedding_model_name(),
                         "vector": session_summary_vector,
                         "scope": hot_record_scope,
+                        **source_lineage,
+                        "source_memory_scopes": source_lineage.get("source_memory_scopes", ["session"]),
+                        "source_session_continuities": source_lineage.get("source_session_continuities", ["same_session"]),
+                        "source_extraction_phases": source_lineage.get("source_extraction_phases", ["hot_path"]),
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "extraction_phase": "hot_path",
                         "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
+                    })
                 )
             self.append(
-                {
+                compact_context_embedding_record({
                     "record_type": "context_embedding",
                     "embedding_type": "event_text",
                     "ref_type": "event",
@@ -6693,8 +6733,15 @@ class MatrixArkLocalAdapter:
                     "model": embedding_model_name(),
                     "vector": event_embedding,
                     "scope": hot_record_scope,
+                    **source_lineage,
+                    "source_memory_scopes": source_lineage.get("source_memory_scopes", ["session"]),
+                    "source_session_continuities": source_lineage.get("source_session_continuities", ["same_session"]),
+                    "source_extraction_phases": source_lineage.get("source_extraction_phases", ["hot_path"]),
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "extraction_phase": "hot_path",
                     "updated_at_ms": envelope["ingestion_time_ms"],
-                }
+                })
             )
             record = {
                 "record_type": "context_event",
