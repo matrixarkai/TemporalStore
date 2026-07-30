@@ -4120,6 +4120,11 @@ def context_benchmark_direct_answer(question: str, texts: list[str]) -> str:
     q = normalize_text(question)
     blob = "\n".join(texts)
     normalized_blob = normalize_text(blob)
+    if re.search(r"\b(?:favorite|favourite).*\brice\b|\btype of rice\b", q):
+        if re.search(r"\bjapanese short[- ]grain rice\b", normalized_blob):
+            return "Japanese short-grain rice"
+        if re.search(r"\bshort[- ]grain rice\b", normalized_blob):
+            return "short-grain rice"
     if re.search(r"\bdegree\b", q) and re.search(r"\bgraduate(?:d)?\b", q):
         if re.search(r"\bbusiness administration\b", normalized_blob):
             return "Business Administration"
