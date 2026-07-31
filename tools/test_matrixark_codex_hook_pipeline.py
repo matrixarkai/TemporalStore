@@ -4860,6 +4860,66 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
+    def test_fast_hook_previous_tool_backfill_respects_raw_only_tool_policy(self) -> None:
+        old_raw = matrixark_codex_hook.HOOK_TOOL_RESULT_RAW
+        old_serving = matrixark_codex_hook.HOOK_TOOL_RESULT_SERVING
+        old_auto = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
+        matrixark_codex_hook.HOOK_TOOL_RESULT_RAW = True
+        matrixark_codex_hook.HOOK_TOOL_RESULT_SERVING = False
+        matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-tool-backfill-raw-only.jsonl")
+
+                class Server:
+                    def __init__(self) -> None:
+                        self.adapter = adapter
+
+                scope = {
+                    "account_id": "acct_fast_tool_raw_only",
+                    "tenant_id": "tenant_fast_tool_raw_only",
+                    "user_id": "user_fast_tool_raw_only",
+                    "session_id": "session_fast_tool_raw_only",
+                }
+                result = matrixark_codex_hook.fast_async_hook_ingest(
+                    Server(),
+                    args=Namespace(
+                        event="UserPromptSubmit",
+                        **scope,
+                        team="codex",
+                        project="temporalstore",
+                        session_commit_threshold=2,
+                        idle_commit_timeout_ms=300000,
+                        understanding_provider="rules",
+                        segment_provider="deterministic",
+                    ),
+                    text="Validation: tests passed. Commit abc123 pushed.",
+                    role="tool",
+                    original_text="Exit code: 0\nValidation: tests passed. Commit abc123 pushed.\nLarge stdout omitted.",
+                    agent_context={"workspace_root": "/repo", "tool_name": "shell_command", "tool_status": "ok"},
+                    hook={
+                        "hook_type": "tool_result",
+                        "trigger": "UserPromptSubmit:previous_tool_output_backfill",
+                        "thread_id": "thread-fast-tool-raw-only",
+                        "turn_id": "turn-fast-tool-raw-only-1",
+                        "session_id_source": "payload_field",
+                    },
+                )
+                self.assertEqual("accepted", result["status"])
+                self.assertEqual("skipped_raw_only_tool_result", result["serving_projection_status"])
+                self.assertEqual("raw_only", result["extraction_mode"])
+                self.assertEqual("raw_only_compact_evidence", result["tool_result_policy"])
+                self.assertEqual(0, result["serving_record_count"])
+                self.assertFalse(adapter.pending_session_events(scope))
+
+                records = adapter.read_all()
+                self.assertTrue(any(record.get("record_type") == "agent_message" for record in records))
+                self.assertFalse(any(record.get("record_type") == "context_event" for record in records))
+        finally:
+            matrixark_codex_hook.HOOK_TOOL_RESULT_RAW = old_raw
+            matrixark_codex_hook.HOOK_TOOL_RESULT_SERVING = old_serving
+            matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = old_auto
+
     def test_fast_hook_threshold_commit_recovers_pending_buffer_after_restart(self) -> None:
         original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
         matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
