@@ -175,13 +175,18 @@ def codex_outcome_fact_index_terms(*values: Any) -> set[str]:
     text = " ".join(str(value or "") for value in values)
     lower = text.lower()
     terms: set[str] = set()
+    has_real_blocker = bool(
+        re.search(r"\b(?:blocked|blocker|failure|error|missing|rejected|fatal)\b", lower)
+        or re.search(r"\b[1-9]\d*\s+(?:failed|failures|errors)\b", lower)
+        or (re.search(r"\bfailed\b", lower) and not re.search(r"\b0\s+failed\b", lower))
+    )
     if re.search(r"\bnext\b", lower):
         terms.add(context_index_name("codex_outcome", "next"))
-    if re.search(r"\b(?:blocked|blocker|failed|failure|error|missing|rejected|fatal)\b", lower):
+    if has_real_blocker:
         terms.add(context_index_name("codex_outcome", "blocker"))
     if re.search(r"\b(?:validation|tests?|py_compile|unittest|pytest|cargo test|cargo check)\b", lower):
         terms.add(context_index_name("codex_outcome", "validation"))
-    if re.search(r"\b(?:outcome|pushed|commit\s+[0-9a-f]{7,40}|origin/main|refs/heads/main)\b", lower):
+    if re.search(r"\b(?:outcome|pushed|commit\s+[0-9a-f]{7,40}|origin/main|refs/heads/main|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main))\b", lower):
         terms.add(context_index_name("codex_outcome", "outcome"))
     if re.search(r"\b(?:changed|updated|implemented|added|removed|fixed)\b", lower):
         terms.add(context_index_name("codex_outcome", "changed"))

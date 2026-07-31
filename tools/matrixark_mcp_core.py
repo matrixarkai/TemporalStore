@@ -2670,7 +2670,7 @@ def tool_evidence_memory_text(text: str) -> str:
         return ""
     selected: list[str] = []
     evidence_line_pattern = re.compile(
-        r"\b(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|\d+\s+passed\b|tests?\s+(?:passed|failed)|test\s+result:\s+ok|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|pushed|rebase|benchmark|validation)\b",
+        r"\b(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|\d+\s+passed\b|tests?\s+(?:passed|failed)|test\s+result:\s+ok|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|pushed|rebase|benchmark|validation)\b",
         re.IGNORECASE,
     )
     for raw_line in str(text).splitlines():
@@ -2685,7 +2685,7 @@ def tool_evidence_memory_text(text: str) -> str:
         selected = [
             match.group(0).strip()
             for match in re.finditer(
-                r"[^.!?\n]*(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|pushed|rebase|benchmark|validation)[^.!?\n]*[.!?]?",
+                r"[^.!?\n]*(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|pushed|rebase|benchmark|validation)[^.!?\n]*[.!?]?",
                 str(text),
                 flags=re.IGNORECASE,
             )
@@ -2714,13 +2714,18 @@ def codex_outcome_fact_kind(line: str) -> str:
     normalized = " ".join(str(line or "").split()).strip().lower()
     if not normalized:
         return ""
+    has_real_blocker = bool(
+        re.search(r"\b(?:blocked|blocker|failure|error|missing|rejected|fatal)\b", normalized)
+        or re.search(r"\b[1-9]\d*\s+(?:failed|failures|errors)\b", normalized)
+        or (re.search(r"\bfailed\b", normalized) and not re.search(r"\b0\s+failed\b", normalized))
+    )
     if normalized.startswith("next:") or re.search(r"\bnext\b", normalized):
         return "next"
-    if normalized.startswith("blocker:") or re.search(r"\b(?:blocked|blocker|failed|failure|error|missing|rejected|fatal)\b", normalized):
+    if normalized.startswith("blocker:") or has_real_blocker:
         return "blocker"
     if normalized.startswith("validation:") or re.search(r"\b(?:validation|tests?|py_compile|unittest|pytest|cargo test|cargo check)\b", normalized):
         return "validation"
-    if normalized.startswith("outcome:") or re.search(r"\b(?:pushed|commit\s+[0-9a-f]{7,40}|origin/main|refs/heads/main)\b", normalized):
+    if normalized.startswith("outcome:") or re.search(r"\b(?:pushed|commit\s+[0-9a-f]{7,40}|origin/main|refs/heads/main|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main))\b", normalized):
         return "outcome"
     if normalized.startswith("changed:") or re.search(r"\b(?:changed|updated|implemented|added|removed|fixed)\b", normalized):
         return "changed"
@@ -2733,14 +2738,19 @@ def codex_outcome_fact_index_terms(*values: Any) -> set[str]:
     text = " ".join(str(value or "") for value in values)
     lower = text.lower()
     terms: set[str] = set()
+    has_real_blocker = bool(
+        re.search(r"\b(?:blocked|blocker|failure|error|missing|rejected|fatal)\b", lower)
+        or re.search(r"\b[1-9]\d*\s+(?:failed|failures|errors)\b", lower)
+        or (re.search(r"\bfailed\b", lower) and not re.search(r"\b0\s+failed\b", lower))
+    )
     for kind in ["next", "blocker", "validation", "outcome", "changed", "benchmark"]:
         if kind == "next" and re.search(r"\bnext\b", lower):
             terms.add(context_index_name("codex_outcome", kind))
-        elif kind == "blocker" and re.search(r"\b(?:blocked|blocker|failed|failure|error|missing|rejected|fatal)\b", lower):
+        elif kind == "blocker" and has_real_blocker:
             terms.add(context_index_name("codex_outcome", kind))
         elif kind == "validation" and re.search(r"\b(?:validation|tests?|py_compile|unittest|pytest|cargo test|cargo check)\b", lower):
             terms.add(context_index_name("codex_outcome", kind))
-        elif kind == "outcome" and re.search(r"\b(?:outcome|pushed|commit\s+[0-9a-f]{7,40}|origin/main|refs/heads/main)\b", lower):
+        elif kind == "outcome" and re.search(r"\b(?:outcome|pushed|commit\s+[0-9a-f]{7,40}|origin/main|refs/heads/main|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main))\b", lower):
             terms.add(context_index_name("codex_outcome", kind))
         elif kind == "changed" and re.search(r"\b(?:changed|updated|implemented|added|removed|fixed)\b", lower):
             terms.add(context_index_name("codex_outcome", kind))
@@ -2924,7 +2934,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         ("correction", r"\b(?:correction|correct|wrong|instead|updated|changed)\s+([^.;!?]{2,140})"),
         ("approval_state", r"\b(?:approved|approval)\s+([^.;!?]{2,140})"),
         ("confirmation", r"\b(?:yes|confirmed|approved|correct|looks good)\b([^.;!?]{0,120})"),
-        ("tool_evidence", r"\b(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|pushed|commit\s+[0-9a-f]{7,40}|error|failed|fatal)\b([^.;!?]{0,180})"),
+        ("tool_evidence", r"\b(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|pushed|commit\s+[0-9a-f]{7,40}|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|error|failed|fatal)\b([^.;!?]{0,180})"),
     ]
     for entity_type, pattern in patterns:
         for match in re.finditer(pattern, text, re.IGNORECASE):
