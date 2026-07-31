@@ -2585,7 +2585,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("user", raw["role"])
         self.assertEqual("real hooked Codex message", raw["text"])
         self.assertEqual("UserPromptSubmit", raw["codex_api_event"])
-        self.assertEqual("before_llm", raw["hook_type"])
+        self.assertNotIn("hook_type", raw)
+        self.assertNotIn("hook_type", raw.get("agent_hook", {}))
         self.assertFalse(raw["serving_visible"])
         self.assertEqual("context_event", raw["serving_projection_record_type"])
         self.assertEqual(serving["event_id_hash"], raw["serving_context_event_hash"])
@@ -2603,7 +2604,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("context_event", serving["record_type"])
         self.assertEqual("user", serving["role"])
         self.assertEqual("UserPromptSubmit", serving["codex_api_event"])
-        self.assertEqual("before_llm", serving["hook_type"])
+        self.assertNotIn("hook_type", serving)
+        self.assertEqual(["before_llm"], serving["source_hook_types"])
         self.assertEqual("codex-cpp-session-1", serving["session_id"])
         self.assertEqual("codex-cpp-session-1", serving["scope"]["session_id"])
         self.assertNotIn("thread_id", serving)
@@ -2637,8 +2639,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertNotIn("source_memory_scopes", embedding_records[0])
         self.assertNotIn("source_session_continuities", embedding_records[0])
         self.assertNotIn("source_extraction_phases", embedding_records[0])
-        self.assertNotIn("extraction_phase", embedding_records[0])
-        self.assertNotIn("final_session_boundary", embedding_records[0])
+        self.assertEqual("pending_async", embedding_records[0]["extraction_phase"])
+        self.assertFalse(embedding_records[0]["final_session_boundary"])
         self.assertNotIn("source_memory_selection_policies", embedding_records[0])
         self.assertNotIn("source_memory_selection_policy_counts", embedding_records[0])
         self.assertNotIn("source_event_ids", embedding_records[0])
@@ -3151,8 +3153,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertNotIn("thread_id", raw_record)
         self.assertNotIn("turn_id", raw_record)
         self.assertEqual("assistant", raw_record["source_role"])
-        self.assertEqual("after_llm", raw_record["hook_type"])
-        self.assertNotIn("source_hook_types", raw_record)
+        self.assertNotIn("hook_type", raw_record)
+        self.assertNotIn("hook_type", raw_record.get("agent_hook", {}))
         self.assertEqual("Stop", raw_record["codex_event"])
         serving_event = next(record for record in server.adapter.serving_records if record["record_type"] == "context_event")
         self.assertEqual("assistant", serving_event["source_role"])
@@ -3375,14 +3377,14 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("tool", raw_record["source_role"])
         self.assertEqual("tool", raw_record["role"])
         self.assertEqual("PostToolUse", raw_record["codex_api_event"])
-        self.assertEqual("tool_result", raw_record["hook_type"])
-        self.assertNotIn("source_hook_types", raw_record)
+        self.assertNotIn("hook_type", raw_record)
+        self.assertNotIn("hook_type", raw_record.get("agent_hook", {}))
         self.assertEqual("PostToolUse", raw_record["codex_event"])
         serving_event = next(record for record in server.adapter.serving_records if record["record_type"] == "context_event")
         self.assertEqual("tool", serving_event["source_role"])
         self.assertEqual("tool", serving_event["role"])
         self.assertEqual("PostToolUse", serving_event["codex_api_event"])
-        self.assertEqual("tool_result", serving_event["hook_type"])
+        self.assertNotIn("hook_type", serving_event)
         self.assertEqual(["tool_result"], serving_event["source_hook_types"])
         self.assertEqual("PostToolUse", serving_event["codex_event"])
         self.assertEqual("tool", serving_event["envelope"]["source_role"])
@@ -3447,7 +3449,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         )
         self.assertEqual("assistant", serving_event["role"])
         self.assertEqual("Stop", serving_event["codex_api_event"])
-        self.assertEqual("after_llm", serving_event["hook_type"])
+        self.assertNotIn("hook_type", serving_event)
+        self.assertEqual(["after_llm"], serving_event["source_hook_types"])
         self.assertIn("assistant: Final assistant answer", serving_event["text"])
 
     def test_fast_async_hook_ingest_threshold_commits_tool_evidence(self) -> None:
@@ -3961,7 +3964,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("dirty_marked", decision["summary_refresh"]["status"])
         self.assertEqual(1, len(server.adapter.commit_calls))
 
-    def test_fast_async_tool_result_defaults_to_skipped(self) -> None:
+    def test_fast_async_tool_result_defaults_to_serving_memory(self) -> None:
         class Adapter:
             def __init__(self) -> None:
                 self.raw_records = []
@@ -4002,14 +4005,20 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             original_text="verbose stdout\nExit code: 0\nRan 9 tests\nOK",
         )
 
-        self.assertEqual("skipped", result["status"])
-        self.assertEqual("tool_result_ingestion_disabled", result["reason"])
-        self.assertEqual("skipped_tool_result", result["raw_ingestion_status"])
-        self.assertEqual("skipped_tool_result", result["serving_projection_status"])
-        self.assertEqual("skipped_tool_result", result["async_pipeline_status"])
-        self.assertEqual("skip_by_default", result["tool_result_policy"])
-        self.assertEqual(0, len(server.adapter.raw_records))
-        self.assertEqual(0, len(server.adapter.serving_records))
+        self.assertEqual("accepted", result["status"])
+        self.assertEqual("accepted", result["raw_ingestion_status"])
+        self.assertEqual("accepted", result["serving_projection_status"])
+        self.assertEqual("pending", result["async_pipeline_status"])
+        self.assertEqual(1, len(server.adapter.raw_records))
+        self.assertGreaterEqual(len(server.adapter.serving_records), 1)
+        raw = server.adapter.raw_records[0]
+        serving = next(record for record in server.adapter.serving_records if record["record_type"] == "context_event")
+        self.assertEqual("tool", raw["role"])
+        self.assertEqual("tool", serving["role"])
+        self.assertEqual("serving", raw["metadata"]["serving_projection"]["visibility"])
+        self.assertEqual("serving", serving["metadata"]["serving_projection"]["visibility"])
+        self.assertIn("Ran 9 tests", serving["text"])
+        self.assertNotIn("verbose stdout", serving["text"])
 
     def test_fast_async_tool_result_raw_override_keeps_raw_only(self) -> None:
         class Adapter:
@@ -4041,8 +4050,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             segment_provider="deterministic",
         )
 
-        original = hook.HOOK_TOOL_RESULT_RAW
+        original_raw = hook.HOOK_TOOL_RESULT_RAW
+        original_serving = hook.HOOK_TOOL_RESULT_SERVING
         hook.HOOK_TOOL_RESULT_RAW = True
+        hook.HOOK_TOOL_RESULT_SERVING = False
         try:
             server = Server()
             result = hook.fast_async_hook_ingest(
@@ -4055,7 +4066,8 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 original_text="verbose stdout\nExit code: 0\nRan 9 tests\nOK",
             )
         finally:
-            hook.HOOK_TOOL_RESULT_RAW = original
+            hook.HOOK_TOOL_RESULT_RAW = original_raw
+            hook.HOOK_TOOL_RESULT_SERVING = original_serving
 
         self.assertEqual("accepted", result["status"])
         self.assertEqual("accepted", result["raw_ingestion_status"])
