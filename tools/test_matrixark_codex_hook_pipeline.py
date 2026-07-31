@@ -4474,6 +4474,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     storage_prefix="matrixark:codex-hook",
                     session_state_dir=Path(tmp_dir) / "sessions",
                     idle_commit_worker_only=False,
+                    extraction_provider="rules",
+                    segment_model="codex-memory-segmenter",
+                    segment_model_path="/models/codex-memory-segmenter.gguf",
+                    segment_max_new_tokens=96,
+                    segment_provider_fallback="deterministic",
+                    skip_prior_context=True,
                     idle_commit_cutoff_ms=0,
                 )
                 result = matrixark_codex_hook.spawn_idle_commit_worker_child(
@@ -4503,6 +4509,17 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("session_idle_worker", cmd)
             self.assertIn("--idle-commit-cutoff-ms", cmd)
             self.assertIn("1000000", cmd)
+            self.assertIn("--extraction-provider", cmd)
+            self.assertIn("rules", cmd)
+            self.assertIn("--segment-model", cmd)
+            self.assertIn("codex-memory-segmenter", cmd)
+            self.assertIn("--segment-model-path", cmd)
+            self.assertIn("/models/codex-memory-segmenter.gguf", cmd)
+            self.assertIn("--segment-max-new-tokens", cmd)
+            self.assertIn("96", cmd)
+            self.assertIn("--segment-provider-fallback", cmd)
+            self.assertIn("deterministic", cmd)
+            self.assertIn("--skip-prior-context", cmd)
             env = launched[0]["kwargs"]["env"]
             self.assertEqual("250", env["MATRIXARK_IDLE_COMMIT_WORKER_DELAY_MS"])
             self.assertEqual("1000000", env["MATRIXARK_IDLE_COMMIT_CUTOFF_MS"])

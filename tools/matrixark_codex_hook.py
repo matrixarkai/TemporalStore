@@ -2579,6 +2579,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--idle-commit-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS", "0")))
     parser.add_argument("--understanding-provider", default=os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "rules"))
     parser.add_argument("--segment-provider", default=os.environ.get("MATRIXARK_SEGMENT_PROVIDER", "deterministic"))
+    parser.add_argument("--extraction-provider", default=os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", ""))
+    parser.add_argument("--segment-model", default=os.environ.get("MATRIXARK_SEGMENT_MODEL", ""))
+    parser.add_argument("--segment-model-path", default=os.environ.get("MATRIXARK_SEGMENT_MODEL_PATH", ""))
+    parser.add_argument(
+        "--segment-max-new-tokens",
+        type=int,
+        default=int(os.environ["MATRIXARK_SEGMENT_MAX_NEW_TOKENS"])
+        if os.environ.get("MATRIXARK_SEGMENT_MAX_NEW_TOKENS")
+        else None,
+    )
+    parser.add_argument("--segment-provider-fallback", default=os.environ.get("MATRIXARK_SEGMENT_PROVIDER_FALLBACK", ""))
+    parser.add_argument("--skip-prior-context", action="store_true", default=os.environ.get("MATRIXARK_SKIP_PRIOR_CONTEXT", "").strip().lower() in {"1", "true", "yes", "on"})
     parser.add_argument("--repo-root", type=Path, default=root)
     parser.add_argument("--rollout-backfill-only", action="store_true", default=False)
     parser.add_argument("--idle-commit-worker-only", action="store_true", default=False)
@@ -4689,8 +4701,15 @@ def spawn_idle_commit_worker_child(args: argparse.Namespace, *, ingest: Json, se
         ("--rust-cli", "rust_cli"),
         ("--storage-prefix", "storage_prefix"),
         ("--session-state-dir", "session_state_dir"),
+        ("--extraction-provider", "extraction_provider"),
+        ("--segment-model", "segment_model"),
+        ("--segment-model-path", "segment_model_path"),
+        ("--segment-max-new-tokens", "segment_max_new_tokens"),
+        ("--segment-provider-fallback", "segment_provider_fallback"),
     ]:
         _append_cli_value(cmd, flag, getattr(args, attr, ""))
+    if bool(getattr(args, "skip_prior_context", False)):
+        cmd.append("--skip-prior-context")
     if session_id_source:
         cmd.extend(["--query", f"idle commit worker for {session_id_source}"])
     env = os.environ.copy()
