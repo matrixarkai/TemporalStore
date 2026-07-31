@@ -217,6 +217,11 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             add_group(*metric_terms)
         if re.search(r"\b(hit[- ]?rate|read[- ]?hit|quality|recall|precision|locomo|longmemeval|memory[- ]?quality)\b", lower):
             add_group(context_index_name("memory_scope", "user_profile"), context_index_name("session_continuity", "cross_session"))
+    if re.search(r"\b(user profile|profile memory|long[- ]term memory|profile entity|profile entities|profile summary|profile summaries|current profile|latest profile)\b", lower) or question_type == "profile_memory":
+        add_group(context_index_name("memory_scope", "user_profile"), context_index_name("session_continuity", "cross_session"))
+        add_group(context_index_name("profile_entity_current", "true"))
+    if question_type in {"current_state", "latest"} and re.search(r"\b(profile|cross[- ]session|long[- ]term|memory|entity|entities)\b", lower):
+        add_group(context_index_name("profile_entity_current", "true"))
     if re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
         add_group(context_index_name("entity_type", "tool_evidence"), context_index_name("event_type", "tool_evidence"))
     if re.search(r"\b(user prompt|prompt|user request|user asked|request|asked codex)\b", lower):
@@ -431,6 +436,8 @@ def candidate_index_terms(
         add_direct_layer_terms()
     elif record_type == "context_entity":
         terms.add(context_index_name("entity_type", record.get("entity_type")))
+        if bool(record.get("profile_entity_current")):
+            terms.add(context_index_name("profile_entity_current", "true"))
         terms.update(benchmark_quality_index_terms(record.get("entity_name"), record.get("entity_type"), record.get("state"), record.get("text")))
         add_direct_layer_terms()
     elif record_type == "context_segment":
