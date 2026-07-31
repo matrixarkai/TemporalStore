@@ -289,6 +289,24 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertGreater(budgets["selected_user_prompt"], budgets["selected_assistant_decision_outcome_only"])
         self.assertGreater(budgets["selected_user_prompt"], budgets["selected_tool_evidence_only"])
 
+    def test_first_person_codex_outcome_queries_target_assistant_and_tool_memory(self) -> None:
+        queries = [
+            "What did you implement and validate last?",
+            "What did we push and verify for TemporalStore memory?",
+        ]
+        for query in queries:
+            self.assertEqual("evidence", infer_query_type(query), query)
+            self.assertEqual("evidence", matrixark_mcp_query.infer_query_type(query), query)
+            for groups in [
+                infer_secondary_index_filter_groups(query, "evidence"),
+                matrixark_mcp_query.infer_secondary_index_filter_groups(query, "evidence"),
+            ]:
+                flattened = {term for group in groups for term in group}
+                self.assertIn("entity_type:assistant_decision", flattened)
+                self.assertIn("entity_type:tool_evidence", flattened)
+                self.assertIn("memory_selection_policy:selected_assistant_decision_outcome_only", flattened)
+                self.assertIn("memory_selection_policy:selected_tool_evidence_only", flattened)
+
     def test_outcome_fact_entities_emit_and_query_specific_index_terms(self) -> None:
         assistant_next = {
             "record_type": "context_entity",
@@ -6146,6 +6164,26 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "selected_profile_current_state": 52,
                 },
                 request["memory_selection_policy_budget_tokens"],
+            )
+
+            adapter.native_requests.clear()
+            adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "What did you implement and validate last?",
+                    "max_context_tokens": 100,
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+            first_person_request = adapter.native_requests[0]
+            self.assertEqual("evidence", first_person_request["question_type"])
+            self.assertEqual({"assistant": 52, "tool": 52, "user": 38}, first_person_request["source_role_budget_tokens"])
+            self.assertEqual(55, first_person_request["memory_layer_budget_tokens"]["profile_entity"])
+            self.assertEqual(52, first_person_request["memory_selection_policy_budget_tokens"]["selected_tool_evidence_only"])
+            self.assertEqual(
+                55,
+                first_person_request["memory_selection_policy_budget_tokens"]["selected_assistant_decision_outcome_only"],
             )
 
     def test_local_native_context_pack_infers_memory_selection_policy_auto_from_related_budget_mode(self) -> None:
