@@ -9496,6 +9496,25 @@ class MatrixArkLocalAdapter:
                     recovered[key] = value
             return recovered
 
+        def first_explicit_bool(key: str, *sources: Json) -> bool | None:
+            for source in sources:
+                if not isinstance(source, dict) or key not in source:
+                    continue
+                value = source.get(key)
+                if value in (None, ""):
+                    continue
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, (int, float)):
+                    return bool(value)
+                if isinstance(value, str):
+                    normalized = value.strip().lower()
+                    if normalized in {"1", "true", "yes", "on"}:
+                        return True
+                    if normalized in {"0", "false", "no", "off"}:
+                        return False
+            return None
+
         def annotate_session_continuity(candidate: Json, record: Json) -> Json:
             embedding_metadata = embedding_metadata_by_ref.get(
                 (candidate.get("ref_type"), candidate.get("ref_hash")),
@@ -9521,6 +9540,7 @@ class MatrixArkLocalAdapter:
             status = session_continuity_status(record_scope, retrieval_scope)
             explicit_status = str(first_value("session_continuity") or "")
             explicit_memory_scope = str(first_value("memory_scope") or "")
+            explicit_profile_current = first_explicit_bool("profile_entity_current", candidate, record, embedding_metadata)
             if explicit_status in {"same_session", "cross_session"} and explicit_memory_scope == "user_profile":
                 status = explicit_status
             elif status in {"", "unscoped"} and explicit_status in {"same_session", "cross_session"}:
@@ -9601,7 +9621,11 @@ class MatrixArkLocalAdapter:
                 "extraction_context_event_ids": extraction_context_event_ids,
                 "current_state_source_session_count": current_state_source_session_count or len(source_session_ids),
                 "current_state_source_entity_count": current_state_source_entity_count or len(source_entity_hashes),
-                "profile_entity_current": bool(first_value("profile_entity_current", False)),
+                "profile_entity_current": (
+                    explicit_profile_current
+                    if explicit_profile_current is not None
+                    else explicit_memory_scope == "user_profile" and status == "cross_session"
+                ),
                 "profile_revision": first_value("profile_revision", 0),
                 "previous_profile_revision": first_value("previous_profile_revision", 0),
                 "previous_profile_updated_at_ms": first_value("previous_profile_updated_at_ms", 0),
@@ -10592,6 +10616,11 @@ class MatrixArkLocalAdapter:
                 str(record.get("memory_scope") or "") == "user_profile"
                 and str(record.get("session_continuity") or "") == "cross_session"
             )
+            entity_metadata = embedding_metadata_by_ref.get(("entity", record.get("entity_hash")), {})
+            profile_current_value = first_explicit_bool("profile_entity_current", record, entity_metadata)
+            if is_profile_entity_bridge and profile_current_value is False:
+                secondary_index_dropped_count += 1
+                continue
             if not selected_by_tree(record) and not is_profile_entity_bridge:
                 continue
             index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
@@ -10657,6 +10686,11 @@ class MatrixArkLocalAdapter:
                 "previous_profile_updated_at_ms": record.get("previous_profile_updated_at_ms", entity_metadata.get("previous_profile_updated_at_ms", 0)),
                 "supersedes_session_entity_hash": record.get("supersedes_session_entity_hash", 0),
                 "supersedes_session_entity_hashes": record.get("supersedes_session_entity_hashes", []),
+                "profile_entity_current": (
+                    profile_current_value
+                    if profile_current_value is not None
+                    else is_profile_entity_bridge
+                ),
                 "profile_current_state_representative": is_profile_entity_bridge,
                 "current_state_source_session_count": len(source_session_ids) if isinstance(source_session_ids, list) else 0,
                 "current_state_source_entity_count": len(source_entity_hashes) if isinstance(source_entity_hashes, list) else 0,
@@ -11128,8 +11162,11 @@ class MatrixArkLocalAdapter:
                         continue
                     if not access_scope_matches_before_scoring(record, retrieval_scope):
                         continue
-                    text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
                     entity_metadata = embedding_metadata_by_ref.get(("entity", record.get("entity_hash")), {})
+                    profile_current_value = first_explicit_bool("profile_entity_current", record, entity_metadata)
+                    if profile_current_value is False:
+                        continue
+                    text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
                     if not text.strip(" :=\t"):
                         continue
                     source_entity_hashes = record.get("source_entity_hashes", [])
@@ -11180,6 +11217,11 @@ class MatrixArkLocalAdapter:
                             "previous_profile_updated_at_ms": record.get("previous_profile_updated_at_ms", entity_metadata.get("previous_profile_updated_at_ms", 0)),
                             "supersedes_session_entity_hash": record.get("supersedes_session_entity_hash", 0),
                             "supersedes_session_entity_hashes": record.get("supersedes_session_entity_hashes", []),
+                            "profile_entity_current": (
+                                profile_current_value
+                                if profile_current_value is not None
+                                else True
+                            ),
                             "profile_current_state_representative": True,
                             "current_state_source_session_count": len(source_session_ids) if isinstance(source_session_ids, list) else 0,
                             "current_state_source_entity_count": len(source_entity_hashes) if isinstance(source_entity_hashes, list) else 0,
