@@ -17,7 +17,9 @@ try:
         TIME_COMPRESSION_WINDOW_EVENTS,
         ENABLE_SUMMARY_REFRESH_AUDIT,
         EMBEDDING_LINEAGE_DEBUG_FIELDS,
+        candidate_index_terms,
         candidate_access_scope,
+        context_index_posting_record,
         embedding_for_text,
         embedding_model_name,
         integer_arg,
@@ -41,7 +43,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         TIME_COMPRESSION_WINDOW_EVENTS,
         ENABLE_SUMMARY_REFRESH_AUDIT,
         EMBEDDING_LINEAGE_DEBUG_FIELDS,
+        candidate_index_terms,
         candidate_access_scope,
+        context_index_posting_record,
         embedding_for_text,
         embedding_model_name,
         integer_arg,
@@ -350,42 +354,58 @@ def build_node_summary_refresh_records(
         summary_hash = stable_hash(f"context_summary:{level}:{node_hash}")
         summary_policy = {**l1_policy, **provider_meta}
         summary_vector = embedding_for_text(summary_text)
-        records.append(
-            {
-                "record_type": "context_summary",
-                "summary_type": level,
-                "summary_hash": summary_hash,
-                "node_hash": node_hash,
-                "node_path": node_path,
-                "depth": len(node_path),
-                "summary_text": summary_text,
-                "source_event_ids": source_event_ids,
-                "source_summary_hashes": source_summary_hashes,
-                "source_entity_hashes": source_entity_hashes,
-                "source_entity_types": source_entity_types,
-                "source_roles": source_roles,
-                "source_role_counts": source_role_counts,
-                "source_hook_types": source_hook_types,
-                "source_hook_type_counts": source_hook_type_counts,
-                "source_codex_events": source_codex_events,
-                "source_codex_event_counts": source_codex_event_counts,
-                "source_memory_selection_policies": source_memory_selection_policies,
-                "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
-                "source_memory_scopes": source_memory_scopes,
-                "source_session_continuities": source_session_continuities,
-                "source_extraction_phases": source_extraction_phases,
-                "source_final_session_boundary_count": source_final_session_boundary_count,
-                "memory_scope": "user_profile" if "user_profile" in source_memory_scopes else ("session" if "session" in source_memory_scopes else ""),
-                "session_continuity": "cross_session" if "cross_session" in source_session_continuities else ("same_session" if "same_session" in source_session_continuities else ""),
-                "extraction_phase": "final" if "final" in source_extraction_phases else ("provisional" if "provisional" in source_extraction_phases else ""),
-                "final_session_boundary": source_final_session_boundary_count > 0,
-                "source_operator_hashes": source_operator_hashes,
-                "summary_generation_policy": summary_policy,
-                "dirty_hash": dirty_hash,
-                "scope": scope,
-                "updated_at_ms": refreshed_at_ms,
-            }
+        profile_summary_current = (
+            "user_profile" in source_memory_scopes
+            or any(str(part).startswith("profile:") for part in node_path)
         )
+        summary_record = {
+            "record_type": "context_summary",
+            "summary_type": level,
+            "summary_hash": summary_hash,
+            "node_hash": node_hash,
+            "node_path": node_path,
+            "depth": len(node_path),
+            "summary_text": summary_text,
+            "source_event_ids": source_event_ids,
+            "source_summary_hashes": source_summary_hashes,
+            "source_entity_hashes": source_entity_hashes,
+            "source_entity_types": source_entity_types,
+            "source_roles": source_roles,
+            "source_role_counts": source_role_counts,
+            "source_hook_types": source_hook_types,
+            "source_hook_type_counts": source_hook_type_counts,
+            "source_codex_events": source_codex_events,
+            "source_codex_event_counts": source_codex_event_counts,
+            "source_memory_selection_policies": source_memory_selection_policies,
+            "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            "source_memory_scopes": source_memory_scopes,
+            "source_session_continuities": source_session_continuities,
+            "source_extraction_phases": source_extraction_phases,
+            "source_final_session_boundary_count": source_final_session_boundary_count,
+            "memory_scope": "user_profile" if "user_profile" in source_memory_scopes else ("session" if "session" in source_memory_scopes else ""),
+            "session_continuity": "cross_session" if "cross_session" in source_session_continuities else ("same_session" if "same_session" in source_session_continuities else ""),
+            "extraction_phase": "final" if "final" in source_extraction_phases else ("provisional" if "provisional" in source_extraction_phases else ""),
+            "final_session_boundary": source_final_session_boundary_count > 0,
+            "profile_summary_current": profile_summary_current,
+            "source_operator_hashes": source_operator_hashes,
+            "summary_generation_policy": summary_policy,
+            "dirty_hash": dirty_hash,
+            "scope": scope,
+            "updated_at_ms": refreshed_at_ms,
+        }
+        records.append(summary_record)
+        for index_name in candidate_index_terms(summary_record, {}, {}):
+            records.append(
+                context_index_posting_record(
+                    index_name=index_name,
+                    data_model="context_summary",
+                    ref_type="summary",
+                    ref_hashes=[summary_hash],
+                    node_hash=node_hash,
+                    scope=scope,
+                    updated_at_ms=refreshed_at_ms,
+                )
+            )
         records.append(
             compact_summary_embedding_record({
                 "record_type": "context_embedding",
@@ -420,6 +440,7 @@ def build_node_summary_refresh_records(
                 "session_continuity": "cross_session" if "cross_session" in source_session_continuities else ("same_session" if "same_session" in source_session_continuities else ""),
                 "extraction_phase": "final" if "final" in source_extraction_phases else ("provisional" if "provisional" in source_extraction_phases else ""),
                 "final_session_boundary": source_final_session_boundary_count > 0,
+                "profile_summary_current": profile_summary_current,
                 "scope": scope,
                 "updated_at_ms": refreshed_at_ms,
             })

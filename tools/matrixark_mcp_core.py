@@ -2427,6 +2427,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "session_continuity:cross_session": "cross session previous sessions other conversations across tasks persistent memory bridge",
     "session_continuity:same_session": "same session current conversation active turn local context",
     "profile_entity_current:true": "current profile entity latest durable user state standing preference instruction",
+    "profile_summary_current:true": "current profile summary latest durable long term memory profile overview",
     "memory_selection_policy:selected_profile_current_state": "selected profile current state standing instruction durable preference",
     "memory_selection_policy:selected_user_prompt": "selected user prompt explicit request instruction preference",
     "memory_selection_policy:selected_assistant_decision_outcome_only": "selected assistant decision outcome final answer implemented changed pushed",
@@ -4426,7 +4427,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         )
     if re.search(r"\b(user profile|profile memory|long[- ]term memory|profile entity|profile entities|profile summary|profile summaries)\b", lower):
         add_group(context_index_name("memory_scope", "user_profile"))
-        add_group(context_index_name("profile_entity_current", "true"))
+        add_group(context_index_name("profile_entity_current", "true"), context_index_name("profile_summary_current", "true"))
     if re.search(r"\b(cross[- ]session|across sessions|between sessions|multi[- ]session|long[- ]term)\b", lower):
         add_group(context_index_name("session_continuity", "cross_session"))
     if re.search(r"\b(session[- ]local|same[- ]session|current session|this session|session specific|session-specific)\b", lower):
@@ -4712,6 +4713,8 @@ def candidate_index_terms(
         add_source_lineage_terms()
     elif record_type == "context_summary":
         terms.add(context_index_name("summary_type", record.get("summary_type")))
+        if bool(record.get("profile_summary_current")):
+            terms.add(context_index_name("profile_summary_current", "true"))
         for entity_type in record.get("source_entity_types", [])[:16]:
             terms.add(context_index_name("entity_type", entity_type))
         terms.update(benchmark_quality_index_terms(record.get("summary_type"), record.get("summary_text"), record.get("text")))
