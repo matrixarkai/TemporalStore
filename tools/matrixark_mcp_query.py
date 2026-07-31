@@ -34,6 +34,8 @@ PROFILE_MEMORY_QUERY_RE = re.compile(
     r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|remember about me|remember about|what should (?:i|you|we) remember|standing instructions?|standing preferences?|persistent instructions?|saved preferences?|know about (?:me|my|the user)|what (?:have|did) i (?:tell|told) you|what (?:are|were) my preferences|my preferences|told you before)\b"
 )
 
+CODEX_OUTCOME_QUERY_RE = re.compile(r"\b(?:codex|assistant|agent)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|validated|verified|push(?:ed)?|commit(?:ted)?|rebased|failed|blocked|blocker|done|outcome|decision|decided|next action)\b|\bwhat (?:was|were|did)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|validated|verified|push(?:ed)?|commit(?:ted)?|failed|blocked|done)\b|\b(?:show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:assistant decision|tool evidence|validation evidence|pushed commit|blocked work|failed validation)\b|\bwhat (?:failed|was blocked|blocked)\b.{0,80}\b(?:memory work|work|validation|commit|push|tool|codex|temporalstore)\b")
+
 QUERY_INDEX_LABELS: dict[str, str] = {
     "entity_type:location": "location city moved lives staying where user is",
     "entity_type:preference": "preference prefer favorite likes language tool choice",
@@ -192,7 +194,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("classification", "correction"),
             context_index_name("segment_topic", "correction"),
         )
-    if re.search(r"\b(assistant|decision|decided|done|implemented|fixed|final answer|what did codex|what was done|next action)\b", lower):
+    if CODEX_OUTCOME_QUERY_RE.search(lower) or re.search(r"\b(assistant|decision|decided|done|implemented|fixed|validated|verified|push(?:ed)?|commit(?:ted)?|failed|blocked|final answer|what did codex|what was done|next action)\b", lower):
         add_group(
             context_index_name("entity_type", "assistant_decision"),
             context_index_name("event_type", "assistant_response"),
@@ -337,9 +339,11 @@ def infer_query_type(query: str) -> str:
         return "multi_hop"
     if re.search(r"\b(when|what date|which date|day|month|year|yesterday|tomorrow|last week|next week|before|after|as of|valid as of)\b", lower):
         return "date"
+    if CODEX_OUTCOME_QUERY_RE.search(lower):
+        return "evidence"
     if re.search(r"\b(current|currently|latest|now|still|today|valid|status|preference|prefer|likes|where does|where is)\b", lower):
         return "current_state"
-    if re.search(r"\b(?:assistant|codex)\b.{0,64}\b(?:decide|decided|decision|done|implemented|fixed|pushed|committed|changed|updated|validated|verified)\b", lower):
+    if re.search(r"\b(?:assistant|codex)\b.{0,64}\b(?:decide|decided|decision|done|implemented|fixed|push(?:ed)?|commit(?:ted)?|changed|updated|validated|verified)\b", lower):
         return "current_state"
     if re.search(r"\b(why|reason|because|feel|felt|emotion|happy|sad|angry|worried|excited)\b", lower):
         return "why_emotion"
