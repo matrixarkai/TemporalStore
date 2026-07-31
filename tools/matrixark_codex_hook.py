@@ -4334,6 +4334,8 @@ def fast_async_hook_ingest(
             "storage_options": storage_options,
             "hook_captured": hook is not None,
             "extraction_mode": "skipped",
+            "idle_commit_result": pre_ingest_idle_commit_result,
+            "auto_batch_extract_result": pre_ingest_idle_commit_result if should_pre_ingest_idle_commit else {},
         }
     raw_ingestion_status = "unavailable"
     if callable(enqueue_raw):
@@ -4360,6 +4362,8 @@ def fast_async_hook_ingest(
             "storage_options": storage_options,
             "hook_captured": hook is not None,
             "extraction_mode": "raw_only",
+            "idle_commit_result": pre_ingest_idle_commit_result,
+            "auto_batch_extract_result": pre_ingest_idle_commit_result if should_pre_ingest_idle_commit else {},
         }
     serving_records = [record, pipeline_task, *projection_records, *summary_dirty_records]
     append_many_materialized = getattr(adapter, "_append_many_materialized", None)
