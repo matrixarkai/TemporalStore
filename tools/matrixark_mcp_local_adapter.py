@@ -10112,9 +10112,24 @@ class MatrixArkLocalAdapter:
                     continue
                 if not recovered_scope_matches(record, retrieval_scope) and not profile_summary_scope_matches(record, retrieval_scope):
                     continue
+                summary_ref_hash = record.get("summary_hash") or record.get("node_hash")
+                embedding_metadata = embedding_metadata_by_ref.get(("summary", summary_ref_hash), {})
+                recovered_memory_scope = str(record.get("memory_scope") or embedding_metadata.get("memory_scope") or "")
+                recovered_session_continuity = str(
+                    record.get("session_continuity") or embedding_metadata.get("session_continuity") or ""
+                )
+                recovered_profile_summary_current = bool(
+                    record.get("profile_summary_current")
+                    or embedding_metadata.get("profile_summary_current")
+                    or (
+                        recovered_memory_scope == "user_profile"
+                        and recovered_session_continuity == "cross_session"
+                    )
+                    or any(str(part).startswith("profile:") for part in record.get("node_path", []))
+                )
                 is_profile_summary_bridge = (
-                    str(record.get("memory_scope") or "") == "user_profile"
-                    and str(record.get("session_continuity") or "") == "cross_session"
+                    recovered_memory_scope == "user_profile"
+                    and recovered_session_continuity == "cross_session"
                 )
                 if not selected_by_tree(record) and not is_profile_summary_bridge:
                     continue
@@ -10127,17 +10142,61 @@ class MatrixArkLocalAdapter:
                     continue
                 lineage_text = " ".join(
                     [
-                        str(record.get("memory_scope") or ""),
-                        str(record.get("session_continuity") or ""),
-                        *[str(value) for value in record.get("source_roles", []) if str(value or "")],
-                        *[str(value) for value in record.get("source_hook_types", []) if str(value or "")],
-                        *[str(value) for value in record.get("source_codex_events", []) if str(value or "")],
-                        *[str(value) for value in record.get("source_memory_selection_policies", []) if str(value or "")],
-                        *[str(value).replace("_", " ") for value in record.get("source_memory_selection_policies", []) if str(value or "")],
-                        *[str(value) for value in record.get("source_memory_scopes", []) if str(value or "")],
-                        *[str(value) for value in record.get("source_session_continuities", []) if str(value or "")],
-                        *[str(value) for value in record.get("source_profile_promotion_policies", []) if str(value or "")],
-                        *[str(value) for value in record.get("source_profile_promotion_blockers", []) if str(value or "")],
+                        recovered_memory_scope,
+                        recovered_session_continuity,
+                        *[str(value) for value in (record.get("source_roles") or embedding_metadata.get("source_roles") or []) if str(value or "")],
+                        *[str(value) for value in (record.get("source_hook_types") or embedding_metadata.get("source_hook_types") or []) if str(value or "")],
+                        *[str(value) for value in (record.get("source_codex_events") or embedding_metadata.get("source_codex_events") or []) if str(value or "")],
+                        *[
+                            str(value)
+                            for value in (
+                                record.get("source_memory_selection_policies")
+                                or embedding_metadata.get("source_memory_selection_policies")
+                                or []
+                            )
+                            if str(value or "")
+                        ],
+                        *[
+                            str(value).replace("_", " ")
+                            for value in (
+                                record.get("source_memory_selection_policies")
+                                or embedding_metadata.get("source_memory_selection_policies")
+                                or []
+                            )
+                            if str(value or "")
+                        ],
+                        *[
+                            str(value)
+                            for value in (record.get("source_memory_scopes") or embedding_metadata.get("source_memory_scopes") or [])
+                            if str(value or "")
+                        ],
+                        *[
+                            str(value)
+                            for value in (
+                                record.get("source_session_continuities")
+                                or embedding_metadata.get("source_session_continuities")
+                                or []
+                            )
+                            if str(value or "")
+                        ],
+                        *[
+                            str(value)
+                            for value in (
+                                record.get("source_profile_promotion_policies")
+                                or embedding_metadata.get("source_profile_promotion_policies")
+                                or []
+                            )
+                            if str(value or "")
+                        ],
+                        *[
+                            str(value)
+                            for value in (
+                                record.get("source_profile_promotion_blockers")
+                                or embedding_metadata.get("source_profile_promotion_blockers")
+                                or []
+                            )
+                            if str(value or "")
+                        ],
                         *[str(value) for value in record.get("source_entity_types", []) if str(value or "")],
                         *[str(value).replace("_", " ") for value in record.get("source_entity_types", []) if str(value or "")],
                         *sorted(index_terms),
@@ -10167,7 +10226,7 @@ class MatrixArkLocalAdapter:
                     score_recall_candidate(
                         annotate_session_continuity({
                             "ref_type": "summary",
-                            "ref_hash": record.get("summary_hash") or record.get("node_hash"),
+                            "ref_hash": summary_ref_hash,
                             "node_hash": record.get("node_hash"),
                             "node_path": record.get("node_path", []),
                             "origin_score": origin_score,
@@ -10181,30 +10240,34 @@ class MatrixArkLocalAdapter:
                             "event_type": summary_type,
                             "context_class": "summary",
                             "summary_type": summary_type,
-                            "source_roles": record.get("source_roles", []),
-                            "source_hook_types": record.get("source_hook_types", []),
-                            "source_codex_events": record.get("source_codex_events", []),
-                            "source_memory_selection_policies": record.get("source_memory_selection_policies", []),
-                            "source_memory_selection_policy_counts": record.get("source_memory_selection_policy_counts", {}),
-                            "source_memory_selection_lossy_count": record.get("source_memory_selection_lossy_count", 0),
-                            "source_memory_selection_complete_count": record.get("source_memory_selection_complete_count", 0),
-                            "source_memory_selection_dropped_text_chars": record.get("source_memory_selection_dropped_text_chars", 0),
-                            "source_memory_selection_dropped_line_count": record.get("source_memory_selection_dropped_line_count", 0),
-                            "source_memory_selection_retained_text_ratio_avg": record.get("source_memory_selection_retained_text_ratio_avg", 1.0),
-                            "source_memory_selection_retained_line_ratio_avg": record.get("source_memory_selection_retained_line_ratio_avg", 1.0),
-                            "source_memory_scopes": record.get("source_memory_scopes", []),
-                            "source_session_continuities": record.get("source_session_continuities", []),
-                            "source_extraction_phases": record.get("source_extraction_phases", []),
-                            "source_profile_promotion_policies": record.get("source_profile_promotion_policies", []),
-                            "source_profile_promotion_blockers": record.get("source_profile_promotion_blockers", []),
+                            "source_roles": record.get("source_roles") or embedding_metadata.get("source_roles", []),
+                            "source_role_counts": record.get("source_role_counts") or embedding_metadata.get("source_role_counts", {}),
+                            "source_hook_types": record.get("source_hook_types") or embedding_metadata.get("source_hook_types", []),
+                            "source_hook_type_counts": record.get("source_hook_type_counts") or embedding_metadata.get("source_hook_type_counts", {}),
+                            "source_codex_events": record.get("source_codex_events") or embedding_metadata.get("source_codex_events", []),
+                            "source_codex_event_counts": record.get("source_codex_event_counts") or embedding_metadata.get("source_codex_event_counts", {}),
+                            "source_memory_selection_policies": record.get("source_memory_selection_policies") or embedding_metadata.get("source_memory_selection_policies", []),
+                            "source_memory_selection_policy_counts": record.get("source_memory_selection_policy_counts") or embedding_metadata.get("source_memory_selection_policy_counts", {}),
+                            "source_memory_selection_lossy_count": record.get("source_memory_selection_lossy_count", embedding_metadata.get("source_memory_selection_lossy_count", 0)),
+                            "source_memory_selection_complete_count": record.get("source_memory_selection_complete_count", embedding_metadata.get("source_memory_selection_complete_count", 0)),
+                            "source_memory_selection_dropped_text_chars": record.get("source_memory_selection_dropped_text_chars", embedding_metadata.get("source_memory_selection_dropped_text_chars", 0)),
+                            "source_memory_selection_dropped_line_count": record.get("source_memory_selection_dropped_line_count", embedding_metadata.get("source_memory_selection_dropped_line_count", 0)),
+                            "source_memory_selection_retained_text_ratio_avg": record.get("source_memory_selection_retained_text_ratio_avg", embedding_metadata.get("source_memory_selection_retained_text_ratio_avg", 1.0)),
+                            "source_memory_selection_retained_line_ratio_avg": record.get("source_memory_selection_retained_line_ratio_avg", embedding_metadata.get("source_memory_selection_retained_line_ratio_avg", 1.0)),
+                            "source_memory_scopes": record.get("source_memory_scopes") or embedding_metadata.get("source_memory_scopes", []),
+                            "source_session_continuities": record.get("source_session_continuities") or embedding_metadata.get("source_session_continuities", []),
+                            "source_extraction_phases": record.get("source_extraction_phases") or embedding_metadata.get("source_extraction_phases", []),
+                            "source_profile_promotion_policies": record.get("source_profile_promotion_policies") or embedding_metadata.get("source_profile_promotion_policies", []),
+                            "source_profile_promotion_blockers": record.get("source_profile_promotion_blockers") or embedding_metadata.get("source_profile_promotion_blockers", []),
                             "source_entity_types": record.get("source_entity_types", []),
-                            "source_final_session_boundary_count": record.get("source_final_session_boundary_count", 0),
-                            "memory_scope": record.get("memory_scope", ""),
-                            "session_continuity": record.get("session_continuity", ""),
-                            "extraction_phase": record.get("extraction_phase", ""),
-                            "final_session_boundary": bool(record.get("final_session_boundary", False)),
-                            "profile_promotion_policy": record.get("profile_promotion_policy", ""),
-                            "profile_promotion_blocker": record.get("profile_promotion_blocker", ""),
+                            "source_final_session_boundary_count": record.get("source_final_session_boundary_count", embedding_metadata.get("source_final_session_boundary_count", 0)),
+                            "memory_scope": recovered_memory_scope,
+                            "session_continuity": recovered_session_continuity,
+                            "extraction_phase": record.get("extraction_phase") or embedding_metadata.get("extraction_phase", ""),
+                            "final_session_boundary": bool(record.get("final_session_boundary", embedding_metadata.get("final_session_boundary", False))),
+                            "profile_summary_current": recovered_profile_summary_current,
+                            "profile_promotion_policy": record.get("profile_promotion_policy") or embedding_metadata.get("profile_promotion_policy", ""),
+                            "profile_promotion_blocker": record.get("profile_promotion_blocker") or embedding_metadata.get("profile_promotion_blocker", ""),
                             "access_decision": "allowed_by_registry_scope_before_scoring",
                             "access_scope": candidate_access_scope(record),
                             "scope": candidate_access_scope(record),
