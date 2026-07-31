@@ -220,6 +220,40 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertGreater(budgets["selected_tool_evidence_only"], budgets["selected_user_prompt"])
         self.assertGreaterEqual(budgets["selected_assistant_decision_outcome_only"], 350)
 
+    def test_query_candidate_index_terms_match_core_source_lineage_terms(self) -> None:
+        record = {
+            "record_type": "context_entity",
+            "entity_type": "assistant_decision",
+            "state": "Decision: commit the live hook extraction fix after validation.",
+            "source_roles": ["assistant"],
+            "source_role_counts": {"assistant": 1, "tool": 0},
+            "source_hook_types": ["hook_boundary"],
+            "source_hook_type_counts": {"hook_boundary": 1},
+            "source_codex_events": ["Stop"],
+            "source_codex_event_counts": {"Stop": 1},
+            "source_memory_selection_policies": ["selected_assistant_decision_outcome_only"],
+            "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 1},
+            "source_memory_selection_lossy_count": 1,
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "extraction_phase": "final",
+        }
+
+        core_terms = candidate_index_terms(record, {}, {})
+        query_terms = matrixark_mcp_query.candidate_index_terms(record, {}, {})
+        for term in {
+            "source_role:assistant",
+            "hook_type:hook_boundary",
+            "codex_event:stop",
+            "memory_selection_policy:selected_assistant_decision_outcome_only",
+            "memory_selection_quality:lossy",
+            "memory_scope:user_profile",
+            "session_continuity:cross_session",
+            "extraction_phase:final",
+        }:
+            self.assertIn(term, core_terms)
+            self.assertIn(term, query_terms)
+
     def test_benchmark_quality_records_emit_metric_index_terms(self) -> None:
         record = {
             "record_type": "context_event",
