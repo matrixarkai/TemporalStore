@@ -1210,6 +1210,20 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("auto", ranking["memory_selection_policy_budget_mode"])
         self.assertEqual("auto", ranking["extraction_phase_budget_mode"])
 
+    def test_codex_retrieve_cross_session_options_are_bounded_profile_bridge(self) -> None:
+        policy = hook.codex_retrieve_cross_session_options()
+
+        self.assertTrue(policy["enabled"])
+        self.assertEqual(0.12, policy["budget_ratio"])
+        self.assertEqual(0.20, policy["max_budget_ratio"])
+        self.assertEqual(4, policy["max_sessions"])
+        self.assertEqual(24, policy["max_candidates"])
+        self.assertEqual(1, policy["min_entity_bridge_refs"])
+        self.assertEqual(
+            ["entity", "summary", "compression", "event", "segment"],
+            policy["preferred_ref_types"],
+        )
+
     def test_session_commit_tool_call_trace_records_trigger_evidence(self) -> None:
         class Server:
             def handle(self, request):
@@ -4410,6 +4424,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             )
         ]
         self.assertIn("**hook_session_commit_extraction_options(args),", retrieve_call)
+        self.assertIn("\"cross_session\": codex_retrieve_cross_session_options(),", retrieve_call)
 
     def test_dual_hook_keeps_derived_context_out_of_raw_ingestion(self) -> None:
         script = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_dual_hook.sh").read_text()
