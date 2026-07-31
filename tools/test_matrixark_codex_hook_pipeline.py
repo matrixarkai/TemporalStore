@@ -6464,6 +6464,93 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(budget["profile_summary"]["refs"], 1)
             self.assertFalse(pack["pre_retrieval_summary_refresh"]["enabled"])
 
+    def test_current_state_query_selects_existing_profile_summary_without_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-current-profile-summary-existing.jsonl")
+            scope = {
+                "account_id": "acct_current_profile_summary_existing",
+                "tenant_id": "tenant_current_profile_summary_existing",
+                "user_id": "user_current_profile_summary_existing",
+                "session_id": "session_current_profile_summary_source",
+            }
+            followup_scope = {**scope, "session_id": "session_current_profile_summary_followup"}
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_entity",
+                        "entity_hash": 4501,
+                        "node_hash": 5501,
+                        "node_path": [
+                            "tenant:tenant_current_profile_summary_existing",
+                            "user:user_current_profile_summary_existing",
+                            "profile:long_term_memory",
+                        ],
+                        "entity_type": "assistant_decision",
+                        "entity_name": "summary_runtime",
+                        "state": "Current retrieval should return durable profile summaries with profile entities.",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "profile_current_state_representative": True,
+                        "profile_revision": 1,
+                        "source_session_ids": ["session_current_profile_summary_source"],
+                        "source_entity_hashes": [4500],
+                        "source_roles": ["assistant"],
+                        "source_role_counts": {"assistant": 1},
+                        "scope": scope,
+                        "updated_at_ms": 3000,
+                    },
+                    {
+                        "record_type": "context_summary",
+                        "summary_hash": 4601,
+                        "node_hash": 5501,
+                        "node_path": [
+                            "tenant:tenant_current_profile_summary_existing",
+                            "user:user_current_profile_summary_existing",
+                            "profile:long_term_memory",
+                        ],
+                        "summary_type": "node_l0",
+                        "summary_text": "Profile summary: current retrieval returns durable profile summaries with profile entities.",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "profile_summary_current": True,
+                        "source_roles": ["assistant"],
+                        "source_role_counts": {"assistant": 1},
+                        "source_entity_types": ["assistant_decision"],
+                        "scope": scope,
+                        "updated_at_ms": 3100,
+                    },
+                ]
+            )
+
+            pack = adapter.retrieve(
+                {
+                    "scope": followup_scope,
+                    "session_scope": "prefer",
+                    "question_type": "current_state",
+                    "query": "What is the current profile summary retrieval runtime?",
+                    "max_context_tokens": 220,
+                    "ranking": {
+                        "max_selected_refs": 2,
+                        "min_similarity_score": 0.0,
+                        "pre_retrieval_summary_refresh": False,
+                    },
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "include_debug_refs": True,
+                }
+            )
+
+            selected_layers = {
+                (ref.get("ref_type"), ref.get("memory_scope"), ref.get("session_continuity"))
+                for ref in pack["selected_refs"]
+            }
+            self.assertIn(("entity", "user_profile", "cross_session"), selected_layers)
+            self.assertIn(("summary", "user_profile", "cross_session"), selected_layers)
+            budget = pack["retrieval_metrics"]["memory_layer_budget"]["by_memory_layer"]
+            self.assertGreaterEqual(budget["profile_entity"]["refs"], 1)
+            self.assertGreaterEqual(budget["profile_summary"]["refs"], 1)
+            self.assertFalse(pack["pre_retrieval_summary_refresh"]["enabled"])
+
     def test_invalid_pre_retrieval_summary_refresh_limit_env_does_not_break_import(self) -> None:
         env = os.environ.copy()
         env["PYTHONPATH"] = "tools"

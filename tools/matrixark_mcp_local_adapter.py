@@ -10268,7 +10268,7 @@ class MatrixArkLocalAdapter:
         )
         primary_matches = []
         auxiliary_matches = []
-        if question_type in {"broad_exploration", "profile_memory"}:
+        if question_type in {"broad_exploration", "profile_memory", "current_state", "latest"}:
             for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
                 if scan_index % 64 == 0 and deadline_exceeded():
                     return deadline_fallback("deadline_during_summary_scan", records)
@@ -10295,6 +10295,8 @@ class MatrixArkLocalAdapter:
                     recovered_memory_scope == "user_profile"
                     and recovered_session_continuity == "cross_session"
                 )
+                if question_type in {"current_state", "latest"} and not is_profile_summary_bridge:
+                    continue
                 if not selected_by_tree(record) and not is_profile_summary_bridge:
                     continue
                 summary_type = str(record.get("summary_type") or "")
@@ -10382,7 +10384,7 @@ class MatrixArkLocalAdapter:
                 embedding_score = cosine(query_embedding, embedding_for_text(" ".join(record.get("node_path", []) + [summary_type, text])))
                 node_score = node_scores.get(record.get("node_hash"), {}).get("score", 0.0)
                 origin_score = min(1.0, 0.18 + hybrid_origin_score(query_terms, text, embedding_score, node_score) + 0.10 * lineage_score)
-                if is_profile_summary_bridge and question_type in {"broad_exploration", "profile_memory"}:
+                if is_profile_summary_bridge and question_type in {"broad_exploration", "profile_memory", "current_state", "latest"}:
                     origin_score = min(1.0, origin_score + 0.20)
                 if origin_score <= 0:
                     continue
