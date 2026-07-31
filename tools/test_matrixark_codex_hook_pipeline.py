@@ -193,6 +193,33 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertGreater(budgets["selected_tool_evidence_only"], budgets["selected_user_prompt"])
         self.assertGreater(budgets["selected_assistant_decision_outcome_only"], budgets["selected_user_prompt"])
 
+    def test_codex_outcome_queries_use_assistant_and_tool_evidence_budget(self) -> None:
+        queries = [
+            "What did Codex implement and push last?",
+            "What failed or was blocked in the last TemporalStore memory work?",
+            "Show the assistant decision and validation evidence for the pushed commit",
+        ]
+        for query in queries:
+            self.assertEqual("evidence", infer_query_type(query), query)
+            self.assertEqual("evidence", matrixark_mcp_query.infer_query_type(query), query)
+
+        groups = infer_secondary_index_filter_groups(queries[0], "evidence")
+        flattened = {term for group in groups for term in group}
+        self.assertIn("entity_type:assistant_decision", flattened)
+        self.assertIn("event_type:assistant_response", flattened)
+        self.assertIn("entity_type:tool_evidence", flattened)
+        self.assertIn("event_type:tool_evidence", flattened)
+
+        budgets, mode = matrixark_mcp_retrieve_request.pre_refresh_helpers.auto_memory_selection_policy_budget_tokens(
+            {},
+            {},
+            remote_budget_tokens=1000,
+            question_type="evidence",
+        )
+        self.assertEqual("auto", mode)
+        self.assertGreater(budgets["selected_tool_evidence_only"], budgets["selected_user_prompt"])
+        self.assertGreaterEqual(budgets["selected_assistant_decision_outcome_only"], 350)
+
     def test_benchmark_quality_records_emit_metric_index_terms(self) -> None:
         record = {
             "record_type": "context_event",
