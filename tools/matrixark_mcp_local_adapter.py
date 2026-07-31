@@ -4257,16 +4257,29 @@ class MatrixArkLocalAdapter:
                 "node_path": prefix,
                 "scope": scope,
                 "status": "pending",
+                "source_ref_type": source_ref_type,
+                source_hash_field: source_hash,
                 "created_at_ms": updated_at_ms,
                 "updated_at_ms": updated_at_ms,
             }
+            for field in [
+                "source_memory_scopes",
+                "source_session_continuities",
+                "source_extraction_phases",
+                "source_profile_promotion_policies",
+                "memory_scope",
+                "session_continuity",
+                "extraction_phase",
+                "final_session_boundary",
+            ]:
+                value = lineage.get(field)
+                if value not in (None, "", [], {}):
+                    record[field] = value
             if ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS or ENABLE_SUMMARY_REFRESH_AUDIT or ENABLE_CONTEXT_DEBUG_RECORDS:
                 record.update(
                     {
                         "depth": len(prefix),
                         "dirty_reason": dirty_reason,
-                        "source_ref_type": source_ref_type,
-                        source_hash_field: source_hash,
                         "changed_ref_count": 1,
                         "propagate_depth": propagate_depth if propagate_depth is not None else len(node_path),
                     }
@@ -4281,16 +4294,8 @@ class MatrixArkLocalAdapter:
                     "source_codex_event_counts",
                     "source_memory_selection_policies",
                     "source_memory_selection_policy_counts",
-                    "source_memory_scopes",
-                    "source_session_continuities",
-                    "source_extraction_phases",
-                    "source_profile_promotion_policies",
                     "source_profile_promotion_blockers",
                     "source_final_session_boundary_count",
-                    "memory_scope",
-                    "session_continuity",
-                    "extraction_phase",
-                    "final_session_boundary",
                 ]:
                     value = lineage.get(field)
                     if value not in (None, "", [], {}):
@@ -7556,6 +7561,27 @@ class MatrixArkLocalAdapter:
                 entity_name=entity["entity_name"],
             )
             updated_entity = apply_entity_patches(previous_entity, entity)
+            entity_source_roles = (
+                ordered_unique_any([normalize_message_role(value) for value in entity.get("source_roles", []) if normalize_message_role(value)])
+                if isinstance(entity.get("source_roles"), list)
+                else source_roles
+            )
+            entity_source_role_counts: Json = {}
+            if isinstance(entity.get("source_role_counts"), dict):
+                for role, count in entity.get("source_role_counts", {}).items():
+                    role_name = normalize_message_role(role)
+                    if not role_name:
+                        continue
+                    try:
+                        amount = max(0, int(count or 0))
+                    except (TypeError, ValueError):
+                        amount = 0
+                    if amount > 0:
+                        entity_source_role_counts[role_name] = amount
+            if not entity_source_roles:
+                entity_source_roles = source_roles
+            if not entity_source_role_counts:
+                entity_source_role_counts = source_role_counts
             entity_type_counts[updated_entity["entity_type"]] = int(entity_type_counts.get(updated_entity["entity_type"], 0)) + 1
             entity_hashes.append(entity_hash)
             session_entity_record = {
@@ -7574,8 +7600,8 @@ class MatrixArkLocalAdapter:
                 "operator": updated_entity["operator"],
                 "source_refs": updated_entity["source_refs"],
                 "source_event_ids": source_event_ids,
-                "source_roles": source_roles,
-                "source_role_counts": source_role_counts,
+                "source_roles": entity_source_roles,
+                "source_role_counts": entity_source_role_counts,
                 "source_hook_types": source_hook_types,
                 "source_hook_type_counts": source_hook_type_counts,
                 "source_codex_events": source_codex_events,
@@ -7644,8 +7670,8 @@ class MatrixArkLocalAdapter:
                     "entity_type": updated_entity["entity_type"],
                     "entity_name": updated_entity["entity_name"],
                     "source_event_ids": source_event_ids,
-                    "source_roles": source_roles,
-                    "source_role_counts": source_role_counts,
+                    "source_roles": entity_source_roles,
+                    "source_role_counts": entity_source_role_counts,
                     "source_hook_types": source_hook_types,
                     "source_hook_type_counts": source_hook_type_counts,
                     "source_codex_events": source_codex_events,
@@ -7694,10 +7720,10 @@ class MatrixArkLocalAdapter:
                     list(previous_profile.get("source_event_ids", [])) + source_event_ids
                 )
                 profile_source_roles = ordered_unique_any(
-                    list(previous_profile.get("source_roles", [])) + source_roles
+                    list(previous_profile.get("source_roles", [])) + entity_source_roles
                 )
                 profile_source_role_counts: Json = dict(previous_profile.get("source_role_counts", {}))
-                for role, count in source_role_counts.items():
+                for role, count in entity_source_role_counts.items():
                     profile_source_role_counts[role] = int(profile_source_role_counts.get(role, 0)) + int(count)
                 profile_source_hook_types = ordered_unique_any(
                     list(previous_profile.get("source_hook_types", [])) + source_hook_types

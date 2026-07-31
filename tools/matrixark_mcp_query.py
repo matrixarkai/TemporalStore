@@ -339,6 +339,8 @@ def infer_query_type(query: str) -> str:
         return "date"
     if re.search(r"\b(current|currently|latest|now|still|today|valid|status|preference|prefer|likes|where does|where is)\b", lower):
         return "current_state"
+    if re.search(r"\b(?:assistant|codex)\b.{0,64}\b(?:decide|decided|decision|done|implemented|fixed|pushed|committed|changed|updated|validated|verified)\b", lower):
+        return "current_state"
     if re.search(r"\b(why|reason|because|feel|felt|emotion|happy|sad|angry|worried|excited)\b", lower):
         return "why_emotion"
     if re.search(r"\b(overview|summarize|summary|explore|broad|what is in|what do we know|topics|map|inventory)\b", lower):
