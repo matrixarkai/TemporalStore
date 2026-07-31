@@ -1219,6 +1219,10 @@ def pre_retrieval_summary_refresh_enabled(args: Json, ranking: Json) -> bool:
     return bool(value)
 
 
+def pre_retrieval_summary_refresh_explicitly_configured(args: Json, ranking: Json) -> bool:
+    return "pre_retrieval_summary_refresh" in args or "pre_retrieval_summary_refresh" in ranking
+
+
 def pre_retrieval_summary_refresh_limit(args: Json, ranking: Json) -> int:
     raw_limit = (
         args.get("pre_retrieval_summary_refresh_limit")
@@ -9198,11 +9202,35 @@ class MatrixArkLocalAdapter:
                 or idle_memory_layers.get("summary_dirty_nodes")
             )
         )
+        explicit_summary_refresh = pre_retrieval_summary_refresh_explicitly_configured(args, ranking)
+        configured_summary_refresh_enabled = pre_retrieval_summary_refresh_enabled(args, ranking)
+        auto_summary_refresh_after_idle = bool(
+            fresh_idle_summary_required
+            and not explicit_summary_refresh
+            and question_type in {
+                "current_state",
+                "latest",
+                "profile_memory",
+                "multi_hop",
+                "date",
+                "broad_exploration",
+                "evidence",
+                "benchmark_quality",
+            }
+        )
+        requested_summary_refresh_limit = pre_retrieval_summary_refresh_limit(args, ranking)
+        if auto_summary_refresh_after_idle:
+            requested_summary_refresh_limit = max(
+                requested_summary_refresh_limit,
+                int(idle_memory_layers.get("summary_dirty_nodes") or 0),
+                8 if bool(idle_summary_refresh.get("profile_summary_refresh_required", False)) else 1,
+            )
         pre_retrieval_summary_refresh: Json = {
-            "enabled": pre_retrieval_summary_refresh_enabled(args, ranking),
-            "requested_limit": pre_retrieval_summary_refresh_limit(args, ranking),
+            "enabled": bool(configured_summary_refresh_enabled or auto_summary_refresh_after_idle),
+            "requested_limit": requested_summary_refresh_limit,
             "refreshed_count": 0,
             "status": "disabled",
+            "source": "explicit" if explicit_summary_refresh else "fresh_idle_commit" if auto_summary_refresh_after_idle else "default",
             "fresh_idle_commit_dirty": fresh_idle_summary_required,
             "fresh_idle_commit_summary_required": fresh_idle_summary_required,
             "fresh_idle_commit_committed_event_count": idle_committed_event_count,
