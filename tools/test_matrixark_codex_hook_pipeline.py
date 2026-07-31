@@ -228,8 +228,19 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         )
         by_name = {entity["entity_name"]: entity for entity in entities}
         self.assertIn("tool_evidence:validation", by_name)
+        self.assertIn("tool_evidence:outcome", by_name)
+        self.assertNotIn("tool_evidence:blocker", by_name)
         self.assertIn("132", by_name["tool_evidence:validation"]["state"])
+        self.assertIn("e2f645c5", by_name["tool_evidence:outcome"]["state"])
         self.assertEqual(["tool_event"], by_name["tool_evidence:validation"]["source_refs"])
+        self.assertEqual(["tool_event"], by_name["tool_evidence:outcome"]["source_refs"])
+        materialized_outcome = {**by_name["tool_evidence:outcome"], "record_type": "context_entity"}
+        for terms in [
+            candidate_index_terms(materialized_outcome, {}, {}),
+            matrixark_mcp_query.candidate_index_terms(materialized_outcome, {}, {}),
+        ]:
+            self.assertIn("codex_outcome:outcome", terms)
+            self.assertNotIn("codex_outcome:blocker", terms)
 
     def test_user_prompt_selection_keeps_goal_and_task_memory_without_large_context(self) -> None:
         large_prompt = "\n".join(
