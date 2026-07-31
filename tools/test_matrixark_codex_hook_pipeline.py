@@ -169,6 +169,43 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(1, budget["source_message_counts_by_role"]["assistant"])
         self.assertEqual(1, budget["source_message_counts_by_role"]["tool"])
 
+    def test_extraction_promotes_selected_assistant_and_tool_outcome_facts(self) -> None:
+        entities = matrixark_mcp_core.extract_batch_entities(
+            [
+                {
+                    "role": "assistant",
+                    "content": (
+                        "Outcome: pushed commit abc1234 to origin/main; "
+                        "Changed: promoted profile summary indexes; "
+                        "Next: validate retrieval against real hooked messages; "
+                        "Blocker: matrixarkai mirror push rejected non-fast-forward"
+                    ),
+                },
+                {
+                    "role": "tool",
+                    "content": (
+                        "Exit code: 0\n"
+                        "Validation: 42 tests passed\n"
+                        "pushed commit abc1234 to origin/main\n"
+                    ),
+                },
+            ],
+            {"source_event_ids": ["assistant_event", "tool_event"]},
+        )
+
+        by_name = {entity["entity_name"]: entity for entity in entities}
+        self.assertIn("assistant_decision", by_name)
+        self.assertIn("assistant_decision:outcome", by_name)
+        self.assertIn("assistant_decision:changed", by_name)
+        self.assertIn("assistant_decision:next", by_name)
+        self.assertIn("assistant_decision:blocker", by_name)
+        self.assertIn("tool_evidence", by_name)
+        self.assertIn("tool_evidence:validation", by_name)
+        self.assertEqual(["assistant_event"], by_name["assistant_decision:next"]["source_refs"])
+        self.assertEqual(["tool_event"], by_name["tool_evidence:validation"]["source_refs"])
+        self.assertEqual(["assistant"], by_name["assistant_decision:blocker"]["source_roles"])
+        self.assertEqual(["tool"], by_name["tool_evidence:validation"]["source_roles"])
+
     def test_benchmark_quality_queries_use_evidence_and_profile_budgets(self) -> None:
         query = "Compare LoCoMo hit rate p50 p99 latency and throughput quality across sessions"
         self.assertEqual("benchmark_quality", infer_query_type(query))
