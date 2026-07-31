@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from typing import Any
 
@@ -58,6 +59,26 @@ def _default_memory_budget_mode(args: Json, ranking: Json, *, field: str, questi
     return ""
 
 
+def codex_user_goal_budget_query(args: Json, ranking: Json, *, question_type: str = "fact") -> bool:
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    if normalized_question_type not in {"profile_memory", "current_state", "latest", "multi_hop", "date"}:
+        return False
+    query = str(args.get("query") or ranking.get("query") or "").strip()
+    if not query:
+        return False
+    lower = query.lower()
+    return bool(
+        re.search(
+            r"\b(?:what|which|show|list|recall|remember|find)\b.{0,80}\b(?:goal|task|plan|requirement|request|asked|ask|instruction|directive)\b",
+            lower,
+        )
+        or re.search(
+            r"\b(?:goal|task|plan|requirement|request|instruction|directive)\b.{0,80}\b(?:codex|implement|fix|add|remove|replace|move|build|work)\b",
+            lower,
+        )
+        or re.search(r"\b(?:what did i ask|what have i asked|user asked|user request|current plan)\b", lower)
+    )
+
 
 def auto_source_role_budget_tokens(
     args: Json,
@@ -83,7 +104,9 @@ def auto_source_role_budget_tokens(
     fractions = optional_object(args, "source_role_budget_fractions") or optional_object(ranking, "source_role_budget_fractions")
     defaults = {"assistant": 0.45, "tool": 0.35, "user": 0.60}
     normalized_question_type = str(question_type or "fact").strip().lower()
-    if normalized_question_type in {"current_state", "latest"}:
+    if codex_user_goal_budget_query(args, ranking, question_type=question_type):
+        defaults.update({"assistant": 0.35, "tool": 0.25, "user": 0.70})
+    elif normalized_question_type in {"current_state", "latest"}:
         defaults.update({"assistant": 0.50, "tool": 0.40, "user": 0.50})
     elif normalized_question_type == "profile_memory":
         defaults.update({"assistant": 0.50, "tool": 0.45, "user": 0.50})
@@ -145,7 +168,16 @@ def auto_memory_selection_policy_budget_tokens(
         "selected_tool_evidence_only": 0.30,
     }
     normalized_question_type = str(question_type or "fact").strip().lower()
-    if normalized_question_type in {"current_state", "latest"}:
+    if codex_user_goal_budget_query(args, ranking, question_type=question_type):
+        defaults.update(
+            {
+                "selected_user_prompt": 0.70,
+                "selected_assistant_decision_outcome_only": 0.30,
+                "selected_tool_evidence_only": 0.25,
+                "selected_profile_current_state": 0.55,
+            }
+        )
+    elif normalized_question_type in {"current_state", "latest"}:
         defaults.update(
             {
                 "selected_user_prompt": 0.40,

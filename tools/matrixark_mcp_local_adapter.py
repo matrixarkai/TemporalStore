@@ -625,6 +625,27 @@ def codex_outcome_budget_query(args: Json, ranking: Json, *, question_type: str 
     ))
 
 
+def codex_user_goal_budget_query(args: Json, ranking: Json, *, question_type: str = "fact") -> bool:
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    if normalized_question_type not in {"profile_memory", "current_state", "latest", "multi_hop", "date"}:
+        return False
+    query = str(args.get("query") or ranking.get("query") or "").strip()
+    if not query:
+        return False
+    lower = query.lower()
+    return bool(
+        re.search(
+            r"\b(?:what|which|show|list|recall|remember|find)\b.{0,80}\b(?:goal|task|plan|requirement|request|asked|ask|instruction|directive)\b",
+            lower,
+        )
+        or re.search(
+            r"\b(?:goal|task|plan|requirement|request|instruction|directive)\b.{0,80}\b(?:codex|implement|fix|add|remove|replace|move|build|work)\b",
+            lower,
+        )
+        or re.search(r"\b(?:what did i ask|what have i asked|user asked|user request|current plan)\b", lower)
+    )
+
+
 def auto_source_role_budget_tokens(
     args: Json,
     ranking: Json,
@@ -651,6 +672,8 @@ def auto_source_role_budget_tokens(
     normalized_question_type = str(question_type or "fact").strip().lower()
     if codex_outcome_budget_query(args, ranking, question_type=question_type):
         defaults.update({"assistant": 0.55, "tool": 0.55, "user": 0.40})
+    elif codex_user_goal_budget_query(args, ranking, question_type=question_type):
+        defaults.update({"assistant": 0.35, "tool": 0.25, "user": 0.70})
     elif normalized_question_type in {"current_state", "latest"}:
         defaults.update({"assistant": 0.50, "tool": 0.40, "user": 0.50})
     elif normalized_question_type == "profile_memory":
@@ -736,6 +759,15 @@ def auto_memory_selection_policy_budget_tokens(
                 "selected_user_prompt": 0.35,
                 "selected_assistant_decision_outcome_only": 0.58,
                 "selected_tool_evidence_only": 0.55,
+                "selected_profile_current_state": 0.55,
+            }
+        )
+    elif codex_user_goal_budget_query(args, ranking, question_type=question_type):
+        defaults.update(
+            {
+                "selected_user_prompt": 0.70,
+                "selected_assistant_decision_outcome_only": 0.30,
+                "selected_tool_evidence_only": 0.25,
                 "selected_profile_current_state": 0.55,
             }
         )
