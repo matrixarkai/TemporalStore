@@ -421,6 +421,71 @@ def candidate_index_terms(
             if value not in (None, "", [], {}):
                 terms.add(context_index_name(prefix, value))
 
+    def add_source_lineage_terms() -> None:
+        role_values: set[str] = set()
+        scalar_role = core.normalize_message_role(record.get("source_role"))
+        if scalar_role:
+            role_values.add(scalar_role)
+        if isinstance(record.get("source_roles"), list):
+            role_values.update(
+                core.normalize_message_role(role)
+                for role in record.get("source_roles", [])[:16]
+                if core.normalize_message_role(role)
+            )
+        if isinstance(record.get("source_role_counts"), dict):
+            for role, count in list(record.get("source_role_counts", {}).items())[:16]:
+                try:
+                    if int(count or 0) <= 0:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                role_name = core.normalize_message_role(role)
+                if role_name:
+                    role_values.add(role_name)
+        for role in sorted(role_values):
+            terms.add(context_index_name("source_role", role))
+        for field, prefix in [
+            ("source_hook_types", "hook_type"),
+            ("source_codex_events", "codex_event"),
+            ("source_memory_selection_policies", "memory_selection_policy"),
+            ("source_memory_scopes", "memory_scope"),
+            ("source_session_continuities", "session_continuity"),
+            ("source_extraction_phases", "extraction_phase"),
+            ("source_profile_promotion_policies", "profile_promotion_policy"),
+            ("source_profile_promotion_blockers", "profile_promotion_blocker"),
+        ]:
+            for value in record.get(field, [])[:16] if isinstance(record.get(field), list) else []:
+                terms.add(context_index_name(prefix, value))
+        for field, prefix in [
+            ("source_hook_type_counts", "hook_type"),
+            ("source_codex_event_counts", "codex_event"),
+            ("source_memory_selection_policy_counts", "memory_selection_policy"),
+        ]:
+            counts = record.get(field)
+            if not isinstance(counts, dict):
+                continue
+            for value, count in list(counts.items())[:16]:
+                try:
+                    if int(count or 0) <= 0:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                terms.add(context_index_name(prefix, value))
+        try:
+            lossy_count = int(record.get("source_memory_selection_lossy_count") or 0)
+        except (TypeError, ValueError):
+            lossy_count = 0
+        try:
+            complete_count = int(record.get("source_memory_selection_complete_count") or 0)
+        except (TypeError, ValueError):
+            complete_count = 0
+        if lossy_count > 0:
+            terms.add(context_index_name("memory_selection_quality", "lossy"))
+        if complete_count > 0:
+            terms.add(context_index_name("memory_selection_quality", "complete"))
+        if lossy_count > 0 and complete_count > 0:
+            terms.add(context_index_name("memory_selection_quality", "mixed"))
+
     if record_type == "context_event":
         terms.update(index_terms_by_batch.get(record.get("batch_id_hash"), []))
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))
@@ -434,20 +499,24 @@ def candidate_index_terms(
         terms.add(context_index_name("source_type", record.get("source_type") or "message"))
         terms.update(benchmark_quality_index_terms(record.get("text"), record.get("summary_text"), record.get("event_type"), record.get("metadata")))
         add_direct_layer_terms()
+        add_source_lineage_terms()
     elif record_type == "context_entity":
         terms.add(context_index_name("entity_type", record.get("entity_type")))
         if bool(record.get("profile_entity_current")):
             terms.add(context_index_name("profile_entity_current", "true"))
         terms.update(benchmark_quality_index_terms(record.get("entity_name"), record.get("entity_type"), record.get("state"), record.get("text")))
         add_direct_layer_terms()
+        add_source_lineage_terms()
     elif record_type == "context_segment":
         terms.add(context_index_name("segment_topic", record.get("topic")))
         terms.update(benchmark_quality_index_terms(record.get("topic"), record.get("text"), record.get("summary_text")))
         add_direct_layer_terms()
+        add_source_lineage_terms()
     elif record_type == "context_summary":
         terms.add(context_index_name("summary_type", record.get("summary_type")))
         terms.update(benchmark_quality_index_terms(record.get("summary_type"), record.get("summary_text"), record.get("text")))
         add_direct_layer_terms()
+        add_source_lineage_terms()
     elif record_type == "context_compression_event":
         terms.update(index_terms_by_ref.get(record.get("compression_id_hash"), []))
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))
@@ -455,6 +524,7 @@ def candidate_index_terms(
         terms.add(context_index_name("operator", record.get("operator") or "TIME_COMPRESS"))
         terms.update(benchmark_quality_index_terms(record.get("summary_text"), record.get("text")))
         add_direct_layer_terms()
+        add_source_lineage_terms()
     elif record_type == "resource_chunk":
         terms.update(index_terms_by_ref.get(record.get("chunk_hash"), []))
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))
