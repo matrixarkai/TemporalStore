@@ -206,6 +206,31 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(["assistant"], by_name["assistant_decision:blocker"]["source_roles"])
         self.assertEqual(["tool"], by_name["tool_evidence:validation"]["source_roles"])
 
+    def test_tool_memory_selection_normalizes_common_test_result_summaries(self) -> None:
+        noisy_tool_output = "\n".join(
+            [
+                "compiling temporalstore v0.1.0",
+                "warning: many unrelated build lines",
+                "test result: ok. 132 passed; 0 failed; 0 ignored; finished in 12.34s",
+                "To https://github.com/bjmeetsfo/TemporalStore.git",
+                "   39f93050..e2f645c5  HEAD -> main",
+            ]
+        )
+
+        selected = matrixark_codex_hook.selected_tool_memory_text(noisy_tool_output)
+        self.assertIn("Validation: 132 tests passed", selected)
+        self.assertIn("pushed commit e2f645c5 to origin/main", selected)
+        self.assertNotIn("warning: many unrelated build lines", selected)
+
+        entities = matrixark_mcp_core.extract_batch_entities(
+            [{"role": "tool", "content": noisy_tool_output}],
+            {"source_event_ids": ["tool_event"]},
+        )
+        by_name = {entity["entity_name"]: entity for entity in entities}
+        self.assertIn("tool_evidence:validation", by_name)
+        self.assertIn("132", by_name["tool_evidence:validation"]["state"])
+        self.assertEqual(["tool_event"], by_name["tool_evidence:validation"]["source_refs"])
+
     def test_outcome_fact_entities_emit_and_query_specific_index_terms(self) -> None:
         assistant_next = {
             "record_type": "context_entity",

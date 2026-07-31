@@ -2886,6 +2886,7 @@ TOOL_EVIDENCE_LINE_PATTERNS = [
         r"\b(?:error|failed|failure|fatal|panic|exception|traceback)\b",
         r"\b(?:passed|ok|success|succeeded|validated|verified)\b",
         r"\b(?:commit|pushed|push|rebase|rebased|branch|origin/main|refs/heads/main)\b",
+        r"\b[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*main\b",
         r"\b(?:test|tests|unittest|pytest|cargo test|cargo check|bash -n|py_compile)\b",
         r"\b(?:warning|blocked|rejected|missing|skipped|non-fast-forward)\b",
         r"\b(?:benchmark|workload|latency|p50|p90|p95|p99|throughput|qps|ops/s|req/s|writes/s|reads/s)\b",
@@ -2997,8 +2998,17 @@ def selected_tool_memory_text(text: str, payload: Json | None = None, *, max_cha
     if exit_match:
         facts.append(f"Exit code: {exit_match.group(1)}")
     tests_match = re.search(r"\bran\s+(\d+)\s+tests?\b", source, re.IGNORECASE)
+    if not tests_match:
+        tests_match = re.search(
+            r"\b(?:test\s+result:\s+ok\.\s*)?(\d+)\s+passed\b(?:[;,]\s*0\s+failed\b)?",
+            source,
+            re.IGNORECASE,
+        )
     if tests_match:
-        facts.append(f"Ran {tests_match.group(1)} tests")
+        if re.search(r"\b(?:passed|test\s+result:\s+ok|0\s+failed)\b", tests_match.group(0), re.IGNORECASE):
+            facts.append(f"Validation: {tests_match.group(1)} tests passed")
+        else:
+            facts.append(f"Ran {tests_match.group(1)} tests")
     elif re.search(r"\b(?:test|tests|validation|py_compile|unittest|pytest|cargo test|cargo check)\b", source, re.IGNORECASE) and re.search(
         r"\b(?:passed|ok|succeeded|success|clean)\b",
         source,
@@ -3076,6 +3086,12 @@ def selected_assistant_outcome_facts(text: str, *, max_facts: int = 6) -> list[s
     tests_match = re.search(r"\b(?:ran\s+)?(\d+)\s+tests?\s+(?:passed|ok|succeeded)\b", compact, re.IGNORECASE)
     if not tests_match:
         tests_match = re.search(r"\bran\s+(\d+)\s+tests?\b", compact, re.IGNORECASE)
+    if not tests_match:
+        tests_match = re.search(
+            r"\b(?:test\s+result:\s+ok\.\s*)?(\d+)\s+passed\b(?:[;,]\s*0\s+failed\b)?",
+            compact,
+            re.IGNORECASE,
+        )
     if tests_match:
         add_fact(f"Validation: {tests_match.group(1)} tests passed")
     elif re.search(r"\b(?:tests?|validation|py_compile|unittest|pytest|cargo test|cargo check)\b.{0,80}\b(?:passed|ok|succeeded|clean)\b", compact, re.IGNORECASE):
