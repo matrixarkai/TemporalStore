@@ -34,7 +34,7 @@ PROFILE_MEMORY_QUERY_RE = re.compile(
     r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|remember about me|remember about|what should (?:i|you|we) remember|standing instructions?|standing preferences?|persistent instructions?|saved preferences?|know about (?:me|my|the user)|what (?:have|did) i (?:tell|told) you|what (?:are|were|do|did) my preferences|what do i prefer|do i prefer|my preferences|my .*?(?:policy|policies|instruction|instructions|preference|preferences)|told you before)\b"
 )
 
-CODEX_OUTCOME_QUERY_RE = re.compile(r"\b(?:codex|assistant|agent)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|validated|verified|push(?:ed)?|commit(?:ted)?|rebased|failed|blocked|blocker|done|outcome|decision|decided|next action)\b|\bwhat (?:was|were|did)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|validated|verified|push(?:ed)?|commit(?:ted)?|failed|blocked|done)\b|\b(?:show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:assistant decision|tool evidence|validation evidence|pushed commit|blocked work|failed validation)\b|\bwhat (?:failed|was blocked|blocked)\b.{0,80}\b(?:memory work|work|validation|commit|push|tool|codex|temporalstore)\b")
+CODEX_OUTCOME_QUERY_RE = re.compile(r"\b(?:codex|assistant|agent)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|validated|verified|push(?:ed)?|commit(?:ted)?|rebased|failed|blocked|blocker|done|outcome|decision|decided|next action)\b|\bwhat (?:was|were|did)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|validated|verified|push(?:ed)?|commit(?:ted)?|failed|blocked|done)\b|\bwhat did (?:you|we)\b.{0,80}\b(?:implement|fix|change|update|validate|verify|push|commit|rebase|fail|block|decide|do)\b|\b(?:show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:assistant decision|tool evidence|validation evidence|pushed commit|blocked work|failed validation)\b|\bwhat (?:failed|was blocked|blocked)\b.{0,80}\b(?:memory work|work|validation|commit|push|tool|codex|temporalstore)\b")
 
 QUERY_INDEX_LABELS: dict[str, str] = {
     "entity_type:location": "location city moved lives staying where user is",
@@ -232,10 +232,16 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("classification", "correction"),
             context_index_name("segment_topic", "correction"),
         )
-    if CODEX_OUTCOME_QUERY_RE.search(lower) or re.search(r"\b(assistant|decision|decided|done|implemented|fixed|validated|verified|push(?:ed)?|commit(?:ted)?|failed|blocked|final answer|what did codex|what was done|next action)\b", lower):
+    if CODEX_OUTCOME_QUERY_RE.search(lower) or re.search(r"\b(assistant|decision|decided|done|implemented|fixed|validated|verified|push(?:ed)?|commit(?:ted)?|failed|blocked|final answer|what did codex|what did you|what did we|what was done|next action)\b", lower):
         add_group(
             context_index_name("entity_type", "assistant_decision"),
             context_index_name("event_type", "assistant_response"),
+            context_index_name("entity_type", "tool_evidence"),
+            context_index_name("event_type", "tool_evidence"),
+            context_index_name("source_role", "assistant"),
+            context_index_name("source_role", "tool"),
+            context_index_name("memory_selection_policy", "selected_assistant_decision_outcome_only"),
+            context_index_name("memory_selection_policy", "selected_tool_evidence_only"),
             context_index_name("source_type", "message"),
         )
         outcome_terms = codex_outcome_fact_index_terms(query)
