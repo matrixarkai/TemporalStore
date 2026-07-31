@@ -3892,7 +3892,8 @@ def hook_storage_options() -> Json:
 
 
 def is_tool_hook_event(event: str) -> bool:
-    return str(event or "") in TOOL_HOOK_EVENTS
+    normalized = str(event or "").strip()
+    return normalized in TOOL_HOOK_EVENTS or normalized.lower() in {"tool_result", "tool-result", "toolresult"}
 
 
 def should_ingest_tool_result(event: str) -> bool:
@@ -4169,8 +4170,13 @@ def fast_async_hook_ingest(
         source_role=role,
         **lineage,
     )
-    tool_result_skipped = role == "tool" and not should_ingest_tool_result(args.event)
-    tool_result_raw_only = role == "tool" and should_ingest_tool_result(args.event) and not should_promote_tool_result_to_serving(args.event)
+    tool_policy_event = hook_type if role == "tool" and is_tool_hook_event(hook_type) else args.event
+    tool_result_skipped = role == "tool" and not should_ingest_tool_result(tool_policy_event)
+    tool_result_raw_only = (
+        role == "tool"
+        and should_ingest_tool_result(tool_policy_event)
+        and not should_promote_tool_result_to_serving(tool_policy_event)
+    )
     metadata["serving_projection"] = {
         "record_type": "context_event",
         "event_id_hash": event_id_hash,
