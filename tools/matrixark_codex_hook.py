@@ -4125,7 +4125,6 @@ def fast_async_hook_ingest(
         "text": text,
         "codex_event": args.event,
         "codex_api_event": args.event,
-        "hook_type": hook_type,
         **tool_fields,
         "messages": messages,
         "scope": scope,
@@ -4164,7 +4163,6 @@ def fast_async_hook_ingest(
         "source_hook_type_counts": {hook_type: 1} if hook_type else {},
         "codex_event": args.event,
         "codex_api_event": args.event,
-        "hook_type": hook_type,
         "source_codex_events": [args.event] if args.event else [],
         "source_codex_event_counts": {args.event: 1} if args.event else {},
         "source_memory_scopes": source_memory_scopes,
@@ -4282,6 +4280,12 @@ def fast_async_hook_ingest(
         )
         if latest_event_time > 0:
             idle_elapsed_before_ingest_ms = max(0, now - latest_event_time)
+        latest_deadline_ms = max(
+            int(record.get("envelope", {}).get("idle_commit_deadline_ms") or 0)
+            for record in pending_before_ingest
+        )
+        if latest_deadline_ms > 0 and now >= latest_deadline_ms:
+            idle_elapsed_before_ingest_ms = max(idle_elapsed_before_ingest_ms, idle_timeout_ms)
     auto_batch_extract_on_ingest = should_auto_batch_extract_on_ingest(args.event)
     commit_extraction_options: Json = hook_session_commit_extraction_options(args)
     should_pre_ingest_idle_commit = (
@@ -4377,6 +4381,9 @@ def fast_async_hook_ingest(
             "idle_commit_result": pre_ingest_idle_commit_result,
             "auto_batch_extract_result": pre_ingest_idle_commit_result if should_pre_ingest_idle_commit else {},
         }
+    if idle_timeout_ms > 0:
+        record["envelope"]["idle_commit_deadline_ms"] = now + idle_timeout_ms
+        record["envelope"]["idle_commit_cutoff_ms"] = now
     serving_records = [record, pipeline_task, *projection_records, *summary_dirty_records]
     append_many_materialized = getattr(adapter, "_append_many_materialized", None)
     if callable(append_many_materialized):
