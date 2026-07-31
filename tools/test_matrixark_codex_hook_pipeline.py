@@ -3396,6 +3396,74 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("pushed commit f8c4907", pending_event["text"])
             self.assertNotIn("large omitted stdout", pending_event["text"])
 
+    def test_fast_hook_tool_evidence_is_serving_pending_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-tool-default-serving.jsonl")
+
+            class Server:
+                def __init__(self) -> None:
+                    self.adapter = adapter
+
+            scope = {
+                "account_id": "acct_tool_default",
+                "tenant_id": "tenant_tool_default",
+                "user_id": "user_tool_default",
+                "session_id": "session_tool_default",
+            }
+            selected_tool_text = matrixark_codex_hook.selected_tool_memory_text(
+                "Exit code: 0\nRan 9 focused tests\nOK\n"
+                + "\n".join(f"huge stdout line {index}" for index in range(80)),
+                {"tool_name": "shell_command", "tool_status": "ok"},
+            )
+            result = matrixark_codex_hook.fast_async_hook_ingest(
+                Server(),
+                args=Namespace(
+                    event="PostToolUse",
+                    **scope,
+                    team="codex",
+                    project="temporalstore",
+                    session_commit_threshold=20,
+                    idle_commit_timeout_ms=300000,
+                    understanding_provider="rules",
+                    segment_provider="deterministic",
+                ),
+                text=selected_tool_text,
+                role="tool",
+                original_text="Exit code: 0\nRan 9 focused tests\nOK\n" + "\n".join(
+                    f"huge stdout line {index}" for index in range(80)
+                ),
+                agent_context={"workspace_root": "/repo", "tool_name": "shell_command", "tool_status": "ok"},
+                hook={
+                    "source": "codex",
+                    "hook_id": "tool-default-serving",
+                    "observed_at_ms": 123456,
+                    "idempotency_key": "tool-default-serving",
+                    "trigger": "PostToolUse",
+                    "auto_captured": True,
+                    "session_id_source": "payload_field",
+                },
+            )
+
+            self.assertEqual("accepted", result["status"])
+            self.assertEqual("accepted", result["serving_projection_status"])
+            self.assertEqual("pending", result["async_pipeline_status"])
+            self.assertEqual(1, result["session_buffer"]["pending_event_count"])
+            self.assertEqual(1, result["session_buffer"]["pending_message_count"])
+            self.assertFalse(result["session_buffer"]["threshold_ready"])
+            self.assertTrue(result["session_buffer"]["idle_commit_scheduled"])
+            records = adapter.read_all()
+            pending_event = next(
+                record
+                for record in records
+                if record.get("record_type") == "context_event" and record.get("event_type") == "pending_async"
+            )
+            self.assertEqual("tool", pending_event["role"])
+            self.assertEqual(["selected_tool_evidence_only"], pending_event["source_memory_selection_policies"])
+            self.assertEqual({"selected_tool_evidence_only": 1}, pending_event["source_memory_selection_policy_counts"])
+            self.assertIn("Validation: tests passed", pending_event["text"])
+            self.assertNotIn("huge stdout line", pending_event["text"])
+            self.assertEqual(1, len(adapter.pending_session_events(scope)))
+
     def test_fast_hook_skipped_tool_result_reports_pre_ingest_idle_commit(self) -> None:
         old_raw = matrixark_codex_hook.HOOK_TOOL_RESULT_RAW
         old_serving = matrixark_codex_hook.HOOK_TOOL_RESULT_SERVING
