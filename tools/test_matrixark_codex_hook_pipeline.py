@@ -5978,9 +5978,22 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
 
             self.assertTrue(pack["insufficient_context"])
             self.assertEqual([], pack.get("selected_refs", []))
-            self.assertTrue(pack["memory_inventory"]["has_profile_memory"])
-            self.assertTrue(pack["memory_inventory"]["profile_records_available_but_not_selected"])
+            self.assertNotIn("memory_inventory", pack)
             self.assertIn("profile_memory_available_but_not_selected", pack["quality_warnings"])
+            metrics_pack = adapter.retrieve(
+                {
+                    "scope": session_scope,
+                    "session_scope": "only",
+                    "query": "What is the current session task?",
+                    "max_context_tokens": 160,
+                    "ranking": {"max_selected_refs": 1, "min_similarity_score": 0.0},
+                    "audit_mode": "off",
+                    "include_retrieval_metrics": True,
+                }
+            )
+            metrics_inventory = metrics_pack["retrieval_metrics"]["memory_inventory"]
+            self.assertTrue(metrics_inventory["has_profile_memory"])
+            self.assertTrue(metrics_inventory["profile_records_available_but_not_selected"])
 
     def test_profile_memory_query_selects_existing_profile_summary_without_refresh(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -9343,7 +9356,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 prefiltered["records"],
             )
 
-    def test_retrieve_serving_pack_exposes_memory_inventory_layers(self) -> None:
+    def test_retrieve_serving_pack_hides_inventory_until_metrics_requested(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = Path(tmp_dir)
             adapter = MatrixArkLocalAdapter(tmp / "matrixark-memory-inventory.jsonl")
@@ -9400,8 +9413,20 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "audit_mode": "off",
                 }
             )
-            self.assertIn("memory_inventory", pack)
-            inventory = pack["memory_inventory"]
+            self.assertNotIn("memory_inventory", pack)
+
+            metrics_pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "session_inventory_followup"},
+                    "session_scope": "prefer",
+                    "query": "Show profile inventory memory and tenant shared inventory policy.",
+                    "max_context_tokens": 800,
+                    "shared_context": {"resource_budget_tokens": 120},
+                    "audit_mode": "off",
+                    "include_retrieval_metrics": True,
+                }
+            )
+            inventory = metrics_pack["retrieval_metrics"]["memory_inventory"]
             self.assertTrue(inventory["has_session_memory"])
             self.assertTrue(inventory["has_profile_memory"])
             self.assertTrue(inventory["has_shared_memory"])
@@ -9416,19 +9441,6 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(inventory["shared"]["resource_chunks"], 1)
             self.assertEqual("prefer", inventory["query_scope"]["session_scope"])
             self.assertNotIn("source_event_ids", json.dumps(inventory, sort_keys=True))
-
-            metrics_pack = adapter.retrieve(
-                {
-                    "scope": {**scope, "session_id": "session_inventory_followup"},
-                    "session_scope": "prefer",
-                    "query": "Show profile inventory memory and tenant shared inventory policy.",
-                    "max_context_tokens": 800,
-                    "shared_context": {"resource_budget_tokens": 120},
-                    "audit_mode": "off",
-                    "include_retrieval_metrics": True,
-                }
-            )
-            self.assertEqual(inventory, metrics_pack["retrieval_metrics"]["memory_inventory"])
 
     def test_context_segment_debug_pack_shows_source_context_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

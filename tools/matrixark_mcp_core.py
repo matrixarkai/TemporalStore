@@ -7141,6 +7141,22 @@ def compact_context_pack_for_serving_flat(pack: Json, *, include_debug: bool = F
         "embedding_fallback_used",
     ]:
         compact.pop(field, None)
+    if include_debug or CONTEXT_PACK_DEBUG_LINEAGE or compact.get("include_retrieval_metrics"):
+        metrics = compact.get("retrieval_metrics")
+        if isinstance(metrics, dict):
+            try:
+                from tools.matrixark_mcp_context_pack import serving_retrieval_metrics
+            except ModuleNotFoundError:  # Direct script execution from tools/.
+                from matrixark_mcp_context_pack import serving_retrieval_metrics
+            compact["retrieval_metrics"] = serving_retrieval_metrics(metrics, include_debug=include_debug)
+    else:
+        for field in [
+            "retrieval_metrics",
+            "memory_inventory",
+            "pre_retrieval_idle_commit",
+            "pre_retrieval_summary_refresh",
+        ]:
+            compact.pop(field, None)
     compact = {key: value for key, value in compact.items() if value not in (None, "", [], {})}
     if include_debug:
         return compact

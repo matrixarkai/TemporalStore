@@ -1415,7 +1415,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         compact["tokens"] = pack.get("tokens", {})
     if pack.get("quality_warnings"):
         compact["warnings"] = pack.get("quality_warnings", [])
-    if isinstance(pack.get("memory_inventory"), dict):
+    if debug_lineage_enabled(include_debug=include_debug) and isinstance(pack.get("memory_inventory"), dict):
         compact["memory_inventory"] = pack["memory_inventory"]
     if pack.get("partial_context_pack"):
         compact["partial"] = True
