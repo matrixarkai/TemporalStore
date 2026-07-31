@@ -494,6 +494,7 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         "source_memory_selection_retained_line_ratio_avg",
         "profile_promotion_policy",
         "profile_promotion_blocker",
+        "profile_entity_current",
         "profile_revision",
         "previous_profile_revision",
         "previous_profile_updated_at_ms",

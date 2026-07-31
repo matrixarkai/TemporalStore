@@ -11852,6 +11852,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 and record.get("memory_scope") == "user_profile"
                 and record.get("session_continuity") == "cross_session"
                 and record.get("entity_type") == "assistant_decision"
+                and record.get("entity_name") == "assistant_decision"
             ]
             self.assertTrue(profile_decisions)
             profile_decision = profile_decisions[0]
@@ -11941,6 +11942,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 and record.get("memory_scope") == "user_profile"
                 and record.get("session_continuity") == "cross_session"
                 and record.get("entity_type") == "assistant_decision"
+                and record.get("entity_name") == "assistant_decision"
             ]
             self.assertTrue(profile_decisions)
             state = "\n".join(str(record.get("state") or "") for record in profile_decisions)
@@ -11995,6 +11997,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 and record.get("memory_scope") == "user_profile"
                 and record.get("session_continuity") == "cross_session"
                 and record.get("entity_type") == "assistant_decision"
+                and record.get("entity_name") == "assistant_decision"
             ]
             self.assertEqual(1, len(profile_decisions))
             profile_decision = profile_decisions[0]
@@ -12100,11 +12103,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "max_context_tokens": 500,
                     "audit_mode": "telemetry_only",
                     "include_debug_refs": True,
-                    "ranking": {"max_selected_refs": 1, "min_similarity_score": 0.0},
+                    "ranking": {"max_selected_refs": 3, "min_similarity_score": 0.0},
                 }
             )
-            self.assertEqual(1, len(current_pack["selected_refs"]))
-            current_ref = current_pack["selected_refs"][0]
+            current_ref = next(
+                ref
+                for ref in current_pack["selected_refs"]
+                if ref.get("entity_name") == "assistant_decision"
+            )
             self.assertEqual("entity", current_ref["ref_type"])
             self.assertEqual("assistant_decision", current_ref["entity_type"])
             self.assertEqual("user_profile", current_ref["memory_scope"])
@@ -12309,6 +12315,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "extraction_context_event_ids": [91003],
                         "source_memory_scopes": ["session", "user_profile"],
                         "source_session_continuities": ["same_session", "cross_session"],
+                        "profile_entity_current": True,
+                        "profile_revision": 2,
+                        "previous_profile_revision": 1,
+                        "previous_profile_updated_at_ms": 900,
                         "extraction_phase": "final",
                         "final_session_boundary": True,
                         "updated_at_ms": 1000,
@@ -12378,6 +12388,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(1, debug_ref["profile_source_entity_count"])
             self.assertEqual(1, debug_ref["current_state_source_session_count"])
             self.assertEqual(1, debug_ref["current_state_source_entity_count"])
+            self.assertTrue(debug_ref["profile_entity_current"])
+            self.assertEqual(2, debug_ref["profile_revision"])
 
     def test_retrieval_recovers_profile_summary_layer_from_compact_embedding_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
