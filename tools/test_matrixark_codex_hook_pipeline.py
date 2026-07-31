@@ -413,6 +413,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
 
     def test_query_helper_oss_labels_cover_profile_memory_layers(self) -> None:
         labels = matrixark_mcp_query.QUERY_INDEX_LABELS
+        core_labels = matrixark_mcp_core.QUERY_INDEX_LABELS
 
         for label in [
             "memory_scope:user_profile",
@@ -428,7 +429,21 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "source_role:tool",
         ]:
             self.assertIn(label, labels)
+            self.assertIn(label, core_labels)
             self.assertTrue(labels[label].strip(), label)
+            self.assertTrue(core_labels[label].strip(), label)
+
+    def test_oss_query_filters_preserve_explicit_resource_and_skill_terms(self) -> None:
+        query = "Which policy requires finance approval and which skill inspects replay evidence?"
+
+        for builder in [
+            matrixark_mcp_core.oss_encoder_secondary_index_filter_groups,
+            matrixark_mcp_query.oss_encoder_secondary_index_filter_groups,
+        ]:
+            flattened = {term for group in builder(query, "evidence") for term in group}
+            self.assertIn("source_type:resource", flattened)
+            self.assertIn("source_type:resource_fact", flattened)
+            self.assertIn("source_type:skill", flattened)
 
     def test_cross_session_query_words_override_latest_and_date_classifiers(self) -> None:
         for query in [
