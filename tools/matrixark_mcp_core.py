@@ -2822,6 +2822,8 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     user_text = text_from_messages(user_messages) if user_messages else ""
     if user_text:
         user_directive_patterns = [
+            ("current_plan", r"\bgoal\s*:\s*([^.;!?\n]{4,220})"),
+            ("current_plan", r"\b(?:please\s+)?(?:implement|fix|add|remove|replace|move)\s+([^.;!?\n]{4,180})"),
             ("preference", r"\b(?:remember(?:\s+that)?|please\s+always|always|keep|use|prefer|make\s+sure(?:\s+to)?)\b[:\s]+([^.;!?\n]{4,180})"),
             ("preference", r"\b(?:do\s+not|don't|never|avoid|stop)\s+([^.;!?\n]{4,180})"),
             ("current_plan", r"\b(?:we\s+should|should|need\s+to|must|have\s+to|let's|lets|please)\s+([^.;!?\n]{4,180})"),
