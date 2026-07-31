@@ -3667,6 +3667,18 @@ def codex_retrieve_ranking_options() -> Json:
     }
 
 
+def codex_retrieve_cross_session_options() -> Json:
+    return {
+        "enabled": True,
+        "budget_ratio": 0.12,
+        "max_budget_ratio": 0.20,
+        "max_sessions": 4,
+        "max_candidates": 24,
+        "min_entity_bridge_refs": 1,
+        "preferred_ref_types": ["entity", "summary", "compression", "event", "segment"],
+    }
+
+
 def hook_async_message_ingest_args(
     common: Json,
     args: argparse.Namespace,
@@ -5188,6 +5200,7 @@ def main() -> int:
                         else {}
                     ),
                     "ranking": codex_retrieve_ranking_options(),
+                    "cross_session": codex_retrieve_cross_session_options(),
                     **hook_session_commit_extraction_options(args),
                     "metadata": {
                         "retrieval_source": "codex_hook_retrieve",
