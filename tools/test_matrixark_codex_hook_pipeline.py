@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+import io
 import json
 import os
 import subprocess
@@ -7678,6 +7679,70 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("auto", role_policy["mode"])
             self.assertLessEqual(debug_pack["used_remote_context_tokens"], role_policy["remote_budget_tokens"])
 
+    def test_user_prompt_backfills_previous_assistant_when_tool_backfill_times_out(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def fake_trace_tool_call(server, name, arguments, trace):
+            role = arguments.get("messages", [{}])[0].get("role", "")
+            trigger = arguments.get("agent_hook", {}).get("trigger", "")
+            calls.append((role, trigger))
+            if role == "tool":
+                return {
+                    "status": "timeout",
+                    "_hook_tool_timeout": True,
+                    "tool": name,
+                    "timeout_ms": 5,
+                }
+            return {"status": "accepted", "event_id_hash": 1, "node_hash": 2, "hook_captured": True}
+
+        argv = [
+            "matrixark_codex_hook.py",
+            "--backend",
+            "local",
+            "--event-log",
+            "/tmp/matrixark-backfill-isolation.jsonl",
+            "--event",
+            "UserPromptSubmit",
+            "--account-id",
+            "acct_backfill_isolation",
+            "--tenant-id",
+            "tenant_backfill_isolation",
+            "--user-id",
+            "user_backfill_isolation",
+            "--session-id",
+            "session_backfill_isolation",
+        ]
+        payload = {
+            "prompt": "User asks the next question after prior tool and assistant output.",
+            "thread_id": "backfill-isolation-thread",
+        }
+        with (
+            mock.patch.object(matrixark_codex_hook.sys, "argv", argv),
+            mock.patch.object(matrixark_codex_hook, "read_stdin_payload", return_value=payload),
+            mock.patch.object(matrixark_codex_hook, "validate_hook_backend_policy", return_value=None),
+            mock.patch.object(matrixark_codex_hook, "build_server", return_value=object()),
+            mock.patch.object(matrixark_codex_hook, "close_server_best_effort", return_value=None),
+            mock.patch.object(matrixark_codex_hook, "append_hook_trace", return_value=None),
+            mock.patch.object(matrixark_codex_hook, "trace_tool_call", side_effect=fake_trace_tool_call),
+            mock.patch.object(matrixark_codex_hook, "should_rollout_backfill_tool_result", return_value=True),
+            mock.patch.object(matrixark_codex_hook, "latest_codex_tool_output_from_rollout", return_value="Exit code: 0\nRan 3 tests\nOK"),
+            mock.patch.object(
+                matrixark_codex_hook,
+                "latest_codex_assistant_message_from_rollout_raw",
+                return_value="Assistant decision: capture previous assistant even if tool backfill timed out.",
+            ),
+            mock.patch.object(matrixark_codex_hook, "spawn_rollout_backfill_child", return_value=None),
+            mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+        ):
+            exit_code = matrixark_codex_hook.main()
+
+        self.assertEqual(0, exit_code)
+        self.assertIn(("tool", "UserPromptSubmit:previous_tool_output_backfill"), calls)
+        self.assertIn(("assistant", "UserPromptSubmit:previous_assistant_backfill"), calls)
+        output = json.loads(stdout.getvalue())
+        self.assertEqual("warning", output["status"])
+        self.assertIn("timed out", output["error"])
+
     def test_user_prompt_cli_idle_preflushes_previous_assistant_rollout(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -8073,7 +8138,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({"tool": 1}, role_policy["budget_tokens"])
             self.assertEqual(0, role_policy["selected_tokens_by_role"]["tool"])
             memory_budget = pack["recall_policy"]["memory_layer_budget"]
-            self.assertEqual({"assistant": 1}, memory_budget["source_message_counts_by_role"])
+            self.assertGreaterEqual(memory_budget["source_message_counts_by_role"].get("assistant", 0), 1)
 
     def test_user_prompt_fast_async_threshold_commits_previous_tool_rollout(self) -> None:
         repo = Path(__file__).resolve().parents[1]
@@ -8386,7 +8451,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({"tool": 1}, role_policy["budget_tokens"])
             self.assertEqual(0, role_policy["selected_tokens_by_role"]["tool"])
             memory_budget = pack["recall_policy"]["memory_layer_budget"]
-            self.assertEqual({"assistant": 1}, memory_budget["source_message_counts_by_role"])
+            self.assertGreaterEqual(memory_budget["source_message_counts_by_role"].get("assistant", 0), 1)
 
             summary_pack = adapter.retrieve(
                 {

@@ -4936,9 +4936,10 @@ def main() -> int:
 
         ingest = {}
         if args.event == "UserPromptSubmit":
+            backfill_warnings: list[str] = []
             previous_tool_raw = latest_codex_tool_output_from_rollout(payload) if should_rollout_backfill_tool_result() else ""
             previous_tool_output = selected_tool_memory_text(previous_tool_raw, payload)
-            if previous_tool_output and previous_tool_output != text and not hook_warning:
+            if previous_tool_output and previous_tool_output != text:
                 backfill_result = trace_tool_call(
                     server,
                     "matrixark_ingest",
@@ -4969,10 +4970,12 @@ def main() -> int:
                     ),
                     trace,
                 )
-                hook_warning = timeout_warning(backfill_result)
+                tool_warning = timeout_warning(backfill_result)
+                if tool_warning:
+                    backfill_warnings.append(tool_warning)
             previous_assistant_raw = latest_codex_assistant_message_from_rollout_raw(payload)
             previous_assistant = selected_assistant_memory_text(previous_assistant_raw)
-            if previous_assistant and previous_assistant != text and not hook_warning:
+            if previous_assistant and previous_assistant != text:
                 backfill_result = trace_tool_call(
                     server,
                     "matrixark_ingest",
@@ -5003,7 +5006,12 @@ def main() -> int:
                     ),
                     trace,
                 )
-                hook_warning = timeout_warning(backfill_result)
+                assistant_warning = timeout_warning(backfill_result)
+                if assistant_warning:
+                    backfill_warnings.append(assistant_warning)
+            if backfill_warnings:
+                trace["backfill_warnings"] = backfill_warnings
+                hook_warning = backfill_warnings[0]
         if raw_uri and is_resource_event(args.event):
             kind = "skill" if resource_type == "skill" or Path(raw_uri).name.lower() == "skill.md" else "resource"
             ingest_args = {
