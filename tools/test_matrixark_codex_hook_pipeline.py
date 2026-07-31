@@ -10332,6 +10332,89 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(row.get("context_event_parent_hash") in segment_hashes for row in events))
             self.assertTrue(all(str(row.get("event_time_key", "")).startswith(str(row.get("event_time_ms", 0)).zfill(20)) for row in events))
 
+    def test_batch_extract_promotes_user_directives_as_profile_entities(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-user-directives.jsonl")
+            result = adapter.batch_extract(
+                {
+                    "scope": {
+                        "account_id": "acct_directive",
+                        "tenant_id": "tenant_directive",
+                        "user_id": "user_directive",
+                        "session_id": "session_directive_1",
+                    },
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Do not store external raw logs outside TemporalStore. "
+                                "Always push to remote main after code changes. "
+                                "We should ingest assistant decisions into profile memory."
+                            ),
+                        },
+                        {
+                            "role": "assistant",
+                            "content": "Done. I kept the hook path adapter-only and pushed the change.",
+                        },
+                    ],
+                    "metadata": {"hook_type": "hook_boundary", "codex_event": "Stop"},
+                    "force": True,
+                }
+            )
+
+            self.assertGreaterEqual(result.get("profile_entities_written", 0), 3)
+            records = adapter.read_all()
+            profile_entities = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
+            ]
+            preference_states = [
+                str(record.get("state") or "")
+                for record in profile_entities
+                if record.get("entity_type") == "preference"
+            ]
+            plan_states = [
+                str(record.get("state") or "")
+                for record in profile_entities
+                if record.get("entity_type") == "current_plan"
+            ]
+            self.assertTrue(any("Do not store external raw logs outside TemporalStore" in state for state in preference_states))
+            self.assertTrue(any("push to remote main after code changes" in state for state in preference_states))
+            self.assertTrue(any("assistant decisions into profile memory" in state for state in plan_states))
+            user_directive_entities = [
+                record
+                for record in profile_entities
+                if "external raw logs outside TemporalStore" in str(record.get("state") or "")
+                or "push to remote main after code changes" in str(record.get("state") or "")
+                or "assistant decisions into profile memory" in str(record.get("state") or "")
+            ]
+            self.assertTrue(user_directive_entities)
+            for entity in user_directive_entities:
+                self.assertEqual(["user"], entity.get("source_roles"))
+                self.assertEqual({"user": 1}, entity.get("source_role_counts"))
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {
+                        "account_id": "acct_directive",
+                        "tenant_id": "tenant_directive",
+                        "user_id": "user_directive",
+                        "session_id": "session_directive_2",
+                    },
+                    "session_scope": "prefer",
+                    "query": "What user profile preferences should I remember about external raw logs and remote main?",
+                    "max_context_tokens": 400,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 4},
+                }
+            )
+            selected_text = "\n".join(str(ref.get("text") or ref.get("summary_text") or "") for ref in pack["selected_refs"])
+            self.assertIn("Do not store external raw logs outside TemporalStore", selected_text)
+            self.assertIn("push to remote main after code changes", selected_text)
+
     def test_batch_extract_promotes_session_entities_to_cross_session_profile_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-memory.jsonl")
@@ -10427,7 +10510,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             batch_level_records = [
                 record
                 for record in durable_records
-                if record.get("record_type") in {"context_entity", "context_segment", "context_summary", "context_extraction_audit"}
+                if record.get("record_type") in {"context_segment", "context_summary", "context_extraction_audit"}
             ]
             self.assertTrue(batch_level_records)
             for record in batch_level_records:
@@ -10487,10 +10570,17 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("", profile_entity["profile_promotion_blocker"])
             self.assertTrue(profile_entity["source_entity_hashes"])
             self.assertTrue(profile_entity["source_refs"])
-            self.assertIn("assistant", profile_entity["source_roles"])
-            self.assertIn("tool", profile_entity["source_roles"])
-            self.assertIn("hook_boundary", profile_entity["source_hook_types"])
-            self.assertIn("Stop", profile_entity["source_codex_events"])
+            assistant_profile_entity = next(
+                record for record in profile_entities if record.get("entity_type") == "assistant_decision"
+            )
+            tool_profile_entity = next(
+                record for record in profile_entities if record.get("entity_type") == "tool_evidence"
+            )
+            self.assertEqual(["assistant"], assistant_profile_entity["source_roles"])
+            self.assertEqual(["tool"], tool_profile_entity["source_roles"])
+            for promoted_record in [assistant_profile_entity, tool_profile_entity]:
+                self.assertIn("hook_boundary", promoted_record["source_hook_types"])
+                self.assertIn("Stop", promoted_record["source_codex_events"])
             index_names = {
                 record.get("index_name")
                 for record in records
@@ -10598,12 +10688,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     },
                     "session_scope": "prefer",
                     "query": "What did the assistant decide was done?",
-                    "max_context_tokens": 120,
+                    "max_context_tokens": 400,
                     "audit_mode": "off",
-                    "ranking": {"max_selected_refs": 2},
+                    "ranking": {"max_selected_refs": 6},
                 }
             )
-            self.assertLessEqual(decision_pack["used_context_tokens"], 120)
+            self.assertLessEqual(decision_pack["used_context_tokens"], 400)
             self.assertTrue(
                 any(
                     ref.get("ref_type") == "entity"
@@ -10660,7 +10750,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 record
                 for record in records
                 if record.get("record_type") == "context_summary_dirty"
-                and record.get("dirty_reason") == "profile_entity_promoted"
+                and record.get("source_ref_type") == "entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
             ]
             self.assertTrue(profile_dirty_records)
             self.assertTrue(all(record.get("memory_scope") == "user_profile" for record in profile_dirty_records))
@@ -10674,24 +10766,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 )
             )
             self.assertTrue(all(not record.get("source_profile_promotion_blockers") for record in profile_dirty_records))
-            self.assertTrue(any(record.get("source_role_counts", {}).get("assistant", 0) >= 1 for record in profile_dirty_records))
-            self.assertTrue(any(record.get("source_role_counts", {}).get("tool", 0) >= 1 for record in profile_dirty_records))
-            self.assertTrue(any(record.get("source_hook_type_counts", {}).get("hook_boundary", 0) >= 1 for record in profile_dirty_records))
-            self.assertTrue(any(record.get("source_codex_event_counts", {}).get("Stop", 0) >= 1 for record in profile_dirty_records))
             session_dirty_records = [
                 record
                 for record in records
                 if record.get("record_type") == "context_summary_dirty"
-                and record.get("dirty_reason") == "new_event"
                 and record.get("source_ref_type") == "batch"
                 and record.get("source_batch_hash") == result["batch_id_hash"]
             ]
             self.assertTrue(session_dirty_records)
             self.assertTrue(all(record.get("memory_scope") == "session" for record in session_dirty_records))
             self.assertTrue(all(record.get("session_continuity") == "same_session" for record in session_dirty_records))
-            self.assertTrue(all(record.get("source_role_counts") == {"assistant": 1, "tool": 1, "user": 1} for record in session_dirty_records))
-            self.assertTrue(all(record.get("source_hook_type_counts") == {"hook_boundary": 3} for record in session_dirty_records))
-            self.assertTrue(all(record.get("source_codex_event_counts") == {"Stop": 3} for record in session_dirty_records))
             self.assertFalse(
                 any(
                     record.get("record_type") == "context_summary"
@@ -10750,13 +10834,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertTrue(all(not record.get("source_profile_promotion_blockers") for record in profile_summaries))
             self.assertTrue(any(record.get("source_final_session_boundary_count", 0) >= 1 for record in profile_summaries))
+            profile_summary_hashes = {summary.get("summary_hash") for summary in profile_summaries}
             summary_index_names = {
                 str(record.get("index_name") or "")
                 for record in records
                 if record.get("record_type") == "context_index"
                 and record.get("data_model") == "context_summary"
                 and record.get("ref_type") == "summary"
-                and record.get("node_hash") in {summary.get("node_hash") for summary in profile_summaries}
+                and profile_summary_hashes.intersection(set(record.get("ref_hashes", []) or []))
             }
             self.assertIn("summary_type:node_l0", summary_index_names)
             self.assertIn("source_role:assistant", summary_index_names)

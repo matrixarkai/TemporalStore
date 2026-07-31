@@ -2721,26 +2721,31 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     ]
     user_text = text_from_messages(user_messages) if user_messages else ""
     if user_text:
-        for match in re.finditer(
-            r"\b(?:remember(?:\s+that)?|please\s+always|always|keep|use)\b[:\s]+([^.;!?\n]{4,180})",
-            user_text,
-            re.IGNORECASE,
-        ):
-            directive = clean_patch_value(match.group(1))
-            if not directive:
-                continue
-            state = summarize_text(f"user directive: {directive}", limit=220)
-            entities.append(
-                {
-                    "entity_type": "preference",
-                    "entity_name": "preference",
-                    "state": state,
-                    "confidence": 0.84,
-                    "source_refs": source_refs,
-                    "operator": normalize_entity_operator(None, "preference"),
-                    "field_patches": [entity_patch("", summarize_text(state, limit=180))],
-                }
-            )
+        user_directive_patterns = [
+            ("preference", r"\b(?:remember(?:\s+that)?|please\s+always|always|keep|use|prefer|make\s+sure(?:\s+to)?)\b[:\s]+([^.;!?\n]{4,180})"),
+            ("preference", r"\b(?:do\s+not|don't|never|avoid|stop)\s+([^.;!?\n]{4,180})"),
+            ("current_plan", r"\b(?:we\s+should|should|need\s+to|must|have\s+to|let's|lets|please)\s+([^.;!?\n]{4,180})"),
+        ]
+        for entity_type, pattern in user_directive_patterns:
+            for match in re.finditer(pattern, user_text, re.IGNORECASE):
+                directive = clean_patch_value(match.group(0))
+                if not directive:
+                    continue
+                prefix = "user directive" if entity_type == "preference" else "user plan"
+                state = summarize_text(f"{prefix}: {directive}", limit=220)
+                entities.append(
+                    {
+                        "entity_type": entity_type,
+                        "entity_name": summarize_text(f"{entity_type}:{directive}", limit=96),
+                        "state": state,
+                        "confidence": 0.86,
+                        "source_refs": source_refs_for_role("user"),
+                        "source_roles": ["user"],
+                        "source_role_counts": {"user": 1},
+                        "operator": normalize_entity_operator(None, entity_type),
+                        "field_patches": [entity_patch("", summarize_text(state, limit=180))],
+                    }
+                )
     tool_messages = [
         item
         for item in messages
@@ -2757,6 +2762,8 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "state": evidence_state,
                 "confidence": 0.86,
                 "source_refs": source_refs_for_role("tool"),
+                "source_roles": ["tool"],
+                "source_role_counts": {"tool": len(tool_messages)},
                 "operator": normalize_entity_operator(None, "tool_evidence"),
                 "field_patches": [entity_patch("", summarize_text(evidence_state, limit=180))],
             }
@@ -2781,6 +2788,8 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "state": decision_state,
                 "confidence": 0.82,
                 "source_refs": source_refs_for_role("assistant"),
+                "source_roles": ["assistant"],
+                "source_role_counts": {"assistant": len(assistant_messages)},
                 "operator": normalize_entity_operator(None, "assistant_decision"),
                 "field_patches": [entity_patch("", summarize_text(decision_state, limit=180))],
             }
@@ -4266,6 +4275,8 @@ def infer_query_type(query: str) -> str:
         return "date"
     if re.search(r"\b(current|currently|latest|now|still|today|valid|status|preference|prefer|likes|where does|where is)\b", lower):
         return "current_state"
+    if re.search(r"\b(?:assistant|codex)\b.{0,64}\b(?:decide|decided|decision|done|implemented|fixed|pushed|committed|changed|updated|validated|verified)\b", lower):
+        return "current_state"
     if re.search(r"\b(why|reason|because|feel|felt|emotion|happy|sad|angry|worried|excited)\b", lower):
         return "why_emotion"
     if re.search(r"\b(overview|summarize|summary|explore|broad|what is in|what do we know|topics|map|inventory)\b", lower):
@@ -5280,16 +5291,24 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
         source_count = len(candidate.get("source_event_ids", []) or [])
         if source_count >= 2:
             token_efficiency *= 1.5
-    current_state_priority = 0.0
-    if question_type in {"current_state", "latest"} and candidate.get("ref_type") == "entity":
+    ref_priority = 0.0
+    if candidate.get("ref_type") == "entity":
         entity_type = str(candidate.get("entity_type") or candidate.get("event_type") or "").strip().lower()
-        if bool(candidate.get("profile_current_state_representative")) or bool(candidate.get("profile_current_state_boost")):
-            current_state_priority = 1.0
-        elif entity_type in {"assistant_decision", "tool_evidence"}:
-            current_state_priority = 0.75
-        elif str(candidate.get("memory_scope") or "") == "user_profile" and str(candidate.get("session_continuity") or "") == "cross_session":
-            current_state_priority = 0.5
-    return (boosted, current_state_priority, token_efficiency, score)
+        if question_type in {"current_state", "latest"}:
+            if entity_type in {"assistant_decision", "tool_evidence"}:
+                ref_priority = 1.0
+            elif bool(candidate.get("profile_current_state_representative")) or bool(candidate.get("profile_current_state_boost")):
+                ref_priority = 0.75
+            elif str(candidate.get("memory_scope") or "") == "user_profile" and str(candidate.get("session_continuity") or "") == "cross_session":
+                ref_priority = 0.5
+        elif question_type in {"evidence", "benchmark_quality"}:
+            if entity_type == "tool_evidence":
+                ref_priority = 1.0
+            elif entity_type == "assistant_decision":
+                ref_priority = 0.7
+    elif question_type in {"evidence", "benchmark_quality"} and str(candidate.get("event_type") or "").strip().lower() == "tool_evidence":
+        ref_priority = 0.8
+    return (boosted, ref_priority, token_efficiency, score)
 
 
 def context_text_hashes(text: str) -> set[int]:
