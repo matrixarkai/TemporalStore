@@ -5599,9 +5599,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertGreaterEqual(preflush["memory_layers_written"]["secondary_indexes"], 1)
                 self.assertTrue(preflush["summary_refresh"]["profile_summary_refresh_required"])
                 refresh_metrics = pack["retrieval_metrics"]["pre_retrieval_summary_refresh"]
-                self.assertFalse(refresh_metrics["enabled"])
-                self.assertEqual("disabled", refresh_metrics["status"])
-                self.assertEqual("fresh_idle_commit_dirty_summary_pending", refresh_metrics["status_reason"])
+                self.assertTrue(refresh_metrics["enabled"])
+                self.assertEqual("fresh_idle_commit", refresh_metrics["source"])
+                self.assertEqual("refreshed", refresh_metrics["status"])
+                self.assertGreaterEqual(refresh_metrics["refreshed_count"], 1)
                 self.assertTrue(refresh_metrics["fresh_idle_commit_dirty"])
                 self.assertTrue(refresh_metrics["fresh_idle_commit_summary_required"])
                 self.assertEqual(1, refresh_metrics["fresh_idle_commit_committed_event_count"])
@@ -5610,6 +5611,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertTrue(
                     any(
                         ref.get("entity_type") == "assistant_decision"
+                        and ref.get("memory_scope") == "user_profile"
+                        for ref in pack["selected_refs"]
+                    ),
+                    pack["selected_refs"],
+                )
+                self.assertTrue(
+                    any(
+                        ref.get("ref_type") == "summary"
                         and ref.get("memory_scope") == "user_profile"
                         for ref in pack["selected_refs"]
                     ),
