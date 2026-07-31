@@ -2393,7 +2393,7 @@ QUERY_TYPE_LABELS: dict[str, str] = {
 }
 
 PROFILE_MEMORY_QUERY_RE = re.compile(
-    r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|remember about me|remember about|what should (?:i|you|we) remember|standing instructions?|standing preferences?|persistent instructions?|saved preferences?|know about (?:me|my|the user)|what (?:have|did) i (?:tell|told) you|what (?:are|were) my preferences|my preferences|told you before)\b"
+    r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|remember about me|remember about|what should (?:i|you|we) remember|standing instructions?|standing preferences?|persistent instructions?|saved preferences?|know about (?:me|my|the user)|what (?:have|did) i (?:tell|told) you|what (?:are|were|do|did) my preferences|what do i prefer|do i prefer|my preferences|my .*?(?:policy|policies|instruction|instructions|preference|preferences)|told you before)\b"
 )
 
 CODEX_OUTCOME_QUERY_RE = re.compile(r"\b(?:codex|assistant|agent)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|validated|verified|push(?:ed)?|commit(?:ted)?|rebased|failed|blocked|blocker|done|outcome|decision|decided|next action)\b|\bwhat (?:was|were|did)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|validated|verified|push(?:ed)?|commit(?:ted)?|failed|blocked|done)\b|\b(?:show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:assistant decision|tool evidence|validation evidence|pushed commit|blocked work|failed validation)\b|\bwhat (?:failed|was blocked|blocked)\b.{0,80}\b(?:memory work|work|validation|commit|push|tool|codex|temporalstore)\b")
@@ -5442,7 +5442,7 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     return 0.0
 
 
-def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float, float]:
+def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float, float, float]:
     score = float(candidate.get("score", 0.0))
     pending_async_penalty = 0.32 if is_pending_async_candidate(candidate) else 0.0
     boosted = clamp01(
@@ -5458,6 +5458,18 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
         if source_count >= 2:
             token_efficiency *= 1.5
     ref_priority = 0.0
+    query_specificity = 0.0
+    try:
+        sparse_score = float(candidate.get("sparse_score") or 0.0)
+    except (TypeError, ValueError):
+        sparse_score = 0.0
+    try:
+        keyword_score = max(0, int(candidate.get("keyword_score") or 0))
+    except (TypeError, ValueError):
+        keyword_score = 0
+    if candidate.get("ref_type") == "entity" and question_type in {"current_state", "latest", "evidence", "benchmark_quality", "profile_memory"}:
+        query_specificity = clamp01(sparse_score + min(0.45, 0.08 * keyword_score))
+        boosted = clamp01(boosted + min(0.18, 0.12 * sparse_score + 0.02 * keyword_score))
     if candidate.get("ref_type") == "entity":
         entity_type = str(candidate.get("entity_type") or candidate.get("event_type") or "").strip().lower()
         if question_type in {"current_state", "latest"}:
@@ -5475,9 +5487,16 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
                 ref_priority = 1.0
             elif entity_type == "assistant_decision":
                 ref_priority = 0.95 if codex_outcome_terms else 0.7
+        if (
+            str(candidate.get("memory_scope") or "") == "user_profile"
+            and str(candidate.get("session_continuity") or "") == "cross_session"
+            and str(candidate.get("entity_name") or "").strip().lower() == entity_type
+            and entity_type in {"assistant_decision", "tool_evidence"}
+        ):
+            ref_priority += 0.30 if entity_type == "assistant_decision" else 0.12
     elif question_type in {"evidence", "benchmark_quality"} and str(candidate.get("event_type") or "").strip().lower() == "tool_evidence":
         ref_priority = 0.8
-    return (boosted, ref_priority, token_efficiency, score)
+    return (boosted, ref_priority, query_specificity, token_efficiency, score)
 
 
 def context_text_hashes(text: str) -> set[int]:
@@ -6295,9 +6314,20 @@ def select_token_budgeted_refs(
         return role_names
 
     def candidate_budget_source_role_counts(candidate: Json, role_names: set[str]) -> Json:
+        metadata = candidate.get("metadata")
+        metadata_entity_type = metadata.get("entity_type") if isinstance(metadata, dict) else ""
+        entity_type = str(candidate.get("entity_type") or metadata_entity_type or "").strip().lower()
+        semantic_role = {
+            "assistant_decision": "assistant",
+            "assistant_response": "assistant",
+            "tool_evidence": "tool",
+            "user_requirement": "user",
+            "user_preference": "user",
+        }.get(entity_type)
+        if semantic_role and semantic_role in role_names:
+            return {semantic_role: 1}
         normalized_source_counts: Json = {}
         sources = [candidate]
-        metadata = candidate.get("metadata")
         if isinstance(metadata, dict):
             sources.append(metadata)
         for source in sources:
