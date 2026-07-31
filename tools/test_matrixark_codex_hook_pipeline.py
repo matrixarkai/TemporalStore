@@ -10396,6 +10396,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertEqual(["user"], entity.get("source_roles"))
                 self.assertEqual({"user": 1}, entity.get("source_role_counts"))
 
+            self.assertEqual(
+                "profile_memory",
+                infer_query_type("What should I remember about raw logs and pushing main?"),
+            )
+            self.assertEqual(
+                "profile_memory",
+                matrixark_mcp_query.infer_query_type("What are my standing instructions for raw logs?"),
+            )
             pack = adapter.retrieve(
                 {
                     "scope": {
@@ -10405,7 +10413,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "session_id": "session_directive_2",
                     },
                     "session_scope": "prefer",
-                    "query": "What user profile preferences should I remember about external raw logs and remote main?",
+                    "query": "What should I remember about raw logs and pushing main?",
                     "max_context_tokens": 400,
                     "audit_mode": "off",
                     "ranking": {"max_selected_refs": 4},
