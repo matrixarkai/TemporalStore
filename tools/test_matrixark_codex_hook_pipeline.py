@@ -293,6 +293,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         queries = [
             "What did you implement and validate last?",
             "What did we push and verify for TemporalStore memory?",
+            "What tests passed recently?",
+            "Which commit was pushed last?",
+            "Show recent validation result",
         ]
         for query in queries:
             self.assertEqual("evidence", infer_query_type(query), query)
