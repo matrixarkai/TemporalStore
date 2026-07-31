@@ -5793,6 +5793,51 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual({"pending_async": 11, "provisional": 23, "final": 66}, request["extraction_phase_budget_tokens"])
             self.assertEqual("auto", request["extraction_phase_budget_mode"])
 
+    def test_codex_outcome_query_auto_budget_prioritizes_assistant_tool_and_profile_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-codex-outcome-budget.jsonl")
+            scope = {
+                "account_id": "acct_native_codex_outcome_budget",
+                "tenant_id": "tenant_native_codex_outcome_budget",
+                "user_id": "user_native_codex_outcome_budget",
+                "session_id": "session_native_codex_outcome_budget",
+            }
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "What did Codex implement, validate, and push last?",
+                    "max_context_tokens": 100,
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertEqual("local-native-pack", pack["pack_id"])
+            self.assertEqual(1, len(adapter.native_requests))
+            request = adapter.native_requests[0]
+            self.assertEqual("evidence", request["question_type"])
+            self.assertEqual("auto", request["source_role_budget_mode"])
+            self.assertEqual({"assistant": 52, "tool": 52, "user": 38}, request["source_role_budget_tokens"])
+            self.assertEqual("auto", request["memory_layer_budget_mode"])
+            self.assertEqual(55, request["memory_layer_budget_tokens"]["profile_entity"])
+            self.assertEqual(33, request["memory_layer_budget_tokens"]["profile_summary"])
+            self.assertEqual(36, request["memory_layer_budget_tokens"]["cross_session_event"])
+            self.assertEqual(33, request["memory_layer_budget_tokens"]["cross_session_segment"])
+            self.assertGreater(
+                request["memory_layer_budget_tokens"]["profile_entity"],
+                request["memory_layer_budget_tokens"]["same_session_event"],
+            )
+            self.assertEqual("auto", request["memory_selection_policy_budget_mode"])
+            self.assertEqual(
+                {
+                    "selected_user_prompt": 33,
+                    "selected_assistant_decision_outcome_only": 55,
+                    "selected_tool_evidence_only": 52,
+                    "selected_profile_current_state": 52,
+                },
+                request["memory_selection_policy_budget_tokens"],
+            )
+
     def test_local_native_context_pack_infers_memory_selection_policy_auto_from_related_budget_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-inferred-selection-budget.jsonl")
