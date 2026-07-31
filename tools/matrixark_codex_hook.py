@@ -222,8 +222,8 @@ HOOK_FAST_ASYNC_INGEST = _env_bool("MATRIXARK_HOOK_FAST_ASYNC_INGEST", True)
 HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH = _env_bool("MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH", False)
 HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT = _env_int("MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT", 2, minimum=1)
 HOOK_COMPACT_HOT_PREFIX_ONLY = os.environ.get("MATRIXARK_HOOK_COMPACT_HOT_PREFIX_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
-HOOK_TOOL_RESULT_RAW = _env_bool("MATRIXARK_HOOK_TOOL_RESULT_RAW", False)
-HOOK_TOOL_RESULT_SERVING = _env_bool("MATRIXARK_HOOK_TOOL_RESULT_SERVING", False)
+HOOK_TOOL_RESULT_RAW = _env_bool("MATRIXARK_HOOK_TOOL_RESULT_RAW", True)
+HOOK_TOOL_RESULT_SERVING = _env_bool("MATRIXARK_HOOK_TOOL_RESULT_SERVING", True)
 HOOK_TOOL_RESULT_ROLLOUT_BACKFILL = _env_bool("MATRIXARK_HOOK_TOOL_RESULT_ROLLOUT_BACKFILL", False)
 TOOL_HOOK_EVENTS = {"PostToolUse", "PreToolUse", "PermissionRequest"}
 SESSION_COMMIT_SUCCESS_STATUSES = {"accepted", "committed", "finalized"}
@@ -4104,8 +4104,8 @@ def fast_async_hook_ingest(
         metadata["tool_result_ingestion"] = {
             "policy": "raw_only_compact_evidence",
             "reason": "explicit_tool_result_raw_capture",
-            "raw_opt_in_env": "MATRIXARK_HOOK_TOOL_RESULT_RAW",
-            "serving_opt_in_env": "MATRIXARK_HOOK_TOOL_RESULT_SERVING",
+            "raw_env": "MATRIXARK_HOOK_TOOL_RESULT_RAW",
+            "serving_env": "MATRIXARK_HOOK_TOOL_RESULT_SERVING",
         }
     if selection_metadata:
         metadata["codex_memory_selection"] = selection_metadata
@@ -4339,8 +4339,8 @@ def fast_async_hook_ingest(
             "async_pipeline_status": "skipped_tool_result",
             "session_buffer_status": "skipped_tool_result",
             "tool_result_policy": "skip_by_default",
-            "tool_result_raw_opt_in_env": "MATRIXARK_HOOK_TOOL_RESULT_RAW",
-            "tool_result_serving_opt_in_env": "MATRIXARK_HOOK_TOOL_RESULT_SERVING",
+            "tool_result_raw_env": "MATRIXARK_HOOK_TOOL_RESULT_RAW",
+            "tool_result_serving_env": "MATRIXARK_HOOK_TOOL_RESULT_SERVING",
             "event_id_hash": event_id_hash,
             "node_hash": node_hash,
             "storage_options": storage_options,
