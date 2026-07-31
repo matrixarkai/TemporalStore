@@ -346,6 +346,116 @@ def _ref_list_value(item: Json, field: str) -> list[Any]:
     return values if isinstance(values, list) else []
 
 
+def _metadata_value(item: Json, field: str) -> Any:
+    value = item.get(field)
+    if value not in (None, "", [], {}):
+        return value
+    metadata = item.get("metadata")
+    if isinstance(metadata, dict):
+        return metadata.get(field)
+    return None
+
+
+def _source_bucket_names(item: Json, list_field: str, count_field: str, *, normalize_roles: bool = False) -> list[str]:
+    values = _metadata_value(item, list_field)
+    names: set[str] = set()
+    if isinstance(values, list):
+        for value in values:
+            name = normalize_message_role(value) if normalize_roles else str(value or "").strip()
+            if name:
+                names.add(name)
+    counts = _metadata_value(item, count_field)
+    if isinstance(counts, dict):
+        for value, count in counts.items():
+            try:
+                amount = max(0, int(count or 0))
+            except (TypeError, ValueError):
+                continue
+            if amount <= 0:
+                continue
+            name = normalize_message_role(value) if normalize_roles else str(value or "").strip()
+            if name:
+                names.add(name)
+    return sorted(names)
+
+
+def _selected_ref_tokens(item: Json) -> int:
+    try:
+        return max(1, int(item.get("token_estimate") or 0))
+    except (TypeError, ValueError):
+        return max(1, token_count(str(item.get("text") or "")))
+
+
+def _refresh_selected_counter_policy(
+    *,
+    selected: list[Json],
+    dropped_over_budget: Json,
+    policy_field: str,
+    token_field: str,
+    count_field: str,
+    bucket_names,
+) -> None:
+    policy = dropped_over_budget.get(policy_field)
+    if not isinstance(policy, dict):
+        return
+    budget_tokens = policy.get("budget_tokens")
+    if not isinstance(budget_tokens, dict) or not budget_tokens:
+        return
+    selected_tokens = {str(name): 0 for name in budget_tokens.keys()}
+    selected_counts = {str(name): 0 for name in budget_tokens.keys()}
+    for item in selected:
+        ref_tokens = _selected_ref_tokens(item)
+        for name in bucket_names(item):
+            if name in selected_tokens:
+                selected_tokens[name] += ref_tokens
+                selected_counts[name] += 1
+    policy[token_field] = {key: value for key, value in selected_tokens.items() if value > 0 or key in budget_tokens}
+    policy[count_field] = {key: value for key, value in selected_counts.items() if value > 0}
+    policy["selected_counter_source"] = "final_context_pack_selection_after_profile_pending_dedupe"
+
+
+def refresh_final_selected_budget_policies(selected: list[Json], dropped_over_budget: Json) -> None:
+    _refresh_selected_counter_policy(
+        selected=selected,
+        dropped_over_budget=dropped_over_budget,
+        policy_field="source_role_budget_policy",
+        token_field="selected_tokens_by_role",
+        count_field="selected_ref_count_by_role",
+        bucket_names=lambda item: _source_bucket_names(item, "source_roles", "source_role_counts", normalize_roles=True),
+    )
+    _refresh_selected_counter_policy(
+        selected=selected,
+        dropped_over_budget=dropped_over_budget,
+        policy_field="memory_selection_policy_budget_policy",
+        token_field="selected_tokens_by_policy",
+        count_field="selected_ref_count_by_policy",
+        bucket_names=lambda item: _source_bucket_names(
+            item,
+            "source_memory_selection_policies",
+            "source_memory_selection_policy_counts",
+        ),
+    )
+    _refresh_selected_counter_policy(
+        selected=selected,
+        dropped_over_budget=dropped_over_budget,
+        policy_field="memory_layer_budget_policy",
+        token_field="selected_tokens_by_layer",
+        count_field="selected_ref_count_by_layer",
+        bucket_names=lambda item: [candidate_memory_layer_name(item)],
+    )
+    _refresh_selected_counter_policy(
+        selected=selected,
+        dropped_over_budget=dropped_over_budget,
+        policy_field="extraction_phase_budget_policy",
+        token_field="selected_tokens_by_phase",
+        count_field="selected_ref_count_by_phase",
+        bucket_names=lambda item: [
+            str(_metadata_value(item, "extraction_phase") or "").strip()
+            or "unknown"
+        ],
+    )
+
+
 def suppress_extracted_represented_pending_events(selected: list[Json], dropped_over_budget: Json) -> tuple[list[Json], int]:
     extracted_selected_event_ids: set[int] = set()
     for item in selected:
@@ -11214,6 +11324,8 @@ class MatrixArkLocalAdapter:
         )
         if memory_inventory["profile_records_available_but_not_selected"]:
             quality_warnings.append("profile_memory_available_but_not_selected")
+        refresh_final_selected_budget_policies(selected, dropped_over_budget)
+
         selected_pending_async_refs = [
             item
             for item in selected

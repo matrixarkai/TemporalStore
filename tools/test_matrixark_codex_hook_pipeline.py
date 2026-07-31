@@ -46,6 +46,7 @@ from matrixark_mcp_retrieve_pack_builder import dropped_ref_layer_budget, memory
 from matrixark_mcp_local_adapter import (
     compression_context_index_records,
     quality_first_underfill_summary,
+    refresh_final_selected_budget_policies,
     suppress_extracted_represented_pending_events,
     suppress_profile_shadowed_session_entities,
 )
@@ -6473,6 +6474,83 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "source_codex_event_counts_by_event",
             ]:
                 self.assertNotIn(field, budget)
+
+    def test_final_budget_policy_counters_follow_pending_event_dedupe(self) -> None:
+        pending_event_hash = 424242
+        selected = [
+            {
+                "ref_type": "event",
+                "ref_hash": pending_event_hash,
+                "event_type": "pending_async",
+                "classification": "PENDING_ASYNC_EXTRACTION",
+                "extraction_status": "pending",
+                "text": "assistant pending raw event",
+                "source_roles": ["assistant"],
+                "source_role_counts": {"assistant": 1},
+                "source_memory_selection_policies": ["selected_assistant_decision_outcome_only"],
+                "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 1},
+                "extraction_phase": "pending_async",
+                "token_estimate": 6,
+            },
+            {
+                "ref_type": "entity",
+                "ref_hash": 99,
+                "text": "user profile entity from extracted assistant event",
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "source_event_ids": [pending_event_hash],
+                "source_roles": ["assistant"],
+                "source_role_counts": {"assistant": 1},
+                "source_memory_selection_policies": ["selected_assistant_decision_outcome_only"],
+                "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 1},
+                "extraction_phase": "provisional",
+                "budget_memory_layer": "profile_entity",
+                "token_estimate": 9,
+            },
+        ]
+        dropped = {
+            "source_role_budget_policy": {
+                "enabled": True,
+                "budget_tokens": {"assistant": 64},
+                "selected_tokens_by_role": {"assistant": 15},
+                "selected_ref_count_by_role": {"assistant": 2},
+            },
+            "memory_selection_policy_budget_policy": {
+                "enabled": True,
+                "budget_tokens": {"selected_assistant_decision_outcome_only": 64},
+                "selected_tokens_by_policy": {"selected_assistant_decision_outcome_only": 15},
+                "selected_ref_count_by_policy": {"selected_assistant_decision_outcome_only": 2},
+            },
+            "memory_layer_budget_policy": {
+                "enabled": True,
+                "budget_tokens": {"pending_async_event": 64, "profile_entity": 64},
+                "selected_tokens_by_layer": {"pending_async_event": 6, "profile_entity": 9},
+                "selected_ref_count_by_layer": {"pending_async_event": 1, "profile_entity": 1},
+            },
+        }
+
+        selected, removed_tokens = suppress_extracted_represented_pending_events(selected, dropped)
+        self.assertEqual(6, removed_tokens)
+        refresh_final_selected_budget_policies(selected, dropped)
+
+        self.assertEqual({"assistant": 9}, dropped["source_role_budget_policy"]["selected_tokens_by_role"])
+        self.assertEqual({"assistant": 1}, dropped["source_role_budget_policy"]["selected_ref_count_by_role"])
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 9},
+            dropped["memory_selection_policy_budget_policy"]["selected_tokens_by_policy"],
+        )
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 1},
+            dropped["memory_selection_policy_budget_policy"]["selected_ref_count_by_policy"],
+        )
+        self.assertEqual(
+            {"pending_async_event": 0, "profile_entity": 9},
+            dropped["memory_layer_budget_policy"]["selected_tokens_by_layer"],
+        )
+        self.assertEqual(
+            {"profile_entity": 1},
+            dropped["memory_layer_budget_policy"]["selected_ref_count_by_layer"],
+        )
 
     def test_retrieve_source_role_budget_uses_entity_semantics_for_mixed_profile_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
