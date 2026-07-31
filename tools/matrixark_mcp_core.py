@@ -2729,6 +2729,26 @@ def codex_outcome_fact_kind(line: str) -> str:
     return ""
 
 
+def codex_outcome_fact_index_terms(*values: Any) -> set[str]:
+    text = " ".join(str(value or "") for value in values)
+    lower = text.lower()
+    terms: set[str] = set()
+    for kind in ["next", "blocker", "validation", "outcome", "changed", "benchmark"]:
+        if kind == "next" and re.search(r"\bnext\b", lower):
+            terms.add(context_index_name("codex_outcome", kind))
+        elif kind == "blocker" and re.search(r"\b(?:blocked|blocker|failed|failure|error|missing|rejected|fatal)\b", lower):
+            terms.add(context_index_name("codex_outcome", kind))
+        elif kind == "validation" and re.search(r"\b(?:validation|tests?|py_compile|unittest|pytest|cargo test|cargo check)\b", lower):
+            terms.add(context_index_name("codex_outcome", kind))
+        elif kind == "outcome" and re.search(r"\b(?:outcome|pushed|commit\s+[0-9a-f]{7,40}|origin/main|refs/heads/main)\b", lower):
+            terms.add(context_index_name("codex_outcome", kind))
+        elif kind == "changed" and re.search(r"\b(?:changed|updated|implemented|added|removed|fixed)\b", lower):
+            terms.add(context_index_name("codex_outcome", kind))
+        elif kind == "benchmark" and re.search(r"\b(?:benchmark|p50|p99|throughput|latency)\b", lower):
+            terms.add(context_index_name("codex_outcome", kind))
+    return terms
+
+
 def codex_outcome_fact_entities(
     text: str,
     *,
@@ -4523,6 +4543,9 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("source_role", "assistant"),
             context_index_name("source_type", "message"),
         )
+        outcome_terms = codex_outcome_fact_index_terms(query)
+        if outcome_terms:
+            add_group(*outcome_terms)
     if re.search(r"\b(benchmark|workload|latency|p50|p90|p95|p99|throughput|qps|ops/s|req/s|hit[- ]?rate|read[- ]?hit|quality|recall|precision|locomo|longmemeval|memory[- ]?quality)\b", lower):
         add_group(
             context_index_name("entity_type", "tool_evidence"),
@@ -4546,6 +4569,9 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("event_type", "tool_evidence"),
             context_index_name("source_role", "tool"),
         )
+        outcome_terms = codex_outcome_fact_index_terms(query)
+        if outcome_terms:
+            add_group(*outcome_terms)
     if re.search(r"\b(user prompt|prompt|user request|user asked|request|asked codex)\b", lower):
         add_group(context_index_name("event_type", "user_prompt"), context_index_name("source_role", "user"))
     if re.search(r"\b(selected|bounded|retained|extracted|memory selection|memory-selection)\b", lower):
@@ -4789,8 +4815,12 @@ def candidate_index_terms(
         add_direct_layer_terms()
     elif record_type == "context_entity":
         terms.add(context_index_name("entity_type", record.get("entity_type")))
+        entity_name = record.get("entity_name")
+        if entity_name not in (None, "", [], {}):
+            terms.add(context_index_name("entity_name", normalized_index_value(entity_name).replace(":", "_")))
         if bool(record.get("profile_entity_current")):
             terms.add(context_index_name("profile_entity_current", "true"))
+        terms.update(codex_outcome_fact_index_terms(record.get("entity_name"), record.get("entity_type"), record.get("state"), record.get("text")))
         terms.update(benchmark_quality_index_terms(record.get("entity_name"), record.get("entity_type"), record.get("state"), record.get("text")))
         add_direct_layer_terms()
         add_source_lineage_terms()
