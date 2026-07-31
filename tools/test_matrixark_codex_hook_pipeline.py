@@ -411,6 +411,25 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("memory_scope:session", session_flattened)
         self.assertIn("session_continuity:same_session", session_flattened)
 
+    def test_query_helper_oss_labels_cover_profile_memory_layers(self) -> None:
+        labels = matrixark_mcp_query.QUERY_INDEX_LABELS
+
+        for label in [
+            "memory_scope:user_profile",
+            "memory_scope:session",
+            "session_continuity:cross_session",
+            "session_continuity:same_session",
+            "profile_entity_current:true",
+            "memory_selection_policy:selected_profile_current_state",
+            "memory_selection_policy:selected_assistant_decision_outcome_only",
+            "memory_selection_policy:selected_tool_evidence_only",
+            "source_role:user",
+            "source_role:assistant",
+            "source_role:tool",
+        ]:
+            self.assertIn(label, labels)
+            self.assertTrue(labels[label].strip(), label)
+
     def test_cross_session_query_words_override_latest_and_date_classifiers(self) -> None:
         for query in [
             "Compare the latest Codex decisions across sessions",
