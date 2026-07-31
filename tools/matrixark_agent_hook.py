@@ -66,6 +66,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 Json = dict[str, Any]
+DEFAULT_IDLE_COMMIT_TIMEOUT_MS = 120_000
 
 
 BEFORE_LLM_EVENTS = {
@@ -220,7 +221,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--request-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "60000")))
     parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "60000")))
     parser.add_argument("--session-commit-threshold", type=int, default=int(os.environ.get("MATRIXARK_SESSION_COMMIT_THRESHOLD", "20")))
-    parser.add_argument("--idle-commit-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS", "0")))
+    parser.add_argument("--idle-commit-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS", str(DEFAULT_IDLE_COMMIT_TIMEOUT_MS))))
     parser.add_argument("--understanding-provider", default=os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "rules"))
     parser.add_argument("--segment-provider", default=os.environ.get("MATRIXARK_SEGMENT_PROVIDER", "deterministic"))
     parser.add_argument("--repo-root", type=Path, default=root)
