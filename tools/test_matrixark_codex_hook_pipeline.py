@@ -12369,8 +12369,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "session_continuity": "cross_session",
                         "source_entity_types": ["assistant_decision"],
                         "source_roles": ["assistant"],
+                        "source_role_counts": {"assistant": 1},
                         "source_hook_types": ["after_llm"],
+                        "source_hook_type_counts": {"after_llm": 1},
                         "source_codex_events": ["Stop"],
+                        "source_codex_event_counts": {"Stop": 1},
                         "updated_at_ms": 1000,
                     },
                 ]
@@ -12385,6 +12388,33 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(result["scan_stats"]["secondary_embedding_matched_posting_count"], 1)
             summaries = [record for record in result["records"] if record.get("record_type") == "context_summary"]
             self.assertTrue(any(record.get("summary_hash") == summary_hash for record in summaries), result)
+
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "session_scope": "prefer",
+                    "question_type": "profile_memory",
+                    "query": "profile summary rows reachable from embeddings marker 993",
+                    "max_context_tokens": 500,
+                    "audit_mode": "off",
+                    "include_debug_refs": True,
+                    "ranking": {"max_selected_refs": 2, "min_similarity_score": 0.0},
+                }
+            )
+            summary_refs = [
+                ref
+                for ref in pack["selected_refs"]
+                if ref.get("ref_type") == "summary"
+                and ref.get("summary_type") == "node_l0"
+                and "marker 993" in ref.get("text", "")
+            ]
+            self.assertTrue(summary_refs, pack["selected_refs"])
+            summary_ref = summary_refs[0]
+            self.assertEqual("user_profile", summary_ref["memory_scope"])
+            self.assertEqual("cross_session", summary_ref["session_continuity"])
+            self.assertEqual({"assistant": 1}, summary_ref["source_role_counts"])
+            budget = pack["retrieval_metrics"]["memory_layer_budget"]
+            self.assertGreaterEqual(budget["by_memory_layer"]["profile_summary"]["refs"], 1)
 
     def test_retrieval_prefilter_recovers_segment_from_compact_embedding_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
