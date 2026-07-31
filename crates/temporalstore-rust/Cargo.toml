@@ -15,7 +15,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 matrixraft = { package = "matrixraft", git = "https://github.com/bjmeetsfo/MatrixRaft.git", rev = "b535783614e742560063a2dc136abb2e6315d899" }
-matrixcache = { git = "https://github.com/bjmeetsfo/MatrixCache.git", rev = "bbcc612917b07c49cc1fbf560cb3f9e586653259", features = ["rocksdb-ssd"] }
+matrixcache = { git = "https://github.com/bjmeetsfo/MatrixCache.git", rev = "5723ebece2f37d5061da7fb5664861b88ecb9245", features = ["rocksdb-ssd"] }
 temporalstore-snapshot = { path = "../temporalstore-snapshot" }
 thiserror = "1"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread"] }
