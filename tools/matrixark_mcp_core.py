@@ -2710,6 +2710,71 @@ def normalized_extraction_message_role(role: Any) -> str:
     }.get(role_name, role_name)
 
 
+def codex_outcome_fact_kind(line: str) -> str:
+    normalized = " ".join(str(line or "").split()).strip().lower()
+    if not normalized:
+        return ""
+    if normalized.startswith("next:") or re.search(r"\bnext\b", normalized):
+        return "next"
+    if normalized.startswith("blocker:") or re.search(r"\b(?:blocked|blocker|failed|failure|error|missing|rejected|fatal)\b", normalized):
+        return "blocker"
+    if normalized.startswith("validation:") or re.search(r"\b(?:validation|tests?|py_compile|unittest|pytest|cargo test|cargo check)\b", normalized):
+        return "validation"
+    if normalized.startswith("outcome:") or re.search(r"\b(?:pushed|commit\s+[0-9a-f]{7,40}|origin/main|refs/heads/main)\b", normalized):
+        return "outcome"
+    if normalized.startswith("changed:") or re.search(r"\b(?:changed|updated|implemented|added|removed|fixed)\b", normalized):
+        return "changed"
+    if normalized.startswith("benchmark:") or re.search(r"\b(?:benchmark|p50|p99|throughput|latency)\b", normalized):
+        return "benchmark"
+    return ""
+
+
+def codex_outcome_fact_entities(
+    text: str,
+    *,
+    role_name: str,
+    source_refs: list[str],
+    source_count: int,
+) -> list[Json]:
+    entity_type = "tool_evidence" if role_name == "tool" else "assistant_decision"
+    source_role = "tool" if role_name == "tool" else "assistant"
+    entities: list[Json] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_line in str(text or "").splitlines():
+        compact_line = " ".join(raw_line.split()).strip(" -*")
+        for candidate in re.split(r"\s*;\s*", compact_line):
+            line = summarize_text(re.sub(r"^(?:assistant|tool)\s*:\s*", "", candidate, flags=re.IGNORECASE), limit=220)
+            if not line:
+                continue
+            kind = codex_outcome_fact_kind(line)
+            if not kind:
+                continue
+            key = (entity_type, kind)
+            if key in seen:
+                continue
+            seen.add(key)
+            state_prefix = "tool evidence" if entity_type == "tool_evidence" else "assistant decision"
+            state = summarize_text(f"{state_prefix} {kind}: {line}", limit=220)
+            entities.append(
+                {
+                    "entity_type": entity_type,
+                    "entity_name": f"{entity_type}:{kind}",
+                    "state": state,
+                    "confidence": 0.9 if kind in {"outcome", "validation"} else 0.86,
+                    "source_refs": source_refs,
+                    "source_roles": [source_role],
+                    "source_role_counts": {source_role: source_count},
+                    "operator": normalize_entity_operator(None, entity_type),
+                    "field_patches": [entity_patch("", summarize_text(state, limit=180))],
+                }
+            )
+            if len(entities) >= 6:
+                break
+        if len(entities) >= 6:
+            break
+    return entities
+
+
 def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     entities: list[Json] = []
     text = text_from_messages(messages)
@@ -2769,6 +2834,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     ]
     tool_text = text_from_messages(tool_messages) if tool_messages else ""
     if tool_text:
+        tool_refs = source_refs_for_role("tool")
         evidence_state = summarize_text(tool_evidence_memory_text(tool_text), limit=220)
         entities.append(
             {
@@ -2776,12 +2842,20 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "entity_name": "tool_evidence",
                 "state": evidence_state,
                 "confidence": 0.86,
-                "source_refs": source_refs_for_role("tool"),
+                "source_refs": tool_refs,
                 "source_roles": ["tool"],
                 "source_role_counts": {"tool": len(tool_messages)},
                 "operator": normalize_entity_operator(None, "tool_evidence"),
                 "field_patches": [entity_patch("", summarize_text(evidence_state, limit=180))],
             }
+        )
+        entities.extend(
+            codex_outcome_fact_entities(
+                tool_text,
+                role_name="tool",
+                source_refs=tool_refs,
+                source_count=len(tool_messages),
+            )
         )
     assistant_messages = [
         item
@@ -2795,6 +2869,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         assistant_text,
         re.IGNORECASE,
     ):
+        assistant_refs = source_refs_for_role("assistant")
         decision_state = summarize_text(assistant_decision_memory_text(assistant_text), limit=220)
         entities.append(
             {
@@ -2802,12 +2877,20 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "entity_name": "assistant_decision",
                 "state": decision_state,
                 "confidence": 0.82,
-                "source_refs": source_refs_for_role("assistant"),
+                "source_refs": assistant_refs,
                 "source_roles": ["assistant"],
                 "source_role_counts": {"assistant": len(assistant_messages)},
                 "operator": normalize_entity_operator(None, "assistant_decision"),
                 "field_patches": [entity_patch("", summarize_text(decision_state, limit=180))],
             }
+        )
+        entities.extend(
+            codex_outcome_fact_entities(
+                assistant_text,
+                role_name="assistant",
+                source_refs=assistant_refs,
+                source_count=len(assistant_messages),
+            )
         )
     patterns = [
         ("preference", r"\b(?:prefer|prefers|favorite|likes?|loves?)\s+([^.;!?]{2,120})"),
