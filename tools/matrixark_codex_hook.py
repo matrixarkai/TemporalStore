@@ -4140,7 +4140,7 @@ def fast_async_hook_ingest(
     event_id_hash = stable_int_hash(f"{now}:{role}:{session_id}:{text}:{uuid.uuid4().hex}")
     storage_options = hook_storage_options()
     messages = [{"role": role, "content": text}]
-    hook_type = hook_type_for_event(args.event)
+    hook_type = str((hook or {}).get("hook_type") or "").strip() or hook_type_for_event(args.event)
     lineage = hook_lineage_fields(hook)
     tool_name = str(agent_context.get("tool_name") or "").strip()
     tool_status = str(agent_context.get("tool_status") or "").strip()
@@ -5043,72 +5043,102 @@ def main() -> int:
             previous_tool_raw = latest_codex_tool_output_from_rollout(payload) if should_rollout_backfill_tool_result() else ""
             previous_tool_output = selected_tool_memory_text(previous_tool_raw, payload)
             if previous_tool_output and previous_tool_output != text:
-                backfill_result = trace_tool_call(
-                    server,
-                    "matrixark_ingest",
-                    hook_async_message_ingest_args(
-                        common,
-                        args,
-                        event=args.event,
-                        role="tool",
+                previous_tool_hook = {
+                    "source": "codex",
+                    "hook_type": "tool_result",
+                    "hook_id": f"PreviousToolOutputBackfill:{stable_short_hash(previous_tool_output)}",
+                    "observed_at_ms": int(time.time() * 1000),
+                    "idempotency_key": f"previous-tool-output:{stable_short_hash(previous_tool_output)}",
+                    "trigger": "UserPromptSubmit:previous_tool_output_backfill",
+                    "auto_captured": True,
+                    "session_id_source": session_id_source,
+                }
+                backfill_result = {}
+                if HOOK_FAST_ASYNC_INGEST:
+                    backfill_result = fast_async_hook_ingest(
+                        server,
+                        args=args,
                         text=previous_tool_output,
+                        role="tool",
+                        agent_context=agent_context,
+                        hook=previous_tool_hook,
                         original_text=previous_tool_raw,
-                        metadata=codex_hook_metadata(
-                            source="codex_hook_rollout_backfill",
-                            event="PreviousToolOutputBackfill",
-                            agent_context=agent_context,
-                            session_id_source=session_id_source,
-                            backfill_reason="post_tool_hook_payload_can_arrive_before_rollout_tool_output_is_visible",
+                    )
+                    if backfill_result:
+                        trace.setdefault("fast_async_backfill", {})["previous_tool_output"] = backfill_result
+                if not backfill_result:
+                    backfill_result = trace_tool_call(
+                        server,
+                        "matrixark_ingest",
+                        hook_async_message_ingest_args(
+                            common,
+                            args,
+                            event=args.event,
+                            role="tool",
+                            text=previous_tool_output,
+                            original_text=previous_tool_raw,
+                            metadata=codex_hook_metadata(
+                                source="codex_hook_rollout_backfill",
+                                event="PreviousToolOutputBackfill",
+                                agent_context=agent_context,
+                                session_id_source=session_id_source,
+                                backfill_reason="post_tool_hook_payload_can_arrive_before_rollout_tool_output_is_visible",
+                            ),
+                            agent_hook=previous_tool_hook,
                         ),
-                        agent_hook={
-                            "source": "codex",
-                            "hook_type": "tool_result",
-                            "hook_id": f"PreviousToolOutputBackfill:{stable_short_hash(previous_tool_output)}",
-                            "observed_at_ms": int(time.time() * 1000),
-                            "idempotency_key": f"previous-tool-output:{stable_short_hash(previous_tool_output)}",
-                            "trigger": "UserPromptSubmit:previous_tool_output_backfill",
-                            "auto_captured": True,
-                            "session_id_source": session_id_source,
-                        },
-                    ),
-                    trace,
-                )
+                        trace,
+                    )
                 tool_warning = timeout_warning(backfill_result)
                 if tool_warning:
                     backfill_warnings.append(tool_warning)
             previous_assistant_raw = latest_codex_assistant_message_from_rollout_raw(payload)
             previous_assistant = selected_assistant_memory_text(previous_assistant_raw)
             if previous_assistant and previous_assistant != text:
-                backfill_result = trace_tool_call(
-                    server,
-                    "matrixark_ingest",
-                    hook_async_message_ingest_args(
-                        common,
-                        args,
-                        event=args.event,
-                        role="assistant",
+                previous_assistant_hook = {
+                    "source": "codex",
+                    "hook_type": "after_llm",
+                    "hook_id": f"PreviousAssistantBackfill:{stable_short_hash(previous_assistant)}",
+                    "observed_at_ms": int(time.time() * 1000),
+                    "idempotency_key": f"previous-assistant:{stable_short_hash(previous_assistant)}",
+                    "trigger": "UserPromptSubmit:previous_assistant_backfill",
+                    "auto_captured": True,
+                    "session_id_source": session_id_source,
+                }
+                backfill_result = {}
+                if HOOK_FAST_ASYNC_INGEST:
+                    backfill_result = fast_async_hook_ingest(
+                        server,
+                        args=args,
                         text=previous_assistant,
+                        role="assistant",
+                        agent_context=agent_context,
+                        hook=previous_assistant_hook,
                         original_text=previous_assistant_raw,
-                        metadata=codex_hook_metadata(
-                            source="codex_hook_rollout_backfill",
-                            event="PreviousAssistantBackfill",
-                            agent_context=agent_context,
-                            session_id_source=session_id_source,
-                            backfill_reason="stop_hook_runs_before_rollout_final_answer_is_visible",
+                    )
+                    if backfill_result:
+                        trace.setdefault("fast_async_backfill", {})["previous_assistant"] = backfill_result
+                if not backfill_result:
+                    backfill_result = trace_tool_call(
+                        server,
+                        "matrixark_ingest",
+                        hook_async_message_ingest_args(
+                            common,
+                            args,
+                            event=args.event,
+                            role="assistant",
+                            text=previous_assistant,
+                            original_text=previous_assistant_raw,
+                            metadata=codex_hook_metadata(
+                                source="codex_hook_rollout_backfill",
+                                event="PreviousAssistantBackfill",
+                                agent_context=agent_context,
+                                session_id_source=session_id_source,
+                                backfill_reason="stop_hook_runs_before_rollout_final_answer_is_visible",
+                            ),
+                            agent_hook=previous_assistant_hook,
                         ),
-                        agent_hook={
-                            "source": "codex",
-                            "hook_type": "after_llm",
-                            "hook_id": f"PreviousAssistantBackfill:{stable_short_hash(previous_assistant)}",
-                            "observed_at_ms": int(time.time() * 1000),
-                            "idempotency_key": f"previous-assistant:{stable_short_hash(previous_assistant)}",
-                            "trigger": "UserPromptSubmit:previous_assistant_backfill",
-                            "auto_captured": True,
-                            "session_id_source": session_id_source,
-                        },
-                    ),
-                    trace,
-                )
+                        trace,
+                    )
                 assistant_warning = timeout_warning(backfill_result)
                 if assistant_warning:
                     backfill_warnings.append(assistant_warning)

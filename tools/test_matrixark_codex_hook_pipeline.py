@@ -4758,6 +4758,108 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
+    def test_fast_hook_previous_assistant_backfill_uses_after_llm_buffer_semantics(self) -> None:
+        original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
+        matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-assistant-backfill.jsonl")
+
+                class Server:
+                    def __init__(self) -> None:
+                        self.adapter = adapter
+
+                scope = {
+                    "account_id": "acct_fast_assistant_backfill",
+                    "tenant_id": "tenant_fast_assistant_backfill",
+                    "user_id": "user_fast_assistant_backfill",
+                    "session_id": "session_fast_assistant_backfill",
+                }
+                args = Namespace(
+                    event="UserPromptSubmit",
+                    **scope,
+                    team="codex",
+                    project="temporalstore",
+                    session_commit_threshold=2,
+                    idle_commit_timeout_ms=300000,
+                    understanding_provider="rules",
+                    segment_provider="deterministic",
+                )
+                server = Server()
+                assistant_result = matrixark_codex_hook.fast_async_hook_ingest(
+                    server,
+                    args=args,
+                    text="Assistant decision: previous response selected profile memory for Codex.",
+                    role="assistant",
+                    original_text="Assistant decision: previous response selected profile memory for Codex.\nLarge answer omitted.",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={
+                        "hook_type": "after_llm",
+                        "trigger": "UserPromptSubmit:previous_assistant_backfill",
+                        "thread_id": "thread-fast-assistant-backfill",
+                        "turn_id": "turn-fast-assistant-backfill-1",
+                        "session_id_source": "payload_field",
+                    },
+                )
+                self.assertEqual("accepted", assistant_result["status"])
+                self.assertFalse(assistant_result["session_buffer"]["threshold_ready"])
+
+                pending = adapter.pending_session_events(scope)
+                self.assertEqual(1, len(pending))
+                self.assertEqual(["after_llm"], pending[0]["source_hook_types"])
+                self.assertEqual({"after_llm": 1}, pending[0]["source_hook_type_counts"])
+                self.assertEqual(["assistant"], pending[0]["source_roles"])
+
+                user_result = matrixark_codex_hook.fast_async_hook_ingest(
+                    server,
+                    args=args,
+                    text="User prompt: what did the previous assistant response decide about profile memory?",
+                    role="user",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={
+                        "hook_type": "before_llm",
+                        "trigger": "UserPromptSubmit",
+                        "thread_id": "thread-fast-assistant-backfill",
+                        "turn_id": "turn-fast-assistant-backfill-2",
+                        "session_id_source": "payload_field",
+                    },
+                )
+                self.assertTrue(user_result["session_buffer"]["threshold_ready"])
+                commit = user_result["auto_batch_extract_result"]
+                self.assertEqual("committed", commit["status"])
+                self.assertEqual("threshold", commit["trigger_policy"])
+                self.assertEqual(["assistant", "user"], commit["source_roles"])
+                self.assertEqual({"after_llm": 1, "before_llm": 1}, commit["source_hook_type_counts"])
+
+                committed_event_hashes = {int(event_id) for event_id in commit["source_event_ids"]}
+                records = adapter.read_all()
+                committed_events = [
+                    record
+                    for record in records
+                    if record.get("record_type") == "context_event"
+                    and record.get("status") == "extraction_committed"
+                    and record.get("event_id_hash") in committed_event_hashes
+                ]
+                self.assertEqual(2, len(committed_events))
+                assistant_events = [
+                    record
+                    for record in committed_events
+                    if record.get("source_role") == "assistant"
+                ]
+                self.assertEqual(1, len(assistant_events))
+                self.assertIn("after_llm", assistant_events[0]["source_hook_types"])
+                profile_entities = [
+                    record
+                    for record in records
+                    if record.get("record_type") == "context_entity"
+                    and record.get("memory_scope") == "user_profile"
+                    and record.get("session_continuity") == "cross_session"
+                    and "previous response selected profile memory" in str(record.get("state") or "")
+                ]
+                self.assertTrue(profile_entities)
+        finally:
+            matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+
     def test_fast_hook_threshold_commit_recovers_pending_buffer_after_restart(self) -> None:
         original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
         matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
