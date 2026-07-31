@@ -4267,6 +4267,7 @@ class MatrixArkLocalAdapter:
                 "node_path": prefix,
                 "scope": scope,
                 "status": "pending",
+                "dirty_reason": dirty_reason,
                 "source_ref_type": source_ref_type,
                 source_hash_field: source_hash,
                 "created_at_ms": updated_at_ms,
@@ -4289,7 +4290,6 @@ class MatrixArkLocalAdapter:
                 record.update(
                     {
                         "depth": len(prefix),
-                        "dirty_reason": dirty_reason,
                         "changed_ref_count": 1,
                         "propagate_depth": propagate_depth if propagate_depth is not None else len(node_path),
                     }
@@ -7735,6 +7735,25 @@ class MatrixArkLocalAdapter:
                 profile_source_role_counts: Json = dict(previous_profile.get("source_role_counts", {}))
                 for role, count in entity_source_role_counts.items():
                     profile_source_role_counts[role] = int(profile_source_role_counts.get(role, 0)) + int(count)
+                metadata_source_roles = (
+                    envelope_metadata.get("source_roles")
+                    if isinstance(envelope_metadata.get("source_roles"), list)
+                    else []
+                )
+                metadata_has_llm_alias = any(
+                    str(value or "").strip().lower()
+                    in {"llm", "model", "assistant_response", "agent", "ai", "bot"}
+                    for value in metadata_source_roles
+                )
+                if (
+                    updated_entity.get("entity_type") == "assistant_decision"
+                    and metadata_has_llm_alias
+                    and int(source_role_counts.get("user", 0) or 0) > 0
+                ):
+                    profile_source_roles = ordered_unique_any(profile_source_roles + ["user"])
+                    profile_source_role_counts["user"] = int(profile_source_role_counts.get("user", 0)) + int(
+                        source_role_counts.get("user", 0) or 0
+                    )
                 profile_source_hook_types = ordered_unique_any(
                     list(previous_profile.get("source_hook_types", [])) + source_hook_types
                 )
@@ -7898,8 +7917,7 @@ class MatrixArkLocalAdapter:
                 records_to_append.append(profile_entity_record)
                 profile_entity_embedding_text = promoted_entity["entity_type"] + " " + promoted_entity["state"]
                 profile_entity_vector = embedding_for_text(profile_entity_embedding_text)
-                records_to_append.append(
-                    compact_context_embedding_record({
+                profile_entity_embedding_record = compact_context_embedding_record({
                         "record_type": "context_embedding",
                         "embedding_type": "profile_entity_state",
                         "ref_type": "entity",
@@ -7943,7 +7961,35 @@ class MatrixArkLocalAdapter:
                         "final_session_boundary": final_session_boundary,
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     })
-                )
+                for field in [
+                    "source_event_ids",
+                    "source_session_ids",
+                    "source_entity_hashes",
+                    "source_roles",
+                    "source_role_counts",
+                    "source_hook_types",
+                    "source_hook_type_counts",
+                    "source_codex_events",
+                    "source_codex_event_counts",
+                    "source_memory_selection_policies",
+                    "source_memory_selection_policy_counts",
+                    "source_profile_promotion_policies",
+                    "source_profile_promotion_blockers",
+                    "source_memory_scopes",
+                    "source_session_continuities",
+                    "supersedes_session_entity_hash",
+                    "supersedes_session_entity_hashes",
+                    "previous_profile_revision",
+                    "previous_profile_updated_at_ms",
+                    "extraction_context_event_ids",
+                    "extraction_phase",
+                    "final_session_boundary",
+                    "profile_source_session_count",
+                    "profile_source_entity_count",
+                    "profile_source_event_count",
+                ]:
+                    profile_entity_embedding_record.pop(field, None)
+                records_to_append.append(profile_entity_embedding_record)
                 for index_name in candidate_index_terms(profile_entity_record, {}, {}):
                     profile_index = context_index_posting_record(
                         index_name=index_name,
