@@ -5691,6 +5691,9 @@ fn matrixark_storage_prefix_partition(request: &RecordLogRequest) -> Option<Stri
     for CompactHashEntry(key, _, _) in &request.entries_compact {
         candidates.push(key);
     }
+    for key in &request.visibility_keys {
+        candidates.push(key);
+    }
     candidates
         .into_iter()
         .filter_map(matrixark_storage_prefix_from_key)
@@ -5709,6 +5712,11 @@ fn matrixark_storage_prefix_from_key(key: &str) -> Option<String> {
         ":event_time",
         ":readiness",
         ":direct_write_queue",
+        ":context_event_by_ingestion_time",
+        ":context_latest_state",
+        ":context_ref_locator",
+        ":context_index_lookup",
+        ":context_placement_lookup",
     ] {
         if let Some((prefix, _)) = trimmed.split_once(marker) {
             if !prefix.is_empty() {
@@ -6238,6 +6246,46 @@ mod tests {
         clear_engine_cache();
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
         env::remove_var("MATRIXARK_RUST_PROXY_ASYNC_STORAGE");
+    }
+
+    #[test]
+    fn matrixark_publish_visibility_uses_visibility_keys_for_partition_root() {
+        let _guard = env_guard();
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+        env::remove_var("MATRIXARK_RUST_PROXY_ASYNC_STORAGE");
+
+        let storage_prefix = "matrixark:mcp:codex:raw_ingestion";
+        let mut append = request("matrixark_batch_append_records");
+        append.namespace = "deploy_ns".to_string();
+        append.table = "deploy_table".to_string();
+        append.metaserver = "127.0.0.1:17100".to_string();
+        append.key = format!("{storage_prefix}:record_count");
+        append.value = "1".to_string();
+        append.entries_compact = vec![CompactHashEntry(
+            format!("{storage_prefix}:records:000000"),
+            "00000000000000000000".to_string(),
+            r#"{"record_type":"agent_message","text":"raw visible"}"#.to_string(),
+        )];
+
+        let mut publish = request("matrixark_publish_visibility");
+        publish.namespace = append.namespace.clone();
+        publish.table = append.table.clone();
+        publish.metaserver = append.metaserver.clone();
+        publish.visibility_keys = vec![
+            format!("{storage_prefix}:record_count"),
+            format!("{storage_prefix}:records:000000"),
+        ];
+
+        let append_root = record_log_root(&append);
+        let publish_root = record_log_root(&publish);
+        assert!(
+            publish_root.to_string_lossy().contains("prefix_"),
+            "visibility-only publish requests must route to the prefix partition"
+        );
+        assert_eq!(
+            publish_root, append_root,
+            "publish and append must share the same durable partition"
+        );
     }
 
     #[test]
