@@ -9322,6 +9322,8 @@ class MatrixArkLocalAdapter:
             metadata_fields = [
                 "memory_scope",
                 "session_continuity",
+                "entity_type",
+                "entity_name",
                 "event_type",
                 "classification",
                 "status",
@@ -9351,6 +9353,10 @@ class MatrixArkLocalAdapter:
                 "extraction_context_event_ids",
                 "profile_source_session_count",
                 "profile_source_entity_count",
+                "profile_entity_current",
+                "profile_revision",
+                "previous_profile_revision",
+                "previous_profile_updated_at_ms",
                 "source_session_count",
                 "source_entity_count",
                 "current_state_source_session_count",
@@ -9479,6 +9485,10 @@ class MatrixArkLocalAdapter:
                 "extraction_context_event_ids": extraction_context_event_ids,
                 "current_state_source_session_count": current_state_source_session_count or len(source_session_ids),
                 "current_state_source_entity_count": current_state_source_entity_count or len(source_entity_hashes),
+                "profile_entity_current": bool(first_value("profile_entity_current", False)),
+                "profile_revision": first_value("profile_revision", 0),
+                "previous_profile_revision": first_value("previous_profile_revision", 0),
+                "previous_profile_updated_at_ms": first_value("previous_profile_updated_at_ms", 0),
                 "source_entity_types": first_list("source_entity_types"),
                 "question_type": question_type,
             }
@@ -9821,10 +9831,11 @@ class MatrixArkLocalAdapter:
             if scan_index % 128 == 0 and deadline_exceeded():
                 return deadline_fallback("deadline_during_embedding_vector_scan")
             record_type = record.get("record_type")
-            if record_type == "context_embedding" and not recovered_scope_matches(record, retrieval_scope):
-                continue
-            if record_type == "context_embedding" and record.get("embedding_type") in {"node_l0", "node_l1", "context_node"}:
+            if record_type == "context_embedding":
                 remember_embedding_metadata(record)
+                if not recovered_scope_matches(record, retrieval_scope):
+                    continue
+            if record_type == "context_embedding" and record.get("embedding_type") in {"node_l0", "node_l1", "context_node"}:
                 dense_score = cosine(query_embedding, record.get("vector", []))
                 node_hash = record["node_hash"]
                 node_text = " ".join(record.get("node_path", [])) + " " + node_summary_text_by_hash.get(node_hash, "")
@@ -9843,25 +9854,18 @@ class MatrixArkLocalAdapter:
                         "embedding_type": record.get("embedding_type"),
                     }
             elif record_type == "context_embedding" and record.get("embedding_type") == "event_text":
-                remember_embedding_metadata(record)
                 event_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") in {"entity_state", "profile_entity_state"}:
-                remember_embedding_metadata(record)
                 entity_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "segment_text":
-                remember_embedding_metadata(record)
                 segment_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "compression_summary":
-                remember_embedding_metadata(record)
                 compression_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "resource_chunk":
-                remember_embedding_metadata(record)
                 resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "skill_section":
-                remember_embedding_metadata(record)
                 resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "skill_summary":
-                remember_embedding_metadata(record)
                 skill_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
         for record in records:
             if record.get("record_type") != "context_node":
@@ -10463,6 +10467,7 @@ class MatrixArkLocalAdapter:
                 return deadline_fallback("deadline_during_entity_scan", records)
             if record.get("record_type") != "context_entity":
                 continue
+            record = record_with_embedding_defaults(record, "entity", record.get("entity_hash"))
             if not access_scope_matches_before_scoring(record, retrieval_scope):
                 continue
             is_profile_entity_bridge = (
@@ -10479,6 +10484,7 @@ class MatrixArkLocalAdapter:
             if not admit_candidate_for_node(record):
                 continue
             text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
+            entity_metadata = embedding_metadata_by_ref.get(("entity", record.get("entity_hash")), {})
             source_entity_hashes = record.get("source_entity_hashes", [])
             source_session_ids = record.get("source_session_ids", [])
             sparse_score = sparse_lexical_score(query_terms, text)
@@ -10528,9 +10534,9 @@ class MatrixArkLocalAdapter:
                 "final_session_boundary": bool(record.get("final_session_boundary", False)),
                 "profile_promotion_policy": record.get("profile_promotion_policy", ""),
                 "profile_promotion_blocker": record.get("profile_promotion_blocker", ""),
-                "profile_revision": record.get("profile_revision", 0),
-                "previous_profile_revision": record.get("previous_profile_revision", 0),
-                "previous_profile_updated_at_ms": record.get("previous_profile_updated_at_ms", 0),
+                "profile_revision": record.get("profile_revision", entity_metadata.get("profile_revision", 0)),
+                "previous_profile_revision": record.get("previous_profile_revision", entity_metadata.get("previous_profile_revision", 0)),
+                "previous_profile_updated_at_ms": record.get("previous_profile_updated_at_ms", entity_metadata.get("previous_profile_updated_at_ms", 0)),
                 "supersedes_session_entity_hash": record.get("supersedes_session_entity_hash", 0),
                 "supersedes_session_entity_hashes": record.get("supersedes_session_entity_hashes", []),
                 "profile_current_state_representative": is_profile_entity_bridge,
@@ -10997,6 +11003,7 @@ class MatrixArkLocalAdapter:
                 for record in records:
                     if record.get("record_type") != "context_entity":
                         continue
+                    record = record_with_embedding_defaults(record, "entity", record.get("entity_hash"))
                     if str(record.get("memory_scope") or "") != "user_profile":
                         continue
                     if str(record.get("session_continuity") or "") != "cross_session":
@@ -11004,6 +11011,7 @@ class MatrixArkLocalAdapter:
                     if not access_scope_matches_before_scoring(record, retrieval_scope):
                         continue
                     text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
+                    entity_metadata = embedding_metadata_by_ref.get(("entity", record.get("entity_hash")), {})
                     if not text.strip(" :=\t"):
                         continue
                     source_entity_hashes = record.get("source_entity_hashes", [])
@@ -11049,9 +11057,9 @@ class MatrixArkLocalAdapter:
                             "final_session_boundary": bool(record.get("final_session_boundary", False)),
                             "profile_promotion_policy": record.get("profile_promotion_policy", ""),
                             "profile_promotion_blocker": record.get("profile_promotion_blocker", ""),
-                            "profile_revision": record.get("profile_revision", 0),
-                            "previous_profile_revision": record.get("previous_profile_revision", 0),
-                            "previous_profile_updated_at_ms": record.get("previous_profile_updated_at_ms", 0),
+                            "profile_revision": record.get("profile_revision", entity_metadata.get("profile_revision", 0)),
+                            "previous_profile_revision": record.get("previous_profile_revision", entity_metadata.get("previous_profile_revision", 0)),
+                            "previous_profile_updated_at_ms": record.get("previous_profile_updated_at_ms", entity_metadata.get("previous_profile_updated_at_ms", 0)),
                             "supersedes_session_entity_hash": record.get("supersedes_session_entity_hash", 0),
                             "supersedes_session_entity_hashes": record.get("supersedes_session_entity_hashes", []),
                             "profile_current_state_representative": True,
