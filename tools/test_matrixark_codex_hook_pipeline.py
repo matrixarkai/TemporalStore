@@ -12373,6 +12373,80 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("dropped_memory_layer_budget", default_current_pack)
             self.assertNotIn("memory_layer_pressure", default_current_pack)
 
+    def test_profile_preference_correction_supersedes_stale_cross_session_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-preference-correction.jsonl")
+            base_scope = {
+                "account_id": "acct_profile_preference_correction",
+                "tenant_id": "tenant_profile_preference_correction",
+                "user_id": "user_profile_preference_correction",
+            }
+            first = adapter.batch_extract(
+                {
+                    "scope": {**base_scope, "session_id": "session_profile_preference_1"},
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "I prefer waiting for Stop before extracting memories.",
+                        }
+                    ],
+                    "metadata": {"hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
+                    "force": True,
+                }
+            )
+            second = adapter.batch_extract(
+                {
+                    "scope": {**base_scope, "session_id": "session_profile_preference_2"},
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "I prefer threshold or idle extraction now instead of waiting for Stop.",
+                        }
+                    ],
+                    "metadata": {"hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
+                    "force": True,
+                }
+            )
+
+            self.assertGreaterEqual(first.get("profile_entities_written", 0), 1)
+            self.assertGreaterEqual(second.get("profile_entities_written", 0), 1)
+            profile_preferences = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
+                and record.get("entity_type") == "preference"
+                and record.get("entity_name") == "preference"
+            ]
+            self.assertEqual(1, len(profile_preferences), profile_preferences)
+            profile_preference = profile_preferences[0]
+            self.assertEqual(2, profile_preference["profile_revision"])
+            self.assertEqual(
+                ["session_profile_preference_1", "session_profile_preference_2"],
+                profile_preference["source_session_ids"],
+            )
+            self.assertIn("threshold or idle extraction", profile_preference["state"])
+            self.assertNotIn("prefer waiting for Stop before extracting memories", profile_preference["state"])
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**base_scope, "session_id": "session_profile_preference_3"},
+                    "session_scope": "prefer",
+                    "question_type": "current_state",
+                    "query": "What is the current extraction preference?",
+                    "max_context_tokens": 180,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 1, "min_similarity_score": 0.0},
+                }
+            )
+            self.assertEqual(1, len(pack["selected_refs"]))
+            current_ref = pack["selected_refs"][0]
+            self.assertEqual("user_profile", current_ref["memory_scope"])
+            self.assertEqual("cross_session", current_ref["session_continuity"])
+            self.assertIn("threshold or idle extraction", current_ref["text"])
+            self.assertNotIn("prefer waiting for Stop before extracting memories", current_ref["text"])
+
     def test_retrieval_recovers_profile_layer_from_compact_embedding_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-embedding-recovery.jsonl")
