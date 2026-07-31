@@ -3961,6 +3961,111 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("dirty_marked", decision["summary_refresh"]["status"])
         self.assertEqual(1, len(server.adapter.commit_calls))
 
+    def test_fast_async_tool_result_defaults_to_raw_only(self) -> None:
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.serving_records = []
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.serving_records.extend(records)
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        args = Namespace(
+            event="PostToolUse",
+            account_id="acct_local",
+            tenant_id="tenant_codex",
+            user_id="deeproute",
+            session_id="codex-cpp-session-1",
+            team="codex",
+            project="temporalstore",
+            session_commit_threshold=20,
+            idle_commit_timeout_ms=0,
+            understanding_provider="rules",
+            segment_provider="deterministic",
+        )
+
+        server = Server()
+        result = hook.fast_async_hook_ingest(
+            server,
+            args=args,
+            text="Exit code: 0; Ran 9 tests",
+            role="tool",
+            agent_context={"workspace_root": "/repo", "tool_name": "shell_command"},
+            hook={"session_id_source": "payload_field"},
+            original_text="verbose stdout\nExit code: 0\nRan 9 tests\nOK",
+        )
+
+        self.assertEqual("accepted", result["status"])
+        self.assertEqual("accepted", result["raw_ingestion_status"])
+        self.assertEqual("skipped_raw_only_tool_result", result["serving_projection_status"])
+        self.assertEqual("skipped_raw_only_tool_result", result["async_pipeline_status"])
+        self.assertEqual(1, len(server.adapter.raw_records))
+        self.assertEqual(0, len(server.adapter.serving_records))
+        raw = server.adapter.raw_records[0]
+        self.assertEqual("tool", raw["role"])
+        self.assertEqual("raw_only", raw["metadata"]["serving_projection"]["visibility"])
+        self.assertEqual("raw_only_compact_evidence", raw["metadata"]["tool_result_ingestion"]["policy"])
+
+    def test_fast_async_tool_result_serving_override_promotes_context_event(self) -> None:
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.serving_records = []
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.serving_records.extend(records)
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        args = Namespace(
+            event="PostToolUse",
+            account_id="acct_local",
+            tenant_id="tenant_codex",
+            user_id="deeproute",
+            session_id="codex-cpp-session-1",
+            team="codex",
+            project="temporalstore",
+            session_commit_threshold=20,
+            idle_commit_timeout_ms=0,
+            understanding_provider="rules",
+            segment_provider="deterministic",
+        )
+
+        original = hook.HOOK_TOOL_RESULT_SERVING
+        hook.HOOK_TOOL_RESULT_SERVING = True
+        try:
+            server = Server()
+            result = hook.fast_async_hook_ingest(
+                server,
+                args=args,
+                text="Exit code: 0; Ran 9 tests",
+                role="tool",
+                agent_context={"workspace_root": "/repo", "tool_name": "shell_command"},
+                hook={"session_id_source": "payload_field"},
+                original_text="verbose stdout\nExit code: 0\nRan 9 tests\nOK",
+            )
+        finally:
+            hook.HOOK_TOOL_RESULT_SERVING = original
+
+        self.assertEqual("accepted", result["status"])
+        self.assertEqual(1, len(server.adapter.raw_records))
+        self.assertGreaterEqual(len(server.adapter.serving_records), 1)
+        serving = next(record for record in server.adapter.serving_records if record["record_type"] == "context_event")
+        self.assertEqual("tool", serving["role"])
+        self.assertEqual("serving", serving["metadata"]["serving_projection"]["visibility"])
+
     def test_retention_keeps_acceptance_prompt_that_mentions_synthetic_rows(self) -> None:
         fields = hook.hook_retention_fields(
             text=(
