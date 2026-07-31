@@ -7902,7 +7902,15 @@ class MatrixArkLocalAdapter:
                 previous_profile = previous_profile_entity or {}
                 previous_profile_state = str(previous_profile.get("state") or "")
                 promoted_state = str(promoted_entity.get("state") or "")
-                if previous_profile_state and previous_profile_state.lower() not in promoted_state.lower():
+                cumulative_profile_entity_types = {"assistant_decision", "tool_evidence"}
+                should_accumulate_profile_state = (
+                    str(updated_entity.get("entity_type") or "") in cumulative_profile_entity_types
+                )
+                if (
+                    should_accumulate_profile_state
+                    and previous_profile_state
+                    and previous_profile_state.lower() not in promoted_state.lower()
+                ):
                     promoted_entity = {
                         **promoted_entity,
                         "state": summarize_text(previous_profile_state + " " + promoted_state, limit=320),
