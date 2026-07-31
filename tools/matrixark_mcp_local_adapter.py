@@ -1682,9 +1682,11 @@ def compact_latest_value_records(records: list[Json]) -> list[Json]:
             latest_positions[key] = len(output)
             output.append(record)
             continue
-        if int(record.get("updated_at_ms") or record.get("created_at_ms") or 0) >= int(
-            existing.get("updated_at_ms") or existing.get("created_at_ms") or 0
-        ):
+        record_ts = int(record.get("updated_at_ms") or record.get("created_at_ms") or 0)
+        existing_ts = int(existing.get("updated_at_ms") or existing.get("created_at_ms") or 0)
+        record_revision = int(record.get("profile_revision") or record.get("revision") or 0)
+        existing_revision = int(existing.get("profile_revision") or existing.get("revision") or 0)
+        if (record_ts, record_revision) >= (existing_ts, existing_revision):
             latest[key] = record
             output[latest_positions[key]] = record
     return output
@@ -1917,7 +1919,9 @@ class MatrixArkLocalAdapter:
         with self._read_cache_lock:
             if self._read_cache_records is not None:
                 self._read_cache_records.extend(records)
-                self._read_cache_records = compact_latest_context_state_records(self._read_cache_records)
+                self._read_cache_records = compact_latest_context_state_records(
+                    compact_latest_value_records(self._read_cache_records)
+                )
             size, mtime_ns = self._jsonl_cache_signature()
             if size >= 0:
                 self._read_cache_size = size
@@ -1930,10 +1934,16 @@ class MatrixArkLocalAdapter:
             cached = _LOCAL_READ_CACHE.get(cache_key)
             if cached is not None:
                 _, _, cached_records = cached
-                cached_records = compact_latest_context_state_records(list(cached_records) + list(records))
+                cached_records = compact_latest_context_state_records(
+                    compact_latest_value_records(list(cached_records) + list(records))
+                )
                 _LOCAL_READ_CACHE[cache_key] = (self._read_cache_size, self._read_cache_mtime_ns, cached_records)
             elif self._read_cache_records is not None:
-                _LOCAL_READ_CACHE[cache_key] = (self._read_cache_size, self._read_cache_mtime_ns, compact_latest_context_state_records(list(self._read_cache_records)))
+                _LOCAL_READ_CACHE[cache_key] = (
+                    self._read_cache_size,
+                    self._read_cache_mtime_ns,
+                    compact_latest_context_state_records(compact_latest_value_records(list(self._read_cache_records))),
+                )
         if any(str(record.get("record_type") or "") in RETRIEVAL_HOT_RECORD_TYPES for record in records):
             with self._retrieval_records_cache_lock:
                 self._retrieval_records_cache_generation += 1

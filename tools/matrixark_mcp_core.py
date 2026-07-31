@@ -5295,8 +5295,10 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
     if candidate.get("ref_type") == "entity":
         entity_type = str(candidate.get("entity_type") or candidate.get("event_type") or "").strip().lower()
         if question_type in {"current_state", "latest"}:
-            if entity_type in {"assistant_decision", "tool_evidence"}:
+            if entity_type == "assistant_decision":
                 ref_priority = 1.0
+            elif entity_type == "tool_evidence":
+                ref_priority = 0.9
             elif bool(candidate.get("profile_current_state_representative")) or bool(candidate.get("profile_current_state_boost")):
                 ref_priority = 0.75
             elif str(candidate.get("memory_scope") or "") == "user_profile" and str(candidate.get("session_continuity") or "") == "cross_session":
