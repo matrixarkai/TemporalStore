@@ -34,7 +34,10 @@ try:
         retrieval_budget_summary_from_retrieve,
         retrieval_layer_summary_from_retrieve,
         retrieval_memory_hierarchy_contract_from_retrieve,
+        codex_memory_selection_metadata,
+        selected_assistant_memory_text,
         selected_tool_evidence_text,
+        selected_user_prompt_memory_text,
         session_commit_summary,
         selected_ref_count_from_retrieve,
         used_context_tokens_from_retrieve,
@@ -57,7 +60,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         retrieval_budget_summary_from_retrieve,
         retrieval_layer_summary_from_retrieve,
         retrieval_memory_hierarchy_contract_from_retrieve,
+        codex_memory_selection_metadata,
+        selected_assistant_memory_text,
         selected_tool_evidence_text,
+        selected_user_prompt_memory_text,
         session_commit_summary,
         selected_ref_count_from_retrieve,
         used_context_tokens_from_retrieve,
@@ -487,6 +493,29 @@ def retrieval_quality_warnings_from_retrieve(pack: Json | None) -> list[Any]:
 
 
 def hook_messages_from_payload(payload: Json, *, event: str, text: str) -> list[Json]:
+    def compact_for_role(role: str, content: str) -> str:
+        role_name = role_for_agent_event(event) if not str(role or "").strip() else str(role or "").strip()
+        normalized_role = {
+            "assistant_response": "assistant",
+            "agent": "assistant",
+            "ai": "assistant",
+            "bot": "assistant",
+            "llm": "assistant",
+            "model": "assistant",
+            "tool_result": "tool",
+            "tool_output": "tool",
+            "function": "tool",
+            "human": "user",
+            "prompt": "user",
+        }.get(role_name.lower(), role_name.lower())
+        if normalized_role == "assistant":
+            return selected_assistant_memory_text(content)
+        if normalized_role == "tool":
+            return selected_tool_evidence_text(content)
+        if normalized_role == "user":
+            return selected_user_prompt_memory_text(content)
+        return str(content or "").strip()
+
     raw_messages = payload.get("messages") if isinstance(payload, dict) else None
     messages: list[Json] = []
     if isinstance(raw_messages, list):
@@ -495,9 +524,10 @@ def hook_messages_from_payload(payload: Json, *, event: str, text: str) -> list[
                 content = str(item.get("content") or item.get("text") or item.get("message") or "").strip()
                 if content:
                     role = str(item.get("role") or role_for_agent_event(event)).strip() or role_for_agent_event(event)
-                    messages.append({"role": role, "content": content})
+                    messages.append({"role": role, "content": compact_for_role(role, content)})
             elif isinstance(item, str) and item.strip():
-                messages.append({"role": role_for_agent_event(event), "content": item.strip()})
+                role = role_for_agent_event(event)
+                messages.append({"role": role, "content": compact_for_role(role, item.strip())})
     if messages:
         return messages
     if norm(event) in TOOL_EVENTS:
@@ -521,7 +551,66 @@ def hook_messages_from_payload(payload: Json, *, event: str, text: str) -> list[
         evidence = selected_tool_evidence_text("\n".join(tool_texts) or text)
         if evidence:
             return [{"role": "tool", "content": evidence}]
-    return [{"role": role_for_agent_event(event), "content": text}]
+    role = role_for_agent_event(event)
+    return [{"role": role, "content": compact_for_role(role, text)}]
+
+
+def agent_memory_selection_metadata(payload: Json, *, event: str, text: str, messages: list[Json]) -> Json:
+    if not messages:
+        return {}
+    raw_messages = payload.get("messages") if isinstance(payload, dict) else None
+    original_by_role: dict[str, list[str]] = {}
+    if isinstance(raw_messages, list):
+        for item in raw_messages:
+            if isinstance(item, dict):
+                role = str(item.get("role") or role_for_agent_event(event)).strip() or role_for_agent_event(event)
+                content = str(item.get("content") or item.get("text") or item.get("message") or "").strip()
+            elif isinstance(item, str):
+                role = role_for_agent_event(event)
+                content = item.strip()
+            else:
+                continue
+            if content:
+                original_by_role.setdefault(role, []).append(content)
+    if not original_by_role and str(text or "").strip():
+        original_by_role.setdefault(role_for_agent_event(event), []).append(str(text or "").strip())
+
+    selected_by_role: dict[str, list[str]] = {}
+    for message in messages:
+        role = str(message.get("role") or role_for_agent_event(event)).strip() or role_for_agent_event(event)
+        content = str(message.get("content") or "").strip()
+        if content:
+            selected_by_role.setdefault(role, []).append(content)
+
+    selections: list[Json] = []
+    policy_counts: Json = {}
+    policies: list[str] = []
+    for role in sorted(selected_by_role):
+        selected_text = "\n".join(selected_by_role.get(role, []))
+        original_text = "\n".join(original_by_role.get(role, [])) or selected_text
+        selection = codex_memory_selection_metadata(
+            role=role,
+            event=event,
+            text=selected_text,
+            original_text=original_text,
+        )
+        if not selection:
+            continue
+        policy = str(selection.get("policy") or "")
+        if policy:
+            policies.append(policy)
+            policy_counts[policy] = int(policy_counts.get(policy, 0)) + len(selected_by_role.get(role, []))
+        selections.append(selection)
+
+    if not selections:
+        return {}
+    aggregate: Json = {
+        "source_memory_selection_policies": sorted(set(policies)),
+        "source_memory_selection_policy_counts": policy_counts,
+    }
+    if len(selections) == 1:
+        aggregate["codex_memory_selection"] = selections[0]
+    return aggregate
 
 
 def normalized_session_buffer_from_ingest(ingest: Json | None) -> Json:
@@ -711,12 +800,18 @@ def main() -> int:
         ingest = call_tool(server, "matrixark_ingest", ingest_args)
     elif text:
         hook_messages = hook_messages_from_payload(payload, event=args.event, text=text)
+        selection_metadata = agent_memory_selection_metadata(
+            payload,
+            event=args.event,
+            text=text,
+            messages=hook_messages,
+        )
         ingest_args = {
             **common,
             "messages": hook_messages,
             "understanding_provider": args.understanding_provider,
             "segment_provider": args.segment_provider,
-            "metadata": base_metadata,
+            "metadata": {**base_metadata, **selection_metadata},
             "agent_hook": hook_meta,
             "storage_options": hook_storage_options(),
         }
