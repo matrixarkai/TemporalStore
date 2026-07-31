@@ -264,6 +264,20 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("threshold and idle batch extraction", plan_text)
         self.assertTrue(all(entity.get("source_roles") == ["user"] for entity in plan_entities))
 
+    def test_user_goal_queries_target_current_plan_and_selected_prompt_memory(self) -> None:
+        query = "What goal did I ask Codex to implement for profile memory retrieval?"
+        self.assertEqual("profile_memory", infer_query_type(query))
+        self.assertEqual("profile_memory", matrixark_mcp_query.infer_query_type(query))
+
+        core_groups = infer_secondary_index_filter_groups(query, "profile_memory")
+        query_groups = matrixark_mcp_query.infer_secondary_index_filter_groups(query, "profile_memory")
+        for groups in [core_groups, query_groups]:
+            flattened = {term for group in groups for term in group}
+            self.assertIn("entity_type:current_plan", flattened)
+            self.assertIn("event_type:user_prompt", flattened)
+            self.assertIn("source_role:user", flattened)
+            self.assertIn("memory_selection_policy:selected_user_prompt", flattened)
+
     def test_outcome_fact_entities_emit_and_query_specific_index_terms(self) -> None:
         assistant_next = {
             "record_type": "context_entity",

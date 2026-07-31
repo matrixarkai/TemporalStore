@@ -21,7 +21,7 @@ QUERY_TYPE_LABELS: dict[str, str] = {
     "profile_memory": "question asks user profile long term memory profile entities profile summaries cross session memories across sessions",
     "benchmark_quality": "question asks benchmark quality hit rate latency p50 p99 throughput locomo longmemeval memory evaluation",
     "date": "question asks when date before after yesterday tomorrow week month year",
-    "current_state": "question asks current latest now still status preference location role valid state",
+    "current_state": "question asks current latest now still status preference location role valid state active goal task request requirement",
     "why_emotion": "question asks why reason feeling emotion because",
     "evidence": "question asks quote exact message evidence what did someone say",
     "procedure": "question asks procedure steps troubleshoot debug rollback runbook checklist how to fix",
@@ -44,7 +44,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "entity_type:family_profile": "family pet dog cat child household",
     "entity_type:job_status": "job role work status position responsibility",
     "event_type:status_update": "job status role work update",
-    "entity_type:current_plan": "plan current plan upcoming task schedule next milestone",
+    "entity_type:current_plan": "plan current plan goal user request requirement upcoming task schedule next milestone",
     "event_type:plan_update": "plan update going to schedule will next",
     "event_type:confirmation": "confirmation approved accepted yes correct confirmed",
     "entity_type:approval_state": "approval budget purchase cost approved",
@@ -210,7 +210,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(context_index_name("entity_type", "relationship"), context_index_name("entity_type", "family_profile"))
     if re.search(r"\b(job|role|work|works|position|status|company|employer)\b", lower):
         add_group(context_index_name("entity_type", "job_status"), context_index_name("event_type", "status_update"))
-    if re.search(r"\b(plan|plans|planning|going to|schedule|next)\b", lower):
+    if re.search(r"\b(plan|plans|planning|going to|schedule|next|goal|task|requirement|user request|user asked|asked codex|asked you|implement(?:ed)?|fix(?:ed)?)\b", lower):
         add_group(context_index_name("entity_type", "current_plan"), context_index_name("event_type", "plan_update"))
     if re.search(r"\b(approval|approved|approve|confirmed|confirmation|budget|purchase|cost|gpu)\b", lower):
         add_group(
@@ -268,8 +268,13 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         outcome_terms = codex_outcome_fact_index_terms(query)
         if outcome_terms:
             add_group(*outcome_terms)
-    if re.search(r"\b(user prompt|prompt|user request|user asked|request|asked codex)\b", lower):
-        add_group(context_index_name("event_type", "user_prompt"), context_index_name("source_role", "user"))
+    if re.search(r"\b(user prompt|prompt|user request|user asked|request|asked codex|ask codex|did i ask|what did i ask|asked you)\b", lower):
+        add_group(
+            context_index_name("event_type", "user_prompt"),
+            context_index_name("source_role", "user"),
+            context_index_name("entity_type", "current_plan"),
+            context_index_name("memory_selection_policy", "selected_user_prompt"),
+        )
     if re.search(r"\b(resource|document|doc|file|pdf|markdown|readme|csv|spreadsheet|excel|html|word|slides?|deck)\b", lower):
         add_group(context_index_name("source_type", "resource"), context_index_name("source_type", "resource_fact"))
     for alias, resource_type in RESOURCE_TYPE_QUERY_ALIASES.items():
@@ -390,7 +395,7 @@ def infer_query_type(query: str) -> str:
         return "date"
     if CODEX_OUTCOME_QUERY_RE.search(lower):
         return "evidence"
-    if re.search(r"\b(current|currently|latest|now|still|today|valid|status|preference|prefer|likes|where does|where is)\b", lower):
+    if re.search(r"\b(current|currently|latest|now|still|today|valid|status|preference|prefer|likes|where does|where is|goal|task|requirement|user request|asked codex)\b", lower):
         return "current_state"
     if re.search(r"\b(?:assistant|codex)\b.{0,64}\b(?:decide|decided|decision|done|implemented|fixed|push(?:ed)?|commit(?:ted)?|changed|updated|validated|verified)\b", lower):
         return "current_state"
