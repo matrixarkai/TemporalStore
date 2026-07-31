@@ -2670,7 +2670,7 @@ def tool_evidence_memory_text(text: str) -> str:
         return ""
     selected: list[str] = []
     evidence_line_pattern = re.compile(
-        r"\b(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|pushed|rebase|benchmark|validation)\b",
+        r"\b(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|\d+\s+passed\b|tests?\s+(?:passed|failed)|test\s+result:\s+ok|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|pushed|rebase|benchmark|validation)\b",
         re.IGNORECASE,
     )
     for raw_line in str(text).splitlines():
