@@ -303,6 +303,40 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("event_type:user_prompt", user_flattened)
         self.assertIn("source_role:user", user_flattened)
 
+    def test_profile_current_entities_emit_and_query_current_index_terms(self) -> None:
+        record = {
+            "record_type": "context_entity",
+            "entity_type": "assistant_decision",
+            "entity_name": "codex_outcome",
+            "state": "Codex pushed the memory retrieval change after validation.",
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "profile_entity_current": True,
+            "source_memory_selection_policies": ["selected_profile_current_state"],
+            "source_memory_selection_policy_counts": {"selected_profile_current_state": 1},
+        }
+        core_terms = candidate_index_terms(record, {}, {})
+        query_terms = matrixark_mcp_query.candidate_index_terms(record, {}, {})
+        for terms in [core_terms, query_terms]:
+            self.assertIn("profile_entity_current:true", terms)
+            self.assertIn("memory_scope:user_profile", terms)
+            self.assertIn("session_continuity:cross_session", terms)
+
+        groups = infer_secondary_index_filter_groups("What is the current profile memory for Codex outcomes?", "current_state")
+        flattened = {term for group in groups for term in group}
+        self.assertIn("profile_entity_current:true", flattened)
+        self.assertIn("memory_scope:user_profile", flattened)
+
+        query_flattened = {
+            term
+            for group in matrixark_mcp_query.infer_secondary_index_filter_groups(
+                "Show latest profile entity memories across sessions",
+                "profile_memory",
+            )
+            for term in group
+        }
+        self.assertIn("profile_entity_current:true", query_flattened)
+
     def test_profile_memory_queries_target_profile_and_cross_session_indexes(self) -> None:
         self.assertEqual(
             "profile_memory",

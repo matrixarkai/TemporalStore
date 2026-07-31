@@ -4416,6 +4416,7 @@ def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[
         )
     if re.search(r"\b(user profile|profile memory|long[- ]term memory|profile entity|profile entities|profile summary|profile summaries)\b", lower):
         add_group(context_index_name("memory_scope", "user_profile"))
+        add_group(context_index_name("profile_entity_current", "true"))
     if re.search(r"\b(cross[- ]session|across sessions|between sessions|multi[- ]session|long[- ]term)\b", lower):
         add_group(context_index_name("session_continuity", "cross_session"))
     if re.search(r"\b(session[- ]local|same[- ]session|current session|this session|session specific|session-specific)\b", lower):
@@ -4688,6 +4689,8 @@ def candidate_index_terms(
         add_direct_layer_terms()
     elif record_type == "context_entity":
         terms.add(context_index_name("entity_type", record.get("entity_type")))
+        if bool(record.get("profile_entity_current")):
+            terms.add(context_index_name("profile_entity_current", "true"))
         terms.update(benchmark_quality_index_terms(record.get("entity_name"), record.get("entity_type"), record.get("state"), record.get("text")))
         add_direct_layer_terms()
         add_source_lineage_terms()
