@@ -278,6 +278,17 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("source_role:user", flattened)
             self.assertIn("memory_selection_policy:selected_user_prompt", flattened)
 
+        budgets, mode = matrixark_mcp_retrieve_request.pre_refresh_helpers.auto_memory_selection_policy_budget_tokens(
+            {"query": query},
+            {},
+            remote_budget_tokens=1000,
+            question_type="profile_memory",
+        )
+        self.assertEqual("auto", mode)
+        self.assertGreater(budgets["selected_user_prompt"], budgets["selected_profile_current_state"])
+        self.assertGreater(budgets["selected_user_prompt"], budgets["selected_assistant_decision_outcome_only"])
+        self.assertGreater(budgets["selected_user_prompt"], budgets["selected_tool_evidence_only"])
+
     def test_outcome_fact_entities_emit_and_query_specific_index_terms(self) -> None:
         assistant_next = {
             "record_type": "context_entity",
@@ -5993,6 +6004,42 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "selected_assistant_decision_outcome_only": 42,
                     "selected_tool_evidence_only": 28,
                     "selected_profile_current_state": 47,
+                },
+                request["memory_selection_policy_budget_tokens"],
+            )
+
+    def test_user_goal_query_auto_budget_prioritizes_selected_prompt_and_plan_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-user-goal-budget.jsonl")
+            scope = {
+                "account_id": "acct_native_user_goal_budget",
+                "tenant_id": "tenant_native_user_goal_budget",
+                "user_id": "user_native_user_goal_budget",
+                "session_id": "session_native_user_goal_budget",
+            }
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "What goal did I ask Codex to implement for profile memory retrieval?",
+                    "max_context_tokens": 100,
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertEqual("local-native-pack", pack["pack_id"])
+            self.assertEqual(1, len(adapter.native_requests))
+            request = adapter.native_requests[0]
+            self.assertEqual("profile_memory", request["question_type"])
+            self.assertEqual("auto", request["source_role_budget_mode"])
+            self.assertEqual({"assistant": 33, "tool": 23, "user": 66}, request["source_role_budget_tokens"])
+            self.assertEqual("auto", request["memory_selection_policy_budget_mode"])
+            self.assertEqual(
+                {
+                    "selected_user_prompt": 66,
+                    "selected_assistant_decision_outcome_only": 28,
+                    "selected_tool_evidence_only": 23,
+                    "selected_profile_current_state": 52,
                 },
                 request["memory_selection_policy_budget_tokens"],
             )
