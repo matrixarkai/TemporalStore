@@ -62,6 +62,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "session_continuity:cross_session": "cross session previous sessions other conversations across tasks persistent memory bridge",
     "session_continuity:same_session": "same session current conversation active turn local context",
     "profile_entity_current:true": "current profile entity latest durable user state standing preference instruction",
+    "profile_summary_current:true": "current profile summary latest durable long term memory profile overview",
     "memory_selection_policy:selected_profile_current_state": "selected profile current state standing instruction durable preference",
     "memory_selection_policy:selected_user_prompt": "selected user prompt explicit request instruction preference",
     "memory_selection_policy:selected_assistant_decision_outcome_only": "selected assistant decision outcome final answer implemented changed pushed",
@@ -231,9 +232,9 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             add_group(context_index_name("memory_scope", "user_profile"), context_index_name("session_continuity", "cross_session"))
     if re.search(r"\b(user profile|profile memory|long[- ]term memory|profile entity|profile entities|profile summary|profile summaries|current profile|latest profile)\b", lower) or question_type == "profile_memory":
         add_group(context_index_name("memory_scope", "user_profile"), context_index_name("session_continuity", "cross_session"))
-        add_group(context_index_name("profile_entity_current", "true"))
+        add_group(context_index_name("profile_entity_current", "true"), context_index_name("profile_summary_current", "true"))
     if question_type in {"current_state", "latest"} and re.search(r"\b(profile|cross[- ]session|long[- ]term|memory|entity|entities)\b", lower):
-        add_group(context_index_name("profile_entity_current", "true"))
+        add_group(context_index_name("profile_entity_current", "true"), context_index_name("profile_summary_current", "true"))
     if re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
         add_group(context_index_name("entity_type", "tool_evidence"), context_index_name("event_type", "tool_evidence"))
     if re.search(r"\b(user prompt|prompt|user request|user asked|request|asked codex)\b", lower):
@@ -526,6 +527,8 @@ def candidate_index_terms(
         add_source_lineage_terms()
     elif record_type == "context_summary":
         terms.add(context_index_name("summary_type", record.get("summary_type")))
+        if bool(record.get("profile_summary_current")):
+            terms.add(context_index_name("profile_summary_current", "true"))
         terms.update(benchmark_quality_index_terms(record.get("summary_type"), record.get("summary_text"), record.get("text")))
         add_direct_layer_terms()
         add_source_lineage_terms()

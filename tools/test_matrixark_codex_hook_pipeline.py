@@ -359,6 +359,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         groups = infer_secondary_index_filter_groups("What is the current profile memory for Codex outcomes?", "current_state")
         flattened = {term for group in groups for term in group}
         self.assertIn("profile_entity_current:true", flattened)
+        self.assertIn("profile_summary_current:true", flattened)
         self.assertIn("memory_scope:user_profile", flattened)
 
         query_flattened = {
@@ -370,6 +371,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             for term in group
         }
         self.assertIn("profile_entity_current:true", query_flattened)
+        self.assertIn("profile_summary_current:true", query_flattened)
 
     def test_profile_memory_queries_target_profile_and_cross_session_indexes(self) -> None:
         self.assertEqual(
@@ -402,6 +404,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         flattened = {term for group in groups for term in group}
         self.assertIn("memory_scope:user_profile", flattened)
         self.assertIn("session_continuity:cross_session", flattened)
+        self.assertIn("profile_summary_current:true", flattened)
 
         session_groups = infer_secondary_index_filter_groups(
             "Show session-specific same-session context entities",
@@ -421,6 +424,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "session_continuity:cross_session",
             "session_continuity:same_session",
             "profile_entity_current:true",
+            "profile_summary_current:true",
             "memory_selection_policy:selected_profile_current_state",
             "memory_selection_policy:selected_assistant_decision_outcome_only",
             "memory_selection_policy:selected_tool_evidence_only",
@@ -710,6 +714,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(["cross_session", "same_session"], summary["source_session_continuities"])
         self.assertEqual("user_profile", summary["memory_scope"])
         self.assertEqual("cross_session", summary["session_continuity"])
+        self.assertTrue(summary["profile_summary_current"])
         self.assertEqual(summary["source_role_counts"], result["source_role_counts"])
         embeddings = [record for record in result["records"] if record.get("record_type") == "context_embedding"]
         self.assertTrue(embeddings)
@@ -717,6 +722,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("summary", embedding["ref_type"])
             self.assertEqual("user_profile", embedding["memory_scope"])
             self.assertEqual("cross_session", embedding["session_continuity"])
+            self.assertTrue(embedding["profile_summary_current"])
             self.assertEqual(["assistant", "tool", "user"], embedding["source_roles"])
             self.assertEqual({"assistant": 3, "tool": 2, "user": 1}, embedding["source_role_counts"])
             self.assertEqual(["after_llm", "before_llm", "tool_result"], embedding["source_hook_types"])
@@ -727,6 +733,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(["cross_session", "same_session"], embedding["source_session_continuities"])
             self.assertEqual(["selected_assistant_decision_outcome_only", "selected_tool_evidence_only", "selected_user_prompt"], embedding["source_memory_selection_policies"])
             self.assertEqual({"selected_assistant_decision_outcome_only": 2, "selected_tool_evidence_only": 2, "selected_user_prompt": 1}, embedding["source_memory_selection_policy_counts"])
+        index_names = {
+            record.get("index_name")
+            for record in result["records"]
+            if record.get("record_type") == "context_index"
+            and record.get("data_model") == "context_summary"
+        }
+        self.assertIn("profile_summary_current:true", index_names)
 
     def test_summary_runtime_refresh_preserves_selection_counts_in_audit_and_result(self) -> None:
         scope = {

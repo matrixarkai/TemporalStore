@@ -4760,6 +4760,10 @@ class MatrixArkLocalAdapter:
             for level, summary_text, embedding_type, provider_meta in summary_specs:
                 summary_hash = stable_hash(f"context_summary:{level}:{node_hash}")
                 summary_policy = {**l1_policy, **provider_meta}
+                profile_summary_current = (
+                    "user_profile" in source_memory_scopes
+                    or any(str(part).startswith("profile:") for part in node_path)
+                )
                 summary_record = {
                     "record_type": "context_summary",
                     "summary_type": level,
@@ -4790,6 +4794,7 @@ class MatrixArkLocalAdapter:
                     "session_continuity": "cross_session" if "cross_session" in source_session_continuities else ("same_session" if "same_session" in source_session_continuities else ""),
                     "extraction_phase": "final" if "final" in source_extraction_phases else ("provisional" if "provisional" in source_extraction_phases else ""),
                     "final_session_boundary": source_final_session_boundary_count > 0,
+                    "profile_summary_current": profile_summary_current,
                     "source_operator_hashes": source_operator_hashes,
                     "summary_generation_policy": summary_policy,
                     "dirty_hash": dirty.get("dirty_hash"),
@@ -4842,6 +4847,7 @@ class MatrixArkLocalAdapter:
                         "session_continuity": summary_record["session_continuity"],
                         "extraction_phase": summary_record["extraction_phase"],
                         "final_session_boundary": summary_record["final_session_boundary"],
+                        "profile_summary_current": summary_record["profile_summary_current"],
                         "updated_at_ms": refreshed_at_ms,
                     }
                 )
