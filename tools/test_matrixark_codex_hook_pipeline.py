@@ -4716,6 +4716,89 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             session_commit_globals["now_ms"] = original_adapter_now_ms
             retrieve_request_globals["now_ms"] = original_retrieve_now_ms
 
+    def test_retrieve_idle_preflush_flushes_all_due_cutoffs(self) -> None:
+        original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
+        original_hook_time = matrixark_codex_hook.time.time
+        session_commit_globals = FastHookLocalAdapter.session_commit.__globals__
+        original_adapter_now_ms = session_commit_globals["now_ms"]
+        retrieve_request_globals = FastHookLocalAdapter.retrieve.__globals__["pre_retrieval_idle_commit_flush"].__globals__
+        original_retrieve_now_ms = retrieve_request_globals["now_ms"]
+        matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-retrieve-idle-all-due.jsonl")
+
+                class Server:
+                    def __init__(self) -> None:
+                        self.adapter = adapter
+
+                scope = {
+                    "account_id": "acct_retrieve_idle_all_due",
+                    "tenant_id": "tenant_retrieve_idle_all_due",
+                    "user_id": "user_retrieve_idle_all_due",
+                    "session_id": "session_retrieve_idle_all_due",
+                }
+                args = Namespace(
+                    event="UserPromptSubmit",
+                    **scope,
+                    team="codex",
+                    project="temporalstore",
+                    session_commit_threshold=20,
+                    idle_commit_timeout_ms=100,
+                    understanding_provider="rules",
+                    segment_provider="deterministic",
+                )
+
+                matrixark_codex_hook.time.time = lambda: 3000.0
+                first = matrixark_codex_hook.fast_async_hook_ingest(
+                    Server(),
+                    args=args,
+                    text="First due idle prompt says profile memory should include the rust repo path.",
+                    role="user",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={"session_id_source": "payload_field", "hook_type": "before_llm"},
+                )
+                first_cutoff_ms = first["session_buffer"]["idle_commit_cutoff_ms"]
+
+                matrixark_codex_hook.time.time = lambda: 3000.050
+                second = matrixark_codex_hook.fast_async_hook_ingest(
+                    Server(),
+                    args=args,
+                    text="Second due idle prompt says retrieval should flush through the latest due cutoff.",
+                    role="assistant",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={"session_id_source": "payload_field", "hook_type": "after_llm"},
+                )
+                second_cutoff_ms = second["session_buffer"]["idle_commit_cutoff_ms"]
+                self.assertGreater(second_cutoff_ms, first_cutoff_ms)
+
+                session_commit_globals["now_ms"] = lambda: second_cutoff_ms + 150
+                retrieve_request_globals["now_ms"] = lambda: second_cutoff_ms + 150
+                pack = adapter.retrieve(
+                    {
+                        "scope": scope,
+                        "session_scope": "prefer",
+                        "query": "What due idle prompts should retrieval preflush expose?",
+                        "max_context_tokens": 360,
+                        "audit_mode": "off",
+                        "debug_context_pack": True,
+                        "ranking": {"max_selected_refs": 6, "min_similarity_score": 0.0},
+                    }
+                )
+
+                preflush = pack["retrieval_metrics"]["pre_retrieval_idle_commit"]
+                self.assertEqual("committed", preflush["status"])
+                self.assertEqual(2, preflush["due_task_count"])
+                self.assertEqual(2, preflush["resolved_scheduled_task_count"])
+                self.assertEqual(2, preflush["committed_event_count"])
+                self.assertEqual(second_cutoff_ms, preflush["commit_before_ms"])
+                self.assertEqual([], adapter.pending_session_events(scope))
+        finally:
+            matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+            matrixark_codex_hook.time.time = original_hook_time
+            session_commit_globals["now_ms"] = original_adapter_now_ms
+            retrieve_request_globals["now_ms"] = original_retrieve_now_ms
+
     def test_fast_hook_idle_preflush_persists_real_adapter_memory_layers(self) -> None:
         original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
         matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True

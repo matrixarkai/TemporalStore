@@ -158,19 +158,30 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
     if not due_tasks:
         return {**result, "status": "no_due_idle_commits", "due_task_count": 0}
     due_tasks.sort(key=lambda item: int(item.get("idle_commit_deadline_ms") or item.get("updated_at_ms") or 0))
-    task = due_tasks[0]
-    try:
-        threshold = int(task.get("threshold_messages") or args.get("session_buffer_threshold") or 20)
-    except (TypeError, ValueError):
-        threshold = 20
-    try:
-        timeout_ms = int(task.get("idle_commit_timeout_ms") or args.get("idle_commit_timeout_ms") or 0)
-    except (TypeError, ValueError):
-        timeout_ms = 0
-    try:
-        cutoff_ms = int(task.get("idle_commit_cutoff_ms") or 0)
-    except (TypeError, ValueError):
-        cutoff_ms = 0
+
+    def positive_int(value: Any, default: int = 0) -> int:
+        try:
+            parsed = int(value or 0)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed > 0 else default
+
+    # Flush through the newest due cutoff. A retrieval can arrive after several
+    # hook events have independently scheduled idle commits; using only the
+    # earliest task would extract one event and incorrectly resolve the rest.
+    task = due_tasks[-1]
+    thresholds = [positive_int(item.get("threshold_messages")) for item in due_tasks]
+    threshold = max(
+        [value for value in thresholds if value > 0]
+        or [positive_int(args.get("session_buffer_threshold"), 20), 20]
+    )
+    timeouts = [positive_int(item.get("idle_commit_timeout_ms")) for item in due_tasks]
+    timeout_ms = max(
+        [value for value in timeouts if value > 0]
+        or [positive_int(args.get("idle_commit_timeout_ms"), 0)]
+    )
+    cutoffs = [positive_int(item.get("idle_commit_cutoff_ms")) for item in due_tasks]
+    cutoff_ms = max([value for value in cutoffs if value > 0] or [0])
     commit_args: Json = {
         "scope": scope,
         "metadata": optional_object(args, "metadata"),
