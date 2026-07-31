@@ -12764,9 +12764,47 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             node_path = ["tenant:tenant_embed_recovery", "user:user_embed_recovery", "profile:long_term_memory"]
             node_hash = 91001
             entity_hash = 91002
+            stale_entity_hash = 91005
+            stale_profile_text = "assistant_decision: latest_profile_marker_991 = stale_profile_marker_991 disabled threshold extraction."
             profile_text = "assistant_decision: latest_profile_marker_991 = Keep threshold and idle extraction enabled."
             adapter.append_many(
                 [
+                    {
+                        "record_type": "context_entity",
+                        "entity_hash": stale_entity_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "scope": profile_scope,
+                        "access_scope": profile_scope,
+                        "entity_type": "assistant_decision",
+                        "entity_name": "latest_profile_marker_991",
+                        "state": "stale_profile_marker_991 disabled threshold extraction.",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "profile_entity_current": False,
+                        "profile_revision": 1,
+                        "updated_at_ms": 900,
+                    },
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "entity_state",
+                        "ref_type": "entity",
+                        "ref_hash": stale_entity_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "dim": len(embedding_for_text(stale_profile_text)),
+                        "model": "deterministic-test",
+                        "vector": embedding_for_text(stale_profile_text),
+                        "scope": profile_scope,
+                        "access_scope": profile_scope,
+                        "entity_type": "assistant_decision",
+                        "entity_name": "latest_profile_marker_991",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "profile_entity_current": False,
+                        "profile_revision": 1,
+                        "updated_at_ms": 900,
+                    },
                     {
                         "record_type": "context_entity",
                         "entity_hash": entity_hash,
@@ -12839,6 +12877,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 and "latest_profile_marker_991" in ref.get("text", "")
             ]
             self.assertTrue(profile_refs, pack["selected_refs"])
+            self.assertFalse(
+                any("stale_profile_marker_991" in ref.get("text", "") for ref in pack["selected_refs"]),
+                pack["selected_refs"],
+            )
             profile_ref = profile_refs[0]
             self.assertEqual("user_profile", profile_ref["memory_scope"])
             self.assertEqual("cross_session", profile_ref["session_continuity"])
