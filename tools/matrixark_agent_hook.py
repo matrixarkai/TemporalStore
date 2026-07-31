@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -228,6 +229,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "60000")))
     parser.add_argument("--session-commit-threshold", type=int, default=int(os.environ.get("MATRIXARK_SESSION_COMMIT_THRESHOLD", "20")))
     parser.add_argument("--idle-commit-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS", str(DEFAULT_IDLE_COMMIT_TIMEOUT_MS))))
+    parser.add_argument("--idle-commit-cutoff-ms", type=int, default=int(os.environ.get("MATRIXARK_IDLE_COMMIT_CUTOFF_MS", "0") or 0))
+    parser.add_argument("--idle-commit-worker-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--understanding-provider", default=os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "rules"))
     parser.add_argument("--segment-provider", default=os.environ.get("MATRIXARK_SEGMENT_PROVIDER", "deterministic"))
     parser.add_argument("--repo-root", type=Path, default=root)
@@ -704,11 +707,158 @@ def agent_retrieval_summary(retrieve: Json | None, *, session_id_source: str) ->
     }
 
 
+def append_cli_value(cmd: list[str], flag: str, value: Any) -> None:
+    if value in (None, ""):
+        return
+    cmd.extend([flag, str(value)])
+
+
+def spawn_idle_commit_worker_child(args: argparse.Namespace, *, ingest: Json, session_id_source: str) -> Json:
+    if getattr(args, "idle_commit_worker_only", False):
+        return {"status": "skipped", "reason": "already_idle_commit_worker"}
+    if os.environ.get("MATRIXARK_DISABLE_IDLE_COMMIT_WORKER", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return {"status": "disabled", "reason": "MATRIXARK_DISABLE_IDLE_COMMIT_WORKER"}
+    session_buffer = ingest.get("session_buffer") if isinstance(ingest, dict) else {}
+    if not isinstance(session_buffer, dict) or not session_buffer.get("idle_commit_scheduled"):
+        return {"status": "skipped", "reason": "idle_commit_not_scheduled"}
+    timeout_ms = int(getattr(args, "idle_commit_timeout_ms", 0) or 0)
+    if timeout_ms <= 0:
+        return {"status": "skipped", "reason": "idle_commit_timeout_disabled"}
+    auto_batch = ingest.get("auto_batch_extract_result") if isinstance(ingest.get("auto_batch_extract_result"), dict) else {}
+    deadline_ms = int(session_buffer.get("idle_commit_deadline_ms") or auto_batch.get("idle_commit_deadline_ms") or 0)
+    now_ms_value = int(time.time() * 1000)
+    cutoff_ms = int(session_buffer.get("idle_commit_cutoff_ms") or auto_batch.get("idle_commit_cutoff_ms") or now_ms_value)
+    delay_ms = max(0, deadline_ms - now_ms_value) if deadline_ms > 0 else timeout_ms
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--idle-commit-worker-only",
+        "--agent",
+        str(getattr(args, "agent", "generic")),
+        "--event",
+        "IdleTimeout",
+        "--backend",
+        str(getattr(args, "backend", default_hook_backend())),
+        "--account-id",
+        str(getattr(args, "account_id", "")),
+        "--tenant-id",
+        str(getattr(args, "tenant_id", "")),
+        "--user-id",
+        str(getattr(args, "user_id", "")),
+        "--session-id",
+        str(getattr(args, "session_id", "")),
+        "--team",
+        str(getattr(args, "team", "agent")),
+        "--project",
+        str(getattr(args, "project", "local")),
+        "--session-commit-threshold",
+        str(getattr(args, "session_commit_threshold", 20)),
+        "--idle-commit-timeout-ms",
+        str(timeout_ms),
+        "--idle-commit-cutoff-ms",
+        str(cutoff_ms),
+        "--understanding-provider",
+        str(getattr(args, "understanding_provider", "rules")),
+        "--segment-provider",
+        str(getattr(args, "segment_provider", "deterministic")),
+        "--request-timeout-ms",
+        str(getattr(args, "request_timeout_ms", 60000)),
+        "--io-timeout-ms",
+        str(getattr(args, "io_timeout_ms", 60000)),
+        "--repo-root",
+        str(getattr(args, "repo_root", Path(__file__).resolve().parents[1])),
+    ]
+    for flag, attr in [
+        ("--api-key", "api_key"),
+        ("--metaserver", "metaserver"),
+        ("--namespace", "namespace"),
+        ("--table", "table"),
+        ("--temporalstore-lib", "temporalstore_lib"),
+        ("--rust-proxy", "rust_proxy"),
+        ("--rust-direct-sdk", "rust_direct_sdk"),
+        ("--rust-cli", "rust_cli"),
+        ("--storage-prefix", "storage_prefix"),
+        ("--session-state-dir", "session_state_dir"),
+    ]:
+        append_cli_value(cmd, flag, getattr(args, attr, ""))
+    env = os.environ.copy()
+    env["MATRIXARK_IDLE_COMMIT_WORKER_DELAY_MS"] = str(delay_ms)
+    env["MATRIXARK_IDLE_COMMIT_CUTOFF_MS"] = str(cutoff_ms)
+    env["MATRIXARK_IDLE_COMMIT_WORKER_PARENT_EVENT"] = str(getattr(args, "event", ""))
+    try:
+        subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=str(getattr(args, "repo_root", Path(__file__).resolve().parents[1])),
+            env=env,
+        )
+    except OSError as exc:
+        return {
+            "status": "error",
+            "reason": "idle_commit_worker_spawn_failed",
+            "error": str(exc)[:300],
+            "delay_ms": delay_ms,
+        }
+    return {
+        "status": "spawned",
+        "reason": "session_buffer_idle_deadline_worker",
+        "delay_ms": delay_ms,
+        "idle_commit_timeout_ms": timeout_ms,
+        "idle_commit_deadline_ms": deadline_ms,
+        "idle_commit_cutoff_ms": cutoff_ms,
+    }
+
+
+def run_idle_commit_worker_only(args: argparse.Namespace, session_id_source: str) -> int:
+    delay_ms = int(os.environ.get("MATRIXARK_IDLE_COMMIT_WORKER_DELAY_MS", "0") or 0)
+    if delay_ms > 0:
+        time.sleep(delay_ms / 1000.0)
+    server = build_server(args)
+    try:
+        common: Json = {"scope": scope_from_args(args)}
+        if args.api_key:
+            common["api_key"] = args.api_key
+        result = call_tool(
+            server,
+            "matrixark_session_commit",
+            {
+                **common,
+                "threshold_messages": args.session_commit_threshold,
+                "force": False,
+                "commit_reason": "idle_timeout",
+                "idle_timeout_ms": args.idle_commit_timeout_ms,
+                "commit_before_ms": args.idle_commit_cutoff_ms or None,
+                "understanding_provider": args.understanding_provider,
+                "segment_provider": args.segment_provider,
+                "storage_options": hook_storage_options(),
+                "agent_hook": {
+                    "source": args.agent,
+                    "hook_type": "session_commit",
+                    "hook_id": f"{args.agent}:idle_commit_worker:{args.session_id}:{int(time.time() * 1000)}",
+                    "observed_at_ms": int(time.time() * 1000),
+                    "idempotency_key": f"agent-idle-commit-worker:{args.agent}:{args.session_id}",
+                    "trigger": "IdleTimeout:worker",
+                    "auto_captured": True,
+                    "session_id_source": session_id_source,
+                },
+            },
+        )
+        print(json.dumps({"status": "ok", "worker": "idle_commit", "result": session_commit_summary(result)}, sort_keys=True))
+    finally:
+        close_server_best_effort(server)
+    return 0
+
+
 def main() -> int:
     args = parse_args()
     validate_hook_backend_policy(args.backend)
     payload = read_stdin_payload()
     args.session_id, session_id_source = resolve_session_id(payload, args)
+    if args.idle_commit_worker_only:
+        return run_idle_commit_worker_only(args, session_id_source)
     text = payload_text(payload) or args.query
     raw_uri = payload_resource_uri(payload)
     resource_type = payload_resource_type(payload, raw_uri) if raw_uri else ""
@@ -871,6 +1021,11 @@ def main() -> int:
         )
 
     ingest_session_buffer = normalized_session_buffer_from_ingest(ingest)
+    idle_commit_worker = spawn_idle_commit_worker_child(
+        args,
+        ingest=ingest,
+        session_id_source=session_id_source,
+    ) if ingest else {}
     close_server_best_effort(server)
     retrieved_summary = agent_retrieval_summary(retrieve, session_id_source=session_id_source)
     output = {
@@ -901,6 +1056,7 @@ def main() -> int:
             if isinstance(ingest.get("idle_commit_result"), dict)
             else {}
         ) if ingest else {},
+        "idle_commit_worker": idle_commit_worker,
         "feedbacked": bool(feedback),
         "resource_uri": raw_uri,
         "resource_type": resource_type,

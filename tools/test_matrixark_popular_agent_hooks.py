@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from argparse import Namespace
 from pathlib import Path
 
 import matrixark_agent_config
@@ -62,6 +63,7 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
                 "MATRIXARK_TEMPORALSTORE_RUST_ROOT": str(rust_root),
                 "MATRIXARK_RUST_PROXY_ASYNC_STORAGE": "true",
                 "MATRIXARK_HOOK_STORAGE_ROUTE": "shared_store_async",
+                "MATRIXARK_DISABLE_IDLE_COMMIT_WORKER": "1",
             }
         )
         proc = subprocess.run(
@@ -323,6 +325,85 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         self.assertEqual("committed", decision["auto_batch_extract_status"])
         self.assertEqual("idle_timeout", decision["reason"])
         self.assertEqual(["user"], decision["source_roles"])
+
+    def test_generic_agent_idle_commit_worker_child_spawns_due_session_commit(self) -> None:
+        launched: list[dict] = []
+        original_popen = matrixark_agent_hook.subprocess.Popen
+        original_time = matrixark_agent_hook.time.time
+
+        class FakePopen:
+            def __init__(self, cmd, **kwargs):
+                launched.append({"cmd": cmd, "kwargs": kwargs})
+
+        try:
+            matrixark_agent_hook.subprocess.Popen = FakePopen
+            matrixark_agent_hook.time.time = lambda: 2000.0
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                args = Namespace(
+                    agent="generic",
+                    event="response",
+                    backend="temporalstore-rust",
+                    api_key="",
+                    account_id="acct_agent_idle_worker",
+                    tenant_id="tenant_agent_idle_worker",
+                    user_id="user_agent_idle_worker",
+                    session_id="generic:session-agent-idle-worker",
+                    team="agent",
+                    project="memory",
+                    session_commit_threshold=20,
+                    idle_commit_timeout_ms=300,
+                    understanding_provider="rules",
+                    segment_provider="deterministic",
+                    request_timeout_ms=60000,
+                    io_timeout_ms=60000,
+                    repo_root=Path(tmp_dir),
+                    metaserver="local",
+                    namespace="deploy_ns",
+                    table="deploy_table",
+                    temporalstore_lib="",
+                    rust_proxy="/tmp/matrixark_rust_proxy",
+                    rust_direct_sdk="",
+                    rust_cli="",
+                    storage_prefix="matrixark:agent-hook-test",
+                    session_state_dir=Path(tmp_dir) / "sessions",
+                    idle_commit_worker_only=False,
+                )
+
+                result = matrixark_agent_hook.spawn_idle_commit_worker_child(
+                    args,
+                    ingest={
+                        "session_buffer": {
+                            "idle_commit_scheduled": True,
+                            "idle_commit_deadline_ms": 2000300,
+                            "idle_commit_cutoff_ms": 2000000,
+                        },
+                        "auto_batch_extract_result": {
+                            "trigger_policy": "idle_timeout",
+                        },
+                    },
+                    session_id_source="payload_field",
+                )
+        finally:
+            matrixark_agent_hook.subprocess.Popen = original_popen
+            matrixark_agent_hook.time.time = original_time
+
+        self.assertEqual("spawned", result["status"])
+        self.assertEqual(300, result["delay_ms"])
+        self.assertEqual(1, len(launched))
+        cmd = launched[0]["cmd"]
+        self.assertIn("--idle-commit-worker-only", cmd)
+        self.assertIn("--agent", cmd)
+        self.assertIn("generic", cmd)
+        self.assertIn("--event", cmd)
+        self.assertIn("IdleTimeout", cmd)
+        self.assertIn("--session-id", cmd)
+        self.assertIn("generic:session-agent-idle-worker", cmd)
+        self.assertIn("--idle-commit-cutoff-ms", cmd)
+        self.assertIn("2000000", cmd)
+        env = launched[0]["kwargs"]["env"]
+        self.assertEqual("300", env["MATRIXARK_IDLE_COMMIT_WORKER_DELAY_MS"])
+        self.assertEqual("2000000", env["MATRIXARK_IDLE_COMMIT_CUTOFF_MS"])
+        self.assertEqual("response", env["MATRIXARK_IDLE_COMMIT_WORKER_PARENT_EVENT"])
 
     def test_generic_agent_hook_compacts_assistant_response_memory(self) -> None:
         raw_assistant = "\n".join(
