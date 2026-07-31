@@ -3961,7 +3961,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("dirty_marked", decision["summary_refresh"]["status"])
         self.assertEqual(1, len(server.adapter.commit_calls))
 
-    def test_fast_async_tool_result_defaults_to_raw_only(self) -> None:
+    def test_fast_async_tool_result_defaults_to_skipped(self) -> None:
         class Adapter:
             def __init__(self) -> None:
                 self.raw_records = []
@@ -4002,10 +4002,64 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             original_text="verbose stdout\nExit code: 0\nRan 9 tests\nOK",
         )
 
+        self.assertEqual("skipped", result["status"])
+        self.assertEqual("tool_result_ingestion_disabled", result["reason"])
+        self.assertEqual("skipped_tool_result", result["raw_ingestion_status"])
+        self.assertEqual("skipped_tool_result", result["serving_projection_status"])
+        self.assertEqual("skipped_tool_result", result["async_pipeline_status"])
+        self.assertEqual("skip_by_default", result["tool_result_policy"])
+        self.assertEqual(0, len(server.adapter.raw_records))
+        self.assertEqual(0, len(server.adapter.serving_records))
+
+    def test_fast_async_tool_result_raw_override_keeps_raw_only(self) -> None:
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.serving_records = []
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.serving_records.extend(records)
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        args = Namespace(
+            event="PostToolUse",
+            account_id="acct_local",
+            tenant_id="tenant_codex",
+            user_id="deeproute",
+            session_id="codex-cpp-session-1",
+            team="codex",
+            project="temporalstore",
+            session_commit_threshold=20,
+            idle_commit_timeout_ms=0,
+            understanding_provider="rules",
+            segment_provider="deterministic",
+        )
+
+        original = hook.HOOK_TOOL_RESULT_RAW
+        hook.HOOK_TOOL_RESULT_RAW = True
+        try:
+            server = Server()
+            result = hook.fast_async_hook_ingest(
+                server,
+                args=args,
+                text="Exit code: 0; Ran 9 tests",
+                role="tool",
+                agent_context={"workspace_root": "/repo", "tool_name": "shell_command"},
+                hook={"session_id_source": "payload_field"},
+                original_text="verbose stdout\nExit code: 0\nRan 9 tests\nOK",
+            )
+        finally:
+            hook.HOOK_TOOL_RESULT_RAW = original
+
         self.assertEqual("accepted", result["status"])
         self.assertEqual("accepted", result["raw_ingestion_status"])
         self.assertEqual("skipped_raw_only_tool_result", result["serving_projection_status"])
-        self.assertEqual("skipped_raw_only_tool_result", result["async_pipeline_status"])
         self.assertEqual(1, len(server.adapter.raw_records))
         self.assertEqual(0, len(server.adapter.serving_records))
         raw = server.adapter.raw_records[0]

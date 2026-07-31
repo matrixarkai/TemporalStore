@@ -222,6 +222,7 @@ HOOK_FAST_ASYNC_INGEST = _env_bool("MATRIXARK_HOOK_FAST_ASYNC_INGEST", True)
 HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH = _env_bool("MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH", False)
 HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT = _env_int("MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT", 2, minimum=1)
 HOOK_COMPACT_HOT_PREFIX_ONLY = os.environ.get("MATRIXARK_HOOK_COMPACT_HOT_PREFIX_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
+HOOK_TOOL_RESULT_RAW = _env_bool("MATRIXARK_HOOK_TOOL_RESULT_RAW", False)
 HOOK_TOOL_RESULT_SERVING = _env_bool("MATRIXARK_HOOK_TOOL_RESULT_SERVING", False)
 HOOK_TOOL_RESULT_ROLLOUT_BACKFILL = _env_bool("MATRIXARK_HOOK_TOOL_RESULT_ROLLOUT_BACKFILL", False)
 TOOL_HOOK_EVENTS = {"PostToolUse", "PreToolUse", "PermissionRequest"}
@@ -3805,12 +3806,16 @@ def is_tool_hook_event(event: str) -> bool:
     return str(event or "") in TOOL_HOOK_EVENTS
 
 
+def should_ingest_tool_result(event: str) -> bool:
+    return not is_tool_hook_event(event) or HOOK_TOOL_RESULT_RAW or HOOK_TOOL_RESULT_SERVING
+
+
 def should_promote_tool_result_to_serving(event: str) -> bool:
     return not is_tool_hook_event(event) or HOOK_TOOL_RESULT_SERVING
 
 
 def should_rollout_backfill_tool_result() -> bool:
-    return HOOK_TOOL_RESULT_ROLLOUT_BACKFILL or HOOK_TOOL_RESULT_SERVING
+    return HOOK_TOOL_RESULT_ROLLOUT_BACKFILL or HOOK_TOOL_RESULT_RAW or HOOK_TOOL_RESULT_SERVING
 
 
 SYNTHETIC_HOOK_TEXT_MARKERS = (
@@ -4075,7 +4080,8 @@ def fast_async_hook_ingest(
         source_role=role,
         **lineage,
     )
-    tool_result_raw_only = role == "tool" and not should_promote_tool_result_to_serving(args.event)
+    tool_result_skipped = role == "tool" and not should_ingest_tool_result(args.event)
+    tool_result_raw_only = role == "tool" and should_ingest_tool_result(args.event) and not should_promote_tool_result_to_serving(args.event)
     metadata["serving_projection"] = {
         "record_type": "context_event",
         "event_id_hash": event_id_hash,
@@ -4085,7 +4091,8 @@ def fast_async_hook_ingest(
     if tool_result_raw_only:
         metadata["tool_result_ingestion"] = {
             "policy": "raw_only_compact_evidence",
-            "reason": "avoid_tool_result_flooding_serving_memory",
+            "reason": "explicit_tool_result_raw_capture",
+            "raw_opt_in_env": "MATRIXARK_HOOK_TOOL_RESULT_RAW",
             "serving_opt_in_env": "MATRIXARK_HOOK_TOOL_RESULT_SERVING",
         }
     if selection_metadata:
@@ -4309,6 +4316,25 @@ def fast_async_hook_ingest(
                     "memory_layers_written": memory_layers_written,
                 }
 
+    if tool_result_skipped:
+        return {
+            "status": "skipped",
+            "reason": "tool_result_ingestion_disabled",
+            "raw_ingestion_status": "skipped_tool_result",
+            "serving_projection_status": "skipped_tool_result",
+            "serving_record_count": 0,
+            "async_processing": False,
+            "async_pipeline_status": "skipped_tool_result",
+            "session_buffer_status": "skipped_tool_result",
+            "tool_result_policy": "skip_by_default",
+            "tool_result_raw_opt_in_env": "MATRIXARK_HOOK_TOOL_RESULT_RAW",
+            "tool_result_serving_opt_in_env": "MATRIXARK_HOOK_TOOL_RESULT_SERVING",
+            "event_id_hash": event_id_hash,
+            "node_hash": node_hash,
+            "storage_options": storage_options,
+            "hook_captured": hook is not None,
+            "extraction_mode": "skipped",
+        }
     raw_ingestion_status = "unavailable"
     if callable(enqueue_raw):
         enqueue_raw([raw_record])
