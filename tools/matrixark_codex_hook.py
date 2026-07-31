@@ -3210,6 +3210,49 @@ def selected_assistant_memory_text(text: str, *, max_chars: int = 4096, max_line
     return evidence
 
 
+USER_PROMPT_MEMORY_LINE_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"\bgoal\s*:",
+        r"\b(?:please\s+)?implement\b",
+        r"\b(?:fix|add|remove|replace|move|keep|make\s+sure|ensure)\b",
+        r"\b(?:we\s+should|should|need\s+to|must|have\s+to|always|never|do\s+not|don't)\b",
+        r"\b(?:ingest|extract|retrieve|profile|cross[- ]session|memory|context|summary|entity|index|budget)\b",
+    ]
+]
+
+
+def selected_user_prompt_memory_text(text: str, *, max_chars: int = 4096, max_lines: int = 64) -> str:
+    """Keep durable user intent lines from large prompts without storing full pasted context."""
+    compact = str(text or "").strip()
+    if not compact:
+        return ""
+    lines = [" ".join(line.split()).strip() for line in compact.splitlines()]
+    selected: list[str] = []
+    in_code_block = False
+    for line in lines:
+        if not line:
+            continue
+        if line.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        normalized = normalize_assistant_memory_line(line)
+        if not normalized:
+            continue
+        if any(pattern.search(normalized) for pattern in USER_PROMPT_MEMORY_LINE_PATTERNS):
+            selected.append(normalized[:420])
+        if len(selected) >= max_lines:
+            break
+    if not selected:
+        selected = [normalize_assistant_memory_line(line)[:420] for line in lines[: min(len(lines), 8)] if line]
+    evidence = "\n".join(selected).strip()
+    if len(evidence) > max_chars:
+        evidence = evidence[:max_chars].rstrip() + "\n[user prompt truncated]"
+    return evidence
+
+
 def codex_memory_selection_metadata(*, role: str, event: str, text: str, original_text: str | None = None) -> Json:
     normalized_role = normalize_message_role(role)
     if normalized_role not in {"assistant", "tool", "user"}:
@@ -3421,6 +3464,8 @@ def payload_text(payload: Json, *, event: str = "") -> str:
     else:
         direct = first_string_at(payload, prompt_paths + assistant_paths + tool_paths)
     if direct:
+        if normalized_event == "UserPromptSubmit":
+            return selected_user_prompt_memory_text(direct)
         return direct
     structured_keys = ["content", "output", "response"]
     if normalized_event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
@@ -3430,6 +3475,8 @@ def payload_text(payload: Json, *, event: str = "") -> str:
     for key in structured_keys:
         text = text_from_content_value(payload.get(key))
         if text:
+            if normalized_event == "UserPromptSubmit":
+                return selected_user_prompt_memory_text(text)
             return text
     preferred_roles: set[str] = set()
     if normalized_event in {"Stop", "PostCompact", "SubagentStop"}:
@@ -3441,6 +3488,8 @@ def payload_text(payload: Json, *, event: str = "") -> str:
     for key in ["messages", "items", "input"]:
         text = text_from_payload_messages(payload.get(key), preferred_roles=preferred_roles)
         if text:
+            if normalized_event == "UserPromptSubmit":
+                return selected_user_prompt_memory_text(text)
             return text
     if payload and not identity_only_payload(payload):
         return json.dumps(payload, sort_keys=True)[:4000]

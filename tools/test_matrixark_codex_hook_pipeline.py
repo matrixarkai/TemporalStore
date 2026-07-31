@@ -231,6 +231,39 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("132", by_name["tool_evidence:validation"]["state"])
         self.assertEqual(["tool_event"], by_name["tool_evidence:validation"]["source_refs"])
 
+    def test_user_prompt_selection_keeps_goal_and_task_memory_without_large_context(self) -> None:
+        large_prompt = "\n".join(
+            [
+                "goal: implement VikingMem style profile memory extraction for Codex hooks",
+                "```",
+                "irrelevant pasted code " * 200,
+                "```",
+                "please implement threshold and idle batch extraction for live hooks",
+                "make sure retrieval budgets include profile and cross-session entities",
+            ]
+        )
+
+        selected = matrixark_codex_hook.selected_user_prompt_memory_text(large_prompt, max_chars=500)
+        self.assertIn("goal: implement VikingMem style profile memory extraction", selected)
+        self.assertIn("please implement threshold and idle batch extraction", selected)
+        self.assertIn("retrieval budgets include profile and cross-session entities", selected)
+        self.assertNotIn("irrelevant pasted code", selected)
+
+        entities = matrixark_mcp_core.extract_batch_entities(
+            [{"role": "user", "content": selected}],
+            {"source_event_ids": ["user_event"]},
+        )
+        plan_entities = [
+            entity
+            for entity in entities
+            if entity.get("entity_type") == "current_plan"
+        ]
+        self.assertTrue(plan_entities, entities)
+        plan_text = " ".join(str(entity.get("state") or "") for entity in plan_entities)
+        self.assertIn("VikingMem style profile memory extraction", plan_text)
+        self.assertIn("threshold and idle batch extraction", plan_text)
+        self.assertTrue(all(entity.get("source_roles") == ["user"] for entity in plan_entities))
+
     def test_outcome_fact_entities_emit_and_query_specific_index_terms(self) -> None:
         assistant_next = {
             "record_type": "context_entity",
