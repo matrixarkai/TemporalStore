@@ -3331,7 +3331,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertNotIn("verbose stdout line", summary)
 
     def test_fast_hook_tool_message_stores_structured_tool_fields(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
+        with (
+            mock.patch.object(matrixark_codex_hook, "HOOK_TOOL_RESULT_RAW", True),
+            mock.patch.object(matrixark_codex_hook, "HOOK_TOOL_RESULT_SERVING", True),
+            tempfile.TemporaryDirectory() as tmp_dir,
+        ):
             adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-tool-structured.jsonl")
 
             class Server:
@@ -3389,6 +3393,118 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("Ran 132 tests", raw_message["messages"][0]["content"])
             self.assertIn("pushed commit f8c4907", pending_event["text"])
             self.assertNotIn("large omitted stdout", pending_event["text"])
+
+    def test_fast_hook_skipped_tool_result_reports_pre_ingest_idle_commit(self) -> None:
+        old_raw = matrixark_codex_hook.HOOK_TOOL_RESULT_RAW
+        old_serving = matrixark_codex_hook.HOOK_TOOL_RESULT_SERVING
+        old_rollout = matrixark_codex_hook.HOOK_TOOL_RESULT_ROLLOUT_BACKFILL
+        old_auto = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
+        matrixark_codex_hook.HOOK_TOOL_RESULT_RAW = False
+        matrixark_codex_hook.HOOK_TOOL_RESULT_SERVING = False
+        matrixark_codex_hook.HOOK_TOOL_RESULT_ROLLOUT_BACKFILL = False
+        matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-skipped-tool-idle.jsonl")
+
+                class Server:
+                    def __init__(self) -> None:
+                        self.adapter = adapter
+
+                scope = {
+                    "account_id": "acct_skip_tool_idle",
+                    "tenant_id": "tenant_skip_tool_idle",
+                    "user_id": "user_skip_tool_idle",
+                    "session_id": "session_skip_tool_idle",
+                }
+                user_args = Namespace(
+                    event="UserPromptSubmit",
+                    **scope,
+                    team="codex",
+                    project="temporalstore",
+                    session_commit_threshold=20,
+                    idle_commit_timeout_ms=1,
+                    understanding_provider="rules",
+                    segment_provider="deterministic",
+                )
+                user_result = matrixark_codex_hook.fast_async_hook_ingest(
+                    Server(),
+                    args=user_args,
+                    text="Remember skipped tool hooks should still report idle memory flushes.",
+                    role="user",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={
+                        "source": "codex",
+                        "hook_id": "skip-tool-idle-user",
+                        "observed_at_ms": 123456,
+                        "idempotency_key": "skip-tool-idle-user",
+                        "trigger": "UserPromptSubmit",
+                        "auto_captured": True,
+                        "session_id_source": "payload_field",
+                    },
+                )
+                self.assertEqual("accepted", user_result["status"])
+                self.assertEqual("deferred", user_result["auto_batch_extract_result"]["status"])
+                time.sleep(0.01)
+
+                tool_args = Namespace(
+                    event="PostToolUse",
+                    **scope,
+                    team="codex",
+                    project="temporalstore",
+                    session_commit_threshold=20,
+                    idle_commit_timeout_ms=1,
+                    understanding_provider="rules",
+                    segment_provider="deterministic",
+                )
+                tool_result = matrixark_codex_hook.fast_async_hook_ingest(
+                    Server(),
+                    args=tool_args,
+                    text="Exit code: 0; Ran 1 focused test",
+                    role="tool",
+                    agent_context={"workspace_root": "/repo", "tool_name": "shell_command", "tool_status": "ok"},
+                    hook={
+                        "source": "codex",
+                        "hook_id": "skip-tool-idle-tool",
+                        "observed_at_ms": 123457,
+                        "idempotency_key": "skip-tool-idle-tool",
+                        "trigger": "PostToolUse",
+                        "auto_captured": True,
+                        "session_id_source": "payload_field",
+                    },
+                    original_text="Exit code: 0\nRan 1 focused test\nOK",
+                )
+
+                self.assertEqual("skipped", tool_result["status"])
+                self.assertEqual("tool_result_ingestion_disabled", tool_result["reason"])
+                self.assertEqual("skipped_tool_result", tool_result["raw_ingestion_status"])
+                self.assertEqual("skipped_tool_result", tool_result["serving_projection_status"])
+                self.assertEqual("idle_timeout", tool_result["idle_commit_result"]["trigger_policy"])
+                self.assertEqual("idle_timeout", tool_result["auto_batch_extract_result"]["trigger_policy"])
+                self.assertIn(tool_result["auto_batch_extract_result"]["status"], {"committed", "finalized"})
+
+                records = adapter.read_all()
+                committed_batches = [
+                    record
+                    for record in records
+                    if record.get("record_type") == "context_batch_commit"
+                    and record.get("trigger_policy") == "idle_timeout"
+                ]
+                self.assertEqual(1, len(committed_batches))
+                self.assertIn("user", committed_batches[0].get("source_roles", []))
+                self.assertEqual([], adapter.pending_session_events(scope))
+                self.assertFalse(
+                    any(
+                        record.get("record_type") == "context_event"
+                        and record.get("source_role") == "tool"
+                        for record in records
+                    )
+                )
+        finally:
+            matrixark_codex_hook.HOOK_TOOL_RESULT_RAW = old_raw
+            matrixark_codex_hook.HOOK_TOOL_RESULT_SERVING = old_serving
+            matrixark_codex_hook.HOOK_TOOL_RESULT_ROLLOUT_BACKFILL = old_rollout
+            matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = old_auto
 
     def test_fast_hook_dirty_markers_refresh_into_retrievable_summaries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
