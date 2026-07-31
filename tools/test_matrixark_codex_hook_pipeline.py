@@ -206,6 +206,76 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(["assistant"], by_name["assistant_decision:blocker"]["source_roles"])
         self.assertEqual(["tool"], by_name["tool_evidence:validation"]["source_roles"])
 
+    def test_outcome_fact_entities_emit_and_query_specific_index_terms(self) -> None:
+        assistant_next = {
+            "record_type": "context_entity",
+            "entity_type": "assistant_decision",
+            "entity_name": "assistant_decision:next",
+            "state": "assistant decision next: validate retrieval against real hooked messages",
+            "source_roles": ["assistant"],
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+        }
+        tool_validation = {
+            "record_type": "context_entity",
+            "entity_type": "tool_evidence",
+            "entity_name": "tool_evidence:validation",
+            "state": "tool evidence validation: Validation: 42 tests passed",
+            "source_roles": ["tool"],
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+        }
+
+        assistant_terms = candidate_index_terms(assistant_next, {}, {})
+        query_assistant_terms = matrixark_mcp_query.candidate_index_terms(assistant_next, {}, {})
+        for terms in [assistant_terms, query_assistant_terms]:
+            self.assertIn("entity_name:assistant_decision_next", terms)
+            self.assertIn("codex_outcome:next", terms)
+            self.assertIn("entity_type:assistant_decision", terms)
+
+        tool_terms = candidate_index_terms(tool_validation, {}, {})
+        query_tool_terms = matrixark_mcp_query.candidate_index_terms(tool_validation, {}, {})
+        for terms in [tool_terms, query_tool_terms]:
+            self.assertIn("entity_name:tool_evidence_validation", terms)
+            self.assertIn("codex_outcome:validation", terms)
+            self.assertIn("entity_type:tool_evidence", terms)
+
+        assistant_groups = infer_secondary_index_filter_groups(
+            "What is the next action Codex decided?",
+            "current_state",
+        )
+        assistant_flattened = {term for group in assistant_groups for term in group}
+        self.assertIn("codex_outcome:next", assistant_flattened)
+
+        query_assistant_flattened = {
+            term
+            for group in matrixark_mcp_query.infer_secondary_index_filter_groups(
+                "What is the next action Codex decided?",
+                "current_state",
+            )
+            for term in group
+        }
+        self.assertIn("codex_outcome:next", query_assistant_flattened)
+
+        tool_groups = infer_secondary_index_filter_groups(
+            "Show validation evidence and tests passed for the pushed commit",
+            "evidence",
+        )
+        tool_flattened = {term for group in tool_groups for term in group}
+        self.assertIn("codex_outcome:validation", tool_flattened)
+        self.assertIn("codex_outcome:outcome", tool_flattened)
+
+        query_tool_flattened = {
+            term
+            for group in matrixark_mcp_query.infer_secondary_index_filter_groups(
+                "Show validation evidence and tests passed for the pushed commit",
+                "evidence",
+            )
+            for term in group
+        }
+        self.assertIn("codex_outcome:validation", query_tool_flattened)
+        self.assertIn("codex_outcome:outcome", query_tool_flattened)
+
     def test_benchmark_quality_queries_use_evidence_and_profile_budgets(self) -> None:
         query = "Compare LoCoMo hit rate p50 p99 latency and throughput quality across sessions"
         self.assertEqual("benchmark_quality", infer_query_type(query))
