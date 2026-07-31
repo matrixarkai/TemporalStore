@@ -31,7 +31,7 @@ QUERY_TYPE_LABELS: dict[str, str] = {
 }
 
 PROFILE_MEMORY_QUERY_RE = re.compile(
-    r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|remember about me|remember about|what should (?:i|you|we) remember|standing instructions?|standing preferences?|persistent instructions?|saved preferences?|know about (?:me|my|the user)|what (?:have|did) i (?:tell|told) you|what (?:are|were) my preferences|my preferences|told you before)\b"
+    r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|remember about me|remember about|what should (?:i|you|we) remember|standing instructions?|standing preferences?|persistent instructions?|saved preferences?|know about (?:me|my|the user)|what (?:have|did) i (?:tell|told) you|what (?:are|were|do|did) my preferences|what do i prefer|do i prefer|my preferences|my .*?(?:policy|policies|instruction|instructions|preference|preferences)|told you before)\b"
 )
 
 CODEX_OUTCOME_QUERY_RE = re.compile(r"\b(?:codex|assistant|agent)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|validated|verified|push(?:ed)?|commit(?:ted)?|rebased|failed|blocked|blocker|done|outcome|decision|decided|next action)\b|\bwhat (?:was|were|did)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|validated|verified|push(?:ed)?|commit(?:ted)?|failed|blocked|done)\b|\b(?:show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:assistant decision|tool evidence|validation evidence|pushed commit|blocked work|failed validation)\b|\bwhat (?:failed|was blocked|blocked)\b.{0,80}\b(?:memory work|work|validation|commit|push|tool|codex|temporalstore)\b")

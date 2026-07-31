@@ -636,6 +636,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "What have I told you about myself?",
             "What did I tell you before?",
             "What are my preferences?",
+            "What do I prefer?",
+            "Do I prefer Ubuntu folders?",
+            "What is my local repo policy?",
+            "What are my always-push instructions?",
         ]:
             self.assertEqual("profile_memory", infer_query_type(query), query)
             self.assertEqual("profile_memory", matrixark_mcp_query.infer_query_type(query), query)

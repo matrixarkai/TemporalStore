@@ -421,7 +421,12 @@ def refresh_final_selected_budget_policies(selected: list[Json], dropped_over_bu
         policy_field="source_role_budget_policy",
         token_field="selected_tokens_by_role",
         count_field="selected_ref_count_by_role",
-        bucket_names=lambda item: _source_bucket_names(item, "source_roles", "source_role_counts", normalize_roles=True),
+        bucket_names=lambda item: _source_bucket_names(
+            item,
+            "budget_source_roles" if _metadata_value(item, "budget_source_roles") else "source_roles",
+            "budget_source_role_counts" if _metadata_value(item, "budget_source_role_counts") else "source_role_counts",
+            normalize_roles=True,
+        ),
     )
     _refresh_selected_counter_policy(
         selected=selected,
@@ -508,6 +513,49 @@ def suppress_extracted_represented_pending_events(selected: list[Json], dropped_
         )
         return extracted_preferred_selected, removed_tokens
     return selected, 0
+
+
+def suppress_overlapping_profile_current_entities(selected: list[Json], dropped_over_budget: Json) -> tuple[list[Json], int]:
+    kept: list[Json] = []
+    removed_tokens = 0
+    profile_text_tokens_by_type: dict[str, list[set[str]]] = {}
+    for item in selected:
+        entity_type = str(item.get("entity_type") or "").strip().lower()
+        is_profile_current_entity = (
+            item.get("ref_type") == "entity"
+            and str(item.get("memory_scope") or "").strip().lower() == "user_profile"
+            and str(item.get("session_continuity") or "").strip().lower() == "cross_session"
+            and bool(item.get("profile_current_state_representative"))
+            and entity_type
+        )
+        if not is_profile_current_entity:
+            kept.append(item)
+            continue
+        item_tokens = {token for token in tokens(str(item.get("text") or "")) if len(token) > 2}
+        overlaps_existing = False
+        for prior_tokens in profile_text_tokens_by_type.get(entity_type, []):
+            if not item_tokens or not prior_tokens:
+                continue
+            intersection = len(item_tokens.intersection(prior_tokens))
+            smaller = max(1, min(len(item_tokens), len(prior_tokens)))
+            if intersection / smaller >= 0.60:
+                overlaps_existing = True
+                break
+        if overlaps_existing:
+            item_token_count = max(1, token_count(str(item.get("text") or "")))
+            removed_tokens += item_token_count
+            dropped_over_budget.setdefault("profile_current_entity_overlap_suppressed", 0)
+            dropped_over_budget["profile_current_entity_overlap_suppressed"] += 1
+            record_dropped_candidate(
+                dropped_over_budget,
+                item,
+                reason="duplicate",
+                token_estimate=item_token_count,
+            )
+            continue
+        kept.append(item)
+        profile_text_tokens_by_type.setdefault(entity_type, []).append(item_tokens)
+    return kept, removed_tokens
 
 
 def suppress_profile_shadowed_session_entities(selected: list[Json], dropped_over_budget: Json) -> tuple[list[Json], int]:
@@ -11154,6 +11202,16 @@ class MatrixArkLocalAdapter:
                     )
                 if len(selected) >= max_selected_refs or used_context_tokens + ref_tokens > remote_context_budget_tokens:
                     continue
+                candidate_entity_type = str(candidate.get("entity_type") or "").strip().lower()
+                candidate_budget_role = (
+                    "assistant"
+                    if candidate_entity_type in {"assistant_decision", "assistant_response"}
+                    else "tool"
+                    if candidate_entity_type == "tool_evidence"
+                    else "user"
+                    if candidate_entity_type in {"user_requirement", "user_preference"}
+                    else ""
+                )
                 selected.append(
                     {
                         **candidate,
@@ -11161,6 +11219,8 @@ class MatrixArkLocalAdapter:
                         "packing_score": round(packing_sort_key(candidate, question_type)[0], 6),
                         "packing_policy": question_type,
                         "budget_memory_layer": "profile_entity",
+                        "budget_source_roles": [candidate_budget_role] if candidate_budget_role else [],
+                        "budget_source_role_counts": {candidate_budget_role: 1} if candidate_budget_role else {},
                     }
                 )
                 used_context_tokens += ref_tokens
@@ -11222,6 +11282,10 @@ class MatrixArkLocalAdapter:
         selected, removed_shadowed_tokens = suppress_profile_shadowed_session_entities(selected, dropped_over_budget)
         if removed_shadowed_tokens:
             used_context_tokens = max(0, used_context_tokens - removed_shadowed_tokens)
+
+        selected, removed_overlapping_profile_tokens = suppress_overlapping_profile_current_entities(selected, dropped_over_budget)
+        if removed_overlapping_profile_tokens:
+            used_context_tokens = max(0, used_context_tokens - removed_overlapping_profile_tokens)
 
         selected, removed_pending_tokens = suppress_extracted_represented_pending_events(selected, dropped_over_budget)
         if removed_pending_tokens:
