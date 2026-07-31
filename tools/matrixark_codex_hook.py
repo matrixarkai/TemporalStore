@@ -1796,20 +1796,6 @@ def additional_context_from_retrieve(
     budget_pressure = retrieval_budget_pressure_from_retrieve(pack)
     layer_summary = retrieval_layer_summary_from_retrieve(pack, refs)
     session_identity = retrieval_session_identity_from_retrieve(pack, session_id_source=session_id_source)
-    budget_bits = [
-        f"used_remote_tokens={budget.get('used_remote_context_tokens', 0)}",
-    ]
-    if budget.get("remote_context_budget_tokens"):
-        budget_bits.append(f"remote_budget={budget.get('remote_context_budget_tokens')}")
-        budget_bits.append(f"remote_remaining={budget.get('remote_budget_remaining_tokens', 0)}")
-    if budget.get("requested_max_context_tokens"):
-        budget_bits.append(f"requested_max={budget.get('requested_max_context_tokens')}")
-    if budget.get("budget_source"):
-        budget_bits.append(f"budget_source={budget.get('budget_source')}")
-    contract = budget.get("budget_contract") if isinstance(budget.get("budget_contract"), dict) else {}
-    if contract.get("mode"):
-        budget_bits.append(f"contract={contract.get('mode')}")
-        budget_bits.append(f"contract_holds={str(bool(contract.get('contract_holds'))).lower()}")
     lines = [
         "MatrixArk/TemporalStore retrieved context for Codex.",
         f"Query: {_compact_one_line(query, max_chars=360)}",
@@ -1824,9 +1810,24 @@ def additional_context_from_retrieve(
             f"used_context_tokens={used_context_tokens_from_retrieve(pack)}, "
             f"local_context_refs_seen={local_context_count}."
         ),
-        "Budget summary: " + ", ".join(budget_bits) + ".",
     ]
-    if session_identity:
+    if CONTEXT_PACK_DEBUG_LINEAGE:
+        budget_bits = [
+            f"used_remote_tokens={budget.get('used_remote_context_tokens', 0)}",
+        ]
+        if budget.get("remote_context_budget_tokens"):
+            budget_bits.append(f"remote_budget={budget.get('remote_context_budget_tokens')}")
+            budget_bits.append(f"remote_remaining={budget.get('remote_budget_remaining_tokens', 0)}")
+        if budget.get("requested_max_context_tokens"):
+            budget_bits.append(f"requested_max={budget.get('requested_max_context_tokens')}")
+        if budget.get("budget_source"):
+            budget_bits.append(f"budget_source={budget.get('budget_source')}")
+        contract = budget.get("budget_contract") if isinstance(budget.get("budget_contract"), dict) else {}
+        if contract.get("mode"):
+            budget_bits.append(f"contract={contract.get('mode')}")
+            budget_bits.append(f"contract_holds={str(bool(contract.get('contract_holds'))).lower()}")
+        lines.append("Budget summary: " + ", ".join(budget_bits) + ".")
+    if CONTEXT_PACK_DEBUG_LINEAGE and session_identity:
         identity_bits = [
             f"source={session_identity.get('session_id_source', '')}",
             f"strong={str(bool(session_identity.get('strong_session_identity'))).lower()}",
@@ -1836,7 +1837,7 @@ def additional_context_from_retrieve(
             identity_bits.append(f"risk={session_identity.get('risk')}")
         lines.append("Session identity: " + ", ".join(identity_bits) + ".")
     formatted_layer_summary = _format_retrieval_layer_summary(layer_summary)
-    if formatted_layer_summary:
+    if CONTEXT_PACK_DEBUG_LINEAGE and formatted_layer_summary:
         lines.append(formatted_layer_summary)
     if CONTEXT_PACK_DEBUG_LINEAGE:
         formatted_lineage = _format_memory_lineage_summary(memory_lineage_summary(*refs))
@@ -1939,13 +1940,11 @@ def additional_context_from_retrieve(
                 if selected_policy_bits:
                     hierarchy_bits.append("memory_selection_policy_selected_tokens[" + ",".join(selected_policy_bits) + "]")
         lines.append("Memory hierarchy: " + "; ".join(hierarchy_bits) + ".")
-    if budget_pressure.get("budget_pressure"):
+    if CONTEXT_PACK_DEBUG_LINEAGE and budget_pressure.get("budget_pressure"):
         dropped_by_reason = budget_pressure.get("dropped_by_reason")
         pressure_bits = []
         if isinstance(dropped_by_reason, dict):
             for reason in sorted(dropped_by_reason):
-                if not CONTEXT_PACK_DEBUG_LINEAGE and str(reason) == "source_role_budget":
-                    continue
                 try:
                     count = int(dropped_by_reason[reason])
                 except (TypeError, ValueError):
@@ -1962,7 +1961,7 @@ def additional_context_from_retrieve(
             pressure_bits.append("dropped_memory_layer_budget: " + "; ".join(dropped_budget_bits))
         if pressure_bits:
             lines.append("Budget pressure: " + ", ".join(pressure_bits) + ".")
-    if isinstance(quality_warnings, list) and quality_warnings:
+    if CONTEXT_PACK_DEBUG_LINEAGE and isinstance(quality_warnings, list) and quality_warnings:
         warnings = []
         for warning in quality_warnings[:4]:
             if isinstance(warning, dict):
@@ -1970,7 +1969,7 @@ def additional_context_from_retrieve(
             else:
                 warnings.append(_compact_one_line(str(warning)))
         lines.append("Quality warnings: " + " | ".join(warnings))
-    if isinstance(retrieval_metrics, dict):
+    if CONTEXT_PACK_DEBUG_LINEAGE and isinstance(retrieval_metrics, dict):
         fallback = retrieval_metrics.get("fallback_reason")
         if fallback:
             lines.append("Retrieval fallback: " + _compact_one_line(str(fallback), max_chars=400))
