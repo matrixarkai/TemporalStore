@@ -5340,6 +5340,20 @@ def merge_ranked_paths(primary: list[Json], auxiliary: list[Json], *, total_limi
     return selected[:total_limit]
 
 
+def candidate_codex_outcome_terms(candidate: Json) -> set[str]:
+    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    return codex_outcome_fact_index_terms(
+        candidate.get("entity_name"),
+        candidate.get("entity_type"),
+        candidate.get("event_type"),
+        candidate.get("topic"),
+        candidate.get("text"),
+        metadata.get("entity_name"),
+        metadata.get("entity_type"),
+        metadata.get("event_type"),
+    )
+
+
 def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     ref_type = str(candidate.get("ref_type", ""))
     context_class = str(candidate.get("context_class") or ref_type)
@@ -5381,10 +5395,16 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
         return 0.0
     if question_type == "evidence":
         if ref_type == "entity" and event_type == "tool_evidence":
+            if candidate_codex_outcome_terms(candidate):
+                return 0.42
             return 0.36
+        if ref_type == "entity" and event_type == "assistant_decision":
+            return 0.50 if candidate_codex_outcome_terms(candidate) else 0.28
         if ref_type == "resource_chunk" and has_citation:
             return 0.30
         if ref_type == "event":
+            if event_type in {"assistant_response", "assistant_decision", "tool_evidence"} and candidate_codex_outcome_terms(candidate):
+                return 0.30
             return 0.24
         return 0.05 if ref_type == "segment" else 0.0
     if question_type == "date":
@@ -5443,10 +5463,11 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
             elif str(candidate.get("memory_scope") or "") == "user_profile" and str(candidate.get("session_continuity") or "") == "cross_session":
                 ref_priority = 0.5
         elif question_type in {"evidence", "benchmark_quality"}:
+            codex_outcome_terms = candidate_codex_outcome_terms(candidate)
             if entity_type == "tool_evidence":
                 ref_priority = 1.0
             elif entity_type == "assistant_decision":
-                ref_priority = 0.7
+                ref_priority = 0.95 if codex_outcome_terms else 0.7
     elif question_type in {"evidence", "benchmark_quality"} and str(candidate.get("event_type") or "").strip().lower() == "tool_evidence":
         ref_priority = 0.8
     return (boosted, ref_priority, token_efficiency, score)

@@ -276,6 +276,58 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("codex_outcome:validation", query_tool_flattened)
         self.assertIn("codex_outcome:outcome", query_tool_flattened)
 
+    def test_evidence_packing_prioritizes_structured_assistant_outcome_entities(self) -> None:
+        assistant_outcome = {
+            "ref_type": "entity",
+            "ref_hash": 2101,
+            "entity_type": "assistant_decision",
+            "entity_name": "assistant_decision:outcome",
+            "score": 0.45,
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "text": "assistant decision outcome: pushed commit abc1234 to origin/main after validation",
+        }
+        generic_assistant = {
+            "ref_type": "entity",
+            "ref_hash": 2102,
+            "entity_type": "assistant_decision",
+            "entity_name": "assistant_decision",
+            "score": 0.55,
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "text": "assistant decision: keep working on the implementation",
+        }
+        raw_event = {
+            "ref_type": "event",
+            "ref_hash": 2103,
+            "event_type": "assistant_response",
+            "score": 0.55,
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "text": "assistant: pushed commit abc1234 to origin/main after validation",
+        }
+
+        self.assertGreater(
+            packing_sort_key(assistant_outcome, "evidence"),
+            packing_sort_key(generic_assistant, "evidence"),
+        )
+        self.assertGreater(
+            packing_sort_key(assistant_outcome, "evidence"),
+            packing_sort_key(raw_event, "evidence"),
+        )
+        selected, _used_tokens, dropped = select_token_budgeted_refs(
+            [generic_assistant, raw_event, assistant_outcome],
+            [],
+            max_context_tokens=128,
+            auxiliary_quota=0,
+            question_type="evidence",
+            min_score=0.0,
+            max_selected_refs=1,
+        )
+
+        self.assertEqual([2101], [item["ref_hash"] for item in selected])
+        self.assertGreaterEqual(dropped["max_selected_refs"], 2)
+
     def test_benchmark_quality_queries_use_evidence_and_profile_budgets(self) -> None:
         query = "Compare LoCoMo hit rate p50 p99 latency and throughput quality across sessions"
         self.assertEqual("benchmark_quality", infer_query_type(query))
