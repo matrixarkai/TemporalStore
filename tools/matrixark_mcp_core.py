@@ -2422,6 +2422,18 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "event_type:user_prompt": "user prompt request asks asked requirement instruction",
     "entity_type:tool_evidence": "tool evidence tests passed failed exit code commit push rebase validation benchmark blocker",
     "event_type:tool_evidence": "tool event evidence tests passed failed exit code commit push rebase validation benchmark blocker",
+    "memory_scope:user_profile": "user profile long term memory profile entity profile summary durable cross session user state",
+    "memory_scope:session": "same active session local conversation memory session scoped context",
+    "session_continuity:cross_session": "cross session previous sessions other conversations across tasks persistent memory bridge",
+    "session_continuity:same_session": "same session current conversation active turn local context",
+    "profile_entity_current:true": "current profile entity latest durable user state standing preference instruction",
+    "memory_selection_policy:selected_profile_current_state": "selected profile current state standing instruction durable preference",
+    "memory_selection_policy:selected_user_prompt": "selected user prompt explicit request instruction preference",
+    "memory_selection_policy:selected_assistant_decision_outcome_only": "selected assistant decision outcome final answer implemented changed pushed",
+    "memory_selection_policy:selected_tool_evidence_only": "selected tool evidence validation test result commit push benchmark",
+    "source_role:user": "user prompt explicit instruction preference request",
+    "source_role:assistant": "assistant decision final answer outcome implementation",
+    "source_role:tool": "tool evidence command output validation benchmark",
     "source_type:message": "raw message dialogue evidence",
     "source_type:feedback": "feedback accepted rejected final answer",
     "source_type:resource": "resource document file pdf markdown text csv table runbook policy docs",
@@ -4370,9 +4382,7 @@ def keyword_candidates_from_query(query: str) -> list[str]:
     return ordered_unique(values)[:8]
 
 
-def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[set[str]]:
-    if understanding_provider() == "oss_encoder":
-        return oss_encoder_secondary_index_filter_groups(query, question_type)
+def deterministic_secondary_index_filter_groups(query: str, question_type: str) -> list[set[str]]:
     lower = query.lower()
     groups: list[set[str]] = []
 
@@ -4505,6 +4515,12 @@ def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[
     return groups
 
 
+def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[set[str]]:
+    if understanding_provider() == "oss_encoder":
+        return oss_encoder_secondary_index_filter_groups(query, question_type)
+    return deterministic_secondary_index_filter_groups(query, question_type)
+
+
 def secondary_filter_terms_to_fields(groups: list[set[str]]) -> Json:
     fields: Json = {}
     for group in groups:
@@ -4577,7 +4593,7 @@ def oss_encoder_secondary_index_filter_groups(query: str, question_type: str) ->
     selected = [str(item["label"]) for item in ranked if float(item["score"]) >= 0.46]
     if not selected and ranked:
         selected = [str(ranked[0]["label"])]
-    groups: list[set[str]] = []
+    groups: list[set[str]] = deterministic_secondary_index_filter_groups(query, question_type)
     by_prefix: dict[str, set[str]] = {}
     for label in selected:
         prefix = label.split(":", 1)[0]
@@ -4585,7 +4601,7 @@ def oss_encoder_secondary_index_filter_groups(query: str, question_type: str) ->
     for labels in by_prefix.values():
         if labels and labels not in groups:
             groups.append(labels)
-    return groups[:4]
+    return groups[:8]
 
 
 def candidate_index_terms(

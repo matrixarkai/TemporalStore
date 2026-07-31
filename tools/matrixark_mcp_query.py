@@ -397,7 +397,7 @@ def oss_encoder_secondary_index_filter_groups(query: str, question_type: str) ->
     selected = [str(item["label"]) for item in ranked if float(item["score"]) >= 0.46]
     if not selected and ranked:
         selected = [str(ranked[0]["label"])]
-    groups: list[set[str]] = []
+    groups: list[set[str]] = deterministic_secondary_index_filter_groups(query, question_type)
     by_prefix: dict[str, set[str]] = {}
     for label in selected:
         prefix = label.split(":", 1)[0]
@@ -405,7 +405,7 @@ def oss_encoder_secondary_index_filter_groups(query: str, question_type: str) ->
     for labels in by_prefix.values():
         if labels and labels not in groups:
             groups.append(labels)
-    return groups[:4]
+    return groups[:8]
 
 
 def candidate_index_terms(
