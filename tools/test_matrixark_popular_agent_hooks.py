@@ -324,10 +324,100 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         self.assertEqual("idle_timeout", decision["reason"])
         self.assertEqual(["user"], decision["source_roles"])
 
+    def test_generic_agent_hook_compacts_assistant_response_memory(self) -> None:
+        raw_assistant = "\n".join(
+            ["background implementation detail " * 80]
+            + [
+                "Implemented generic agent assistant selection and pushed commit 123abcd to origin/main.",
+                "Validation ran 9 tests passed.",
+                "Next: continue profile retrieval budget tuning.",
+            ]
+        )
+        payload = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": raw_assistant,
+                }
+            ]
+        }
+
+        messages = matrixark_agent_hook.hook_messages_from_payload(
+            payload,
+            event="response",
+            text=raw_assistant,
+        )
+        metadata = matrixark_agent_hook.agent_memory_selection_metadata(
+            payload,
+            event="response",
+            text=raw_assistant,
+            messages=messages,
+        )
+
+        self.assertEqual(1, len(messages))
+        self.assertEqual("assistant", messages[0]["role"])
+        self.assertIn("Outcome: pushed commit 123abcd to origin/main", messages[0]["content"])
+        self.assertIn("Validation: 9 tests passed", messages[0]["content"])
+        self.assertIn("Next: continue profile retrieval budget tuning", messages[0]["content"])
+        self.assertNotIn("background implementation detail", messages[0]["content"])
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 1},
+            metadata["source_memory_selection_policy_counts"],
+        )
+        self.assertEqual(
+            "selected_assistant_decision_outcome_only",
+            metadata["codex_memory_selection"]["policy"],
+        )
+        self.assertTrue(metadata["codex_memory_selection"]["selection_lossy"])
+        self.assertFalse(metadata["codex_memory_selection"]["large_payload_verbatim_stored"])
+
+    def test_generic_agent_hook_compacts_mixed_user_assistant_memory_policies(self) -> None:
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Please implement profile entities and keep cross-session retrieval bounded.",
+                },
+                {
+                    "role": "assistant",
+                    "content": (
+                        "Done. Implemented profile entity promotion. "
+                        "Validation ran 12 tests passed. "
+                        + ("Verbose explanation " * 120)
+                    ),
+                },
+            ]
+        }
+
+        messages = matrixark_agent_hook.hook_messages_from_payload(
+            payload,
+            event="response",
+            text="",
+        )
+        metadata = matrixark_agent_hook.agent_memory_selection_metadata(
+            payload,
+            event="response",
+            text="",
+            messages=messages,
+        )
+
+        self.assertEqual(2, len(messages))
+        self.assertIn("Please implement profile entities", messages[0]["content"])
+        self.assertIn("Validation: 12 tests passed", messages[1]["content"])
+        self.assertNotIn("Verbose explanation Verbose explanation", messages[1]["content"])
+        self.assertEqual(
+            {
+                "selected_assistant_decision_outcome_only": 1,
+                "selected_user_prompt": 1,
+            },
+            metadata["source_memory_selection_policy_counts"],
+        )
+        self.assertNotIn("codex_memory_selection", metadata)
+
     def test_generic_hook_threshold_extracts_user_and_assistant_turns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             rust_root = Path(tmp_dir) / "rust-store"
-            threshold_args = ["--session-commit-threshold", "2"]
+            threshold_args = ["--session-commit-threshold", "2", "--idle-commit-timeout-ms", "0"]
             first = self.run_agent_hook(
                 agent="codex",
                 event="UserPromptSubmit",
