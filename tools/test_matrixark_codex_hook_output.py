@@ -3300,6 +3300,41 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
 
         self.assertEqual("codex_cli_profile_user", args.user_id)
 
+    def test_cli_auto_batch_idle_timeout_defaults_to_live_flush(self) -> None:
+        old_argv = sys.argv
+        old_timeout = os.environ.get("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS")
+        os.environ.pop("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS", None)
+        sys.argv = ["matrixark_codex_hook.py"]
+        try:
+            args = hook.parse_args()
+        finally:
+            sys.argv = old_argv
+            if old_timeout is None:
+                os.environ.pop("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS", None)
+            else:
+                os.environ["MATRIXARK_IDLE_COMMIT_TIMEOUT_MS"] = old_timeout
+
+        self.assertEqual(hook.DEFAULT_IDLE_COMMIT_TIMEOUT_MS, args.idle_commit_timeout_ms)
+        ingest_args = hook.apply_hook_auto_batch_ingest_options(
+            {},
+            event="UserPromptSubmit",
+            session_commit_threshold=args.session_commit_threshold,
+            idle_commit_timeout_ms=args.idle_commit_timeout_ms,
+        )
+        self.assertTrue(ingest_args["auto_batch_extract"])
+        self.assertEqual(hook.DEFAULT_IDLE_COMMIT_TIMEOUT_MS, ingest_args["idle_commit_timeout_ms"])
+
+    def test_cli_explicit_zero_idle_timeout_disables_live_flush(self) -> None:
+        ingest_args = hook.apply_hook_auto_batch_ingest_options(
+            {"idle_commit_timeout_ms": 123},
+            event="UserPromptSubmit",
+            session_commit_threshold=20,
+            idle_commit_timeout_ms=0,
+        )
+
+        self.assertTrue(ingest_args["auto_batch_extract"])
+        self.assertNotIn("idle_commit_timeout_ms", ingest_args)
+
     def test_dual_hook_uses_local_user_identity_without_hardcoded_user(self) -> None:
         source = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_dual_hook.sh").read_text()
         self.assertIn("HOOK_USER_ID=", source)
