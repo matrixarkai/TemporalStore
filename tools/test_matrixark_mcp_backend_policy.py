@@ -6470,6 +6470,33 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         adapter._dedicated_proxy_clients_enabled = True
         self.assertTrue(adapter._raw_ingestion_visibility_required_after_flush())
 
+    def test_rust_visibility_publish_groups_raw_and_serving_partitions(self) -> None:
+        adapter = mcp.MatrixArkTemporalStoreRustAdapter.__new__(mcp.MatrixArkTemporalStoreRustAdapter)
+        grouped = adapter._visibility_key_groups_by_partition(
+            [
+                "matrixark:mcp:codex:raw_ingestion:record_count",
+                "matrixark:mcp:codex:raw_ingestion:records:000000",
+                "matrixark:mcp:codex:record_count",
+                "matrixark:mcp:codex:records:000000",
+                "matrixark:mcp:codex:context_event_by_ingestion_time:context_node:7",
+            ]
+        )
+
+        self.assertEqual(
+            grouped,
+            [
+                [
+                    "matrixark:mcp:codex:raw_ingestion:record_count",
+                    "matrixark:mcp:codex:raw_ingestion:records:000000",
+                ],
+                [
+                    "matrixark:mcp:codex:record_count",
+                    "matrixark:mcp:codex:records:000000",
+                    "matrixark:mcp:codex:context_event_by_ingestion_time:context_node:7",
+                ],
+            ],
+        )
+
     def test_rust_proxy_context_pack_requests_top_level_response(self) -> None:
         client = mcp.MatrixArkRustProxyClient.__new__(mcp.MatrixArkRustProxyClient)
         calls = []

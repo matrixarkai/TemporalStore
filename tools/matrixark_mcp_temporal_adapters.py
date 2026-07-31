@@ -5712,7 +5712,40 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             return
         publisher = getattr(self._client, "matrixark_publish_visibility", None)
         if callable(publisher):
-            publisher(visibility_keys=visibility_keys)
+            for keys in self._visibility_key_groups_by_partition(visibility_keys):
+                publisher(visibility_keys=keys)
+
+    def _visibility_key_groups_by_partition(self, visibility_keys: list[str]) -> list[list[str]]:
+        groups: dict[str, list[str]] = {}
+        order: list[str] = []
+        for key in visibility_keys:
+            partition = self._visibility_key_partition(str(key or ""))
+            if partition not in groups:
+                groups[partition] = []
+                order.append(partition)
+            groups[partition].append(str(key or ""))
+        return [groups[partition] for partition in order if groups[partition]]
+
+    def _visibility_key_partition(self, key: str) -> str:
+        key = str(key or "").strip()
+        for marker in (
+            ":records",
+            ":record_count",
+            ":record_index",
+            ":event_time",
+            ":readiness",
+            ":direct_write_queue",
+            ":context_event_by_ingestion_time",
+            ":context_latest_state",
+            ":context_ref_locator",
+            ":context_index_lookup",
+            ":context_placement_lookup",
+        ):
+            if marker in key:
+                prefix, _ = key.split(marker, 1)
+                if prefix:
+                    return prefix
+        return key
 
     def _should_publish_visibility_key(self, key: str) -> bool:
         key = str(key or "")
