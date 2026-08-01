@@ -15,6 +15,7 @@ try:
         DEFAULT_MAX_SELECTED_REFS,
         DEFAULT_RETRIEVAL_MIN_SCORE,
         DEFAULT_TOP_K_PER_LAYER,
+        FEATURE_SCOPE_EXCLUSION_RE,
         HARD_MAX_CHILDREN_SCORED_PER_PARENT,
         TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
         Json,
@@ -42,6 +43,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         DEFAULT_MAX_SELECTED_REFS,
         DEFAULT_RETRIEVAL_MIN_SCORE,
         DEFAULT_TOP_K_PER_LAYER,
+        FEATURE_SCOPE_EXCLUSION_RE,
         HARD_MAX_CHILDREN_SCORED_PER_PARENT,
         TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
         Json,
@@ -212,6 +214,47 @@ def stage_budget_snapshot(
     }
 
 
+FEATURE_SCOPE_EXCLUDED_MEMORY_LAYERS = {
+    "same_session_codex_outcome_event",
+    "cross_session_codex_outcome_event",
+    "same_session_codex_outcome_segment",
+    "cross_session_codex_outcome_segment",
+    "cross_session_codex_outcome_entity",
+    "cross_session_codex_outcome_summary",
+    "cross_session_codex_outcome_compression",
+}
+
+FEATURE_SCOPE_EXCLUDED_MEMORY_SELECTION_POLICIES = {
+    "selected_tool_evidence_only",
+    "selected_assistant_decision_outcome_only",
+}
+
+
+def feature_scope_excludes_evidence(query: str) -> bool:
+    return bool(FEATURE_SCOPE_EXCLUSION_RE.search(str(query or "").lower()))
+
+
+def prune_feature_scope_evidence_budgets(
+    *,
+    query: str,
+    memory_layer_budget_tokens: Json,
+    memory_selection_policy_budget_tokens: Json,
+) -> tuple[Json, Json]:
+    if not feature_scope_excludes_evidence(query):
+        return memory_layer_budget_tokens, memory_selection_policy_budget_tokens
+    pruned_memory_layers = {
+        layer: tokens
+        for layer, tokens in (memory_layer_budget_tokens or {}).items()
+        if str(layer or "").strip().lower() not in FEATURE_SCOPE_EXCLUDED_MEMORY_LAYERS
+    }
+    pruned_selection_policies = {
+        policy: tokens
+        for policy, tokens in (memory_selection_policy_budget_tokens or {}).items()
+        if str(policy or "").strip() not in FEATURE_SCOPE_EXCLUDED_MEMORY_SELECTION_POLICIES
+    }
+    return pruned_memory_layers, pruned_selection_policies
+
+
 def retrieval_query_budget_plan(
     args: Json,
     ranking: Json,
@@ -303,6 +346,11 @@ def retrieval_query_budget_plan(
                 question_type=question_type,
             )
         )
+    memory_layer_budget_tokens, memory_selection_policy_budget_tokens = prune_feature_scope_evidence_budgets(
+        query=query,
+        memory_layer_budget_tokens=memory_layer_budget_tokens,
+        memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
+    )
     raw_reference_time_ms = args.get("reference_time_ms", now_ms())
     if not isinstance(raw_reference_time_ms, int):
         raise MatrixArkError("reference_time_ms must be an integer")
