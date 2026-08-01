@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("codex", "claude", "generic")]
+  [ValidateSet("codex", "claude", "both", "generic")]
   [string]$Agent = "codex",
   [ValidateSet("dry-run", "wsl", "native", "remote", "docker")]
   [string]$Mode = "dry-run",
@@ -10,6 +10,7 @@ param(
   [string]$Endpoint = "http://127.0.0.1:18080",
   [string]$Repo = "/root/src/github-services/TemporalStore",
   [string]$WslRepo = "/root/src/github-services/TemporalStore",
+  [string]$WslDistro = $env:TEMPORALSTORE_WSL_DISTRO,
   [switch]$SkipCodexAdd
 )
 
@@ -72,20 +73,37 @@ function Install-CodexPlugin {
 }
 
 function Install-ClaudeHook {
+  # Native-Windows Claude Code runs the hook command through the OS shell, but the
+  # hook engine lives in WSL, so each event invokes the WSL wrapper via wsl.exe.
+  # The hook JSON on stdin is inherited by wsl.exe -> bash. Full lifecycle, agent=claude,
+  # persisting to the rust TemporalStore.
   New-Item -ItemType Directory -Force (Split-Path $ClaudeSettings) | Out-Null
-  $launcher = (Join-Path $Dest "scripts\temporalstore_hook_launcher.mjs").Replace("\", "/")
-  $nodePath = $Node.Replace("\", "/")
+  $wrap = "$WslRepo/tools/matrixark_claude_hook.sh"
+  $distroArg = if ($WslDistro) { "-d $WslDistro " } else { "" }
+  function New-ClaudeEntry([string]$event, [int]$timeout, [string]$matcher) {
+    $cmd = "wsl.exe ${distroArg}-e bash -lc `"bash $wrap --event $event`""
+    $hook = [pscustomobject]@{ type = "command"; command = $cmd; timeout = $timeout }
+    $entry = [pscustomobject]@{ hooks = @($hook) }
+    if ($matcher) { $entry | Add-Member -NotePropertyName matcher -NotePropertyValue $matcher }
+    return ,@($entry)
+  }
   $settings = if (Test-Path $ClaudeSettings) { Get-Content -Raw $ClaudeSettings | ConvertFrom-Json } else { [pscustomobject]@{} }
   $hooks = [pscustomobject]@{}
-  $hooks | Add-Member -NotePropertyName UserPromptSubmit -NotePropertyValue @([pscustomobject]@{ hooks=@([pscustomobject]@{ type="command"; command="`"$nodePath`" `"$launcher`" UserPromptSubmit" }) })
-  $hooks | Add-Member -NotePropertyName Stop -NotePropertyValue @([pscustomobject]@{ hooks=@([pscustomobject]@{ type="command"; command="`"$nodePath`" `"$launcher`" Stop" }) })
+  $hooks | Add-Member -NotePropertyName SessionStart     -NotePropertyValue (New-ClaudeEntry "SessionStart" 600 $null)
+  $hooks | Add-Member -NotePropertyName UserPromptSubmit -NotePropertyValue (New-ClaudeEntry "UserPromptSubmit" 30 $null)
+  $hooks | Add-Member -NotePropertyName PostToolUse      -NotePropertyValue (New-ClaudeEntry "PostToolUse" 120 "*")
+  $hooks | Add-Member -NotePropertyName Stop             -NotePropertyValue (New-ClaudeEntry "Stop" 120 $null)
+  $hooks | Add-Member -NotePropertyName SubagentStop     -NotePropertyValue (New-ClaudeEntry "SubagentStop" 120 $null)
+  $hooks | Add-Member -NotePropertyName PreCompact       -NotePropertyValue (New-ClaudeEntry "PreCompact" 120 $null)
+  $hooks | Add-Member -NotePropertyName SessionEnd       -NotePropertyValue (New-ClaudeEntry "SessionEnd" 120 $null)
   if ($settings.PSObject.Properties.Name -contains "hooks") { $settings.hooks = $hooks } else { $settings | Add-Member -NotePropertyName hooks -NotePropertyValue $hooks }
   $settings | ConvertTo-Json -Depth 10 | Set-Content -Path $ClaudeSettings -Encoding ASCII
-  Write-Host "Claude settings updated: $ClaudeSettings"
+  Write-Host "Claude settings updated (full lifecycle -> $wrap): $ClaudeSettings"
 }
 
 if ($Agent -eq "codex") { Install-CodexPlugin }
 elseif ($Agent -eq "claude") { Install-ClaudeHook }
+elseif ($Agent -eq "both") { Install-CodexPlugin; Install-ClaudeHook }
 else { Write-Host "Generic hook launcher copied to: $Dest" }
 
 Write-Host "Installed TemporalStore agent hooks to: $Dest"
