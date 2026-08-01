@@ -9147,7 +9147,12 @@ class MatrixArkLocalAdapter:
                 previous_profile = previous_profile_entity or {}
                 previous_profile_state = str(previous_profile.get("state") or "")
                 promoted_state = str(promoted_entity.get("state") or "")
-                cumulative_profile_entity_types = {"assistant_decision", "tool_evidence", *CODEX_OUTCOME_ENTITY_TYPES}
+                cumulative_profile_entity_types = {
+                    "assistant_decision",
+                    "tool_evidence",
+                    "memory_feature_profile",
+                    *CODEX_OUTCOME_ENTITY_TYPES,
+                }
                 should_accumulate_profile_state = (
                     str(updated_entity.get("entity_type") or "") in cumulative_profile_entity_types
                 )

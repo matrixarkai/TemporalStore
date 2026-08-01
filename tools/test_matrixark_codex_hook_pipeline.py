@@ -11996,6 +11996,54 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             ),
         )
 
+    def test_profile_memory_feature_updates_accumulate_across_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-feature-accumulate.jsonl")
+            base_scope = {
+                "account_id": "acct_profile_feature_accumulate",
+                "tenant_id": "tenant_profile_feature_accumulate",
+                "user_id": "user_profile_feature_accumulate",
+            }
+            messages_by_session = [
+                (
+                    "session_profile_feature_accumulate_1",
+                    "Focus on OpenViking session memory features and threshold batch extraction.",
+                ),
+                (
+                    "session_profile_feature_accumulate_2",
+                    "Focus on VikingMem profile retrieval budgets and idle batch extraction.",
+                ),
+            ]
+            for session_id, content in messages_by_session:
+                scope = {**base_scope, "session_id": session_id}
+                result = adapter.batch_extract(
+                    {
+                        "scope": scope,
+                        "messages": [{"role": "user", "content": content}],
+                        "threshold_messages": 1,
+                        "force": True,
+                        "skip_prior_context": True,
+                        "metadata": {"node_path": adapter.default_session_node_path(scope)},
+                    }
+                )
+                self.assertEqual("accepted", result["status"])
+
+            profile_entities = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("entity_type") == "memory_feature_profile"
+                and record.get("profile_entity_current") is True
+            ]
+            self.assertTrue(profile_entities)
+            latest_profile = profile_entities[-1]
+            self.assertIn("OpenViking session memory features", latest_profile["state"])
+            self.assertIn("VikingMem profile retrieval budgets", latest_profile["state"])
+            self.assertIn("session_profile_feature_accumulate_1", latest_profile["source_session_ids"])
+            self.assertIn("session_profile_feature_accumulate_2", latest_profile["source_session_ids"])
+            self.assertGreaterEqual(latest_profile["profile_revision"], 2)
+
     def test_lightweight_async_assistant_and_tool_pending_events_keep_semantic_types(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-lightweight-pending-role-types.jsonl")
