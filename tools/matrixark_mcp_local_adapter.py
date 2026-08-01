@@ -906,6 +906,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         "cross_session_segment": 0.25,
         "profile_entity": 0.40,
         "cross_session_codex_outcome_entity": 0.25,
+        "cross_session_codex_outcome_summary": 0.25,
     }
     normalized_question_type = str(question_type or "fact").strip().lower()
     if codex_outcome_budget_query(args, ranking, question_type=question_type):
@@ -926,6 +927,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.35,
                 "profile_entity": 0.45,
                 "cross_session_codex_outcome_entity": 0.62,
+                "cross_session_codex_outcome_summary": 0.45,
             }
         )
     elif normalized_question_type in {"current_state", "latest"}:
@@ -946,6 +948,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.30,
                 "profile_entity": 0.55,
                 "cross_session_codex_outcome_entity": 0.45,
+                "cross_session_codex_outcome_summary": 0.35,
             }
         )
     elif normalized_question_type == "profile_memory":
@@ -966,6 +969,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.40,
                 "profile_entity": 0.60,
                 "cross_session_codex_outcome_entity": 0.30,
+                "cross_session_codex_outcome_summary": 0.35,
             }
         )
     elif normalized_question_type in {"multi_hop", "date"}:
@@ -986,6 +990,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.35,
                 "profile_entity": 0.45,
                 "cross_session_codex_outcome_entity": 0.40,
+                "cross_session_codex_outcome_summary": 0.35,
             }
         )
     elif normalized_question_type == "benchmark_quality":
@@ -1006,6 +1011,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.35,
                 "profile_entity": 0.50,
                 "cross_session_codex_outcome_entity": 0.58,
+                "cross_session_codex_outcome_summary": 0.45,
             }
         )
     elif normalized_question_type in {"broad_exploration", "evidence"}:
@@ -1026,6 +1032,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.30,
                 "profile_entity": 0.45,
                 "cross_session_codex_outcome_entity": 0.45,
+                "cross_session_codex_outcome_summary": 0.35,
             }
         )
     budgets: Json = {}
@@ -1146,6 +1153,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
         "cross_session_segment": 0.25,
         "profile_entity": 0.45,
         "cross_session_codex_outcome_entity": 0.25,
+        "cross_session_codex_outcome_summary": 0.25,
     }
     if normalized_question_type in {"current_state", "latest"}:
         fractions.update(
@@ -1158,6 +1166,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_segment": 0.30,
                 "profile_entity": 0.55,
                 "cross_session_codex_outcome_entity": 0.45,
+                "cross_session_codex_outcome_summary": 0.35,
             }
         )
     elif normalized_question_type == "profile_memory":
@@ -1175,6 +1184,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_segment": 0.40,
                 "profile_entity": 0.60,
                 "cross_session_codex_outcome_entity": 0.30,
+                "cross_session_codex_outcome_summary": 0.35,
             }
         )
     elif normalized_question_type in {"multi_hop", "date"}:
@@ -1186,6 +1196,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_segment": 0.35,
                 "profile_entity": 0.50,
                 "cross_session_codex_outcome_entity": 0.40,
+                "cross_session_codex_outcome_summary": 0.35,
             }
         )
     elif normalized_question_type == "benchmark_quality":
@@ -1200,6 +1211,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_segment": 0.35,
                 "profile_entity": 0.50,
                 "cross_session_codex_outcome_entity": 0.58,
+                "cross_session_codex_outcome_summary": 0.45,
             }
         )
     elif normalized_question_type in {"broad_exploration", "evidence"}:
@@ -1216,6 +1228,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_segment": 0.30,
                 "profile_entity": 0.50,
                 "cross_session_codex_outcome_entity": 0.45,
+                "cross_session_codex_outcome_summary": 0.35,
             }
         )
     return {
@@ -4935,6 +4948,32 @@ class MatrixArkLocalAdapter:
                     if str(value or "").strip()
                 }
             )
+
+            def source_profile_layer_values(list_field: str, fallback_field: str) -> list[str]:
+                values: set[str] = set()
+                for record in entity_states + child_summaries:
+                    raw_values = record.get(list_field) if isinstance(record.get(list_field), list) else []
+                    for value in raw_values:
+                        text_value = str(value or "").strip()
+                        if text_value:
+                            values.add(text_value)
+                    fallback = str(record.get(fallback_field) or "").strip()
+                    if fallback:
+                        values.add(fallback)
+                return sorted(values)
+
+            source_profile_memory_classes = source_profile_layer_values("source_profile_memory_classes", "profile_memory_class")
+            source_profile_memory_kinds = source_profile_layer_values("source_profile_memory_kinds", "profile_memory_kind")
+            profile_memory_class = source_profile_memory_classes[0] if len(source_profile_memory_classes) == 1 else ("mixed" if source_profile_memory_classes else "")
+            profile_memory_kind = (
+                "codex_outcome"
+                if "codex_outcome" in source_profile_memory_kinds
+                else source_profile_memory_kinds[0]
+                if len(source_profile_memory_kinds) == 1
+                else "mixed"
+                if source_profile_memory_kinds
+                else ""
+            )
             source_operator_hashes = [
                 int(record.get("compression_id_hash") or record.get("boundary_hash") or record.get("ref_hash"))
                 for record in operator_states
@@ -5004,6 +5043,10 @@ class MatrixArkLocalAdapter:
                     "source_extraction_phases": source_extraction_phases,
                     "source_profile_promotion_policies": source_profile_promotion_policies,
                     "source_profile_promotion_blockers": source_profile_promotion_blockers,
+                    "source_profile_memory_classes": source_profile_memory_classes,
+                    "source_profile_memory_kinds": source_profile_memory_kinds,
+                    "profile_memory_class": profile_memory_class,
+                    "profile_memory_kind": profile_memory_kind,
                     "source_final_session_boundary_count": source_final_session_boundary_count,
                     "memory_scope": "user_profile" if "user_profile" in source_memory_scopes else ("session" if "session" in source_memory_scopes else ""),
                     "session_continuity": "cross_session" if "cross_session" in source_session_continuities else ("same_session" if "same_session" in source_session_continuities else ""),
@@ -5058,6 +5101,10 @@ class MatrixArkLocalAdapter:
                         "source_extraction_phases": source_extraction_phases,
                         "source_profile_promotion_policies": source_profile_promotion_policies,
                         "source_profile_promotion_blockers": source_profile_promotion_blockers,
+                        "source_profile_memory_classes": source_profile_memory_classes,
+                        "source_profile_memory_kinds": source_profile_memory_kinds,
+                        "profile_memory_class": profile_memory_class,
+                        "profile_memory_kind": profile_memory_kind,
                         "memory_scope": summary_record["memory_scope"],
                         "session_continuity": summary_record["session_continuity"],
                         "extraction_phase": summary_record["extraction_phase"],
@@ -10580,6 +10627,10 @@ class MatrixArkLocalAdapter:
                             "source_extraction_phases": record.get("source_extraction_phases") or embedding_metadata.get("source_extraction_phases", []),
                             "source_profile_promotion_policies": record.get("source_profile_promotion_policies") or embedding_metadata.get("source_profile_promotion_policies", []),
                             "source_profile_promotion_blockers": record.get("source_profile_promotion_blockers") or embedding_metadata.get("source_profile_promotion_blockers", []),
+                            "source_profile_memory_classes": record.get("source_profile_memory_classes") or embedding_metadata.get("source_profile_memory_classes", []),
+                            "source_profile_memory_kinds": record.get("source_profile_memory_kinds") or embedding_metadata.get("source_profile_memory_kinds", []),
+                            "profile_memory_class": record.get("profile_memory_class") or embedding_metadata.get("profile_memory_class", ""),
+                            "profile_memory_kind": record.get("profile_memory_kind") or embedding_metadata.get("profile_memory_kind", ""),
                             "source_entity_types": record.get("source_entity_types", []),
                             "source_final_session_boundary_count": record.get("source_final_session_boundary_count", embedding_metadata.get("source_final_session_boundary_count", 0)),
                             "memory_scope": recovered_memory_scope,

@@ -5077,6 +5077,12 @@ def candidate_index_terms(
         add_source_lineage_terms()
     elif record_type == "context_summary":
         terms.add(context_index_name("summary_type", record.get("summary_type")))
+        if record.get("profile_memory_class") not in (None, "", [], {}):
+            terms.add(context_index_name("profile_memory_class", record.get("profile_memory_class")))
+        if record.get("profile_memory_kind") not in (None, "", [], {}):
+            terms.add(context_index_name("profile_memory_kind", record.get("profile_memory_kind")))
+        for profile_kind in record.get("source_profile_memory_kinds", [])[:8]:
+            terms.add(context_index_name("profile_memory_kind", profile_kind))
         if bool(record.get("profile_summary_current")):
             terms.add(context_index_name("profile_summary_current", "true"))
         for entity_type in record.get("source_entity_types", [])[:16]:
@@ -6152,6 +6158,8 @@ def candidate_memory_layer_name(candidate: Json) -> str:
         return "compression"
     if ref_type == "summary" or context_class == "summary":
         if memory_scope == "user_profile" and session_continuity == "cross_session":
+            if profile_memory_kind == "codex_outcome":
+                return "cross_session_codex_outcome_summary"
             return "profile_summary"
         if session_continuity == "same_session":
             return "same_session_summary"
@@ -6503,7 +6511,7 @@ def select_token_budgeted_refs(
         any(normalized_memory_layer_budget_tokens.get(layer) for layer in profile_entity_bridge_layers)
         and any(
             normalized_memory_layer_budget_tokens.get(layer)
-            for layer in ["summary", "profile_summary", "same_session_summary", "cross_session_summary"]
+            for layer in ["summary", "profile_summary", "cross_session_codex_outcome_summary", "same_session_summary", "cross_session_summary"]
         )
     )
     cross_session_profile_entity_floor_enabled = bool(
@@ -6789,7 +6797,7 @@ def select_token_budgeted_refs(
         candidate_memory_layer = candidate_memory_layer_name(candidate)
         is_broad_profile_summary = (
             candidate_memory_layer
-            in {"summary", "profile_summary", "same_session_summary", "cross_session_summary"}
+            in {"summary", "profile_summary", "cross_session_codex_outcome_summary", "same_session_summary", "cross_session_summary"}
             and normalized_question_type in {"broad_exploration", "profile_memory"}
         )
         if is_cross_session and not cross_enabled:
@@ -6859,7 +6867,7 @@ def select_token_budgeted_refs(
         should_reserve_profile_entity_floor = bool(
             (
                 summary_profile_entity_floor_enabled
-                and candidate_memory_layer in {"summary", "profile_summary", "same_session_summary", "cross_session_summary"}
+                and candidate_memory_layer in {"summary", "profile_summary", "cross_session_codex_outcome_summary", "same_session_summary", "cross_session_summary"}
                 and not (
                     selected_ref_cap > 1
                     and
@@ -6874,7 +6882,7 @@ def select_token_budgeted_refs(
                     selected_ref_cap > 1
                     and
                     normalized_question_type in {"broad_exploration", "profile_memory"}
-                    and candidate_memory_layer in {"summary", "profile_summary", "same_session_summary", "cross_session_summary"}
+                    and candidate_memory_layer in {"summary", "profile_summary", "cross_session_codex_outcome_summary", "same_session_summary", "cross_session_summary"}
                 )
             )
         )
