@@ -2743,6 +2743,10 @@ def profile_entity_type_for_memory_text(text: str) -> str:
     return ""
 
 
+def feature_scope_excludes_outcome_evidence(text: str) -> bool:
+    return bool(FEATURE_SCOPE_EXCLUSION_RE.search(str(text or "").lower())) and profile_entity_type_for_memory_text(text) == "memory_feature_profile"
+
+
 def normalized_extraction_message_role(role: Any) -> str:
     role_name = str(role or "").strip().lower()
     return {
@@ -2935,6 +2939,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     entities: list[Json] = []
     text = text_from_messages(messages)
     lower = text.lower()
+    feature_scope_memory_only = feature_scope_excludes_outcome_evidence(text)
     source_event_ids = envelope.get("source_event_ids", [])
     source_refs = [str(ref) for ref in source_event_ids] if isinstance(source_event_ids, list) and source_event_ids else [str(index) for index, _ in enumerate(messages)]
 
@@ -3056,7 +3061,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     ]
     tool_messages = [item for _index, item in tool_message_items]
     tool_text = text_from_messages(tool_messages) if tool_messages else ""
-    if tool_text:
+    if tool_text and not feature_scope_memory_only:
         tool_refs = source_refs_for_role("tool")
         evidence_state = summarize_text(tool_evidence_memory_text(tool_text), limit=220)
         entities.append(
@@ -3095,29 +3100,30 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         re.IGNORECASE,
     ):
         assistant_refs = source_refs_for_role("assistant")
-        decision_state = summarize_text(assistant_decision_memory_text(assistant_text), limit=220)
-        entities.append(
-            {
-                "entity_type": "assistant_decision",
-                "entity_name": "assistant_decision",
-                "state": decision_state,
-                "confidence": 0.82,
-                "source_refs": assistant_refs,
-                "source_roles": ["assistant"],
-                "source_role_counts": {"assistant": len(assistant_messages)},
-                "operator": normalize_entity_operator(None, "assistant_decision"),
-                "field_patches": [entity_patch("", summarize_text(decision_state, limit=180))],
-            }
-        )
-        for message_index, message in assistant_message_items:
-            entities.extend(
-                codex_outcome_fact_entities(
-                    str(message.get("content") or ""),
-                    role_name="assistant",
-                    source_refs=[source_ref_for_message_index(message_index)],
-                    source_count=1,
-                )
+        if not feature_scope_memory_only:
+            decision_state = summarize_text(assistant_decision_memory_text(assistant_text), limit=220)
+            entities.append(
+                {
+                    "entity_type": "assistant_decision",
+                    "entity_name": "assistant_decision",
+                    "state": decision_state,
+                    "confidence": 0.82,
+                    "source_refs": assistant_refs,
+                    "source_roles": ["assistant"],
+                    "source_role_counts": {"assistant": len(assistant_messages)},
+                    "operator": normalize_entity_operator(None, "assistant_decision"),
+                    "field_patches": [entity_patch("", summarize_text(decision_state, limit=180))],
+                }
             )
+            for message_index, message in assistant_message_items:
+                entities.extend(
+                    codex_outcome_fact_entities(
+                        str(message.get("content") or ""),
+                        role_name="assistant",
+                        source_refs=[source_ref_for_message_index(message_index)],
+                        source_count=1,
+                    )
+                )
         assistant_profile_fact_patterns = [
             r"\b(?:i(?:'ll| will)?|codex will|assistant will)\s+(?:remember|keep|use|follow|prefer|avoid|stop using|not use|always use|make sure)\b[:\s]+([^.;!?\n]{4,220})",
             r"\b(?:noted|got it|understood|i(?:'ll| will)? remember|remembered)\b[:\s]+(?:that\s+)?([^.;!?\n]{4,220})",
