@@ -9689,6 +9689,20 @@ class MatrixArkLocalAdapter:
                 })
             )
 
+        batch_has_memory_feature = (
+            "memory_feature" in {str(value or "").strip().lower() for value in source_profile_memory_classes}
+            or "memory_feature" in {str(value or "").strip().lower() for value in source_profile_memory_kinds}
+            or int(entity_type_counts.get("memory_feature_profile") or 0) > 0
+        )
+        batch_profile_memory_class = "memory_feature" if batch_has_memory_feature else ""
+        batch_profile_memory_kind = "memory_feature" if batch_has_memory_feature else ""
+        batch_source_profile_memory_classes = ordered_unique_any(
+            list(source_profile_memory_classes) + ([batch_profile_memory_class] if batch_profile_memory_class else [])
+        )
+        batch_source_profile_memory_kinds = ordered_unique_any(
+            list(source_profile_memory_kinds) + ([batch_profile_memory_kind] if batch_profile_memory_kind else [])
+        )
+
         summary_hash = stable_hash(f"batch_summary:{batch_id_hash}")
         batch_summary_record = {
             "record_type": "context_summary",
@@ -9709,6 +9723,10 @@ class MatrixArkLocalAdapter:
             "source_codex_event_counts": source_codex_event_counts,
             "source_memory_selection_policies": source_memory_selection_policies,
             "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            "source_profile_memory_classes": batch_source_profile_memory_classes,
+            "source_profile_memory_kinds": batch_source_profile_memory_kinds,
+            "profile_memory_class": batch_profile_memory_class,
+            "profile_memory_kind": batch_profile_memory_kind,
             **source_memory_selection_retention,
             "source_memory_scopes": ["session"],
             "source_session_continuities": ["same_session"],
@@ -9734,6 +9752,12 @@ class MatrixArkLocalAdapter:
                 updated_at_ms=envelope["ingestion_time_ms"],
             )
             summary_index["access_scope"] = envelope["scope"]
+            summary_index["memory_scope"] = batch_summary_record["memory_scope"]
+            summary_index["session_continuity"] = batch_summary_record["session_continuity"]
+            summary_index["profile_memory_class"] = batch_profile_memory_class
+            summary_index["profile_memory_kind"] = batch_profile_memory_kind
+            summary_index["extraction_phase"] = batch_summary_record["extraction_phase"]
+            summary_index["final_session_boundary"] = batch_summary_record["final_session_boundary"]
             summary_index.pop("index_hash", None)
             records_to_append.append(summary_index)
             summary_index_write_count += 1
@@ -9765,8 +9789,10 @@ class MatrixArkLocalAdapter:
                 "source_codex_event_counts": source_codex_event_counts,
                 "source_memory_selection_policies": source_memory_selection_policies,
                 "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
-                "source_profile_memory_classes": source_profile_memory_classes,
-                "source_profile_memory_kinds": source_profile_memory_kinds,
+                "source_profile_memory_classes": batch_source_profile_memory_classes,
+                "source_profile_memory_kinds": batch_source_profile_memory_kinds,
+                "profile_memory_class": batch_profile_memory_class,
+                "profile_memory_kind": batch_profile_memory_kind,
                 **source_memory_selection_retention,
                 "source_memory_scopes": ["session"],
                 "source_session_continuities": ["same_session"],
