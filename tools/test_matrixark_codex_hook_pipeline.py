@@ -6634,11 +6634,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(14, request["memory_layer_budget_tokens"]["same_session_compression"])
             self.assertEqual(33, request["memory_layer_budget_tokens"]["cross_session_event"])
             self.assertEqual(33, request["memory_layer_budget_tokens"]["cross_session_segment"])
-            self.assertEqual(52, request["memory_layer_budget_tokens"]["pending_async_memory_feature_event"])
-            self.assertEqual(52, request["memory_layer_budget_tokens"]["same_session_memory_feature_event"])
-            self.assertEqual(66, request["memory_layer_budget_tokens"]["cross_session_memory_feature_event"])
-            self.assertEqual(47, request["memory_layer_budget_tokens"]["same_session_memory_feature_segment"])
-            self.assertEqual(64, request["memory_layer_budget_tokens"]["cross_session_memory_feature_segment"])
+            self.assertEqual(19, request["memory_layer_budget_tokens"]["pending_async_memory_feature_event"])
+            self.assertEqual(33, request["memory_layer_budget_tokens"]["same_session_memory_feature_event"])
+            self.assertEqual(23, request["memory_layer_budget_tokens"]["cross_session_memory_feature_event"])
+            self.assertEqual(28, request["memory_layer_budget_tokens"]["same_session_memory_feature_segment"])
+            self.assertEqual(23, request["memory_layer_budget_tokens"]["cross_session_memory_feature_segment"])
             self.assertGreater(
                 request["memory_layer_budget_tokens"]["profile_entity"],
                 request["memory_layer_budget_tokens"]["same_session_event"],
@@ -6649,14 +6649,58 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertEqual(
                 {
-                    "selected_user_prompt": 33,
-                    "selected_assistant_profile_fact": 61,
-                    "selected_assistant_decision_outcome_only": 38,
-                    "selected_tool_evidence_only": 28,
-                    "selected_profile_current_state": 61,
+                    "selected_user_prompt": 66,
+                    "selected_user_profile_fact": 66,
+                    "selected_assistant_profile_fact": 66,
+                    "selected_assistant_decision_outcome_only": 19,
+                    "selected_tool_evidence_only": 19,
+                    "selected_profile_current_state": 52,
                 },
                 request["memory_selection_policy_budget_tokens"],
             )
+
+    def test_standing_rule_fact_query_uses_profile_memory_budgets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = NativeCaptureLocalAdapter(Path(tmp_dir) / "matrixark-native-standing-rule-budget.jsonl")
+            scope = {
+                "account_id": "acct_native_standing_rule_budget",
+                "tenant_id": "tenant_native_standing_rule_budget",
+                "user_id": "user_native_standing_rule_budget",
+                "session_id": "session_native_standing_rule_budget",
+            }
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "question_type": "fact",
+                    "query": "Which repo should you use for TemporalStore builds?",
+                    "max_context_tokens": 100,
+                    "ranking": {
+                        "source_role_budget_mode": "auto",
+                        "memory_layer_budget_mode": "auto",
+                        "memory_selection_policy_budget_mode": "auto",
+                    },
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                }
+            )
+
+            self.assertEqual("local-native-pack", pack["pack_id"])
+            self.assertEqual(1, len(adapter.native_requests))
+            request = adapter.native_requests[0]
+            self.assertEqual("profile_memory", request["question_type"])
+            self.assertEqual("profile_memory", request["memory_layer_budget_question_type"])
+            self.assertIn("profile_memory_queries_prioritize", request["memory_layer_budget_question_reason"])
+            self.assertEqual(61, request["memory_layer_budget_tokens"]["profile_entity"])
+            self.assertGreater(
+                request["memory_layer_budget_tokens"]["profile_entity"],
+                request["memory_layer_budget_tokens"]["same_session_event"],
+            )
+            self.assertGreater(
+                request["memory_layer_budget_tokens"]["cross_session_event"],
+                request["memory_layer_budget_tokens"]["same_session_event"],
+            )
+            self.assertEqual(66, request["memory_selection_policy_budget_tokens"]["selected_user_profile_fact"])
+            self.assertEqual(52, request["memory_selection_policy_budget_tokens"]["selected_profile_current_state"])
 
     def test_profile_memory_query_defaults_to_bounded_auto_memory_budgets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

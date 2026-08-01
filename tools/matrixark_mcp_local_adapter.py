@@ -685,9 +685,17 @@ def feature_profile_memory_budget_query(args: Json, ranking: Json, *, question_t
     lower = query.lower()
     return bool(
         PROFILE_MEMORY_QUERY_RE.search(lower)
+        or PROFILE_MEMORY_STANDING_RULE_QUERY_RE.search(lower)
         or FEATURE_MEMORY_BUDGET_QUERY_RE.search(lower)
         or (FEATURE_SCOPE_EXCLUSION_RE.search(lower) and "feature" in lower)
     )
+
+
+def effective_retrieval_question_type(query: str, requested_question_type: Any = "") -> str:
+    question_type = str(requested_question_type or infer_query_type(query)).strip().lower()
+    if question_type in {"", "fact"} and PROFILE_MEMORY_STANDING_RULE_QUERY_RE.search(query.lower()):
+        return "profile_memory"
+    return question_type or "fact"
 
 
 def _default_memory_budget_mode(args: Json, ranking: Json, *, field: str, question_type: str) -> str:
@@ -10137,7 +10145,7 @@ class MatrixArkLocalAdapter:
                 "over_budget_stages": [stage for stage, row in stages.items() if row["over_budget"]],
             }
 
-        question_type = str(args.get("question_type") or infer_query_type(query))
+        question_type = effective_retrieval_question_type(query, args.get("question_type"))
         retrieval_session_scope = str(args.get("session_scope") or ranking.get("session_scope") or "prefer").strip().lower()
         if retrieval_session_scope not in {"prefer", "only"}:
             raise MatrixArkError("session_scope must be prefer or only")
