@@ -3098,9 +3098,32 @@ ASSISTANT_PROFILE_MEMORY_POLICY_PATTERNS = [
 ]
 
 
+FEATURE_SCOPE_EXCLUSION_RE = re.compile(
+    r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\s+"
+    r"(?:testing|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b",
+    re.IGNORECASE,
+)
+
+FEATURE_MEMORY_POLICY_RE = re.compile(
+    r"\b(?:openviking|vikingmem|mem0|feature parity|feature[- ]focused|features? only|features? referring to|functionalit(?:y|ies)|algorithms?|memory feature|long[- ]term memory|session memory|profile memory|cross[- ]session memory|threshold|idle batch|batch extraction)\b",
+    re.IGNORECASE,
+)
+
+
+def feature_scope_memory_only_policy(text: str) -> bool:
+    compact = " ".join(str(text or "").split())
+    return bool(compact and FEATURE_SCOPE_EXCLUSION_RE.search(compact) and FEATURE_MEMORY_POLICY_RE.search(compact))
+
+
 def selected_assistant_profile_fact_policy(text: str) -> bool:
     compact = " ".join(str(text or "").split())
-    return bool(compact and any(pattern.search(compact) for pattern in ASSISTANT_PROFILE_MEMORY_POLICY_PATTERNS))
+    return bool(
+        compact
+        and (
+            feature_scope_memory_only_policy(compact)
+            or any(pattern.search(compact) for pattern in ASSISTANT_PROFILE_MEMORY_POLICY_PATTERNS)
+        )
+    )
 
 
 def normalize_assistant_memory_line(line: str) -> str:
@@ -3123,6 +3146,8 @@ def selected_assistant_outcome_facts(text: str, *, max_facts: int = 6) -> list[s
     """Extract durable assistant outcome facts without keeping full LLM output."""
     compact = " ".join(str(text or "").split())
     if not compact:
+        return []
+    if feature_scope_memory_only_policy(compact):
         return []
     facts: list[str] = []
 
@@ -3244,6 +3269,7 @@ def selected_assistant_memory_text(text: str, *, max_chars: int = 4096, max_line
     compact = str(text or "").strip()
     if not compact:
         return ""
+    feature_memory_only = feature_scope_memory_only_policy(compact)
     lines = [" ".join(line.split()) for line in compact.splitlines()]
     selected: list[str] = []
     in_code_block = False
@@ -3259,12 +3285,16 @@ def selected_assistant_memory_text(text: str, *, max_chars: int = 4096, max_line
         normalized = normalize_assistant_memory_line(stripped)
         if assistant_memory_line_too_repetitive(normalized):
             continue
-        if normalized and any(pattern.search(normalized) for pattern in ASSISTANT_MEMORY_LINE_PATTERNS):
+        patterns = ASSISTANT_PROFILE_MEMORY_POLICY_PATTERNS if feature_memory_only else ASSISTANT_MEMORY_LINE_PATTERNS
+        if normalized and any(pattern.search(normalized) for pattern in patterns):
             selected.append(normalized[:420])
         if len(selected) >= max_lines:
             break
     if not selected:
-        selected = [normalize_assistant_memory_line(line)[:420] for line in lines[: min(len(lines), 8)] if line]
+        fallback_lines = lines[: min(len(lines), 8)]
+        if feature_memory_only:
+            fallback_lines = [line for line in lines if FEATURE_MEMORY_POLICY_RE.search(line)][: min(len(lines), 8)]
+        selected = [normalize_assistant_memory_line(line)[:420] for line in fallback_lines if line]
     outcome_facts = selected_assistant_outcome_facts(compact)
     if outcome_facts:
         outcome_line = "; ".join(outcome_facts)
@@ -3345,12 +3375,14 @@ def codex_memory_selection_metadata(*, role: str, event: str, text: str, origina
         max_lines = 80
     elif normalized_role == "assistant":
         policies = []
-        if selected_assistant_profile_fact_policy(selected_text or original):
+        assistant_source_text = selected_text or original
+        feature_memory_only = feature_scope_memory_only_policy(assistant_source_text)
+        if selected_assistant_profile_fact_policy(assistant_source_text):
             policies.append("selected_assistant_profile_fact")
-        if selected_assistant_outcome_facts(selected_text or original):
+        if not feature_memory_only and selected_assistant_outcome_facts(assistant_source_text):
             policies.append("selected_assistant_decision_outcome_only")
         if not policies:
-            policies.append("selected_assistant_decision_outcome_only")
+            policies.append("selected_assistant_profile_fact" if feature_memory_only else "selected_assistant_decision_outcome_only")
         truncation_marker = "[assistant memory truncated]"
         max_chars = 4096
         max_lines = 48
@@ -4384,10 +4416,13 @@ def pending_session_buffer_lineage(records: list[Json], *, fallback_role: str, f
 
     assistant_lineage_text = "\n".join(assistant_text_parts)
     assistant_policies: list[str] = []
+    assistant_feature_memory_only = feature_scope_memory_only_policy(assistant_lineage_text)
     if assistant_lineage_text and selected_assistant_profile_fact_policy(assistant_lineage_text):
         assistant_policies.append("selected_assistant_profile_fact")
-    if assistant_lineage_text or source_role_counts.get("assistant"):
+    if (assistant_lineage_text or source_role_counts.get("assistant")) and not assistant_feature_memory_only:
         assistant_policies.append("selected_assistant_decision_outcome_only")
+    if assistant_feature_memory_only and not assistant_policies:
+        assistant_policies.append("selected_assistant_profile_fact")
     inferred_policy_by_role = {
         "assistant": assistant_policies,
         "tool": ["selected_tool_evidence_only"],
