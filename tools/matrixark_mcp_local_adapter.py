@@ -1039,6 +1039,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         "same_session_compression": 0.20,
         "cross_session_compression": 0.20,
         "pending_async_event": 0.20,
+        "pending_async_codex_outcome_event": 0.20,
         "pending_async_memory_feature_event": 0.20,
         "same_session_event": 0.45,
         "same_session_memory_feature_event": 0.35,
@@ -1070,6 +1071,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "same_session_compression": 0.20,
                 "cross_session_compression": 0.32,
                 "pending_async_event": 0.20,
+                "pending_async_codex_outcome_event": 0.42,
                 "same_session_event": 0.35,
                 "cross_session_event": 0.38,
                 "same_session_segment": 0.30,
@@ -1093,6 +1095,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "same_session_compression": 0.15,
                 "cross_session_compression": 0.40,
                 "pending_async_event": 0.12,
+                "pending_async_codex_outcome_event": 0.10,
                 "pending_async_memory_feature_event": 0.55,
                 "same_session_event": 0.25,
                 "same_session_memory_feature_event": 0.55,
@@ -1238,6 +1241,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
     if feature_scope_budget_query(args, ranking):
         for outcome_layer in [
             "same_session_codex_outcome_event",
+            "pending_async_codex_outcome_event",
             "cross_session_codex_outcome_event",
             "same_session_codex_outcome_segment",
             "cross_session_codex_outcome_segment",
@@ -1384,6 +1388,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
         "same_session_compression": 0.20,
         "cross_session_compression": 0.25,
         "pending_async_event": 0.20,
+        "pending_async_codex_outcome_event": 0.20,
         "pending_async_memory_feature_event": 0.20,
         "same_session_event": 0.45,
         "same_session_memory_feature_event": 0.35,
@@ -1409,6 +1414,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_summary": 0.45,
                 "profile_compression": 0.45,
                 "cross_session_compression": 0.40,
+                "pending_async_codex_outcome_event": 0.10,
                 "pending_async_memory_feature_event": 0.55,
                 "same_session_event": 0.25,
                 "same_session_memory_feature_event": 0.55,
@@ -1450,6 +1456,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_summary": 0.40,
                 "profile_compression": 0.40,
                 "cross_session_compression": 0.35,
+                "pending_async_codex_outcome_event": 0.15,
                 "pending_async_memory_feature_event": 0.50,
                 "same_session_event": 0.25,
                 "same_session_memory_feature_event": 0.50,
@@ -13482,7 +13489,12 @@ class MatrixArkLocalAdapter:
         selected_pending_async_refs = [
             item
             for item in selected
-            if candidate_memory_layer_name(item) == "pending_async_event"
+            if candidate_memory_layer_name(item)
+            in {
+                "pending_async_event",
+                "pending_async_codex_outcome_event",
+                "pending_async_memory_feature_event",
+            }
             or str(item.get("extraction_phase") or "").strip().lower() == "pending_async"
         ]
         selected_pending_async_summary = {

@@ -5235,6 +5235,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("memory_selection_policy", "selected_tool_evidence_only"),
             context_index_name("source_type", "message"),
             context_index_name("profile_memory_kind", "codex_outcome"),
+            context_index_name("memory_layer", "pending_async_codex_outcome_event"),
             context_index_name("memory_layer", "same_session_codex_outcome_event"),
             context_index_name("memory_layer", "cross_session_codex_outcome_event"),
             context_index_name("memory_layer", "same_session_codex_outcome_segment"),
@@ -5261,6 +5262,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("memory_selection_policy", "selected_tool_evidence_only"),
             context_index_name("memory_selection_policy", "selected_assistant_decision_outcome_only"),
             context_index_name("profile_memory_kind", "codex_outcome"),
+            context_index_name("memory_layer", "pending_async_codex_outcome_event"),
             context_index_name("memory_layer", "same_session_codex_outcome_event"),
             context_index_name("memory_layer", "cross_session_codex_outcome_event"),
             context_index_name("memory_layer", "same_session_codex_outcome_segment"),
@@ -5281,6 +5283,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("event_type", "tool_evidence"),
             context_index_name("source_role", "tool"),
             context_index_name("profile_memory_kind", "codex_outcome"),
+            context_index_name("memory_layer", "pending_async_codex_outcome_event"),
             context_index_name("memory_layer", "same_session_codex_outcome_event"),
             context_index_name("memory_layer", "cross_session_codex_outcome_event"),
             context_index_name("memory_layer", "same_session_codex_outcome_segment"),
@@ -7071,6 +7074,8 @@ def candidate_memory_layer_name(candidate: Json) -> str:
         if is_pending_async_candidate(candidate):
             if is_memory_feature_memory:
                 return "pending_async_memory_feature_event"
+            if is_codex_outcome_memory:
+                return "pending_async_codex_outcome_event"
             return "pending_async_event"
         if is_memory_feature_memory and session_continuity == "same_session":
             return "same_session_memory_feature_event"
