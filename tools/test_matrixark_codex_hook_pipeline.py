@@ -411,6 +411,32 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("selected_user_profile_fact", metadata["policies"])
         self.assertEqual(1, metadata["policy_counts"]["selected_user_profile_fact"])
 
+    def test_assistant_standing_workspace_response_gets_profile_fact_policy(self) -> None:
+        text = "Going forward, I'll use the Ubuntu TemporalStore repo and avoid Windows folders for builds."
+        selected = matrixark_codex_hook.selected_assistant_memory_text(text)
+        metadata = matrixark_codex_hook.codex_memory_selection_metadata(
+            role="assistant",
+            event="Stop",
+            text=selected,
+            original_text=text,
+        )
+
+        self.assertIn("Ubuntu TemporalStore repo", selected)
+        self.assertIn("selected_assistant_profile_fact", metadata["policies"])
+        self.assertEqual(1, metadata["policy_counts"]["selected_assistant_profile_fact"])
+        entities = matrixark_mcp_core.extract_batch_entities(
+            [{"role": "assistant", "content": selected}],
+            {"source_event_ids": ["assistant_profile_fact_event"]},
+        )
+        profile_entities = [
+            entity
+            for entity in entities
+            if entity.get("entity_type") == "workspace_profile"
+            and "Ubuntu TemporalStore repo" in str(entity.get("state") or "")
+        ]
+        self.assertTrue(profile_entities, entities)
+        self.assertEqual(["assistant_profile_fact_event"], profile_entities[0]["source_refs"])
+
     def test_codex_async_ingest_messages_carry_selection_metadata(self) -> None:
         args = Namespace(session_commit_threshold=20, idle_commit_timeout_ms=120000)
         text = "Always use the Ubuntu TemporalStore repo and never use Windows folders for builds."
