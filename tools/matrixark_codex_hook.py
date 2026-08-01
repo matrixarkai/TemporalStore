@@ -4820,6 +4820,13 @@ def fast_async_hook_ingest(
             "source_profile_memory_classes": ["memory_feature"],
             "source_profile_memory_kinds": ["memory_feature"],
         }
+    elif normalize_message_role(role) in {"assistant", "tool"}:
+        profile_memory_fields = {
+            "profile_memory_class": "codex_outcome",
+            "profile_memory_kind": "codex_outcome",
+            "source_profile_memory_classes": ["codex_outcome"],
+            "source_profile_memory_kinds": ["codex_outcome"],
+        }
     metadata: Json = codex_hook_metadata(
         source="codex_hook_fast_async",
         event=event_name,
