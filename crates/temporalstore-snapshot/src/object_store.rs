@@ -19,6 +19,9 @@ pub enum ObjectStoreError {
 #[async_trait]
 pub trait ObjectStore: Send + Sync {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError>;
+    async fn append_blob(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+        self.put(key, bytes).await
+    }
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError>;
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError>;
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError>;
@@ -76,6 +79,30 @@ impl ObjectStore for FileObjectStore {
             }
         }
         let mut file = tokio::fs::File::create(path).await?;
+        file.write_all(&bytes).await?;
+        file.flush().await?;
+        Ok(())
+    }
+
+    async fn append_blob(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+        let path = self.resolve(key)?;
+        if let Some(parent) = path.parent() {
+            let should_create = {
+                let mut created = self
+                    .created_dirs
+                    .lock()
+                    .expect("object-store dir cache poisoned");
+                created.insert(parent.to_path_buf())
+            };
+            if should_create {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+        }
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .await?;
         file.write_all(&bytes).await?;
         file.flush().await?;
         Ok(())
@@ -140,4 +167,29 @@ async fn collect_files(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn file_object_store_append_blob_preserves_existing_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileObjectStore::new(dir.path());
+
+        store
+            .append_blob("wal/blob.pb", Bytes::from_static(b"first"))
+            .await
+            .unwrap();
+        store
+            .append_blob("wal/blob.pb", Bytes::from_static(b"second"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.get("wal/blob.pb").await.unwrap(),
+            Bytes::from_static(b"firstsecond")
+        );
+    }
 }

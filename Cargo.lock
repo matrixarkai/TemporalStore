@@ -721,6 +721,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "matrixobjectstore-rs"
+version = "0.1.0"
+source = "git+https://github.com/bjmeetsfo/MatrixObjectStore.git?rev=242fb3f1e4d628b456547a6bf154caf257b65f75#242fb3f1e4d628b456547a6bf154caf257b65f75"
+
+[[package]]
 name = "matrixraft"
 version = "0.1.0"
 source = "git+https://github.com/bjmeetsfo/MatrixRaft.git?rev=b535783614e742560063a2dc136abb2e6315d899#b535783614e742560063a2dc136abb2e6315d899"
@@ -1287,6 +1292,7 @@ dependencies = [
  "bytes",
  "hex",
  "matrixcache",
+ "matrixobjectstore-rs",
  "matrixraft",
  "prost",
  "protoc-bin-vendored",
