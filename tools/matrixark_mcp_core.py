@@ -148,6 +148,9 @@ DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO = float(os.environ.get("MATRIXARK_C
 DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_BROAD_BUDGET_RATIO", "0.15"))
 DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_BUDGET_RATIO", "0.30"))
 DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS", "8192"))
+DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS = int(
+    os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS", "16384")
+)
 DEFAULT_CROSS_SESSION_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_SESSIONS", "3"))
 DEFAULT_CROSS_SESSION_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_CANDIDATES", "24"))
 DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS", "2"))
@@ -5483,7 +5486,11 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     default_max_budget_ratio = DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO if profile_memory_query else DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO
     max_budget_ratio = max(0.0, min(1.0, float(config.get("max_budget_ratio", default_max_budget_ratio))))
     budget_ratio = float_arg(config, "budget_ratio", min(default_ratio, max_budget_ratio), minimum=0.0, maximum=max_budget_ratio)
-    max_budget_default = DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS
+    max_budget_default = (
+        DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS
+        if profile_memory_query
+        else DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS
+    )
     max_budget_tokens = integer_arg(config, "max_budget_tokens", max_budget_default, minimum=0)
     ratio_budget_cap = int(remote_budget_tokens * max_budget_ratio) if max_budget_ratio > 0 else 0
     max_budget_cap = max_budget_tokens if max_budget_tokens > 0 else remote_budget_tokens
