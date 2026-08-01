@@ -436,6 +436,33 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         ]
         self.assertTrue(profile_entities, entities)
         self.assertEqual(["assistant_profile_fact_event"], profile_entities[0]["source_refs"])
+        assistant_only_entity_types = {
+            entity.get("entity_type")
+            for entity in entities
+            if entity.get("source_roles") == ["assistant"]
+        }
+        self.assertNotIn("current_plan", assistant_only_entity_types)
+        self.assertNotIn("job_status", assistant_only_entity_types)
+
+    def test_user_goal_still_extracts_current_plan_after_assistant_profile_cleanup(self) -> None:
+        entities = matrixark_mcp_core.extract_batch_entities(
+            [
+                {
+                    "role": "user",
+                    "content": "Goal: implement VikingMem-style profile memory retrieval for TemporalStore.",
+                }
+            ],
+            {"source_event_ids": ["user_goal_event"]},
+        )
+
+        plans = [
+            entity
+            for entity in entities
+            if entity.get("entity_type") == "current_plan"
+            and "VikingMem-style profile memory retrieval" in str(entity.get("state") or "")
+        ]
+        self.assertTrue(plans, entities)
+        self.assertEqual(["user"], plans[0]["source_roles"])
 
     def test_codex_async_ingest_messages_carry_selection_metadata(self) -> None:
         args = Namespace(session_commit_threshold=20, idle_commit_timeout_ms=120000)

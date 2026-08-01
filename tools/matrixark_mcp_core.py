@@ -2799,6 +2799,26 @@ def feature_scope_excludes_outcome_evidence(text: str) -> bool:
     return bool(FEATURE_SCOPE_EXCLUSION_RE.search(str(text or "").lower())) and profile_entity_type_for_memory_text(text) == "memory_feature_profile"
 
 
+def assistant_profile_fact_memory_text(text: str) -> bool:
+    """Detect assistant confirmations that should refine profile memory, not session plans."""
+    compact = " ".join(str(text or "").lower().split())
+    if not compact:
+        return False
+    if not re.search(
+        r"\b(?:going forward|from now on|noted|got it|understood|remembered|i(?:'ll| will)?|codex will|assistant will)\b",
+        compact,
+    ):
+        return False
+    if profile_entity_type_for_memory_text(compact):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:remember|keep|use|follow|prefer|avoid|stop using|not use|always use|make sure)\b",
+            compact,
+        )
+    )
+
+
 def normalized_extraction_message_role(role: Any) -> str:
     role_name = str(role or "").strip().lower()
     return {
@@ -3055,6 +3075,19 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
             "source_role_counts": role_counts,
         }
 
+    def assistant_profile_fact_only_lineage(lineage: Json) -> bool:
+        roles = set(lineage.get("source_roles") or [])
+        if roles != {"assistant"}:
+            return False
+        lineage_refs = {str(ref) for ref in lineage.get("source_refs") or []}
+        for index, item in assistant_message_items:
+            ref = source_ref_for_message_index(index)
+            if lineage_refs and ref not in lineage_refs:
+                continue
+            if assistant_profile_fact_memory_text(str(item.get("content") or "")):
+                return True
+        return False
+
     user_messages = [
         item
         for item in messages
@@ -3266,6 +3299,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
             break
         for match in re.finditer(pattern, profile_pattern_text, re.IGNORECASE):
             value = " ".join(match.group(1).split()).strip(" :-") if match.groups() else ""
+            lineage = source_lineage_for_match(match.group(0))
             if entity_type == "confirmation" and not envelope.get("context_pack_id") and not profile_pattern_lower.strip() in {
                 "yes",
                 "yes.",
@@ -3277,9 +3311,19 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 continue
             if feature_scope_memory_only and entity_type in {"relationship", "location", "job_status", "family_profile"}:
                 continue
+            if assistant_profile_fact_only_lineage(lineage) and entity_type in {
+                "relationship",
+                "location",
+                "job_status",
+                "family_profile",
+                "current_plan",
+                "confirmation",
+                "approval_state",
+                "correction",
+            }:
+                continue
             entity_name = canonical_entity_name(entity_type, value)
             field_patches = infer_entity_field_patches(entity_type, value, profile_pattern_text)
-            lineage = source_lineage_for_match(match.group(0))
             entities.append(
                 {
                     "entity_type": entity_type,
