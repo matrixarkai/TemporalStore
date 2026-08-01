@@ -16,9 +16,9 @@ use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{json_response, parse_json, post_json, serve, HttpRequest};
 use temporalstore_rust::ingestion::{FlinkCheckpointStatus, IngestionBatchRequest};
 use temporalstore_rust::meta::{
-    AckResponse, GetTableTopologyRequest, LoadFinishRequest, PartitionLoad,
-    RegisterServerRequest, RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest,
-    ServerHeartbeatResponse, ShardLoad, ShardSnapshotRef, TableTopologyResponse,
+    AckResponse, GetTableTopologyRequest, LoadFinishRequest, PartitionLoad, RegisterServerRequest,
+    RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest, ServerHeartbeatResponse,
+    ShardLoad, ShardSnapshotRef, TableTopologyResponse,
 };
 use temporalstore_rust::raft::{
     DataRaftCommittedLogApplier, DataRaftReadMode, DataRaftReadPolicy, RaftReplicaBootstrapPlan,
@@ -36,10 +36,9 @@ use temporalstore_rust::{
     LoadShardRequest, MembershipUpdateRequest, ProductionRaftEngineKind, ProductionRaftNode,
     ProductionRaftRuntime, ProductionRaftRuntimeOptions, RaftConfig, RaftControlLeadershipRequest,
     RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions,
-    RaftTransport, RequestController, ScanStreamRequest,
-    SchedulerLifecycleToken, SetConfigRequest, SlotDumpManifest, StorageCacheInvalidateSlotRequest,
-    StorageLifecycleRequest, StorageProductionReadinessRequest, StreamReadRequest,
-    UnloadShardRequest,
+    RequestController, ScanStreamRequest, SchedulerLifecycleToken, SetConfigRequest,
+    SlotDumpManifest, StorageCacheInvalidateSlotRequest, StorageLifecycleRequest,
+    StorageProductionReadinessRequest, StreamReadRequest, UnloadShardRequest,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 
@@ -1467,36 +1466,6 @@ fn handle_server_raft_route(
                 },
             };
             json_response(200, &response)
-        }
-        ("POST", "/raft/admin/catch_up") => {
-            if !state.local_admin_enabled {
-                return Some(json_response(
-                    403,
-                    &Status::error("forbidden", "local admin disabled"),
-                ));
-            }
-            match parse_json::<RaftAdminCatchUpRequest>(&request.body) {
-                Ok(req) => {
-                    let cluster = state.runtime.cluster();
-                    let status = cluster
-                        .build_install_snapshot_request(req.node_id)
-                        .and_then(|snapshot| {
-                            let response = state.runtime.transport().install_snapshot(snapshot)?;
-                            if response.success {
-                                cluster.catch_up(req.node_id)
-                            } else {
-                                Err(temporalstore_rust::RaftError::Transport(format!(
-                                    "snapshot install rejected by node {}: {:?}",
-                                    req.node_id, response.reject_reason
-                                )))
-                            }
-                        })
-                        .map(|_| Status::ok())
-                        .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
-                    json_response(200, &RaftAdminLivenessResponse { status })
-                }
-                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
-            }
         }
         ("POST", "/raft/admin/bootstrap_external_snapshot") => {
             if !state.local_admin_enabled {

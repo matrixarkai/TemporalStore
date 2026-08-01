@@ -275,8 +275,7 @@ fn main() {
     initialize_liveness(&nodes);
 
     elect_leader(&nodes[0], nodes[0].node_id);
-    catch_up_peer_with_local_fallback(&nodes[0], restarted_secondary, Some(restarted_node));
-    local_catch_up(restarted_node, restarted_secondary);
+    wait_for_local_catch_up(restarted_node, restarted_secondary);
     let _restart_catchup_trigger =
         propose(&nodes[0], "secondary-restart-catchup-trigger", "v-catchup");
     wait_for_value(
@@ -287,8 +286,7 @@ fn main() {
     );
     writes.push(propose(&nodes[0], "secondary-after-restart", "v4"));
     elect_leader(&nodes[0], nodes[0].node_id);
-    catch_up_peer_with_local_fallback(&nodes[0], restarted_secondary, Some(restarted_node));
-    local_catch_up(restarted_node, restarted_secondary);
+    wait_for_local_catch_up(restarted_node, restarted_secondary);
 
     let mut reads_after_restart = Vec::new();
     for node in &nodes {
@@ -325,8 +323,7 @@ fn main() {
     wait_for_value(&nodes[2], 3, "secondary-before-stop", "v2");
     wait_for_value(&nodes[2], 3, "membership-scale-down", "v-scale-down");
     writes.push(propose(&nodes[0], "membership-scale-up", "v-scale-up"));
-    catch_up_peer_with_local_fallback(&nodes[0], 3, Some(&nodes[2]));
-    local_catch_up(&nodes[2], 3);
+    wait_for_local_catch_up(&nodes[2], 3);
     for node in &nodes {
         wait_for_value(node, node.node_id, "membership-scale-up", "v-scale-up");
     }
@@ -673,8 +670,7 @@ fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
         .iter()
         .filter(|node| node.node_id != leader.node_id && node.node_id != isolated_node)
     {
-        catch_up_peer_with_local_fallback(leader, follower.node_id, Some(follower));
-        local_catch_up(follower, follower.node_id);
+        wait_for_local_catch_up(follower, follower.node_id);
     }
 
     for majority in nodes.iter().filter(|node| node.node_id != isolated_node) {
@@ -719,8 +715,7 @@ fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
     for node in nodes {
         elect_leader(node, leader.node_id);
     }
-    catch_up_peer_with_local_fallback(leader, isolated_node, Some(isolated));
-    local_catch_up(isolated, isolated_node);
+    wait_for_local_catch_up(isolated, isolated_node);
     let healed_read = wait_for_value(isolated, isolated_node, "partition-majority", "v-partition");
     PartitionSummary {
         isolated_node,
@@ -773,8 +768,7 @@ fn run_lagging_follower_phase(nodes: &[ProductionRaftNode]) -> LaggingFollowerSu
     for node in nodes {
         elect_leader(node, leader.node_id);
     }
-    catch_up_peer_with_local_fallback(leader, follower_node, Some(follower));
-    local_catch_up(follower, follower_node);
+    wait_for_local_catch_up(follower, follower_node);
     let catchup_reads = (0..3)
         .map(|index| {
             wait_for_value(
@@ -804,8 +798,7 @@ fn run_network_vote_phase(
     for node in nodes {
         elect_leader(node, leader.node_id);
         if node.node_id != leader.node_id {
-            catch_up_peer_with_local_fallback(leader, node.node_id, Some(node));
-            local_catch_up(node, node.node_id);
+            wait_for_local_catch_up(node, node.node_id);
         }
     }
 
@@ -980,8 +973,7 @@ fn run_rolling_restart_phase(
         }
         if restarted_node_id != active_leader_id {
             elect_leader(active_leader, active_leader_id);
-            catch_up_peer_with_local_fallback(active_leader, restarted_node_id, Some(restarted));
-            local_catch_up(restarted, restarted_node_id);
+            wait_for_local_catch_up(restarted, restarted_node_id);
         }
 
         let key = format!("rolling-restart-{restarted_node_id}");
@@ -989,8 +981,7 @@ fn run_rolling_restart_phase(
         let write = propose(active_leader, &key, &value);
         for follower in nodes.iter().filter(|node| node.node_id != active_leader_id) {
             elect_leader(active_leader, active_leader_id);
-            catch_up_peer_with_local_fallback(active_leader, follower.node_id, Some(follower));
-            local_catch_up(follower, follower.node_id);
+            wait_for_local_catch_up(follower, follower.node_id);
         }
         for node in nodes {
             reads_after_each_restart.push(wait_for_value(node, node.node_id, &key, &value));
@@ -998,8 +989,7 @@ fn run_rolling_restart_phase(
         writes_after_each_restart.push(write);
 
         if restarting_active_leader && active_leader_id != leader_node_id {
-            catch_up_peer_with_local_fallback(active_leader, leader_node_id, Some(original_leader));
-            local_catch_up(original_leader, leader_node_id);
+            wait_for_local_catch_up(original_leader, leader_node_id);
             for node in nodes {
                 elect_leader(node, leader_node_id);
             }
@@ -1237,65 +1227,22 @@ fn elect_leader(node: &ProductionRaftNode, leader_id: RaftNodeId) {
     );
 }
 
-fn catch_up_peer_with_local_fallback(
-    leader: &ProductionRaftNode,
-    node_id: RaftNodeId,
-    local_target: Option<&ProductionRaftNode>,
-) {
+fn wait_for_local_catch_up(node: &ProductionRaftNode, node_id: RaftNodeId) {
     let mut last_status = None;
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut retry_sleep_ms = 50;
     while Instant::now() < deadline {
-        let response: AdminLivenessResponse = loop {
-            match post_json_with_options(
-                &leader.addr,
-                "/raft/admin/catch_up",
-                &AdminCatchUpRequest { node_id },
-                request_options(),
-            ) {
-                Ok(response) => break response,
-                Err(err) => {
-                    assert!(
-                        Instant::now() < deadline,
-                        "catch-up admin request to node {} for peer {} failed: {:?}",
-                        leader.node_id,
-                        node_id,
-                        err
-                    );
-                    thread::sleep(Duration::from_millis(50));
-                }
-            }
-        };
-        if response.status.ok {
-            return;
+        match local_catch_up_status(node, node_id) {
+            Ok(status) if status.ok => return,
+            Ok(status) => last_status = Some(status),
+            Err(err) => last_status = Some(Status::error("raft_error", err)),
         }
-        let stale_term = response.status.message.contains("stale_term");
-        let transient_transport = response.status.message.contains("raft transport error")
-            || response
-                .status
-                .message
-                .contains("Resource temporarily unavailable")
-            || response.status.message.contains("timed out")
-            || response.status.message.contains("connection refused");
-        last_status = Some(response.status);
-        if !(stale_term || transient_transport) {
-            break;
-        }
-        if let Some(target) = local_target {
-            if let Ok(status) = local_catch_up_status(target, target.node_id) {
-                if status.ok {
-                    return;
-                }
-                last_status = Some(status);
-            }
-        }
-        elect_leader(leader, leader.node_id);
         thread::sleep(Duration::from_millis(retry_sleep_ms));
         retry_sleep_ms = (retry_sleep_ms * 2).min(500);
     }
     panic!(
-        "catch-up admin request failed: {:?}",
-        last_status.expect("catch-up should have produced a status")
+        "local catch-up admin request failed: {:?}",
+        last_status.expect("local catch-up should have produced a status")
     );
 }
 
@@ -1363,7 +1310,7 @@ fn wait_for_surviving_apply_health(leader: &ProductionRaftNode, survivors: &[Pro
     loop {
         for node in survivors {
             if node.node_id != leader.node_id {
-                catch_up_peer_with_local_fallback(leader, node.node_id, Some(node));
+                wait_for_local_catch_up(node, node.node_id);
             }
         }
         for observer in survivors {
