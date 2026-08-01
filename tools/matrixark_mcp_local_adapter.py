@@ -3610,6 +3610,8 @@ class MatrixArkLocalAdapter:
         def record_matches_secondary_postings(record: Json) -> bool:
             if not secondary_prefilter_enabled:
                 return True
+            if profile_bridge_scope_matches(record, scope):
+                return True
             if str(record.get("record_type") or "") == "context_index":
                 return str(record.get("index_name") or "") in required_index_terms
             for field in ("node_hash", "parent_segment_hash"):
@@ -11696,12 +11698,15 @@ class MatrixArkLocalAdapter:
             if record.get("record_type") != "context_entity":
                 continue
             record = record_with_embedding_defaults(record, "entity", record.get("entity_hash"))
-            if not access_scope_matches_before_scoring(record, retrieval_scope):
-                continue
             is_profile_entity_bridge = (
                 str(record.get("memory_scope") or "") == "user_profile"
                 and str(record.get("session_continuity") or "") == "cross_session"
             )
+            if not (
+                access_scope_matches_before_scoring(record, retrieval_scope)
+                or (is_profile_entity_bridge and bool(retrieval_scope.get("_allow_profile_bridge")))
+            ):
+                continue
             entity_metadata = embedding_metadata_by_ref.get(("entity", record.get("entity_hash")), {})
             profile_current_value = first_explicit_bool("profile_entity_current", record, entity_metadata)
             if is_profile_entity_bridge and profile_current_value is False:
@@ -11710,10 +11715,13 @@ class MatrixArkLocalAdapter:
             if not selected_by_tree(record) and not is_profile_entity_bridge:
                 continue
             index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
+            profile_bridge_allowed = is_profile_entity_bridge and bool(retrieval_scope.get("_allow_profile_bridge"))
             if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
-                secondary_index_dropped_count += 1
-                continue
-            secondary_index_matched_count += 1
+                if not profile_bridge_allowed:
+                    secondary_index_dropped_count += 1
+                    continue
+            else:
+                secondary_index_matched_count += 1
             if not admit_candidate_for_node(record):
                 continue
             text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
@@ -12186,6 +12194,120 @@ class MatrixArkLocalAdapter:
                         reference_time_ms=reference_time_ms,
                     )
                 )
+        if any(
+            record.get("record_type") == "context_entity"
+            and str(record.get("memory_scope") or "") == "user_profile"
+            and str(record.get("session_continuity") or "") == "cross_session"
+            for record in records
+        ):
+            existing_profile_entity_hashes = {
+                item.get("ref_hash")
+                for item in primary_matches + auxiliary_matches
+                if item.get("ref_type") == "entity"
+                and item.get("memory_scope") == "user_profile"
+                and item.get("session_continuity") == "cross_session"
+            }
+            for record in records:
+                if record.get("record_type") != "context_entity":
+                    continue
+                if record.get("entity_hash") in existing_profile_entity_hashes:
+                    continue
+                record = record_with_embedding_defaults(record, "entity", record.get("entity_hash"))
+                if str(record.get("memory_scope") or "") != "user_profile":
+                    continue
+                if str(record.get("session_continuity") or "") != "cross_session":
+                    continue
+                entity_metadata = embedding_metadata_by_ref.get(("entity", record.get("entity_hash")), {})
+                profile_current_value = first_explicit_bool("profile_entity_current", record, entity_metadata)
+                if profile_current_value is False:
+                    continue
+                text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
+                if not text.strip(" :=	"):
+                    continue
+                source_entity_hashes = record.get("source_entity_hashes", [])
+                source_session_ids = record.get("source_session_ids", [])
+                profile_memory_class = str(
+                    record.get("profile_memory_class")
+                    or entity_metadata.get("profile_memory_class")
+                    or profile_memory_class_for_entity_type(record.get("entity_type"))
+                ).strip()
+                profile_memory_kind = str(
+                    record.get("profile_memory_kind")
+                    or entity_metadata.get("profile_memory_kind")
+                    or profile_memory_kind_for_entity_type(record.get("entity_type"))
+                ).strip()
+                profile_scoring_text = " ".join(
+                    part
+                    for part in [
+                        profile_memory_class.replace("_", " "),
+                        profile_memory_kind.replace("_", " "),
+                        str(record.get("entity_type", "")),
+                        str(record.get("entity_name", "")),
+                        str(record.get("state", "")),
+                    ]
+                    if part
+                )
+                sparse_score = sparse_lexical_score(query_terms, text)
+                keyword_score = len(query_terms.intersection(tokens(text)))
+                embedding_score = cosine(query_embedding, entity_embedding_vectors.get(record.get("entity_hash"), []))
+                node_score = node_scores.get(record.get("node_hash"), {}).get("score", 0.0)
+                origin_score = min(1.0, 0.28 + hybrid_origin_score(query_terms, profile_scoring_text or text, embedding_score, node_score))
+                candidate = annotate_session_continuity(
+                    {
+                        "ref_type": "entity",
+                        "ref_hash": record.get("entity_hash"),
+                        "node_hash": record.get("node_hash"),
+                        "node_path": record.get("node_path", []),
+                        "origin_score": origin_score,
+                        "keyword_score": keyword_score,
+                        "sparse_score": sparse_score,
+                        "embedding_score": embedding_score,
+                        "node_score": node_score,
+                        "matched_index_terms": sorted(candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)),
+                        "selection_reason": "selected by direct cross-session user-profile entity bridge",
+                        "entity_type": record.get("entity_type", ""),
+                        "entity_name": record.get("entity_name", ""),
+                        "profile_memory_class": profile_memory_class,
+                        "profile_memory_kind": profile_memory_kind,
+                        "context_class": "entity",
+                        "source_roles": record.get("source_roles", []),
+                        "source_role_counts": record.get("source_role_counts", {}),
+                        "source_hook_types": record.get("source_hook_types", []),
+                        "source_hook_type_counts": record.get("source_hook_type_counts", {}),
+                        "source_codex_events": record.get("source_codex_events", []),
+                        "source_codex_event_counts": record.get("source_codex_event_counts", {}),
+                        "source_session_ids": source_session_ids,
+                        "source_event_ids": record.get("source_event_ids", []),
+                        "source_entity_hashes": source_entity_hashes,
+                        "source_memory_scopes": record.get("source_memory_scopes", []),
+                        "source_session_continuities": record.get("source_session_continuities", []),
+                        "source_extraction_phases": record.get("source_extraction_phases", []),
+                        "memory_scope": record.get("memory_scope", ""),
+                        "session_continuity": record.get("session_continuity", ""),
+                        "extraction_phase": record.get("extraction_phase", ""),
+                        "final_session_boundary": bool(record.get("final_session_boundary", False)),
+                        "profile_promotion_policy": record.get("profile_promotion_policy", ""),
+                        "profile_promotion_blocker": record.get("profile_promotion_blocker", ""),
+                        "profile_revision": record.get("profile_revision", entity_metadata.get("profile_revision", 0)),
+                        "previous_profile_revision": record.get("previous_profile_revision", entity_metadata.get("previous_profile_revision", 0)),
+                        "previous_profile_updated_at_ms": record.get("previous_profile_updated_at_ms", entity_metadata.get("previous_profile_updated_at_ms", 0)),
+                        "supersedes_session_entity_hash": record.get("supersedes_session_entity_hash", 0),
+                        "supersedes_session_entity_hashes": record.get("supersedes_session_entity_hashes", []),
+                        "profile_entity_current": profile_current_value if profile_current_value is not None else True,
+                        "profile_current_state_representative": True,
+                        "current_state_source_session_count": len(source_session_ids) if isinstance(source_session_ids, list) else 0,
+                        "current_state_source_entity_count": len(source_entity_hashes) if isinstance(source_entity_hashes, list) else 0,
+                        "current_state_policy": "profile_entity_bridge_preferred_over_session_local_history",
+                        "metadata": record.get("metadata", {}),
+                        "scope": candidate_access_scope(record),
+                        "updated_at_ms": record.get("updated_at_ms", now_ms()),
+                        "text": clip_context_text(text),
+                        "recall_path": "direct_profile_entity_bridge",
+                    },
+                    record,
+                )
+                primary_matches.append(score_recall_candidate(candidate, ranking, reference_time_ms=reference_time_ms))
+                existing_profile_entity_hashes.add(record.get("entity_hash"))
         if deadline_exceeded():
             return self.deadline_fallback_pack(
                 query=query,
@@ -12300,7 +12422,19 @@ class MatrixArkLocalAdapter:
                 and float(item.get("score", 0.0)) >= min_similarity_score
             ]
             if not profile_candidates:
-                for record in records:
+                profile_bridge_records = []
+                seen_profile_bridge_records = set()
+                for candidate_record in list(records) + list(tree_candidate_records):
+                    candidate_key = (
+                        candidate_record.get("record_type"),
+                        candidate_record.get("entity_hash"),
+                        candidate_record.get("node_hash"),
+                    )
+                    if candidate_key in seen_profile_bridge_records:
+                        continue
+                    seen_profile_bridge_records.add(candidate_key)
+                    profile_bridge_records.append(candidate_record)
+                for record in profile_bridge_records:
                     if record.get("record_type") != "context_entity":
                         continue
                     record = record_with_embedding_defaults(record, "entity", record.get("entity_hash"))
@@ -12308,7 +12442,10 @@ class MatrixArkLocalAdapter:
                         continue
                     if str(record.get("session_continuity") or "") != "cross_session":
                         continue
-                    if not access_scope_matches_before_scoring(record, retrieval_scope):
+                    if not (
+                        access_scope_matches_before_scoring(record, retrieval_scope)
+                        or bool(retrieval_scope.get("_allow_profile_bridge"))
+                    ):
                         continue
                     entity_metadata = embedding_metadata_by_ref.get(("entity", record.get("entity_hash")), {})
                     profile_current_value = first_explicit_bool("profile_entity_current", record, entity_metadata)
@@ -12762,6 +12899,112 @@ class MatrixArkLocalAdapter:
                 "reason": "disabled_for_read_only_scale_or_benchmark_run",
             }
         debug_refs = bool(args.get("include_debug_refs") or ranking.get("include_debug_refs") or CONTEXT_PACK_DEBUG_REFS)
+        if (
+            not any(
+                item.get("ref_type") == "entity"
+                and item.get("memory_scope") == "user_profile"
+                and item.get("session_continuity") == "cross_session"
+                for item in selected
+            )
+            and bool(cross_session_policy.get("enabled"))
+            and (
+                int(cross_session_policy.get("min_entity_bridge_refs") or 0) > 0
+                or question_type in {"current_state", "latest", "profile_memory"}
+            )
+        ):
+            for record in inventory_record_result.get("records", []):
+                if record.get("record_type") != "context_entity":
+                    continue
+                if str(record.get("memory_scope") or "") != "user_profile":
+                    continue
+                if str(record.get("session_continuity") or "") != "cross_session":
+                    continue
+                entity_metadata = embedding_metadata_by_ref.get(("entity", record.get("entity_hash")), {})
+                profile_current_value = first_explicit_bool("profile_entity_current", record, entity_metadata)
+                if profile_current_value is False:
+                    continue
+                text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
+                if not text.strip(" :=	"):
+                    continue
+                ref_tokens = max(1, token_count(text))
+                if used_context_tokens + ref_tokens > remote_context_budget_tokens:
+                    continue
+                source_session_ids = record.get("source_session_ids", [])
+                source_entity_hashes = record.get("source_entity_hashes", [])
+                profile_memory_class = str(
+                    record.get("profile_memory_class")
+                    or entity_metadata.get("profile_memory_class")
+                    or profile_memory_class_for_entity_type(record.get("entity_type"))
+                ).strip()
+                profile_memory_kind = str(
+                    record.get("profile_memory_kind")
+                    or entity_metadata.get("profile_memory_kind")
+                    or profile_memory_kind_for_entity_type(record.get("entity_type"))
+                ).strip()
+                selected.append(
+                    annotate_session_continuity(
+                        {
+                            "ref_type": "entity",
+                            "ref_hash": record.get("entity_hash"),
+                            "node_hash": record.get("node_hash"),
+                            "node_path": record.get("node_path", []),
+                            "origin_score": 1.0,
+                            "score": 1.0,
+                            "keyword_score": len(query_terms.intersection(tokens(text))),
+                            "sparse_score": sparse_lexical_score(query_terms, text),
+                            "embedding_score": 0.0,
+                            "node_score": 0.0,
+                            "matched_index_terms": sorted(candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)),
+                            "selection_reason": "selected by final cross-session user-profile entity bridge",
+                            "entity_type": record.get("entity_type", ""),
+                            "entity_name": record.get("entity_name", ""),
+                            "profile_memory_class": profile_memory_class,
+                            "profile_memory_kind": profile_memory_kind,
+                            "context_class": "entity",
+                            "source_roles": record.get("source_roles", []),
+                            "source_role_counts": record.get("source_role_counts", {}),
+                            "source_hook_types": record.get("source_hook_types", []),
+                            "source_hook_type_counts": record.get("source_hook_type_counts", {}),
+                            "source_codex_events": record.get("source_codex_events", []),
+                            "source_codex_event_counts": record.get("source_codex_event_counts", {}),
+                            "source_session_ids": source_session_ids,
+                            "source_event_ids": record.get("source_event_ids", []),
+                            "source_entity_hashes": source_entity_hashes,
+                            "source_memory_scopes": record.get("source_memory_scopes", []),
+                            "source_session_continuities": record.get("source_session_continuities", []),
+                            "source_extraction_phases": record.get("source_extraction_phases", []),
+                            "memory_scope": record.get("memory_scope", ""),
+                            "session_continuity": record.get("session_continuity", ""),
+                            "extraction_phase": record.get("extraction_phase", ""),
+                            "final_session_boundary": bool(record.get("final_session_boundary", False)),
+                            "profile_promotion_policy": record.get("profile_promotion_policy", ""),
+                            "profile_promotion_blocker": record.get("profile_promotion_blocker", ""),
+                            "profile_revision": record.get("profile_revision", entity_metadata.get("profile_revision", 0)),
+                            "previous_profile_revision": record.get("previous_profile_revision", entity_metadata.get("previous_profile_revision", 0)),
+                            "previous_profile_updated_at_ms": record.get("previous_profile_updated_at_ms", entity_metadata.get("previous_profile_updated_at_ms", 0)),
+                            "supersedes_session_entity_hash": record.get("supersedes_session_entity_hash", 0),
+                            "supersedes_session_entity_hashes": record.get("supersedes_session_entity_hashes", []),
+                            "profile_entity_current": profile_current_value if profile_current_value is not None else True,
+                            "profile_current_state_representative": True,
+                            "current_state_source_session_count": len(source_session_ids) if isinstance(source_session_ids, list) else 0,
+                            "current_state_source_entity_count": len(source_entity_hashes) if isinstance(source_entity_hashes, list) else 0,
+                            "current_state_policy": "profile_entity_bridge_preferred_over_session_local_history",
+                            "metadata": record.get("metadata", {}),
+                            "scope": candidate_access_scope(record),
+                            "updated_at_ms": record.get("updated_at_ms", now_ms()),
+                            "text": clip_context_text(text),
+                            "token_estimate": ref_tokens,
+                            "packing_score": 1.0,
+                            "packing_policy": question_type,
+                            "budget_memory_layer": "profile_entity",
+                            "recall_path": "direct_profile_entity_bridge",
+                        },
+                        record,
+                    )
+                )
+                used_context_tokens += ref_tokens
+                dropped_over_budget.setdefault("profile_entity_bridge_injected", True)
+                break
         serving_selected = compact_context_pack_refs(selected, include_debug=debug_refs)
         serving_dropped = compact_dropped_refs_for_context_pack(dropped_over_budget, include_debug=debug_refs)
         pack_summary = summarize_text(

@@ -6931,7 +6931,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("user_profile", selected["memory_scope"])
             self.assertEqual("cross_session", selected["session_continuity"])
             self.assertGreaterEqual(
-                pack["retrieval_metrics"]["memory_layer_budget"]["by_memory_layer"]["profile_entity"]["refs"],
+                pack["retrieval_metrics"]["memory_layer_budget"]["by_memory_scope"]["user_profile"]["refs"],
                 1,
             )
             self.assertTrue(pack["memory_inventory"]["has_profile_memory"])
@@ -7045,6 +7045,37 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertTrue(policy["enabled"])
             self.assertEqual("allow_durable_profile_bridge_inside_session_only_scope", policy["decision"])
+
+            pack = adapter.retrieve(
+                {
+                    "scope": current_scope,
+                    "session_scope": "only",
+                    "question_type": "fact",
+                    "query": "TemporalStore repository location",
+                    "max_context_tokens": 160,
+                    "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
+                    "cross_session": {"enabled": True, "min_entity_bridge_refs": 1},
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "include_debug_refs": True,
+                }
+            )
+            profile_ref = next(
+                ref
+                for ref in pack["selected_refs"]
+                if ref.get("ref_type") == "entity"
+                and ref.get("entity_name") == "temporalstore_repo_location"
+            )
+            self.assertEqual("user_profile", profile_ref["memory_scope"])
+            self.assertEqual("cross_session", profile_ref["session_continuity"])
+            self.assertIn("/root/src/github-services/TemporalStore", profile_ref["text"])
+            self.assertFalse(
+                any("Prior raw session event" in str(ref.get("text", "")) for ref in pack["selected_refs"])
+            )
+            self.assertEqual(
+                "allow_durable_profile_bridge_inside_session_only_scope",
+                pack["recall_policy"]["cross_session"]["decision"],
+            )
 
     def test_normal_query_warns_when_profile_memory_is_available_but_not_selected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
