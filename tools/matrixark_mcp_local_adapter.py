@@ -1852,6 +1852,8 @@ def context_event_type_for_message(message: Json, default_event_type: str) -> st
         and feature_scope_excludes_outcome_evidence(content)
     ):
         return "memory_feature"
+    if role == "user" and feature_scope_excludes_outcome_evidence(content):
+        return "memory_feature"
     by_role = {
         "user": "user_prompt",
         "assistant": "assistant_response",
