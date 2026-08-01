@@ -7850,6 +7850,7 @@ class MatrixArkLocalAdapter:
                     continue
                 if amount:
                     source_role_counts[role_name] = int(source_role_counts.get(role_name, 0)) + amount
+            source_roles = sorted(source_role_counts)
         source_hook_type_values = [
             envelope.get("hook_type"),
             envelope_metadata.get("hook_type"),
@@ -7944,11 +7945,34 @@ class MatrixArkLocalAdapter:
                 if isinstance(envelope_metadata.get("codex_memory_selection"), dict)
                 else {}
             )
+            if isinstance(selection.get("policies"), list):
+                selection_values.extend(selection.get("policies", []))
             selection_policy = str(selection.get("policy") or "").strip()
             if selection_policy:
                 selection_values.append(selection_policy)
             for policy_name in ordered_unique_any(selection_values):
                 source_memory_selection_policy_counts[policy_name] = source_lineage_count
+        assistant_text_parts = [
+            str(message.get("content") or "")
+            for message in envelope.get("messages", [])
+            if isinstance(message, dict) and normalize_message_role(message.get("role")) == "assistant"
+        ]
+        assistant_lineage_text = "\n".join(assistant_text_parts) or envelope_metadata.get("text") or envelope.get("text")
+        assistant_policies: list[str] = []
+        if assistant_profile_fact_lineage_text(assistant_lineage_text):
+            assistant_policies.append("selected_assistant_profile_fact")
+        if assistant_lineage_text or source_role_counts.get("assistant"):
+            assistant_policies.append("selected_assistant_decision_outcome_only")
+        inferred_policy_by_role = {
+            "assistant": assistant_policies,
+            "tool": ["selected_tool_evidence_only"],
+            "user": ["selected_user_prompt"],
+        }
+        for role, count in source_role_counts.items():
+            for policy_name in inferred_policy_by_role.get(role, []):
+                if not policy_name or policy_name in source_memory_selection_policy_counts:
+                    continue
+                source_memory_selection_policy_counts[policy_name] = max(source_lineage_count, int(count or 0), 1)
         source_memory_selection_policies = sorted(source_memory_selection_policy_counts)
         source_memory_selection_retention: Json = {
             key: envelope_metadata.get(key)
