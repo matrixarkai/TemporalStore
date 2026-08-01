@@ -3058,6 +3058,9 @@ ASSISTANT_MEMORY_LINE_PATTERNS = [
         r"\b(?:test|tests|passed|failed|blocked|missing|gap|risk|warning)\b",
         r"\b(?:benchmark|workload|latency|p50|p90|p95|p99|throughput|qps|hit[- ]?rate|quality|locomo|longmemeval)\b",
         r"\b(?:temporalstore|matrixark|codex|context|profile|cross[- ]session|memory)\b",
+        r"\b(?:user|you)\b.{0,96}\b(?:prefer|prefers|preference|likes|wants|needs|asked|requires|required|always|never|avoid|remember)\b",
+        r"\b(?:i(?:'ll| will)? remember|remembered|noted|got it)\b.{0,140}\b(?:prefer|preference|want|need|always|never|avoid|profile|memory)\b",
+        r"\b(?:standing instruction|standing preference|user profile|long[- ]term memor(?:y|ies)|saved preference)\b",
     ]
 ]
 
