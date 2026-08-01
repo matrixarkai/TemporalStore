@@ -313,11 +313,13 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
     if re.search(r"\b(user profile|profile memory|long[- ]term memory|profile entity|profile entities|profile summary|profile summaries|current profile|latest profile|identity profile|communication profile|workspace profile|preferred language|preferred format|communication style|response style|workspace rules?|repo rules?|repository rules?|branch rules?|build rules?|deployment rules?)\b", lower) or question_type == "profile_memory":
         add_group(context_index_name("memory_scope", "user_profile"), context_index_name("session_continuity", "cross_session"))
         add_group(context_index_name("profile_entity_current", "true"), context_index_name("profile_summary_current", "true"))
-        add_group(
+        profile_memory_kind_terms = [
             context_index_name("profile_memory_kind", "durable_profile"),
-            context_index_name("profile_memory_kind", "codex_outcome"),
             context_index_name("profile_memory_kind", "memory_feature"),
-        )
+        ]
+        if not feature_scope_excludes_evidence:
+            profile_memory_kind_terms.append(context_index_name("profile_memory_kind", "codex_outcome"))
+        add_group(*profile_memory_kind_terms)
     if question_type in {"current_state", "latest"} and re.search(r"\b(profile|cross[- ]session|long[- ]term|memory|entity|entities)\b", lower):
         add_group(context_index_name("profile_entity_current", "true"), context_index_name("profile_summary_current", "true"))
     if not feature_scope_excludes_evidence and re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|published|deploy(?:ed)?|deployment|release(?:d)?|merge(?:d)?|rebase(?:d)?|configured|configuration|enabled|disabled|installed|migrated|recovered|restored|cleaned|promoted|indexed|budgeted|batched|flushed|validation|benchmark|blocker)\b", lower):
