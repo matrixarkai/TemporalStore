@@ -25,6 +25,7 @@ try:
         embedding_for_text,
         embedding_model_name,
         EMBEDDING_LINEAGE_DEBUG_FIELDS,
+        infer_query_type,
         local_account_user_id,
         memory_hierarchy_contract_from_recall_policy,
         messages_from_event_record,
@@ -46,6 +47,7 @@ except ModuleNotFoundError:
         embedding_for_text,
         embedding_model_name,
         EMBEDDING_LINEAGE_DEBUG_FIELDS,
+        infer_query_type,
         local_account_user_id,
         memory_hierarchy_contract_from_recall_policy,
         messages_from_event_record,
@@ -3793,8 +3795,13 @@ def codex_retrieve_ranking_options() -> Json:
     }
 
 
-def codex_retrieve_cross_session_options() -> Json:
-    return {
+def codex_retrieve_question_type(query: str) -> str:
+    return str(infer_query_type(str(query or "")) or "fact")
+
+
+def codex_retrieve_cross_session_options(query: str = "") -> Json:
+    question_type = codex_retrieve_question_type(query)
+    options: Json = {
         "enabled": True,
         "budget_ratio": 0.12,
         "max_budget_ratio": 0.20,
@@ -3803,6 +3810,26 @@ def codex_retrieve_cross_session_options() -> Json:
         "min_entity_bridge_refs": 1,
         "preferred_ref_types": ["entity", "summary", "compression", "event", "segment"],
     }
+    if question_type == "profile_memory":
+        options.update(
+            {
+                "budget_ratio": 0.20,
+                "max_budget_ratio": 0.30,
+                "max_sessions": 8,
+                "max_candidates": 48,
+                "min_entity_bridge_refs": 2,
+                "preferred_ref_types": ["entity", "summary", "compression", "segment", "event"],
+            }
+        )
+    elif question_type in {"current_state", "latest", "multi_hop", "date"}:
+        options.update(
+            {
+                "budget_ratio": 0.16,
+                "max_sessions": 6,
+                "max_candidates": 36,
+            }
+        )
+    return options
 
 
 def hook_async_message_ingest_args(
@@ -5363,12 +5390,14 @@ def main() -> int:
         retrieve = {}
         query = args.query or text[:500]
         if (args.event == "UserPromptSubmit" or args.query) and not hook_warning and not HOOK_COMPACT_HOT_PREFIX_ONLY:
+            question_type = codex_retrieve_question_type(query)
             retrieve = trace_tool_call(
                 server,
                 "matrixark_retrieve",
                 {
                     **common,
                     "query": query,
+                    "question_type": question_type,
                     "max_context_tokens": args.max_context_tokens,
                     "audit_mode": "telemetry_only",
                     "audit_sample_rate": 0.0,
@@ -5382,12 +5411,13 @@ def main() -> int:
                         else {}
                     ),
                     "ranking": codex_retrieve_ranking_options(),
-                    "cross_session": codex_retrieve_cross_session_options(),
+                    "cross_session": codex_retrieve_cross_session_options(query),
                     **hook_session_commit_extraction_options(args),
                     "metadata": {
                         "retrieval_source": "codex_hook_retrieve",
                         "codex_event": args.event,
                         "hook_type": hook_type_for_event(args.event),
+                        "question_type": question_type,
                         "codex_session_id_source": session_id_source,
                         "session_id_source": session_id_source,
                         "lifecycle_stage": "before_llm_retrieve" if args.event == "UserPromptSubmit" else "explicit_query_retrieve",
