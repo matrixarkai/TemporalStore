@@ -3392,7 +3392,14 @@ def codex_memory_selection_metadata(*, role: str, event: str, text: str, origina
         max_chars = 4096
         max_lines = 64
     policy = policies[0] if policies else ""
-    return {
+    feature_memory_profile = bool(
+        feature_scope_memory_only_policy(selected_text or original)
+        or (
+            normalized_role in {"assistant", "user"}
+            and FEATURE_MEMORY_POLICY_RE.search(selected_text or original)
+        )
+    )
+    metadata = {
         "policy": policy,
         "policies": policies,
         "policy_counts": {policy_name: 1 for policy_name in policies},
@@ -3418,6 +3425,16 @@ def codex_memory_selection_metadata(*, role: str, event: str, text: str, origina
         ),
         "selection_stage": "codex_hook_before_temporalstore_ingest",
     }
+    if feature_memory_profile:
+        metadata.update(
+            {
+                "profile_memory_class": "memory_feature",
+                "profile_memory_kind": "memory_feature",
+                "source_profile_memory_classes": ["memory_feature"],
+                "source_profile_memory_kinds": ["memory_feature"],
+            }
+        )
+    return metadata
 
 
 

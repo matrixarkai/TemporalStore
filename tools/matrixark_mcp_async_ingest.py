@@ -86,9 +86,11 @@ def _lightweight_memory_policy_lineage(envelope: Json) -> Json:
     policy_counts = {policy: 1 for policy in policies}
     profile_kinds = ordered_unique(
         _metadata_string_values(metadata, "source_profile_memory_kinds", "profile_memory_kind")
+        + _metadata_string_values(selection, "source_profile_memory_kinds", "profile_memory_kind")
     )
     profile_classes = ordered_unique(
         _metadata_string_values(metadata, "source_profile_memory_classes", "profile_memory_class")
+        + _metadata_string_values(selection, "source_profile_memory_classes", "profile_memory_class")
     )
     lineage: Json = {}
     if policies:
@@ -443,11 +445,9 @@ def lightweight_async_accept(
                 "threshold_messages": session_buffer_threshold,
                 **idle_schedule,
                 **source_counts,
-                "memory_scope": "session",
-                "session_continuity": "same_session",
-                "source_extraction_phases": ["provisional"],
-                "extraction_phase": "provisional",
-                "final_session_boundary": False,
+                **memory_layer_fields,
+                **source_layer_lineage,
+                **policy_lineage,
                 "created_at_ms": envelope["ingestion_time_ms"],
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }

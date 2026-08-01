@@ -645,6 +645,8 @@ def agent_memory_selection_metadata(payload: Json, *, event: str, text: str, mes
     selections: list[Json] = []
     policy_counts: Json = {}
     policies: list[str] = []
+    source_profile_memory_classes: list[str] = []
+    source_profile_memory_kinds: list[str] = []
     for role in sorted(selected_by_role):
         selected_text = "\n".join(selected_by_role.get(role, []))
         original_text = "\n".join(original_by_role.get(role, [])) or selected_text
@@ -660,6 +662,18 @@ def agent_memory_selection_metadata(payload: Json, *, event: str, text: str, mes
         if policy:
             policies.append(policy)
             policy_counts[policy] = int(policy_counts.get(policy, 0)) + len(selected_by_role.get(role, []))
+        for field, target in [
+            ("source_profile_memory_classes", source_profile_memory_classes),
+            ("profile_memory_class", source_profile_memory_classes),
+            ("source_profile_memory_kinds", source_profile_memory_kinds),
+            ("profile_memory_kind", source_profile_memory_kinds),
+        ]:
+            raw_values = selection.get(field)
+            values = raw_values if isinstance(raw_values, list) else [raw_values]
+            for raw_value in values:
+                value = str(raw_value or "").strip()
+                if value and value not in target:
+                    target.append(value)
         selections.append(selection)
 
     if not selections:
@@ -668,6 +682,20 @@ def agent_memory_selection_metadata(payload: Json, *, event: str, text: str, mes
         "source_memory_selection_policies": sorted(set(policies)),
         "source_memory_selection_policy_counts": policy_counts,
     }
+    if source_profile_memory_classes:
+        aggregate["source_profile_memory_classes"] = sorted(set(source_profile_memory_classes))
+        aggregate["profile_memory_class"] = (
+            "memory_feature"
+            if "memory_feature" in source_profile_memory_classes
+            else aggregate["source_profile_memory_classes"][0]
+        )
+    if source_profile_memory_kinds:
+        aggregate["source_profile_memory_kinds"] = sorted(set(source_profile_memory_kinds))
+        aggregate["profile_memory_kind"] = (
+            "memory_feature"
+            if "memory_feature" in source_profile_memory_kinds
+            else aggregate["source_profile_memory_kinds"][0]
+        )
     if len(selections) == 1:
         aggregate["codex_memory_selection"] = selections[0]
     return aggregate
