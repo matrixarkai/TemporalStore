@@ -645,6 +645,10 @@ AUTO_BUDGET_QUERY_TYPES = {
     "benchmark_quality",
 }
 
+FEATURE_MEMORY_BUDGET_QUERY_RE = re.compile(
+    r"\b(?:openviking|vikingmem|mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionalit(?:y|ies)|algorithms?|memory feature|session memory|profile memory|cross[- ]session memory|long[- ]term memory|threshold|idle batch|batch extraction)\b"
+)
+
 
 def _explicit_cross_session_requested(args: Json, ranking: Json) -> bool:
     raw = args.get("cross_session", ranking.get("cross_session"))
@@ -655,12 +659,31 @@ def _explicit_cross_session_requested(args: Json, ranking: Json) -> bool:
     return False
 
 
+def feature_profile_memory_budget_query(args: Json, ranking: Json, *, question_type: str = "fact") -> bool:
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    if normalized_question_type == "profile_memory":
+        return True
+    query = str(args.get("query") or ranking.get("query") or "").strip()
+    if not query:
+        return False
+    lower = query.lower()
+    return bool(
+        PROFILE_MEMORY_QUERY_RE.search(lower)
+        or FEATURE_MEMORY_BUDGET_QUERY_RE.search(lower)
+        or (FEATURE_SCOPE_EXCLUSION_RE.search(lower) and "feature" in lower)
+    )
+
+
 def _default_memory_budget_mode(args: Json, ranking: Json, *, field: str, question_type: str) -> str:
     mode = str(args.get(field) or ranking.get(field) or "").strip().lower()
     if mode:
         return mode
     normalized_question_type = str(question_type or "fact").strip().lower()
-    if normalized_question_type in AUTO_BUDGET_QUERY_TYPES or _explicit_cross_session_requested(args, ranking):
+    if (
+        normalized_question_type in AUTO_BUDGET_QUERY_TYPES
+        or feature_profile_memory_budget_query(args, ranking, question_type=question_type)
+        or _explicit_cross_session_requested(args, ranking)
+    ):
         return "auto"
     return ""
 
@@ -971,10 +994,16 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         "same_session_compression": 0.20,
         "cross_session_compression": 0.20,
         "pending_async_event": 0.20,
+        "pending_async_memory_feature_event": 0.20,
         "same_session_event": 0.45,
+        "same_session_memory_feature_event": 0.35,
+        "cross_session_memory_feature_event": 0.25,
         "cross_session_event": 0.25,
         "same_session_segment": 0.35,
+        "same_session_memory_feature_segment": 0.30,
+        "cross_session_memory_feature_segment": 0.25,
         "cross_session_segment": 0.25,
+        "same_session_memory_feature_entity": 0.35,
         "profile_entity": 0.40,
         "cross_session_codex_outcome_entity": 0.25,
         "cross_session_memory_feature_entity": 0.25,
@@ -982,7 +1011,9 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         "cross_session_codex_outcome_compression": 0.25,
     }
     normalized_question_type = str(question_type or "fact").strip().lower()
-    if codex_outcome_budget_query(args, ranking, question_type=question_type):
+    outcome_query = codex_outcome_budget_query(args, ranking, question_type=question_type)
+    feature_profile_query = feature_profile_memory_budget_query(args, ranking, question_type=question_type)
+    if outcome_query:
         defaults.update(
             {
                 "summary": 0.18,
@@ -1003,6 +1034,29 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_memory_feature_entity": 0.35,
                 "cross_session_codex_outcome_summary": 0.45,
                 "cross_session_codex_outcome_compression": 0.45,
+            }
+        )
+    elif feature_profile_query:
+        defaults.update(
+            {
+                "summary": 0.15,
+                "profile_summary": 0.50,
+                "same_session_summary": 0.15,
+                "cross_session_summary": 0.45,
+                "compression": 0.20,
+                "profile_compression": 0.45,
+                "same_session_compression": 0.15,
+                "cross_session_compression": 0.40,
+                "pending_async_event": 0.12,
+                "same_session_event": 0.25,
+                "cross_session_event": 0.35,
+                "same_session_segment": 0.25,
+                "cross_session_segment": 0.35,
+                "profile_entity": 0.65,
+                "cross_session_codex_outcome_entity": 0.20,
+                "cross_session_memory_feature_entity": 0.75,
+                "cross_session_codex_outcome_summary": 0.20,
+                "cross_session_codex_outcome_compression": 0.20,
             }
         )
     elif normalized_question_type in {"current_state", "latest"}:
@@ -1123,7 +1177,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
     defaults.update(
         codex_outcome_event_segment_layer_fractions(
             normalized_question_type,
-            outcome_query=codex_outcome_budget_query(args, ranking, question_type=question_type),
+            outcome_query=outcome_query,
         )
     )
     defaults["cross_session_memory_feature_summary"] = max(
@@ -1133,6 +1187,14 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
     defaults["cross_session_memory_feature_compression"] = max(
         defaults.get("cross_session_memory_feature_entity", 0.25),
         defaults.get("profile_compression", 0.25),
+    )
+    defaults["same_session_memory_feature_summary"] = max(
+        defaults.get("same_session_memory_feature_entity", 0.25),
+        defaults.get("same_session_summary", 0.20),
+    )
+    defaults["same_session_memory_feature_compression"] = max(
+        defaults.get("same_session_memory_feature_entity", 0.25),
+        defaults.get("same_session_compression", 0.20),
     )
     budgets: Json = {}
     for layer, default_fraction in defaults.items():
@@ -1218,6 +1280,8 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
     remote_budget_tokens: int,
     question_type: str = "fact",
     outcome_query: bool = False,
+    args: Json | None = None,
+    ranking: Json | None = None,
 ) -> tuple[Json, str]:
     try:
         remote_budget = max(0, int(remote_budget_tokens or 0))
@@ -1237,6 +1301,9 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
         mode = "pre_retrieval_summary_refresh_evidence"
     if remote_budget <= 0:
         return {}, mode
+    args = args if isinstance(args, dict) else {}
+    ranking = ranking if isinstance(ranking, dict) else {}
+    feature_profile_query = feature_profile_memory_budget_query(args, ranking, question_type=question_type)
     fractions = {
         "summary": 0.15,
         "profile_summary": 0.30,
@@ -1247,17 +1314,43 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
         "same_session_compression": 0.20,
         "cross_session_compression": 0.25,
         "pending_async_event": 0.20,
+        "pending_async_memory_feature_event": 0.20,
         "same_session_event": 0.45,
+        "same_session_memory_feature_event": 0.35,
+        "cross_session_memory_feature_event": 0.25,
         "cross_session_event": 0.25,
         "same_session_segment": 0.30,
+        "same_session_memory_feature_segment": 0.30,
+        "cross_session_memory_feature_segment": 0.25,
         "cross_session_segment": 0.25,
+        "same_session_memory_feature_entity": 0.35,
         "profile_entity": 0.45,
         "cross_session_codex_outcome_entity": 0.25,
         "cross_session_memory_feature_entity": 0.25,
         "cross_session_codex_outcome_summary": 0.25,
         "cross_session_codex_outcome_compression": 0.25,
     }
-    if normalized_question_type in {"current_state", "latest"}:
+    if feature_profile_query:
+        fractions.update(
+            {
+                "summary": 0.15,
+                "profile_summary": 0.50,
+                "same_session_summary": 0.15,
+                "cross_session_summary": 0.45,
+                "profile_compression": 0.45,
+                "cross_session_compression": 0.40,
+                "same_session_event": 0.25,
+                "cross_session_event": 0.35,
+                "same_session_segment": 0.25,
+                "cross_session_segment": 0.35,
+                "profile_entity": 0.65,
+                "cross_session_codex_outcome_entity": 0.20,
+                "cross_session_memory_feature_entity": 0.75,
+                "cross_session_codex_outcome_summary": 0.20,
+                "cross_session_codex_outcome_compression": 0.20,
+            }
+        )
+    elif normalized_question_type in {"current_state", "latest"}:
         fractions.update(
             {
                 "profile_summary": 0.35,
@@ -1356,6 +1449,14 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
     fractions["cross_session_memory_feature_compression"] = max(
         fractions.get("cross_session_memory_feature_entity", 0.25),
         fractions.get("profile_compression", 0.25),
+    )
+    fractions["same_session_memory_feature_summary"] = max(
+        fractions.get("same_session_memory_feature_entity", 0.25),
+        fractions.get("same_session_summary", 0.20),
+    )
+    fractions["same_session_memory_feature_compression"] = max(
+        fractions.get("same_session_memory_feature_entity", 0.25),
+        fractions.get("same_session_compression", 0.20),
     )
     return {
         layer: max(1, int(remote_budget * fraction))
@@ -9872,6 +9973,8 @@ class MatrixArkLocalAdapter:
                 remote_budget_tokens=remote_context_budget_tokens,
                 question_type=question_type,
                 outcome_query=codex_outcome_budget_query(args, ranking, question_type=question_type),
+                args=args,
+                ranking=ranking,
             )
         elif not memory_layer_budget_tokens:
             memory_layer_budget_tokens, memory_layer_budget_mode = auto_memory_layer_budget_tokens(
