@@ -6656,6 +6656,12 @@ def select_token_budgeted_refs(
     extraction_phase_used_tokens: Json = {phase: 0 for phase in normalized_extraction_phase_budget_tokens}
     extraction_phase_selected_ref_counts: Json = {phase: 0 for phase in normalized_extraction_phase_budget_tokens}
     profile_entity_bridge_layers = {"profile_entity", "cross_session_codex_outcome_entity"}
+    codex_outcome_evidence_layers = {
+        "same_session_codex_outcome_event",
+        "cross_session_codex_outcome_event",
+        "same_session_codex_outcome_segment",
+        "cross_session_codex_outcome_segment",
+    }
     high_level_profile_memory_layers = {
         "summary",
         "profile_summary",
@@ -6672,6 +6678,10 @@ def select_token_budgeted_refs(
     cross_session_profile_entity_floor_enabled = bool(
         cross_enabled
         and cross_min_entity_bridge_refs > 0
+    )
+    codex_outcome_evidence_floor_enabled = bool(
+        any(normalized_memory_layer_budget_tokens.get(layer) for layer in codex_outcome_evidence_layers)
+        and any(normalized_memory_layer_budget_tokens.get(layer) for layer in high_level_profile_memory_layers)
     )
 
     def profile_entity_floor_satisfied() -> bool:
@@ -6699,6 +6709,33 @@ def select_token_budgeted_refs(
             if remaining.get("session_continuity") == "cross_session" and not cross_enabled:
                 continue
             return remaining_layer
+        return ""
+
+    def codex_outcome_evidence_floor_satisfied() -> bool:
+        return any(int(memory_layer_selected_ref_counts.get(layer, 0) or 0) > 0 for layer in codex_outcome_evidence_layers) or any(
+            candidate_memory_layer_name(item) in codex_outcome_evidence_layers
+            for item in selected
+        )
+
+    def remaining_codex_outcome_evidence_floor_layer(start_index: int) -> str:
+        for remaining in candidates[start_index:]:
+            remaining_layer = candidate_memory_layer_name(remaining)
+            if remaining_layer not in codex_outcome_evidence_layers:
+                continue
+            try:
+                remaining_score = float(remaining.get("score", 0.0))
+            except (TypeError, ValueError):
+                remaining_score = 0.0
+            if remaining_score < min_score:
+                continue
+            if question_type in {"current_state", "latest"} and is_stale_or_superseded_candidate(remaining):
+                continue
+            remaining_tokens = max(1, token_count(str(remaining.get("text", ""))))
+            if remote_budget <= 0 or (selected and used_tokens + remaining_tokens > remote_budget):
+                continue
+            layer_budget = int(normalized_memory_layer_budget_tokens.get(remaining_layer, 0) or 0)
+            if layer_budget > 0 and int(memory_layer_used_tokens.get(remaining_layer, 0) or 0) + remaining_tokens <= layer_budget:
+                return remaining_layer
         return ""
 
     def candidate_source_role_names(candidate: Json) -> set[str]:
@@ -7027,6 +7064,31 @@ def select_token_budgeted_refs(
                 )
             )
         )
+        should_reserve_codex_outcome_evidence_floor = bool(
+            codex_outcome_evidence_floor_enabled
+            and candidate_memory_layer in high_level_profile_memory_layers
+            and normalized_question_type in {"current_state", "latest", "evidence", "benchmark_quality", "profile_memory", "multi_hop", "date"}
+        )
+        reserved_outcome_layer = remaining_codex_outcome_evidence_floor_layer(index + 1)
+        if (
+            should_reserve_codex_outcome_evidence_floor
+            and not codex_outcome_evidence_floor_satisfied()
+            and reserved_outcome_layer
+        ):
+            dropped["memory_layer_floor"] += 1
+            dropped["estimated_tokens"]["memory_layer_floor"] += ref_tokens
+            record_dropped_candidate(
+                dropped,
+                {
+                    **candidate,
+                    "budget_memory_layer": candidate_memory_layer,
+                    "memory_layer_budget_capped_layer": candidate_memory_layer,
+                    "memory_layer_floor_reserved_layer": reserved_outcome_layer,
+                },
+                reason="memory_layer_floor",
+                token_estimate=ref_tokens,
+            )
+            continue
         reserved_profile_layer = remaining_profile_entity_floor_layer(index + 1)
         if (
             should_reserve_profile_entity_floor
