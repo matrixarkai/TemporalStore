@@ -74,6 +74,20 @@ pub type SharedStoreWalEntry = SharedStoreOplogEntry;
 pub type SharedStoreWalObject = SharedStoreOplogObject;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SharedStoreWalOffsetMetadata {
+    pub shard_id: ShardId,
+    pub oplog_index: u64,
+    pub wal_blob_key: String,
+    pub wal_blob_start_offset: u64,
+    pub wal_blob_end_offset: u64,
+    pub wal_blob_bytes_written: u64,
+    pub wal_blob_object_length: u64,
+    pub command_byte_size: u64,
+    pub command_sha256: String,
+    pub command_encoding: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SharedStorePageSegment {
     pub page_segment_id: u64,
     pub key: String,
@@ -234,6 +248,30 @@ struct SharedStoreWalFrameProto {
     command_encoding: u32,
 }
 
+#[derive(Clone, PartialEq, Message)]
+struct SharedStoreWalOffsetMetadataProto {
+    #[prost(uint64, tag = "1")]
+    shard_id: u64,
+    #[prost(uint64, tag = "2")]
+    oplog_index: u64,
+    #[prost(string, tag = "3")]
+    wal_blob_key: String,
+    #[prost(uint64, tag = "4")]
+    wal_blob_start_offset: u64,
+    #[prost(uint64, tag = "5")]
+    wal_blob_end_offset: u64,
+    #[prost(uint64, tag = "6")]
+    wal_blob_bytes_written: u64,
+    #[prost(uint64, tag = "7")]
+    wal_blob_object_length: u64,
+    #[prost(uint64, tag = "8")]
+    command_byte_size: u64,
+    #[prost(string, tag = "9")]
+    command_sha256: String,
+    #[prost(uint32, tag = "10")]
+    command_encoding: u32,
+}
+
 #[derive(Debug)]
 pub struct SharedStoreStorageWriter<O> {
     replicator: SharedStoreReplicator<O>,
@@ -316,8 +354,43 @@ where
         entry: SharedStoreWalEntry,
     ) -> Result<Option<AppendBlobReceipt>, SharedStoreReplicationError> {
         let key = self.oplog_blob_key(entry.shard_id);
+        let command_metadata = wal_command_metadata(&entry.command)?;
         let frame = encode_wal_proto_frame(&entry)?;
-        self.append_blob_with_retry(&key, Bytes::from(frame)).await
+        let receipt = self
+            .append_blob_with_retry(&key, Bytes::from(frame))
+            .await?
+            .expect("protobuf append blob must return a receipt");
+        self.publish_wal_offset_metadata(&entry, &key, &receipt, command_metadata)
+            .await?;
+        Ok(Some(receipt))
+    }
+
+    async fn publish_wal_offset_metadata(
+        &self,
+        entry: &SharedStoreWalEntry,
+        wal_blob_key: &str,
+        receipt: &AppendBlobReceipt,
+        command_metadata: WalCommandMetadata,
+    ) -> Result<(), SharedStoreReplicationError> {
+        let metadata = SharedStoreWalOffsetMetadata {
+            shard_id: entry.shard_id,
+            oplog_index: entry.oplog_index,
+            wal_blob_key: wal_blob_key.to_string(),
+            wal_blob_start_offset: receipt.start_offset,
+            wal_blob_end_offset: receipt.end_offset,
+            wal_blob_bytes_written: receipt.bytes_written,
+            wal_blob_object_length: receipt.object_length,
+            command_byte_size: command_metadata.byte_size,
+            command_sha256: command_metadata.sha256,
+            command_encoding: command_metadata.encoding,
+        };
+        let frame = encode_wal_offset_metadata_frame(&metadata);
+        self.append_blob_with_retry(
+            &self.oplog_offset_index_blob_key(entry.shard_id),
+            Bytes::from(frame),
+        )
+        .await?;
+        Ok(())
     }
 
     pub fn storage_writer(
@@ -841,6 +914,28 @@ where
         format!("{}oplog.protobuf.blob", self.oplog_prefix(shard_id))
     }
 
+    fn oplog_offset_index_blob_key(&self, shard_id: ShardId) -> String {
+        format!(
+            "{}oplog.offset_index.protobuf.blob",
+            self.oplog_prefix(shard_id)
+        )
+    }
+
+    pub async fn load_wal_offset_metadata(
+        &self,
+        shard_id: ShardId,
+    ) -> Result<BTreeMap<u64, SharedStoreWalOffsetMetadata>, SharedStoreReplicationError> {
+        match self
+            .object_store
+            .get(&self.oplog_offset_index_blob_key(shard_id))
+            .await
+        {
+            Ok(bytes) => decode_wal_offset_metadata_blob(&bytes),
+            Err(ObjectStoreError::NotFound(_)) => Ok(BTreeMap::new()),
+            Err(err) => Err(err.into()),
+        }
+    }
+
     fn replay_cursor_key(&self, shard_id: ShardId) -> String {
         format!("{}replay_cursor.json", self.shard_prefix(shard_id))
     }
@@ -1103,6 +1198,29 @@ fn verify_checksum(
 const WAL_COMMAND_ENCODING_JSON_SERDE: u32 = 0;
 const WAL_COMMAND_ENCODING_SDK_PROTO: u32 = 1;
 
+struct WalCommandMetadata {
+    byte_size: u64,
+    sha256: String,
+    encoding: u32,
+}
+
+fn wal_command_metadata(
+    command: &Command,
+) -> Result<WalCommandMetadata, SharedStoreReplicationError> {
+    let (command_payload, command_encoding) = match command_to_sdk_proto(command) {
+        Some(command) => (command.encode_to_vec(), WAL_COMMAND_ENCODING_SDK_PROTO),
+        None => (
+            serde_json::to_vec(command)?,
+            WAL_COMMAND_ENCODING_JSON_SERDE,
+        ),
+    };
+    Ok(WalCommandMetadata {
+        byte_size: command_payload.len() as u64,
+        sha256: sha256_hex(&command_payload),
+        encoding: command_encoding,
+    })
+}
+
 fn encode_wal_proto_frame(
     entry: &SharedStoreWalEntry,
 ) -> Result<Vec<u8>, SharedStoreReplicationError> {
@@ -1126,6 +1244,26 @@ fn encode_wal_proto_frame(
     out.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
     out.append(&mut encoded);
     Ok(out)
+}
+
+fn encode_wal_offset_metadata_frame(metadata: &SharedStoreWalOffsetMetadata) -> Vec<u8> {
+    let proto = SharedStoreWalOffsetMetadataProto {
+        shard_id: metadata.shard_id,
+        oplog_index: metadata.oplog_index,
+        wal_blob_key: metadata.wal_blob_key.clone(),
+        wal_blob_start_offset: metadata.wal_blob_start_offset,
+        wal_blob_end_offset: metadata.wal_blob_end_offset,
+        wal_blob_bytes_written: metadata.wal_blob_bytes_written,
+        wal_blob_object_length: metadata.wal_blob_object_length,
+        command_byte_size: metadata.command_byte_size,
+        command_sha256: metadata.command_sha256.clone(),
+        command_encoding: metadata.command_encoding,
+    };
+    let mut encoded = proto.encode_to_vec();
+    let mut out = Vec::with_capacity(4 + encoded.len());
+    out.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+    out.append(&mut encoded);
+    out
 }
 
 fn decode_wal_proto_blob(
@@ -1183,6 +1321,51 @@ fn decode_wal_proto_blob(
             oplog_index: frame.oplog_index,
             command,
         });
+    }
+    Ok(entries)
+}
+
+fn decode_wal_offset_metadata_blob(
+    bytes: &[u8],
+) -> Result<BTreeMap<u64, SharedStoreWalOffsetMetadata>, SharedStoreReplicationError> {
+    let mut cursor = 0usize;
+    let mut entries = BTreeMap::new();
+    while cursor < bytes.len() {
+        if bytes.len().saturating_sub(cursor) < 4 {
+            return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "truncated protobuf WAL offset metadata frame length",
+            )));
+        }
+        let len = u32::from_be_bytes(
+            bytes[cursor..cursor + 4]
+                .try_into()
+                .expect("length slice is exactly 4 bytes"),
+        ) as usize;
+        cursor += 4;
+        if bytes.len().saturating_sub(cursor) < len {
+            return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "truncated protobuf WAL offset metadata frame payload",
+            )));
+        }
+        let frame = SharedStoreWalOffsetMetadataProto::decode(&bytes[cursor..cursor + len])?;
+        cursor += len;
+        entries.insert(
+            frame.oplog_index,
+            SharedStoreWalOffsetMetadata {
+                shard_id: frame.shard_id,
+                oplog_index: frame.oplog_index,
+                wal_blob_key: frame.wal_blob_key,
+                wal_blob_start_offset: frame.wal_blob_start_offset,
+                wal_blob_end_offset: frame.wal_blob_end_offset,
+                wal_blob_bytes_written: frame.wal_blob_bytes_written,
+                wal_blob_object_length: frame.wal_blob_object_length,
+                command_byte_size: frame.command_byte_size,
+                command_sha256: frame.command_sha256,
+                command_encoding: frame.command_encoding,
+            },
+        );
     }
     Ok(entries)
 }
@@ -2079,14 +2262,27 @@ mod tests {
         assert!(append_receipts[1].physical_extent_count > 1);
 
         let blob_key = "cluster-a/shards/1/shared/oplog/oplog.protobuf.blob";
+        let offset_index_key = "cluster-a/shards/1/shared/oplog/oplog.offset_index.protobuf.blob";
         assert_eq!(
             store
                 .list("cluster-a/shards/1/shared/oplog/")
                 .await
                 .unwrap(),
-            vec![blob_key.to_string()]
+            vec![offset_index_key.to_string(), blob_key.to_string()]
         );
         assert!(!store.get(blob_key).await.unwrap().is_empty());
+        assert!(!store.get(offset_index_key).await.unwrap().is_empty());
+        let offset_metadata = replicator.load_wal_offset_metadata(1).await.unwrap();
+        assert_eq!(offset_metadata.len(), append_receipts.len());
+        for (index, receipt) in append_receipts.iter().enumerate() {
+            let metadata = offset_metadata
+                .get(&(index as u64 + 1))
+                .expect("offset metadata by oplog index");
+            assert_eq!(metadata.wal_blob_key, blob_key);
+            assert_eq!(metadata.wal_blob_start_offset, receipt.start_offset);
+            assert_eq!(metadata.wal_blob_end_offset, receipt.end_offset);
+            assert_eq!(metadata.wal_blob_bytes_written, receipt.bytes_written);
+        }
         let matrixobject_blob = store
             .inner()
             .lock()

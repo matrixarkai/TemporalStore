@@ -285,10 +285,16 @@ def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
         }
     return {
         "runtime_valid": rust_report.get("schema") == "temporalstore_shared_store_append_blob_parity_report_v1",
+        "matrixobject_mode": rust_report.get("matrixobject_mode"),
+        "storage_semantics": "in_memory_matrixobject_binding",
+        "durable_reopen_equivalent": False,
         "offsets_monotonic": bool(summary.get("direct_offsets_monotonic")),
         "offsets_contiguous": bool(summary.get("direct_offsets_contiguous")),
         "direct_offset_slices_decode_expected_frames": bool(
             summary.get("direct_offset_slices_decode_expected_frames")
+        ),
+        "direct_offset_index_maps_oplog_to_blob_offsets": bool(
+            summary.get("direct_offset_index_maps_oplog_to_blob_offsets")
         ),
         "secondary_replay_recovered_all_records": bool(
             summary.get("secondary_replay_recovered_all_records")
@@ -332,12 +338,23 @@ def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runti
         rust_summary.get("retrieval_latency_avg_us"),
         cpp_summary.get("read_full_latency_us"),
     )
+    feature_mismatches = []
+    if not rust_summary.get("durable_reopen_equivalent"):
+        feature_mismatches.append(
+            "Rust MatrixObject binding benchmark is in-memory and lacks C++ ObjectStore disk-root reopen semantics"
+        )
     checks = {
         "rust_runtime_valid": bool(rust_summary.get("runtime_valid")),
         "rust_offsets_monotonic": bool(rust_summary.get("offsets_monotonic")),
         "rust_offsets_contiguous": bool(rust_summary.get("offsets_contiguous")),
         "rust_offset_slices_decode_expected_frames": bool(
             rust_summary.get("direct_offset_slices_decode_expected_frames")
+        ),
+        "rust_offset_index_maps_oplog_to_blob_offsets": bool(
+            rust_summary.get("direct_offset_index_maps_oplog_to_blob_offsets")
+        ),
+        "rust_durable_reopen_equivalent_to_cpp": bool(
+            rust_summary.get("durable_reopen_equivalent")
         ),
         "rust_secondary_replay_recovered_all_records": bool(
             rust_summary.get("secondary_replay_recovered_all_records")
@@ -364,9 +381,15 @@ def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runti
         "matrixobject_rust_api_exposes_metadata": bool(
             cpp_contract.get("rust_matrixobject_api_exposes_metadata")
         ),
-        "append_latency_ratio_within_2x": append_latency_ratio is not None
+        "append_latency_ratio_within_2x_when_comparable": bool(
+            rust_summary.get("durable_reopen_equivalent")
+        )
+        and append_latency_ratio is not None
         and append_latency_ratio <= 2.0,
-        "retrieval_vs_cpp_full_read_latency_ratio_within_2x": full_read_latency_ratio is not None
+        "retrieval_vs_cpp_full_read_latency_ratio_within_2x_when_comparable": bool(
+            rust_summary.get("durable_reopen_equivalent")
+        )
+        and full_read_latency_ratio is not None
         and full_read_latency_ratio <= 2.0,
     }
     blockers = [name for name, passed in checks.items() if not passed]
@@ -377,14 +400,22 @@ def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runti
         "latency_ratios": {
             "rust_append_avg_us_to_cpp_append_avg_us": append_latency_ratio,
             "rust_retrieval_avg_us_to_cpp_full_read_us": full_read_latency_ratio,
-            "threshold": "<=2.0x for this bounded local parity harness",
+            "threshold": "<=2.0x only when durable storage semantics are comparable",
+            "comparable": bool(rust_summary.get("durable_reopen_equivalent")),
         },
+        "feature_mismatches": feature_mismatches,
+        "root_cause": (
+            "Rust appeared much faster because the current Rust MatrixObject binding benchmark uses "
+            "an in-memory MatrixObjectStore, while the C++ benchmark uses a disk-root ObjectStore, "
+            "FlushForShutdown, process-style reopen, extent metadata recovery, and range reads. "
+            "The Rust path now persists protobuf oplog-offset metadata, but latency parity remains "
+            "not comparable until Rust exposes equivalent durable MatrixObject reopen semantics."
+        ),
         "note": (
-            "Rust TemporalStore MatrixObject append-blob runtime evidence is compared with "
-            "C++ MatrixObjectStore runtime append/reopen/readback evidence and source "
-            "contract checks for offset/extents propagation. Rust also validates that "
-            "reported byte offsets slice exact WAL frames for secondary replay and "
-            "single-node reload from shared blob state."
+            "Rust TemporalStore MatrixObject append-blob runtime evidence now validates WAL frame "
+            "offsets and a protobuf oplog-index offset metadata sidecar. C++ MatrixObjectStore "
+            "runtime evidence still covers disk reopen/readback semantics that the Rust binding "
+            "does not currently expose."
         ),
     }
 
@@ -400,6 +431,8 @@ def _render_html(report: dict[str, Any]) -> str:
         ("MatrixObject commit", cpp["matrixobject_commit"]),
         ("Rust avg append latency us", rust_summary.get("append_latency_avg_us")),
         ("Rust p95 append latency us", rust_summary.get("append_latency_p95_us")),
+        ("Rust MatrixObject mode", rust_summary.get("matrixobject_mode")),
+        ("Rust durable reopen equivalent", rust_summary.get("durable_reopen_equivalent")),
         ("Rust total replay latency us", rust_summary.get("replay_latency_total_us")),
         ("Rust avg retrieval latency us", rust_summary.get("retrieval_latency_avg_us")),
         ("C++ avg append latency us", cpp_runtime_summary.get("append_latency_avg_us")),

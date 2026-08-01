@@ -7,7 +7,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use temporalstore_rust::shared_store::{
     ReplayReport, SharedStoreFlushReport, SharedStoreReplicator, SharedStoreStorageMode,
-    SharedStoreWalAppendMode, SharedStoreWalEntry, SharedStoreWriteReport,
+    SharedStoreWalAppendMode, SharedStoreWalEntry, SharedStoreWalOffsetMetadata,
+    SharedStoreWriteReport,
 };
 use temporalstore_rust::{
     Command, CommandResponse, ExecuteRequest, MatrixObjectObjectStore, TemporalEngine,
@@ -55,6 +56,14 @@ struct OffsetFrameValidation {
 }
 
 #[derive(Debug, Serialize)]
+struct OffsetIndexValidation {
+    checked_entries: usize,
+    matched_entries: usize,
+    all_oplog_indexes_have_offset_metadata: bool,
+    all_metadata_ranges_match_append_receipts: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct PublishPhaseReport {
     shard_id: u64,
     blob_key: String,
@@ -63,6 +72,7 @@ struct PublishPhaseReport {
     blob_object_length: u64,
     blob_physical_extent_count: usize,
     offset_frame_validation: OffsetFrameValidation,
+    offset_index_validation: OffsetIndexValidation,
     replay: ReplayPhaseReport,
 }
 
@@ -110,6 +120,7 @@ struct Summary {
     direct_offsets_monotonic: bool,
     direct_offsets_contiguous: bool,
     direct_offset_slices_decode_expected_frames: bool,
+    direct_offset_index_maps_oplog_to_blob_offsets: bool,
     secondary_replay_recovered_all_records: bool,
     single_node_reload_recovered_all_records: bool,
     sync_reports_include_offsets: bool,
@@ -210,6 +221,12 @@ async fn main() {
         direct_offset_slices_decode_expected_frames: direct_publish
             .offset_frame_validation
             .all_offsets_decode_expected_frame,
+        direct_offset_index_maps_oplog_to_blob_offsets: direct_publish
+            .offset_index_validation
+            .all_oplog_indexes_have_offset_metadata
+            && direct_publish
+                .offset_index_validation
+                .all_metadata_ranges_match_append_receipts,
         secondary_replay_recovered_all_records: direct_publish.replay.secondary_retrieved_records
             == entry_count
             && sync_writer.replay.secondary_retrieved_records == entry_count
@@ -252,7 +269,7 @@ async fn main() {
     let report = Report {
         schema: "temporalstore_shared_store_append_blob_parity_report_v1",
         backend: "rust",
-        matrixobject_mode: "protobuf_append_blob",
+        matrixobject_mode: "rust_matrixobject_in_memory_protobuf_append_blob",
         entry_count,
         value_bytes,
         direct_publish,
@@ -289,6 +306,12 @@ async fn run_direct_publish(
     let metadata = matrixobject_metadata(&store, &blob_key);
     let offset_frame_validation =
         validate_offset_frames(&store, &blob_key, &append_receipts, shard_id);
+    let offset_metadata = replicator
+        .load_wal_offset_metadata(shard_id)
+        .await
+        .expect("offset metadata");
+    let offset_index_validation =
+        validate_offset_index(&blob_key, &append_receipts, &offset_metadata);
     PublishPhaseReport {
         shard_id,
         blob_key,
@@ -297,6 +320,7 @@ async fn run_direct_publish(
         blob_object_length: metadata.length,
         blob_physical_extent_count: metadata.extents.len(),
         offset_frame_validation,
+        offset_index_validation,
         replay: replay_and_retrieve(root, replicator, shard_id, entry_count, "direct").await,
     }
 }
@@ -454,6 +478,33 @@ fn retrieve_records(
         }
     }
     (retrieved_records, retrieval_latencies_us)
+}
+
+fn validate_offset_index(
+    blob_key: &str,
+    receipts: &[AppendBlobReceipt],
+    offset_metadata: &std::collections::BTreeMap<u64, SharedStoreWalOffsetMetadata>,
+) -> OffsetIndexValidation {
+    let mut matched_entries = 0usize;
+    for (index, receipt) in receipts.iter().enumerate() {
+        let Some(metadata) = offset_metadata.get(&(index as u64 + 1)) else {
+            continue;
+        };
+        if metadata.wal_blob_key == blob_key
+            && metadata.wal_blob_start_offset == receipt.start_offset
+            && metadata.wal_blob_end_offset == receipt.end_offset
+            && metadata.wal_blob_bytes_written == receipt.bytes_written
+            && metadata.wal_blob_object_length == receipt.object_length
+        {
+            matched_entries += 1;
+        }
+    }
+    OffsetIndexValidation {
+        checked_entries: receipts.len(),
+        matched_entries,
+        all_oplog_indexes_have_offset_metadata: offset_metadata.len() >= receipts.len(),
+        all_metadata_ranges_match_append_receipts: matched_entries == receipts.len(),
+    }
 }
 
 fn validate_offset_frames(
