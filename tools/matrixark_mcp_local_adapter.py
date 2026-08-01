@@ -4639,6 +4639,7 @@ class MatrixArkLocalAdapter:
                 "force": True,
                 "derive_from_existing_events": True,
                 "source_event_ids": source_event_ids,
+                "source_event_records": pending,
                 "extraction_context_messages": extraction_context_messages,
                 "extraction_context_event_ids": extraction_context_event_ids,
                 "extraction_phase": extraction_phase,
@@ -8402,6 +8403,16 @@ class MatrixArkLocalAdapter:
         force = bool(args.get("force", False))
         derive_from_existing_events = bool(args.get("derive_from_existing_events", False))
         source_event_ids = [int(ref) for ref in args.get("source_event_ids", [])] if isinstance(args.get("source_event_ids", []), list) else []
+        source_event_records_arg = args.get("source_event_records", [])
+        source_event_record_by_hash: dict[int, Json] = {}
+        if isinstance(source_event_records_arg, list):
+            for source_record in source_event_records_arg:
+                if not isinstance(source_record, dict):
+                    continue
+                try:
+                    source_event_record_by_hash[int(source_record.get("event_id_hash"))] = source_record
+                except (TypeError, ValueError):
+                    continue
         extraction_phase = str(args.get("extraction_phase") or "").strip().lower()
         if extraction_phase not in {"provisional", "final", "standalone"}:
             extraction_phase = "final" if force else "provisional"
@@ -8678,13 +8689,34 @@ class MatrixArkLocalAdapter:
                 event_role = normalize_message_role(message.get("role"))
                 original_event_role = str(message.get("original_role") or message.get("role") or "").strip().lower()
                 event_type = context_event_type_for_message(message, str(extraction["event_type"] or ""))
-                event_hook_types = list(source_hook_types)
-                event_hook_type_counts = {hook_type: 1 for hook_type in event_hook_types if hook_type}
-                event_codex_events = list(source_codex_events)
-                event_codex_event_counts = {codex_event: 1 for codex_event in event_codex_events if codex_event}
+                source_event_record = source_event_record_by_hash.get(int(event_id_hash), {})
+                event_source_lineage = (
+                    source_event_lineage_summary([source_event_record])
+                    if source_event_record
+                    else {}
+                )
+                event_hook_types = list(event_source_lineage.get("source_hook_types") or source_hook_types)
+                event_hook_type_counts = dict(event_source_lineage.get("source_hook_type_counts") or {})
+                if not event_hook_type_counts:
+                    event_hook_type_counts = {hook_type: 1 for hook_type in event_hook_types if hook_type}
+                event_codex_events = list(event_source_lineage.get("source_codex_events") or source_codex_events)
+                event_codex_event_counts = dict(event_source_lineage.get("source_codex_event_counts") or {})
+                if not event_codex_event_counts:
+                    event_codex_event_counts = {codex_event: 1 for codex_event in event_codex_events if codex_event}
+                event_profile_memory_classes = list(
+                    event_source_lineage.get("source_profile_memory_classes") or source_profile_memory_classes
+                )
+                event_profile_memory_kinds = list(
+                    event_source_lineage.get("source_profile_memory_kinds") or source_profile_memory_kinds
+                )
+                event_default_policy_counts = (
+                    event_source_lineage.get("source_memory_selection_policy_counts")
+                    if isinstance(event_source_lineage.get("source_memory_selection_policy_counts"), dict)
+                    else source_memory_selection_policy_counts
+                )
                 event_memory_selection_policy_counts = memory_selection_policy_counts_for_message(
                     message,
-                    default_counts=source_memory_selection_policy_counts,
+                    default_counts=event_default_policy_counts,
                 )
                 event_memory_selection_policies = sorted(event_memory_selection_policy_counts)
                 event_memory_selection_retention = memory_selection_retention_for_message(
@@ -8736,6 +8768,8 @@ class MatrixArkLocalAdapter:
                         "source_codex_event_counts": event_codex_event_counts,
                         "source_memory_selection_policies": event_memory_selection_policies,
                         "source_memory_selection_policy_counts": event_memory_selection_policy_counts,
+                        "source_profile_memory_classes": event_profile_memory_classes,
+                        "source_profile_memory_kinds": event_profile_memory_kinds,
                         **event_memory_selection_retention,
                         "storage_options": envelope.get("storage_options", {}),
                         "updated_at_ms": envelope["ingestion_time_ms"],
@@ -8771,6 +8805,8 @@ class MatrixArkLocalAdapter:
                         "source_codex_event_counts": event_codex_event_counts,
                         "source_memory_selection_policies": event_memory_selection_policies,
                         "source_memory_selection_policy_counts": event_memory_selection_policy_counts,
+                        "source_profile_memory_classes": event_profile_memory_classes,
+                        "source_profile_memory_kinds": event_profile_memory_kinds,
                         **event_memory_selection_retention,
                         "extraction_context_event_ids": extraction_context_event_ids,
                         "extraction_phase": extraction_phase,
