@@ -105,6 +105,95 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         ]:
             self.assertNotIn(field, embedding)
 
+    def test_serving_record_materializer_compacts_profile_embedding_lineage_by_default(self) -> None:
+        serving_mod = importlib.import_module("tools.matrixark_mcp_serving_records")
+        materialized = serving_mod.materialize_serving_records(
+            {
+                "record_type": "context_embedding",
+                "embedding_type": "profile_entity_state",
+                "ref_type": "entity",
+                "ref_hash": 101,
+                "node_hash": 202,
+                "node_path": ["tenant:t", "user:u", "profile:long_term_memory"],
+                "dim": 2,
+                "model": "matrixark-local-token-hash-v1",
+                "vector": [0.1, 0.2],
+                "memory_scope": "user_profile",
+                "session_continuity": "cross_session",
+                "source_session_ids": ["s1", "s2"],
+                "source_entity_hashes": [11, 12],
+                "source_roles": ["assistant", "tool"],
+                "source_role_counts": {"assistant": 1, "tool": 1},
+                "source_memory_selection_policies": [
+                    "selected_assistant_decision_outcome_only",
+                    "selected_tool_evidence_only",
+                ],
+                "source_memory_selection_policy_counts": {
+                    "selected_assistant_decision_outcome_only": 1,
+                    "selected_tool_evidence_only": 1,
+                },
+                "promoted_from_memory_scope": "session",
+                "extraction_phase": "final",
+                "final_session_boundary": True,
+            }
+        )
+
+        self.assertEqual(1, len(materialized))
+        embedding = materialized[0]
+        self.assertEqual("context_embedding", embedding["record_type"])
+        self.assertEqual("profile_entity_state", embedding["embedding_type"])
+        self.assertEqual("user_profile", embedding["memory_scope"])
+        self.assertEqual("cross_session", embedding["session_continuity"])
+        self.assertEqual(2, embedding["profile_source_session_count"])
+        self.assertEqual(2, embedding["profile_source_entity_count"])
+        for field in [
+            "source_session_ids",
+            "source_entity_hashes",
+            "source_roles",
+            "source_role_counts",
+            "source_memory_selection_policies",
+            "source_memory_selection_policy_counts",
+            "promoted_from_memory_scope",
+            "extraction_phase",
+            "final_session_boundary",
+        ]:
+            self.assertNotIn(field, embedding)
+
+    def test_batch_runtime_embedding_compaction_matches_serving_shape(self) -> None:
+        runtime_mod = importlib.import_module("tools.matrixark_mcp_local_batch_extract_runtime")
+        compacted = runtime_mod.compact_context_embedding_record(
+            {
+                "record_type": "context_embedding",
+                "embedding_type": "event_text",
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+                "source_event_ids": [7],
+                "source_roles": ["user"],
+                "source_role_counts": {"user": 1},
+                "source_hook_types": ["before_llm"],
+                "source_memory_selection_policies": ["selected_user_prompt"],
+                "extraction_phase": "provisional",
+                "final_session_boundary": False,
+                "vector": [0.3, 0.4],
+            }
+        )
+
+        self.assertEqual("context_embedding", compacted["record_type"])
+        self.assertEqual("event_text", compacted["embedding_type"])
+        self.assertEqual("session", compacted["memory_scope"])
+        self.assertEqual("same_session", compacted["session_continuity"])
+        self.assertEqual([0.3, 0.4], compacted["vector"])
+        for field in [
+            "source_event_ids",
+            "source_roles",
+            "source_role_counts",
+            "source_hook_types",
+            "source_memory_selection_policies",
+            "extraction_phase",
+            "final_session_boundary",
+        ]:
+            self.assertNotIn(field, compacted)
+
     def test_modular_extractor_promotes_bounded_assistant_memory_terms(self) -> None:
         extract_mod = importlib.import_module("tools.matrixark_mcp_extraction_normalization")
         entities = extract_mod.extract_batch_entities(
@@ -2764,8 +2853,10 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(session_entities[0]["source_role_counts"], profile_entities[0]["source_role_counts"])
         self.assertEqual(session_entities[0]["source_hook_type_counts"], profile_entities[0]["source_hook_type_counts"])
         self.assertEqual(session_entities[0]["source_codex_event_counts"], profile_entities[0]["source_codex_event_counts"])
+        expected_profile_selection_counts = dict(session_entities[0]["source_memory_selection_policy_counts"])
+        expected_profile_selection_counts["selected_profile_current_state"] = 1
         self.assertEqual(
-            session_entities[0]["source_memory_selection_policy_counts"],
+            expected_profile_selection_counts,
             profile_entities[0]["source_memory_selection_policy_counts"],
         )
         self.assertEqual(["session_mod"], profile_entities[0]["source_session_ids"])
@@ -2792,7 +2883,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             ("entity", session_entities[0]["entity_hash"], "entity_state")
         ]
         profile_entity_embedding = embeddings_by_ref[
-            ("entity", profile_entities[0]["entity_hash"], "entity_state")
+            ("entity", profile_entities[0]["entity_hash"], "profile_entity_state")
         ]
         segment_embedding = embeddings_by_ref[
             ("segment", session_segments[0]["segment_hash"], "segment_text")
@@ -2900,7 +2991,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(session_entities[0]["source_hook_type_counts"], profile_dirty[0]["source_hook_type_counts"])
         self.assertEqual(session_entities[0]["source_codex_event_counts"], profile_dirty[0]["source_codex_event_counts"])
         self.assertEqual(
-            session_entities[0]["source_memory_selection_policy_counts"],
+            expected_profile_selection_counts,
             profile_dirty[0]["source_memory_selection_policy_counts"],
         )
         self.assertEqual("always_when_profile_scope_available", profile_dirty[0]["profile_promotion_policy"])
