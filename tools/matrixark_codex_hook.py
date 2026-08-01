@@ -33,6 +33,9 @@ try:
         new_secondary_index_budget,
         normalize_message_role,
         pending_extraction_memory_layer_intent,
+        profile_entity_type_for_memory_text,
+        profile_memory_class_for_entity_type,
+        profile_memory_kind_for_entity_type,
         serving_memory_layer_budget,
         serving_memory_layer_pressure,
         take_secondary_index_terms,
@@ -58,6 +61,9 @@ except ModuleNotFoundError:
         new_secondary_index_budget,
         normalize_message_role,
         pending_extraction_memory_layer_intent,
+        profile_entity_type_for_memory_text,
+        profile_memory_class_for_entity_type,
+        profile_memory_kind_for_entity_type,
         serving_memory_layer_budget,
         serving_memory_layer_pressure,
         take_secondary_index_terms,
@@ -3150,6 +3156,33 @@ def selected_user_profile_fact_policy(text: str) -> bool:
     )
 
 
+def fast_hook_profile_memory_fields(*, role: str, text: str, selection_policies: list[str]) -> Json:
+    role_name = normalize_message_role(role)
+    policy_set = {str(policy or "").strip() for policy in selection_policies if str(policy or "").strip()}
+    profile_entity_type = profile_entity_type_for_memory_text(text)
+    if profile_entity_type and (
+        "selected_user_profile_fact" in policy_set
+        or "selected_assistant_profile_fact" in policy_set
+        or profile_entity_type == "memory_feature_profile"
+    ):
+        profile_class = profile_memory_class_for_entity_type(profile_entity_type)
+        profile_kind = profile_memory_kind_for_entity_type(profile_entity_type)
+        return {
+            "profile_memory_class": profile_class,
+            "profile_memory_kind": profile_kind,
+            "source_profile_memory_classes": [profile_class],
+            "source_profile_memory_kinds": [profile_kind],
+        }
+    if role_name in {"assistant", "tool"}:
+        return {
+            "profile_memory_class": "codex_outcome",
+            "profile_memory_kind": "codex_outcome",
+            "source_profile_memory_classes": ["codex_outcome"],
+            "source_profile_memory_kinds": ["codex_outcome"],
+        }
+    return {}
+
+
 def normalize_assistant_memory_line(line: str) -> str:
     stripped = str(line or "").strip()
     stripped = re.sub(r"^(?:#{1,6}\s+|>\s+)", "", stripped).strip()
@@ -4807,26 +4840,11 @@ def fast_async_hook_ingest(
         policy_name: 1
         for policy_name in source_memory_selection_policies
     }
-    feature_memory_profile = bool(
-        FEATURE_MEMORY_POLICY_RE.search(str(text or ""))
-        or feature_scope_memory_only_policy(text)
-        or "selected_assistant_profile_fact" in source_memory_selection_policies
+    profile_memory_fields = fast_hook_profile_memory_fields(
+        role=role,
+        text=text,
+        selection_policies=source_memory_selection_policies,
     )
-    profile_memory_fields: Json = {}
-    if feature_memory_profile:
-        profile_memory_fields = {
-            "profile_memory_class": "memory_feature",
-            "profile_memory_kind": "memory_feature",
-            "source_profile_memory_classes": ["memory_feature"],
-            "source_profile_memory_kinds": ["memory_feature"],
-        }
-    elif normalize_message_role(role) in {"assistant", "tool"}:
-        profile_memory_fields = {
-            "profile_memory_class": "codex_outcome",
-            "profile_memory_kind": "codex_outcome",
-            "source_profile_memory_classes": ["codex_outcome"],
-            "source_profile_memory_kinds": ["codex_outcome"],
-        }
     metadata: Json = codex_hook_metadata(
         source="codex_hook_fast_async",
         event=event_name,
