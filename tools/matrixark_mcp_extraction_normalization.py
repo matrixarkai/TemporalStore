@@ -450,6 +450,20 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         }:
             return role_lineage("user") if user_text else {}
         return {}
+
+    def source_refs_for_match(entity_type: str, value: str) -> list[str]:
+        probe = str(value or "").strip().lower()
+        if entity_type == "tool_evidence":
+            return source_refs_for_role("tool")
+        if probe and probe in user_text.lower():
+            return source_refs_for_role("user")
+        if probe and probe in assistant_text.lower():
+            return source_refs_for_role("assistant")
+        lineage = profile_lineage_for_match(entity_type, value)
+        roles = lineage.get("source_roles") if isinstance(lineage.get("source_roles"), list) else []
+        if len(roles) == 1:
+            return source_refs_for_role(str(roles[0]))
+        return source_refs
     user_messages = [
         item
         for item in messages
@@ -637,13 +651,14 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
             entity_name = canonical_entity_name(entity_type, value)
             field_patches = infer_entity_field_patches(entity_type, value, text)
             role_lineage_fields = profile_lineage_for_match(entity_type, value or match.group(0))
+            matched_source_refs = source_refs_for_match(entity_type, value or match.group(0))
             entities.append(
                 {
                     "entity_type": entity_type,
                     "entity_name": entity_name or entity_type,
                     "state": summarize_text(value or text, limit=220),
                     "confidence": 0.82 if value else 0.66,
-                    "source_refs": source_refs,
+                    "source_refs": matched_source_refs,
                     **role_lineage_fields,
                     "operator": normalize_entity_operator(None, entity_type),
                     "field_patches": field_patches,
