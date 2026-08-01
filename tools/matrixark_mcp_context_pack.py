@@ -999,17 +999,54 @@ def _memory_layer_for_ref(ref: Json) -> str:
         or str(ref.get("classification") or metadata.get("classification") or "").strip().upper() == "PENDING_ASYNC_EXTRACTION"
         or str(ref.get("extraction_phase") or metadata.get("extraction_phase") or "").strip().lower() == "pending_async"
     ):
-        return "pending_async"
+        return "pending_async_event"
     sharing_scope = str(ref.get("sharing_scope") or metadata.get("sharing_scope") or "").strip().lower()
     ref_type = str(ref.get("ref_type") or "")
     if sharing_scope in {"tenant_shared", "global_shared"} or ref_type in {"resource_chunk", "skill_section"}:
         return "shared_context"
     memory_scope = str(ref.get("memory_scope") or metadata.get("memory_scope") or "").strip().lower()
+    session_continuity = str(ref.get("session_continuity") or metadata.get("session_continuity") or "").strip().lower()
+    profile_memory_kind = str(ref.get("profile_memory_kind") or metadata.get("profile_memory_kind") or "").strip().lower()
+    source_profile_memory_kinds = {
+        str(value or "").strip().lower()
+        for value in (
+            ref.get("source_profile_memory_kinds")
+            if isinstance(ref.get("source_profile_memory_kinds"), list)
+            else metadata.get("source_profile_memory_kinds", [])
+            if isinstance(metadata.get("source_profile_memory_kinds"), list)
+            else []
+        )
+        if str(value or "").strip()
+    }
+    event_type = str(ref.get("event_type") or metadata.get("event_type") or ref.get("entity_type") or metadata.get("entity_type") or "").strip().lower()
+    codex_outcome_types = {
+        "assistant_response",
+        "assistant_decision",
+        "tool_evidence",
+        "codex_next_action",
+        "codex_blocker",
+        "codex_publish_outcome",
+        "codex_code_change",
+        "codex_benchmark_result",
+    }
+    is_codex_outcome_memory = profile_memory_kind == "codex_outcome" or "codex_outcome" in source_profile_memory_kinds or event_type in codex_outcome_types
+    is_memory_feature_memory = profile_memory_kind == "memory_feature" or "memory_feature" in source_profile_memory_kinds
+    if memory_scope in {"user_profile", "profile", "cross_session_profile"} and session_continuity == "cross_session":
+        if is_codex_outcome_memory:
+            return "cross_session_codex_outcome"
+        if is_memory_feature_memory:
+            ref_kind = str(ref.get("ref_type") or metadata.get("ref_type") or ref.get("context_class") or metadata.get("context_class") or "").strip().lower()
+            if ref_kind in {"entity", "context_entity", "profile_entity"}:
+                return "cross_session_memory_feature_entity"
+            if ref_kind in {"summary", "context_summary"}:
+                return "cross_session_memory_feature_summary"
+            if ref_kind in {"compression", "context_compression_event"}:
+                return "cross_session_memory_feature_compression"
+            return "cross_session_memory_feature_entity"
     if memory_scope in {"user_profile", "profile", "cross_session_profile"}:
         return "profile"
     if memory_scope in {"session", "session_memory"}:
         return "session"
-    session_continuity = str(ref.get("session_continuity") or metadata.get("session_continuity") or "")
     if session_continuity == "same_session":
         return "session"
     if session_continuity == "cross_session":

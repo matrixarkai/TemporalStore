@@ -6273,7 +6273,7 @@ def memory_layer_for_serving_ref(ref: Json) -> str:
         or str(ref.get("classification") or metadata.get("classification") or "").strip().upper() == "PENDING_ASYNC_EXTRACTION"
         or str(ref.get("extraction_phase") or metadata.get("extraction_phase") or "").strip().lower() == "pending_async"
     ):
-        return "pending_async"
+        return "pending_async_event"
     sharing_scope = str(ref.get("sharing_scope") or metadata.get("sharing_scope") or "").strip().lower()
     ref_type = str(ref.get("ref_type") or "")
     if sharing_scope in {"tenant_shared", "global_shared"} or ref_type in {"resource_chunk", "skill_section"}:
