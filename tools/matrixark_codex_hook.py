@@ -4541,7 +4541,11 @@ def fast_async_hook_ingest(
         policy_name: 1
         for policy_name in source_memory_selection_policies
     }
-    feature_memory_profile = bool(FEATURE_MEMORY_POLICY_RE.search(str(text or "")))
+    feature_memory_profile = bool(
+        FEATURE_MEMORY_POLICY_RE.search(str(text or ""))
+        or feature_scope_memory_only_policy(text)
+        or "selected_assistant_profile_fact" in source_memory_selection_policies
+    )
     profile_memory_fields: Json = {}
     if feature_memory_profile:
         profile_memory_fields = {
