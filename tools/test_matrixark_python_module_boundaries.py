@@ -2525,6 +2525,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                         "codex_event": "UserPromptSubmit",
                         "codex_memory_selection": {
                             "policy": "selected_user_prompt",
+                            "policies": ["selected_user_prompt", "selected_user_profile_fact"],
+                            "policy_counts": {"selected_user_prompt": 1, "selected_user_profile_fact": 1},
                             "selection_lossy": False,
                             "retained_text_ratio": 1.0,
                             "retained_line_ratio": 1.0,
@@ -2566,8 +2568,14 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual({"user": 1}, committed["source_role_counts"])
         self.assertEqual({"before_llm": 1}, committed["source_hook_type_counts"])
         self.assertEqual({"UserPromptSubmit": 1}, committed["source_codex_event_counts"])
-        self.assertEqual(["selected_user_prompt"], committed["source_memory_selection_policies"])
-        self.assertEqual({"selected_user_prompt": 1}, committed["source_memory_selection_policy_counts"])
+        self.assertEqual(
+            ["selected_user_profile_fact", "selected_user_prompt"],
+            committed["source_memory_selection_policies"],
+        )
+        self.assertEqual(
+            {"selected_user_prompt": 1, "selected_user_profile_fact": 1},
+            committed["source_memory_selection_policy_counts"],
+        )
         self.assertEqual(1, committed["source_memory_selection_complete_count"])
         self.assertEqual(1.0, committed["source_memory_selection_retained_text_ratio_avg"])
         self.assertEqual(["memory_feature"], committed["source_profile_memory_classes"])
@@ -2577,7 +2585,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("", committed["profile_promotion_blocker"])
         self.assertEqual([{"entity_hash": 44, "profile_entity_hash": 55}], committed["profile_promotion_summary"])
         self.assertEqual(
-            {"selected_user_prompt": 1},
+            {"selected_user_prompt": 1, "selected_user_profile_fact": 1},
             adapter.batch_extract_calls[0]["metadata"]["source_memory_selection_policy_counts"],
         )
         self.assertEqual(["memory_feature"], adapter.batch_extract_calls[0]["metadata"]["source_profile_memory_classes"])
