@@ -41,6 +41,7 @@ def _idle_commit_schedule(args: Json, envelope: Json, pending_event_count: int, 
     return {
         "idle_commit_timeout_ms": idle_timeout_ms,
         "idle_commit_deadline_ms": deadline_ms,
+        "idle_commit_cutoff_ms": int(envelope.get("ingestion_time_ms") or 0),
         "idle_commit_pending_event_count": pending_event_count,
         "idle_commit_pending_message_count": pending_message_count,
         "idle_commit_due": idle_timeout_ms == 0,
