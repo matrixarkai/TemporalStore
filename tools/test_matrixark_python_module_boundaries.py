@@ -2321,7 +2321,12 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                         {"role": "assistant", "content": "Remember the assistant decision."},
                         {"role": "tool", "content": "Exit code: 0"},
                     ],
-                    "metadata": {"hook_type": "hook_boundary", "codex_event": "Stop"},
+                    "metadata": {
+                        "hook_type": "hook_boundary",
+                        "codex_event": "Stop",
+                        "source_profile_memory_classes": ["memory_feature"],
+                        "source_profile_memory_kinds": ["memory_feature"],
+                    },
                     "ingestion_time_ms": 200,
                 },
             }
@@ -2408,6 +2413,15 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("final", final_summaries[0]["extraction_phase"])
         self.assertTrue(final_summaries[0]["final_session_boundary"])
         self.assertEqual(["provisional"], final_summaries[0]["source_extraction_phases"])
+        self.assertEqual(["memory_feature"], final_summaries[0]["source_profile_memory_classes"])
+        self.assertEqual(["memory_feature"], final_summaries[0]["source_profile_memory_kinds"])
+        self.assertEqual("memory_feature", final_summaries[0]["profile_memory_class"])
+        self.assertEqual("memory_feature", final_summaries[0]["profile_memory_kind"])
+        self.assertEqual(
+            ["always_when_profile_scope_available"],
+            final_summaries[0]["source_profile_promotion_policies"],
+        )
+        self.assertEqual("always_when_profile_scope_available", final_summaries[0]["profile_promotion_policy"])
         self.assertEqual([2], final_summaries[0]["source_event_ids"])
         summary_indexes = [
             record
@@ -2420,6 +2434,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn("summary_type:session_final", summary_index_names)
         self.assertIn("extraction_phase:final", summary_index_names)
         self.assertIn("source_extraction_phase:provisional", summary_index_names)
+        self.assertIn("profile_memory_class:memory_feature", summary_index_names)
+        self.assertIn("profile_memory_kind:memory_feature", summary_index_names)
+        self.assertIn("profile_promotion_policy:always_when_profile_scope_available", summary_index_names)
 
         second_finalized = runtime_mod.session_commit(
             multi_adapter,
