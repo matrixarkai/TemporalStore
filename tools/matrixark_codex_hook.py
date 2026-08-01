@@ -3813,11 +3813,11 @@ def codex_retrieve_cross_session_options(query: str = "") -> Json:
     if question_type == "profile_memory":
         options.update(
             {
-                "budget_ratio": 0.20,
-                "max_budget_ratio": 0.30,
+                "budget_ratio": 0.30,
+                "max_budget_ratio": 0.35,
                 "max_sessions": 8,
                 "max_candidates": 48,
-                "min_entity_bridge_refs": 2,
+                "min_entity_bridge_refs": 3,
                 "preferred_ref_types": ["entity", "summary", "compression", "segment", "event"],
             }
         )
