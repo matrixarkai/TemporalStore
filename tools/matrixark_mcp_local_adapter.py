@@ -3465,7 +3465,13 @@ class MatrixArkLocalAdapter:
                 }
                 or (
                     record_type == "context_event"
-                    and str(record.get("event_type") or record.get("classification") or "").lower() == "pending_async"
+                    and (
+                        str(record.get("event_type") or record.get("classification") or "").lower() == "pending_async"
+                        or str(record.get("classification") or "").strip().upper() == "PENDING_ASYNC_EXTRACTION"
+                        or str(record.get("extraction_phase") or "").strip().lower() == "pending_async"
+                        or str(record.get("extraction_status") or "").strip().lower() in {"pending", "async_pending"}
+                        or str(record.get("extraction_mode") or "").strip().lower() == "async_pending"
+                    )
                 )
             ):
                 if not recovered_scope_matches(record, scope) and not profile_summary_path_matches(record, scope):
@@ -11247,7 +11253,14 @@ class MatrixArkLocalAdapter:
             ):
                 continue
             envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else {}
-            is_pending_async_event = str(record.get("event_type") or record.get("classification") or "").lower() == "pending_async"
+            raw_event_type = str(record.get("event_type") or record.get("classification") or "")
+            is_pending_async_event = (
+                raw_event_type.strip().lower() == "pending_async"
+                or str(record.get("classification") or "").strip().upper() == "PENDING_ASYNC_EXTRACTION"
+                or str(record.get("extraction_phase") or "").strip().lower() == "pending_async"
+                or str(record.get("extraction_status") or "").strip().lower() in {"pending", "async_pending"}
+                or str(record.get("extraction_mode") or "").strip().lower() == "async_pending"
+            )
             record_scope = (
                 recovered_scope_for_query(record, retrieval_scope)
                 if is_pending_async_event
@@ -11275,7 +11288,7 @@ class MatrixArkLocalAdapter:
             embedding_score = cosine(query_embedding, event_embedding_vectors.get(record["event_id_hash"], []))
             node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
             origin_score = hybrid_origin_score(query_terms, text, embedding_score, node_score)
-            event_type = str(record.get("event_type") or record.get("classification") or "")
+            event_type = "pending_async" if is_pending_async_event else raw_event_type
             candidate_metadata: Json = {}
             record_metadata = record.get("metadata")
             envelope_metadata = envelope.get("metadata")
@@ -11283,6 +11296,8 @@ class MatrixArkLocalAdapter:
                 candidate_metadata.update(record_metadata)
             if isinstance(envelope_metadata, dict):
                 candidate_metadata.update(envelope_metadata)
+            if is_pending_async_event and raw_event_type and raw_event_type != "pending_async":
+                candidate_metadata.setdefault("semantic_event_type", raw_event_type)
             internal_extraction = record.get("internal_extraction") if isinstance(record.get("internal_extraction"), dict) else {}
             candidate = {
                 "ref_type": "event",
@@ -11313,6 +11328,10 @@ class MatrixArkLocalAdapter:
                 "source_codex_event_counts": record.get("source_codex_event_counts", {}),
                 "source_memory_selection_policies": record.get("source_memory_selection_policies", []),
                 "source_memory_selection_policy_counts": record.get("source_memory_selection_policy_counts", {}),
+                "profile_memory_class": record.get("profile_memory_class", ""),
+                "profile_memory_kind": record.get("profile_memory_kind", ""),
+                "source_profile_memory_classes": record.get("source_profile_memory_classes", []),
+                "source_profile_memory_kinds": record.get("source_profile_memory_kinds", []),
                 "source_memory_scopes": record.get("source_memory_scopes", []),
                 "source_session_continuities": record.get("source_session_continuities", []),
                 "source_extraction_phases": record.get("source_extraction_phases", []),

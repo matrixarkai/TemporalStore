@@ -3754,9 +3754,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 for ref in pack["selected_refs"]
                 if ref.get("ref_type") == "event" and ref.get("event_type") == "pending_async"
             )
-            self.assertEqual("pending_async_event", candidate_memory_layer_name(pending_ref))
+            self.assertEqual("pending_async_memory_feature_event", candidate_memory_layer_name(pending_ref))
             budget = pack["recall_policy"]["memory_layer_budget"]
-            self.assertGreaterEqual(budget["by_memory_layer"]["pending_async_event"]["refs"], 1)
+            self.assertGreaterEqual(budget["by_memory_layer"]["pending_async_memory_feature_event"]["refs"], 1)
             self.assertGreaterEqual(budget["by_extraction_phase"]["pending_async"]["refs"], 1)
             self.assertIn("selected_pending_async_event_refs:1", pack["quality_warnings"])
             self.assertEqual(1, pack["recall_policy"]["selected_pending_async"]["selected_ref_count"])

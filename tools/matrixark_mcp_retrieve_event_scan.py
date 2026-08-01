@@ -101,7 +101,14 @@ def scan_event_candidates(
         embedding_score = cosine(query_embedding, event_embedding_vectors.get(record["event_id_hash"], []))
         node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
         origin_score = hybrid_origin_score(query_terms, text, embedding_score, node_score)
-        event_type = str(record.get("event_type") or record.get("classification") or "")
+        raw_event_type = str(record.get("event_type") or record.get("classification") or "")
+        is_pending_async = (
+            str(record.get("classification") or "").strip().upper() == "PENDING_ASYNC_EXTRACTION"
+            or str(record.get("extraction_phase") or "").strip().lower() == "pending_async"
+            or str(record.get("extraction_status") or "").strip().lower() in {"pending", "async_pending"}
+            or str(record.get("extraction_mode") or "").strip().lower() == "async_pending"
+        )
+        event_type = "pending_async" if is_pending_async else raw_event_type
         candidate_metadata: Json = {}
         record_metadata = record.get("metadata")
         envelope_metadata = envelope.get("metadata")
@@ -109,6 +116,8 @@ def scan_event_candidates(
             candidate_metadata.update(record_metadata)
         if isinstance(envelope_metadata, dict):
             candidate_metadata.update(envelope_metadata)
+        if is_pending_async and raw_event_type and raw_event_type != "pending_async":
+            candidate_metadata.setdefault("semantic_event_type", raw_event_type)
         candidate = candidate_builders.event_candidate(
             record,
             envelope=envelope,
