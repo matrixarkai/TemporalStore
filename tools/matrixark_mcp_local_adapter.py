@@ -11629,17 +11629,23 @@ class MatrixArkLocalAdapter:
                 continue
             if not selected_by_tree(record):
                 continue
+            text = str(record.get("text", ""))
+            sparse_score = sparse_lexical_score(query_terms, text)
+            keyword_score = len(query_terms.intersection(tokens(text)))
             index_record = record_with_embedding_defaults(record, "event", record.get("event_id_hash"))
             index_terms = candidate_index_terms(index_record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
-            if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
+            secondary_filters_pass = passes_secondary_index_filters(
+                index_terms,
+                secondary_index_filter_groups,
+                mode=secondary_index_filter_mode,
+            )
+            live_pending_text_match = is_pending_async_event and (keyword_score > 0 or sparse_score > 0)
+            if not secondary_filters_pass and not live_pending_text_match:
                 secondary_index_dropped_count += 1
                 continue
             secondary_index_matched_count += 1
             if not admit_candidate_for_node(record):
                 continue
-            text = str(record.get("text", ""))
-            sparse_score = sparse_lexical_score(query_terms, text)
-            keyword_score = len(query_terms.intersection(tokens(text)))
             embedding_score = cosine(query_embedding, event_embedding_vectors.get(record["event_id_hash"], []))
             node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
             origin_score = hybrid_origin_score(query_terms, text, embedding_score, node_score)
