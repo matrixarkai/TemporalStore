@@ -320,7 +320,11 @@ export MATRIXARK_TEMPORALSTORE_PREFIX="$hook_prefix"
 export MATRIXARK_TEMPORALSTORE_METASERVER="127.0.0.1:$meta_port"
 export MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS=60000
 export MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS=60000
-event="\${1:-\${MATRIXARK_AGENT_EVENT:-\${CODEX_HOOK_EVENT:-UserPromptSubmit}}}"
+event="\${MATRIXARK_AGENT_EVENT:-\${CODEX_HOOK_EVENT:-UserPromptSubmit}}"
+if [[ "\${1:-}" != "" && "\${1:-}" != --* ]]; then
+  event="\$1"
+  shift
+fi
 exec python3 "$repo/tools/matrixark_agent_hook.py" --agent codex --event "\$event" --backend temporalstore-rust "\$@"
 EOF
   chmod +x "$proxy_wrapper" "$hook_wrapper"
