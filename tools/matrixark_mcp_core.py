@@ -6139,6 +6139,8 @@ def memory_layer_for_serving_ref(ref: Json) -> str:
         "cross_session_codex_outcome_segment",
     }:
         return "cross_session_codex_outcome"
+    if ref_layer == "cross_session_memory_feature_entity":
+        return "cross_session_memory_feature_entity"
     if ref_layer in {"same_session_codex_outcome_event", "same_session_codex_outcome_segment"}:
         return "session_codex_outcome"
     if profile_memory_kind == "codex_outcome":
@@ -6210,6 +6212,14 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
     memory_layer = memory_layer_for_serving_ref(ref)
     if memory_layer and memory_layer != default_memory_layer:
         item["memory_layer"] = memory_layer
+    profile_memory_kind = str(ref.get("profile_memory_kind") or metadata.get("profile_memory_kind") or "").strip()
+    if profile_memory_kind:
+        item["profile_memory_kind"] = profile_memory_kind
+    profile_memory_class = str(ref.get("profile_memory_class") or metadata.get("profile_memory_class") or "").strip()
+    if profile_memory_class:
+        item["profile_memory_class"] = profile_memory_class
+    if bool(ref.get("profile_entity_current") or metadata.get("profile_entity_current")):
+        item["profile_entity_current"] = True
     lineage_fields = [
         "source_session_ids",
         "source_roles",
