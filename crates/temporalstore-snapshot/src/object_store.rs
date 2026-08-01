@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use bytes::Bytes;
+use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -16,7 +17,7 @@ pub enum ObjectStoreError {
     Io(#[from] std::io::Error),
 }
 
-#[derive(Debug, Clone, Default, Eq, PartialEq)]
+#[derive(Debug, Clone, Default, Eq, PartialEq, Serialize)]
 pub struct AppendBlobReceipt {
     pub key: String,
     pub start_offset: u64,

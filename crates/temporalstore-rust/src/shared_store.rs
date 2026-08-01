@@ -242,7 +242,7 @@ pub struct SharedStoreStorageWriter<O> {
     pending: Mutex<VecDeque<SharedStoreOplogEntry>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplayReport {
     pub applied: usize,
     pub last_oplog_index: u64,
