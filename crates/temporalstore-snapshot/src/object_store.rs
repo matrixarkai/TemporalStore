@@ -16,11 +16,36 @@ pub enum ObjectStoreError {
     Io(#[from] std::io::Error),
 }
 
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct AppendBlobReceipt {
+    pub key: String,
+    pub start_offset: u64,
+    pub end_offset: u64,
+    pub bytes_written: u64,
+    pub object_length: u64,
+    pub physical_extent_count: usize,
+    pub first_physical_offset: Option<u64>,
+}
+
 #[async_trait]
 pub trait ObjectStore: Send + Sync {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError>;
-    async fn append_blob(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
-        self.put(key, bytes).await
+    async fn append_blob(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<AppendBlobReceipt, ObjectStoreError> {
+        let bytes_written = bytes.len() as u64;
+        self.put(key, bytes).await?;
+        Ok(AppendBlobReceipt {
+            key: key.to_string(),
+            start_offset: 0,
+            end_offset: bytes_written,
+            bytes_written,
+            object_length: bytes_written,
+            physical_extent_count: 0,
+            first_physical_offset: None,
+        })
     }
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError>;
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError>;
@@ -84,7 +109,11 @@ impl ObjectStore for FileObjectStore {
         Ok(())
     }
 
-    async fn append_blob(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+    async fn append_blob(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<AppendBlobReceipt, ObjectStoreError> {
         let path = self.resolve(key)?;
         if let Some(parent) = path.parent() {
             let should_create = {
@@ -98,6 +127,12 @@ impl ObjectStore for FileObjectStore {
                 tokio::fs::create_dir_all(parent).await?;
             }
         }
+        let start_offset = match tokio::fs::metadata(&path).await {
+            Ok(metadata) => metadata.len(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(err) => return Err(ObjectStoreError::Io(err)),
+        };
+        let bytes_written = bytes.len() as u64;
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -105,7 +140,16 @@ impl ObjectStore for FileObjectStore {
             .await?;
         file.write_all(&bytes).await?;
         file.flush().await?;
-        Ok(())
+        let end_offset = start_offset.saturating_add(bytes_written);
+        Ok(AppendBlobReceipt {
+            key: key.to_string(),
+            start_offset,
+            end_offset,
+            bytes_written,
+            object_length: end_offset,
+            physical_extent_count: 0,
+            first_physical_offset: None,
+        })
     }
 
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
@@ -182,7 +226,7 @@ mod tests {
             .append_blob("wal/blob.pb", Bytes::from_static(b"first"))
             .await
             .unwrap();
-        store
+        let receipt = store
             .append_blob("wal/blob.pb", Bytes::from_static(b"second"))
             .await
             .unwrap();
@@ -191,5 +235,8 @@ mod tests {
             store.get("wal/blob.pb").await.unwrap(),
             Bytes::from_static(b"firstsecond")
         );
+        assert_eq!(receipt.start_offset, 5);
+        assert_eq!(receipt.end_offset, 11);
+        assert_eq!(receipt.object_length, 11);
     }
 }

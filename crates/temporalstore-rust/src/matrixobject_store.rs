@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use bytes::Bytes;
 use matrixobjectstore_rs::{MatrixObjectStore, ObjectError as MatrixObjectError, StoreOptions};
-use temporalstore_snapshot::object_store::{ObjectStore, ObjectStoreError};
+use temporalstore_snapshot::object_store::{AppendBlobReceipt, ObjectStore, ObjectStoreError};
 
 #[derive(Debug, Clone)]
 pub struct MatrixObjectObjectStore {
@@ -50,12 +50,27 @@ impl ObjectStore for MatrixObjectObjectStore {
         Ok(())
     }
 
-    async fn append_blob(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+    async fn append_blob(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<AppendBlobReceipt, ObjectStoreError> {
+        let bytes_written = bytes.len() as u64;
         let mut inner = self.inner.lock().expect("matrixobject lock poisoned");
-        inner
+        let metadata = inner
             .append_object(&self.bucket, key, bytes.to_vec(), self.content_type.clone())
             .map_err(map_matrixobject_error)?;
-        Ok(())
+        let end_offset = metadata.length;
+        let start_offset = end_offset.saturating_sub(bytes_written);
+        Ok(AppendBlobReceipt {
+            key: key.to_string(),
+            start_offset,
+            end_offset,
+            bytes_written,
+            object_length: metadata.length,
+            physical_extent_count: metadata.extents.len(),
+            first_physical_offset: metadata.extents.first().map(|extent| extent.offset),
+        })
     }
 
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
