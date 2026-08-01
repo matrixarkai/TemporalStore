@@ -11921,6 +11921,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 if record.get("record_type") == "context_index"
                 and record.get("data_model") == "context_profile_entity"
             }
+            profile_index_rows = [
+                record
+                for record in records
+                if record.get("record_type") == "context_index"
+                and record.get("data_model") == "context_profile_entity"
+            ]
             self.assertIn("memory_scope:user_profile", index_names)
             self.assertIn("session_continuity:cross_session", index_names)
             self.assertIn("source_role:assistant", index_names)
@@ -11931,6 +11937,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(any(str(name).startswith("entity_type:") for name in index_names))
             self.assertIn("entity_type:assistant_decision", index_names)
             self.assertIn("entity_type:tool_evidence", index_names)
+            self.assertTrue(profile_index_rows)
+            self.assertTrue(all(record.get("memory_scope") == "user_profile" for record in profile_index_rows))
+            self.assertTrue(all(record.get("session_continuity") == "cross_session" for record in profile_index_rows))
+            self.assertTrue(all(record.get("profile_entity_current") is True for record in profile_index_rows))
+            self.assertTrue(all(record.get("profile_revision", 0) >= 1 for record in profile_index_rows))
+            self.assertTrue(all(record.get("promoted_from_memory_scope") == "session" for record in profile_index_rows))
             self.assertTrue(
                 any(
                     record.get("entity_type") == "assistant_decision"
