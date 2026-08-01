@@ -117,6 +117,173 @@ struct NativeScoredCandidate {
     cross_session_rerank_boost_value: f64,
 }
 
+fn native_query_contains_any(lower: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| lower.contains(needle))
+}
+
+fn infer_native_question_type(query: &str) -> &'static str {
+    let lower = query.to_ascii_lowercase();
+    if native_query_contains_any(
+        &lower,
+        &[
+            "profile memory",
+            "user profile",
+            "long term memory",
+            "long-term memory",
+            "cross session memory",
+            "cross-session memory",
+            "session memory",
+            "memory feature",
+            "openviking",
+            "vikingmem",
+            "mem0",
+        ],
+    ) {
+        return "profile_memory";
+    }
+    if native_query_contains_any(
+        &lower,
+        &[
+            "benchmark",
+            "workload",
+            "latency",
+            "p50",
+            "p90",
+            "p95",
+            "p99",
+            "throughput",
+            "qps",
+            "ops/s",
+            "req/s",
+            "hit rate",
+            "read hit",
+            "memory quality",
+            "locomo",
+            "longmemeval",
+        ],
+    ) {
+        return "benchmark_quality";
+    }
+    if native_query_contains_any(
+        &lower,
+        &[
+            "both",
+            "together",
+            "across",
+            "between",
+            "compare",
+            "combine",
+            "sessions",
+            "multi-hop",
+            "multi session",
+            "multi-session",
+            "cross session",
+            "cross-session",
+            "previous sessions",
+            "other sessions",
+        ],
+    ) {
+        return "multi_hop";
+    }
+    if native_query_contains_any(
+        &lower,
+        &[
+            "what date",
+            "which date",
+            "yesterday",
+            "tomorrow",
+            "last week",
+            "next week",
+            "before",
+            "after",
+            "as of",
+            "valid as of",
+        ],
+    ) || lower.split_whitespace().any(|term| matches!(term, "when" | "day" | "month" | "year"))
+    {
+        return "date";
+    }
+    if native_query_contains_any(
+        &lower,
+        &[
+            "current",
+            "currently",
+            "latest",
+            "now",
+            "still",
+            "today",
+            "valid",
+            "status",
+            "preference",
+            "prefer",
+            "likes",
+            "where does",
+            "where is",
+            "goal",
+            "task",
+            "requirement",
+            "user request",
+            "asked codex",
+            "what did we decide",
+            "what was decided",
+            "who owns",
+            "owner",
+            "decision",
+            "decided",
+        ],
+    ) {
+        return "current_state";
+    }
+    if (lower.contains("assistant") || lower.contains("codex"))
+        && native_query_contains_any(
+            &lower,
+            &[
+                "decide",
+                "decided",
+                "decision",
+                "done",
+                "implemented",
+                "fixed",
+                "pushed",
+                "push",
+                "committed",
+                "commit",
+                "changed",
+                "updated",
+                "validated",
+                "verified",
+            ],
+        )
+    {
+        return "current_state";
+    }
+    if native_query_contains_any(
+        &lower,
+        &["why", "reason", "because", "feel", "felt", "emotion", "happy", "sad", "angry", "worried", "excited"],
+    ) {
+        return "why_emotion";
+    }
+    if native_query_contains_any(
+        &lower,
+        &["overview", "summarize", "summary", "explore", "broad", "what is in", "what do we know", "topics", "map", "inventory"],
+    ) {
+        return "broad_exploration";
+    }
+    if native_query_contains_any(
+        &lower,
+        &["evidence", "quote", "exactly", "what did", "conversation", "dialogue", "message"],
+    ) {
+        return "evidence";
+    }
+    if native_query_contains_any(
+        &lower,
+        &["procedure", "step", "steps", "how to", "troubleshoot", "rollback", "runbook", "playbook", "checklist", "fix", "remediate", "mitigate"],
+    ) {
+        return "procedure";
+    }
+    "fact"
+}
+
 #[derive(Debug, Serialize)]
 struct RecordLogResponse {
     ok: bool,
@@ -1207,7 +1374,10 @@ fn cross_session_rerank_boost(
         || record.get("source_chunk_hash").is_some();
     match record_type {
         "context_entity" => {
-            if matches!(question_type, "current_state" | "latest" | "multi_hop") {
+            if matches!(
+                question_type,
+                "current_state" | "latest" | "multi_hop" | "profile_memory"
+            ) {
                 0.10
             } else {
                 0.06
@@ -1262,7 +1432,7 @@ fn type_priority_boost(record: &Value, context_class: &str, question_type: &str)
             }
         }
         "context_entity" => {
-            if question_type == "current_state" {
+            if matches!(question_type, "current_state" | "latest" | "profile_memory") {
                 0.24
             } else {
                 0.12
@@ -1318,7 +1488,10 @@ fn parse_cross_session_policy(
     let config = request
         .get("cross_session")
         .filter(|value| value.is_object());
-    let mut budget_ratio = if matches!(
+    let profile_memory_query = question_type == "profile_memory";
+    let mut budget_ratio = if profile_memory_query {
+        0.30
+    } else if matches!(
         question_type,
         "current_state" | "latest" | "multi_hop" | "date"
     ) {
@@ -1331,7 +1504,7 @@ fn parse_cross_session_policy(
     let max_budget_ratio = config
         .and_then(|cfg| cfg.get("max_budget_ratio"))
         .and_then(Value::as_f64)
-        .unwrap_or(0.20)
+        .unwrap_or(if profile_memory_query { 0.35 } else { 0.20 })
         .clamp(0.0, 1.0);
     if budget_ratio > max_budget_ratio {
         budget_ratio = max_budget_ratio;
@@ -1345,7 +1518,7 @@ fn parse_cross_session_policy(
     let max_budget_tokens = config
         .and_then(|cfg| cfg.get("max_budget_tokens"))
         .and_then(Value::as_u64)
-        .unwrap_or(8192);
+        .unwrap_or(if profile_memory_query { 12288 } else { 8192 });
     let mut computed = (remote_budget as f64 * budget_ratio) as u64;
     if remote_budget >= 1200 && computed > 0 {
         computed = computed.max(256);
@@ -1362,11 +1535,11 @@ fn parse_cross_session_policy(
     let mut max_sessions = config
         .and_then(|cfg| cfg.get("max_sessions"))
         .and_then(Value::as_u64)
-        .unwrap_or(3);
+        .unwrap_or(if profile_memory_query { 8 } else { 3 });
     let mut max_candidates = config
         .and_then(|cfg| cfg.get("max_candidates"))
         .and_then(Value::as_u64)
-        .unwrap_or(24);
+        .unwrap_or(if profile_memory_query { 48 } else { 24 });
     let mut min_score = config
         .and_then(|cfg| cfg.get("min_score"))
         .and_then(Value::as_f64)
@@ -1380,7 +1553,7 @@ fn parse_cross_session_policy(
     let mut min_entity_bridge_refs = config
         .and_then(|cfg| cfg.get("min_entity_bridge_refs"))
         .and_then(Value::as_u64)
-        .unwrap_or(2);
+        .unwrap_or(if profile_memory_query { 3 } else { 2 });
     let mut parallelism = config
         .and_then(|cfg| cfg.get("parallelism"))
         .and_then(Value::as_u64)
@@ -3367,8 +3540,9 @@ fn retrieve_context_pack_native(
     let question_type = request
         .get("question_type")
         .and_then(Value::as_str)
-        .unwrap_or("fact")
-        .to_string();
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| infer_native_question_type(&query).to_string());
     let max_refs = json_field(&request, &["ranking", "max_selected_refs"])
         .and_then(Value::as_u64)
         .unwrap_or(24)
@@ -3604,9 +3778,12 @@ fn retrieve_context_pack_native(
     let has_scored_event_candidate = scored.iter().any(|candidate| candidate.context_class == "event");
     let summary_allowed_for_question = matches!(
         question_type.as_str(),
-        "broad" | "broad_exploration" | "exploration"
+        "broad" | "broad_exploration" | "exploration" | "profile_memory"
     );
-    let current_state_query = matches!(question_type.as_str(), "current_state" | "latest");
+    let current_state_query = matches!(
+        question_type.as_str(),
+        "current_state" | "latest" | "profile_memory"
+    );
     let (profile_by_entity, profile_by_source_entity_hash) = if current_state_query {
         profile_shadow_maps(&scored)
     } else {
@@ -5275,13 +5452,20 @@ fn retrieve_context_pack_output(
         request.query.clone()
     };
     let query_terms = query_terms(&query);
-    let question_type = request_record
+    let inferred_question_type;
+    let question_type = if let Some(explicit) = request_record
         .get("question_type")
         .and_then(Value::as_str)
-        .unwrap_or("fact");
+        .filter(|value| !value.trim().is_empty())
+    {
+        explicit
+    } else {
+        inferred_question_type = infer_native_question_type(&query);
+        inferred_question_type
+    };
     let summary_allowed_for_question = matches!(
         question_type,
-        "broad" | "broad_exploration" | "exploration"
+        "broad" | "broad_exploration" | "exploration" | "profile_memory"
     );
     let has_event_candidate = snapshot
         .candidates
@@ -5304,7 +5488,10 @@ fn retrieve_context_pack_output(
         candidates.truncate(keep);
     }
     candidates.sort_by(|left, right| compare_scored_candidate(*left, *right));
-    let current_state_query = matches!(question_type, "current_state" | "latest");
+    let current_state_query = matches!(
+        question_type,
+        "current_state" | "latest" | "profile_memory"
+    );
     let all_candidate_refs: Vec<Value> = snapshot
         .candidates
         .iter()
