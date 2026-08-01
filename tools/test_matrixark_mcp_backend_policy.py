@@ -5513,6 +5513,21 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual({"final": 80, "provisional": 20}, plan["extraction_phase_budget_tokens"])
         self.assertEqual("explicit", plan["extraction_phase_budget_mode"])
 
+    def test_feature_scope_prunes_codex_tool_alias_budgets(self) -> None:
+        source_roles, memory_layers, selection_policies = retrieve_planning.prune_feature_scope_evidence_budgets(
+            query="focus on feature parity only, no evidence or debugging",
+            source_role_budget_tokens={"function_call_output": 32, "assistant": 64},
+            memory_layer_budget_tokens={"cross_session_codex_outcome_event": 32, "profile_entity": 64},
+            memory_selection_policy_budget_tokens={
+                "selected_tool_evidence_only": 32,
+                "selected_profile_current_state": 64,
+            },
+        )
+
+        self.assertEqual({"assistant": 64}, source_roles)
+        self.assertEqual({"profile_entity": 64}, memory_layers)
+        self.assertEqual({"selected_profile_current_state": 64}, selection_policies)
+
     def test_retrieval_plan_uses_question_type_source_role_budget_defaults(self) -> None:
         plan = retrieve_planning.retrieval_query_budget_plan(
             {
