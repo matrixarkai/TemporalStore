@@ -11534,7 +11534,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("provisional", result["auto_batch_extract_result"]["extraction_phase"])
             self.assertFalse(result["auto_batch_extract_result"]["final_session_boundary"])
             self.assertEqual(1, len(adapter.pending_session_events(scope)))
-            pending_event = next(record for record in adapter.read_all() if record.get("record_type") == "context_event")
+            records = adapter.read_all()
+            pending_event = next(record for record in records if record.get("record_type") == "context_event")
             self.assertEqual("user_prompt", pending_event["event_type"])
             self.assertEqual("pending_async", pending_event["batch_event_type"])
             self.assertEqual("session", pending_event["memory_scope"])
@@ -11544,6 +11545,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(["user"], pending_event["source_roles"])
             self.assertEqual({"user": 1}, pending_event["source_role_counts"])
             self.assertEqual(["selected_user_prompt"], pending_event["source_memory_selection_policies"])
+            index_names = {
+                record.get("index_name")
+                for record in records
+                if record.get("record_type") == "context_index"
+                and record.get("data_model") == "context_event"
+                and record.get("ref_hashes") == [pending_event["event_id_hash"]]
+            }
+            self.assertIn("event_type:user_prompt", index_names)
+            self.assertIn("memory_selection_policy:selected_user_prompt", index_names)
+            self.assertIn("memory_layer:pending_async_event", index_names)
 
     def test_lightweight_async_ingest_reports_idle_commit_as_auto_batch_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

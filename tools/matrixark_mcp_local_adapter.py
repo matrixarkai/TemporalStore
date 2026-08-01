@@ -6929,41 +6929,54 @@ class MatrixArkLocalAdapter:
                     dirty_reason="new_event",
                     source_lineage=source_lineage,
                 )
-                self.append(
-                    {
-                        "record_type": "context_event",
-                        "event_id_hash": event_id_hash,
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "text": text,
-                        "summary_text": summarize_text(text),
+                pending_event_record = {
+                    "record_type": "context_event",
+                    "event_id_hash": event_id_hash,
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "text": text,
+                    "summary_text": summarize_text(text),
+                    "classification": "PENDING_ASYNC_EXTRACTION",
+                    "event_type": pending_event_type,
+                    "batch_event_type": "pending_async",
+                    "status": "pending",
+                    "source_kind": envelope.get("kind", "message"),
+                    "envelope": envelope,
+                    "internal_extraction": {
+                        "mode": "async_pending",
                         "classification": "PENDING_ASYNC_EXTRACTION",
                         "event_type": pending_event_type,
                         "batch_event_type": "pending_async",
                         "status": "pending",
-                        "source_kind": envelope.get("kind", "message"),
-                        "envelope": envelope,
-                        "internal_extraction": {
-                            "mode": "async_pending",
-                            "classification": "PENDING_ASYNC_EXTRACTION",
-                            "event_type": pending_event_type,
-                            "batch_event_type": "pending_async",
-                            "status": "pending",
-                        },
-                        "agent_hook": hook,
-                        **source_lineage,
-                        **pending_lineage,
-                        "storage_options": envelope.get("storage_options", {}),
-                        "async_processing": True,
-                        "memory_scope": "session",
-                        "session_continuity": "same_session",
-                        "source_memory_scopes": source_memory_scopes,
-                        "source_session_continuities": source_session_continuities,
-                        "extraction_phase": "pending_async",
-                        "final_session_boundary": False,
-                        "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
-                )
+                    },
+                    "agent_hook": hook,
+                    **source_lineage,
+                    **pending_lineage,
+                    "storage_options": envelope.get("storage_options", {}),
+                    "async_processing": True,
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "source_memory_scopes": source_memory_scopes,
+                    "source_session_continuities": source_session_continuities,
+                    "extraction_phase": "pending_async",
+                    "final_session_boundary": False,
+                    "updated_at_ms": envelope["ingestion_time_ms"],
+                }
+                self.append(pending_event_record)
+                for index_name in candidate_index_terms(pending_event_record, {}, {}):
+                    event_index = context_index_posting_record(
+                        index_name=index_name,
+                        data_model="context_event",
+                        ref_type="event",
+                        ref_hashes=[event_id_hash],
+                        batch_id_hash=event_id_hash,
+                        node_hash=node_hash,
+                        scope=envelope["scope"],
+                        updated_at_ms=envelope["ingestion_time_ms"],
+                    )
+                    event_index["access_scope"] = envelope["scope"]
+                    event_index.pop("index_hash", None)
+                    self.append(event_index)
                 self.append_session_buffer_event(envelope=envelope, event_id_hash=event_id_hash, node_hash=node_hash, node_path=node_path, hook=hook)
                 self.append(
                     {
