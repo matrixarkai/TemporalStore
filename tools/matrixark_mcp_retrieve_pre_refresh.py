@@ -15,6 +15,7 @@ try:
         PROFILE_MEMORY_QUERY_RE,
         Json,
         access_scope_matches_before_scoring,
+        feature_scope_excludes_outcome_evidence,
         now_ms,
         optional_object,
     )
@@ -25,6 +26,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         PROFILE_MEMORY_QUERY_RE,
         Json,
         access_scope_matches_before_scoring,
+        feature_scope_excludes_outcome_evidence,
         now_ms,
         optional_object,
     )
@@ -134,6 +136,11 @@ def codex_outcome_budget_query(args: Json, ranking: Json, *, question_type: str 
             lower,
         )
     )
+
+
+def feature_scope_budget_query(args: Json, ranking: Json) -> bool:
+    query = str(args.get("query") or ranking.get("query") or ranking.get("question") or "")
+    return feature_scope_excludes_outcome_evidence(query)
 
 
 def auto_source_role_budget_tokens(
@@ -599,6 +606,18 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
             outcome_query=outcome_query,
         )
     )
+    if feature_scope_budget_query(args, ranking):
+        for outcome_layer in [
+            "same_session_codex_outcome_event",
+            "pending_async_codex_outcome_event",
+            "cross_session_codex_outcome_event",
+            "same_session_codex_outcome_segment",
+            "cross_session_codex_outcome_segment",
+            "cross_session_codex_outcome_entity",
+            "cross_session_codex_outcome_summary",
+            "cross_session_codex_outcome_compression",
+        ]:
+            defaults[outcome_layer] = 0.0
     defaults["cross_session_memory_feature_summary"] = max(
         defaults.get("cross_session_memory_feature_entity", 0.25),
         defaults.get("profile_summary", 0.30),
@@ -622,7 +641,11 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
             fraction = max(0.0, min(1.0, float(raw_fraction)))
         except (TypeError, ValueError):
             fraction = default_fraction
-        budgets[layer] = max(1, int(remote_budget * fraction))
+        if fraction <= 0.0:
+            continue
+        amount = max(1, int(remote_budget * fraction))
+        if amount:
+            budgets[layer] = amount
     return budgets, mode
 
 
@@ -873,6 +896,18 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
             outcome_query=outcome_query,
         )
     )
+    if feature_scope_budget_query(args, ranking):
+        for outcome_layer in [
+            "same_session_codex_outcome_event",
+            "pending_async_codex_outcome_event",
+            "cross_session_codex_outcome_event",
+            "same_session_codex_outcome_segment",
+            "cross_session_codex_outcome_segment",
+            "cross_session_codex_outcome_entity",
+            "cross_session_codex_outcome_summary",
+            "cross_session_codex_outcome_compression",
+        ]:
+            fractions[outcome_layer] = 0.0
     fractions["cross_session_memory_feature_summary"] = max(
         fractions.get("cross_session_memory_feature_entity", 0.25),
         fractions.get("profile_summary", 0.30),
@@ -889,7 +924,18 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
         fractions.get("same_session_memory_feature_entity", 0.25),
         fractions.get("same_session_compression", 0.20),
     )
-    return {layer: max(1, int(remote_budget * fraction)) for layer, fraction in fractions.items()}, mode
+    budgets: Json = {}
+    for layer, fraction in fractions.items():
+        try:
+            bounded_fraction = max(0.0, min(1.0, float(fraction)))
+        except (TypeError, ValueError):
+            continue
+        if bounded_fraction <= 0.0:
+            continue
+        amount = max(1, int(remote_budget * bounded_fraction))
+        if amount:
+            budgets[layer] = amount
+    return budgets, mode
 
 
 def pre_retrieval_summary_refresh_enabled(args: Json, ranking: Json) -> bool:
