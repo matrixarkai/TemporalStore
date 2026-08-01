@@ -3426,6 +3426,48 @@ class MatrixArkLocalAdapter:
         def recovered_scope_matches(record: Json, query_scope: Json) -> bool:
             return scope_matches(recovered_scope_for_query(record, query_scope), query_scope)
 
+        def profile_bridge_scope_matches(record: Json, query_scope: Json) -> bool:
+            if not bool(query_scope.get("_allow_profile_bridge")):
+                return False
+            memory_scope = str(record.get("memory_scope") or "").strip().lower()
+            session_continuity = str(record.get("session_continuity") or "").strip().lower()
+            data_model = str(record.get("data_model") or "").strip().lower()
+            embedding_type = str(record.get("embedding_type") or "").strip().lower()
+            node_path = [str(part or "") for part in record.get("node_path", []) if str(part or "")]
+            is_profile_record = (
+                memory_scope in {"user_profile", "profile", "cross_session_profile"}
+                or data_model == "context_profile_entity"
+                or embedding_type == "profile_entity_state"
+                or "profile:long_term_memory" in node_path
+            )
+            if not is_profile_record:
+                return False
+            if session_continuity and session_continuity != "cross_session" and memory_scope == "session":
+                return False
+            record_scope = recovered_scope_for_query(record, query_scope)
+            if not record_scope and node_path:
+                record_scope = scope_from_node_path(node_path)
+                if query_scope.get("account_id") and not record_scope.get("account_id"):
+                    record_scope = {**record_scope, "account_id": query_scope.get("account_id")}
+            record_key_parts = parse_scope_key(str(record_scope.get("scope_key") or ""))
+            for field in ["account_id", "account_hash", "tenant_id", "tenant_hash", "user_id", "user_hash"]:
+                query_value = query_scope.get(field)
+                record_value = record_scope.get(field)
+                if query_value and record_value and query_value != record_value:
+                    return False
+            try:
+                if query_scope.get("tenant_hash") and record_key_parts.get("t") != int(query_scope.get("tenant_hash")):
+                    return False
+                if query_scope.get("user_hash") and record_key_parts.get("u") != int(query_scope.get("user_hash")):
+                    return False
+            except (TypeError, ValueError):
+                return False
+            return bool(
+                record_scope.get("tenant_id")
+                or record_scope.get("tenant_hash")
+                or record_key_parts.get("t")
+            )
+
         def session_scope_allows_record(record: Json, query_scope: Json) -> bool:
             if session_scope_mode(query_scope) != "only":
                 return True
@@ -3434,6 +3476,8 @@ class MatrixArkLocalAdapter:
                 return True
             record_type = str(record.get("record_type") or "")
             if not record_type.startswith("context_") and record_type != "matrixark_async_pipeline_task":
+                return True
+            if profile_bridge_scope_matches(record, query_scope):
                 return True
             memory_scope = str(record.get("memory_scope") or "").strip().lower()
             session_continuity = str(record.get("session_continuity") or "").strip().lower()
@@ -3469,7 +3513,11 @@ class MatrixArkLocalAdapter:
                 index_name = str(index_record.get("index_name") or "")
                 if index_name not in required_index_terms:
                     continue
-                if not recovered_scope_matches(index_record, scope) and not profile_summary_path_matches(index_record, scope):
+                if (
+                    not recovered_scope_matches(index_record, scope)
+                    and not profile_summary_path_matches(index_record, scope)
+                    and not profile_bridge_scope_matches(index_record, scope)
+                ):
                     continue
                 secondary_matched_index_count += 1
                 for ref_hash in context_index_record_ref_hashes(index_record):
@@ -3494,7 +3542,7 @@ class MatrixArkLocalAdapter:
                 ref_hash = embedding_record.get("ref_hash")
                 if ref_hash in (None, ""):
                     continue
-                if not recovered_scope_matches(embedding_record, scope):
+                if not recovered_scope_matches(embedding_record, scope) and not profile_bridge_scope_matches(embedding_record, scope):
                     continue
                 synthetic_record: Json | None = None
                 if embedding_type == "event_text" and embedding_record.get("ref_type") in {"event", None, ""}:
@@ -3638,7 +3686,11 @@ class MatrixArkLocalAdapter:
                     )
                 )
             ):
-                if not recovered_scope_matches(record, scope) and not profile_summary_path_matches(record, scope):
+                if (
+                    not recovered_scope_matches(record, scope)
+                    and not profile_summary_path_matches(record, scope)
+                    and not profile_bridge_scope_matches(record, scope)
+                ):
                     dropped_scope += 1
                     continue
             elif not access_scope_matches_before_scoring(record, scope):
@@ -10278,6 +10330,10 @@ class MatrixArkLocalAdapter:
             question_type=question_type,
             session_scope=retrieval_session_scope,
             remote_budget_tokens=remote_context_budget_tokens,
+        )
+        retrieval_scope["_allow_profile_bridge"] = bool(
+            cross_session_policy.get("enabled")
+            and int(cross_session_policy.get("min_entity_bridge_refs") or 0) > 0
         )
         shared_context_policy = build_shared_context_policy(
             args,

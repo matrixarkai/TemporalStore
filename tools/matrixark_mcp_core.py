@@ -5685,6 +5685,12 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
         query_lower and (PROFILE_MEMORY_QUERY_RE.search(query_lower) or PROFILE_MEMORY_STANDING_RULE_QUERY_RE.search(query_lower))
     )
     feature_memory_query = bool(query_lower and FEATURE_MEMORY_QUERY_RE.search(query_lower))
+    explicit_cross_session_enabled = "enabled" in config and bool(config.get("enabled"))
+    try:
+        explicit_bridge_refs = int(config.get("min_entity_bridge_refs", DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS) or 0)
+    except (TypeError, ValueError):
+        explicit_bridge_refs = DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS
+    explicit_profile_bridge_requested = bool(explicit_cross_session_enabled and explicit_bridge_refs > 0)
     cross_session_query = normalized_question_type in {
         "current_state",
         "latest",
@@ -5694,7 +5700,13 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
         "evidence",
         "benchmark_quality",
     }
-    cross_session_allowed = session_scope == "prefer" or profile_memory_query or feature_memory_query or cross_session_query
+    cross_session_allowed = (
+        session_scope == "prefer"
+        or profile_memory_query
+        or feature_memory_query
+        or cross_session_query
+        or explicit_profile_bridge_requested
+    )
     default_enabled = cross_session_allowed and remote_budget_tokens > 0
     enabled = bool(config.get("enabled", default_enabled)) and cross_session_allowed and remote_budget_tokens > 0
     profile_budget_query = profile_memory_query or feature_memory_query
@@ -5782,6 +5794,8 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
             if enabled and feature_memory_query and session_scope != "prefer"
             else "always_consider_same_user_cross_session_for_query_type"
             if enabled and cross_session_query and session_scope != "prefer"
+            else "allow_durable_profile_bridge_inside_session_only_scope"
+            if enabled and explicit_profile_bridge_requested and session_scope == "only"
             else "always_consider_same_user_cross_session_when_session_scope_prefer"
             if enabled
             else "disabled_by_session_scope_or_budget"

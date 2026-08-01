@@ -6937,6 +6937,115 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(pack["memory_inventory"]["has_profile_memory"])
             self.assertFalse(pack["memory_inventory"]["profile_records_available_but_not_selected"])
 
+    def test_session_only_candidate_fetch_keeps_durable_profile_bridge_without_cross_session_raw_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-session-only-profile-bridge.jsonl")
+            base_scope = {
+                "account_id": "acct_session_only_profile_bridge",
+                "tenant_id": "tenant_session_only_profile_bridge",
+                "user_id": "user_session_only_profile_bridge",
+            }
+            identity = {
+                **base_scope,
+                "session_id": "session_profile_bridge_current",
+                "mode": "api_key",
+            }
+            current_scope = matrixark_mcp_core.enrich_scope_with_identity(
+                {**base_scope, "session_id": "session_profile_bridge_current"},
+                identity,
+            )
+            prior_scope = matrixark_mcp_core.enrich_scope_with_identity(
+                {**base_scope, "session_id": "session_profile_bridge_prior"},
+                {**identity, "session_id": "session_profile_bridge_prior"},
+            )
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": 4411,
+                        "node_hash": 5411,
+                        "node_path": [
+                            "tenant:tenant_session_only_profile_bridge",
+                            "user:user_session_only_profile_bridge",
+                            "session:session_profile_bridge_current",
+                        ],
+                        "text": "Current session asks a small factual follow-up about repository location.",
+                        "event_type": "user_prompt",
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "scope": current_scope,
+                        "updated_at_ms": 2000,
+                    },
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": 4412,
+                        "node_hash": 5412,
+                        "node_path": [
+                            "tenant:tenant_session_only_profile_bridge",
+                            "user:user_session_only_profile_bridge",
+                            "session:session_profile_bridge_prior",
+                        ],
+                        "text": "Prior raw session event mentions repository location but should not enter session-only retrieval.",
+                        "event_type": "user_prompt",
+                        "memory_scope": "session",
+                        "session_continuity": "cross_session",
+                        "scope": prior_scope,
+                        "updated_at_ms": 2500,
+                    },
+                    {
+                        "record_type": "context_entity",
+                        "entity_hash": 4413,
+                        "node_hash": 5413,
+                        "node_path": [
+                            "tenant:tenant_session_only_profile_bridge",
+                            "user:user_session_only_profile_bridge",
+                            "profile:long_term_memory",
+                        ],
+                        "entity_type": "workspace_profile",
+                        "entity_name": "temporalstore_repo_location",
+                        "state": "TemporalStore work should use /root/src/github-services/TemporalStore in Ubuntu.",
+                        "memory_scope": "user_profile",
+                        "session_continuity": "cross_session",
+                        "profile_entity_current": True,
+                        "profile_current_state_representative": True,
+                        "source_session_ids": ["session_profile_bridge_prior"],
+                        "scope": prior_scope,
+                        "updated_at_ms": 3000,
+                    },
+                ]
+            )
+
+            query_scope = {
+                **current_scope,
+                "_session_scope": "only",
+                "_allow_profile_bridge": True,
+            }
+            records = adapter.retrieval_records(
+                scope=query_scope,
+                secondary_index_groups=infer_secondary_index_filter_groups(
+                    "TemporalStore repository location",
+                    "fact",
+                ),
+            )["records"]
+
+            returned_ids = {record.get("event_id_hash") or record.get("entity_hash") for record in records}
+            self.assertIn(4411, returned_ids)
+            self.assertIn(4413, returned_ids)
+            self.assertNotIn(4412, returned_ids)
+            profile_record = next(record for record in records if record.get("entity_hash") == 4413)
+            self.assertEqual("user_profile", profile_record["memory_scope"])
+            self.assertEqual("cross_session", profile_record["session_continuity"])
+
+            policy = matrixark_mcp_core.build_cross_session_policy(
+                {"query": "TemporalStore repository location", "cross_session": {"enabled": True, "min_entity_bridge_refs": 1}},
+                {},
+                question_type="fact",
+                session_scope="only",
+                remote_budget_tokens=160,
+            )
+            self.assertTrue(policy["enabled"])
+            self.assertEqual("allow_durable_profile_bridge_inside_session_only_scope", policy["decision"])
+
     def test_normal_query_warns_when_profile_memory_is_available_but_not_selected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-memory-not-selected.jsonl")
