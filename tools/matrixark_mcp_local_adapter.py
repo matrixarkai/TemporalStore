@@ -1302,6 +1302,45 @@ def deferred_idle_auto_batch_result(
     }
 
 
+def idle_commit_scheduled_task_record(
+    *,
+    event_id_hash: int,
+    node_hash: int,
+    node_path: list[str],
+    scope: Json,
+    ingestion_time_ms: int,
+    idle_commit_timeout_ms: int,
+    pending_event_count: int,
+    pending_message_count: int,
+    threshold_messages: int,
+) -> Json:
+    deadline_ms = int(ingestion_time_ms or 0) + max(0, int(idle_commit_timeout_ms or 0))
+    return {
+        "record_type": "matrixark_async_pipeline_task",
+        "task_hash": stable_hash(f"async_pipeline_idle_commit:{event_id_hash}"),
+        "event_id_hash": event_id_hash,
+        "node_hash": node_hash,
+        "node_path": node_path,
+        "scope": scope,
+        "status": "idle_commit_scheduled",
+        "stages": ["extraction", "summary", "compression", "embedding"],
+        "reason": "session_buffer_idle_deadline",
+        "trigger_policy": "idle_timeout",
+        "auto_batch_extract": True,
+        "threshold_messages": threshold_messages,
+        "idle_commit_timeout_ms": idle_commit_timeout_ms,
+        "idle_commit_deadline_ms": deadline_ms,
+        "idle_commit_cutoff_ms": int(ingestion_time_ms or 0),
+        "idle_commit_pending_event_count": pending_event_count,
+        "idle_commit_pending_message_count": pending_message_count,
+        "source_extraction_phases": ["provisional"],
+        "extraction_phase": "provisional",
+        "final_session_boundary": False,
+        "created_at_ms": int(ingestion_time_ms or 0),
+        "updated_at_ms": int(ingestion_time_ms or 0),
+    }
+
+
 ASSISTANT_PROFILE_FACT_LINEAGE_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
     for pattern in [
@@ -6249,6 +6288,20 @@ class MatrixArkLocalAdapter:
                 and auto_batch_result.get("trigger_policy") == "idle_timeout"
                 and auto_batch_result.get("idle_commit_scheduled")
             )
+            if idle_commit_scheduled and idle_commit_timeout_ms is not None:
+                self.append(
+                    idle_commit_scheduled_task_record(
+                        event_id_hash=event_id_hash,
+                        node_hash=node_hash,
+                        node_path=node_path,
+                        scope=envelope["scope"],
+                        ingestion_time_ms=int(envelope["ingestion_time_ms"]),
+                        idle_commit_timeout_ms=int(idle_commit_timeout_ms),
+                        pending_event_count=pending_event_count,
+                        pending_message_count=pending_message_count,
+                        threshold_messages=session_buffer_threshold,
+                    )
+                )
             return {
                 "status": "accepted",
                 "sync_write_mode": "lightweight_event",
@@ -7351,6 +7404,20 @@ class MatrixArkLocalAdapter:
             and auto_batch_result.get("trigger_policy") == "idle_timeout"
             and auto_batch_result.get("idle_commit_scheduled")
         )
+        if idle_commit_scheduled and idle_commit_timeout_ms is not None:
+            self.append(
+                idle_commit_scheduled_task_record(
+                    event_id_hash=event_id_hash,
+                    node_hash=record["node_hash"],
+                    node_path=node_path,
+                    scope=envelope["scope"],
+                    ingestion_time_ms=int(envelope["ingestion_time_ms"]),
+                    idle_commit_timeout_ms=int(idle_commit_timeout_ms),
+                    pending_event_count=pending_event_count,
+                    pending_message_count=pending_message_count,
+                    threshold_messages=session_buffer_threshold,
+                )
+            )
         return {
             "status": "accepted",
             "event_id_hash": event_id_hash,
