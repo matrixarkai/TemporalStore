@@ -5228,6 +5228,13 @@ def fast_async_hook_ingest(
         and auto_batch_extract_on_ingest
         and (pending_event_count >= threshold or pending_message_count >= threshold)
     )
+    should_immediate_idle_commit = (
+        not should_boundary_commit
+        and not should_threshold_commit
+        and auto_batch_extract_on_ingest
+        and idle_timeout_ms == 0
+        and pending_event_count > 0
+    )
     idle_commit_deadline_ms = now + idle_timeout_ms if idle_timeout_ms > 0 else 0
     idle_commit_cutoff_ms = now if idle_timeout_ms > 0 else 0
     should_schedule_idle_commit = (
@@ -5300,8 +5307,14 @@ def fast_async_hook_ingest(
             ]
         )
     should_idle_commit = should_boundary_commit and commit_reason_for_event(args.event) == "idle_timeout"
-    if callable(session_commit) and (should_threshold_commit or should_boundary_commit):
-        commit_reason = commit_reason_for_event(args.event) if should_boundary_commit else "threshold"
+    if callable(session_commit) and (should_threshold_commit or should_boundary_commit or should_immediate_idle_commit):
+        commit_reason = (
+            commit_reason_for_event(args.event)
+            if should_boundary_commit
+            else "idle_timeout"
+            if should_immediate_idle_commit
+            else "threshold"
+        )
         commit_args: Json = {
             "scope": scope,
             "metadata": pending_commit_metadata,
@@ -5323,6 +5336,8 @@ def fast_async_hook_ingest(
         }
         if commit_reason == "idle_timeout":
             commit_args["idle_timeout_ms"] = idle_timeout_ms
+            if should_immediate_idle_commit:
+                commit_args["commit_before_ms"] = now
         if should_threshold_commit:
             commit_args["max_messages"] = threshold
         try:
@@ -5429,6 +5444,20 @@ def fast_async_hook_ingest(
         auto_batch_extract_result = pre_ingest_idle_commit_result
     elif should_idle_commit:
         auto_batch_extract_result = session_commit_result
+    elif should_immediate_idle_commit:
+        auto_batch_extract_result = session_commit_result or {
+            "status": "deferred",
+            "trigger_policy": "idle_timeout",
+            "commit_reason": "idle_timeout",
+            "reason": "session_commit_missing_immediate_idle",
+            "pending_event_count": pending_event_count,
+            "pending_message_count": pending_message_count,
+            "threshold_messages": threshold,
+            "idle_commit_timeout_ms": idle_timeout_ms,
+            "idle_commit_cutoff_ms": now,
+            "extraction_phase": "provisional",
+            "final_session_boundary": False,
+        }
     elif should_schedule_idle_commit:
         auto_batch_extract_result = {
             "status": "deferred",
@@ -5477,10 +5506,13 @@ def fast_async_hook_ingest(
             "tail_pending_event_count": tail_pending_event_count,
             "tail_pending_message_count": tail_pending_message_count,
             "threshold_commit_scheduled": threshold_commit_scheduled,
-            "idle_ready": should_idle_commit,
+            "idle_ready": bool(should_idle_commit or should_immediate_idle_commit),
+            "immediate_idle_ready": should_immediate_idle_commit,
             "pre_ingest_idle_ready": should_pre_ingest_idle_commit,
             "pre_ingest_idle_elapsed_ms": idle_elapsed_before_ingest_ms,
-            "commit_after_current_ingest": bool(should_threshold_commit or should_boundary_commit),
+            "commit_after_current_ingest": bool(
+                should_threshold_commit or should_boundary_commit or should_immediate_idle_commit
+            ),
             "auto_batch_extract": auto_batch_extract_on_ingest,
             "boundary_commit_requested": should_boundary_commit,
         },
