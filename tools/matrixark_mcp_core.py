@@ -2493,6 +2493,13 @@ FEATURE_SCOPE_EXCLUSION_RE = re.compile(
 FEATURE_SCOPE_EXCLUDED_DIMENSION_RE = re.compile(
     r"\b(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b"
 )
+FEATURE_SCOPE_ONLY_RE = re.compile(
+    r"\b(?:just|only|pure(?:ly)?|focus(?:ed)? on|prioriti[sz]e)\s+"
+    r"(?:feature parity|features?|functionalit(?:y|ies)|implementation|algorithms?|algos?)\b"
+    r"|\b(?:feature parity|features?|functionalit(?:y|ies)|implementation|algorithms?|algos?)\s+"
+    r"(?:only|focus|focused|first|parity)\b"
+    r"|\b(?:feature work only|features? only|functionality only|implementation only|code changes only)\b"
+)
 
 CODEX_OUTCOME_QUERY_RE = re.compile(r"\b(?:codex|assistant|agent)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|validated|verified|push(?:ed)?|publish(?:ed)?|deploy(?:ed)?|release(?:d)?|merge(?:d)?|commit(?:ted)?|rebase(?:d)?|failed|blocked|blocker|done|outcome|decision|decided|next action)\b|\bwhat (?:was|were|did)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|validated|verified|push(?:ed)?|publish(?:ed)?|deploy(?:ed)?|release(?:d)?|merge(?:d)?|commit(?:ted)?|failed|blocked|done)\b|\bwhat did (?:you|we)\b.{0,80}\b(?:implement|fix|change|update|configure|enable|disable|install|migrate|recover|restore|clean|validate|verify|push|publish|deploy|release|merge|commit|rebase|fail|block|decide|do)\b|\b(?:show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:assistant decision|tool evidence|validation evidence|pushed commit|blocked work|failed validation|validation result|test result|tests? passed|pushed commit|deployment result|deploy(?:ed)? result|install(?:ed)? result|configured result|configuration result|recovery result|migration result|merge result|publish(?:ed)? result|release result|outcome facts?)\b|\b(?:what|which|show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:tests? passed|validation (?:passed|result|evidence)|pushed commit|commit (?:was )?pushed|push result|rebase result|deploy(?:ed)? result|deployment result|install(?:ed)? result|configured result|configuration result|recovery result|migration result|merge result|publish(?:ed)? result|release result)\b|\bwhat (?:failed|was blocked|blocked)\b.{0,80}\b(?:memory work|work|validation|commit|push|deploy|deployment|install|configuration|migration|recovery|merge|publish|release|tool|codex|temporalstore)\b")
 
@@ -2826,6 +2833,8 @@ def feature_scope_excludes_outcome_evidence(text: str) -> bool:
     feature_memory = profile_entity_type_for_memory_text(text) == "memory_feature_profile"
     if not feature_memory:
         return False
+    if FEATURE_SCOPE_ONLY_RE.search(lower):
+        return True
     if FEATURE_SCOPE_EXCLUSION_RE.search(lower):
         return True
     if re.search(r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\b", lower):
@@ -5080,7 +5089,7 @@ def keyword_candidates_from_query(query: str) -> list[str]:
 
 def deterministic_secondary_index_filter_groups(query: str, question_type: str) -> list[set[str]]:
     lower = query.lower()
-    feature_scope_excludes_evidence = bool(FEATURE_SCOPE_EXCLUSION_RE.search(lower))
+    feature_scope_excludes_evidence = feature_scope_excludes_outcome_evidence(query)
     groups: list[set[str]] = []
 
     def add_group(*terms: str) -> None:
