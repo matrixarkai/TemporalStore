@@ -863,6 +863,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "Where should you build TemporalStore?",
             "Should you use Ubuntu or Windows folders for TemporalStore?",
             "Which remote main branch should you push to?",
+            "What should you always do after code changes?",
+            "What default behavior should Codex follow?",
+            "Which standing instructions should you remember?",
+            "How should you behave by default?",
         ]:
             self.assertEqual("profile_memory", infer_query_type(query), query)
             self.assertEqual("profile_memory", matrixark_mcp_query.infer_query_type(query), query)
@@ -886,6 +890,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("session_continuity:cross_session", standing_rule_flattened)
         self.assertIn("profile_memory_class:workspace", standing_rule_flattened)
         self.assertIn("memory_selection_policy:selected_user_profile_fact", standing_rule_flattened)
+
+        default_behavior_groups = infer_secondary_index_filter_groups(
+            "What should you always do after code changes?",
+            "fact",
+        )
+        default_behavior_flattened = {term for group in default_behavior_groups for term in group}
+        self.assertIn("memory_scope:user_profile", default_behavior_flattened)
+        self.assertIn("session_continuity:cross_session", default_behavior_flattened)
+        self.assertIn("profile_entity_current:true", default_behavior_flattened)
+        self.assertIn("memory_selection_policy:selected_user_profile_fact", default_behavior_flattened)
 
         session_groups = infer_secondary_index_filter_groups(
             "Show session-specific same-session context entities",
@@ -13713,6 +13727,27 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("cross_session", current_ref["session_continuity"])
             self.assertIn("threshold or idle extraction", current_ref["text"])
             self.assertNotIn("prefer waiting for Stop before extracting memories", current_ref["text"])
+
+            natural_pack = adapter.retrieve(
+                {
+                    "scope": {**base_scope, "session_id": "session_profile_preference_4"},
+                    "session_scope": "prefer",
+                    "query": "What should you always remember about extraction by default?",
+                    "max_context_tokens": 180,
+                    "audit_mode": "off",
+                    "include_retrieval_metrics": True,
+                    "ranking": {"max_selected_refs": 1, "min_similarity_score": 0.0},
+                }
+            )
+            self.assertEqual(1, len(natural_pack["selected_refs"]))
+            natural_ref = natural_pack["selected_refs"][0]
+            self.assertEqual("user_profile", natural_ref["memory_scope"])
+            self.assertEqual("cross_session", natural_ref["session_continuity"])
+            self.assertIn("threshold or idle extraction", natural_ref["text"])
+            self.assertGreaterEqual(
+                natural_pack["retrieval_metrics"]["memory_layer_budget"]["by_memory_scope"]["user_profile"]["refs"],
+                1,
+            )
 
     def test_retrieval_recovers_profile_layer_from_compact_embedding_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
