@@ -7176,7 +7176,7 @@ def select_token_budgeted_refs(
                 remaining_score = 0.0
             if remaining_score < min_score:
                 continue
-            if question_type in {"current_state", "latest"} and is_stale_or_superseded_candidate(remaining):
+            if question_type in {"current_state", "latest", "profile_memory"} and is_stale_or_superseded_candidate(remaining):
                 continue
             remaining_tokens = max(1, token_count(str(remaining.get("text", ""))))
             if remote_budget <= 0 or (selected and used_tokens + remaining_tokens > remote_budget):
@@ -7203,7 +7203,7 @@ def select_token_budgeted_refs(
                 remaining_score = 0.0
             if remaining_score < min_score:
                 continue
-            if question_type in {"current_state", "latest"} and is_stale_or_superseded_candidate(remaining):
+            if question_type in {"current_state", "latest", "profile_memory"} and is_stale_or_superseded_candidate(remaining):
                 continue
             remaining_tokens = max(1, token_count(str(remaining.get("text", ""))))
             if remote_budget <= 0 or (selected and used_tokens + remaining_tokens > remote_budget):
@@ -7371,7 +7371,7 @@ def select_token_budgeted_refs(
             remaining_candidates = candidates[index:]
             for skipped in remaining_candidates:
                 skipped_tokens = max(1, token_count(str(skipped.get("text", ""))))
-                if question_type in {"current_state", "latest"} and bool(skipped.get("stale_or_superseded")):
+                if question_type in {"current_state", "latest", "profile_memory"} and bool(skipped.get("stale_or_superseded")):
                     dropped["stale"] += 1
                     dropped["estimated_tokens"]["stale"] += skipped_tokens
                     record_dropped_candidate(dropped, skipped, reason="stale", token_estimate=skipped_tokens)
@@ -7408,7 +7408,7 @@ def select_token_budgeted_refs(
             dropped["estimated_tokens"]["low_score"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="low_score", token_estimate=ref_tokens)
             continue
-        if question_type in {"current_state", "latest"} and is_stale_or_superseded_candidate(candidate):
+        if question_type in {"current_state", "latest", "profile_memory"} and is_stale_or_superseded_candidate(candidate):
             dropped["stale"] += 1
             dropped["estimated_tokens"]["stale"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="stale", token_estimate=ref_tokens)
