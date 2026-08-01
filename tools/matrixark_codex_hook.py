@@ -1867,13 +1867,13 @@ def additional_context_from_retrieve(
         has_cross_session_memory = int(layer_summary.get("cross_session_refs") or 0) > 0
     except (TypeError, ValueError):
         has_cross_session_memory = False
-    if has_profile_memory or has_cross_session_memory:
+    if CONTEXT_PACK_DEBUG_LINEAGE and (has_profile_memory or has_cross_session_memory):
         hierarchy_bits = [
             "session refs are turn/session-local",
             "user_profile/cross_session refs are long-term state and may supersede older session-local entity copies",
         ]
         hierarchy = retrieval_memory_hierarchy_contract_from_retrieve(pack)
-        if CONTEXT_PACK_DEBUG_LINEAGE and isinstance(hierarchy, dict):
+        if isinstance(hierarchy, dict):
             floor_status = hierarchy.get("cross_session_budget_floor_status")
             if floor_status:
                 hierarchy_bits.append(f"cross_session_budget_floor_status={floor_status}")
