@@ -8540,6 +8540,7 @@ class MatrixArkLocalAdapter:
         event_records_to_append: list[Json] = []
         event_index_write_count = 0
         event_rows: list[tuple[int, Json, str, int]] = []
+        event_records_by_hash: dict[int, Json] = {}
         segment_hash_by_position: dict[int, int] = {}
         segment_hashes_by_position: dict[int, list[int]] = {}
         for segment in extraction["segments"]:
@@ -8568,6 +8569,10 @@ class MatrixArkLocalAdapter:
                 event_role = normalize_message_role(message.get("role"))
                 original_event_role = str(message.get("original_role") or message.get("role") or "").strip().lower()
                 event_type = context_event_type_for_message(message, str(extraction["event_type"] or ""))
+                event_hook_types = list(source_hook_types)
+                event_hook_type_counts = {hook_type: 1 for hook_type in event_hook_types if hook_type}
+                event_codex_events = list(source_codex_events)
+                event_codex_event_counts = {codex_event: 1 for codex_event in event_codex_events if codex_event}
                 event_memory_selection_policy_counts = memory_selection_policy_counts_for_message(
                     message,
                     default_counts=source_memory_selection_policy_counts,
@@ -8616,10 +8621,10 @@ class MatrixArkLocalAdapter:
                         "original_source_role": original_event_role,
                         "source_roles": [event_role] if event_role else [],
                         "source_role_counts": {event_role: 1} if event_role else {},
-                        "source_hook_types": source_hook_types,
-                        "source_hook_type_counts": source_hook_type_counts,
-                        "source_codex_events": source_codex_events,
-                        "source_codex_event_counts": source_codex_event_counts,
+                        "source_hook_types": event_hook_types,
+                        "source_hook_type_counts": event_hook_type_counts,
+                        "source_codex_events": event_codex_events,
+                        "source_codex_event_counts": event_codex_event_counts,
                         "source_memory_selection_policies": event_memory_selection_policies,
                         "source_memory_selection_policy_counts": event_memory_selection_policy_counts,
                         **event_memory_selection_retention,
@@ -8651,10 +8656,10 @@ class MatrixArkLocalAdapter:
                         "source_role": event_role,
                         "source_roles": [event_role] if event_role else [],
                         "source_role_counts": {event_role: 1} if event_role else {},
-                        "source_hook_types": source_hook_types,
-                        "source_hook_type_counts": source_hook_type_counts,
-                        "source_codex_events": source_codex_events,
-                        "source_codex_event_counts": source_codex_event_counts,
+                        "source_hook_types": event_hook_types,
+                        "source_hook_type_counts": event_hook_type_counts,
+                        "source_codex_events": event_codex_events,
+                        "source_codex_event_counts": event_codex_event_counts,
                         "source_memory_selection_policies": event_memory_selection_policies,
                         "source_memory_selection_policy_counts": event_memory_selection_policy_counts,
                         **event_memory_selection_retention,
@@ -8665,6 +8670,11 @@ class MatrixArkLocalAdapter:
                     })
                 )
         if event_records_to_append:
+            event_records_by_hash = {
+                int(event_record["event_id_hash"]): event_record
+                for event_record in event_records_to_append
+                if event_record.get("record_type") == "context_event" and event_record.get("event_id_hash") is not None
+            }
             indexed_event_records: list[Json] = []
             for event_record in event_records_to_append:
                 indexed_event_records.append(event_record)
@@ -8687,6 +8697,16 @@ class MatrixArkLocalAdapter:
                     indexed_event_records.append(event_index)
                     event_index_write_count += 1
             event_records_to_append = indexed_event_records
+
+        def source_lineage_for_event_ids(event_ids: list[int]) -> Json:
+            scoped_events = [
+                event_records_by_hash[int(event_id)]
+                for event_id in event_ids
+                if event_id is not None and int(event_id) in event_records_by_hash
+            ]
+            if scoped_events:
+                return source_event_lineage_summary(scoped_events)
+            return source_lineage
 
         def source_event_ids_for_entity(entity: Json) -> list[int]:
             refs = entity.get("source_refs") if isinstance(entity.get("source_refs"), list) else []
@@ -8828,6 +8848,11 @@ class MatrixArkLocalAdapter:
             if not entity_source_role_counts:
                 entity_source_role_counts = source_role_counts
             entity_source_event_ids = source_event_ids_for_entity(entity)
+            entity_source_lineage = source_lineage_for_event_ids(entity_source_event_ids)
+            entity_source_hook_types = entity_source_lineage.get("source_hook_types", source_hook_types)
+            entity_source_hook_type_counts = entity_source_lineage.get("source_hook_type_counts", source_hook_type_counts)
+            entity_source_codex_events = entity_source_lineage.get("source_codex_events", source_codex_events)
+            entity_source_codex_event_counts = entity_source_lineage.get("source_codex_event_counts", source_codex_event_counts)
             entity_source_memory_selection_policy_counts = memory_selection_policy_counts_for_entity(
                 entity,
                 entity_source_roles,
@@ -8858,10 +8883,10 @@ class MatrixArkLocalAdapter:
                 "source_event_ids": entity_source_event_ids,
                 "source_roles": entity_source_roles,
                 "source_role_counts": entity_source_role_counts,
-                "source_hook_types": source_hook_types,
-                "source_hook_type_counts": source_hook_type_counts,
-                "source_codex_events": source_codex_events,
-                "source_codex_event_counts": source_codex_event_counts,
+                "source_hook_types": entity_source_hook_types,
+                "source_hook_type_counts": entity_source_hook_type_counts,
+                "source_codex_events": entity_source_codex_events,
+                "source_codex_event_counts": entity_source_codex_event_counts,
                 "source_memory_selection_policies": entity_source_memory_selection_policies,
                 "source_memory_selection_policy_counts": entity_source_memory_selection_policy_counts,
                 "source_profile_memory_classes": source_profile_memory_classes,
@@ -8937,10 +8962,10 @@ class MatrixArkLocalAdapter:
                     "source_event_ids": entity_source_event_ids,
                     "source_roles": entity_source_roles,
                     "source_role_counts": entity_source_role_counts,
-                    "source_hook_types": source_hook_types,
-                    "source_hook_type_counts": source_hook_type_counts,
-                    "source_codex_events": source_codex_events,
-                    "source_codex_event_counts": source_codex_event_counts,
+                    "source_hook_types": entity_source_hook_types,
+                    "source_hook_type_counts": entity_source_hook_type_counts,
+                    "source_codex_events": entity_source_codex_events,
+                    "source_codex_event_counts": entity_source_codex_event_counts,
                     "source_memory_selection_policies": entity_source_memory_selection_policies,
                     "source_memory_selection_policy_counts": entity_source_memory_selection_policy_counts,
                     "source_profile_memory_classes": source_profile_memory_classes,
@@ -9031,16 +9056,16 @@ class MatrixArkLocalAdapter:
                         source_role_counts.get("user", 0) or 0
                     )
                 profile_source_hook_types = ordered_unique_any(
-                    list(previous_profile.get("source_hook_types", [])) + source_hook_types
+                    list(previous_profile.get("source_hook_types", [])) + list(entity_source_hook_types)
                 )
                 profile_source_hook_type_counts: Json = dict(previous_profile.get("source_hook_type_counts", {}))
-                for hook_type, count in source_hook_type_counts.items():
+                for hook_type, count in entity_source_hook_type_counts.items():
                     profile_source_hook_type_counts[hook_type] = int(profile_source_hook_type_counts.get(hook_type, 0)) + int(count)
                 profile_source_codex_events = ordered_unique_any(
-                    list(previous_profile.get("source_codex_events", [])) + source_codex_events
+                    list(previous_profile.get("source_codex_events", [])) + list(entity_source_codex_events)
                 )
                 profile_source_codex_event_counts: Json = dict(previous_profile.get("source_codex_event_counts", {}))
-                for codex_event, count in source_codex_event_counts.items():
+                for codex_event, count in entity_source_codex_event_counts.items():
                     profile_source_codex_event_counts[codex_event] = int(profile_source_codex_event_counts.get(codex_event, 0)) + int(count)
                 profile_source_memory_selection_policies = ordered_unique_any(
                     list(previous_profile.get("source_memory_selection_policies", []))
@@ -9387,6 +9412,12 @@ class MatrixArkLocalAdapter:
                 segment_profile_memory_kind,
             ) = segment_source_roles_and_type(segment)
             segment_source_memory_selection_policies = sorted(segment_source_memory_selection_policy_counts)
+            segment_source_event_ids = [event_hashes[index] for index in segment["message_indexes"] if index < len(event_hashes)]
+            segment_source_lineage = source_lineage_for_event_ids(segment_source_event_ids)
+            segment_source_hook_types = segment_source_lineage.get("source_hook_types", source_hook_types)
+            segment_source_hook_type_counts = segment_source_lineage.get("source_hook_type_counts", source_hook_type_counts)
+            segment_source_codex_events = segment_source_lineage.get("source_codex_events", source_codex_events)
+            segment_source_codex_event_counts = segment_source_lineage.get("source_codex_event_counts", source_codex_event_counts)
             segment_record = {
                 "record_type": "context_segment",
                 "segment_hash": segment_hash,
@@ -9397,7 +9428,7 @@ class MatrixArkLocalAdapter:
                 "topic": segment["topic"],
                 "coordinate_tuples": segment["coordinate_tuples"],
                 "message_indexes": segment["message_indexes"],
-                "source_event_ids": [event_hashes[index] for index in segment["message_indexes"] if index < len(event_hashes)],
+                "source_event_ids": segment_source_event_ids,
                 "source_record_type": "context_event",
                 "segment_origin": segment.get("segment_origin") or segment.get("detected_by") or "derived_from_events",
                 "derived_from_context_events": bool(segment.get("derived_from_context_events", True)),
@@ -9406,10 +9437,10 @@ class MatrixArkLocalAdapter:
                 "segment_source_roles": segment_source_roles,
                 "segment_source_role_counts": segment_source_role_counts,
                 "event_type": segment_event_type,
-                "source_hook_types": source_hook_types,
-                "source_hook_type_counts": source_hook_type_counts,
-                "source_codex_events": source_codex_events,
-                "source_codex_event_counts": source_codex_event_counts,
+                "source_hook_types": segment_source_hook_types,
+                "source_hook_type_counts": segment_source_hook_type_counts,
+                "source_codex_events": segment_source_codex_events,
+                "source_codex_event_counts": segment_source_codex_event_counts,
                 "source_memory_selection_policies": segment_source_memory_selection_policies,
                 "source_memory_selection_policy_counts": segment_source_memory_selection_policy_counts,
                 **source_memory_selection_retention,
@@ -9468,14 +9499,14 @@ class MatrixArkLocalAdapter:
                     "vector": segment_vector,
                     "scope": envelope["scope"],
                     "topic": segment["topic"],
-                    "source_event_ids": [event_hashes[index] for index in segment["message_indexes"] if index < len(event_hashes)],
+                    "source_event_ids": segment_source_event_ids,
                     "source_roles": segment_source_roles,
                     "source_role_counts": segment_source_role_counts,
                     "event_type": segment_event_type,
-                    "source_hook_types": source_hook_types,
-                    "source_hook_type_counts": source_hook_type_counts,
-                    "source_codex_events": source_codex_events,
-                    "source_codex_event_counts": source_codex_event_counts,
+                    "source_hook_types": segment_source_hook_types,
+                    "source_hook_type_counts": segment_source_hook_type_counts,
+                    "source_codex_events": segment_source_codex_events,
+                    "source_codex_event_counts": segment_source_codex_event_counts,
                     "source_memory_selection_policies": segment_source_memory_selection_policies,
                     "source_memory_selection_policy_counts": segment_source_memory_selection_policy_counts,
                     **source_memory_selection_retention,
