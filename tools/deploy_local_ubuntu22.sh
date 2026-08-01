@@ -21,6 +21,7 @@ REPLICA_COUNT="${REPLICA_COUNT:-${SERVER_COUNT}}"
 SERVER_EXTRA_FLAGS="${SERVER_EXTRA_FLAGS:-}"
 METASERVER_EXTRA_FLAGS="${METASERVER_EXTRA_FLAGS:-}"
 PERSIST_DEPLOY_DIR="${PERSIST_DEPLOY_DIR:-0}"
+STOP_GRACE_S="${STOP_GRACE_S:-5}"
 
 action="${1:-start}"
 
@@ -60,7 +61,7 @@ stop_deploy() {
   done
   kill_matching_processes "bcache2-metaserver --metaserver_cluster_name=${CLUSTER_NAME}"
   kill_matching_processes "bcache2-server --cluster_name=${CLUSTER_NAME}"
-  sleep 0.5
+  sleep "${STOP_GRACE_S}"
   kill_matching_processes "bcache2-metaserver --metaserver_cluster_name=${CLUSTER_NAME}" KILL
   kill_matching_processes "bcache2-server --cluster_name=${CLUSTER_NAME}" KILL
 }
