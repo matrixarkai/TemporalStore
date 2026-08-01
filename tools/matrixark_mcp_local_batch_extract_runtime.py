@@ -929,6 +929,9 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             "source_codex_event_counts": source_codex_event_counts,
             "source_memory_selection_policies": source_memory_selection_policies,
             "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            "source_memory_scopes": ["session"],
+            "source_session_continuities": ["same_session"],
+            "source_extraction_phases": [extraction_phase],
             "scope": envelope["scope"],
             "memory_scope": "session",
             "session_continuity": "same_session",
@@ -961,6 +964,12 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             "source_hook_type_counts": source_hook_type_counts,
             "source_codex_events": source_codex_events,
             "source_codex_event_counts": source_codex_event_counts,
+            "source_memory_selection_policies": source_memory_selection_policies,
+            "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            **source_memory_selection_retention,
+            "source_memory_scopes": ["session"],
+            "source_session_continuities": ["same_session"],
+            "source_extraction_phases": [extraction_phase],
             "memory_scope": "session",
             "session_continuity": "same_session",
             "extraction_phase": extraction_phase,
@@ -1020,6 +1029,9 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             "source_codex_event_counts": source_codex_event_counts,
             "source_memory_selection_policies": source_memory_selection_policies,
             "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            "source_memory_scopes": ["session"],
+            "source_session_continuities": ["same_session"],
+            "source_extraction_phases": [extraction_phase],
             "extraction_context_event_ids": extraction_context_event_ids,
             "extraction_phase": extraction_phase,
             "final_session_boundary": final_session_boundary,
@@ -1027,6 +1039,26 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             "created_at_ms": now_ms(),
         }
     )
+    session_dirty_lineage: Json = {
+        "memory_scope": "session",
+        "session_continuity": "same_session",
+        "source_event_ids": event_hashes,
+        "source_entity_hashes": entity_hashes,
+        "source_roles": source_roles,
+        "source_role_counts": source_role_counts,
+        "source_hook_types": source_hook_types,
+        "source_hook_type_counts": source_hook_type_counts,
+        "source_codex_events": source_codex_events,
+        "source_codex_event_counts": source_codex_event_counts,
+        "source_memory_selection_policies": source_memory_selection_policies,
+        "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+        **source_memory_selection_retention,
+        "source_memory_scopes": ["session"],
+        "source_session_continuities": ["same_session"],
+        "source_extraction_phases": [extraction_phase],
+        "extraction_phase": extraction_phase,
+        "final_session_boundary": final_session_boundary,
+    }
     dirty_hashes, dirty_records = self.node_summary_dirty_records(
         node_path=node_path,
         scope=envelope["scope"],
@@ -1035,6 +1067,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         source_hash_field="source_batch_hash",
         source_hash=batch_id_hash,
         dirty_reason="new_event",
+        source_lineage=session_dirty_lineage,
     )
     all_dirty_hashes = ordered_unique_any(list(dirty_hashes) + profile_dirty_hashes)
     records_to_append.extend(dirty_records)
