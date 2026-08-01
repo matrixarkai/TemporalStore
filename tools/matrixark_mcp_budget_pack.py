@@ -188,6 +188,7 @@ def candidate_memory_layer_name(candidate: Json) -> str:
     context_class = str(candidate.get("context_class") or metadata.get("context_class") or ref_type)
     memory_scope = str(candidate.get("memory_scope") or metadata.get("memory_scope") or "")
     session_continuity = str(candidate.get("session_continuity") or metadata.get("session_continuity") or "")
+    profile_memory_kind = str(candidate.get("profile_memory_kind") or metadata.get("profile_memory_kind") or "")
     if context_class == "resource_entity_fact":
         return "resource_entity_fact"
     if context_class == "resource_fact":
@@ -228,6 +229,8 @@ def candidate_memory_layer_name(candidate: Json) -> str:
         return "session_neutral_event"
     if ref_type == "entity":
         if memory_scope == "user_profile":
+            if profile_memory_kind == "codex_outcome":
+                return "cross_session_codex_outcome_entity"
             return "profile_entity"
         if session_continuity == "same_session":
             return "same_session_entity"

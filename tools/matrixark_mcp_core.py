@@ -3630,6 +3630,17 @@ def profile_memory_class_for_entity_type(entity_type: Any) -> str:
     return "general"
 
 
+def profile_memory_kind_for_entity_type(entity_type: Any) -> str:
+    normalized = normalized_index_value(entity_type)
+    if normalized in {"assistant_decision", "tool_evidence"}:
+        return "codex_outcome"
+    if normalized.startswith("resource_") or normalized in {"resource_fact"}:
+        return "resource_context"
+    if normalized in {"current_plan"}:
+        return "task_context"
+    return "durable_profile"
+
+
 def non_default_classification(value: Any) -> str:
     classification = str(value or "").strip().upper()
     return "" if classification in {"", "NEW_EVENT"} else classification
@@ -4985,6 +4996,8 @@ def candidate_index_terms(
         terms.add(context_index_name("entity_type", record.get("entity_type")))
         if record.get("profile_memory_class") not in (None, "", [], {}):
             terms.add(context_index_name("profile_memory_class", record.get("profile_memory_class")))
+        if record.get("profile_memory_kind") not in (None, "", [], {}):
+            terms.add(context_index_name("profile_memory_kind", record.get("profile_memory_kind")))
         entity_name = record.get("entity_name")
         if entity_name not in (None, "", [], {}):
             terms.add(context_index_name("entity_name", normalized_index_value(entity_name).replace(":", "_")))
@@ -6040,6 +6053,7 @@ def candidate_memory_layer_name(candidate: Json) -> str:
     context_class = str(candidate.get("context_class") or metadata.get("context_class") or ref_type)
     memory_scope = str(candidate.get("memory_scope") or metadata.get("memory_scope") or "")
     session_continuity = str(candidate.get("session_continuity") or metadata.get("session_continuity") or "")
+    profile_memory_kind = str(candidate.get("profile_memory_kind") or metadata.get("profile_memory_kind") or "")
     if context_class == "resource_entity_fact":
         return "resource_entity_fact"
     if context_class == "resource_fact":
@@ -6080,6 +6094,8 @@ def candidate_memory_layer_name(candidate: Json) -> str:
         return "session_neutral_event"
     if ref_type == "entity":
         if memory_scope == "user_profile":
+            if profile_memory_kind == "codex_outcome":
+                return "cross_session_codex_outcome_entity"
             return "profile_entity"
         if session_continuity == "same_session":
             return "same_session_entity"

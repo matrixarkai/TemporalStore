@@ -46,6 +46,7 @@ def memory_layer_name(ref: Json) -> str:
     context_class = str(ref_value(ref, "context_class") or ref_type)
     memory_scope = str(ref_value(ref, "memory_scope") or "")
     session_continuity = str(ref_value(ref, "session_continuity") or "")
+    profile_memory_kind = str(ref_value(ref, "profile_memory_kind") or "")
     if context_class == "resource_entity_fact":
         return "resource_entity_fact"
     if context_class == "resource_fact":
@@ -86,6 +87,8 @@ def memory_layer_name(ref: Json) -> str:
         return "session_neutral_event"
     if ref_type == "entity":
         if memory_scope == "user_profile":
+            if profile_memory_kind == "codex_outcome":
+                return "cross_session_codex_outcome_entity"
             return "profile_entity"
         if session_continuity == "same_session":
             return "same_session_entity"
@@ -200,6 +203,12 @@ def add_entity_type_buckets(breakdown: Json, ref: Json, token_estimate: int) -> 
         add_ref_bucket(breakdown, "by_entity_type", entity_type, token_estimate)
 
 
+def add_profile_memory_kind_bucket(breakdown: Json, ref: Json, token_estimate: int) -> None:
+    profile_memory_kind = str(ref_value(ref, "profile_memory_kind", "") or "").strip()
+    if profile_memory_kind:
+        add_ref_bucket(breakdown, "by_profile_memory_kind", profile_memory_kind, token_estimate)
+
+
 def source_count_identity_keys(ref: Json, aggregate_field: str, bucket_name: str, source_name: str, source_count: int) -> list[tuple[object, ...]]:
     source_ids = []
     if ref_value(ref, "ref_type") == "event" and ref_value(ref, "ref_hash") not in (None, "", [], {}):
@@ -235,6 +244,7 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
         "by_extraction_phase": {},
         "by_ref_type": {},
         "by_entity_type": {},
+        "by_profile_memory_kind": {},
         "by_source_role": {},
         "by_hook_type": {},
         "by_codex_event": {},
@@ -267,6 +277,7 @@ def selected_ref_layer_budget(refs: list[Json]) -> Json:
         )
         add_ref_bucket(breakdown, "by_ref_type", str(ref_value(ref, "ref_type", "unknown") or "unknown"), token_estimate)
         add_entity_type_buckets(breakdown, ref, token_estimate)
+        add_profile_memory_kind_bucket(breakdown, ref, token_estimate)
         role_count_field = "budget_source_role_counts" if ref_dict(ref, "budget_source_role_counts") else "source_role_counts"
         role_list_field = "budget_source_roles" if ref_list(ref, "budget_source_roles") else "source_roles"
         for role_name in source_bucket_names(ref, role_list_field, role_count_field, normalize_roles=True):
@@ -324,6 +335,7 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
         "by_extraction_phase": {},
         "by_ref_type": {},
         "by_entity_type": {},
+        "by_profile_memory_kind": {},
         "by_source_role": {},
         "by_hook_type": {},
         "by_codex_event": {},
@@ -379,6 +391,7 @@ def dropped_ref_layer_budget(dropped: Json) -> Json:
         )
         add_ref_bucket(breakdown, "by_ref_type", str(ref_value(ref, "ref_type", "unknown") or "unknown"), token_estimate)
         add_entity_type_buckets(breakdown, ref, token_estimate)
+        add_profile_memory_kind_bucket(breakdown, ref, token_estimate)
         role_count_field = "budget_source_role_counts" if ref_dict(ref, "budget_source_role_counts") else "source_role_counts"
         role_list_field = "budget_source_roles" if ref_list(ref, "budget_source_roles") else "source_roles"
         for role_name in source_bucket_names(ref, role_list_field, role_count_field, normalize_roles=True):
