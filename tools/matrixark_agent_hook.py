@@ -558,8 +558,13 @@ def hook_messages_from_payload(payload: Json, *, event: str, text: str) -> list[
             "llm": "assistant",
             "model": "assistant",
             "tool_result": "tool",
+            "tool-output": "tool",
+            "tooloutput": "tool",
             "tool_output": "tool",
             "function": "tool",
+            "function_call_output": "tool",
+            "custom_tool_call_output": "tool",
+            "tool_call_output": "tool",
             "human": "user",
             "prompt": "user",
         }.get(role_name.lower(), role_name.lower())
