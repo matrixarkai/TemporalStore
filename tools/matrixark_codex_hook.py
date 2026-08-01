@@ -5318,7 +5318,7 @@ def run_rollout_backfill_only(args: argparse.Namespace, payload: Json, session_i
                 },
             ),
         )
-        if should_commit_session(args.event) or bool(text):
+        if should_commit_session(args.event):
             call_tool(
                 server,
                 "matrixark_session_commit",
