@@ -4850,6 +4850,11 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(context_index_name("profile_memory_class", "memory_feature"))
         add_group(context_index_name("profile_memory_kind", "memory_feature"))
         add_group(
+            context_index_name("memory_selection_policy", "selected_user_prompt"),
+            context_index_name("memory_selection_policy", "selected_assistant_profile_fact"),
+            context_index_name("memory_selection_policy", "selected_profile_current_state"),
+        )
+        add_group(
             context_index_name("memory_layer", "cross_session_memory_feature_entity"),
             context_index_name("memory_layer", "cross_session_memory_feature_summary"),
             context_index_name("memory_layer", "cross_session_memory_feature_compression"),
