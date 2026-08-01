@@ -1756,6 +1756,8 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
     memory_selection_retained_ratio_count = 0
     profile_promotion_policies: list[str] = []
     profile_promotion_blockers: list[str] = []
+    profile_memory_classes: list[str] = []
+    profile_memory_kinds: list[str] = []
     final_session_boundary_count = 0
 
     def add_count(counts: Json, name: Any, count: Any = 1) -> None:
@@ -1968,6 +1970,10 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
         add_values(profile_promotion_policies, record.get("profile_promotion_policy"))
         add_values(profile_promotion_blockers, record.get("source_profile_promotion_blockers"))
         add_values(profile_promotion_blockers, record.get("profile_promotion_blocker"))
+        add_values(profile_memory_classes, record.get("source_profile_memory_classes"))
+        add_values(profile_memory_classes, record.get("profile_memory_class"))
+        add_values(profile_memory_kinds, record.get("source_profile_memory_kinds"))
+        add_values(profile_memory_kinds, record.get("profile_memory_kind"))
         try:
             final_session_boundary_count += max(0, int(record.get("source_final_session_boundary_count") or 0))
         except (TypeError, ValueError):
@@ -1987,6 +1993,8 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
     explicit_extraction_phases = ordered_unique_any(target_extraction_phases)
     source_profile_promotion_policies = ordered_unique_any(profile_promotion_policies)
     source_profile_promotion_blockers = ordered_unique_any(profile_promotion_blockers)
+    source_profile_memory_classes = ordered_unique_any(profile_memory_classes)
+    source_profile_memory_kinds = ordered_unique_any(profile_memory_kinds)
     memory_scope = (
         explicit_memory_scopes[0]
         if len(explicit_memory_scopes) == 1
@@ -2040,6 +2048,8 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
         "source_extraction_phases": source_extraction_phases,
         "source_profile_promotion_policies": source_profile_promotion_policies,
         "source_profile_promotion_blockers": source_profile_promotion_blockers,
+        "source_profile_memory_classes": source_profile_memory_classes,
+        "source_profile_memory_kinds": source_profile_memory_kinds,
         "source_final_session_boundary_count": final_session_boundary_count,
     }
     if memory_scope:
@@ -4114,6 +4124,8 @@ class MatrixArkLocalAdapter:
         source_codex_event_counts = source_lineage.get("source_codex_event_counts", {})
         source_memory_selection_policies = source_lineage.get("source_memory_selection_policies", [])
         source_memory_selection_policy_counts = source_lineage.get("source_memory_selection_policy_counts", {})
+        source_profile_memory_classes = source_lineage.get("source_profile_memory_classes", [])
+        source_profile_memory_kinds = source_lineage.get("source_profile_memory_kinds", [])
         source_memory_selection_retention: Json = {
             key: source_lineage.get(key)
             for key in [
@@ -4142,6 +4154,12 @@ class MatrixArkLocalAdapter:
                 "source_memory_selection_policies": source_memory_selection_policies,
                 "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
                 **source_memory_selection_retention,
+            }
+        if source_profile_memory_classes or source_profile_memory_kinds:
+            metadata = {
+                **metadata,
+                "source_profile_memory_classes": source_profile_memory_classes,
+                "source_profile_memory_kinds": source_profile_memory_kinds,
             }
         storage_options = normalize_storage_options(args, metadata)
         if "node_path" not in metadata:
@@ -4332,6 +4350,8 @@ class MatrixArkLocalAdapter:
             "source_codex_event_counts": source_codex_event_counts,
             "source_memory_selection_policies": source_memory_selection_policies,
             "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            "source_profile_memory_classes": source_profile_memory_classes,
+            "source_profile_memory_kinds": source_profile_memory_kinds,
             **source_memory_selection_retention,
             "profile_promotion_summary": batch_result.get("profile_promotion_summary", []),
             "commit_reason": commit_reason,
@@ -8228,6 +8248,8 @@ class MatrixArkLocalAdapter:
                 entity_source_role_counts = source_role_counts
             entity_type_counts[updated_entity["entity_type"]] = int(entity_type_counts.get(updated_entity["entity_type"], 0)) + 1
             entity_hashes.append(entity_hash)
+            session_profile_memory_class = profile_memory_class_for_entity_type(updated_entity.get("entity_type"))
+            session_profile_memory_kind = profile_memory_kind_for_entity_type(updated_entity.get("entity_type"))
             session_entity_record = {
                 "record_type": "context_entity",
                 "entity_hash": entity_hash,
@@ -8238,6 +8260,8 @@ class MatrixArkLocalAdapter:
                 "access_scope": envelope["scope"],
                 "entity_type": updated_entity["entity_type"],
                 "entity_name": updated_entity["entity_name"],
+                "profile_memory_class": session_profile_memory_class,
+                "profile_memory_kind": session_profile_memory_kind,
                 "state": updated_entity["state"],
                 "previous_state": updated_entity.get("previous_state", ""),
                 "confidence": updated_entity["confidence"],
@@ -8252,6 +8276,8 @@ class MatrixArkLocalAdapter:
                 "source_codex_event_counts": source_codex_event_counts,
                 "source_memory_selection_policies": source_memory_selection_policies,
                 "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                "source_profile_memory_classes": source_profile_memory_classes,
+                "source_profile_memory_kinds": source_profile_memory_kinds,
                 **source_memory_selection_retention,
                 "extraction_context_event_ids": extraction_context_event_ids,
                 "field_patches": updated_entity.get("field_patches", []),
@@ -8313,6 +8339,8 @@ class MatrixArkLocalAdapter:
                     "scope": envelope["scope"],
                     "entity_type": updated_entity["entity_type"],
                     "entity_name": updated_entity["entity_name"],
+                    "profile_memory_class": session_profile_memory_class,
+                    "profile_memory_kind": session_profile_memory_kind,
                     "source_event_ids": source_event_ids,
                     "source_roles": entity_source_roles,
                     "source_role_counts": entity_source_role_counts,
@@ -8322,6 +8350,8 @@ class MatrixArkLocalAdapter:
                     "source_codex_event_counts": source_codex_event_counts,
                     "source_memory_selection_policies": source_memory_selection_policies,
                     "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                    "source_profile_memory_classes": source_profile_memory_classes,
+                    "source_profile_memory_kinds": source_profile_memory_kinds,
                     **source_memory_selection_retention,
                     "memory_scope": "session",
                     "session_continuity": "same_session",
@@ -8894,6 +8924,8 @@ class MatrixArkLocalAdapter:
                 "source_codex_event_counts": source_codex_event_counts,
                 "source_memory_selection_policies": source_memory_selection_policies,
                 "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                "source_profile_memory_classes": source_profile_memory_classes,
+                "source_profile_memory_kinds": source_profile_memory_kinds,
                 **source_memory_selection_retention,
                 "source_memory_scopes": ["session"],
                 "source_session_continuities": ["same_session"],
@@ -8963,6 +8995,8 @@ class MatrixArkLocalAdapter:
                 "source_codex_event_counts": source_codex_event_counts,
                 "source_memory_selection_policies": source_memory_selection_policies,
                 "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                "source_profile_memory_classes": source_profile_memory_classes,
+                "source_profile_memory_kinds": source_profile_memory_kinds,
                 **source_memory_selection_retention,
                 "extraction_context_event_ids": extraction_context_event_ids,
                 "extraction_phase": extraction_phase,
@@ -8988,6 +9022,8 @@ class MatrixArkLocalAdapter:
                 "source_codex_event_counts": source_codex_event_counts,
                 "source_memory_selection_policies": source_memory_selection_policies,
                 "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                "source_profile_memory_classes": source_profile_memory_classes,
+                "source_profile_memory_kinds": source_profile_memory_kinds,
                 **source_memory_selection_retention,
                 "source_memory_scopes": ["session"],
                 "source_session_continuities": ["same_session"],
@@ -9042,6 +9078,8 @@ class MatrixArkLocalAdapter:
             "source_codex_event_counts": source_codex_event_counts,
             "source_memory_selection_policies": source_memory_selection_policies,
             "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            "source_profile_memory_classes": source_profile_memory_classes,
+            "source_profile_memory_kinds": source_profile_memory_kinds,
             **source_memory_selection_retention,
             "profile_promotion_summary": profile_promotion_summary[:16],
             "segments_written": len(segment_hashes),
