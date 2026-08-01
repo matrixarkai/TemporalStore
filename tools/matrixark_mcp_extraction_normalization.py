@@ -264,6 +264,15 @@ def codex_outcome_entity_type(kind: str) -> str:
     }.get(str(kind or "").strip().lower(), "codex_outcome_fact")
 
 
+CODEX_OUTCOME_ENTITY_TYPES = {
+    "codex_next_action",
+    "codex_blocker",
+    "codex_publish_outcome",
+    "codex_code_change",
+    "codex_benchmark_result",
+}
+
+
 def codex_outcome_fact_entities(
     text: str,
     *,
@@ -586,6 +595,7 @@ def infer_entity_field_patches(entity_type: str, value: str, text: str) -> list[
         "confirmation",
         "assistant_decision",
         "tool_evidence",
+        *CODEX_OUTCOME_ENTITY_TYPES,
     }
     if entity_type in evolving_entity_types and not patches and value:
         patches.append(entity_patch("", summarize_text(value, limit=180)))
@@ -612,6 +622,7 @@ def canonical_entity_name(entity_type: str, value: str) -> str:
         "confirmation",
         "assistant_decision",
         "tool_evidence",
+        *CODEX_OUTCOME_ENTITY_TYPES,
     }:
         return entity_type
     if entity_type == "approval_state":
@@ -634,6 +645,35 @@ def canonical_entity_name(entity_type: str, value: str) -> str:
     return compact_value[:80] if compact_value else entity_type
 
 
+def entity_retention_priority(entity: Json) -> int:
+    entity_type = str(entity.get("entity_type") or "").strip().lower()
+    entity_name = str(entity.get("entity_name") or "").strip().lower()
+    source_roles = {
+        str(role or "").strip().lower()
+        for role in entity.get("source_roles", [])
+        if str(role or "").strip()
+    }
+    if entity_type in {
+        "identity_profile",
+        "communication_profile",
+        "workspace_profile",
+        "preference",
+        "approval_state",
+        "correction",
+        "memory_feature_profile",
+    }:
+        return 0
+    if "user" in source_roles or entity_type in {"current_plan", "confirmation"}:
+        return 1
+    if entity_type in CODEX_OUTCOME_ENTITY_TYPES:
+        return 2
+    if entity_type in {"assistant_decision", "tool_evidence"} and ":" in entity_name:
+        return 2
+    if entity_type in {"assistant_decision", "tool_evidence"}:
+        return 3
+    return 4
+
+
 def dedupe_entities(entities: list[Json]) -> list[Json]:
     seen = set()
     positions: dict[tuple[Any, str], int] = {}
@@ -641,7 +681,11 @@ def dedupe_entities(entities: list[Json]) -> list[Json]:
     for entity in entities:
         key = (entity.get("entity_type"), str(entity.get("entity_name", "")).lower())
         if key in seen:
-            if entity.get("entity_type") == "tool_evidence" and out[positions[key]].get("state"):
+            existing = out[positions[key]]
+            if entity_retention_priority(entity) < entity_retention_priority(existing):
+                out[positions[key]] = entity
+                continue
+            if entity.get("entity_type") == "tool_evidence" and existing.get("state"):
                 continue
             if entity.get("entity_name") == entity.get("entity_type"):
                 out[positions[key]] = entity
@@ -649,7 +693,9 @@ def dedupe_entities(entities: list[Json]) -> list[Json]:
         seen.add(key)
         positions[key] = len(out)
         out.append(entity)
-    return out[:12]
+    ranked = sorted(enumerate(out), key=lambda item: (entity_retention_priority(item[1]), item[0]))
+    kept_indexes = {index for index, _entity in ranked[:20]}
+    return [entity for index, entity in enumerate(out) if index in kept_indexes]
 
 
 def ordered_unique(values: list[str]) -> list[str]:
