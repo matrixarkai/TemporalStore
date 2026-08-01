@@ -3994,8 +3994,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 if record.get("record_type") == "context_event"
                 and record.get("extraction_phase") == "pending_async"
             ]
+            pending_embeddings = [
+                record
+                for record in records
+                if record.get("record_type") == "context_embedding"
+                and record.get("embedding_type") == "event_text"
+                and record.get("ref_hash") == pending_events[0]["event_id_hash"]
+            ]
             self.assertEqual(1, len(raw_messages))
             self.assertEqual(1, len(pending_events))
+            self.assertEqual(1, len(pending_embeddings))
             self.assertNotIn("hook_type", raw_messages[0])
             self.assertNotIn("hook_type", raw_messages[0].get("metadata", {}))
             self.assertNotIn("hook_type", raw_messages[0].get("agent_hook", {}))
@@ -4011,6 +4019,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("selected_user_profile_fact", raw_selection["policies"])
             self.assertEqual(raw_selection["policies"], pending_events[0]["source_memory_selection_policies"])
             self.assertIn("selected_user_profile_fact", pending_events[0]["source_memory_selection_policies"])
+            self.assertEqual(pending_events[0]["event_id_hash"], pending_embeddings[0]["ref_hash"])
+            self.assertEqual("pending_async_event", pending_embeddings[0]["memory_layer"])
+            self.assertEqual("user_prompt", pending_embeddings[0]["event_type"])
+            self.assertNotIn("source_memory_selection_policies", pending_embeddings[0])
+            self.assertNotIn("source_hook_type_counts", pending_embeddings[0])
+            self.assertNotIn("source_codex_event_counts", pending_embeddings[0])
 
     def test_tool_output_memory_uses_short_structured_evidence(self) -> None:
         noisy_output = "\n".join(
