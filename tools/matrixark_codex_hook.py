@@ -4111,8 +4111,13 @@ def fast_hook_event_projection_records(*, event_record: Json, updated_at_ms: int
         "extraction_phase": event_record.get("extraction_phase") or "pending_async",
         "final_session_boundary": bool(event_record.get("final_session_boundary", False)),
     }
+    semantic_event_type = str(event_record.get("event_type") or "pending_async").strip() or "pending_async"
     projection_lineage: Json = {
         **serving_lineage,
+        "event_type": semantic_event_type,
+        "classification": event_record.get("classification", ""),
+        "extraction_status": event_record.get("extraction_status", ""),
+        "extraction_mode": event_record.get("extraction_mode", ""),
         "source_roles": event_record.get("source_roles", []),
         "source_role_counts": event_record.get("source_role_counts", {}),
         "source_hook_types": event_record.get("source_hook_types", []),
@@ -4144,6 +4149,10 @@ def fast_hook_event_projection_records(*, event_record: Json, updated_at_ms: int
             "model": embedding_model_name(),
             "vector": vector,
             "scope": scope,
+            "event_type": semantic_event_type,
+            "classification": event_record.get("classification", ""),
+            "extraction_status": event_record.get("extraction_status", ""),
+            "extraction_mode": event_record.get("extraction_mode", ""),
             **serving_lineage,
             "projection_phase": "fast_hook_pending_async",
             "updated_at_ms": updated_at_ms,
@@ -4199,6 +4208,12 @@ def fast_async_hook_ingest(
     event_id_hash = stable_int_hash(f"{now}:{role}:{session_id}:{text}:{uuid.uuid4().hex}")
     storage_options = hook_storage_options()
     messages = [{"role": role, "content": text}]
+    fast_event_type_by_role = {
+        "user": "user_prompt",
+        "assistant": "assistant_response",
+        "tool": "tool_evidence",
+    }
+    semantic_event_type = fast_event_type_by_role.get(normalize_message_role(role), "conversation_event")
     hook_type = str((hook or {}).get("hook_type") or "").strip() or hook_type_for_event(args.event)
     lineage = hook_lineage_fields(hook)
     tool_name = str(agent_context.get("tool_name") or "").strip()
@@ -4292,7 +4307,9 @@ def fast_async_hook_ingest(
         "text": f"{role}: {text}",
         "summary_text": _compact_one_line(f"{role}: {text}", max_chars=220),
         "classification": "PENDING_ASYNC_EXTRACTION",
-        "event_type": "pending_async",
+        "event_type": semantic_event_type,
+        "extraction_status": "pending",
+        "extraction_mode": "async_pending",
         "status": "pending",
         "source_kind": "message",
         "source_role": role,
@@ -4325,6 +4342,7 @@ def fast_async_hook_ingest(
             "kind": "message",
             "source_role": role,
             "codex_event": args.event,
+            "event_type": semantic_event_type,
             **tool_fields,
             "messages": messages,
             "scope": scope,
@@ -4338,7 +4356,9 @@ def fast_async_hook_ingest(
         "internal_extraction": {
             "mode": "async_pending",
             "classification": "PENDING_ASYNC_EXTRACTION",
-            "event_type": "pending_async",
+            "event_type": semantic_event_type,
+            "extraction_status": "pending",
+            "extraction_mode": "async_pending",
             "status": "pending",
             "source": "codex_hook_fast_async",
         },
