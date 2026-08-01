@@ -9,9 +9,12 @@ try:
     from tools.matrixark_mcp_core import (
         Json,
         MatrixArkError,
+        context_index_name,
+        context_index_posting_record,
         messages_from_event_record,
         normalize_message_role,
         normalized_node_path,
+        ordered_unique,
         session_buffer_key,
         stable_hash,
         summarize_text,
@@ -21,9 +24,12 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         Json,
         MatrixArkError,
+        context_index_name,
+        context_index_posting_record,
         messages_from_event_record,
         normalize_message_role,
         normalized_node_path,
+        ordered_unique,
         session_buffer_key,
         stable_hash,
         summarize_text,
@@ -46,6 +52,26 @@ def _idle_commit_schedule(args: Json, envelope: Json, pending_event_count: int, 
         "idle_commit_pending_message_count": pending_message_count,
         "idle_commit_due": idle_timeout_ms == 0,
     }
+
+
+def _lightweight_context_event_index_terms(source_counts: Json, memory_layer_fields: Json, envelope: Json) -> list[str]:
+    terms = [
+        context_index_name("event_type", "pending_async"),
+        context_index_name("classification", "pending_async_extraction"),
+        context_index_name("status", "pending"),
+        context_index_name("source_type", envelope.get("kind", "message")),
+    ]
+    for field in ["memory_scope", "session_continuity", "extraction_phase"]:
+        value = str(memory_layer_fields.get(field) or "").strip()
+        if value:
+            terms.append(context_index_name(field, value))
+    for role in source_counts.get("source_role_counts", {}):
+        terms.append(context_index_name("source_role", role))
+    for hook_type in source_counts.get("source_hook_type_counts", {}):
+        terms.append(context_index_name("hook_type", hook_type))
+    for codex_event in source_counts.get("source_codex_event_counts", {}):
+        terms.append(context_index_name("codex_event", codex_event))
+    return ordered_unique(terms)
 
 
 def _source_count_summary(envelope: Json, hook: Json | None) -> Json:
@@ -144,6 +170,23 @@ def lightweight_async_accept(
         "extraction_phase": "pending_async",
         "final_session_boundary": False,
     }
+    event_index_terms = _lightweight_context_event_index_terms(source_counts, memory_layer_fields, envelope)
+    event_index_records = [
+        {
+            **context_index_posting_record(
+                index_name=index_name,
+                data_model="context_event",
+                ref_type="event",
+                ref_hashes=[event_id_hash],
+                node_hash=node_hash,
+                scope=envelope["scope"],
+                updated_at_ms=envelope["ingestion_time_ms"],
+            ),
+            "access_scope": envelope["scope"],
+            **memory_layer_fields,
+        }
+        for index_name in event_index_terms
+    ]
     node_materialization = target.ensure_context_node_path(
         node_path=node_path,
         scope=envelope["scope"],
@@ -194,6 +237,13 @@ def lightweight_async_accept(
                 node_path=node_path,
                 hook=hook,
             )
+        if event_index_records:
+            append_many = getattr(target, "append_many", None)
+            if callable(append_many):
+                append_many(event_index_records)
+            else:
+                for index_record in event_index_records:
+                    target.append(index_record)
         target.append(
             {
                 "record_type": "matrixark_async_pipeline_task",
