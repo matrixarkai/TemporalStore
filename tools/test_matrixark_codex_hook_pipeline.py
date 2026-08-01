@@ -206,6 +206,25 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(["assistant"], by_name["assistant_decision:blocker"]["source_roles"])
         self.assertEqual(["tool"], by_name["tool_evidence:validation"]["source_roles"])
 
+    def test_assistant_outcome_does_not_create_tool_evidence_without_tool_message(self) -> None:
+        selected = matrixark_codex_hook.selected_assistant_memory_text(
+            "Implemented profile memory retrieval for validation-result queries and pushed commit abc1234 to origin/main. "
+            "Tests passed: 164."
+        )
+        entities = matrixark_mcp_core.extract_batch_entities(
+            [{"role": "assistant", "content": selected}],
+            {"source_event_ids": ["assistant_event"]},
+        )
+        by_name = {entity["entity_name"]: entity for entity in entities}
+
+        self.assertIn("assistant_decision", by_name)
+        self.assertIn("assistant_decision:outcome", by_name)
+        self.assertIn("assistant_decision:validation", by_name)
+        self.assertNotIn("tool_evidence", by_name)
+        self.assertNotIn("tool_evidence:outcome", by_name)
+        self.assertEqual(["assistant"], by_name["assistant_decision:outcome"]["source_roles"])
+        self.assertEqual(["assistant_event"], by_name["assistant_decision:outcome"]["source_refs"])
+
     def test_tool_memory_selection_normalizes_common_test_result_summaries(self) -> None:
         noisy_tool_output = "\n".join(
             [
