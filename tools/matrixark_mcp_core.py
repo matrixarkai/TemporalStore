@@ -4829,6 +4829,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(context_index_name("entity_type", "memory_feature_profile"))
         add_group(context_index_name("profile_memory_class", "memory_feature"))
         add_group(context_index_name("profile_memory_kind", "memory_feature"))
+        add_group(context_index_name("memory_layer", "cross_session_memory_feature_entity"))
         add_group(context_index_name("memory_scope", "user_profile"))
     if re.search(r"\b(friend|partner|mother|father|sister|brother|wife|husband|manager|teammate|relationship|family|child|children|son|daughter|pet)\b", lower):
         add_group(context_index_name("entity_type", "relationship"), context_index_name("entity_type", "family_profile"))
@@ -6421,6 +6422,8 @@ def candidate_memory_layer_name(candidate: Json) -> str:
         if memory_scope == "user_profile":
             if profile_memory_kind == "codex_outcome":
                 return "cross_session_codex_outcome_entity"
+            if profile_memory_kind == "memory_feature":
+                return "cross_session_memory_feature_entity"
             return "profile_entity"
         if session_continuity == "same_session":
             return "same_session_entity"
@@ -6743,7 +6746,11 @@ def select_token_budgeted_refs(
             normalized_extraction_phase_budget_tokens[phase_name] = budget_tokens
     extraction_phase_used_tokens: Json = {phase: 0 for phase in normalized_extraction_phase_budget_tokens}
     extraction_phase_selected_ref_counts: Json = {phase: 0 for phase in normalized_extraction_phase_budget_tokens}
-    profile_entity_bridge_layers = {"profile_entity", "cross_session_codex_outcome_entity"}
+    profile_entity_bridge_layers = {
+        "profile_entity",
+        "cross_session_codex_outcome_entity",
+        "cross_session_memory_feature_entity",
+    }
     codex_outcome_evidence_layers = {
         "same_session_codex_outcome_event",
         "cross_session_codex_outcome_event",

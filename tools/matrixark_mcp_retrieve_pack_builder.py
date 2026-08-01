@@ -89,6 +89,8 @@ def memory_layer_name(ref: Json) -> str:
         if memory_scope == "user_profile":
             if profile_memory_kind == "codex_outcome":
                 return "cross_session_codex_outcome_entity"
+            if profile_memory_kind == "memory_feature":
+                return "cross_session_memory_feature_entity"
             return "profile_entity"
         if session_continuity == "same_session":
             return "same_session_entity"
