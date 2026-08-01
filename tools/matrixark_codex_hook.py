@@ -5420,8 +5420,8 @@ def main() -> int:
     text = payload_text(payload, event=args.event) or args.query
     original_hook_text = text
     if args.event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
-        fallback_text = text
         text = ""
+        original_hook_text = ""
         for _attempt in range(12):
             rollout_raw = latest_codex_tool_output_from_rollout(payload)
             rollout_text = selected_tool_memory_text(rollout_raw, payload)
@@ -5430,9 +5430,6 @@ def main() -> int:
                 original_hook_text = rollout_raw
                 break
             time.sleep(0.2)
-        if not text:
-            text = fallback_text
-            original_hook_text = fallback_text
     if args.event in {"Stop", "PostCompact", "SubagentStop"}:
         fallback_text = text
         text = ""
