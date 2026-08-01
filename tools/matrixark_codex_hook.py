@@ -4244,6 +4244,10 @@ def fast_hook_event_projection_records(*, event_record: Json, updated_at_ms: int
         "source_extraction_phases": event_record.get("source_extraction_phases", []),
         "source_memory_selection_policies": event_record.get("source_memory_selection_policies", []),
         "source_memory_selection_policy_counts": event_record.get("source_memory_selection_policy_counts", {}),
+        "profile_memory_class": event_record.get("profile_memory_class", ""),
+        "profile_memory_kind": event_record.get("profile_memory_kind", ""),
+        "source_profile_memory_classes": event_record.get("source_profile_memory_classes", []),
+        "source_profile_memory_kinds": event_record.get("source_profile_memory_kinds", []),
         "source_event_ids": [event_id_hash] if event_id_hash else [],
     }
     projection_lineage = {
@@ -4537,6 +4541,15 @@ def fast_async_hook_ingest(
         policy_name: 1
         for policy_name in source_memory_selection_policies
     }
+    feature_memory_profile = bool(FEATURE_MEMORY_POLICY_RE.search(str(text or "")))
+    profile_memory_fields: Json = {}
+    if feature_memory_profile:
+        profile_memory_fields = {
+            "profile_memory_class": "memory_feature",
+            "profile_memory_kind": "memory_feature",
+            "source_profile_memory_classes": ["memory_feature"],
+            "source_profile_memory_kinds": ["memory_feature"],
+        }
     metadata: Json = codex_hook_metadata(
         source="codex_hook_fast_async",
         event=event_name,
@@ -4565,6 +4578,8 @@ def fast_async_hook_ingest(
             "raw_env": "MATRIXARK_HOOK_TOOL_RESULT_RAW",
             "serving_env": "MATRIXARK_HOOK_TOOL_RESULT_SERVING",
         }
+    if profile_memory_fields:
+        metadata.update(profile_memory_fields)
     if selection_metadata:
         metadata["codex_memory_selection"] = selection_metadata
     retention = hook_retention_fields(text=text, role=role, now_ms=now)
@@ -4592,6 +4607,7 @@ def fast_async_hook_ingest(
         **lineage,
         "source_memory_selection_policies": source_memory_selection_policies,
         "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+        **profile_memory_fields,
         "metadata": metadata,
         "agent_hook": hook,
         "ingestion_time_ms": now,
@@ -4630,6 +4646,7 @@ def fast_async_hook_ingest(
         "source_extraction_phases": ["pending_async"],
         "source_memory_selection_policies": source_memory_selection_policies,
         "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+        **profile_memory_fields,
         "scope": scope,
         "tenant_id": tenant_id,
         "user_id": user_id,
@@ -4653,6 +4670,7 @@ def fast_async_hook_ingest(
             "storage_options": storage_options,
             "source_memory_selection_policies": source_memory_selection_policies,
             "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            **profile_memory_fields,
             **lineage,
         },
         "internal_extraction": {
@@ -4698,6 +4716,7 @@ def fast_async_hook_ingest(
         "source_extraction_phases": ["pending_async"],
         "source_memory_selection_policies": source_memory_selection_policies,
         "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+        **profile_memory_fields,
         "memory_scope": "session",
         "session_continuity": "same_session",
         "extraction_phase": "pending_async",
@@ -4720,11 +4739,8 @@ def fast_async_hook_ingest(
         source_memory_selection_policies=source_memory_selection_policies,
         source_memory_selection_policy_counts=source_memory_selection_policy_counts,
         source_lineage=lineage,
-        **(
-            {"profile_memory_class": "memory_feature", "profile_memory_kind": "memory_feature"}
-            if FEATURE_MEMORY_POLICY_RE.search(str(text or ""))
-            else {}
-        ),
+        profile_memory_class=str(profile_memory_fields.get("profile_memory_class") or ""),
+        profile_memory_kind=str(profile_memory_fields.get("profile_memory_kind") or ""),
     )
     enqueue_raw = getattr(adapter, "enqueue_raw_ingestion_records", None)
     session_commit_result: Json = {}

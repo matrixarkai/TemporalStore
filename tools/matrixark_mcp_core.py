@@ -5272,6 +5272,12 @@ def candidate_index_terms(
         terms.update(index_terms_by_batch.get(record.get("batch_id_hash"), []))
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))
         terms.add(context_index_name("event_type", record.get("event_type")))
+        if record.get("profile_memory_class") not in (None, "", [], {}):
+            terms.add(context_index_name("profile_memory_class", record.get("profile_memory_class")))
+        if record.get("profile_memory_kind") not in (None, "", [], {}):
+            terms.add(context_index_name("profile_memory_kind", record.get("profile_memory_kind")))
+        for profile_kind in record.get("source_profile_memory_kinds", [])[:8] if isinstance(record.get("source_profile_memory_kinds"), list) else []:
+            terms.add(context_index_name("profile_memory_kind", profile_kind))
         if not require_oss_understanding() and not record.get("event_type"):
             terms.add(context_index_name("event_type", infer_event_type(str(record.get("text", "")))))
         classification = non_default_classification(record.get("classification"))
