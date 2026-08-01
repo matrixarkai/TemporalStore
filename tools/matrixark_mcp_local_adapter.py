@@ -1196,6 +1196,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
     *,
     remote_budget_tokens: int,
     question_type: str = "fact",
+    outcome_query: bool = False,
 ) -> tuple[Json, str]:
     try:
         remote_budget = max(0, int(remote_budget_tokens or 0))
@@ -1315,7 +1316,12 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_codex_outcome_compression": 0.35,
             }
         )
-    fractions.update(codex_outcome_event_segment_layer_fractions(normalized_question_type))
+    fractions.update(
+        codex_outcome_event_segment_layer_fractions(
+            normalized_question_type,
+            outcome_query=outcome_query,
+        )
+    )
     return {
         layer: max(1, int(remote_budget * fraction))
         for layer, fraction in fractions.items()
@@ -9680,6 +9686,7 @@ class MatrixArkLocalAdapter:
             memory_layer_budget_tokens, memory_layer_budget_mode = pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 remote_budget_tokens=remote_context_budget_tokens,
                 question_type=question_type,
+                outcome_query=codex_outcome_budget_query(args, ranking, question_type=question_type),
             )
         elif not memory_layer_budget_tokens:
             memory_layer_budget_tokens, memory_layer_budget_mode = auto_memory_layer_budget_tokens(
