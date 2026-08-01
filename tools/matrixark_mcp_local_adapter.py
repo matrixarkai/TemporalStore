@@ -567,8 +567,10 @@ def suppress_profile_shadowed_session_entities(selected: list[Json], dropped_ove
             and item.get("memory_scope") == "user_profile"
             and item.get("session_continuity") == "cross_session"
         ):
-            profile_entity_source_hashes.update(_ref_list_value(item, "source_entity_hashes"))
             entity_type = str(item.get("entity_type") or "").strip().lower()
+            if is_codex_outcome_entity_type(entity_type) or str(item.get("profile_memory_kind") or "").strip().lower() == "codex_outcome":
+                continue
+            profile_entity_source_hashes.update(_ref_list_value(item, "source_entity_hashes"))
             entity_name = str(item.get("entity_name") or "").strip().lower()
             if entity_type and entity_name:
                 profile_entity_identity_keys.add((entity_type, entity_name))
@@ -584,8 +586,12 @@ def suppress_profile_shadowed_session_entities(selected: list[Json], dropped_ove
             and item.get("memory_scope") == "session"
             and item.get("session_continuity") == "same_session"
         ):
+            item_entity_type = str(item.get("entity_type") or "").strip().lower()
+            if is_codex_outcome_entity_type(item_entity_type) or str(item.get("profile_memory_kind") or "").strip().lower() == "codex_outcome":
+                deduped_selected.append(item)
+                continue
             item_key = (
-                str(item.get("entity_type") or "").strip().lower(),
+                item_entity_type,
                 str(item.get("entity_name") or "").strip().lower(),
             )
             represented_by_profile = item.get("ref_hash") in profile_entity_source_hashes or (
