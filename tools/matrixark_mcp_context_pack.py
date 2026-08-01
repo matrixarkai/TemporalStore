@@ -131,7 +131,13 @@ def _normalize_message_role(role: Any) -> str:
         "llm": "assistant",
         "model": "assistant",
         "tool_result": "tool",
+        "tool-output": "tool",
+        "tooloutput": "tool",
         "tool_output": "tool",
+        "function": "tool",
+        "function_call_output": "tool",
+        "custom_tool_call_output": "tool",
+        "tool_call_output": "tool",
     }.get(role_name, role_name)
 
 
