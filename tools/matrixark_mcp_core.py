@@ -5993,9 +5993,11 @@ def is_pending_async_candidate(candidate: Json) -> bool:
     classification = str(candidate.get("classification") or metadata.get("classification") or "").strip().upper()
     extraction_status = str(candidate.get("extraction_status") or metadata.get("extraction_status") or "").strip().lower()
     extraction_mode = str(candidate.get("extraction_mode") or metadata.get("extraction_mode") or "").strip().lower()
+    extraction_phase = str(candidate.get("extraction_phase") or metadata.get("extraction_phase") or "").strip().lower()
     return (
         event_type == "pending_async"
         or classification == "PENDING_ASYNC_EXTRACTION"
+        or extraction_phase == "pending_async"
         or extraction_status in {"pending", "async_pending"}
         or extraction_mode == "async_pending"
     )
@@ -6607,7 +6609,7 @@ def memory_layer_for_serving_ref(ref: Json) -> str:
         or str(ref.get("classification") or metadata.get("classification") or "").strip().upper() == "PENDING_ASYNC_EXTRACTION"
         or str(ref.get("extraction_phase") or metadata.get("extraction_phase") or "").strip().lower() == "pending_async"
     ):
-        return "pending_async_event"
+        return candidate_memory_layer_name(ref)
     sharing_scope = str(ref.get("sharing_scope") or metadata.get("sharing_scope") or "").strip().lower()
     ref_type = str(ref.get("ref_type") or "")
     if sharing_scope in {"tenant_shared", "global_shared"} or ref_type in {"resource_chunk", "skill_section"}:

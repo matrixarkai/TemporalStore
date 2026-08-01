@@ -37,6 +37,7 @@ from matrixark_mcp_core import (
     identity_hashes,
     infer_query_type,
     infer_secondary_index_filter_groups,
+    memory_layer_for_serving_ref,
     packing_sort_key,
     select_token_budgeted_refs,
 )
@@ -3680,6 +3681,22 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(9, feature_budget["by_memory_layer"]["same_session_memory_feature_segment"]["tokens"])
         self.assertEqual(1, feature_budget["by_memory_layer"]["cross_session_memory_feature_event"]["refs"])
         self.assertEqual(10, feature_budget["by_memory_layer"]["cross_session_memory_feature_event"]["tokens"])
+        phase_only_feature_pending_event = {
+            "ref_type": "event",
+            "event_type": "memory_feature",
+            "profile_memory_kind": "memory_feature",
+            "extraction_phase": "pending_async",
+            "token_estimate": 6,
+            "text": "pending feature memory after compact context projection",
+        }
+        self.assertEqual(
+            "pending_async_memory_feature_event",
+            candidate_memory_layer_name(phase_only_feature_pending_event),
+        )
+        self.assertEqual(
+            "pending_async_memory_feature_event",
+            memory_layer_for_serving_ref(phase_only_feature_pending_event),
+        )
 
         selected, _used_tokens, dropped = select_token_budgeted_refs(
             [
@@ -3794,9 +3811,6 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "ref_type": "event",
             "ref_hash": 901,
             "event_type": "memory_feature",
-            "classification": "PENDING_ASYNC_EXTRACTION",
-            "extraction_status": "pending",
-            "extraction_mode": "async_pending",
             "extraction_phase": "pending_async",
             "memory_scope": "session",
             "session_continuity": "same_session",
