@@ -2407,7 +2407,7 @@ PROFILE_MEMORY_QUERY_RE = re.compile(
     r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|identity profile|communication profile|workspace profile|remember about me|remember about|what should (?:i|you|we) remember|standing instructions?|standing preferences?|persistent instructions?|saved preferences?|know about (?:me|my|the user)|what (?:have|did) i (?:tell|told) you|what (?:are|were|do|did) my preferences|what do i prefer|do i prefer|my preferences|my .*?(?:policy|policies|instruction|instructions|preference|preferences)|told you before|how should (?:you|codex) (?:address|reply|respond|answer)|what (?:is|are) my (?:name|nickname|pronouns?|preferred language|preferred format|communication style|response style|workspace rules?|repo rules?|repository rules?|branch rules?|build rules?|deployment rules?)|what (?:workspace|repo|repository|branch|build|deployment|github|remote) rules? (?:do|should) (?:you|codex) remember)\b"
 )
 
-CODEX_OUTCOME_QUERY_RE = re.compile(r"\b(?:codex|assistant|agent)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|validated|verified|push(?:ed)?|commit(?:ted)?|rebased|failed|blocked|blocker|done|outcome|decision|decided|next action)\b|\bwhat (?:was|were|did)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|validated|verified|push(?:ed)?|commit(?:ted)?|failed|blocked|done)\b|\bwhat did (?:you|we)\b.{0,80}\b(?:implement|fix|change|update|validate|verify|push|commit|rebase|fail|block|decide|do)\b|\b(?:show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:assistant decision|tool evidence|validation evidence|pushed commit|blocked work|failed validation|validation result|test result|tests? passed|pushed commit)\b|\b(?:what|which|show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:tests? passed|validation (?:passed|result|evidence)|pushed commit|commit (?:was )?pushed|push result|rebase result)\b|\bwhat (?:failed|was blocked|blocked)\b.{0,80}\b(?:memory work|work|validation|commit|push|tool|codex|temporalstore)\b")
+CODEX_OUTCOME_QUERY_RE = re.compile(r"\b(?:codex|assistant|agent)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|validated|verified|push(?:ed)?|publish(?:ed)?|deploy(?:ed)?|release(?:d)?|merge(?:d)?|commit(?:ted)?|rebase(?:d)?|failed|blocked|blocker|done|outcome|decision|decided|next action)\b|\bwhat (?:was|were|did)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|validated|verified|push(?:ed)?|publish(?:ed)?|deploy(?:ed)?|release(?:d)?|merge(?:d)?|commit(?:ted)?|failed|blocked|done)\b|\bwhat did (?:you|we)\b.{0,80}\b(?:implement|fix|change|update|configure|enable|disable|install|migrate|recover|restore|clean|validate|verify|push|publish|deploy|release|merge|commit|rebase|fail|block|decide|do)\b|\b(?:show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:assistant decision|tool evidence|validation evidence|pushed commit|blocked work|failed validation|validation result|test result|tests? passed|pushed commit)\b|\b(?:what|which|show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:tests? passed|validation (?:passed|result|evidence)|pushed commit|commit (?:was )?pushed|push result|rebase result)\b|\bwhat (?:failed|was blocked|blocked)\b.{0,80}\b(?:memory work|work|validation|commit|push|tool|codex|temporalstore)\b")
 
 QUERY_INDEX_LABELS: dict[str, str] = {
     "entity_type:location": "location city moved lives staying where user is",
@@ -2654,7 +2654,7 @@ def assistant_decision_memory_text(text: str) -> str:
         return ""
     selected: list[str] = []
     primary_decision_line_pattern = re.compile(
-        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|blocked|next|follow[- ]?up|will|use|keep|remove|updated|changed|validated|verified)\b",
+        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|published|deployed|released|merged|rebased|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|blocked|next|follow[- ]?up|will|use|keep|remove|updated|changed|validated|verified|promoted|indexed|budgeted|batched|flushed)\b",
         re.IGNORECASE,
     )
     secondary_decision_line_pattern = re.compile(
@@ -2676,7 +2676,7 @@ def assistant_decision_memory_text(text: str) -> str:
         selected = [
             match.group(0).strip()
             for match in re.finditer(
-                r"[^.!?\n]*(?:decision|decided|done|implemented|fixed|committed|pushed|blocked|next|will|updated|changed|validated|verified|profile|cross[- ]session|memory|gap|risk|warning)[^.!?\n]*[.!?]?",
+                r"[^.!?\n]*(?:decision|decided|done|implemented|fixed|committed|pushed|published|deployed|released|merged|rebased|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|blocked|next|will|updated|changed|validated|verified|promoted|indexed|budgeted|batched|flushed|profile|cross[- ]session|memory|gap|risk|warning)[^.!?\n]*[.!?]?",
                 str(text),
                 flags=re.IGNORECASE,
             )
@@ -2691,7 +2691,7 @@ def tool_evidence_memory_text(text: str) -> str:
         return ""
     selected: list[str] = []
     evidence_line_pattern = re.compile(
-        r"\b(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|\d+\s+passed\b|tests?\s+(?:passed|failed)|test\s+result:\s+ok|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|pushed|rebase|benchmark|validation)\b",
+        r"\b(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|\d+\s+passed\b|tests?\s+(?:passed|failed)|test\s+result:\s+ok|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|pushed|published|deployed|released|merged|rebased|rebase|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|promoted|indexed|budgeted|batched|flushed|benchmark|validation|built|compiled)\b",
         re.IGNORECASE,
     )
     for raw_line in str(text).splitlines():
@@ -2706,7 +2706,7 @@ def tool_evidence_memory_text(text: str) -> str:
         selected = [
             match.group(0).strip()
             for match in re.finditer(
-                r"[^.!?\n]*(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|pushed|rebase|benchmark|validation)[^.!?\n]*[.!?]?",
+                r"[^.!?\n]*(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|pushed|published|deployed|released|merged|rebased|rebase|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|promoted|indexed|budgeted|batched|flushed|benchmark|validation|built|compiled)[^.!?\n]*[.!?]?",
                 str(text),
                 flags=re.IGNORECASE,
             )
@@ -2745,6 +2745,24 @@ def normalized_extraction_message_role(role: Any) -> str:
     }.get(role_name, role_name)
 
 
+CODEX_OUTCOME_CHANGE_RE = re.compile(
+    r"\b(?:changed|updated|implemented|added|removed|fixed|configured|enabled|disabled|installed|upgraded|downgraded|migrated|recovered|restored|cleaned|deleted|moved|renamed|wired|integrated|extracted|promoted|indexed|budgeted|ranked|batched|flushed|synced|consumed|hooked|captured)\b",
+    re.IGNORECASE,
+)
+CODEX_OUTCOME_PUBLISH_RE = re.compile(
+    r"\b(?:outcome|pushed|published|deployed|released|uploaded|merged|rebased|fast[- ]?forward(?:ed)?|commit\s+[0-9a-f]{7,40}|origin/main|refs/heads/main|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main))\b",
+    re.IGNORECASE,
+)
+CODEX_OUTCOME_VALIDATION_RE = re.compile(
+    r"\b(?:validation|validated|verified|tests?|py_compile|unittest|pytest|cargo test|cargo check|build(?: succeeded)?|built|compiled|syntax check)\b",
+    re.IGNORECASE,
+)
+CODEX_OUTCOME_BENCHMARK_RE = re.compile(
+    r"\b(?:benchmark|benchmarked|p50|p99|throughput|latency|qps|ops/sec|requests/sec)\b",
+    re.IGNORECASE,
+)
+
+
 def codex_outcome_fact_kind(line: str) -> str:
     normalized = " ".join(str(line or "").split()).strip().lower()
     if not normalized:
@@ -2754,17 +2772,17 @@ def codex_outcome_fact_kind(line: str) -> str:
         or re.search(r"\b[1-9]\d*\s+(?:failed|failures|errors)\b", normalized)
         or (re.search(r"\bfailed\b", normalized) and not re.search(r"\b0\s+failed\b", normalized))
     )
-    if normalized.startswith("next:") or re.search(r"\bnext\b", normalized):
+    if normalized.startswith("next:") or re.search(r"\b(?:next|follow[- ]?up)\b", normalized):
         return "next"
     if normalized.startswith("blocker:") or has_real_blocker:
         return "blocker"
-    if normalized.startswith("validation:") or re.search(r"\b(?:validation|tests?|py_compile|unittest|pytest|cargo test|cargo check)\b", normalized):
+    if normalized.startswith("validation:") or CODEX_OUTCOME_VALIDATION_RE.search(normalized):
         return "validation"
-    if normalized.startswith("outcome:") or re.search(r"\b(?:pushed|commit\s+[0-9a-f]{7,40}|origin/main|refs/heads/main|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main))\b", normalized):
+    if normalized.startswith("outcome:") or CODEX_OUTCOME_PUBLISH_RE.search(normalized):
         return "outcome"
-    if normalized.startswith("changed:") or re.search(r"\b(?:changed|updated|implemented|added|removed|fixed)\b", normalized):
+    if normalized.startswith("changed:") or CODEX_OUTCOME_CHANGE_RE.search(normalized):
         return "changed"
-    if normalized.startswith("benchmark:") or re.search(r"\b(?:benchmark|p50|p99|throughput|latency)\b", normalized):
+    if normalized.startswith("benchmark:") or CODEX_OUTCOME_BENCHMARK_RE.search(normalized):
         return "benchmark"
     return ""
 
@@ -2823,17 +2841,17 @@ def codex_outcome_fact_index_terms(*values: Any) -> set[str]:
         or (re.search(r"\bfailed\b", lower) and not re.search(r"\b0\s+failed\b", lower))
     )
     for kind in ["next", "blocker", "validation", "outcome", "changed", "benchmark"]:
-        if kind == "next" and re.search(r"\bnext\b", lower):
+        if kind == "next" and re.search(r"\b(?:next|follow[- ]?up)\b", lower):
             terms.add(context_index_name("codex_outcome", kind))
         elif kind == "blocker" and has_real_blocker:
             terms.add(context_index_name("codex_outcome", kind))
-        elif kind == "validation" and re.search(r"\b(?:validation|tests?|py_compile|unittest|pytest|cargo test|cargo check)\b", lower):
+        elif kind == "validation" and CODEX_OUTCOME_VALIDATION_RE.search(lower):
             terms.add(context_index_name("codex_outcome", kind))
-        elif kind == "outcome" and re.search(r"\b(?:outcome|pushed|commit\s+[0-9a-f]{7,40}|origin/main|refs/heads/main|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main))\b", lower):
+        elif kind == "outcome" and CODEX_OUTCOME_PUBLISH_RE.search(lower):
             terms.add(context_index_name("codex_outcome", kind))
-        elif kind == "changed" and re.search(r"\b(?:changed|updated|implemented|added|removed|fixed)\b", lower):
+        elif kind == "changed" and CODEX_OUTCOME_CHANGE_RE.search(lower):
             terms.add(context_index_name("codex_outcome", kind))
-        elif kind == "benchmark" and re.search(r"\b(?:benchmark|p50|p99|throughput|latency)\b", lower):
+        elif kind == "benchmark" and CODEX_OUTCOME_BENCHMARK_RE.search(lower):
             terms.add(context_index_name("codex_outcome", kind))
     return terms
 
@@ -3017,7 +3035,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     ]
     assistant_text = text_from_messages(assistant_messages) if assistant_messages else ""
     if assistant_text and re.search(
-        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|will|next|choose|chose|use|keep|remove|blocked|blocker|failed|failure|error|rejected|updated|changed|validated|validation|verified|profile|cross[- ]session|memory|gap|risk|warning)\b",
+        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|published|deployed|released|merged|rebased|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|will|next|choose|chose|use|keep|remove|blocked|blocker|failed|failure|error|rejected|updated|changed|validated|validation|verified|promoted|indexed|budgeted|batched|flushed|profile|cross[- ]session|memory|gap|risk|warning)\b",
         assistant_text,
         re.IGNORECASE,
     ):
