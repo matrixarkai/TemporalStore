@@ -7292,6 +7292,72 @@ def is_stale_or_superseded_candidate(candidate: Json) -> bool:
     return version_state in {"stale", "superseded", "historical_superseded"}
 
 
+def suppress_profile_shadowed_session_entity_refs(selected: list[Json], dropped: Json) -> tuple[list[Json], int]:
+    profile_source_hashes: set[Any] = set()
+    profile_identity_keys: set[tuple[str, str]] = set()
+    for item in selected:
+        if (
+            item.get("ref_type") != "entity"
+            or item.get("memory_scope") != "user_profile"
+            or item.get("session_continuity") != "cross_session"
+        ):
+            continue
+        entity_type = str(item.get("entity_type") or "").strip().lower()
+        if is_codex_outcome_entity_type(entity_type) or str(item.get("profile_memory_kind") or "").strip().lower() == "codex_outcome":
+            continue
+        source_hashes = item.get("source_entity_hashes")
+        if isinstance(source_hashes, list):
+            profile_source_hashes.update(value for value in source_hashes if value not in (None, ""))
+        entity_name = str(item.get("entity_name") or "").strip().lower()
+        if entity_type and entity_name:
+            profile_identity_keys.add((entity_type, entity_name))
+    if not profile_source_hashes and not profile_identity_keys:
+        return selected, 0
+
+    kept: list[Json] = []
+    removed_tokens = 0
+    removed_count = 0
+    for item in selected:
+        if (
+            item.get("ref_type") == "entity"
+            and item.get("memory_scope") == "session"
+            and item.get("session_continuity") == "same_session"
+        ):
+            entity_type = str(item.get("entity_type") or "").strip().lower()
+            if is_codex_outcome_entity_type(entity_type) or str(item.get("profile_memory_kind") or "").strip().lower() == "codex_outcome":
+                kept.append(item)
+                continue
+            identity_key = (entity_type, str(item.get("entity_name") or "").strip().lower())
+            represented_by_profile = item.get("ref_hash") in profile_source_hashes or (
+                bool(identity_key[0] and identity_key[1]) and identity_key in profile_identity_keys
+            )
+            if represented_by_profile:
+                token_estimate = int(item.get("token_estimate") or max(1, token_count(str(item.get("text") or ""))))
+                removed_tokens += token_estimate
+                removed_count += 1
+                record_dropped_candidate(
+                    dropped,
+                    {
+                        **item,
+                        "stale_or_superseded": True,
+                        "profile_shadowed_reason": "selected_profile_entity_supersedes_session_entity",
+                    },
+                    reason="stale",
+                    token_estimate=token_estimate,
+                )
+                continue
+        kept.append(item)
+    if removed_count and kept:
+        dropped["stale"] = int(dropped.get("stale") or 0) + removed_count
+        dropped["profile_entity_shadowed_session_entities"] = (
+            int(dropped.get("profile_entity_shadowed_session_entities") or 0) + removed_count
+        )
+        dropped.setdefault("estimated_tokens", {}).setdefault("stale", 0)
+        dropped["estimated_tokens"]["stale"] = int(dropped["estimated_tokens"].get("stale") or 0) + removed_tokens
+        return kept, removed_tokens
+    return selected, 0
+
+
 def select_token_budgeted_refs(
     primary: list[Json],
     auxiliary: list[Json],
@@ -8059,6 +8125,10 @@ def select_token_budgeted_refs(
             )
         if used_tokens >= remote_budget:
             break
+    if normalized_question_type in {"current_state", "latest", "profile_memory"}:
+        selected, removed_shadowed_tokens = suppress_profile_shadowed_session_entity_refs(selected, dropped)
+        if removed_shadowed_tokens:
+            used_tokens = max(0, used_tokens - removed_shadowed_tokens)
     dropped["cross_session_policy"] = {
         **cross_session_policy,
         "selected_tokens": cross_used_tokens,
