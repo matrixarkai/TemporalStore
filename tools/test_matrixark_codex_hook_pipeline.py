@@ -411,6 +411,28 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("selected_user_profile_fact", metadata["policies"])
         self.assertEqual(1, metadata["policy_counts"]["selected_user_profile_fact"])
 
+    def test_codex_async_ingest_messages_carry_selection_metadata(self) -> None:
+        args = Namespace(session_commit_threshold=20, idle_commit_timeout_ms=120000)
+        text = "Always use the Ubuntu TemporalStore repo and never use Windows folders for builds."
+        ingest_args = matrixark_codex_hook.hook_async_message_ingest_args(
+            {"scope": {"account_id": "acct", "tenant_id": "tenant", "user_id": "user", "session_id": "session"}},
+            args,
+            event="UserPromptSubmit",
+            role="user",
+            text=text,
+            original_text=text,
+            metadata={},
+            agent_hook={"source": "codex", "hook_type": "before_llm"},
+        )
+
+        message_selection = ingest_args["messages"][0]["metadata"]["codex_memory_selection"]
+        self.assertEqual("selected_user_prompt", message_selection["policy"])
+        self.assertIn("selected_user_profile_fact", message_selection["policies"])
+        self.assertEqual(
+            ingest_args["metadata"]["codex_memory_selection"]["policies"],
+            message_selection["policies"],
+        )
+
     def test_first_person_codex_outcome_queries_target_assistant_and_tool_memory(self) -> None:
         queries = [
             "What did you implement and validate last?",
@@ -3855,6 +3877,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("hook_type", hook)
             self.assertEqual("UserPromptSubmit", hook["trigger"])
 
+            prompt_text = "Always use the Ubuntu TemporalStore repo and never use Windows folders for builds."
             result = matrixark_codex_hook.fast_async_hook_ingest(
                 Server(),
                 args=Namespace(
@@ -3867,10 +3890,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     understanding_provider="rules",
                     segment_provider="deterministic",
                 ),
-                text="Remember compact Codex hook lineage should use codex_event and role.",
+                text=prompt_text,
                 role="user",
                 agent_context={"workspace_root": "/repo"},
                 hook=hook,
+                original_text=prompt_text,
             )
             self.assertEqual("accepted", result["status"])
 
@@ -3880,7 +3904,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 record
                 for record in records
                 if record.get("record_type") == "context_event"
-                and record.get("event_type") == "pending_async"
+                and record.get("extraction_phase") == "pending_async"
             ]
             self.assertEqual(1, len(raw_messages))
             self.assertEqual(1, len(pending_events))
@@ -3894,6 +3918,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("UserPromptSubmit", pending_events[0]["codex_event"])
             self.assertEqual({"before_llm": 1}, pending_events[0]["source_hook_type_counts"])
             self.assertEqual({"UserPromptSubmit": 1}, pending_events[0]["source_codex_event_counts"])
+            raw_selection = raw_messages[0]["messages"][0]["metadata"]["codex_memory_selection"]
+            self.assertEqual("selected_user_prompt", raw_selection["policy"])
+            self.assertIn("selected_user_profile_fact", raw_selection["policies"])
+            self.assertEqual(raw_selection["policies"], pending_events[0]["source_memory_selection_policies"])
+            self.assertIn("selected_user_profile_fact", pending_events[0]["source_memory_selection_policies"])
 
     def test_tool_output_memory_uses_short_structured_evidence(self) -> None:
         noisy_output = "\n".join(

@@ -4154,9 +4154,12 @@ def hook_async_message_ingest_args(
     selection_metadata = codex_memory_selection_metadata(role=role, event=event, text=text, original_text=original_text)
     if selection_metadata:
         metadata = {**metadata, "codex_memory_selection": selection_metadata}
+    message: Json = {"role": role, "content": text}
+    if selection_metadata:
+        message["metadata"] = {"codex_memory_selection": selection_metadata}
     ingest_args: Json = {
         **common,
-        "messages": [{"role": role, "content": text}],
+        "messages": [message],
         "wait": False,
         "async_processing": True,
         **hook_session_commit_extraction_options(args),
@@ -4768,6 +4771,8 @@ def fast_async_hook_ingest(
         text=text,
         original_text=original_text,
     )
+    if selection_metadata:
+        messages[0]["metadata"] = {"codex_memory_selection": selection_metadata}
     selection_policy_values = []
     if isinstance(selection_metadata.get("policies"), list):
         selection_policy_values.extend(selection_metadata.get("policies", []))
