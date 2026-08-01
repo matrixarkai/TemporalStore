@@ -402,10 +402,16 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         "same_session_compression": 0.20,
         "cross_session_compression": 0.20,
         "pending_async_event": 0.20,
+        "pending_async_memory_feature_event": 0.20,
         "same_session_event": 0.45,
+        "same_session_memory_feature_event": 0.35,
+        "cross_session_memory_feature_event": 0.25,
         "cross_session_event": 0.25,
         "same_session_segment": 0.35,
+        "same_session_memory_feature_segment": 0.30,
+        "cross_session_memory_feature_segment": 0.25,
         "cross_session_segment": 0.25,
+        "same_session_memory_feature_entity": 0.35,
         "profile_entity": 0.40,
         "cross_session_codex_outcome_entity": 0.25,
         "cross_session_memory_feature_entity": 0.25,
@@ -590,6 +596,14 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         defaults.get("cross_session_memory_feature_entity", 0.25),
         defaults.get("profile_compression", 0.25),
     )
+    defaults["same_session_memory_feature_summary"] = max(
+        defaults.get("same_session_memory_feature_entity", 0.25),
+        defaults.get("same_session_summary", 0.20),
+    )
+    defaults["same_session_memory_feature_compression"] = max(
+        defaults.get("same_session_memory_feature_entity", 0.25),
+        defaults.get("same_session_compression", 0.20),
+    )
     budgets: Json = {}
     for layer, default_fraction in defaults.items():
         raw_fraction = fractions.get(layer, default_fraction) if isinstance(fractions, dict) else default_fraction
@@ -705,10 +719,16 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
         "same_session_compression": 0.20,
         "cross_session_compression": 0.25,
         "pending_async_event": 0.20,
+        "pending_async_memory_feature_event": 0.20,
         "same_session_event": 0.45,
+        "same_session_memory_feature_event": 0.35,
+        "cross_session_memory_feature_event": 0.25,
         "cross_session_event": 0.25,
         "same_session_segment": 0.30,
+        "same_session_memory_feature_segment": 0.30,
+        "cross_session_memory_feature_segment": 0.25,
         "cross_session_segment": 0.25,
+        "same_session_memory_feature_entity": 0.35,
         "profile_entity": 0.45,
         "cross_session_codex_outcome_entity": 0.25,
         "cross_session_memory_feature_entity": 0.25,
@@ -846,6 +866,14 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
     fractions["cross_session_memory_feature_compression"] = max(
         fractions.get("cross_session_memory_feature_entity", 0.25),
         fractions.get("profile_compression", 0.25),
+    )
+    fractions["same_session_memory_feature_summary"] = max(
+        fractions.get("same_session_memory_feature_entity", 0.25),
+        fractions.get("same_session_summary", 0.20),
+    )
+    fractions["same_session_memory_feature_compression"] = max(
+        fractions.get("same_session_memory_feature_entity", 0.25),
+        fractions.get("same_session_compression", 0.20),
     )
     return {layer: max(1, int(remote_budget * fraction)) for layer, fraction in fractions.items()}, mode
 
