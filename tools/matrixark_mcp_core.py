@@ -6641,7 +6641,19 @@ def candidate_memory_layer_name(candidate: Json) -> str:
     context_class = str(candidate.get("context_class") or metadata.get("context_class") or ref_type)
     memory_scope = str(candidate.get("memory_scope") or metadata.get("memory_scope") or "")
     session_continuity = str(candidate.get("session_continuity") or metadata.get("session_continuity") or "")
+    profile_memory_class = str(candidate.get("profile_memory_class") or metadata.get("profile_memory_class") or "").strip().lower()
     profile_memory_kind = str(candidate.get("profile_memory_kind") or metadata.get("profile_memory_kind") or "").strip().lower()
+    source_profile_memory_classes = {
+        str(value or "").strip().lower()
+        for value in (
+            candidate.get("source_profile_memory_classes")
+            if isinstance(candidate.get("source_profile_memory_classes"), list)
+            else metadata.get("source_profile_memory_classes", [])
+            if isinstance(metadata.get("source_profile_memory_classes"), list)
+            else []
+        )
+        if str(value or "").strip()
+    }
     source_profile_memory_kinds = {
         str(value or "").strip().lower()
         for value in (
@@ -6655,7 +6667,12 @@ def candidate_memory_layer_name(candidate: Json) -> str:
     }
     event_type = str(candidate.get("event_type") or metadata.get("event_type") or candidate.get("entity_type") or metadata.get("entity_type") or "").strip().lower()
     is_codex_outcome_memory = profile_memory_kind == "codex_outcome" or "codex_outcome" in source_profile_memory_kinds or event_type in {"assistant_response", "assistant_decision", "tool_evidence", *CODEX_OUTCOME_ENTITY_TYPES}
-    is_memory_feature_memory = profile_memory_kind == "memory_feature" or "memory_feature" in source_profile_memory_kinds
+    is_memory_feature_memory = (
+        profile_memory_kind == "memory_feature"
+        or profile_memory_class == "memory_feature"
+        or "memory_feature" in source_profile_memory_kinds
+        or "memory_feature" in source_profile_memory_classes
+    )
     if context_class == "resource_entity_fact":
         return "resource_entity_fact"
     if context_class == "resource_fact":
@@ -6728,15 +6745,15 @@ def candidate_memory_layer_name(candidate: Json) -> str:
         if memory_scope == "user_profile":
             if profile_memory_kind == "codex_outcome":
                 return "cross_session_codex_outcome_entity"
-            if profile_memory_kind == "memory_feature":
+            if is_memory_feature_memory:
                 return "cross_session_memory_feature_entity"
             return "profile_entity"
         if session_continuity == "same_session":
-            if profile_memory_kind == "memory_feature":
+            if is_memory_feature_memory:
                 return "same_session_memory_feature_entity"
             return "same_session_entity"
         if session_continuity == "cross_session":
-            if profile_memory_kind == "memory_feature":
+            if is_memory_feature_memory:
                 return "cross_session_memory_feature_entity"
             return "cross_session_entity"
         return "session_entity"
