@@ -1092,11 +1092,11 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             remote_budget_tokens=100,
             question_type="profile_memory",
         )
-        self.assertEqual("pre_retrieval_summary_refresh_profile_memory", profile_mode)
-        self.assertEqual(60, profile_budgets["profile_entity"])
-        self.assertEqual(45, profile_budgets["profile_summary"])
-        self.assertEqual(40, profile_budgets["cross_session_summary"])
-        self.assertEqual(40, profile_budgets["cross_session_event"])
+        self.assertEqual("pre_retrieval_summary_refresh_feature_profile_memory", profile_mode)
+        self.assertEqual(65, profile_budgets["profile_entity"])
+        self.assertEqual(50, profile_budgets["profile_summary"])
+        self.assertEqual(45, profile_budgets["cross_session_summary"])
+        self.assertEqual(35, profile_budgets["cross_session_event"])
 
     def test_moduleized_request_flushes_due_idle_commit_before_retrieval_cache(self) -> None:
         request_mod = importlib.import_module("tools.matrixark_mcp_retrieve_request")
@@ -1564,10 +1564,11 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("auto", profile_mode)
         self.assertEqual(
             {
-                "selected_user_prompt": 35,
-                "selected_assistant_decision_outcome_only": 40,
-                "selected_tool_evidence_only": 30,
-                "selected_profile_current_state": 65,
+                "selected_user_prompt": 70,
+                "selected_assistant_profile_fact": 70,
+                "selected_assistant_decision_outcome_only": 20,
+                "selected_tool_evidence_only": 20,
+                "selected_profile_current_state": 70,
             },
             profile_budgets,
         )
@@ -1606,6 +1607,62 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         )
         self.assertEqual("auto", inferred_phase_mode)
         self.assertEqual({"pending_async": 12, "provisional": 25, "final": 70}, inferred_phase_budgets)
+
+    def test_cross_session_policy_enables_feature_and_current_memory_queries(self) -> None:
+        core_mod = importlib.import_module("tools.matrixark_mcp_core")
+        policy_mod = importlib.import_module("tools.matrixark_mcp_budget_policies")
+
+        scenarios = [
+            (
+                {"query": "focus on OpenViking style profile memory and threshold batch extraction features"},
+                "fact",
+                "always_consider_same_user_cross_session_for_profile_memory",
+                0.30,
+            ),
+            (
+                {"query": "what is the latest current preference for memory extraction?"},
+                "current_state",
+                "always_consider_same_user_cross_session_for_query_type",
+                0.20,
+            ),
+            (
+                {"query": "show the evidence from previous tool results"},
+                "evidence",
+                "always_consider_same_user_cross_session_for_query_type",
+                0.15,
+            ),
+        ]
+        for args, question_type, decision, budget_ratio in scenarios:
+            with self.subTest(question_type=question_type, query=args["query"]):
+                core_policy = core_mod.build_cross_session_policy(
+                    args,
+                    {},
+                    question_type=question_type,
+                    session_scope="same_session",
+                    remote_budget_tokens=2000,
+                )
+                module_policy = policy_mod.build_cross_session_policy(
+                    args,
+                    {},
+                    question_type=question_type,
+                    session_scope="same_session",
+                    remote_budget_tokens=2000,
+                )
+                self.assertEqual(core_policy, module_policy)
+                self.assertTrue(core_policy["enabled"])
+                self.assertEqual(decision, core_policy["decision"])
+                self.assertEqual(budget_ratio, core_policy["budget_ratio"])
+                self.assertGreater(core_policy["budget_tokens"], 0)
+
+        disabled = core_mod.build_cross_session_policy(
+            {"query": "direct fact lookup in this turn"},
+            {},
+            question_type="fact",
+            session_scope="same_session",
+            remote_budget_tokens=2000,
+        )
+        self.assertFalse(disabled["enabled"])
+        self.assertEqual(0, disabled["budget_tokens"])
 
     def test_moduleized_cross_session_policy_matches_profile_memory_core_budget(self) -> None:
         core_mod = importlib.import_module("tools.matrixark_mcp_core")
