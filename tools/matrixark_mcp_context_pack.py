@@ -454,6 +454,7 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         "operator",
         "memory_scope",
         "session_continuity",
+        "profile_memory_class",
         "entity_type",
         "entity_name",
         "profile_current_state_representative",
