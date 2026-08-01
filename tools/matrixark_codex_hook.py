@@ -3002,7 +3002,7 @@ def selected_tool_evidence_text(text: str, *, max_chars: int = 4096, max_lines: 
         if len(selected) >= max_lines:
             break
     if not selected:
-        selected = [line[:360] for line in lines[: min(len(lines), 12)] if line]
+        return ""
     evidence = "\n".join(selected).strip()
     if len(evidence) > max_chars:
         evidence = evidence[:max_chars].rstrip() + "\n[tool evidence truncated]"
