@@ -7670,10 +7670,10 @@ def select_token_budgeted_refs(
                 token_estimate=ref_tokens,
             )
             continue
-        candidate_memory_selection_policies = candidate_memory_selection_policy_names(candidate)
+        candidate_memory_selection_policy_set = candidate_memory_selection_policy_names(candidate)
         capped_memory_selection_policies = [
             policy
-            for policy in sorted(candidate_memory_selection_policies)
+            for policy in sorted(candidate_memory_selection_policy_set)
             if policy in normalized_memory_selection_policy_budget_tokens
             and int(memory_selection_policy_used_tokens.get(policy, 0)) + ref_tokens
             > int(normalized_memory_selection_policy_budget_tokens[policy])
@@ -7685,7 +7685,7 @@ def select_token_budgeted_refs(
                 dropped,
                 {
                     **candidate,
-                    "budget_memory_selection_policies": sorted(candidate_memory_selection_policies),
+                    "budget_memory_selection_policies": sorted(candidate_memory_selection_policy_set),
                     "memory_selection_policy_budget_capped_policies": capped_memory_selection_policies,
                 },
                 reason="memory_selection_policy_budget",
@@ -7721,7 +7721,7 @@ def select_token_budgeted_refs(
                 "budget_memory_layer": candidate_memory_layer,
                 "budget_source_roles": sorted(candidate_source_roles),
                 "budget_source_role_counts": candidate_budget_source_role_counts(candidate, candidate_source_roles),
-                "budget_memory_selection_policies": sorted(candidate_memory_selection_policies),
+                "budget_memory_selection_policies": sorted(candidate_memory_selection_policy_set),
                 "budget_extraction_phase": candidate_extraction_phase,
             }
         )
@@ -7745,7 +7745,7 @@ def select_token_budgeted_refs(
             if role in normalized_source_role_budget_tokens:
                 source_role_used_tokens[role] = int(source_role_used_tokens.get(role, 0)) + ref_tokens
                 source_role_selected_ref_counts[role] = int(source_role_selected_ref_counts.get(role, 0)) + 1
-        for policy in candidate_memory_selection_policies:
+        for policy in candidate_memory_selection_policy_set:
             if policy in normalized_memory_selection_policy_budget_tokens:
                 memory_selection_policy_used_tokens[policy] = int(memory_selection_policy_used_tokens.get(policy, 0)) + ref_tokens
                 memory_selection_policy_selected_ref_counts[policy] = int(
@@ -7826,12 +7826,12 @@ def select_token_budgeted_refs(
                 for role in candidate_source_roles
             ):
                 continue
-            candidate_memory_selection_policies = candidate_memory_selection_policy_names(candidate)
+            candidate_memory_selection_policy_set = candidate_memory_selection_policy_names(candidate)
             if any(
                 policy in normalized_memory_selection_policy_budget_tokens
                 and int(memory_selection_policy_used_tokens.get(policy, 0)) + fallback_tokens
                 > int(normalized_memory_selection_policy_budget_tokens[policy])
-                for policy in candidate_memory_selection_policies
+                for policy in candidate_memory_selection_policy_set
             ):
                 continue
             candidate_extraction_phase = candidate_extraction_phase_name(candidate)
@@ -7843,7 +7843,7 @@ def select_token_budgeted_refs(
                 continue
             first = candidate
             first_source_roles = candidate_source_roles
-            first_memory_selection_policies = candidate_memory_selection_policies
+            first_memory_selection_policies = candidate_memory_selection_policy_set
             first_extraction_phase = candidate_extraction_phase
             first_memory_layer = candidate_memory_layer
             first_clipped_words = clipped_words_for_candidate

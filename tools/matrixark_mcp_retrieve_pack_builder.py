@@ -10,6 +10,7 @@ try:
         DEFAULT_BUSINESS_WEIGHT,
         DEFAULT_TIME_WEIGHT,
         Json,
+        candidate_memory_layer_name,
         compact_context_pack_refs,
         compact_dropped_refs_for_context_pack,
         embedding_execution_mode_name,
@@ -26,6 +27,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         DEFAULT_BUSINESS_WEIGHT,
         DEFAULT_TIME_WEIGHT,
         Json,
+        candidate_memory_layer_name,
         compact_context_pack_refs,
         compact_dropped_refs_for_context_pack,
         embedding_execution_mode_name,
@@ -42,6 +44,9 @@ def memory_layer_name(ref: Json) -> str:
     explicit_layer = str(ref_value(ref, "budget_memory_layer") or "").strip()
     if explicit_layer:
         return explicit_layer
+    core_layer = candidate_memory_layer_name(ref)
+    if core_layer and core_layer != "unknown":
+        return core_layer
     ref_type = str(ref_value(ref, "ref_type") or "")
     context_class = str(ref_value(ref, "context_class") or ref_type)
     memory_scope = str(ref_value(ref, "memory_scope") or "")
