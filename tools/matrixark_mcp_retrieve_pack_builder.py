@@ -47,6 +47,11 @@ def memory_layer_name(ref: Json) -> str:
     memory_scope = str(ref_value(ref, "memory_scope") or "")
     session_continuity = str(ref_value(ref, "session_continuity") or "")
     profile_memory_kind = str(ref_value(ref, "profile_memory_kind") or "")
+    source_profile_memory_kinds = {
+        str(value or "").strip()
+        for value in ref_list(ref, "source_profile_memory_kinds")
+        if str(value or "").strip()
+    }
     if context_class == "resource_entity_fact":
         return "resource_entity_fact"
     if context_class == "resource_fact":
@@ -57,7 +62,7 @@ def memory_layer_name(ref: Json) -> str:
         return "skill_section"
     if ref_type == "compression" or context_class == "compression":
         if memory_scope == "user_profile" and session_continuity == "cross_session":
-            if profile_memory_kind == "memory_feature":
+            if profile_memory_kind == "memory_feature" or "memory_feature" in source_profile_memory_kinds:
                 return "cross_session_memory_feature_compression"
             return "profile_compression"
         if session_continuity == "same_session":
@@ -67,7 +72,7 @@ def memory_layer_name(ref: Json) -> str:
         return "compression"
     if ref_type == "summary" or context_class == "summary":
         if memory_scope == "user_profile" and session_continuity == "cross_session":
-            if profile_memory_kind == "memory_feature":
+            if profile_memory_kind == "memory_feature" or "memory_feature" in source_profile_memory_kinds:
                 return "cross_session_memory_feature_summary"
             return "profile_summary"
         if session_continuity == "same_session":
