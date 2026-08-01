@@ -279,6 +279,10 @@ CODEX_OUTCOME_PUBLISH_RE = re.compile(
     r"\b(?:outcome|pushed|published|deployed|released|uploaded|merged|rebased|fast[- ]?forward(?:ed)?|commit\s+[0-9a-f]{7,40}|origin/main|refs/heads/main|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main))\b",
     re.IGNORECASE,
 )
+CODEX_OUTCOME_VALIDATION_RE = re.compile(
+    r"\b(?:validation|validated|verified|tests?|py_compile|unittest|pytest|cargo test|cargo check|build(?: succeeded)?|built|compiled|syntax check)\b",
+    re.IGNORECASE,
+)
 CODEX_OUTCOME_BENCHMARK_RE = re.compile(
     r"\b(?:benchmark|benchmarked|p50|p99|throughput|latency|qps|ops/sec|requests/sec)\b",
     re.IGNORECASE,
@@ -298,6 +302,8 @@ def codex_outcome_fact_kind(line: str) -> str:
         return "next"
     if normalized.startswith("blocker:") or has_real_blocker:
         return "blocker"
+    if normalized.startswith("validation:") or CODEX_OUTCOME_VALIDATION_RE.search(normalized):
+        return "validation"
     if normalized.startswith("outcome:") or CODEX_OUTCOME_PUBLISH_RE.search(normalized):
         return "outcome"
     if normalized.startswith("changed:") or CODEX_OUTCOME_CHANGE_RE.search(normalized):
@@ -311,6 +317,7 @@ def codex_outcome_entity_type(kind: str) -> str:
     return {
         "next": "codex_next_action",
         "blocker": "codex_blocker",
+        "validation": "codex_validation",
         "outcome": "codex_publish_outcome",
         "changed": "codex_code_change",
         "benchmark": "codex_benchmark_result",
@@ -320,6 +327,7 @@ def codex_outcome_entity_type(kind: str) -> str:
 CODEX_OUTCOME_ENTITY_TYPES = {
     "codex_next_action",
     "codex_blocker",
+    "codex_validation",
     "codex_publish_outcome",
     "codex_code_change",
     "codex_benchmark_result",
@@ -341,7 +349,7 @@ def codex_outcome_fact_entities(
         chunks: list[str] = []
         for semicolon_part in re.split(r"\s*;\s*", compact_line):
             for sentence in re.split(
-                r"(?<=[.!?])\s+(?=(?:I|We|Codex|Assistant|Tool|Next|Changed|Outcome|Blocked|Implemented|Fixed|Added|Removed|Updated|Configured|Installed|Pushed|Published|Deployed|Merged|Rebased|Recovered|Promoted|Indexed|Budgeted|Batched|Flushed)\b)",
+                r"(?<=[.!?])\s+(?=(?:I|We|Codex|Assistant|Tool|Next|Changed|Outcome|Validation|Blocked|Implemented|Fixed|Added|Removed|Updated|Configured|Installed|Pushed|Published|Deployed|Merged|Rebased|Recovered|Promoted|Indexed|Budgeted|Batched|Flushed)\b)",
                 semicolon_part,
             ):
                 chunk = sentence.strip()
@@ -370,7 +378,7 @@ def codex_outcome_fact_entities(
                     "entity_type": entity_type,
                     "entity_name": summarize_text(f"{entity_type}:{normalized_fact or line}", limit=96),
                     "state": state,
-                    "confidence": 0.9 if kind == "outcome" else 0.86,
+                    "confidence": 0.9 if kind in {"outcome", "validation"} else 0.86,
                     "source_refs": source_refs,
                     "source_roles": [source_role],
                     "source_role_counts": {source_role: source_count},
