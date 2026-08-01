@@ -180,19 +180,10 @@ METRIC_FAMILIES = {
     },
     "secondary_replication": {
         "dashboard": [
-            "temporalstore_replica_replay_loop_enabled",
-            "temporalstore_replica_replay_loop_events_total",
-            "temporalstore_replica_replay_loop_consecutive_failures",
-            "temporalstore_replica_replay_loop_next_delay_ms",
         ],
         "alerts": [
-            "TemporalStoreReplicaReplayFailures",
         ],
         "rust": [
-            "temporalstore_replica_replay_loop_enabled",
-            "temporalstore_replica_replay_loop_events_total",
-            "temporalstore_replica_replay_loop_consecutive_failures",
-            "temporalstore_replica_replay_loop_next_delay_ms",
         ],
     },
     "matrixark_backend": {

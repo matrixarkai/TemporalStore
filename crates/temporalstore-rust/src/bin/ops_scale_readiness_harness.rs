@@ -396,7 +396,6 @@ fn grafana_metrics_parity_ready(root: &Path) -> bool {
         "temporalstore_data_node_lifecycle_snapshot_events_total",
         "temporalstore_ingestion_kafka_lag",
         "temporalstore_ingestion_dead_letters",
-        "temporalstore_replica_replay_loop_consecutive_failures",
         "temporalstore_scale_write_p99_us",
         "temporalstore_scale_error_budget_remaining",
     ];
@@ -411,7 +410,6 @@ fn grafana_metrics_parity_ready(root: &Path) -> bool {
         "TemporalStoreLifecycleSnapshotFailures",
         "TemporalStoreBlockStoreReadErrors",
         "TemporalStoreCacheMissPressure",
-        "TemporalStoreReplicaReplayFailures",
         "TemporalStoreIngestionDeadLetters",
         "TemporalStoreScaleSloRegression",
     ];
@@ -427,7 +425,6 @@ fn grafana_metrics_parity_ready(root: &Path) -> bool {
         "temporalstore_data_node_lifecycle_snapshot_events_total",
         "temporalstore_ingestion_kafka_lag",
         "temporalstore_ingestion_dead_letters",
-        "temporalstore_replica_replay_loop_consecutive_failures",
     ];
     let doc_families = [
         "readiness",

@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use temporalstore_rust::context_workflow::{
@@ -14,13 +13,10 @@ use temporalstore_rust::context_workflow::{
 use temporalstore_rust::data_node::{DataNodeLifecycleSnapshot, DataNodeTopologyValidationReport};
 use temporalstore_rust::engine::reports::{StorageManagerCycleReport, StorageManagerCycleRequest};
 use temporalstore_rust::engine::TemporalEngine;
-use temporalstore_rust::http::{
-    get_json_with_options, json_response, parse_json, post_json, serve, HttpRequest,
-    HttpRequestOptions,
-};
+use temporalstore_rust::http::{json_response, parse_json, post_json, serve, HttpRequest};
 use temporalstore_rust::ingestion::{FlinkCheckpointStatus, IngestionBatchRequest};
 use temporalstore_rust::meta::{
-    AckResponse, GetShardResponse, GetTableTopologyRequest, LoadFinishRequest, PartitionLoad,
+    AckResponse, GetTableTopologyRequest, LoadFinishRequest, PartitionLoad,
     RegisterServerRequest, RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest,
     ServerHeartbeatResponse, ShardLoad, ShardSnapshotRef, TableTopologyResponse,
 };
@@ -37,11 +33,10 @@ use temporalstore_rust::{
     BlockStoreOptions, CheckedBatchExecuteRequest, CheckedExecuteRequest, Command, CommandResponse,
     CompactionRequest, DataNodeRuntime, DataNodeRuntimeOptions, DistributedRaftCommandResponse,
     DistributedRaftProposeRequest, DistributedRaftReadRequest, DumpShardRequest, GcRequest,
-    HttpReplicaStreamSource, LoadShardRequest, MembershipUpdateRequest, ProductionRaftEngineKind,
-    ProductionRaftNode, ProductionRaftRuntime, ProductionRaftRuntimeOptions, RaftConfig,
-    RaftControlLeadershipRequest, RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId,
-    RaftRpcRuntimeOptions, RaftTransport, ReplicaReplayLoop, ReplicaReplayOptions,
-    ReplicaReplayRequest, ReplicaReplayResponse, RequestController, ScanStreamRequest,
+    LoadShardRequest, MembershipUpdateRequest, ProductionRaftEngineKind, ProductionRaftNode,
+    ProductionRaftRuntime, ProductionRaftRuntimeOptions, RaftConfig, RaftControlLeadershipRequest,
+    RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions,
+    RaftTransport, RequestController, ScanStreamRequest,
     SchedulerLifecycleToken, SetConfigRequest, SlotDumpManifest, StorageCacheInvalidateSlotRequest,
     StorageLifecycleRequest, StorageProductionReadinessRequest, StreamReadRequest,
     UnloadShardRequest,
@@ -83,8 +78,6 @@ fn main() {
         .unwrap_or_else(|_| "target/temporalstore-pages".to_string());
     let index_dir = std::env::var("TS_INDEX_DIR")
         .unwrap_or_else(|_| "target/temporalstore-indexes".to_string());
-    let replica_replay_cursor_dir = std::env::var("TS_REPLICA_REPLAY_CURSOR_DIR")
-        .unwrap_or_else(|_| format!("{index_dir}/replica-replay-cursors"));
     let cache_memory_bytes = std::env::var("TS_CACHE_MEMORY_BYTES")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -124,15 +117,6 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(3_000);
-    let replica_replay_primary_addr =
-        std::env::var("TS_REPLICA_REPLAY_PRIMARY_ADDR").unwrap_or_default();
-    let replica_replay_interval_ms = env_u64("TS_REPLICA_REPLAY_INTERVAL_MS", 0);
-    let replica_replay_max_stream_bytes =
-        env_u64("TS_REPLICA_REPLAY_MAX_STREAM_BYTES", 16 * 1024 * 1024);
-    let replica_replay_max_backoff_ms = env_u64(
-        "TS_REPLICA_REPLAY_MAX_BACKOFF_MS",
-        replica_replay_interval_ms.saturating_mul(16).max(30_000),
-    );
     let raft_state = start_server_raft_from_env(shard_id, node_id, &advertised_addr);
 
     let server_registration = RegisterServerRequest {
@@ -184,18 +168,6 @@ fn main() {
         heartbeat_interval_ms,
     );
     let data_raft_appliers: Arc<Mutex<BTreeMap<u64, DataRaftCommittedLogApplier>>> = Arc::default();
-    let replica_replay_loop = start_replica_replay_loop(
-        engine.clone(),
-        replica_replay_cursor_dir.clone(),
-        meta_addr.clone(),
-        advertised_addr.clone(),
-        shard_id,
-        replica_replay_primary_addr,
-        replica_replay_interval_ms,
-        replica_replay_max_stream_bytes,
-        replica_replay_max_backoff_ms,
-    );
-
     println!("temporalstore server listening on {addr}");
     serve(&addr, move |request| {
         if let Some(response) = handle_ping_route(&request) {
@@ -226,7 +198,6 @@ fn main() {
                 let mut metrics = engine.prometheus_metrics();
                 append_ingestion_metrics(&mut metrics, &engine);
                 append_runtime_metrics(&mut metrics, &runtime);
-                append_replica_replay_metrics(&mut metrics, &replica_replay_loop.status());
                 if let Some(raft_state) = &raft_state {
                     metrics.push_str(&raft_state.runtime.cluster().prometheus_metrics());
                 }
@@ -375,9 +346,6 @@ fn main() {
                     },
                     Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
                 }
-            }
-            ("GET", "/server/replica_replay_status") => {
-                json_response(200, &replica_replay_loop.status())
             }
             ("POST", "/heartbeat") => json_response(
                 200,
@@ -630,15 +598,6 @@ fn main() {
                 Ok(req) => json_response(200, &engine.scan_stream(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
-            ("POST", "/replica/replay") => {
-                match parse_json::<ReplicaReplayRequest>(&request.body) {
-                    Ok(req) => json_response(
-                        200,
-                        &run_replica_replay(&engine, &replica_replay_cursor_dir, req),
-                    ),
-                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
-                }
-            }
             _ => json_response(404, &Status::error("not_found", "unknown server route")),
         }
     })
@@ -1025,42 +984,6 @@ fn apply_data_raft_log_route(
             applied_raft_index: applier.applied_raft_index(),
             applied_oplog_sequence: applier.applied_oplog_sequence(),
         },
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct ReplicaReplayLoopStatus {
-    enabled: bool,
-    shard_id: u64,
-    configured_primary_addr: String,
-    last_primary_addr: Option<String>,
-    primary_route_change_total: u64,
-    attempts_total: u64,
-    success_total: u64,
-    failure_total: u64,
-    skipped_total: u64,
-    consecutive_failures: u64,
-    next_delay_ms: u64,
-    last_attempt_at_ms: u64,
-    last_success_at_ms: u64,
-    last_error: Option<String>,
-    last_report: Option<temporalstore_rust::ReplicaReplayReport>,
-}
-
-#[derive(Debug, Clone)]
-struct ReplicaReplayLoopHandle {
-    status: Arc<Mutex<ReplicaReplayLoopStatus>>,
-}
-
-impl ReplicaReplayLoopHandle {
-    fn new(status: ReplicaReplayLoopStatus) -> Self {
-        Self {
-            status: Arc::new(Mutex::new(status)),
-        }
-    }
-
-    fn status(&self) -> ReplicaReplayLoopStatus {
-        self.status.lock().unwrap().clone()
     }
 }
 
@@ -1919,48 +1842,6 @@ fn startup_load_shard_request(shard_id: u64, node_id: u64) -> LoadShardRequest {
     }
 }
 
-fn run_replica_replay(
-    engine: &TemporalEngine,
-    cursor_dir: &str,
-    request: ReplicaReplayRequest,
-) -> ReplicaReplayResponse {
-    if request.primary_addr.is_empty() {
-        return ReplicaReplayResponse {
-            status: Status::error("bad_request", "primary_addr is required"),
-            report: None,
-        };
-    }
-    let cursor_path = request.cursor_path.clone().unwrap_or_else(|| {
-        format!(
-            "{}/shard-{}.cursor.json",
-            cursor_dir.trim_end_matches('/'),
-            request.shard_id
-        )
-    });
-    let mut options = ReplicaReplayOptions::new(request.shard_id, cursor_path);
-    if let Some(max_stream_bytes) = request.max_stream_bytes {
-        options.max_stream_bytes = max_stream_bytes.max(1);
-    }
-    let source = HttpReplicaStreamSource::with_options(
-        request.primary_addr,
-        HttpRequestOptions {
-            connect_timeout_ms: 1_000,
-            io_timeout_ms: 5_000,
-            max_retries: 3,
-        },
-    );
-    match ReplicaReplayLoop::new(options).run(&source, engine) {
-        Ok(report) => ReplicaReplayResponse {
-            status: Status::ok(),
-            report: Some(report),
-        },
-        Err(err) => ReplicaReplayResponse {
-            status: Status::error("replica_replay_failed", err.to_string()),
-            report: None,
-        },
-    }
-}
-
 fn update_membership_with_finish_callback(
     engine: &TemporalEngine,
     meta_addr: &str,
@@ -1986,132 +1867,6 @@ fn update_membership_with_finish_callback(
         }
     }
     status
-}
-
-fn start_replica_replay_loop(
-    engine: TemporalEngine,
-    cursor_dir: String,
-    meta_addr: String,
-    local_addr: String,
-    shard_id: u64,
-    primary_addr: String,
-    interval_ms: u64,
-    max_stream_bytes: u64,
-    max_backoff_ms: u64,
-) -> ReplicaReplayLoopHandle {
-    let handle = ReplicaReplayLoopHandle::new(ReplicaReplayLoopStatus {
-        enabled: interval_ms > 0,
-        shard_id,
-        configured_primary_addr: primary_addr.clone(),
-        last_primary_addr: None,
-        primary_route_change_total: 0,
-        attempts_total: 0,
-        success_total: 0,
-        failure_total: 0,
-        skipped_total: 0,
-        consecutive_failures: 0,
-        next_delay_ms: interval_ms,
-        last_attempt_at_ms: 0,
-        last_success_at_ms: 0,
-        last_error: None,
-        last_report: None,
-    });
-    if interval_ms == 0 {
-        return handle;
-    }
-    let status = Arc::clone(&handle.status);
-    let max_backoff_ms = max_backoff_ms.max(interval_ms);
-    std::thread::spawn(move || loop {
-        let mut delay_ms = interval_ms;
-        if let Some(primary_addr) =
-            resolve_replica_replay_primary_addr(&meta_addr, &local_addr, shard_id, &primary_addr)
-        {
-            {
-                let mut status = status.lock().unwrap();
-                let route_changed = status
-                    .last_primary_addr
-                    .as_deref()
-                    .map(|previous| previous != primary_addr)
-                    .unwrap_or(false);
-                if route_changed {
-                    status.primary_route_change_total += 1;
-                    status.consecutive_failures = 0;
-                    status.last_error = None;
-                }
-                status.last_primary_addr = Some(primary_addr.clone());
-                status.attempts_total += 1;
-                status.last_attempt_at_ms = now_ms();
-                status.next_delay_ms = interval_ms;
-            }
-            let response = run_replica_replay(
-                &engine,
-                &cursor_dir,
-                ReplicaReplayRequest {
-                    shard_id,
-                    primary_addr,
-                    cursor_path: None,
-                    max_stream_bytes: Some(max_stream_bytes),
-                },
-            );
-            let mut status = status.lock().unwrap();
-            if response.status.ok {
-                status.success_total += 1;
-                status.consecutive_failures = 0;
-                status.last_success_at_ms = now_ms();
-                status.last_error = None;
-                status.last_report = response.report;
-                status.next_delay_ms = interval_ms;
-            } else {
-                status.failure_total += 1;
-                status.consecutive_failures += 1;
-                status.last_error = Some(response.status.message);
-                let shifts = status.consecutive_failures.saturating_sub(1).min(10) as u32;
-                delay_ms = interval_ms
-                    .saturating_mul(1u64 << shifts)
-                    .min(max_backoff_ms);
-                status.next_delay_ms = delay_ms;
-            }
-        } else {
-            let mut status = status.lock().unwrap();
-            status.skipped_total += 1;
-            status.last_primary_addr = None;
-            status.last_error = Some("primary route unavailable or local".to_string());
-            status.next_delay_ms = interval_ms;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-    });
-    handle
-}
-
-fn resolve_replica_replay_primary_addr(
-    meta_addr: &str,
-    local_addr: &str,
-    shard_id: u64,
-    configured_primary_addr: &str,
-) -> Option<String> {
-    let candidate = if configured_primary_addr.is_empty() {
-        let response = get_json_with_options::<GetShardResponse>(
-            meta_addr,
-            &format!("/shards/{shard_id}"),
-            HttpRequestOptions {
-                connect_timeout_ms: 500,
-                io_timeout_ms: 1_000,
-                max_retries: 1,
-            },
-        )
-        .ok()?;
-        if !response.status.ok {
-            return None;
-        }
-        response.location?.server_addr
-    } else {
-        configured_primary_addr.to_string()
-    };
-    if candidate.is_empty() || candidate == local_addr {
-        None
-    } else {
-        Some(candidate)
-    }
 }
 
 fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
@@ -2522,48 +2277,6 @@ fn append_ingestion_metrics(out: &mut String, engine: &TemporalEngine) {
     }
 }
 
-fn append_replica_replay_metrics(out: &mut String, status: &ReplicaReplayLoopStatus) {
-    out.push_str("# HELP temporalstore_replica_replay_loop_enabled Whether background replica replay is enabled.\n");
-    out.push_str("# TYPE temporalstore_replica_replay_loop_enabled gauge\n");
-    out.push_str("temporalstore_replica_replay_loop_enabled ");
-    out.push_str(if status.enabled { "1" } else { "0" });
-    out.push('\n');
-
-    out.push_str("# HELP temporalstore_replica_replay_loop_events_total Background replica replay loop events.\n");
-    out.push_str("# TYPE temporalstore_replica_replay_loop_events_total counter\n");
-    for (kind, value) in [
-        ("attempt", status.attempts_total),
-        ("success", status.success_total),
-        ("failure", status.failure_total),
-        ("skipped", status.skipped_total),
-        ("primary_route_change", status.primary_route_change_total),
-    ] {
-        out.push_str("temporalstore_replica_replay_loop_events_total{shard_id=\"");
-        out.push_str(&status.shard_id.to_string());
-        out.push_str("\",kind=\"");
-        out.push_str(kind);
-        out.push_str("\"} ");
-        out.push_str(&value.to_string());
-        out.push('\n');
-    }
-
-    out.push_str("# HELP temporalstore_replica_replay_loop_consecutive_failures Current consecutive replay failures.\n");
-    out.push_str("# TYPE temporalstore_replica_replay_loop_consecutive_failures gauge\n");
-    out.push_str("temporalstore_replica_replay_loop_consecutive_failures{shard_id=\"");
-    out.push_str(&status.shard_id.to_string());
-    out.push_str("\"} ");
-    out.push_str(&status.consecutive_failures.to_string());
-    out.push('\n');
-
-    out.push_str("# HELP temporalstore_replica_replay_loop_next_delay_ms Next background replay delay in milliseconds.\n");
-    out.push_str("# TYPE temporalstore_replica_replay_loop_next_delay_ms gauge\n");
-    out.push_str("temporalstore_replica_replay_loop_next_delay_ms{shard_id=\"");
-    out.push_str(&status.shard_id.to_string());
-    out.push_str("\"} ");
-    out.push_str(&status.next_delay_ms.to_string());
-    out.push('\n');
-}
-
 fn start_heartbeat_loop(
     engine: TemporalEngine,
     runtime: DataNodeRuntime,
@@ -2579,13 +2292,6 @@ fn start_heartbeat_loop(
         let _ = send_heartbeat(&engine, &runtime, &meta_addr, &server_addr, &binary_version);
         std::thread::sleep(std::time::Duration::from_millis(interval_ms));
     });
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
 }
 
 fn validate_node_topology_from_meta(
@@ -2712,7 +2418,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use tempfile::tempdir;
-    use temporalstore_rust::http::get_json_with_options;
+    use temporalstore_rust::http::{get_json_with_options, HttpRequestOptions};
     use temporalstore_rust::ingestion::{IngestionBatchReport, IngestionRecord, IngestionSource};
     use temporalstore_rust::raft::{serialize_data_raft_log, DataRaftLogCodecEntry};
     use temporalstore_rust::types::{Command, CommandResponse};
@@ -3026,308 +2732,6 @@ mod tests {
                 "metaserver did not receive finish callback"
             );
             thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    #[test]
-    fn server_replica_replay_endpoint_pulls_remote_streams() {
-        let primary_dir = tempdir().unwrap();
-        let follower_dir = tempdir().unwrap();
-        let cursor_dir = tempdir().unwrap();
-        let primary = test_engine(primary_dir.path(), "primary");
-        let follower = test_engine(follower_dir.path(), "follower");
-        primary.load_shard(17);
-        primary.execute(ExecuteRequest {
-            shard_id: 17,
-            command: Command::StringSet {
-                key: "server-replay".to_string(),
-                value: b"remote".to_vec(),
-            },
-        });
-
-        let primary_addr = free_local_addr();
-        let primary_for_server = primary.clone();
-        let bind_addr = primary_addr.clone();
-        thread::spawn(move || {
-            serve(&bind_addr, move |request| {
-                match (request.method.as_str(), request.path.as_str()) {
-                    ("GET", "/health") => json_response(200, &Status::ok()),
-                    ("POST", "/read_stream") => {
-                        match parse_json::<StreamReadRequest>(&request.body) {
-                            Ok(req) => json_response(200, &primary_for_server.read_stream(req)),
-                            Err(err) => {
-                                json_response(400, &Status::error("bad_request", err.to_string()))
-                            }
-                        }
-                    }
-                    ("POST", "/scan_stream") => {
-                        match parse_json::<ScanStreamRequest>(&request.body) {
-                            Ok(req) => json_response(200, &primary_for_server.scan_stream(req)),
-                            Err(err) => {
-                                json_response(400, &Status::error("bad_request", err.to_string()))
-                            }
-                        }
-                    }
-                    _ => json_response(404, &Status::error("not_found", "unknown route")),
-                }
-            })
-            .unwrap()
-        });
-        wait_for_http(&primary_addr);
-
-        let response = run_replica_replay(
-            &follower,
-            &cursor_dir.path().display().to_string(),
-            ReplicaReplayRequest {
-                shard_id: 17,
-                primary_addr,
-                cursor_path: None,
-                max_stream_bytes: None,
-            },
-        );
-        assert!(response.status.ok, "{:?}", response.status);
-        let report = response.report.unwrap();
-        assert_eq!(report.installed_page_segments, vec![0]);
-        assert_eq!(report.index_log_records, 1);
-        assert_eq!(report.oplog_records, 1);
-
-        let read = follower.execute(ExecuteRequest {
-            shard_id: 17,
-            command: Command::StringGet {
-                key: "server-replay".to_string(),
-            },
-        });
-        assert_eq!(
-            read.response,
-            CommandResponse::Bytes {
-                value: Some(b"remote".to_vec())
-            }
-        );
-    }
-
-    #[test]
-    fn server_background_replica_replay_loop_pulls_remote_streams() {
-        let primary_dir = tempdir().unwrap();
-        let follower_dir = tempdir().unwrap();
-        let cursor_dir = tempdir().unwrap();
-        let primary = test_engine(primary_dir.path(), "primary");
-        let follower = test_engine(follower_dir.path(), "follower");
-        primary.load_shard(19);
-        primary.execute(ExecuteRequest {
-            shard_id: 19,
-            command: Command::StringSet {
-                key: "background-replay".to_string(),
-                value: b"loop".to_vec(),
-            },
-        });
-
-        let primary_addr = start_primary_stream_server(primary);
-        start_replica_replay_loop(
-            follower.clone(),
-            cursor_dir.path().display().to_string(),
-            String::new(),
-            "127.0.0.1:0".to_string(),
-            19,
-            primary_addr,
-            10,
-            16 * 1024 * 1024,
-            80,
-        );
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let read = follower.execute(ExecuteRequest {
-                shard_id: 19,
-                command: Command::StringGet {
-                    key: "background-replay".to_string(),
-                },
-            });
-            if read.response
-                == (CommandResponse::Bytes {
-                    value: Some(b"loop".to_vec()),
-                })
-            {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "background replica replay loop did not catch up; last response: {:?}",
-                read
-            );
-            thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    #[test]
-    fn server_background_replica_replay_loop_discovers_primary_from_meta() {
-        let primary_dir = tempdir().unwrap();
-        let follower_dir = tempdir().unwrap();
-        let cursor_dir = tempdir().unwrap();
-        let primary = test_engine(primary_dir.path(), "primary");
-        let follower = test_engine(follower_dir.path(), "follower");
-        primary.load_shard(23);
-        primary.execute(ExecuteRequest {
-            shard_id: 23,
-            command: Command::StringSet {
-                key: "meta-discovered-replay".to_string(),
-                value: b"route".to_vec(),
-            },
-        });
-
-        let primary_addr = start_primary_stream_server(primary);
-        let meta_addr = start_meta_route_server(23, primary_addr.clone());
-        start_replica_replay_loop(
-            follower.clone(),
-            cursor_dir.path().display().to_string(),
-            meta_addr,
-            "secondary:17002".to_string(),
-            23,
-            String::new(),
-            10,
-            16 * 1024 * 1024,
-            80,
-        );
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let read = follower.execute(ExecuteRequest {
-                shard_id: 23,
-                command: Command::StringGet {
-                    key: "meta-discovered-replay".to_string(),
-                },
-            });
-            if read.response
-                == (CommandResponse::Bytes {
-                    value: Some(b"route".to_vec()),
-                })
-            {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "metaserver-discovered replica replay did not catch up; last response: {:?}",
-                read
-            );
-            thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    #[test]
-    fn server_background_replica_replay_loop_resets_on_primary_route_change() {
-        let primary_dir = tempdir().unwrap();
-        let follower_dir = tempdir().unwrap();
-        let cursor_dir = tempdir().unwrap();
-        let primary = test_engine(primary_dir.path(), "primary");
-        let follower = test_engine(follower_dir.path(), "follower");
-        primary.load_shard(27);
-        primary.execute(ExecuteRequest {
-            shard_id: 27,
-            command: Command::StringSet {
-                key: "route-change-replay".to_string(),
-                value: b"new-primary".to_vec(),
-            },
-        });
-
-        let bad_primary_addr = free_local_addr();
-        let routed_primary = Arc::new(Mutex::new(bad_primary_addr));
-        let meta_addr = start_dynamic_meta_route_server(27, Arc::clone(&routed_primary));
-        let replay_loop = start_replica_replay_loop(
-            follower.clone(),
-            cursor_dir.path().display().to_string(),
-            meta_addr,
-            "secondary:17002".to_string(),
-            27,
-            String::new(),
-            10,
-            16 * 1024 * 1024,
-            120,
-        );
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let status = replay_loop.status();
-            if status.failure_total > 0 {
-                assert!(status.consecutive_failures > 0, "{status:?}");
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "replica replay loop did not observe initial bad primary; status: {:?}",
-                status
-            );
-            thread::sleep(Duration::from_millis(10));
-        }
-
-        let good_primary_addr = start_primary_stream_server(primary);
-        *routed_primary.lock().unwrap() = good_primary_addr.clone();
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let status = replay_loop.status();
-            let read = follower.execute(ExecuteRequest {
-                shard_id: 27,
-                command: Command::StringGet {
-                    key: "route-change-replay".to_string(),
-                },
-            });
-            if read.response
-                == (CommandResponse::Bytes {
-                    value: Some(b"new-primary".to_vec()),
-                })
-            {
-                assert_eq!(
-                    status.last_primary_addr.as_deref(),
-                    Some(good_primary_addr.as_str())
-                );
-                assert!(status.primary_route_change_total >= 1, "{status:?}");
-                assert_eq!(status.consecutive_failures, 0, "{status:?}");
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "replica replay loop did not recover after primary route change; status: {:?}, read: {:?}",
-                status,
-                read
-            );
-            thread::sleep(Duration::from_millis(20));
-        }
-    }
-
-    #[test]
-    fn server_background_replica_replay_loop_reports_failures_with_backoff() {
-        let follower_dir = tempdir().unwrap();
-        let cursor_dir = tempdir().unwrap();
-        let follower = test_engine(follower_dir.path(), "follower");
-
-        let missing_primary = free_local_addr();
-        let replay_loop = start_replica_replay_loop(
-            follower,
-            cursor_dir.path().display().to_string(),
-            String::new(),
-            "127.0.0.1:0".to_string(),
-            29,
-            missing_primary,
-            10,
-            16 * 1024,
-            40,
-        );
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let status = replay_loop.status();
-            if status.failure_total >= 2 {
-                assert_eq!(status.attempts_total, status.failure_total);
-                assert!(status.consecutive_failures >= 2, "{status:?}");
-                assert!(status.next_delay_ms >= 20, "{status:?}");
-                assert!(status.last_error.is_some(), "{status:?}");
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "replica replay loop did not record failures; status: {:?}",
-                status
-            );
-            thread::sleep(Duration::from_millis(10));
         }
     }
 
@@ -4905,39 +4309,6 @@ mod tests {
         assert_eq!(status.code, "forbidden");
     }
 
-    fn start_primary_stream_server(primary: TemporalEngine) -> String {
-        let primary_addr = free_local_addr();
-        let primary_for_server = primary.clone();
-        let bind_addr = primary_addr.clone();
-        thread::spawn(move || {
-            serve(&bind_addr, move |request| {
-                match (request.method.as_str(), request.path.as_str()) {
-                    ("GET", "/health") => json_response(200, &Status::ok()),
-                    ("POST", "/read_stream") => {
-                        match parse_json::<StreamReadRequest>(&request.body) {
-                            Ok(req) => json_response(200, &primary_for_server.read_stream(req)),
-                            Err(err) => {
-                                json_response(400, &Status::error("bad_request", err.to_string()))
-                            }
-                        }
-                    }
-                    ("POST", "/scan_stream") => {
-                        match parse_json::<ScanStreamRequest>(&request.body) {
-                            Ok(req) => json_response(200, &primary_for_server.scan_stream(req)),
-                            Err(err) => {
-                                json_response(400, &Status::error("bad_request", err.to_string()))
-                            }
-                        }
-                    }
-                    _ => json_response(404, &Status::error("not_found", "unknown route")),
-                }
-            })
-            .unwrap()
-        });
-        wait_for_http(&primary_addr);
-        primary_addr
-    }
-
     fn start_lifecycle_snapshot_server(engine: TemporalEngine, runtime: DataNodeRuntime) -> String {
         let server_addr = free_local_addr();
         let bind_addr = server_addr.clone();
@@ -4968,37 +4339,6 @@ mod tests {
         });
         wait_for_http(&server_addr);
         server_addr
-    }
-
-    fn start_meta_route_server(shard_id: u64, primary_addr: String) -> String {
-        start_dynamic_meta_route_server(shard_id, Arc::new(Mutex::new(primary_addr)))
-    }
-
-    fn start_dynamic_meta_route_server(shard_id: u64, primary_addr: Arc<Mutex<String>>) -> String {
-        let meta_addr = free_local_addr();
-        let bind_addr = meta_addr.clone();
-        thread::spawn(move || {
-            serve(&bind_addr, move |request| {
-                match (request.method.as_str(), request.path.as_str()) {
-                    ("GET", path) if path == format!("/shards/{shard_id}") => json_response(
-                        200,
-                        &GetShardResponse {
-                            status: Status::ok(),
-                            location: Some(temporalstore_rust::ShardLocation {
-                                shard_id,
-                                server_addr: primary_addr.lock().unwrap().clone(),
-                                latest_snapshot: None,
-                            }),
-                        },
-                    ),
-                    ("GET", "/health") => json_response(200, &Status::ok()),
-                    _ => json_response(404, &Status::error("not_found", "unknown route")),
-                }
-            })
-            .unwrap()
-        });
-        wait_for_http(&meta_addr);
-        meta_addr
     }
 
     fn start_finish_load_server(callbacks: Arc<Mutex<Vec<LoadFinishRequest>>>) -> String {

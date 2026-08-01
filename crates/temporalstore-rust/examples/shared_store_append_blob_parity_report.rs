@@ -101,6 +101,23 @@ struct AsyncWriterPhaseReport {
 }
 
 #[derive(Debug, Serialize)]
+struct MatrixObjectCacheStatsReport {
+    entries: u64,
+    bytes: u64,
+    max_bytes: u64,
+    hits: u64,
+    misses: u64,
+    evictions: u64,
+    direct_fill_pages: u64,
+    direct_fill_bytes: u64,
+    compressed_fill_pages: u64,
+    compressed_fill_bytes: u64,
+    ec_fill_pages: u64,
+    ec_fill_bytes: u64,
+    pressure: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct SnapshotReopenReport {
     snapshot_export_latency_us: u128,
     snapshot_disk_write_latency_us: u128,
@@ -109,6 +126,9 @@ struct SnapshotReopenReport {
     snapshot_bytes: u64,
     snapshot_sha256: String,
     reopened_offset_metadata_ok: bool,
+    cache_before_replay: MatrixObjectCacheStatsReport,
+    cache_after_retrieval: MatrixObjectCacheStatsReport,
+    cache_metrics_available: bool,
     reopened_replay_recovered_all_records: bool,
     reopened_retrieval_recovered_all_records: bool,
     replay_latency_total_us: u128,
@@ -140,6 +160,7 @@ struct Summary {
     direct_offset_index_maps_oplog_to_blob_offsets: bool,
     snapshot_reopen_restores_offset_metadata: bool,
     snapshot_reopen_recovered_all_records: bool,
+    snapshot_reopen_cache_metrics_available: bool,
     secondary_replay_recovered_all_records: bool,
     single_node_reload_recovered_all_records: bool,
     sync_reports_include_offsets: bool,
@@ -258,6 +279,7 @@ async fn main() {
         snapshot_reopen_recovered_all_records: snapshot_reopen
             .reopened_replay_recovered_all_records
             && snapshot_reopen.reopened_retrieval_recovered_all_records,
+        snapshot_reopen_cache_metrics_available: snapshot_reopen.cache_metrics_available,
         secondary_replay_recovered_all_records: direct_publish.replay.secondary_retrieved_records
             == entry_count
             && sync_writer.replay.secondary_retrieved_records == entry_count
@@ -531,6 +553,7 @@ async fn run_snapshot_reopen(
         .await
         .expect("reopened offset metadata")
         .is_empty();
+    let cache_before_replay = matrixobject_cache_stats(&reopened_store);
 
     let mut replay_latency_total_us = 0u128;
     let mut retrieval_latencies = Vec::new();
@@ -552,6 +575,9 @@ async fn run_snapshot_reopen(
         retrieval_latencies.extend(latencies);
     }
 
+    let cache_after_retrieval = matrixobject_cache_stats(&reopened_store);
+    let cache_metrics_available = cache_after_retrieval.max_bytes > 0;
+
     SnapshotReopenReport {
         snapshot_export_latency_us,
         snapshot_disk_write_latency_us,
@@ -560,10 +586,36 @@ async fn run_snapshot_reopen(
         snapshot_bytes: restored_snapshot_bytes.len() as u64,
         snapshot_sha256,
         reopened_offset_metadata_ok,
+        cache_before_replay,
+        cache_after_retrieval,
+        cache_metrics_available,
         reopened_replay_recovered_all_records: replay_ok,
         reopened_retrieval_recovered_all_records: retrieval_ok,
         replay_latency_total_us,
         retrieval_latency_avg_us: avg(&retrieval_latencies),
+    }
+}
+
+fn matrixobject_cache_stats(store: &MatrixObjectObjectStore) -> MatrixObjectCacheStatsReport {
+    let stats = store
+        .inner()
+        .lock()
+        .expect("matrixobject lock poisoned")
+        .read_cache_stats();
+    MatrixObjectCacheStatsReport {
+        entries: stats.entries,
+        bytes: stats.bytes,
+        max_bytes: stats.max_bytes,
+        hits: stats.hits,
+        misses: stats.misses,
+        evictions: stats.evictions,
+        direct_fill_pages: stats.direct_fill_pages,
+        direct_fill_bytes: stats.direct_fill_bytes,
+        compressed_fill_pages: stats.compressed_fill_pages,
+        compressed_fill_bytes: stats.compressed_fill_bytes,
+        ec_fill_pages: stats.ec_fill_pages,
+        ec_fill_bytes: stats.ec_fill_bytes,
+        pressure: stats.pressure,
     }
 }
 
