@@ -5381,11 +5381,10 @@ def run_rollout_backfill_only(args: argparse.Namespace, payload: Json, session_i
                 "matrixark_session_commit",
                 {
                     **common,
+                    **hook_session_commit_extraction_options(args),
                     "threshold_messages": 1,
                     "force": True,
                     "commit_reason": "async_rollout_backfill",
-                    "understanding_provider": args.understanding_provider,
-                    "segment_provider": args.segment_provider,
                     "storage_options": hook_storage_options(),
                     "agent_hook": {
                         **codex_agent_hook(
