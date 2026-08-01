@@ -2723,6 +2723,8 @@ def profile_entity_type_for_memory_text(text: str) -> str:
         return "identity_profile"
     if re.search(r"\b(?:reply|respond|answer|write|communication style|response style|answer style|preferred language|preferred format|language|locale|timezone|time zone|tone|style|format|bullets?|bullet points?|markdown|concise|brief|detailed)\b", lower):
         return "communication_profile"
+    if re.search(r"\b(?:feature parity|feature[- ]focused|functionality|functionalities|algorithms?|implementation focus|no testing|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no eviden[ct]e|feature work only|code changes only|openviking|vikingmem|mem0|long[- ]term memory|session memory|profile memory|cross[- ]session memory|threshold|idle batch|batch extraction)\b", lower):
+        return "workspace_profile"
     if re.search(r"\b(?:workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|folder|build|deploy|deployment|rustraft|temporalstore|matrixark)\b", lower):
         return "workspace_profile"
     return ""
