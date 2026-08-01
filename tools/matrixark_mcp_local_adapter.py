@@ -8507,8 +8507,7 @@ class MatrixArkLocalAdapter:
                 )
             entity_embedding_text = updated_entity["entity_type"] + " " + updated_entity["state"]
             entity_vector = embedding_for_text(entity_embedding_text)
-            records_to_append.append(
-                compact_context_embedding_record({
+            session_entity_embedding_record = compact_context_embedding_record({
                     "record_type": "context_embedding",
                     "embedding_type": "entity_state",
                     "ref_type": "entity",
@@ -8542,11 +8541,22 @@ class MatrixArkLocalAdapter:
                     "extraction_context_event_ids": extraction_context_event_ids,
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 })
-            )
+            records_to_append.append(session_entity_embedding_record)
             if profile_node_hash and should_promote_session_entity_to_profile(updated_entity):
                 profile_entity_hash = stable_hash(
                     f"{profile_node_hash}:{updated_entity['entity_type']}:{updated_entity['entity_name']}"
                 )
+                profile_shadow_fields: Json = {
+                    "stale_or_superseded": True,
+                    "version_state": "historical_superseded",
+                    "current_state_policy": "historical_superseded_by_user_profile",
+                    "profile_shadowed_by_ref_hash": profile_entity_hash,
+                    "profile_shadowed_reason": "profile_entity_supersedes_session_entity",
+                    "superseded_by_entity_hash": profile_entity_hash,
+                    "profile_shadowed_at_ms": envelope["ingestion_time_ms"],
+                }
+                session_entity_record.update(profile_shadow_fields)
+                session_entity_embedding_record.update(profile_shadow_fields)
                 previous_profile_entity = self.find_latest_entity(
                     node_hash=profile_node_hash,
                     entity_type=updated_entity["entity_type"],
