@@ -7,7 +7,7 @@ use bytes::Bytes;
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use temporalstore_snapshot::object_store::{ObjectStore, ObjectStoreError};
+use temporalstore_snapshot::object_store::{AppendBlobReceipt, ObjectStore, ObjectStoreError};
 use thiserror::Error;
 
 use crate::block_store::{BlockStoreError, LocalBlockStore};
@@ -148,6 +148,14 @@ pub struct SharedStoreWriteReport {
     pub oplog_index: u64,
     pub published: bool,
     pub queued: bool,
+    #[serde(default)]
+    pub wal_blob_start_offset: Option<u64>,
+    #[serde(default)]
+    pub wal_blob_end_offset: Option<u64>,
+    #[serde(default)]
+    pub wal_blob_bytes_written: Option<u64>,
+    #[serde(default)]
+    pub wal_blob_object_length: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -155,6 +163,12 @@ pub struct SharedStoreFlushReport {
     pub flushed: usize,
     pub remaining: usize,
     pub last_oplog_index: u64,
+    #[serde(default)]
+    pub last_wal_blob_start_offset: Option<u64>,
+    #[serde(default)]
+    pub last_wal_blob_end_offset: Option<u64>,
+    #[serde(default)]
+    pub last_wal_blob_object_length: Option<u64>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,14 +285,14 @@ where
     pub async fn publish_oplog_entry(
         &self,
         entry: SharedStoreOplogEntry,
-    ) -> Result<(), SharedStoreReplicationError> {
+    ) -> Result<Option<AppendBlobReceipt>, SharedStoreReplicationError> {
         self.publish_wal_entry(entry).await
     }
 
     pub async fn publish_wal_entry(
         &self,
         entry: SharedStoreWalEntry,
-    ) -> Result<(), SharedStoreReplicationError> {
+    ) -> Result<Option<AppendBlobReceipt>, SharedStoreReplicationError> {
         if matches!(
             self.wal_append_mode,
             SharedStoreWalAppendMode::ProtobufAppendBlob
@@ -294,18 +308,16 @@ where
         };
         self.put_with_retry(&key, Bytes::from(serde_json::to_vec(&object)?))
             .await?;
-        Ok(())
+        Ok(None)
     }
 
     async fn publish_wal_entry_protobuf_blob(
         &self,
         entry: SharedStoreWalEntry,
-    ) -> Result<(), SharedStoreReplicationError> {
+    ) -> Result<Option<AppendBlobReceipt>, SharedStoreReplicationError> {
         let key = self.oplog_blob_key(entry.shard_id);
         let frame = encode_wal_proto_frame(&entry)?;
-        self.append_blob_with_retry(&key, Bytes::from(frame))
-            .await?;
-        Ok(())
+        self.append_blob_with_retry(&key, Bytes::from(frame)).await
     }
 
     pub fn storage_writer(
@@ -921,12 +933,12 @@ where
         &self,
         key: &str,
         bytes: Bytes,
-    ) -> Result<(), SharedStoreReplicationError> {
+    ) -> Result<Option<AppendBlobReceipt>, SharedStoreReplicationError> {
         let attempts = self.retry_policy.max_attempts.max(1);
         let mut last_error = None;
         for attempt in 0..attempts {
             match self.object_store.append_blob(key, bytes.clone()).await {
-                Ok(()) => return Ok(()),
+                Ok(receipt) => return Ok(Some(receipt)),
                 Err(err) => {
                     last_error = Some(err);
                     if attempt + 1 < attempts && self.retry_policy.backoff_ms > 0 {
@@ -968,11 +980,15 @@ where
         };
         match self.mode {
             SharedStoreStorageMode::Sync => {
-                self.replicator.publish_oplog_entry(entry).await?;
+                let receipt = self.replicator.publish_oplog_entry(entry).await?;
                 Ok(SharedStoreWriteReport {
                     oplog_index,
                     published: true,
                     queued: false,
+                    wal_blob_start_offset: receipt.as_ref().map(|receipt| receipt.start_offset),
+                    wal_blob_end_offset: receipt.as_ref().map(|receipt| receipt.end_offset),
+                    wal_blob_bytes_written: receipt.as_ref().map(|receipt| receipt.bytes_written),
+                    wal_blob_object_length: receipt.as_ref().map(|receipt| receipt.object_length),
                 })
             }
             SharedStoreStorageMode::Async => {
@@ -984,6 +1000,10 @@ where
                     oplog_index,
                     published: false,
                     queued: true,
+                    wal_blob_start_offset: None,
+                    wal_blob_end_offset: None,
+                    wal_blob_bytes_written: None,
+                    wal_blob_object_length: None,
                 })
             }
         }
@@ -1016,17 +1036,21 @@ where
         }
 
         let mut last_oplog_index = 0;
+        let mut last_receipt = None;
         for (index, entry) in drained.iter().cloned().enumerate() {
             last_oplog_index = entry.oplog_index;
-            if let Err(err) = self.replicator.publish_oplog_entry(entry).await {
-                let mut pending = self
-                    .pending
-                    .lock()
-                    .expect("shared-store async queue lock poisoned");
-                for entry in drained[index..].iter().rev().cloned() {
-                    pending.push_front(entry);
+            match self.replicator.publish_oplog_entry(entry).await {
+                Ok(receipt) => last_receipt = receipt,
+                Err(err) => {
+                    let mut pending = self
+                        .pending
+                        .lock()
+                        .expect("shared-store async queue lock poisoned");
+                    for entry in drained[index..].iter().rev().cloned() {
+                        pending.push_front(entry);
+                    }
+                    return Err(err);
                 }
-                return Err(err);
             }
         }
         let remaining = self.queued_len();
@@ -1034,6 +1058,9 @@ where
             flushed: drained.len(),
             remaining,
             last_oplog_index,
+            last_wal_blob_start_offset: last_receipt.as_ref().map(|receipt| receipt.start_offset),
+            last_wal_blob_end_offset: last_receipt.as_ref().map(|receipt| receipt.end_offset),
+            last_wal_blob_object_length: last_receipt.as_ref().map(|receipt| receipt.object_length),
         })
     }
 }
@@ -1532,6 +1559,10 @@ mod tests {
                 oplog_index: 1,
                 published: true,
                 queued: false,
+                wal_blob_start_offset: None,
+                wal_blob_end_offset: None,
+                wal_blob_bytes_written: None,
+                wal_blob_object_length: None,
             }
         );
 
@@ -1622,6 +1653,9 @@ mod tests {
                 flushed: 1,
                 remaining: 1,
                 last_oplog_index: 1,
+                last_wal_blob_start_offset: None,
+                last_wal_blob_end_offset: None,
+                last_wal_blob_object_length: None,
             }
         );
         assert_eq!(
@@ -1641,6 +1675,9 @@ mod tests {
                 flushed: 1,
                 remaining: 0,
                 last_oplog_index: 2,
+                last_wal_blob_start_offset: None,
+                last_wal_blob_end_offset: None,
+                last_wal_blob_object_length: None,
             }
         );
         assert_eq!(
@@ -1728,6 +1765,10 @@ mod tests {
                 oplog_index: 2,
                 published: true,
                 queued: false,
+                wal_blob_start_offset: None,
+                wal_blob_end_offset: None,
+                wal_blob_bytes_written: None,
+                wal_blob_object_length: None,
             }
         );
 
@@ -1747,6 +1788,10 @@ mod tests {
                 oplog_index: 3,
                 published: false,
                 queued: true,
+                wal_blob_start_offset: None,
+                wal_blob_end_offset: None,
+                wal_blob_bytes_written: None,
+                wal_blob_object_length: None,
             }
         );
         assert_eq!(
@@ -1755,6 +1800,9 @@ mod tests {
                 flushed: 1,
                 remaining: 0,
                 last_oplog_index: 3,
+                last_wal_blob_start_offset: None,
+                last_wal_blob_end_offset: None,
+                last_wal_blob_object_length: None,
             }
         );
 
@@ -1924,6 +1972,9 @@ mod tests {
                 flushed: 1,
                 remaining: 0,
                 last_oplog_index: 1,
+                last_wal_blob_start_offset: None,
+                last_wal_blob_end_offset: None,
+                last_wal_blob_object_length: None,
             }
         );
     }
@@ -1998,11 +2049,12 @@ mod tests {
         let replicator = SharedStoreReplicator::new("cluster-a", store.clone())
             .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
 
+        let mut append_receipts = Vec::new();
         for (oplog_index, key, value) in [
             (1, "proto-a", b"one".to_vec()),
             (2, "proto-b", b"two".to_vec()),
         ] {
-            replicator
+            let receipt = replicator
                 .publish_wal_entry(SharedStoreWalEntry {
                     shard_id: 1,
                     oplog_index,
@@ -2013,7 +2065,18 @@ mod tests {
                 })
                 .await
                 .unwrap();
+            append_receipts.push(receipt.expect("protobuf append blob should return offsets"));
         }
+        assert_eq!(append_receipts[0].start_offset, 0);
+        assert_eq!(
+            append_receipts[0].end_offset,
+            append_receipts[1].start_offset
+        );
+        assert_eq!(
+            append_receipts[1].end_offset,
+            append_receipts[1].object_length
+        );
+        assert!(append_receipts[1].physical_extent_count > 1);
 
         let blob_key = "cluster-a/shards/1/shared/oplog/oplog.protobuf.blob";
         assert_eq!(
