@@ -2866,9 +2866,22 @@ def codex_outcome_fact_entities(
     source_role = "tool" if role_name == "tool" else "assistant"
     entities: list[Json] = []
     seen: set[tuple[str, str, str]] = set()
+
+    def outcome_candidate_chunks(compact_line: str) -> list[str]:
+        chunks: list[str] = []
+        for semicolon_part in re.split(r"\s*;\s*", compact_line):
+            for sentence in re.split(
+                r"(?<=[.!?])\s+(?=(?:I|We|Codex|Assistant|Tool|Next|Changed|Outcome|Validation|Blocked|Implemented|Fixed|Added|Removed|Updated|Configured|Installed|Pushed|Published|Deployed|Merged|Rebased|Recovered|Promoted|Indexed|Budgeted|Batched|Flushed)\b)",
+                semicolon_part,
+            ):
+                chunk = sentence.strip()
+                if chunk:
+                    chunks.append(chunk)
+        return chunks or ([compact_line] if compact_line else [])
+
     for raw_line in str(text or "").splitlines():
         compact_line = " ".join(raw_line.split()).strip(" -*")
-        for candidate in re.split(r"\s*;\s*", compact_line):
+        for candidate in outcome_candidate_chunks(compact_line):
             line = summarize_text(re.sub(r"^(?:assistant|tool)\s*:\s*", "", candidate, flags=re.IGNORECASE), limit=220)
             if not line:
                 continue
