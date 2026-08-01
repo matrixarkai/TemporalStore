@@ -1663,12 +1663,17 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
             selection_complete_count += 1
     assistant_policies: list[str] = []
     assistant_lineage_text = "\n".join(assistant_text_parts) or metadata.get("text") or envelope.get("text")
+    assistant_feature_memory_only = feature_scope_excludes_outcome_evidence(assistant_lineage_text)
     if assistant_profile_fact_lineage_text(assistant_lineage_text):
         assistant_policies.append("selected_assistant_profile_fact")
-    if assistant_lineage_text:
+    if assistant_lineage_text and not assistant_feature_memory_only:
         assistant_policies.append("selected_assistant_decision_outcome_only")
     if not assistant_policies:
-        assistant_policies.append("selected_assistant_decision_outcome_only")
+        assistant_policies.append(
+            "selected_assistant_profile_fact"
+            if assistant_feature_memory_only
+            else "selected_assistant_decision_outcome_only"
+        )
     inferred_policy_by_role = {
         "assistant": assistant_policies,
         "tool": "selected_tool_evidence_only",
@@ -1688,7 +1693,7 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
     if "tool" in roles:
         entity_type = "tool_evidence"
     elif "assistant" in roles:
-        entity_type = "assistant_decision"
+        entity_type = "memory_feature_profile" if assistant_feature_memory_only else "assistant_decision"
     return {
         "memory_scope": "session",
         "session_continuity": "same_session",
@@ -7979,10 +7984,13 @@ class MatrixArkLocalAdapter:
         ]
         assistant_lineage_text = "\n".join(assistant_text_parts) or envelope_metadata.get("text") or envelope.get("text")
         assistant_policies: list[str] = []
+        assistant_feature_memory_only = feature_scope_excludes_outcome_evidence(assistant_lineage_text)
         if assistant_profile_fact_lineage_text(assistant_lineage_text):
             assistant_policies.append("selected_assistant_profile_fact")
-        if assistant_lineage_text or source_role_counts.get("assistant"):
+        if (assistant_lineage_text or source_role_counts.get("assistant")) and not assistant_feature_memory_only:
             assistant_policies.append("selected_assistant_decision_outcome_only")
+        if assistant_feature_memory_only and not assistant_policies:
+            assistant_policies.append("selected_assistant_profile_fact")
         inferred_policy_by_role = {
             "assistant": assistant_policies,
             "tool": ["selected_tool_evidence_only"],
