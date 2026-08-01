@@ -3272,6 +3272,7 @@ USER_PROMPT_MEMORY_LINE_PATTERNS = [
         r"\b(?:fix|add|remove|replace|move|keep|make\s+sure|ensure)\b",
         r"\b(?:we\s+should|should|need\s+to|must|have\s+to|always|never|do\s+not|don't)\b",
         r"\b(?:ingest|extract|retrieve|profile|cross[- ]session|memory|context|summary|entity|index|budget)\b",
+        r"\b(?:openviking|vikingmem|mem0|long[- ]term memory|session memory|profile memory|feature parity|features?|functionalit(?:y|ies)|algorithms?|feature[- ]focused|no testing|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no eviden[ct]e|threshold|idle batch|batch extraction)\b",
     ]
 ]
 
