@@ -953,7 +953,7 @@ def main() -> int:
     args.session_id, session_id_source = resolve_session_id(payload, args)
     if args.idle_commit_worker_only:
         return run_idle_commit_worker_only(args, session_id_source)
-    text = payload_text(payload) or args.query
+    text = payload_text(payload, event=args.event) or args.query
     raw_uri = payload_resource_uri(payload)
     resource_type = payload_resource_type(payload, raw_uri) if raw_uri else ""
     event_hook_type = hook_type_for_agent_event(args.event)

@@ -470,6 +470,22 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             hook.payload_text(payload, event="PostToolUse"),
         )
 
+    def test_payload_text_extracts_terminal_output_for_tool_events(self) -> None:
+        self.assertEqual(
+            "Exit code: 0\nRan 9 tests\nOK",
+            hook.payload_text(
+                {"terminal_output": "Exit code: 0\nRan 9 tests\nOK"},
+                event="PostToolUse",
+            ),
+        )
+        self.assertEqual(
+            "noise\nExit code: 0\nRan 5 tests\nOK",
+            hook.payload_text(
+                {"tool_outputs": ["noise", {"output": "Exit code: 0\nRan 5 tests\nOK"}]},
+                event="PostToolUse",
+            ),
+        )
+
     def test_payload_text_prefers_user_role_from_mixed_prompt_messages(self) -> None:
         payload = {
             "hook_event_name": "UserPromptSubmit",

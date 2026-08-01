@@ -3554,6 +3554,12 @@ def payload_text(payload: Json, *, event: str = "") -> str:
         ["turn", "finalAnswer"],
     ]
     tool_paths = [
+        ["terminal_output"],
+        ["terminal-output"],
+        ["terminalOutput"],
+        ["tool_outputs"],
+        ["tool-outputs"],
+        ["toolOutputs"],
         ["tool_output"],
         ["tool-output"],
         ["toolOutput"],
@@ -3567,6 +3573,12 @@ def payload_text(payload: Json, *, event: str = "") -> str:
         ["params", "tool_output"],
         ["params", "tool-output"],
         ["params", "toolOutput"],
+        ["params", "terminal_output"],
+        ["params", "terminal-output"],
+        ["params", "terminalOutput"],
+        ["params", "tool_outputs"],
+        ["params", "tool-outputs"],
+        ["params", "toolOutputs"],
         ["params", "tool_result"],
         ["params", "tool-result"],
         ["params", "toolResult"],
@@ -3599,7 +3611,22 @@ def payload_text(payload: Json, *, event: str = "") -> str:
         return direct
     structured_keys = ["content", "output", "response"]
     if normalized_event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
-        structured_keys = ["tool_output", "tool_result", "result", "output", "stderr", "stdout", "content", "response"]
+        structured_keys = [
+            "terminal_output",
+            "terminalOutput",
+            "tool_outputs",
+            "toolOutputs",
+            "tool_output",
+            "toolOutput",
+            "tool_result",
+            "toolResult",
+            "result",
+            "output",
+            "stderr",
+            "stdout",
+            "content",
+            "response",
+        ]
     elif normalized_event in {"Stop", "PostCompact", "SubagentStop"}:
         structured_keys = ["last_assistant_message", "assistant_message", "final_answer", "response", "output", "content"]
     for key in structured_keys:

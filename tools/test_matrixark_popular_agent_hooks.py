@@ -824,6 +824,11 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
                 self.assertIn('--event "\\$event" --backend temporalstore-rust "\\$@"', script)
                 self.assertNotIn("--event UserPromptSubmit --backend temporalstore-rust", script)
 
+    def test_agent_hook_main_extracts_payload_text_with_event_context(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        source = (repo / "tools" / "matrixark_agent_hook.py").read_text()
+        self.assertIn("text = payload_text(payload, event=args.event) or args.query", source)
+
 
 if __name__ == "__main__":
     unittest.main()
