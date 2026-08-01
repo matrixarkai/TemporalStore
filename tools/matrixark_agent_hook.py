@@ -24,6 +24,9 @@ try:
         call_tool,
         close_server_best_effort,
         auto_batch_decision_summary,
+        codex_retrieve_cross_session_options,
+        codex_retrieve_question_type,
+        codex_retrieve_ranking_options,
         default_hook_backend,
         first_string_at,
         generated_session_id,
@@ -50,6 +53,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         call_tool,
         close_server_best_effort,
         auto_batch_decision_summary,
+        codex_retrieve_cross_session_options,
+        codex_retrieve_question_type,
+        codex_retrieve_ranking_options,
         default_hook_backend,
         first_string_at,
         generated_session_id,
@@ -278,6 +284,47 @@ def should_commit(event: str) -> bool:
 
 def should_auto_batch_extract_on_ingest(event: str) -> bool:
     return not should_commit(event)
+
+
+def agent_retrieve_args(
+    common: Json,
+    args: argparse.Namespace,
+    *,
+    query: str,
+    retrieve_metadata: Json,
+    local_context: list[Any],
+) -> Json:
+    question_type = codex_retrieve_question_type(query)
+    retrieve_args: Json = {
+        **common,
+        "query": query,
+        "question_type": question_type,
+        "max_context_tokens": args.max_context_tokens,
+        "session_buffer_threshold": args.session_commit_threshold,
+        "idle_commit_timeout_ms": args.idle_commit_timeout_ms,
+        "storage_options": hook_storage_options(),
+        "ranking": codex_retrieve_ranking_options(),
+        "cross_session": codex_retrieve_cross_session_options(query),
+        "understanding_provider": getattr(args, "understanding_provider", None),
+        "extraction_provider": getattr(args, "extraction_provider", None),
+        "segment_provider": getattr(args, "segment_provider", None),
+        "segment_model": getattr(args, "segment_model", None),
+        "segment_model_path": getattr(args, "segment_model_path", None),
+        "segment_max_new_tokens": getattr(args, "segment_max_new_tokens", None),
+        "segment_provider_fallback": getattr(args, "segment_provider_fallback", None),
+        "skip_prior_context": bool(getattr(args, "skip_prior_context", False)),
+        "metadata": {
+            **retrieve_metadata,
+            "question_type": question_type,
+        },
+        "retrieval_request_metadata": {
+            **retrieve_metadata,
+            "question_type": question_type,
+        },
+    }
+    if local_context:
+        retrieve_args["local_context"] = local_context
+    return retrieve_args
 
 
 def is_resource_event(event: str) -> bool:
@@ -901,16 +948,14 @@ def main() -> int:
             "session_id_source": session_id_source,
             "codex_session_id_source": session_id_source if args.agent == "codex" else "",
         }
-        retrieve_args: Json = {
-            **common,
-            "query": args.query or text[:500],
-            "max_context_tokens": args.max_context_tokens,
-            "metadata": retrieve_metadata,
-            "retrieval_request_metadata": retrieve_metadata,
-        }
         local_context = agent_context.get("local_context", [])
-        if local_context:
-            retrieve_args["local_context"] = local_context
+        retrieve_args = agent_retrieve_args(
+            common,
+            args,
+            query=args.query or text[:500],
+            retrieve_metadata=retrieve_metadata,
+            local_context=local_context if isinstance(local_context, list) else [],
+        )
         retrieve = call_tool(server, "matrixark_retrieve", retrieve_args)
     base_metadata: Json = {
         "source": f"{args.agent}_hook",
@@ -986,16 +1031,14 @@ def main() -> int:
             "session_id_source": session_id_source,
             "codex_session_id_source": session_id_source if args.agent == "codex" else "",
         }
-        retrieve_args: Json = {
-            **common,
-            "query": args.query or text[:500],
-            "max_context_tokens": args.max_context_tokens,
-            "metadata": retrieve_metadata,
-            "retrieval_request_metadata": retrieve_metadata,
-        }
         local_context = agent_context.get("local_context", [])
-        if local_context:
-            retrieve_args["local_context"] = local_context
+        retrieve_args = agent_retrieve_args(
+            common,
+            args,
+            query=args.query or text[:500],
+            retrieve_metadata=retrieve_metadata,
+            local_context=local_context if isinstance(local_context, list) else [],
+        )
         retrieve = call_tool(server, "matrixark_retrieve", retrieve_args)
 
     commit: Json = {}
