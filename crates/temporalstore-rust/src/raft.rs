@@ -32,13 +32,13 @@ use crate::meta::{
 use crate::rebalance::RaftPersistedSchedulerState;
 use crate::types::{Command, CommandResponse, ExecuteRequest, ShardId, Status};
 
+mod matrixraft;
 mod membership;
 mod readiness;
-mod matrixraft;
 use bytes::Bytes;
+pub use matrixraft::*;
 pub use membership::*;
 pub use readiness::*;
-pub use matrixraft::*;
 use temporalstore_snapshot::{ObjectStore, S3SnapshotStore, SnapshotRef, SnapshotStore};
 
 pub type RaftNodeId = u64;
@@ -1055,7 +1055,10 @@ pub struct RaftReadSafetyRuntimeState {
 }
 
 impl RaftReadSafetyRuntimeState {
-    fn record_matrixraft_runtime_decision(&mut self, decision: &MatrixRaftReadSafetyRuntimeDecision) {
+    fn record_matrixraft_runtime_decision(
+        &mut self,
+        decision: &MatrixRaftReadSafetyRuntimeDecision,
+    ) {
         if decision.stale_leader_lease_rejected {
             self.stale_leader_lease_rejected = self.stale_leader_lease_rejected.saturating_add(1);
         }
@@ -8877,7 +8880,8 @@ impl RaftClusterInner {
             self.config.send_snapshot_timeout_ms,
             self.config.max_inflights_replicate,
         );
-        let append_backpressure_enforced = matrixraft_pipeline_evidence.append_backpressure_enforced;
+        let append_backpressure_enforced =
+            matrixraft_pipeline_evidence.append_backpressure_enforced;
         let apply_backpressure_enforced = matrixraft_pipeline_evidence.apply_backpressure_enforced;
         let memory_replicate_bytes_enforced =
             matrixraft_pipeline_evidence.memory_replicate_bytes_enforced;
@@ -8885,10 +8889,13 @@ impl RaftClusterInner {
             matrixraft_pipeline_evidence.oversized_log_rejection_present;
         let out_of_order_append_handling_present =
             matrixraft_pipeline_evidence.out_of_order_append_handling_present;
-        let reorder_timeout_drop_present = matrixraft_pipeline_evidence.reorder_timeout_drop_present;
-        let stale_term_rejection_present = matrixraft_pipeline_evidence.stale_term_rejection_present;
+        let reorder_timeout_drop_present =
+            matrixraft_pipeline_evidence.reorder_timeout_drop_present;
+        let stale_term_rejection_present =
+            matrixraft_pipeline_evidence.stale_term_rejection_present;
         let reorder_queue_enabled = matrixraft_pipeline_evidence.reorder_queue_enabled;
-        let snapshot_sender_lifecycle_present = matrixraft_snapshot_evidence.sender_lifecycle_present;
+        let snapshot_sender_lifecycle_present =
+            matrixraft_snapshot_evidence.sender_lifecycle_present;
         let snapshot_downloader_lifecycle_present =
             matrixraft_snapshot_evidence.downloader_lifecycle_present;
         let snapshot_retry_backpressure_present =
@@ -8896,8 +8903,10 @@ impl RaftClusterInner {
         let snapshot_chunk_retry_present = matrixraft_snapshot_evidence.chunk_retry_present;
         let snapshot_send_timeout_present = matrixraft_snapshot_evidence.send_timeout_present;
         let snapshot_rate_limit_present = matrixraft_snapshot_evidence.rate_limit_present;
-        let snapshot_install_progress_present = matrixraft_snapshot_evidence.install_progress_present;
-        let snapshot_install_rollback_present = matrixraft_snapshot_evidence.install_rollback_present;
+        let snapshot_install_progress_present =
+            matrixraft_snapshot_evidence.install_progress_present;
+        let snapshot_install_rollback_present =
+            matrixraft_snapshot_evidence.install_rollback_present;
         let snapshot_membership_change_present =
             matrixraft_snapshot_evidence.membership_change_present;
         let snapshot_rejoin_after_compacted_log_present =
@@ -8975,26 +8984,27 @@ impl RaftClusterInner {
                 )
             })
             .unwrap_or((0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false));
-        let matrixraft_wal_evidence = matrixraft_wal_lifecycle_evidence(&MatrixRaftWalLifecycleStatus {
-            segment_count: wal_segment_count,
-            active_segment_id: wal_active_segment_id,
-            first_retained_segment_id: wal_first_retained_segment_id,
-            last_retained_segment_id: wal_last_retained_segment_id,
-            total_bytes: wal_total_bytes,
-            active_segment_bytes: wal_active_segment_bytes,
-            total_records: wal_total_records,
-            first_sequence: wal_first_sequence,
-            last_sequence: wal_last_sequence,
-            first_log_index: wal_first_log_index,
-            last_log_index: wal_last_log_index,
-            released_segment_count: wal_released_segment_count,
-            slow_fsync_backpressure_observed: wal_slow_fsync_backpressure_observed,
-            slow_fsync_threshold_ms: 0,
-            slow_fsync_count: 0,
-            consecutive_slow_fsync_count: 0,
-            max_fsync_elapsed_ms: 0,
-            compacted_after_slow_fsync_count: 0,
-        });
+        let matrixraft_wal_evidence =
+            matrixraft_wal_lifecycle_evidence(&MatrixRaftWalLifecycleStatus {
+                segment_count: wal_segment_count,
+                active_segment_id: wal_active_segment_id,
+                first_retained_segment_id: wal_first_retained_segment_id,
+                last_retained_segment_id: wal_last_retained_segment_id,
+                total_bytes: wal_total_bytes,
+                active_segment_bytes: wal_active_segment_bytes,
+                total_records: wal_total_records,
+                first_sequence: wal_first_sequence,
+                last_sequence: wal_last_sequence,
+                first_log_index: wal_first_log_index,
+                last_log_index: wal_last_log_index,
+                released_segment_count: wal_released_segment_count,
+                slow_fsync_backpressure_observed: wal_slow_fsync_backpressure_observed,
+                slow_fsync_threshold_ms: 0,
+                slow_fsync_count: 0,
+                consecutive_slow_fsync_count: 0,
+                max_fsync_elapsed_ms: 0,
+                compacted_after_slow_fsync_count: 0,
+            });
         let wal_segment_lifecycle_present = matrixraft_wal_evidence.segment_lifecycle_present;
         let pre_vote_enforced = self.config.enable_pre_vote;
         let pre_vote_process_evidence_observed = self.config.enable_pre_vote
@@ -11454,10 +11464,7 @@ fn matrixraft_capability_report_from_byteraft_admin(
     if !report.ready {
         product_blockers.push("temporalstore:blocker:byteraft_admin_report_not_ready".to_string());
     }
-    matrixraft_runtime_capability_report_from_evidence(
-        capability_evidence,
-        product_blockers,
-    )
+    matrixraft_runtime_capability_report_from_evidence(capability_evidence, product_blockers)
 }
 
 fn push_raft_metric(out: &mut String, name: &str, labels: &[(&str, String)], value: u64) {

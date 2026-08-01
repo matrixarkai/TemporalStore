@@ -105,4 +105,3 @@ def main():
     parts.append(f'</table></section><section class="section"><h2>Backend Evidence And Queue</h2><table><tr><th>Item</th><th>Details</th></tr><tr><td>Rust LoCoMo full replay</td><td><pre>{esc(json.dumps(backend_summary, indent=2))}</pre></td></tr><tr><td>Next isolated reader check</td><td><code>{esc(args.qwen7b_script)}</code></td></tr><tr><td>LongMemEval_s</td><td>{esc(args.longmemeval_note)}</td></tr></table></section></main></body></html>')
     args.output.parent.mkdir(parents=True, exist_ok=True); args.output.write_text('\n'.join(parts), encoding='utf-8'); print(args.output)
 if __name__ == '__main__': main()
-

@@ -195,6 +195,12 @@ def backend_prometheus(target: Any) -> str:
 
 
 def backend_metrics(target: Any) -> Json:
+    direct_context_pack_cache = getattr(target, "_direct_context_pack_response_cache", None)
+    direct_context_pack_cache_count = len(direct_context_pack_cache) if hasattr(direct_context_pack_cache, "__len__") else 0
+    retrieval_candidate_cache = getattr(target, "_retrieval_candidate_cache", None)
+    retrieval_candidate_cache_count = len(retrieval_candidate_cache) if hasattr(retrieval_candidate_cache, "__len__") else 0
+    context_pack_cache = getattr(target, "_context_pack_cache", None)
+    context_pack_cache_count = len(context_pack_cache) if hasattr(context_pack_cache, "__len__") else 0
     return {
         "backend": target._backend_label(),
         "metrics_format": "prometheus",
@@ -244,6 +250,15 @@ def backend_metrics(target: Any) -> Json:
             "entry_count_cache": target._entry_count_cache,
             "python_hot_cache_allowed": target.python_hot_cache_enabled(),
             "records_cache_ready": target._records_cache is not None,
+            "records_cache_count": len(target._records_cache) if isinstance(target._records_cache, list) else 0,
+            "retrieval_candidate_cache_count": retrieval_candidate_cache_count,
+            "context_pack_cache_count": context_pack_cache_count,
+            "direct_context_pack_response_cache_enabled": bool(getattr(target, "_direct_context_pack_response_cache_enabled", False)),
+            "direct_context_pack_response_cache_count": direct_context_pack_cache_count,
+            "direct_context_pack_response_cache_max_entries": int(getattr(target, "_direct_context_pack_response_cache_max_entries", 0) or 0),
+            "direct_context_pack_response_cache_hits_total": int(getattr(target, "_direct_context_pack_response_cache_hits_total", 0) or 0),
+            "direct_context_pack_response_cache_misses_total": int(getattr(target, "_direct_context_pack_response_cache_misses_total", 0) or 0),
+            "direct_context_pack_response_cache_updates_total": int(getattr(target, "_direct_context_pack_response_cache_updates_total", 0) or 0),
             "commands_total": target._commands_total,
             "errors_total": target._errors_total,
             "timeouts_total": target._timeouts_total,
