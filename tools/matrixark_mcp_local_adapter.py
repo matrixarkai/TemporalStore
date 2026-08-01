@@ -7058,8 +7058,10 @@ class MatrixArkLocalAdapter:
                     "final_session_boundary": False,
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
-                self.append(pending_event_record)
                 pending_memory_layer = candidate_memory_layer_name(pending_event_record)
+                if pending_memory_layer:
+                    pending_event_record["memory_layer"] = pending_memory_layer
+                self.append(pending_event_record)
                 pending_embedding_record = compact_context_embedding_record(
                     {
                         "record_type": "context_embedding",
@@ -7121,6 +7123,7 @@ class MatrixArkLocalAdapter:
                         **source_event_lineage_summary([source_lineage]),
                         "source_memory_scopes": source_memory_scopes,
                         "source_session_continuities": source_session_continuities,
+                        **({"memory_layer": pending_memory_layer} if pending_memory_layer else {}),
                         **pending_profile_memory_fields,
                         "created_at_ms": envelope["ingestion_time_ms"],
                         "updated_at_ms": envelope["ingestion_time_ms"],
