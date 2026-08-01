@@ -1969,6 +1969,37 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
         entity_type = "tool_evidence"
     elif "assistant" in roles:
         entity_type = "memory_feature_profile" if assistant_feature_memory_only else "assistant_decision"
+    memory_layer_counts: Json = {}
+    for layer in metadata.get("source_memory_layers", []) if isinstance(metadata.get("source_memory_layers"), list) else []:
+        layer_name = str(layer or "").strip()
+        if layer_name:
+            memory_layer_counts[layer_name] = int(memory_layer_counts.get(layer_name, 0)) + source_lineage_count
+    if isinstance(metadata.get("source_memory_layer_counts"), dict):
+        for layer, count in metadata["source_memory_layer_counts"].items():
+            layer_name = str(layer or "").strip()
+            if not layer_name:
+                continue
+            try:
+                amount = max(0, int(count or 0))
+            except (TypeError, ValueError):
+                amount = 0
+            if amount:
+                memory_layer_counts[layer_name] = int(memory_layer_counts.get(layer_name, 0)) + amount
+    explicit_memory_layer = str(metadata.get("memory_layer") or "").strip()
+    if explicit_memory_layer:
+        memory_layer_counts.setdefault(explicit_memory_layer, source_lineage_count)
+    inferred_memory_layer = candidate_memory_layer_name(
+        {
+            "record_type": "context_event",
+            "ref_type": "event",
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "entity_type": entity_type,
+            "event_type": entity_type,
+        }
+    )
+    if inferred_memory_layer:
+        memory_layer_counts.setdefault(inferred_memory_layer, source_lineage_count)
     return {
         "memory_scope": "session",
         "session_continuity": "same_session",
@@ -1981,6 +2012,8 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
         "source_codex_event_counts": {name: int(codex_event_counts.get(name, 0)) for name in sorted(codex_events) if int(codex_event_counts.get(name, 0)) > 0},
         "source_memory_selection_policies": sorted(memory_selection_policy_counts),
         "source_memory_selection_policy_counts": memory_selection_policy_counts,
+        "source_memory_layers": sorted(memory_layer_counts),
+        "source_memory_layer_counts": memory_layer_counts,
         "source_memory_selection_lossy_count": selection_lossy_count,
         "source_memory_selection_complete_count": selection_complete_count,
         "source_memory_selection_dropped_text_chars": selection_dropped_text_chars,
@@ -2105,6 +2138,7 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
     profile_promotion_blockers: list[str] = []
     profile_memory_classes: list[str] = []
     profile_memory_kinds: list[str] = []
+    memory_layer_counts: Json = {}
     final_session_boundary_count = 0
 
     def add_count(counts: Json, name: Any, count: Any = 1) -> None:
@@ -2321,6 +2355,23 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
         add_values(profile_memory_classes, record.get("profile_memory_class"))
         add_values(profile_memory_kinds, record.get("source_profile_memory_kinds"))
         add_values(profile_memory_kinds, record.get("profile_memory_kind"))
+        existing_layer_counts = (
+            record.get("source_memory_layer_counts")
+            if isinstance(record.get("source_memory_layer_counts"), dict)
+            else {}
+        )
+        if existing_layer_counts:
+            for layer, count in existing_layer_counts.items():
+                add_count(memory_layer_counts, layer, count)
+        else:
+            layer_values: list[str] = []
+            add_values(layer_values, record.get("source_memory_layers"))
+            add_values(layer_values, record.get("memory_layer"))
+            inferred_layer = candidate_memory_layer_name(record)
+            if inferred_layer:
+                add_values(layer_values, inferred_layer)
+            for layer in ordered_unique_any(layer_values):
+                add_count(memory_layer_counts, layer, 1)
         try:
             final_session_boundary_count += max(0, int(record.get("source_final_session_boundary_count") or 0))
         except (TypeError, ValueError):
@@ -2342,6 +2393,7 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
     source_profile_promotion_blockers = ordered_unique_any(profile_promotion_blockers)
     source_profile_memory_classes = ordered_unique_any(profile_memory_classes)
     source_profile_memory_kinds = ordered_unique_any(profile_memory_kinds)
+    source_memory_layers = sorted(memory_layer_counts)
     memory_scope = (
         explicit_memory_scopes[0]
         if len(explicit_memory_scopes) == 1
@@ -2397,6 +2449,8 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
         "source_profile_promotion_blockers": source_profile_promotion_blockers,
         "source_profile_memory_classes": source_profile_memory_classes,
         "source_profile_memory_kinds": source_profile_memory_kinds,
+        "source_memory_layers": source_memory_layers,
+        "source_memory_layer_counts": memory_layer_counts,
         "source_final_session_boundary_count": final_session_boundary_count,
     }
     if memory_scope:
@@ -8701,6 +8755,14 @@ class MatrixArkLocalAdapter:
         source_profile_memory_kinds = source_lineage.get("source_profile_memory_kinds", [])
         if not isinstance(source_profile_memory_kinds, list):
             source_profile_memory_kinds = []
+        source_memory_layers = source_lineage.get("source_memory_layers", [])
+        if not isinstance(source_memory_layers, list):
+            source_memory_layers = []
+        source_memory_layer_counts = (
+            source_lineage.get("source_memory_layer_counts")
+            if isinstance(source_lineage.get("source_memory_layer_counts"), dict)
+            else {}
+        )
         source_memory_selection_retention: Json = {
             key: envelope_metadata.get(key)
             for key in [
@@ -9104,6 +9166,14 @@ class MatrixArkLocalAdapter:
             entity_source_hook_type_counts = entity_source_lineage.get("source_hook_type_counts", source_hook_type_counts)
             entity_source_codex_events = entity_source_lineage.get("source_codex_events", source_codex_events)
             entity_source_codex_event_counts = entity_source_lineage.get("source_codex_event_counts", source_codex_event_counts)
+            entity_source_memory_layers = entity_source_lineage.get("source_memory_layers", source_memory_layers)
+            if not isinstance(entity_source_memory_layers, list):
+                entity_source_memory_layers = source_memory_layers
+            entity_source_memory_layer_counts = (
+                entity_source_lineage.get("source_memory_layer_counts")
+                if isinstance(entity_source_lineage.get("source_memory_layer_counts"), dict)
+                else source_memory_layer_counts
+            )
             entity_profile_memory_class = profile_memory_class_for_entity_type(updated_entity.get("entity_type"))
             entity_profile_memory_kind = profile_memory_kind_for_entity_type(updated_entity.get("entity_type"))
             entity_source_profile_memory_classes = ordered_unique_any(
@@ -9150,6 +9220,8 @@ class MatrixArkLocalAdapter:
                 "source_codex_event_counts": entity_source_codex_event_counts,
                 "source_memory_selection_policies": entity_source_memory_selection_policies,
                 "source_memory_selection_policy_counts": entity_source_memory_selection_policy_counts,
+                "source_memory_layers": entity_source_memory_layers,
+                "source_memory_layer_counts": entity_source_memory_layer_counts,
                 "source_profile_memory_classes": entity_source_profile_memory_classes,
                 "source_profile_memory_kinds": entity_source_profile_memory_kinds,
                 **source_memory_selection_retention,
@@ -9229,6 +9301,8 @@ class MatrixArkLocalAdapter:
                     "source_codex_event_counts": entity_source_codex_event_counts,
                     "source_memory_selection_policies": entity_source_memory_selection_policies,
                     "source_memory_selection_policy_counts": entity_source_memory_selection_policy_counts,
+                    "source_memory_layers": entity_source_memory_layers,
+                    "source_memory_layer_counts": entity_source_memory_layer_counts,
                     "source_profile_memory_classes": entity_source_profile_memory_classes,
                     "source_profile_memory_kinds": entity_source_profile_memory_kinds,
                     **source_memory_selection_retention,
@@ -9710,6 +9784,14 @@ class MatrixArkLocalAdapter:
             segment_source_hook_type_counts = segment_source_lineage.get("source_hook_type_counts", source_hook_type_counts)
             segment_source_codex_events = segment_source_lineage.get("source_codex_events", source_codex_events)
             segment_source_codex_event_counts = segment_source_lineage.get("source_codex_event_counts", source_codex_event_counts)
+            segment_source_memory_layers = segment_source_lineage.get("source_memory_layers", source_memory_layers)
+            if not isinstance(segment_source_memory_layers, list):
+                segment_source_memory_layers = source_memory_layers
+            segment_source_memory_layer_counts = (
+                segment_source_lineage.get("source_memory_layer_counts")
+                if isinstance(segment_source_lineage.get("source_memory_layer_counts"), dict)
+                else source_memory_layer_counts
+            )
             segment_record = {
                 "record_type": "context_segment",
                 "segment_hash": segment_hash,
@@ -9735,6 +9817,8 @@ class MatrixArkLocalAdapter:
                 "source_codex_event_counts": segment_source_codex_event_counts,
                 "source_memory_selection_policies": segment_source_memory_selection_policies,
                 "source_memory_selection_policy_counts": segment_source_memory_selection_policy_counts,
+                "source_memory_layers": segment_source_memory_layers,
+                "source_memory_layer_counts": segment_source_memory_layer_counts,
                 **source_memory_selection_retention,
                 "source_memory_scopes": ["session"],
                 "source_session_continuities": ["same_session"],
@@ -9900,6 +9984,8 @@ class MatrixArkLocalAdapter:
             "source_codex_event_counts": source_codex_event_counts,
             "source_memory_selection_policies": source_memory_selection_policies,
             "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            "source_memory_layers": source_memory_layers,
+            "source_memory_layer_counts": source_memory_layer_counts,
             "source_profile_memory_classes": batch_source_profile_memory_classes,
             "source_profile_memory_kinds": batch_source_profile_memory_kinds,
             "profile_memory_class": batch_profile_memory_class,
@@ -9966,6 +10052,8 @@ class MatrixArkLocalAdapter:
                 "source_codex_event_counts": source_codex_event_counts,
                 "source_memory_selection_policies": source_memory_selection_policies,
                 "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                "source_memory_layers": source_memory_layers,
+                "source_memory_layer_counts": source_memory_layer_counts,
                 "source_profile_memory_classes": batch_source_profile_memory_classes,
                 "source_profile_memory_kinds": batch_source_profile_memory_kinds,
                 "profile_memory_class": batch_profile_memory_class,
