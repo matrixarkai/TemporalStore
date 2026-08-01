@@ -9578,6 +9578,7 @@ class MatrixArkLocalAdapter:
             status = session_continuity_status(record_scope, retrieval_scope)
             explicit_status = str(first_value("session_continuity") or "")
             explicit_memory_scope = str(first_value("memory_scope") or "")
+            explicit_profile_memory_class = str(first_value("profile_memory_class") or "")
             explicit_profile_current = first_explicit_bool("profile_entity_current", candidate, record, embedding_metadata)
             if explicit_status in {"same_session", "cross_session"} and explicit_memory_scope == "user_profile":
                 status = explicit_status
@@ -9621,6 +9622,7 @@ class MatrixArkLocalAdapter:
                 "continuity_boost": round(boost, 6),
                 "continuity_reason": reason,
                 "memory_scope": first_value("memory_scope"),
+                "profile_memory_class": explicit_profile_memory_class,
                 "event_type": first_value("event_type"),
                 "classification": first_value("classification"),
                 "extraction_status": first_value("extraction_status", first_value("status")),
@@ -10672,11 +10674,38 @@ class MatrixArkLocalAdapter:
             entity_metadata = embedding_metadata_by_ref.get(("entity", record.get("entity_hash")), {})
             source_entity_hashes = record.get("source_entity_hashes", [])
             source_session_ids = record.get("source_session_ids", [])
+            profile_memory_class = str(
+                record.get("profile_memory_class")
+                or entity_metadata.get("profile_memory_class")
+                or (
+                    profile_memory_class_for_entity_type(record.get("entity_type"))
+                    if is_profile_entity_bridge
+                    else ""
+                )
+            ).strip()
+            profile_class_term = context_index_name("profile_memory_class", profile_memory_class)
+            profile_class_matched_query = bool(
+                profile_class_term
+                and any(profile_class_term in group for group in secondary_index_filter_groups)
+            )
+            profile_text_parts = [
+                profile_memory_class.replace("_", " "),
+                str(record.get("entity_type", "")),
+                str(record.get("entity_name", "")),
+                str(record.get("state", "")),
+            ]
+            profile_scoring_text = " ".join(part for part in profile_text_parts if part).strip()
             sparse_score = sparse_lexical_score(query_terms, text)
             keyword_score = len(query_terms.intersection(tokens(text)))
             embedding_score = cosine(query_embedding, entity_embedding_vectors.get(record["entity_hash"], []))
             node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
-            origin_score = min(1.0, 0.12 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
+            entity_hybrid_text = profile_scoring_text if is_profile_entity_bridge and profile_scoring_text else text
+            origin_score = min(
+                1.0,
+                0.12
+                + hybrid_origin_score(query_terms, entity_hybrid_text, embedding_score, node_score)
+                + (0.14 if profile_class_matched_query else 0.0),
+            )
             candidate = {
                 "ref_type": "entity",
                 "ref_hash": record["entity_hash"],
@@ -10689,7 +10718,9 @@ class MatrixArkLocalAdapter:
                 "node_score": node_score,
                 "matched_index_terms": sorted(index_terms),
                 "selection_reason": (
-                    "selected as cross-session user-profile entity bridge"
+                    "selected as class-matched cross-session user-profile entity bridge"
+                    if is_profile_entity_bridge and profile_class_matched_query
+                    else "selected as cross-session user-profile entity bridge"
                     if is_profile_entity_bridge
                     else
                     "selected by tree path, secondary indexes, and resource entity state score"
@@ -10698,6 +10729,7 @@ class MatrixArkLocalAdapter:
                 ),
                 "entity_type": record.get("entity_type", ""),
                 "entity_name": record.get("entity_name", ""),
+                "profile_memory_class": profile_memory_class,
                 "context_class": "resource_entity_fact" if record.get("source_chunk_hash") else "entity",
                 "source_chunk_hash": record.get("source_chunk_hash"),
                 "source_ref": record.get("source_ref", ""),
@@ -11209,11 +11241,36 @@ class MatrixArkLocalAdapter:
                         continue
                     source_entity_hashes = record.get("source_entity_hashes", [])
                     source_session_ids = record.get("source_session_ids", [])
+                    profile_memory_class = str(
+                        record.get("profile_memory_class")
+                        or entity_metadata.get("profile_memory_class")
+                        or profile_memory_class_for_entity_type(record.get("entity_type"))
+                    ).strip()
+                    profile_class_term = context_index_name("profile_memory_class", profile_memory_class)
+                    profile_class_matched_query = bool(
+                        profile_class_term
+                        and any(profile_class_term in group for group in secondary_index_filter_groups)
+                    )
                     sparse_score = sparse_lexical_score(query_terms, text)
                     keyword_score = len(query_terms.intersection(tokens(text)))
                     embedding_score = cosine(query_embedding, entity_embedding_vectors.get(record.get("entity_hash"), []))
                     node_score = node_scores.get(record.get("node_hash"), {}).get("score", 0.0)
-                    origin_score = min(1.0, 0.28 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
+                    profile_scoring_text = " ".join(
+                        part
+                        for part in [
+                            profile_memory_class.replace("_", " "),
+                            str(record.get("entity_type", "")),
+                            str(record.get("entity_name", "")),
+                            str(record.get("state", "")),
+                        ]
+                        if part
+                    )
+                    origin_score = min(
+                        1.0,
+                        0.28
+                        + hybrid_origin_score(query_terms, profile_scoring_text or text, embedding_score, node_score)
+                        + (0.14 if profile_class_matched_query else 0.0),
+                    )
                     if origin_score <= 0:
                         continue
                     candidate = annotate_session_continuity(
@@ -11231,6 +11288,7 @@ class MatrixArkLocalAdapter:
                             "selection_reason": "selected by direct cross-session user-profile entity bridge",
                             "entity_type": record.get("entity_type", ""),
                             "entity_name": record.get("entity_name", ""),
+                            "profile_memory_class": profile_memory_class,
                             "context_class": "entity",
                             "source_roles": record.get("source_roles", []),
                             "source_role_counts": record.get("source_role_counts", {}),
