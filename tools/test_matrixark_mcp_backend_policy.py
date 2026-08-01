@@ -1949,15 +1949,25 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "role": "tool_output",
                     "content": "pushed commit abcdef1 to origin/main",
                 },
+                {
+                    "role": "function_call_output",
+                    "content": "codex_memory_roles tests passed",
+                },
+                {
+                    "role": "custom_tool_call_output",
+                    "content": "rebase completed cleanly",
+                },
             ],
-            {"source_event_ids": [401, 402], "metadata": {}},
+            {"source_event_ids": [401, 402, 403, 404], "metadata": {}},
         )
 
         evidence = next(entity for entity in result if entity["entity_type"] == "tool_evidence")
         self.assertIn("Exit code: 0", evidence["state"])
         self.assertIn("Ran 12 tests", evidence["state"])
         self.assertIn("pushed commit abcdef1", evidence["state"])
-        self.assertEqual(["401", "402"], evidence["source_refs"])
+        self.assertIn("codex_memory_roles tests passed", evidence["state"])
+        self.assertIn("rebase completed cleanly", evidence["state"])
+        self.assertEqual(["401", "402", "403", "404"], evidence["source_refs"])
 
     def test_openai_compatible_batch_extraction_uses_model_entities(self) -> None:
         extraction_globals = mcp_core.one_pass_memory_extraction.__globals__
@@ -5689,8 +5699,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "text": "tool evidence",
                     "score": 0.93,
                     "entity_type": "tool_evidence",
-                    "source_roles": ["tool"],
-                    "source_role_counts": {"tool": 1},
+                    "source_roles": ["function_call_output", "custom_tool_call_output"],
+                    "source_role_counts": {"function_call_output": 1, "custom_tool_call_output": 1},
                     "memory_scope": "user_profile",
                     "session_continuity": "cross_session",
                 },

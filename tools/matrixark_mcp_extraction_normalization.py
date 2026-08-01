@@ -18,8 +18,13 @@ ROLE_ALIASES = {
     "llm": "assistant",
     "model": "assistant",
     "tool_result": "tool",
+    "tool-output": "tool",
+    "tooloutput": "tool",
     "tool_output": "tool",
     "function": "tool",
+    "function_call_output": "tool",
+    "custom_tool_call_output": "tool",
+    "tool_call_output": "tool",
 }
 
 try:
@@ -538,7 +543,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     tool_messages = [
         item
         for item in messages
-        if str(item.get("role") or "").lower() in {"tool", "tool_result"}
+        if normalize_source_role(item.get("role")) == "tool"
         and str(item.get("content") or "").strip()
     ]
     tool_text = text_from_messages(tool_messages) if tool_messages else ""
@@ -558,8 +563,8 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
             }
         )
         for message_index, message in enumerate(messages):
-            role = str(message.get("role") or "").lower()
-            if role not in {"tool", "tool_result", "tool_output", "function"}:
+            role = normalize_source_role(message.get("role"))
+            if role != "tool":
                 continue
             content = str(message.get("content") or "").strip()
             if not content:
