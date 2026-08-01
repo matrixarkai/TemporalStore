@@ -9583,9 +9583,10 @@ def cross_session_rerank_adjustment(candidate: Json, question_type: str) -> floa
     context_class = str(candidate.get("context_class") or ref_type)
     memory_scope = str(candidate.get("memory_scope") or "").strip().lower()
     profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
+    is_feature_profile_memory = candidate_is_feature_profile_memory(candidate)
     has_citation = bool(candidate.get("source_ref") or candidate.get("citation") or candidate.get("source_chunk_hash"))
     if question_type == "profile_memory":
-        if memory_scope == "user_profile" or profile_memory_kind in {"durable_profile", "memory_feature"}:
+        if memory_scope == "user_profile" or profile_memory_kind == "durable_profile" or is_feature_profile_memory:
             if ref_type == "entity":
                 return 0.16
             if ref_type in {"summary", "compression"}:
