@@ -43,6 +43,12 @@ PROFILE_MEMORY_STANDING_RULE_QUERY_RE = re.compile(
     r"|\b(?:always|default|standing|persistent)\b.{0,80}\b(?:rules?|instructions?|preferences?|behaviou?r|workflow|workflows)\b"
 )
 
+ACTIVE_MEMORY_GOAL_QUERY_RE = re.compile(
+    r"\b(?:active|current|latest|next|ongoing|standing|persistent)\b.{0,80}\b(?:memory|retrieval|extraction|ingestion|context)\b.{0,80}\b(?:goal|focus|priority|work|feature|functionality|implementation|direction|instruction|preference)\b"
+    r"|\b(?:what|which|how)\b.{0,80}\b(?:should|must|need|keep|continue|focus|prioriti[sz]e|work on)\b.{0,80}\b(?:memory|retrieval|extraction|ingestion|context)\b.{0,80}\b(?:goal|focus|priority|feature|functionality|implementation|direction)\b"
+    r"|\b(?:memory|retrieval|extraction|ingestion|context)\b.{0,80}\b(?:goal|focus|priority|feature|functionality|implementation|direction)\b.{0,80}\b(?:active|current|latest|next|ongoing|standing|persistent)\b"
+)
+
 FEATURE_SCOPE_EXCLUSION_RE = re.compile(
     r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\s+"
     r"(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b"
@@ -233,7 +239,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(context_index_name("entity_type", "preference"), context_index_name("event_type", "preference_update"))
         add_group(context_index_name("profile_memory_kind", "durable_profile"))
         add_group(context_index_name("memory_selection_policy", "selected_user_profile_fact"))
-    if re.search(r"\b(openviking|vikingmem|mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionality|functionalities|functionality only|algorithms?|algos?|implementation focus|no testing|no teseting|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no evident|no eviden[ct]e|feature work only|code changes only|session memory|profile memory|cross[- ]session memory|threshold|idle batch|batch extraction)\b", lower):
+    if re.search(r"\b(openviking|vikingmem|mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionality|functionalities|functionality only|algorithms?|algos?|implementation focus|no testing|no teseting|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no evident|no eviden[ct]e|feature work only|code changes only|session memory|profile memory|cross[- ]session memory|threshold|idle batch|batch extraction)\b", lower) or ACTIVE_MEMORY_GOAL_QUERY_RE.search(lower):
         add_group(context_index_name("entity_type", "memory_feature_profile"))
         add_group(context_index_name("profile_memory_class", "memory_feature"))
         add_group(context_index_name("profile_memory_kind", "memory_feature"))
@@ -323,7 +329,12 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             add_group(*metric_terms)
         if re.search(r"\b(hit[- ]?rate|read[- ]?hit|quality|recall|precision|locomo|longmemeval|memory[- ]?quality)\b", lower):
             add_group(context_index_name("memory_scope", "user_profile"), context_index_name("session_continuity", "cross_session"))
-    if re.search(r"\b(user profile|profile memory|long[- ]term memory|profile entity|profile entities|profile summary|profile summaries|current profile|latest profile|identity profile|communication profile|workspace profile|preferred language|preferred format|communication style|response style|workspace rules?|repo rules?|repository rules?|branch rules?|build rules?|deployment rules?)\b", lower) or question_type == "profile_memory" or PROFILE_MEMORY_STANDING_RULE_QUERY_RE.search(lower):
+    if (
+        re.search(r"\b(user profile|profile memory|long[- ]term memory|profile entity|profile entities|profile summary|profile summaries|current profile|latest profile|identity profile|communication profile|workspace profile|preferred language|preferred format|communication style|response style|workspace rules?|repo rules?|repository rules?|branch rules?|build rules?|deployment rules?)\b", lower)
+        or question_type == "profile_memory"
+        or PROFILE_MEMORY_STANDING_RULE_QUERY_RE.search(lower)
+        or ACTIVE_MEMORY_GOAL_QUERY_RE.search(lower)
+    ):
         add_group(context_index_name("memory_scope", "user_profile"), context_index_name("session_continuity", "cross_session"))
         add_group(context_index_name("profile_entity_current", "true"), context_index_name("profile_summary_current", "true"))
         profile_memory_kind_terms = [
@@ -473,7 +484,11 @@ def _core_query_runtime() -> Any:
 def infer_query_type(query: str) -> str:
     core = _core_query_runtime()
     lower = query.lower()
-    if PROFILE_MEMORY_QUERY_RE.search(lower) or PROFILE_MEMORY_STANDING_RULE_QUERY_RE.search(lower):
+    if (
+        PROFILE_MEMORY_QUERY_RE.search(lower)
+        or PROFILE_MEMORY_STANDING_RULE_QUERY_RE.search(lower)
+        or ACTIVE_MEMORY_GOAL_QUERY_RE.search(lower)
+    ):
         return "profile_memory"
     if re.search(r"\b(benchmark|workload|latency|p50|p90|p95|p99|throughput|qps|ops/s|req/s|hit[- ]?rate|read[- ]?hit|quality|recall|precision|locomo|longmemeval|memory[- ]?quality)\b", lower):
         return "benchmark_quality"

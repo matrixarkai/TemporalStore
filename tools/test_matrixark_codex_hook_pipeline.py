@@ -947,6 +947,75 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("memory_scope:session", session_flattened)
         self.assertIn("session_continuity:same_session", session_flattened)
 
+    def test_active_memory_goal_queries_retrieve_profile_feature_memory(self) -> None:
+        query = "What should we focus on next for memory functionality?"
+        self.assertEqual("profile_memory", infer_query_type(query))
+        self.assertEqual("profile_memory", matrixark_mcp_query.infer_query_type(query))
+        flattened = {term for group in infer_secondary_index_filter_groups(query, "profile_memory") for term in group}
+        helper_flattened = {
+            term
+            for group in matrixark_mcp_query.infer_secondary_index_filter_groups(query, "profile_memory")
+            for term in group
+        }
+        for terms in (flattened, helper_flattened):
+            self.assertIn("entity_type:memory_feature_profile", terms)
+            self.assertIn("profile_memory_class:memory_feature", terms)
+            self.assertIn("memory_scope:user_profile", terms)
+            self.assertIn("session_continuity:cross_session", terms)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-active-memory-goal-query.jsonl")
+            base_scope = {
+                "account_id": "acct_active_memory_goal",
+                "tenant_id": "tenant_active_memory_goal",
+                "user_id": "user_active_memory_goal",
+            }
+            result = adapter.batch_extract(
+                {
+                    "scope": {**base_scope, "session_id": "session_active_memory_goal_1"},
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Focus memory work on live ingestion, profile promotion, "
+                                "retrieval budgets, and feature functionality only."
+                            ),
+                        }
+                    ],
+                    "metadata": {"hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
+                    "force": True,
+                }
+            )
+            self.assertEqual("accepted", result["status"])
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**base_scope, "session_id": "session_active_memory_goal_2"},
+                    "session_scope": "prefer",
+                    "query": query,
+                    "max_context_tokens": 220,
+                    "audit_mode": "off",
+                    "include_retrieval_metrics": True,
+                    "ranking": {"max_selected_refs": 2, "min_similarity_score": 0.0},
+                }
+            )
+            profile_feature_refs = [
+                ref
+                for ref in pack["selected_refs"]
+                if ref.get("ref_type") == "entity"
+                and ref.get("entity_type") == "memory_feature_profile"
+                and ref.get("memory_scope") == "user_profile"
+                and ref.get("session_continuity") == "cross_session"
+            ]
+            self.assertTrue(profile_feature_refs, pack["selected_refs"])
+            self.assertIn("live ingestion", profile_feature_refs[0]["text"])
+            self.assertIn("retrieval budgets", profile_feature_refs[0]["text"])
+            self.assertNotIn("source_session_ids", profile_feature_refs[0])
+            self.assertGreaterEqual(
+                pack["retrieval_metrics"]["memory_layer_budget"]["by_memory_scope"]["user_profile"]["refs"],
+                1,
+            )
+
     def test_query_helper_oss_labels_cover_profile_memory_layers(self) -> None:
         labels = matrixark_mcp_query.QUERY_INDEX_LABELS
         core_labels = matrixark_mcp_core.QUERY_INDEX_LABELS
