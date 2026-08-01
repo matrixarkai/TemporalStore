@@ -11556,6 +11556,64 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("memory_selection_policy:selected_user_prompt", index_names)
             self.assertIn("memory_layer:pending_async_event", index_names)
 
+    def test_lightweight_async_pending_event_is_retrievable_before_batch_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-lightweight-pending-retrieval.jsonl")
+            scope = {
+                "account_id": "acct_lightweight_pending_retrieval",
+                "tenant_id": "tenant_lightweight_pending_retrieval",
+                "user_id": "user_lightweight_pending_retrieval",
+                "session_id": "session_lightweight_pending_retrieval",
+            }
+            result = adapter.ingest(
+                {
+                    "scope": scope,
+                    "async_processing": True,
+                    "auto_batch_extract": True,
+                    "session_buffer_threshold": 20,
+                    "idle_commit_timeout_ms": 60000,
+                    "skip_prior_context": True,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Remember live lightweight pending retrieval marker obsidian lantern.",
+                        }
+                    ],
+                    "metadata": {"hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
+                }
+            )
+
+            self.assertEqual("accepted", result["status"])
+            self.assertEqual("deferred", result["auto_batch_extract_result"]["status"])
+            self.assertEqual(1, len(adapter.pending_session_events(scope)))
+
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "query": "What marker proves live lightweight pending retrieval for obsidian lantern?",
+                    "max_context_tokens": 220,
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "ranking": {
+                        "max_selected_refs": 6,
+                        "min_similarity_score": 0.0,
+                        "budget_fill_policy": "force_fill",
+                    },
+                }
+            )
+
+            event_refs = [
+                ref
+                for ref in pack["selected_refs"]
+                if ref.get("ref_type") == "event" and "obsidian lantern" in str(ref.get("text") or "")
+            ]
+            self.assertTrue(event_refs, pack["selected_refs"])
+            self.assertEqual("pending_async", event_refs[0]["event_type"])
+            self.assertEqual("pending_async_event", event_refs[0]["memory_layer"])
+            self.assertEqual("session", event_refs[0]["memory_scope"])
+            self.assertEqual("same_session", event_refs[0]["session_continuity"])
+            self.assertEqual("pending_async_event", candidate_memory_layer_name(event_refs[0]))
+
     def test_lightweight_async_ingest_reports_idle_commit_as_auto_batch_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-async-idle-auto.jsonl")
