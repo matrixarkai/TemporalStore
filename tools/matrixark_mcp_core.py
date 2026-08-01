@@ -6420,7 +6420,16 @@ def is_resource_or_skill_candidate(candidate: Json) -> bool:
 
 def candidate_memory_layer_name(candidate: Json) -> str:
     metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
+    record_type = str(candidate.get("record_type") or metadata.get("record_type") or "")
     ref_type = str(candidate.get("ref_type") or metadata.get("ref_type") or "")
+    if not ref_type and record_type == "context_event":
+        ref_type = "event"
+    elif not ref_type and record_type == "context_entity":
+        ref_type = "entity"
+    elif not ref_type and record_type == "context_summary":
+        ref_type = "summary"
+    elif not ref_type and record_type == "context_segment":
+        ref_type = "segment"
     context_class = str(candidate.get("context_class") or metadata.get("context_class") or ref_type)
     memory_scope = str(candidate.get("memory_scope") or metadata.get("memory_scope") or "")
     session_continuity = str(candidate.get("session_continuity") or metadata.get("session_continuity") or "")
