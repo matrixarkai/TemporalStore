@@ -4847,7 +4847,11 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(context_index_name("entity_type", "memory_feature_profile"))
         add_group(context_index_name("profile_memory_class", "memory_feature"))
         add_group(context_index_name("profile_memory_kind", "memory_feature"))
-        add_group(context_index_name("memory_layer", "cross_session_memory_feature_entity"))
+        add_group(
+            context_index_name("memory_layer", "cross_session_memory_feature_entity"),
+            context_index_name("memory_layer", "cross_session_memory_feature_summary"),
+            context_index_name("memory_layer", "cross_session_memory_feature_compression"),
+        )
         add_group(context_index_name("memory_scope", "user_profile"))
     if re.search(r"\b(friend|partner|mother|father|sister|brother|wife|husband|manager|teammate|relationship|family|child|children|son|daughter|pet)\b", lower):
         add_group(context_index_name("entity_type", "relationship"), context_index_name("entity_type", "family_profile"))
@@ -4892,6 +4896,11 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("profile_memory_kind", "durable_profile"),
             context_index_name("profile_memory_kind", "codex_outcome"),
             context_index_name("profile_memory_kind", "memory_feature"),
+        )
+        add_group(
+            context_index_name("memory_layer", "cross_session_memory_feature_entity"),
+            context_index_name("memory_layer", "cross_session_memory_feature_summary"),
+            context_index_name("memory_layer", "cross_session_memory_feature_compression"),
         )
         add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
     if re.search(r"\b(cross[- ]session|across sessions|between sessions|multi[- ]session|long[- ]term)\b", lower):
