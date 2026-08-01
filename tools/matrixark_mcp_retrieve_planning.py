@@ -31,6 +31,7 @@ try:
         infer_secondary_index_filter_groups,
         integer_arg,
         local_context_budget,
+        normalize_message_role,
         now_ms,
         optional_object,
         tokens,
@@ -60,6 +61,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         infer_secondary_index_filter_groups,
         integer_arg,
         local_context_budget,
+        normalize_message_role,
         now_ms,
         optional_object,
         tokens,
@@ -252,7 +254,7 @@ def prune_feature_scope_evidence_budgets(
     pruned_source_roles = {
         role: tokens
         for role, tokens in (source_role_budget_tokens or {}).items()
-        if str(role or "").strip().lower() not in FEATURE_SCOPE_EXCLUDED_SOURCE_ROLES
+        if normalize_message_role(role) not in FEATURE_SCOPE_EXCLUDED_SOURCE_ROLES
     }
     pruned_memory_layers = {
         layer: tokens
