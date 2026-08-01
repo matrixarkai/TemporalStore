@@ -3126,6 +3126,17 @@ def selected_assistant_profile_fact_policy(text: str) -> bool:
     )
 
 
+def selected_user_profile_fact_policy(text: str) -> bool:
+    compact = " ".join(str(text or "").split())
+    return bool(
+        compact
+        and (
+            feature_scope_memory_only_policy(compact)
+            or any(pattern.search(compact) for pattern in ASSISTANT_PROFILE_MEMORY_POLICY_PATTERNS)
+        )
+    )
+
+
 def normalize_assistant_memory_line(line: str) -> str:
     stripped = str(line or "").strip()
     stripped = re.sub(r"^(?:#{1,6}\s+|>\s+)", "", stripped).strip()
@@ -3388,6 +3399,8 @@ def codex_memory_selection_metadata(*, role: str, event: str, text: str, origina
         max_lines = 48
     else:
         policies = ["selected_user_prompt"]
+        if selected_user_profile_fact_policy(selected_text or original):
+            policies.append("selected_user_profile_fact")
         truncation_marker = "[user prompt truncated]"
         max_chars = 4096
         max_lines = 64
@@ -4535,6 +4548,7 @@ def pending_session_buffer_lineage(records: list[Json], *, fallback_role: str, f
     source_codex_events: list[str] = []
     source_memory_selection_policies: list[str] = []
     assistant_text_parts: list[str] = []
+    user_text_parts: list[str] = []
     source_role_counts: Json = {}
     source_hook_type_counts: Json = {}
     source_codex_event_counts: Json = {}
@@ -4580,6 +4594,8 @@ def pending_session_buffer_lineage(records: list[Json], *, fallback_role: str, f
                 add_count(source_role_counts, role)
             if role == "assistant":
                 assistant_text_parts.append(str(message.get("content") or ""))
+            elif role == "user":
+                user_text_parts.append(str(message.get("content") or ""))
         add_values(metadata.get("source_roles"), source_roles, source_role_counts, normalize_role=True)
         add_values(record.get("source_roles"), source_roles, source_role_counts, normalize_role=True)
         add_explicit_counts(metadata.get("source_role_counts"), source_roles, source_role_counts, normalize_role=True)
@@ -4661,10 +4677,14 @@ def pending_session_buffer_lineage(records: list[Json], *, fallback_role: str, f
         assistant_policies.append("selected_assistant_decision_outcome_only")
     if assistant_feature_memory_only and not assistant_policies:
         assistant_policies.append("selected_assistant_profile_fact")
+    user_lineage_text = "\n".join(user_text_parts)
+    user_policies = ["selected_user_prompt"]
+    if user_lineage_text and selected_user_profile_fact_policy(user_lineage_text):
+        user_policies.append("selected_user_profile_fact")
     inferred_policy_by_role = {
         "assistant": assistant_policies,
         "tool": ["selected_tool_evidence_only"],
-        "user": ["selected_user_prompt"],
+        "user": user_policies,
     }
     for role, count in source_role_counts.items():
         for policy_name in inferred_policy_by_role.get(role, []):

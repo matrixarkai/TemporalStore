@@ -387,6 +387,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("event_type:user_prompt", flattened)
             self.assertIn("source_role:user", flattened)
             self.assertIn("memory_selection_policy:selected_user_prompt", flattened)
+            self.assertIn("memory_selection_policy:selected_user_profile_fact", flattened)
 
         budgets, mode = matrixark_mcp_retrieve_request.pre_refresh_helpers.auto_memory_selection_policy_budget_tokens(
             {"query": query},
@@ -398,6 +399,17 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertGreater(budgets["selected_user_prompt"], budgets["selected_profile_current_state"])
         self.assertGreater(budgets["selected_user_prompt"], budgets["selected_assistant_decision_outcome_only"])
         self.assertGreater(budgets["selected_user_prompt"], budgets["selected_tool_evidence_only"])
+
+    def test_user_prompt_profile_preferences_get_profile_fact_policy(self) -> None:
+        metadata = matrixark_codex_hook.codex_memory_selection_metadata(
+            role="user",
+            event="UserPromptSubmit",
+            text="Always use the Ubuntu TemporalStore repo and never use Windows folders for builds.",
+        )
+
+        self.assertEqual("selected_user_prompt", metadata["policy"])
+        self.assertIn("selected_user_profile_fact", metadata["policies"])
+        self.assertEqual(1, metadata["policy_counts"]["selected_user_profile_fact"])
 
     def test_first_person_codex_outcome_queries_target_assistant_and_tool_memory(self) -> None:
         queries = [

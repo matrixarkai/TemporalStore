@@ -225,6 +225,7 @@ def auto_memory_selection_policy_budget_tokens(
     )
     defaults = {
         "selected_user_prompt": 0.45,
+        "selected_user_profile_fact": 0.35,
         "selected_assistant_profile_fact": 0.35,
         "selected_assistant_decision_outcome_only": 0.30,
         "selected_tool_evidence_only": 0.30,
@@ -235,6 +236,7 @@ def auto_memory_selection_policy_budget_tokens(
         defaults.update(
             {
                 "selected_user_prompt": 0.35,
+                "selected_user_profile_fact": 0.45,
                 "selected_assistant_profile_fact": 0.35,
                 "selected_assistant_decision_outcome_only": 0.58,
                 "selected_tool_evidence_only": 0.55,
@@ -245,16 +247,18 @@ def auto_memory_selection_policy_budget_tokens(
         defaults.update(
             {
                 "selected_user_prompt": 0.70,
+                "selected_user_profile_fact": 0.70,
                 "selected_assistant_profile_fact": 0.70,
                 "selected_assistant_decision_outcome_only": 0.20,
                 "selected_tool_evidence_only": 0.20,
-                "selected_profile_current_state": 0.70,
+                "selected_profile_current_state": 0.55,
             }
         )
     elif codex_user_goal_budget_query(args, ranking, question_type=question_type):
         defaults.update(
             {
                 "selected_user_prompt": 0.70,
+                "selected_user_profile_fact": 0.55,
                 "selected_assistant_profile_fact": 0.45,
                 "selected_assistant_decision_outcome_only": 0.30,
                 "selected_tool_evidence_only": 0.25,
@@ -265,6 +269,7 @@ def auto_memory_selection_policy_budget_tokens(
         defaults.update(
             {
                 "selected_user_prompt": 0.40,
+                "selected_user_profile_fact": 0.60,
                 "selected_assistant_profile_fact": 0.55,
                 "selected_assistant_decision_outcome_only": 0.45,
                 "selected_tool_evidence_only": 0.30,
@@ -275,6 +280,7 @@ def auto_memory_selection_policy_budget_tokens(
         defaults.update(
             {
                 "selected_user_prompt": 0.35,
+                "selected_user_profile_fact": 0.70,
                 "selected_assistant_profile_fact": 0.65,
                 "selected_assistant_decision_outcome_only": 0.40,
                 "selected_tool_evidence_only": 0.30,
@@ -285,6 +291,7 @@ def auto_memory_selection_policy_budget_tokens(
         defaults.update(
             {
                 "selected_user_prompt": 0.25,
+                "selected_user_profile_fact": 0.35,
                 "selected_assistant_profile_fact": 0.30,
                 "selected_assistant_decision_outcome_only": 0.50,
                 "selected_tool_evidence_only": 0.65,
@@ -295,6 +302,7 @@ def auto_memory_selection_policy_budget_tokens(
         defaults.update(
             {
                 "selected_user_prompt": 0.35,
+                "selected_user_profile_fact": 0.45,
                 "selected_assistant_profile_fact": 0.45,
                 "selected_assistant_decision_outcome_only": 0.45,
                 "selected_tool_evidence_only": 0.50,

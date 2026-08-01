@@ -73,6 +73,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "profile_memory_kind:memory_feature": "memory feature durable preference openviking vikingmem feature focused features only no testing no monitoring no debugging no evidence no evident",
     "memory_selection_policy:selected_profile_current_state": "selected profile current state standing instruction durable preference",
     "memory_selection_policy:selected_user_prompt": "selected user prompt explicit request instruction preference",
+    "memory_selection_policy:selected_user_profile_fact": "selected user profile fact standing preference durable instruction",
     "memory_selection_policy:selected_assistant_decision_outcome_only": "selected assistant decision outcome final answer implemented changed pushed",
     "memory_selection_policy:selected_tool_evidence_only": "selected tool evidence validation test result commit push benchmark",
     "codex_outcome:next": "codex assistant next action follow up next step",
@@ -221,12 +222,14 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
     if re.search(r"\b(prefer|preference|favorite|like|likes|love|loves)\b", lower):
         add_group(context_index_name("entity_type", "preference"), context_index_name("event_type", "preference_update"))
         add_group(context_index_name("profile_memory_kind", "durable_profile"))
+        add_group(context_index_name("memory_selection_policy", "selected_user_profile_fact"))
     if re.search(r"\b(openviking|vikingmem|mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionality|functionalities|functionality only|algorithms?|algos?|implementation focus|no testing|no teseting|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no evident|no eviden[ct]e|feature work only|code changes only|session memory|profile memory|cross[- ]session memory|threshold|idle batch|batch extraction)\b", lower):
         add_group(context_index_name("entity_type", "memory_feature_profile"))
         add_group(context_index_name("profile_memory_class", "memory_feature"))
         add_group(context_index_name("profile_memory_kind", "memory_feature"))
         add_group(context_index_name("memory_layer", "cross_session_memory_feature_entity"))
         add_group(context_index_name("memory_scope", "user_profile"))
+        add_group(context_index_name("memory_selection_policy", "selected_user_profile_fact"))
     if re.search(r"\b(friend|partner|mother|father|sister|brother|wife|husband|manager|teammate|relationship|family|child|children|son|daughter|pet)\b", lower):
         add_group(context_index_name("entity_type", "relationship"), context_index_name("entity_type", "family_profile"))
     if re.search(r"\b(job|role|work|works|position|status|company|employer)\b", lower):
@@ -346,6 +349,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("source_role", "user"),
             context_index_name("entity_type", "current_plan"),
             context_index_name("memory_selection_policy", "selected_user_prompt"),
+            context_index_name("memory_selection_policy", "selected_user_profile_fact"),
         )
     if re.search(r"\b(resource|document|doc|file|pdf|markdown|readme|csv|spreadsheet|excel|html|word|slides?|deck)\b", lower):
         add_group(context_index_name("source_type", "resource"), context_index_name("source_type", "resource_fact"))
