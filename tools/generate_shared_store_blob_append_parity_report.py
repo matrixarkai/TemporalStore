@@ -2,10 +2,9 @@
 """Generate Rust/C++ shared-store append-blob parity evidence.
 
 The Rust side is live runtime evidence from the MatrixObject-backed protobuf
-append-blob WAL workflow. The C++ side is contract evidence from the
-MatrixObjectStore AppendObject implementation and RPC surface, because the
-TemporalStore shared-store C++ integration delegates append placement to
-MatrixObject's ObjectInfo metadata.
+append-blob WAL workflow. The C++ side includes live MatrixObjectStore append
+runtime evidence plus source contract checks for the AppendObject/RPC offset
+surface that TemporalStore shared-store replication relies on.
 """
 
 from __future__ import annotations
@@ -108,6 +107,57 @@ def _source_contains(path: Path, patterns: list[str]) -> dict[str, bool]:
     return {pattern: bool(re.search(pattern, text, re.MULTILINE | re.DOTALL)) for pattern in patterns}
 
 
+
+def _load_cpp_runtime_report(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
+    if args.cpp_runtime_report:
+        data = json.loads(Path(args.cpp_runtime_report).read_text(encoding="utf-8"))
+        return data, {
+            "mode": "loaded",
+            "path": str(args.cpp_runtime_report),
+            "returncode": 0,
+            "stderr_tail": "",
+        }
+
+    bin_path = Path(args.cpp_runtime_bin) if args.cpp_runtime_bin else (
+        Path(args.matrixobject_repo)
+        / "build-mvp/matrixobjectstore/objectstore/objectstore_append_blob_parity_report"
+    )
+    if not bin_path.exists():
+        return {
+            "status": "missing",
+            "reason": "cpp runtime emitter binary not found",
+            "expected_binary": str(bin_path),
+        }, {
+            "mode": "missing",
+            "argv": [str(bin_path)],
+            "returncode": 127,
+            "stderr_tail": "",
+        }
+
+    root = Path(args.output_dir)
+    if not root.is_absolute():
+        root = ROOT / root
+    runtime_root = root / "cpp_matrixobjectstore_runtime_root"
+    command = [str(bin_path), str(runtime_root), str(args.entries), str(args.value_bytes)]
+    started = time.time()
+    result = _run(command, cwd=Path(args.matrixobject_repo), timeout=args.timeout_seconds)
+    command_report = {
+        "mode": "executed",
+        "argv": command,
+        "returncode": result.returncode,
+        "elapsed_ms": round((time.time() - started) * 1000, 3),
+        "stderr_tail": result.stderr[-4000:],
+    }
+    if result.returncode != 0:
+        return {"status": "failed", "stdout_tail": result.stdout[-4000:]}, command_report
+    try:
+        return json.loads(result.stdout), command_report
+    except json.JSONDecodeError:
+        return {
+            "status": "invalid_json",
+            "stdout_tail": result.stdout[-4000:],
+        }, command_report
+
 def _cpp_contract(matrixobject_repo: Path) -> dict[str, Any]:
     object_cc = matrixobject_repo / "matrixobjectstore/objectstore/objectstore.cc"
     rpc_cc = matrixobject_repo / "matrixobjectstore/objectstore/objectstore_rpc.cc"
@@ -176,6 +226,35 @@ def _cpp_contract(matrixobject_repo: Path) -> dict[str, Any]:
     }
 
 
+
+def _cpp_runtime_summary(cpp_report: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(cpp_report, dict):
+        return {"runtime_valid": False, "reason": "missing runtime report"}
+    return {
+        "runtime_valid": cpp_report.get("status") == "passed"
+        and cpp_report.get("engine") == "cpp_matrixobjectstore",
+        "offsets_monotonic": bool(cpp_report.get("offsets_monotonic")),
+        "offsets_contiguous": bool(cpp_report.get("offsets_contiguous")),
+        "reopened_recovered_all_bytes": bool(cpp_report.get("reopened_recovered_all_bytes")),
+        "full_read_matches": bool(cpp_report.get("full_read_matches")),
+        "tail_read_matches": bool(cpp_report.get("tail_read_matches")),
+        "append_latency_avg_us": _avg_latency_us(cpp_report.get("appends")),
+        "reopen_latency_us": cpp_report.get("reopen_latency_us"),
+        "read_full_latency_us": cpp_report.get("read_full_latency_us"),
+        "read_tail_latency_us": cpp_report.get("read_tail_latency_us"),
+        "reopened_extent_count": cpp_report.get("reopened_extent_count"),
+    }
+
+
+def _avg_latency_us(appends: Any) -> float | None:
+    if not isinstance(appends, list) or not appends:
+        return None
+    values = [item.get("latency_us") for item in appends if isinstance(item, dict)]
+    values = [float(value) for value in values if isinstance(value, (int, float))]
+    if not values:
+        return None
+    return round(sum(values) / len(values), 3)
+
 def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
     summary = rust_report.get("summary") if isinstance(rust_report, dict) else None
     if not isinstance(summary, dict):
@@ -198,8 +277,9 @@ def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _parity_status(rust: dict[str, Any], cpp: dict[str, Any]) -> dict[str, Any]:
+def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runtime: dict[str, Any]) -> dict[str, Any]:
     rust_summary = _rust_summary(rust)
+    cpp_summary = _cpp_runtime_summary(cpp_runtime)
     checks = {
         "rust_runtime_valid": bool(rust_summary.get("runtime_valid")),
         "rust_offsets_monotonic": bool(rust_summary.get("offsets_monotonic")),
@@ -212,10 +292,16 @@ def _parity_status(rust: dict[str, Any], cpp: dict[str, Any]) -> dict[str, Any]:
         "rust_retrieval_recovered_all_records": bool(
             rust_summary.get("retrieval_recovered_all_records")
         ),
-        "cpp_append_object_returns_object_info": bool(cpp.get("append_object_returns_object_info")),
-        "cpp_rpc_exposes_offset_and_extents": bool(cpp.get("rpc_exposes_offset_and_extents")),
+        "cpp_runtime_valid": bool(cpp_summary.get("runtime_valid")),
+        "cpp_offsets_monotonic": bool(cpp_summary.get("offsets_monotonic")),
+        "cpp_offsets_contiguous": bool(cpp_summary.get("offsets_contiguous")),
+        "cpp_reopen_recovered_all_bytes": bool(cpp_summary.get("reopened_recovered_all_bytes")),
+        "cpp_full_read_matches": bool(cpp_summary.get("full_read_matches")),
+        "cpp_tail_read_matches": bool(cpp_summary.get("tail_read_matches")),
+        "cpp_append_object_returns_object_info": bool(cpp_contract.get("append_object_returns_object_info")),
+        "cpp_rpc_exposes_offset_and_extents": bool(cpp_contract.get("rpc_exposes_offset_and_extents")),
         "matrixobject_rust_api_exposes_metadata": bool(
-            cpp.get("rust_matrixobject_api_exposes_metadata")
+            cpp_contract.get("rust_matrixobject_api_exposes_metadata")
         ),
     }
     blockers = [name for name, passed in checks.items() if not passed]
@@ -224,9 +310,9 @@ def _parity_status(rust: dict[str, Any], cpp: dict[str, Any]) -> dict[str, Any]:
         "checks": checks,
         "blockers": blockers,
         "note": (
-            "Rust live append/replay metrics are compared with C++ MatrixObject append contract "
-            "evidence. Full same-hardware C++ runtime latency parity still requires a C++ "
-            "TemporalStore append-blob runtime emitter."
+            "Rust TemporalStore MatrixObject append-blob runtime evidence is compared with "
+            "C++ MatrixObjectStore runtime append/reopen/readback evidence and source "
+            "contract checks for offset/extents propagation."
         ),
     }
 
@@ -235,6 +321,7 @@ def _render_html(report: dict[str, Any]) -> str:
     status = report["parity"]["status"]
     rust_summary = report["rust_summary"]
     cpp = report["cpp_contract"]
+    cpp_runtime_summary = report["cpp_runtime_summary"]
     rows = [
         ("Status", status),
         ("TemporalStore commit", report["temporalstore_commit"]),
@@ -243,6 +330,11 @@ def _render_html(report: dict[str, Any]) -> str:
         ("Rust p95 append latency us", rust_summary.get("append_latency_p95_us")),
         ("Rust total replay latency us", rust_summary.get("replay_latency_total_us")),
         ("Rust avg retrieval latency us", rust_summary.get("retrieval_latency_avg_us")),
+        ("C++ avg append latency us", cpp_runtime_summary.get("append_latency_avg_us")),
+        ("C++ reopen latency us", cpp_runtime_summary.get("reopen_latency_us")),
+        ("C++ full read latency us", cpp_runtime_summary.get("read_full_latency_us")),
+        ("C++ tail read latency us", cpp_runtime_summary.get("read_tail_latency_us")),
+        ("C++ reopened extent count", cpp_runtime_summary.get("reopened_extent_count")),
     ]
     check_rows = "\n".join(
         f"<tr><td>{html.escape(key)}</td><td>{'pass' if value else 'fail'}</td></tr>"
@@ -291,6 +383,8 @@ def main() -> int:
     parser.add_argument("--value-bytes", type=int, default=64)
     parser.add_argument("--timeout-seconds", type=int, default=180)
     parser.add_argument("--rust-report")
+    parser.add_argument("--cpp-runtime-report")
+    parser.add_argument("--cpp-runtime-bin")
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -299,6 +393,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rust_runtime, command_report = _load_rust_runtime_report(args)
+    cpp_runtime, cpp_command_report = _load_cpp_runtime_report(args)
     cpp_contract = _cpp_contract(Path(args.matrixobject_repo))
     report = {
         "schema": SCHEMA,
@@ -308,9 +403,12 @@ def main() -> int:
         "rust_command": command_report,
         "rust_summary": _rust_summary(rust_runtime),
         "rust_runtime": rust_runtime,
+        "cpp_runtime_command": cpp_command_report,
+        "cpp_runtime_summary": _cpp_runtime_summary(cpp_runtime),
+        "cpp_runtime": cpp_runtime,
         "cpp_contract": cpp_contract,
     }
-    report["parity"] = _parity_status(rust_runtime, cpp_contract)
+    report["parity"] = _parity_status(rust_runtime, cpp_contract, cpp_runtime)
 
     json_path = output_dir / "shared_store_blob_append_parity_report.json"
     html_path = output_dir / "shared_store_blob_append_parity_report.html"
