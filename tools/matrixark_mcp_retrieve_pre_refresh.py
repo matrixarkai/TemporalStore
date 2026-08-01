@@ -258,6 +258,71 @@ def auto_memory_selection_policy_budget_tokens(
     return budgets, mode
 
 
+def codex_outcome_event_segment_layer_fractions(question_type: str, *, outcome_query: bool = False) -> Json:
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    defaults: Json = {
+        "same_session_codex_outcome_event": 0.22,
+        "cross_session_codex_outcome_event": 0.20,
+        "same_session_codex_outcome_segment": 0.20,
+        "cross_session_codex_outcome_segment": 0.18,
+    }
+    if outcome_query:
+        defaults.update(
+            {
+                "same_session_codex_outcome_event": 0.45,
+                "cross_session_codex_outcome_event": 0.42,
+                "same_session_codex_outcome_segment": 0.38,
+                "cross_session_codex_outcome_segment": 0.36,
+            }
+        )
+    elif normalized_question_type in {"current_state", "latest"}:
+        defaults.update(
+            {
+                "same_session_codex_outcome_event": 0.35,
+                "cross_session_codex_outcome_event": 0.30,
+                "same_session_codex_outcome_segment": 0.30,
+                "cross_session_codex_outcome_segment": 0.28,
+            }
+        )
+    elif normalized_question_type == "profile_memory":
+        defaults.update(
+            {
+                "same_session_codex_outcome_event": 0.25,
+                "cross_session_codex_outcome_event": 0.35,
+                "same_session_codex_outcome_segment": 0.22,
+                "cross_session_codex_outcome_segment": 0.32,
+            }
+        )
+    elif normalized_question_type in {"multi_hop", "date"}:
+        defaults.update(
+            {
+                "same_session_codex_outcome_event": 0.35,
+                "cross_session_codex_outcome_event": 0.35,
+                "same_session_codex_outcome_segment": 0.32,
+                "cross_session_codex_outcome_segment": 0.32,
+            }
+        )
+    elif normalized_question_type == "benchmark_quality":
+        defaults.update(
+            {
+                "same_session_codex_outcome_event": 0.42,
+                "cross_session_codex_outcome_event": 0.45,
+                "same_session_codex_outcome_segment": 0.35,
+                "cross_session_codex_outcome_segment": 0.40,
+            }
+        )
+    elif normalized_question_type in {"broad_exploration", "evidence"}:
+        defaults.update(
+            {
+                "same_session_codex_outcome_event": 0.38,
+                "cross_session_codex_outcome_event": 0.35,
+                "same_session_codex_outcome_segment": 0.34,
+                "cross_session_codex_outcome_segment": 0.32,
+            }
+        )
+    return defaults
+
+
 def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_tokens: int, question_type: str = "fact") -> tuple[Json, str]:
     mode = _default_memory_budget_mode(
         args,
@@ -291,9 +356,12 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         "profile_entity": 0.40,
         "cross_session_codex_outcome_entity": 0.25,
         "cross_session_memory_feature_entity": 0.25,
+        "cross_session_codex_outcome_summary": 0.25,
+        "cross_session_codex_outcome_compression": 0.25,
     }
     normalized_question_type = str(question_type or "fact").strip().lower()
-    if codex_outcome_budget_query(args, ranking, question_type=question_type):
+    outcome_query = codex_outcome_budget_query(args, ranking, question_type=question_type)
+    if outcome_query:
         defaults.update(
             {
                 "summary": 0.18,
@@ -312,6 +380,8 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "profile_entity": 0.45,
                 "cross_session_codex_outcome_entity": 0.62,
                 "cross_session_memory_feature_entity": 0.35,
+                "cross_session_codex_outcome_summary": 0.45,
+                "cross_session_codex_outcome_compression": 0.45,
             }
         )
     elif normalized_question_type in {"current_state", "latest"}:
@@ -333,6 +403,8 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "profile_entity": 0.55,
                 "cross_session_codex_outcome_entity": 0.45,
                 "cross_session_memory_feature_entity": 0.50,
+                "cross_session_codex_outcome_summary": 0.35,
+                "cross_session_codex_outcome_compression": 0.35,
             }
         )
     elif normalized_question_type == "profile_memory":
@@ -354,6 +426,8 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "profile_entity": 0.60,
                 "cross_session_codex_outcome_entity": 0.30,
                 "cross_session_memory_feature_entity": 0.65,
+                "cross_session_codex_outcome_summary": 0.35,
+                "cross_session_codex_outcome_compression": 0.35,
             }
         )
     elif normalized_question_type in {"multi_hop", "date"}:
@@ -375,6 +449,8 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "profile_entity": 0.45,
                 "cross_session_codex_outcome_entity": 0.40,
                 "cross_session_memory_feature_entity": 0.45,
+                "cross_session_codex_outcome_summary": 0.35,
+                "cross_session_codex_outcome_compression": 0.35,
             }
         )
     elif normalized_question_type == "benchmark_quality":
@@ -396,6 +472,8 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "profile_entity": 0.50,
                 "cross_session_codex_outcome_entity": 0.58,
                 "cross_session_memory_feature_entity": 0.35,
+                "cross_session_codex_outcome_summary": 0.45,
+                "cross_session_codex_outcome_compression": 0.45,
             }
         )
     elif normalized_question_type in {"broad_exploration", "evidence"}:
@@ -417,8 +495,24 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "profile_entity": 0.45,
                 "cross_session_codex_outcome_entity": 0.45,
                 "cross_session_memory_feature_entity": 0.45,
+                "cross_session_codex_outcome_summary": 0.35,
+                "cross_session_codex_outcome_compression": 0.35,
             }
         )
+    defaults.update(
+        codex_outcome_event_segment_layer_fractions(
+            normalized_question_type,
+            outcome_query=outcome_query,
+        )
+    )
+    defaults["cross_session_memory_feature_summary"] = max(
+        defaults.get("cross_session_memory_feature_entity", 0.25),
+        defaults.get("profile_summary", 0.30),
+    )
+    defaults["cross_session_memory_feature_compression"] = max(
+        defaults.get("cross_session_memory_feature_entity", 0.25),
+        defaults.get("profile_compression", 0.25),
+    )
     budgets: Json = {}
     for layer, default_fraction in defaults.items():
         raw_fraction = fractions.get(layer, default_fraction) if isinstance(fractions, dict) else default_fraction
@@ -532,6 +626,16 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
         "same_session_segment": 0.30,
         "cross_session_segment": 0.25,
         "profile_entity": 0.45,
+        "cross_session_codex_outcome_entity": 0.25,
+        "cross_session_memory_feature_entity": 0.25,
+        "cross_session_codex_outcome_summary": 0.25,
+        "cross_session_codex_outcome_compression": 0.25,
+    }
+    outcome_query = normalized_question_type in {
+        "benchmark_quality",
+        "evidence",
+        "current_state",
+        "latest",
     }
     if normalized_question_type in {"current_state", "latest"}:
         fractions.update(
@@ -543,6 +647,10 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_event": 0.30,
                 "cross_session_segment": 0.30,
                 "profile_entity": 0.55,
+                "cross_session_codex_outcome_entity": 0.45,
+                "cross_session_memory_feature_entity": 0.50,
+                "cross_session_codex_outcome_summary": 0.35,
+                "cross_session_codex_outcome_compression": 0.35,
             }
         )
     elif normalized_question_type == "profile_memory":
@@ -559,6 +667,10 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "same_session_segment": 0.25,
                 "cross_session_segment": 0.40,
                 "profile_entity": 0.60,
+                "cross_session_codex_outcome_entity": 0.30,
+                "cross_session_memory_feature_entity": 0.65,
+                "cross_session_codex_outcome_summary": 0.35,
+                "cross_session_codex_outcome_compression": 0.35,
             }
         )
     elif normalized_question_type in {"multi_hop", "date"}:
@@ -571,6 +683,11 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_compression": 0.35,
                 "cross_session_event": 0.35,
                 "cross_session_segment": 0.35,
+                "profile_entity": 0.50,
+                "cross_session_codex_outcome_entity": 0.40,
+                "cross_session_memory_feature_entity": 0.45,
+                "cross_session_codex_outcome_summary": 0.35,
+                "cross_session_codex_outcome_compression": 0.35,
             }
         )
     elif normalized_question_type == "benchmark_quality":
@@ -584,6 +701,10 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_event": 0.35,
                 "cross_session_segment": 0.35,
                 "profile_entity": 0.50,
+                "cross_session_codex_outcome_entity": 0.58,
+                "cross_session_memory_feature_entity": 0.35,
+                "cross_session_codex_outcome_summary": 0.45,
+                "cross_session_codex_outcome_compression": 0.45,
             }
         )
     elif normalized_question_type in {"broad_exploration", "evidence"}:
@@ -597,9 +718,31 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "same_session_compression": 0.30,
                 "cross_session_compression": 0.30,
                 "pending_async_event": 0.25,
+                "same_session_event": 0.35,
                 "cross_session_event": 0.30,
+                "same_session_segment": 0.35,
+                "cross_session_segment": 0.30,
+                "profile_entity": 0.50,
+                "cross_session_codex_outcome_entity": 0.45,
+                "cross_session_memory_feature_entity": 0.45,
+                "cross_session_codex_outcome_summary": 0.35,
+                "cross_session_codex_outcome_compression": 0.35,
             }
         )
+    fractions.update(
+        codex_outcome_event_segment_layer_fractions(
+            normalized_question_type,
+            outcome_query=outcome_query,
+        )
+    )
+    fractions["cross_session_memory_feature_summary"] = max(
+        fractions.get("cross_session_memory_feature_entity", 0.25),
+        fractions.get("profile_summary", 0.30),
+    )
+    fractions["cross_session_memory_feature_compression"] = max(
+        fractions.get("cross_session_memory_feature_entity", 0.25),
+        fractions.get("profile_compression", 0.25),
+    )
     return {layer: max(1, int(remote_budget * fraction)) for layer, fraction in fractions.items()}, mode
 
 
