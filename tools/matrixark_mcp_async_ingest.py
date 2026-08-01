@@ -103,6 +103,23 @@ def _lightweight_memory_policy_lineage(envelope: Json) -> Json:
     return lineage
 
 
+def _lightweight_source_layer_lineage(memory_layer_fields: Json) -> Json:
+    memory_scope = str(memory_layer_fields.get("memory_scope") or "").strip()
+    session_continuity = str(memory_layer_fields.get("session_continuity") or "").strip()
+    extraction_phase = str(memory_layer_fields.get("extraction_phase") or "").strip()
+    lineage: Json = {}
+    if memory_scope:
+        lineage["source_memory_scopes"] = [memory_scope]
+    if session_continuity:
+        lineage["source_session_continuities"] = [session_continuity]
+    if extraction_phase:
+        lineage["source_extraction_phases"] = [extraction_phase]
+    lineage["source_final_session_boundary_count"] = (
+        1 if bool(memory_layer_fields.get("final_session_boundary")) else 0
+    )
+    return lineage
+
+
 def _lightweight_context_event_index_terms(source_counts: Json, memory_layer_fields: Json, envelope: Json) -> list[str]:
     policy_lineage = _lightweight_memory_policy_lineage(envelope)
     terms = [
@@ -227,6 +244,7 @@ def lightweight_async_accept(
         "extraction_phase": "pending_async",
         "final_session_boundary": False,
     }
+    source_layer_lineage = _lightweight_source_layer_lineage(memory_layer_fields)
     event_embedding = embedding_for_text(text)
     event_embedding_record: Json = {
         "record_type": "context_embedding",
@@ -241,6 +259,7 @@ def lightweight_async_accept(
         "scope": envelope["scope"],
         "updated_at_ms": envelope["ingestion_time_ms"],
         **memory_layer_fields,
+        **source_layer_lineage,
         **policy_lineage,
     }
     event_index_terms = _lightweight_context_event_index_terms(source_counts, memory_layer_fields, envelope)
@@ -299,6 +318,7 @@ def lightweight_async_accept(
                 "storage_options": envelope.get("storage_options", {}),
                 **source_counts,
                 **memory_layer_fields,
+                **source_layer_lineage,
                 **policy_lineage,
                 "async_processing": True,
                 "updated_at_ms": envelope["ingestion_time_ms"],
@@ -332,6 +352,7 @@ def lightweight_async_accept(
                 "reason": "sync_accept_async_processing",
                 **source_counts,
                 **memory_layer_fields,
+                **source_layer_lineage,
                 **policy_lineage,
                 "created_at_ms": envelope["ingestion_time_ms"],
                 "updated_at_ms": envelope["ingestion_time_ms"],
