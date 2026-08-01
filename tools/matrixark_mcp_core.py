@@ -9125,6 +9125,7 @@ def session_continuity_boost(candidate: Json, question_type: str) -> float:
     status = str(candidate.get("session_continuity") or "")
     ref_type = str(candidate.get("ref_type") or "")
     context_class = str(candidate.get("context_class") or ref_type)
+    memory_scope = str(candidate.get("memory_scope") or "").strip().lower()
     if status == "same_session":
         if ref_type in {"event", "segment"}:
             return 0.16
@@ -9134,6 +9135,13 @@ def session_continuity_boost(candidate: Json, question_type: str) -> float:
             return 0.10
         return 0.08
     if status == "cross_session":
+        if question_type == "profile_memory" and memory_scope == "user_profile":
+            if ref_type == "entity":
+                return 0.16
+            if ref_type in {"summary", "compression"}:
+                return 0.14
+            if ref_type == "segment":
+                return 0.08
         if ref_type == "entity" or context_class in {"resource_entity_fact", "resource_fact"}:
             return 0.11
         if question_type in {"multi_hop", "current_state"} and ref_type in {"event", "segment", "compression"}:
@@ -9146,9 +9154,21 @@ def cross_session_rerank_adjustment(candidate: Json, question_type: str) -> floa
         return 0.0
     ref_type = str(candidate.get("ref_type") or "")
     context_class = str(candidate.get("context_class") or ref_type)
+    memory_scope = str(candidate.get("memory_scope") or "").strip().lower()
+    profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
     has_citation = bool(candidate.get("source_ref") or candidate.get("citation") or candidate.get("source_chunk_hash"))
+    if question_type == "profile_memory":
+        if memory_scope == "user_profile" or profile_memory_kind == "durable_profile":
+            if ref_type == "entity":
+                return 0.16
+            if ref_type in {"summary", "compression"}:
+                return 0.12
+            if ref_type == "segment":
+                return 0.06
+        if profile_memory_kind == "codex_outcome" and ref_type in {"entity", "summary", "compression"}:
+            return 0.10
     if ref_type == "entity":
-        profile_boost = 0.04 if str(candidate.get("memory_scope") or "") == "user_profile" else 0.0
+        profile_boost = 0.04 if memory_scope == "user_profile" else 0.0
         base_boost = 0.10 if question_type in {"current_state", "latest", "multi_hop"} else 0.06
         return base_boost + profile_boost
     if context_class in {"resource_fact", "resource_entity_fact"}:
@@ -9160,5 +9180,5 @@ def cross_session_rerank_adjustment(candidate: Json, question_type: str) -> floa
     if ref_type == "compression":
         return 0.05
     if ref_type == "summary":
-        return 0.05 if question_type == "broad_exploration" else 0.02
+        return 0.05 if question_type in {"broad_exploration", "profile_memory"} else 0.02
     return 0.0
