@@ -213,11 +213,26 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
 
 def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float, float]:
     score = float(candidate.get("score", 0.0))
+    ref_type = str(candidate.get("ref_type") or "")
+    memory_scope = str(candidate.get("memory_scope") or "").strip().lower()
+    session_continuity = str(candidate.get("session_continuity") or "").strip().lower()
+    profile_current = bool(candidate.get("profile_entity_current"))
+    try:
+        profile_revision = max(0, int(candidate.get("profile_revision") or 0))
+    except (TypeError, ValueError):
+        profile_revision = 0
+    profile_current_boost = 0.0
+    if ref_type == "entity" and memory_scope == "user_profile" and session_continuity == "cross_session":
+        if profile_current:
+            profile_current_boost = 0.10 if question_type in {"current_state", "latest", "profile_memory"} else 0.04
+        if profile_revision > 0:
+            profile_current_boost += min(0.04, 0.01 * profile_revision)
     boosted = clamp01(
         score
         + question_type_ref_boost(candidate, question_type)
         + session_continuity_boost(candidate, question_type)
         + cross_session_rerank_adjustment(candidate, question_type)
+        + profile_current_boost
     )
     token_efficiency = boosted / max(1, token_count(str(candidate.get("text", ""))))
     if candidate.get("ref_type") == "compression" and question_type in {"fact", "current_state", "multi_hop"}:
@@ -225,20 +240,26 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
         if source_count >= 2:
             token_efficiency *= 1.5
     current_state_priority = 0.0
-    if question_type in {"current_state", "latest"} and candidate.get("ref_type") == "entity":
+    if question_type in {"current_state", "latest"} and ref_type == "entity":
         entity_type = str(candidate.get("entity_type") or candidate.get("event_type") or "").strip().lower()
         profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
         if profile_memory_kind == "codex_outcome":
             current_state_priority = 1.0
         elif bool(candidate.get("profile_current_state_representative")) or bool(candidate.get("profile_current_state_boost")):
             current_state_priority = 1.0
+        elif profile_current and memory_scope == "user_profile" and session_continuity == "cross_session":
+            current_state_priority = 0.9
         elif entity_type in {"assistant_decision", "tool_evidence"}:
             current_state_priority = 0.75
-        elif str(candidate.get("memory_scope") or "") == "user_profile" and str(candidate.get("session_continuity") or "") == "cross_session":
+        elif memory_scope == "user_profile" and session_continuity == "cross_session":
             current_state_priority = 0.5
-    elif question_type == "profile_memory" and candidate.get("ref_type") == "entity":
+        if profile_current and memory_scope == "user_profile" and session_continuity == "cross_session":
+            current_state_priority += min(0.08, 0.02 + 0.01 * profile_revision)
+    elif question_type == "profile_memory" and ref_type == "entity":
         if str(candidate.get("profile_memory_kind") or "").strip().lower() in {"durable_profile", "memory_feature"}:
-            current_state_priority = 0.9
+            current_state_priority = 0.98 if profile_current else 0.9
+        elif profile_current and memory_scope == "user_profile" and session_continuity == "cross_session":
+            current_state_priority = 0.86
     return (boosted, current_state_priority, token_efficiency, score)
 
 

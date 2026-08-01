@@ -5880,12 +5880,26 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
     score = float(candidate.get("score", 0.0))
     profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
     ref_type = str(candidate.get("ref_type") or "")
+    memory_scope = str(candidate.get("memory_scope") or "").strip().lower()
+    session_continuity = str(candidate.get("session_continuity") or "").strip().lower()
+    profile_current = bool(candidate.get("profile_entity_current"))
+    try:
+        profile_revision = max(0, int(candidate.get("profile_revision") or 0))
+    except (TypeError, ValueError):
+        profile_revision = 0
     pending_async_penalty = 0.32 if is_pending_async_candidate(candidate) else 0.0
+    profile_current_boost = 0.0
+    if ref_type == "entity" and memory_scope == "user_profile" and session_continuity == "cross_session":
+        if profile_current:
+            profile_current_boost = 0.10 if question_type in {"current_state", "latest", "profile_memory"} else 0.04
+        if profile_revision > 0:
+            profile_current_boost += min(0.04, 0.01 * profile_revision)
     boosted = clamp01(
         score
         + question_type_ref_boost(candidate, question_type)
         + session_continuity_boost(candidate, question_type)
         + cross_session_rerank_adjustment(candidate, question_type)
+        + profile_current_boost
         - pending_async_penalty
     )
     token_efficiency = boosted / max(1, token_count(str(candidate.get("text", ""))))
@@ -5940,7 +5954,9 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
                 ref_priority = 0.9
             elif bool(candidate.get("profile_current_state_representative")) or bool(candidate.get("profile_current_state_boost")):
                 ref_priority = 0.75
-            elif str(candidate.get("memory_scope") or "") == "user_profile" and str(candidate.get("session_continuity") or "") == "cross_session":
+            elif profile_current and memory_scope == "user_profile" and session_continuity == "cross_session":
+                ref_priority = 0.78
+            elif memory_scope == "user_profile" and session_continuity == "cross_session":
                 ref_priority = 0.5
         elif question_type in {"evidence", "benchmark_quality"}:
             codex_outcome_terms = candidate_codex_outcome_terms(candidate)
@@ -5953,20 +5969,22 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
             elif entity_type == "assistant_decision":
                 ref_priority = 0.95 if codex_outcome_terms else 0.7
         elif question_type == "profile_memory" and profile_memory_kind in {"durable_profile", "memory_feature"}:
-            ref_priority = max(ref_priority, 0.95)
+            ref_priority = max(ref_priority, 0.98 if profile_current else 0.95)
         elif (
             question_type == "profile_memory"
-            and str(candidate.get("memory_scope") or "") == "user_profile"
-            and str(candidate.get("session_continuity") or "") == "cross_session"
+            and memory_scope == "user_profile"
+            and session_continuity == "cross_session"
         ):
-            ref_priority = max(ref_priority, 0.72)
+            ref_priority = max(ref_priority, 0.82 if profile_current else 0.72)
         if (
-            str(candidate.get("memory_scope") or "") == "user_profile"
-            and str(candidate.get("session_continuity") or "") == "cross_session"
+            memory_scope == "user_profile"
+            and session_continuity == "cross_session"
             and str(candidate.get("entity_name") or "").strip().lower() == entity_type
             and entity_type in {"assistant_decision", "tool_evidence"}
         ):
             ref_priority += 0.30 if entity_type == "assistant_decision" else 0.12
+        if profile_current and memory_scope == "user_profile" and session_continuity == "cross_session":
+            ref_priority += min(0.08, 0.02 + 0.01 * profile_revision)
     elif question_type == "profile_memory" and profile_memory_kind in {"durable_profile", "memory_feature"} and ref_type in {"summary", "compression"}:
         ref_priority = 0.82
         query_specificity = clamp01(sparse_score + min(0.35, 0.06 * keyword_score))
