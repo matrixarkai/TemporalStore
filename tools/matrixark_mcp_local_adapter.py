@@ -1627,6 +1627,11 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
         if policy_name and policy_name not in memory_selection_policy_counts:
             memory_selection_policy_counts[policy_name] = 1
     selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
+    if isinstance(selection.get("policies"), list):
+        for policy in selection.get("policies", []):
+            policy_name = str(policy or "").strip()
+            if policy_name and policy_name not in memory_selection_policy_counts:
+                memory_selection_policy_counts[policy_name] = 1
     selection_policy = str(selection.get("policy") or "").strip()
     if selection_policy and selection_policy not in memory_selection_policy_counts:
         memory_selection_policy_counts[selection_policy] = 1

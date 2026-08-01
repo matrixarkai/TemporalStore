@@ -251,6 +251,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             if isinstance(envelope_metadata.get("codex_memory_selection"), dict)
             else {}
         )
+        if isinstance(selection.get("policies"), list):
+            selection_values.extend(selection.get("policies", []))
         selection_policy = str(selection.get("policy") or "").strip()
         if selection_policy:
             selection_values.append(selection_policy)

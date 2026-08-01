@@ -3330,26 +3330,31 @@ def codex_memory_selection_metadata(*, role: str, event: str, text: str, origina
     dropped_line_count = max(0, original_line_count - line_count)
     selection_transformed = " ".join(selected_text.split()) != " ".join(original.split())
     if normalized_role == "tool":
-        policy = "selected_tool_evidence_only"
+        policies = ["selected_tool_evidence_only"]
         truncation_marker = "[tool evidence truncated]"
         max_chars = 4096
         max_lines = 80
     elif normalized_role == "assistant":
-        policy = (
-            "selected_assistant_profile_fact"
-            if selected_assistant_profile_fact_policy(selected_text or original)
-            else "selected_assistant_decision_outcome_only"
-        )
+        policies = []
+        if selected_assistant_profile_fact_policy(selected_text or original):
+            policies.append("selected_assistant_profile_fact")
+        if selected_assistant_outcome_facts(selected_text or original):
+            policies.append("selected_assistant_decision_outcome_only")
+        if not policies:
+            policies.append("selected_assistant_decision_outcome_only")
         truncation_marker = "[assistant memory truncated]"
         max_chars = 4096
         max_lines = 48
     else:
-        policy = "selected_user_prompt"
+        policies = ["selected_user_prompt"]
         truncation_marker = "[user prompt truncated]"
         max_chars = 4096
         max_lines = 64
+    policy = policies[0] if policies else ""
     return {
         "policy": policy,
+        "policies": policies,
+        "policy_counts": {policy_name: 1 for policy_name in policies},
         "source_role": normalized_role,
         "codex_event": event,
         "selected_text_chars": selected_text_chars,
@@ -4283,10 +4288,19 @@ def pending_session_buffer_lineage(records: list[Json], *, fallback_role: str, f
             source_memory_selection_policy_counts,
         )
         selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
+        selection_policy_values = []
+        if isinstance(selection.get("policies"), list):
+            selection_policy_values.extend(selection.get("policies", []))
         selection_policy = str(selection.get("policy") or "").strip()
         if selection_policy:
-            source_memory_selection_policies.append(selection_policy)
-            add_count(source_memory_selection_policy_counts, selection_policy)
+            selection_policy_values.append(selection_policy)
+        seen_selection_policy_values: set[str] = set()
+        for selection_policy_value in selection_policy_values:
+            selection_policy_name = str(selection_policy_value or "").strip()
+            if selection_policy_name and selection_policy_name not in seen_selection_policy_values:
+                seen_selection_policy_values.add(selection_policy_name)
+                source_memory_selection_policies.append(selection_policy_name)
+                add_count(source_memory_selection_policy_counts, selection_policy_name)
 
     if not source_roles and fallback_role:
         source_roles.append(fallback_role)
@@ -4371,10 +4385,20 @@ def fast_async_hook_ingest(
         text=text,
         original_text=original_text,
     )
-    source_memory_selection_policies = [str(selection_metadata["policy"])] if selection_metadata.get("policy") else []
+    selection_policy_values = []
+    if isinstance(selection_metadata.get("policies"), list):
+        selection_policy_values.extend(selection_metadata.get("policies", []))
+    if selection_metadata.get("policy"):
+        selection_policy_values.append(selection_metadata.get("policy"))
+    source_memory_selection_policies = []
+    for selection_policy_value in selection_policy_values:
+        selection_policy_name = str(selection_policy_value or "").strip()
+        if selection_policy_name and selection_policy_name not in source_memory_selection_policies:
+            source_memory_selection_policies.append(selection_policy_name)
     source_memory_selection_policy_counts = {
-        str(selection_metadata["policy"]): 1,
-    } if selection_metadata.get("policy") else {}
+        policy_name: 1
+        for policy_name in source_memory_selection_policies
+    }
     metadata: Json = codex_hook_metadata(
         source="codex_hook_fast_async",
         event=args.event,
