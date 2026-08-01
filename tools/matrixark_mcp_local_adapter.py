@@ -8688,6 +8688,28 @@ class MatrixArkLocalAdapter:
                     event_index_write_count += 1
             event_records_to_append = indexed_event_records
 
+        def source_event_ids_for_entity(entity: Json) -> list[int]:
+            refs = entity.get("source_refs") if isinstance(entity.get("source_refs"), list) else []
+            resolved: list[int] = []
+            source_event_id_set = {int(value) for value in source_event_ids if value is not None}
+            for ref in refs:
+                ref_text = str(ref or "").strip()
+                if not ref_text:
+                    continue
+                try:
+                    ref_value = int(ref_text)
+                except (TypeError, ValueError):
+                    continue
+                if source_event_id_set and ref_value in source_event_id_set:
+                    resolved.append(ref_value)
+                    continue
+                if not source_event_id_set and 0 <= ref_value < len(event_hashes):
+                    resolved.append(int(event_hashes[ref_value]))
+                    continue
+                if source_event_id_set and 0 <= ref_value < len(source_event_ids):
+                    resolved.append(int(source_event_ids[ref_value]))
+            return ordered_unique_any(resolved) or list(source_event_ids or event_hashes)
+
         profile_scope = {
             key: value
             for key, value in envelope["scope"].items()
@@ -8761,6 +8783,7 @@ class MatrixArkLocalAdapter:
                 entity_source_roles = source_roles
             if not entity_source_role_counts:
                 entity_source_role_counts = source_role_counts
+            entity_source_event_ids = source_event_ids_for_entity(entity)
             entity_type_counts[updated_entity["entity_type"]] = int(entity_type_counts.get(updated_entity["entity_type"], 0)) + 1
             entity_hashes.append(entity_hash)
             session_profile_memory_class = profile_memory_class_for_entity_type(updated_entity.get("entity_type"))
@@ -8782,7 +8805,7 @@ class MatrixArkLocalAdapter:
                 "confidence": updated_entity["confidence"],
                 "operator": updated_entity["operator"],
                 "source_refs": updated_entity["source_refs"],
-                "source_event_ids": source_event_ids,
+                "source_event_ids": entity_source_event_ids,
                 "source_roles": entity_source_roles,
                 "source_role_counts": entity_source_role_counts,
                 "source_hook_types": source_hook_types,
@@ -8861,7 +8884,7 @@ class MatrixArkLocalAdapter:
                     "entity_name": updated_entity["entity_name"],
                     "profile_memory_class": session_profile_memory_class,
                     "profile_memory_kind": session_profile_memory_kind,
-                    "source_event_ids": source_event_ids,
+                    "source_event_ids": entity_source_event_ids,
                     "source_roles": entity_source_roles,
                     "source_role_counts": entity_source_role_counts,
                     "source_hook_types": source_hook_types,
@@ -8930,7 +8953,7 @@ class MatrixArkLocalAdapter:
                     list(previous_profile.get("source_refs", [])) + list(promoted_entity.get("source_refs", []))
                 )
                 profile_source_event_ids = ordered_unique_any(
-                    list(previous_profile.get("source_event_ids", [])) + source_event_ids
+                    list(previous_profile.get("source_event_ids", [])) + entity_source_event_ids
                 )
                 profile_source_roles = ordered_unique_any(
                     list(previous_profile.get("source_roles", [])) + entity_source_roles
