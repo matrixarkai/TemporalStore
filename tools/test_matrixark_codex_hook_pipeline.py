@@ -3789,6 +3789,47 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(5, removed_tokens)
         self.assertEqual(1, dropped["pending_async_event_superseded_by_extracted_refs"])
 
+    def test_pending_async_cleanup_suppresses_feature_memory_pending_event(self) -> None:
+        represented_feature_pending = {
+            "ref_type": "event",
+            "ref_hash": 901,
+            "event_type": "memory_feature",
+            "classification": "PENDING_ASYNC_EXTRACTION",
+            "extraction_status": "pending",
+            "extraction_mode": "async_pending",
+            "extraction_phase": "pending_async",
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "profile_memory_kind": "memory_feature",
+            "profile_memory_class": "memory_feature",
+            "token_estimate": 8,
+            "text": "user: focus on OpenViking-style profile memory features",
+        }
+        profile_entity = {
+            "ref_type": "entity",
+            "ref_hash": 902,
+            "entity_type": "memory_feature_profile",
+            "entity_name": "memory_feature_profile",
+            "memory_scope": "user_profile",
+            "session_continuity": "cross_session",
+            "profile_memory_kind": "memory_feature",
+            "profile_memory_class": "memory_feature",
+            "source_event_ids": [901],
+            "token_estimate": 7,
+            "text": "memory_feature_profile: focus on OpenViking-style profile memory features",
+        }
+        dropped: dict = {}
+
+        self.assertEqual("pending_async_memory_feature_event", candidate_memory_layer_name(represented_feature_pending))
+        selected, removed_tokens = suppress_extracted_represented_pending_events(
+            [represented_feature_pending, profile_entity],
+            dropped,
+        )
+
+        self.assertEqual([902], [item["ref_hash"] for item in selected])
+        self.assertEqual(8, removed_tokens)
+        self.assertEqual(1, dropped["pending_async_event_superseded_by_extracted_refs"])
+
     def test_profile_entity_cleanup_suppresses_shadowed_same_session_entity(self) -> None:
         session_entity = {
             "ref_type": "entity",
