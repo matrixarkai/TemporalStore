@@ -6466,8 +6466,9 @@ def select_token_budgeted_refs(
             normalized_extraction_phase_budget_tokens[phase_name] = budget_tokens
     extraction_phase_used_tokens: Json = {phase: 0 for phase in normalized_extraction_phase_budget_tokens}
     extraction_phase_selected_ref_counts: Json = {phase: 0 for phase in normalized_extraction_phase_budget_tokens}
+    profile_entity_bridge_layers = {"profile_entity", "cross_session_codex_outcome_entity"}
     summary_profile_entity_floor_enabled = bool(
-        normalized_memory_layer_budget_tokens.get("profile_entity")
+        any(normalized_memory_layer_budget_tokens.get(layer) for layer in profile_entity_bridge_layers)
         and any(
             normalized_memory_layer_budget_tokens.get(layer)
             for layer in ["summary", "profile_summary", "same_session_summary", "cross_session_summary"]
@@ -6479,14 +6480,15 @@ def select_token_budgeted_refs(
     )
 
     def profile_entity_floor_satisfied() -> bool:
-        return int(memory_layer_selected_ref_counts.get("profile_entity", 0) or 0) > 0 or any(
-            candidate_memory_layer_name(item) == "profile_entity"
+        return any(int(memory_layer_selected_ref_counts.get(layer, 0) or 0) > 0 for layer in profile_entity_bridge_layers) or any(
+            candidate_memory_layer_name(item) in profile_entity_bridge_layers
             for item in selected
         )
 
-    def remaining_profile_entity_candidate_exists(start_index: int) -> bool:
+    def remaining_profile_entity_floor_layer(start_index: int) -> str:
         for remaining in candidates[start_index:]:
-            if candidate_memory_layer_name(remaining) != "profile_entity":
+            remaining_layer = candidate_memory_layer_name(remaining)
+            if remaining_layer not in profile_entity_bridge_layers:
                 continue
             try:
                 remaining_score = float(remaining.get("score", 0.0))
@@ -6501,8 +6503,8 @@ def select_token_budgeted_refs(
                 continue
             if remaining.get("session_continuity") == "cross_session" and not cross_enabled:
                 continue
-            return True
-        return False
+            return remaining_layer
+        return ""
 
     def candidate_source_role_names(candidate: Json) -> set[str]:
         role_names: set[str] = set()
@@ -6835,7 +6837,7 @@ def select_token_budgeted_refs(
             )
             or (
                 cross_session_profile_entity_floor_enabled
-                and candidate_memory_layer != "profile_entity"
+                and candidate_memory_layer not in profile_entity_bridge_layers
                 and not (
                     selected_ref_cap > 1
                     and
@@ -6844,10 +6846,11 @@ def select_token_budgeted_refs(
                 )
             )
         )
+        reserved_profile_layer = remaining_profile_entity_floor_layer(index + 1)
         if (
             should_reserve_profile_entity_floor
             and not profile_entity_floor_satisfied()
-            and remaining_profile_entity_candidate_exists(index + 1)
+            and reserved_profile_layer
         ):
             dropped["memory_layer_floor"] += 1
             dropped["estimated_tokens"]["memory_layer_floor"] += ref_tokens
@@ -6857,7 +6860,7 @@ def select_token_budgeted_refs(
                     **candidate,
                     "budget_memory_layer": candidate_memory_layer,
                     "memory_layer_budget_capped_layer": candidate_memory_layer,
-                    "memory_layer_floor_reserved_layer": "profile_entity",
+                    "memory_layer_floor_reserved_layer": reserved_profile_layer,
                 },
                 reason="memory_layer_floor",
                 token_estimate=ref_tokens,
