@@ -67,6 +67,21 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_retrieve_request import pre_retrieval_idle_commit_flush
 
+try:
+    from tools.matrixark_mcp_retrieve_pre_refresh import (
+        auto_extraction_phase_budget_tokens as shared_auto_extraction_phase_budget_tokens,
+        auto_memory_layer_budget_tokens as shared_auto_memory_layer_budget_tokens,
+        auto_memory_selection_policy_budget_tokens as shared_auto_memory_selection_policy_budget_tokens,
+        pre_retrieval_summary_refresh_memory_layer_budget_tokens as shared_pre_retrieval_summary_refresh_memory_layer_budget_tokens,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieve_pre_refresh import (
+        auto_extraction_phase_budget_tokens as shared_auto_extraction_phase_budget_tokens,
+        auto_memory_layer_budget_tokens as shared_auto_memory_layer_budget_tokens,
+        auto_memory_selection_policy_budget_tokens as shared_auto_memory_selection_policy_budget_tokens,
+        pre_retrieval_summary_refresh_memory_layer_budget_tokens as shared_pre_retrieval_summary_refresh_memory_layer_budget_tokens,
+    )
+
 RETRIEVAL_HOT_RECORD_TYPES = {
     "context_compression_event",
     "context_embedding",
@@ -1536,6 +1551,68 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
         for layer, fraction in fractions.items()
         if fraction > 0.0
     }, mode
+
+
+def auto_memory_selection_policy_budget_tokens(
+    args: Json,
+    ranking: Json,
+    *,
+    remote_budget_tokens: int,
+    question_type: str = "fact",
+) -> tuple[Json, str]:
+    return shared_auto_memory_selection_policy_budget_tokens(
+        args,
+        ranking,
+        remote_budget_tokens=remote_budget_tokens,
+        question_type=question_type,
+    )
+
+
+def auto_memory_layer_budget_tokens(
+    args: Json,
+    ranking: Json,
+    *,
+    remote_budget_tokens: int,
+    question_type: str = "fact",
+) -> tuple[Json, str]:
+    return shared_auto_memory_layer_budget_tokens(
+        args,
+        ranking,
+        remote_budget_tokens=remote_budget_tokens,
+        question_type=question_type,
+    )
+
+
+def auto_extraction_phase_budget_tokens(
+    args: Json,
+    ranking: Json,
+    *,
+    remote_budget_tokens: int,
+    question_type: str = "fact",
+) -> tuple[Json, str]:
+    return shared_auto_extraction_phase_budget_tokens(
+        args,
+        ranking,
+        remote_budget_tokens=remote_budget_tokens,
+        question_type=question_type,
+    )
+
+
+def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
+    *,
+    remote_budget_tokens: int,
+    question_type: str = "fact",
+    outcome_query: bool = False,
+    args: Json | None = None,
+    ranking: Json | None = None,
+) -> tuple[Json, str]:
+    del outcome_query
+    return shared_pre_retrieval_summary_refresh_memory_layer_budget_tokens(
+        remote_budget_tokens=remote_budget_tokens,
+        question_type=question_type,
+        args=args,
+        ranking=ranking,
+    )
 
 
 def pre_retrieval_summary_refresh_enabled(args: Json, ranking: Json) -> bool:

@@ -1519,6 +1519,38 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(local_phase_budget, helper_phase_budget)
         self.assertEqual({"pending_async": 12, "provisional": 25, "final": 70}, helper_phase_budget)
 
+    def test_local_adapter_uses_moduleized_feature_profile_pre_refresh_budget(self) -> None:
+        helper_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pre_refresh")
+        local_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
+
+        args = {
+            "query": "OpenViking feature-focused profile memory threshold extraction",
+            "memory_layer_budget_mode": "auto",
+        }
+        ranking = {"query": "feature profile memory across sessions"}
+
+        helper_budget, helper_mode = helper_mod.pre_retrieval_summary_refresh_memory_layer_budget_tokens(
+            remote_budget_tokens=100,
+            question_type="profile_memory",
+            args=args,
+            ranking=ranking,
+        )
+        local_budget, local_mode = local_mod.pre_retrieval_summary_refresh_memory_layer_budget_tokens(
+            remote_budget_tokens=100,
+            question_type="profile_memory",
+            outcome_query=False,
+            args=args,
+            ranking=ranking,
+        )
+
+        self.assertEqual("pre_retrieval_summary_refresh_feature_profile_memory", helper_mode)
+        self.assertEqual(helper_mode, local_mode)
+        self.assertEqual(helper_budget, local_budget)
+        self.assertEqual(65, local_budget["profile_entity"])
+        self.assertEqual(75, local_budget["cross_session_memory_feature_entity"])
+        self.assertEqual(75, local_budget["cross_session_memory_feature_summary"])
+        self.assertEqual(75, local_budget["cross_session_memory_feature_compression"])
+
     def test_moduleized_memory_selection_budget_infers_from_related_auto_modes(self) -> None:
         helper_mod = importlib.import_module("tools.matrixark_mcp_retrieve_pre_refresh")
         local_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
