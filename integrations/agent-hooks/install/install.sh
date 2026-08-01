@@ -17,7 +17,7 @@ USER_ID="${MATRIXARK_USER_ID:-${USER:-local_user}}"
 
 usage() {
   cat <<USAGE
-Usage: install.sh [--agent codex|claude|generic] [--mode dry-run|wsl|native|remote|docker]
+Usage: install.sh [--agent codex|claude|both|generic] [--mode dry-run|wsl|native|remote|docker]
                   [--dest PATH] [--node PATH] [--codex-bin PATH]
                   [--claude-settings PATH] [--endpoint URL]
                   [--repo PATH] [--wsl-repo PATH] [--skip-codex-add]
@@ -110,24 +110,41 @@ NODE
 
 install_claude() {
   mkdir -p "$(dirname "$CLAUDE_SETTINGS")"
-  local launcher="$DEST/scripts/temporalstore_hook_launcher.mjs"
-  CLAUDE_SETTINGS="$CLAUDE_SETTINGS" NODE_BIN="$NODE_BIN" LAUNCHER="$launcher" node - <<'NODE'
+  # Claude Code's context hook is the shell wrapper in the repo tools/ dir; it drives
+  # the same ingestion/extraction/retrieval pipeline as the Codex hook, as agent
+  # "claude". Register the full Claude Code lifecycle.
+  local hook="$REPO/tools/matrixark_claude_hook.sh"
+  CLAUDE_SETTINGS="$CLAUDE_SETTINGS" HOOK="$hook" node - <<'NODE'
 const fs = require('fs');
 const file = process.env.CLAUDE_SETTINGS;
+const hook = process.env.HOOK;
 let data = {};
-if (fs.existsSync(file)) data = JSON.parse(fs.readFileSync(file, 'utf8'));
+if (fs.existsSync(file)) { try { data = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { data = {}; } }
 data.hooks ||= {};
-for (const event of ['UserPromptSubmit', 'Stop']) {
-  data.hooks[event] = [{ hooks: [{ type: 'command', command: `"${process.env.NODE_BIN}" "${process.env.LAUNCHER}" ${event}` }] }];
-}
+const cmd = (event) => `bash "${hook}" --event ${event}`;
+const entry = (event, timeout, matcher) => {
+  const e = { hooks: [{ type: 'command', command: cmd(event), timeout }] };
+  if (matcher) e.matcher = matcher;
+  return [e];
+};
+// UserPromptSubmit runs under a 30s budget; the rest have generous budgets.
+data.hooks.SessionStart = entry('SessionStart', 600);
+data.hooks.UserPromptSubmit = entry('UserPromptSubmit', 30);
+data.hooks.PostToolUse = entry('PostToolUse', 120, '*');
+data.hooks.Stop = entry('Stop', 120);
+data.hooks.SubagentStop = entry('SubagentStop', 120);
+data.hooks.PreCompact = entry('PreCompact', 120);
+data.hooks.SessionEnd = entry('SessionEnd', 120);
 fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
 NODE
-  echo "Claude settings updated: $CLAUDE_SETTINGS"
+  chmod +x "$hook" 2>/dev/null || true
+  echo "Claude settings updated (full lifecycle -> $hook): $CLAUDE_SETTINGS"
 }
 
 case "$AGENT" in
   codex) install_codex ;;
   claude) install_claude ;;
+  both) install_codex; install_claude ;;
   generic) echo "Generic hook launcher installed to: $DEST" ;;
   *) echo "unsupported agent: $AGENT" >&2; exit 2 ;;
 esac

@@ -149,7 +149,7 @@ fn main() {
             max_summary_nodes: 16,
             max_event_nodes: 8,
             prefer_current_agent: false,
-            current_agent_scope_key: "agent:codex".to_string(),
+            current_agent_scope_key: format!("agent:{}", agent_profile(&args.agent_name)),
             provider: ContextModelProviderConfig::default(),
         };
         let inject = inject_context(
@@ -175,6 +175,10 @@ fn main() {
             "used_context_tokens": inject.audit.selected_tokens,
             "injected_prompt_contains_context": inject.injected_prompt.contains("<context>"),
             "selected_refs": inject.audit.selected_refs,
+            "additional_context": additional_context_from_injected(
+                &inject.injected_prompt,
+                additional_context_char_limit(),
+            ),
         });
     }
 
@@ -279,10 +283,13 @@ fn read_payload() -> Value {
     io::stdin()
         .read_to_string(&mut raw)
         .expect("stdin should be readable");
-    if raw.trim().is_empty() {
+    // Strip a leading UTF-8 BOM (common when hook stdin originates from Windows
+    // tooling) so the JSON parses instead of falling back to a raw-text blob.
+    let raw = raw.trim_start_matches('\u{feff}').trim();
+    if raw.is_empty() {
         return Value::Object(Default::default());
     }
-    serde_json::from_str(&raw).unwrap_or_else(|_| json!({ "raw_text": raw }))
+    serde_json::from_str(raw).unwrap_or_else(|_| json!({ "raw_text": raw }))
 }
 
 fn payload_text(payload: &Value) -> Option<String> {
@@ -305,6 +312,17 @@ fn payload_text(payload: &Value) -> Option<String> {
         &["conversation", "last_message"][..],
         &["cursor", "prompt"][..],
         &["claude", "prompt"][..],
+        // LLM response / assistant-message keys (captured on Stop/SubagentStop) so the
+        // model's answer is ingested as clean text, not the raw hook JSON blob.
+        &["last_assistant_message"][..],
+        &["lastAssistantMessage"][..],
+        &["assistant_message"][..],
+        &["assistantMessage"][..],
+        &["last_agent_message"][..],
+        &["final_answer"][..],
+        &["finalAnswer"][..],
+        &["response"][..],
+        &["output"][..],
         &["raw_text"][..],
     ] {
         if let Some(value) = string_at(payload, path) {
@@ -438,6 +456,33 @@ fn env_bool(name: &str) -> bool {
     )
 }
 
+fn additional_context_char_limit() -> usize {
+    std::env::var("MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(40_000)
+}
+
+/// Extract the retrieved `<context>...</context>` block from the injected prompt so
+/// an agent launcher (e.g. the Claude Code hook) can surface it as
+/// `hookSpecificOutput.additionalContext`. Returns an empty string when no context
+/// block was injected. Truncated to `limit` characters.
+fn additional_context_from_injected(injected: &str, limit: usize) -> String {
+    let block = match (injected.find("<context>"), injected.rfind("</context>")) {
+        (Some(start), Some(end)) if end >= start => {
+            let end = (end + "</context>".len()).min(injected.len());
+            injected[start..end].to_string()
+        }
+        _ => String::new(),
+    };
+    if block.chars().count() <= limit {
+        block
+    } else {
+        block.chars().take(limit).collect()
+    }
+}
+
 fn append_event_log(path: Option<&PathBuf>, enabled: bool, report: &Value) {
     if !enabled {
         return;
@@ -561,5 +606,36 @@ mod tests {
         let written = fs::read_to_string(&path).expect("debug event log should be written");
         assert!(written.contains("UserPromptSubmit"));
         let _ = fs::remove_file(&path);
+    }
+
+    // shared-corpus: codex_mcp_multi_agent_context_hook_parity
+    #[test]
+    fn payload_text_captures_llm_response_on_stop() {
+        let stop = json!({
+            "hook_event_name": "Stop",
+            "session_id": "s1",
+            "last_assistant_message": "The deploy runbook lives in docs/deploy.md."
+        });
+        assert_eq!(
+            payload_text(&stop).as_deref(),
+            Some("The deploy runbook lives in docs/deploy.md.")
+        );
+    }
+
+    // shared-corpus: codex_mcp_multi_agent_context_hook_parity
+    #[test]
+    fn additional_context_extracts_context_block_for_injection() {
+        let injected =
+            "Answer this.\n<context>\nRetrieved: Claude owns the release checklist.\n</context>";
+        assert_eq!(
+            additional_context_from_injected(injected, 40_000),
+            "<context>\nRetrieved: Claude owns the release checklist.\n</context>"
+        );
+        assert_eq!(
+            additional_context_from_injected("plain prompt, no context", 40_000),
+            ""
+        );
+        let big = format!("<context>{}</context>", "x".repeat(100));
+        assert_eq!(additional_context_from_injected(&big, 10).chars().count(), 10);
     }
 }

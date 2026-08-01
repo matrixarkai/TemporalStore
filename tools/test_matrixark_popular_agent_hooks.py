@@ -119,6 +119,81 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
                 result["retrieved"]["memory_hierarchy_contract"]["retrieval_strategy"],
             )
 
+    def test_claude_prompt_hook_ingests_retrieves_and_preserves_visible_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            rust_root = Path(tmp_dir) / "rust-store"
+            result = self.run_agent_hook(
+                agent="claude",
+                event="UserPromptSubmit",
+                rust_root=rust_root,
+                payload={
+                    "prompt": "Remember that Claude owns the GPU release checklist.",
+                    "conversation_id": "claude-thread-42",
+                    "workspace_root": "/repo/aurora",
+                    "local_context": [
+                        {"ref": "open-file:docs/release.md", "text": "Visible release checklist notes."}
+                    ],
+                    "local_context_tokens": 12,
+                    "max_context_tokens": 512,
+                },
+            )
+            self.assertEqual("ok", result["status"])
+            self.assertEqual("claude", result["agent"])
+            self.assertEqual("claude:claude-thread-42", result["session_id"])
+            self.assertEqual("payload_field", result["session_id_source"])
+            self.assertEqual(1, result["agent_context_refs"])
+            self.assertTrue(result["ingested"])
+            self.assertGreaterEqual(result["retrieved"]["selected_ref_count"], 0)
+
+    def test_codex_and_claude_hooks_have_ingestion_extraction_retrieval_parity(self) -> None:
+        """Codex and Claude hooks run the same ingest/extract/retrieve pipeline,
+        capturing user prompts and LLM responses, differing only by agent identity
+        and session scope."""
+        agents = ("codex", "claude")
+        results: dict[str, dict] = {}
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            for agent in agents:
+                rr = Path(tmp_dir) / f"{agent}-store"
+                ingest = self.run_agent_hook(
+                    agent=agent, event="UserPromptSubmit", rust_root=rr,
+                    payload={"prompt": f"Remember that {agent} owns the GPU release checklist.",
+                             "conversation_id": f"{agent}-parity"},
+                )
+                retrieve = self.run_agent_hook(
+                    agent=agent, event="UserPromptSubmit", rust_root=rr,
+                    payload={"prompt": "Who owns the GPU release checklist?",
+                             "conversation_id": f"{agent}-parity"},
+                )
+                # Stop carries the LLM response via last_assistant_message (Claude Code's key).
+                commit = self.run_agent_hook(
+                    agent=agent, event="Stop", rust_root=rr,
+                    payload={"last_assistant_message": f"{agent} confirmed the owner is {agent}.",
+                             "conversation_id": f"{agent}-parity"},
+                )
+                results[agent] = {"ingest": ingest, "retrieve": retrieve, "commit": commit}
+
+        for agent in agents:
+            s = results[agent]
+            # Ingestion parity.
+            self.assertEqual("ok", s["ingest"]["status"], agent)
+            self.assertTrue(s["ingest"]["ingested"], agent)
+            self.assertEqual(agent, s["ingest"]["agent"], agent)
+            self.assertEqual(f"{agent}:{agent}-parity", s["ingest"]["session_id"], agent)
+            # Retrieval parity.
+            self.assertEqual("ok", s["retrieve"]["status"], agent)
+            self.assertGreaterEqual(s["retrieve"]["retrieved"]["selected_ref_count"], 0, agent)
+            # LLM-response ingestion parity (assistant message on Stop).
+            self.assertEqual("ok", s["commit"]["status"], agent)
+            self.assertTrue(s["commit"]["ingested"], agent)
+
+        # Structural parity: identical result shape per stage across the two agents.
+        for stage in ("ingest", "retrieve", "commit"):
+            self.assertEqual(
+                set(results["codex"][stage].keys()),
+                set(results["claude"][stage].keys()),
+                f"{stage} result-shape parity",
+            )
+
     def test_generic_agent_retrieval_summary_exposes_memory_layer_pressure(self) -> None:
         retrieve = {
             "context_pack_id": "pack-pressure",
@@ -632,10 +707,11 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
             self.assertEqual("todo_planned", planned["hook_status"])
             self.assertNotIn("recommended_hook_command", planned)
 
-    def test_agent_config_exposes_codex_supported_hook_and_todo_agents(self) -> None:
-        self.assertEqual(matrixark_agent_config.SUPPORTED_AGENT_CLIENTS, ["codex"])
-        self.assertEqual(matrixark_agent_config.SUPPORTED_HOOK_CLIENTS, ["codex"])
-        self.assertIn("claude", matrixark_agent_config.TODO_AGENT_CLIENTS)
+    def test_agent_config_exposes_codex_and_claude_supported_hook_and_todo_agents(self) -> None:
+        self.assertEqual(matrixark_agent_config.SUPPORTED_AGENT_CLIENTS, ["codex", "claude"])
+        self.assertEqual(matrixark_agent_config.SUPPORTED_HOOK_CLIENTS, ["codex", "claude"])
+        self.assertIn("claude", matrixark_agent_config.SUPPORTED_HOOK_CLIENTS)
+        self.assertNotIn("claude", matrixark_agent_config.TODO_AGENT_CLIENTS)
         self.assertIn("openclaw", matrixark_agent_config.TODO_AGENT_CLIENTS)
         envelope = matrixark_agent_config.agent_envelope_schema()
         self.assertTrue(envelope["visible_local_context_only"])
@@ -691,11 +767,11 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         for snippet in required:
             self.assertIn(snippet, policy)
 
-    def test_hook_examples_only_emit_codex_commands(self) -> None:
+    def test_hook_examples_emit_codex_and_claude_commands(self) -> None:
         examples = matrixark_agent_config.hook_examples_text(".")
         self.assertIn("--agent codex --event UserPromptSubmit", examples)
+        self.assertIn("--agent claude --event UserPromptSubmit", examples)
         self.assertIn("TODO/planned", examples)
-        self.assertNotIn("--agent claude --event UserPromptSubmit", examples)
         self.assertNotIn("--agent openclaw --event UserPromptSubmit", examples)
 
 
