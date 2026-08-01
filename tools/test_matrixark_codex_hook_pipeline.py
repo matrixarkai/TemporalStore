@@ -3847,7 +3847,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(
                 any(
                     ref.get("ref_type") == "event"
-                    and ref.get("event_type") == "pending_async"
+                    and ref.get("event_type") == "user_prompt"
+                    and ref.get("memory_layer") == "pending_async_event"
                     and ref.get("memory_scope") == "session"
                     and ref.get("session_continuity") == "same_session"
                     and "phoenix quartz" in str(ref.get("text") or "")
@@ -3858,11 +3859,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             pending_ref = next(
                 ref
                 for ref in pack["selected_refs"]
-                if ref.get("ref_type") == "event" and ref.get("event_type") == "pending_async"
+                if ref.get("ref_type") == "event" and ref.get("memory_layer") == "pending_async_event"
             )
-            self.assertEqual("pending_async_memory_feature_event", candidate_memory_layer_name(pending_ref))
+            self.assertEqual("pending_async_event", candidate_memory_layer_name(pending_ref))
             budget = pack["recall_policy"]["memory_layer_budget"]
-            self.assertGreaterEqual(budget["by_memory_layer"]["pending_async_memory_feature_event"]["refs"], 1)
+            self.assertGreaterEqual(budget["by_memory_layer"]["pending_async_event"]["refs"], 1)
             self.assertGreaterEqual(budget["by_extraction_phase"]["pending_async"]["refs"], 1)
             self.assertIn("selected_pending_async_event_refs:1", pack["quality_warnings"])
             self.assertEqual(1, pack["recall_policy"]["selected_pending_async"]["selected_ref_count"])
@@ -3912,7 +3913,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 for ref in compact_pack["selected_refs"]
                 if ref.get("ref_type") == "event" and "phoenix quartz" in str(ref.get("text") or "")
             )
-            self.assertEqual("pending_async", compact_ref["event_type"])
+            self.assertEqual("user_prompt", compact_ref["event_type"])
+            self.assertEqual("pending_async_event", compact_ref["memory_layer"])
             self.assertIn("selected_pending_async_event_refs:1", compact_pack["quality_warnings"])
             self.assertNotIn("retrieval_metrics", compact_pack)
             self.assertNotIn("matched_index_terms", compact_ref)
@@ -11608,11 +11610,81 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 if ref.get("ref_type") == "event" and "obsidian lantern" in str(ref.get("text") or "")
             ]
             self.assertTrue(event_refs, pack["selected_refs"])
-            self.assertEqual("pending_async", event_refs[0]["event_type"])
+            self.assertEqual("user_prompt", event_refs[0]["event_type"])
             self.assertEqual("pending_async_event", event_refs[0]["memory_layer"])
             self.assertEqual("session", event_refs[0]["memory_scope"])
             self.assertEqual("same_session", event_refs[0]["session_continuity"])
             self.assertEqual("pending_async_event", candidate_memory_layer_name(event_refs[0]))
+
+    def test_lightweight_async_assistant_and_tool_pending_events_keep_semantic_types(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-lightweight-pending-role-types.jsonl")
+            base_scope = {
+                "account_id": "acct_lightweight_pending_roles",
+                "tenant_id": "tenant_lightweight_pending_roles",
+                "user_id": "user_lightweight_pending_roles",
+            }
+            cases = [
+                (
+                    "assistant",
+                    "after_llm",
+                    "Stop",
+                    "Decision: use riverstone adapter for profile extraction marker cobalt compass.",
+                    "What assistant decision mentions cobalt compass?",
+                    "assistant_response",
+                    "cobalt compass",
+                ),
+                (
+                    "tool",
+                    "tool_result",
+                    "ToolResult",
+                    "Exit code: 0; validation passed for marker silver anvil.",
+                    "What tool evidence mentions silver anvil?",
+                    "tool_evidence",
+                    "silver anvil",
+                ),
+            ]
+            for role, hook_type, codex_event, text, query, event_type, marker in cases:
+                with self.subTest(role=role):
+                    scope = {**base_scope, "session_id": f"session_lightweight_pending_{role}"}
+                    result = adapter.ingest(
+                        {
+                            "scope": scope,
+                            "async_processing": True,
+                            "auto_batch_extract": True,
+                            "session_buffer_threshold": 20,
+                            "idle_commit_timeout_ms": 60000,
+                            "skip_prior_context": True,
+                            "messages": [{"role": role, "content": text}],
+                            "metadata": {"hook_type": hook_type, "codex_event": codex_event},
+                        }
+                    )
+                    self.assertEqual("accepted", result["status"])
+
+                    pack = adapter.retrieve(
+                        {
+                            "scope": scope,
+                            "query": query,
+                            "max_context_tokens": 260,
+                            "audit_mode": "off",
+                            "ranking": {
+                                "max_selected_refs": 6,
+                                "min_similarity_score": 0.0,
+                                "budget_fill_policy": "force_fill",
+                            },
+                        }
+                    )
+
+                    event_refs = [
+                        ref
+                        for ref in pack["selected_refs"]
+                        if ref.get("ref_type") == "event" and marker in str(ref.get("text") or "")
+                    ]
+                    self.assertTrue(event_refs, pack["selected_refs"])
+                    self.assertEqual(event_type, event_refs[0]["event_type"])
+                    self.assertEqual("pending_async_event", event_refs[0]["memory_layer"])
+                    self.assertEqual("session", event_refs[0]["memory_scope"])
+                    self.assertEqual("same_session", event_refs[0]["session_continuity"])
 
     def test_lightweight_async_ingest_reports_idle_commit_as_auto_batch_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

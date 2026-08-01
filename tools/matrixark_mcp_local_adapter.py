@@ -11649,7 +11649,7 @@ class MatrixArkLocalAdapter:
             embedding_score = cosine(query_embedding, event_embedding_vectors.get(record["event_id_hash"], []))
             node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
             origin_score = hybrid_origin_score(query_terms, text, embedding_score, node_score)
-            event_type = "pending_async" if is_pending_async_event else raw_event_type
+            event_type = raw_event_type or ("pending_async" if is_pending_async_event else "")
             candidate_metadata: Json = {}
             record_metadata = record.get("metadata")
             envelope_metadata = envelope.get("metadata")
@@ -11657,8 +11657,6 @@ class MatrixArkLocalAdapter:
                 candidate_metadata.update(record_metadata)
             if isinstance(envelope_metadata, dict):
                 candidate_metadata.update(envelope_metadata)
-            if is_pending_async_event and raw_event_type and raw_event_type != "pending_async":
-                candidate_metadata.setdefault("semantic_event_type", raw_event_type)
             internal_extraction = record.get("internal_extraction") if isinstance(record.get("internal_extraction"), dict) else {}
             candidate = {
                 "ref_type": "event",
@@ -11677,6 +11675,8 @@ class MatrixArkLocalAdapter:
                     else "selected by tree path, secondary indexes, and event hybrid score"
                 ),
                 "event_type": event_type,
+                "batch_event_type": record.get("batch_event_type", "") if is_pending_async_event else "",
+                "memory_layer": "pending_async_event" if is_pending_async_event else "",
                 "classification": record.get("classification", ""),
                 "extraction_status": record.get("status", ""),
                 "extraction_mode": internal_extraction.get("mode", ""),
