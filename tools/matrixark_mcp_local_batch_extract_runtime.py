@@ -389,6 +389,33 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             entity_name=entity["entity_name"],
         )
         updated_entity = apply_entity_patches(previous_entity, entity)
+        entity_source_roles = (
+            ordered_unique_any(
+                [
+                    normalize_message_role(value)
+                    for value in entity.get("source_roles", [])
+                    if normalize_message_role(value)
+                ]
+            )
+            if isinstance(entity.get("source_roles"), list)
+            else source_roles
+        )
+        entity_source_role_counts: Json = {}
+        if isinstance(entity.get("source_role_counts"), dict):
+            for role, count in entity.get("source_role_counts", {}).items():
+                role_name = normalize_message_role(role)
+                if not role_name:
+                    continue
+                try:
+                    amount = max(0, int(count or 0))
+                except (TypeError, ValueError):
+                    amount = 0
+                if amount > 0:
+                    entity_source_role_counts[role_name] = amount
+        if not entity_source_roles:
+            entity_source_roles = source_roles
+        if not entity_source_role_counts:
+            entity_source_role_counts = source_role_counts
         entity_hashes.append(entity_hash)
         session_entity_record = {
             "record_type": "context_entity",
@@ -406,8 +433,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             "operator": updated_entity["operator"],
             "source_refs": updated_entity["source_refs"],
             "source_event_ids": source_event_ids,
-            "source_roles": source_roles,
-            "source_role_counts": source_role_counts,
+            "source_roles": entity_source_roles,
+            "source_role_counts": entity_source_role_counts,
             "source_hook_types": source_hook_types,
             "source_hook_type_counts": source_hook_type_counts,
             "source_codex_events": source_codex_events,
@@ -473,8 +500,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "vector": entity_vector,
                 "scope": envelope["scope"],
                 "source_event_ids": source_event_ids,
-                "source_roles": source_roles,
-                "source_role_counts": source_role_counts,
+                "source_roles": entity_source_roles,
+                "source_role_counts": entity_source_role_counts,
                 "source_hook_types": source_hook_types,
                 "source_hook_type_counts": source_hook_type_counts,
                 "source_codex_events": source_codex_events,
@@ -530,10 +557,10 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 list(previous_profile.get("source_event_ids", [])) + event_hashes
             )
             profile_source_roles = ordered_unique_any(
-                list(previous_profile.get("source_roles", [])) + source_roles
+                list(previous_profile.get("source_roles", [])) + entity_source_roles
             )
             profile_source_role_counts: Json = dict(previous_profile.get("source_role_counts", {}))
-            for role, count in source_role_counts.items():
+            for role, count in entity_source_role_counts.items():
                 profile_source_role_counts[role] = int(profile_source_role_counts.get(role, 0)) + int(count)
             profile_source_hook_types = ordered_unique_any(
                 list(previous_profile.get("source_hook_types", [])) + source_hook_types
