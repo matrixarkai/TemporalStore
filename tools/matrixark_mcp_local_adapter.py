@@ -667,7 +667,7 @@ def _default_memory_budget_mode(args: Json, ranking: Json, *, field: str, questi
 
 def codex_outcome_budget_query(args: Json, ranking: Json, *, question_type: str = "fact") -> bool:
     normalized_question_type = str(question_type or "fact").strip().lower()
-    if normalized_question_type not in {"evidence", "current_state", "latest", "benchmark_quality"}:
+    if normalized_question_type not in {"evidence", "current_state", "latest", "benchmark_quality", "profile_memory", "multi_hop", "date"}:
         return False
     query = str(args.get("query") or ranking.get("query") or "").strip()
     if not query:
