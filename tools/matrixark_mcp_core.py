@@ -5694,6 +5694,10 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
         return 0.46
     if is_codex_outcome_compression and question_type in {"profile_memory", "multi_hop", "date"}:
         return 0.34
+    if ref_type == "segment" and profile_memory_kind == "codex_outcome" and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
+        return 0.30
+    if ref_type == "segment" and profile_memory_kind == "codex_outcome" and question_type in {"profile_memory", "multi_hop", "date"}:
+        return 0.20
     if ref_type == "entity" and profile_memory_kind == "codex_outcome" and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
         return 0.52
     if ref_type == "entity" and is_codex_outcome_entity_type(event_type) and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
@@ -6002,7 +6006,10 @@ def memory_layer_for_serving_ref(ref: Json) -> str:
     }:
         return "cross_session_codex_outcome"
     if profile_memory_kind == "codex_outcome":
-        return "cross_session_codex_outcome"
+        session_continuity = str(ref.get("session_continuity") or metadata.get("session_continuity") or "").strip().lower()
+        if memory_scope in {"user_profile", "profile", "cross_session_profile"} or session_continuity == "cross_session":
+            return "cross_session_codex_outcome"
+        return "session_codex_outcome"
     if memory_scope in {"user_profile", "profile", "cross_session_profile"}:
         return "profile"
     if memory_scope in {"session", "session_memory"}:

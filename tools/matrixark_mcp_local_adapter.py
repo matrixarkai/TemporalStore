@@ -8504,10 +8504,54 @@ class MatrixArkLocalAdapter:
                 profile_dirty_hashes.extend(_profile_dirty_hashes)
                 records_to_append.extend(profile_dirty_records)
 
+        def segment_source_roles_and_type(segment: Json) -> tuple[list[str], Json, str, list[str], list[str], str, str]:
+            segment_roles: list[str] = []
+            for message_index in segment.get("message_indexes", []):
+                if not isinstance(message_index, int) or message_index < 0 or message_index >= len(envelope["messages"]):
+                    continue
+                role = normalize_message_role(envelope["messages"][message_index].get("role"))
+                if role:
+                    segment_roles.append(role)
+            role_counts: Json = {}
+            for role in segment_roles:
+                role_counts[role] = int(role_counts.get(role, 0)) + 1
+            ordered_roles = ordered_unique_any(segment_roles) or source_roles
+            policy_set = {str(policy or "").strip() for policy in source_memory_selection_policies if str(policy or "").strip()}
+            topic_text = " ".join([str(segment.get("topic") or ""), str(segment.get("summary_text") or ""), str(segment.get("text") or "")]).lower()
+            has_tool_evidence = "tool" in ordered_roles or "selected_tool_evidence_only" in policy_set or "tool evidence" in topic_text
+            has_assistant_outcome = (
+                "assistant" in ordered_roles
+                or "selected_assistant_decision_outcome_only" in policy_set
+                or "assistant decision" in topic_text
+                or "assistant response" in topic_text
+            )
+            if has_tool_evidence:
+                event_type = "tool_evidence"
+            elif has_assistant_outcome:
+                event_type = "assistant_response"
+            elif "user" in ordered_roles:
+                event_type = "user_prompt"
+            else:
+                event_type = str(extraction.get("event_type") or "session")
+            profile_classes = ["codex_outcome"] if has_tool_evidence or has_assistant_outcome else []
+            profile_kinds = ["codex_outcome"] if profile_classes else []
+            profile_class = "codex_outcome" if profile_classes else ""
+            profile_kind = "codex_outcome" if profile_kinds else ""
+            return ordered_roles, role_counts or source_role_counts, event_type, profile_classes, profile_kinds, profile_class, profile_kind
+
         segment_hashes = []
         for segment in extraction["segments"]:
             segment_hash = stable_hash(f"{batch_id_hash}:segment:{segment['topic']}:{segment['coordinate_tuples']}")
             segment_hashes.append(segment_hash)
+            (
+                segment_source_roles,
+                segment_source_role_counts,
+                segment_event_type,
+                segment_profile_memory_classes,
+                segment_profile_memory_kinds,
+                segment_profile_memory_class,
+                segment_profile_memory_kind,
+            ) = segment_source_roles_and_type(segment)
             records_to_append.append(
                 {
                     "record_type": "context_segment",
@@ -8523,8 +8567,9 @@ class MatrixArkLocalAdapter:
                     "source_record_type": "context_event",
                     "segment_origin": segment.get("segment_origin") or segment.get("detected_by") or "derived_from_events",
                     "derived_from_context_events": bool(segment.get("derived_from_context_events", True)),
-                    "source_roles": source_roles,
-                    "source_role_counts": source_role_counts,
+                    "source_roles": segment_source_roles,
+                    "source_role_counts": segment_source_role_counts,
+                    "event_type": segment_event_type,
                     "source_hook_types": source_hook_types,
                     "source_hook_type_counts": source_hook_type_counts,
                     "source_codex_events": source_codex_events,
@@ -8535,6 +8580,10 @@ class MatrixArkLocalAdapter:
                     "source_memory_scopes": ["session"],
                     "source_session_continuities": ["same_session"],
                     "source_extraction_phases": [extraction_phase],
+                    "source_profile_memory_classes": segment_profile_memory_classes,
+                    "source_profile_memory_kinds": segment_profile_memory_kinds,
+                    "profile_memory_class": segment_profile_memory_class,
+                    "profile_memory_kind": segment_profile_memory_kind,
                     "saliency_score": segment["saliency_score"],
                     "summary_text": segment["summary_text"],
                     "text": segment["text"],
@@ -8578,8 +8627,9 @@ class MatrixArkLocalAdapter:
                     "scope": envelope["scope"],
                     "topic": segment["topic"],
                     "source_event_ids": [event_hashes[index] for index in segment["message_indexes"] if index < len(event_hashes)],
-                    "source_roles": source_roles,
-                    "source_role_counts": source_role_counts,
+                    "source_roles": segment_source_roles,
+                    "source_role_counts": segment_source_role_counts,
+                    "event_type": segment_event_type,
                     "source_hook_types": source_hook_types,
                     "source_hook_type_counts": source_hook_type_counts,
                     "source_codex_events": source_codex_events,
@@ -8590,6 +8640,10 @@ class MatrixArkLocalAdapter:
                     "source_memory_scopes": ["session"],
                     "source_session_continuities": ["same_session"],
                     "source_extraction_phases": [extraction_phase],
+                    "source_profile_memory_classes": segment_profile_memory_classes,
+                    "source_profile_memory_kinds": segment_profile_memory_kinds,
+                    "profile_memory_class": segment_profile_memory_class,
+                    "profile_memory_kind": segment_profile_memory_kind,
                     "memory_scope": "session",
                     "session_continuity": "same_session",
                     "extraction_phase": extraction_phase,
