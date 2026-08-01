@@ -3405,6 +3405,37 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         pending_budget = selected_ref_layer_budget([{**pending_event, "token_estimate": 7}])
         self.assertEqual(1, pending_budget["by_memory_layer"]["pending_async_event"]["refs"])
         self.assertEqual(7, pending_budget["by_memory_layer"]["pending_async_event"]["tokens"])
+        feature_pending_event = {
+            **pending_event,
+            "profile_memory_kind": "memory_feature",
+            "profile_memory_class": "memory_feature",
+            "token_estimate": 8,
+        }
+        same_session_feature_segment = {
+            "ref_type": "segment",
+            "session_continuity": "same_session",
+            "memory_scope": "session",
+            "source_profile_memory_kinds": ["memory_feature"],
+            "token_estimate": 9,
+            "text": "feature memory segment",
+        }
+        cross_session_feature_event = {
+            "ref_type": "event",
+            "session_continuity": "cross_session",
+            "memory_scope": "session",
+            "source_profile_memory_classes": ["memory_feature"],
+            "token_estimate": 10,
+            "text": "cross-session feature memory event",
+        }
+        feature_budget = selected_ref_layer_budget(
+            [feature_pending_event, same_session_feature_segment, cross_session_feature_event]
+        )
+        self.assertEqual(1, feature_budget["by_memory_layer"]["pending_async_memory_feature_event"]["refs"])
+        self.assertEqual(8, feature_budget["by_memory_layer"]["pending_async_memory_feature_event"]["tokens"])
+        self.assertEqual(1, feature_budget["by_memory_layer"]["same_session_memory_feature_segment"]["refs"])
+        self.assertEqual(9, feature_budget["by_memory_layer"]["same_session_memory_feature_segment"]["tokens"])
+        self.assertEqual(1, feature_budget["by_memory_layer"]["cross_session_memory_feature_event"]["refs"])
+        self.assertEqual(10, feature_budget["by_memory_layer"]["cross_session_memory_feature_event"]["tokens"])
 
         selected, _used_tokens, dropped = select_token_budgeted_refs(
             [
@@ -3424,6 +3455,25 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual("pending_async_event", dropped["refs"][0]["memory_layer_budget_capped_layer"])
         dropped_budget = dropped_ref_layer_budget(dropped)
         self.assertEqual(1, dropped_budget["by_memory_layer"]["pending_async_event"]["refs"])
+        feature_dropped_budget = dropped_ref_layer_budget(
+            {
+                "refs": [
+                    {
+                        **cross_session_feature_event,
+                        "drop_reason": "memory_layer_budget",
+                        "memory_layer_budget_capped_layer": "cross_session_memory_feature_event",
+                    }
+                ]
+            }
+        )
+        self.assertEqual(
+            1,
+            feature_dropped_budget["by_memory_layer"]["cross_session_memory_feature_event"]["refs"],
+        )
+        self.assertEqual(
+            10,
+            feature_dropped_budget["by_memory_layer"]["cross_session_memory_feature_event"]["tokens"],
+        )
 
     def test_pending_async_cleanup_only_suppresses_represented_events(self) -> None:
         represented_pending = {
