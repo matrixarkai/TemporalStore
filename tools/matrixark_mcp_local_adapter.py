@@ -1717,6 +1717,24 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
 
 def context_event_type_for_message(message: Json, default_event_type: str) -> str:
     role = normalize_message_role(message.get("role")) if isinstance(message, dict) else ""
+    content = str(message.get("content") or "") if isinstance(message, dict) else ""
+    metadata = message.get("metadata") if isinstance(message, dict) and isinstance(message.get("metadata"), dict) else {}
+    selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
+    policies = {
+        str(policy or "").strip()
+        for policy in (selection.get("policies") if isinstance(selection.get("policies"), list) else [])
+        if str(policy or "").strip()
+    }
+    policy = str(selection.get("policy") or "").strip()
+    if policy:
+        policies.add(policy)
+    if (
+        role == "assistant"
+        and "selected_assistant_profile_fact" in policies
+        and "selected_assistant_decision_outcome_only" not in policies
+        and feature_scope_excludes_outcome_evidence(content)
+    ):
+        return "memory_feature"
     by_role = {
         "user": "user_prompt",
         "assistant": "assistant_response",
@@ -1724,10 +1742,6 @@ def context_event_type_for_message(message: Json, default_event_type: str) -> st
     }
     if role in by_role:
         return by_role[role]
-    metadata = message.get("metadata") if isinstance(message, dict) and isinstance(message.get("metadata"), dict) else {}
-    selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
-    policies = selection.get("policies") if isinstance(selection.get("policies"), list) else []
-    policy = str(selection.get("policy") or "").strip()
     by_policy = {
         "selected_user_prompt": "user_prompt",
         "selected_assistant_profile_fact": "assistant_response",
@@ -1735,10 +1749,10 @@ def context_event_type_for_message(message: Json, default_event_type: str) -> st
         "selected_tool_evidence_only": "tool_evidence",
     }
     for policy_value in policies:
-        event_type = by_policy.get(str(policy_value or "").strip())
+        event_type = by_policy.get(policy_value)
         if event_type:
             return event_type
-    return by_policy.get(policy, default_event_type or "conversation_event")
+    return default_event_type or "conversation_event"
 
 
 def source_event_lineage_summary(records: list[Json]) -> Json:
@@ -8721,14 +8735,24 @@ class MatrixArkLocalAdapter:
             ordered_roles = ordered_unique_any(segment_roles) or source_roles
             policy_set = {str(policy or "").strip() for policy in source_memory_selection_policies if str(policy or "").strip()}
             topic_text = " ".join([str(segment.get("topic") or ""), str(segment.get("summary_text") or ""), str(segment.get("text") or "")]).lower()
+            has_memory_feature = (
+                "memory_feature" in {str(kind or "").strip().lower() for kind in source_profile_memory_kinds}
+                or (
+                    "selected_assistant_profile_fact" in policy_set
+                    and "selected_assistant_decision_outcome_only" not in policy_set
+                    and feature_scope_excludes_outcome_evidence(topic_text)
+                )
+            )
             has_tool_evidence = "tool" in ordered_roles or "selected_tool_evidence_only" in policy_set or "tool evidence" in topic_text
             has_assistant_outcome = (
-                "assistant" in ordered_roles
+                ("assistant" in ordered_roles and not has_memory_feature)
                 or "selected_assistant_decision_outcome_only" in policy_set
                 or "assistant decision" in topic_text
                 or "assistant response" in topic_text
             )
-            if has_tool_evidence:
+            if has_memory_feature:
+                event_type = "memory_feature"
+            elif has_tool_evidence:
                 event_type = "tool_evidence"
             elif has_assistant_outcome:
                 event_type = "assistant_response"
@@ -8736,10 +8760,21 @@ class MatrixArkLocalAdapter:
                 event_type = "user_prompt"
             else:
                 event_type = str(extraction.get("event_type") or "session")
-            profile_classes = ["codex_outcome"] if has_tool_evidence or has_assistant_outcome else []
-            profile_kinds = ["codex_outcome"] if profile_classes else []
-            profile_class = "codex_outcome" if profile_classes else ""
-            profile_kind = "codex_outcome" if profile_kinds else ""
+            if has_memory_feature:
+                profile_classes = ["memory_feature"]
+                profile_kinds = ["memory_feature"]
+                profile_class = "memory_feature"
+                profile_kind = "memory_feature"
+            elif has_tool_evidence or has_assistant_outcome:
+                profile_classes = ["codex_outcome"]
+                profile_kinds = ["codex_outcome"]
+                profile_class = "codex_outcome"
+                profile_kind = "codex_outcome"
+            else:
+                profile_classes = []
+                profile_kinds = []
+                profile_class = ""
+                profile_kind = ""
             return ordered_roles, role_counts or source_role_counts, event_type, profile_classes, profile_kinds, profile_class, profile_kind
 
         segment_hashes = []
