@@ -122,6 +122,7 @@ COMMIT_EVENTS = {
     "session_end",
     "taskcomplete",
     "task_complete",
+    "idle",
     "idletimeout",
     "idle_timeout",
     "sessionidle",
@@ -273,6 +274,10 @@ def should_retrieve(event: str) -> bool:
 
 def should_commit(event: str) -> bool:
     return norm(event) in COMMIT_EVENTS
+
+
+def should_auto_batch_extract_on_ingest(event: str) -> bool:
+    return not should_commit(event)
 
 
 def is_resource_event(event: str) -> bool:
@@ -965,9 +970,10 @@ def main() -> int:
             "agent_hook": hook_meta,
             "storage_options": hook_storage_options(),
         }
-        ingest_args["auto_batch_extract"] = True
+        auto_batch_extract = should_auto_batch_extract_on_ingest(args.event)
+        ingest_args["auto_batch_extract"] = auto_batch_extract
         ingest_args["session_buffer_threshold"] = args.session_commit_threshold
-        if args.idle_commit_timeout_ms > 0:
+        if auto_batch_extract and args.idle_commit_timeout_ms > 0:
             ingest_args["idle_commit_timeout_ms"] = args.idle_commit_timeout_ms
         ingest = call_tool(server, "matrixark_ingest", ingest_args)
 
