@@ -12091,6 +12091,19 @@ class MatrixArkLocalAdapter:
                 profile_kind_term
                 and any(profile_kind_term in group for group in secondary_index_filter_groups)
             )
+            profile_feature_matched_query = bool(
+                is_profile_entity_bridge
+                and (
+                    str(record.get("entity_type") or "").strip() == "memory_feature_profile"
+                    or profile_memory_kind == "memory_feature"
+                    or profile_memory_class == "memory_feature"
+                )
+                and (
+                    any(context_index_name("entity_type", "memory_feature_profile") in group for group in secondary_index_filter_groups)
+                    or profile_class_matched_query
+                    or profile_kind_matched_query
+                )
+            )
             profile_text_parts = [
                 profile_memory_class.replace("_", " "),
                 profile_memory_kind.replace("_", " "),
@@ -12109,7 +12122,8 @@ class MatrixArkLocalAdapter:
                 0.12
                 + hybrid_origin_score(query_terms, entity_hybrid_text, embedding_score, node_score)
                 + (0.14 if profile_class_matched_query else 0.0)
-                + (0.12 if profile_kind_matched_query else 0.0),
+                + (0.12 if profile_kind_matched_query else 0.0)
+                + (0.18 if profile_feature_matched_query else 0.0),
             )
             candidate = {
                 "ref_type": "entity",
