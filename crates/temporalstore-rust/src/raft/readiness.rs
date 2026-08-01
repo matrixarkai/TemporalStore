@@ -107,8 +107,7 @@ pub struct RaftTemporalRaftRolloutReadiness {
     pub missing: Vec<String>,
 }
 
-pub type RaftProcessPathReadinessReport =
-    MatrixRaftCrossPlaneProcessReadinessBlockerReport;
+pub type RaftProcessPathReadinessReport = MatrixRaftCrossPlaneProcessReadinessBlockerReport;
 
 pub fn raft_temporal_raft_rollout_readiness() -> RaftTemporalRaftRolloutReadiness {
     raft_temporal_raft_rollout_readiness_from_reports(None, None)
@@ -118,10 +117,7 @@ pub fn raft_process_path_readiness_report_from_reports(
     data_node_report: &TemporalRaftDataNodeProcessRolloutReport,
     metaserver_report: &TemporalRaftMetaProcessRolloutReport,
 ) -> RaftProcessPathReadinessReport {
-    matrixraft_cross_plane_process_readiness_blocker_report(
-        data_node_report,
-        metaserver_report,
-    )
+    matrixraft_cross_plane_process_readiness_blocker_report(data_node_report, metaserver_report)
 }
 
 fn raft_readiness_blocker_from_matrixraft_blocker(
@@ -183,12 +179,9 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
                 + &operational_missing,
         );
         missing_evidence_fields.extend(
-            matrixraft_data_node_process_rollout_blockers(
-                "data_node_report",
-                data_node_report,
-            )
-            .into_iter()
-            .map(raft_readiness_blocker_from_matrixraft_blocker),
+            matrixraft_data_node_process_rollout_blockers("data_node_report", data_node_report)
+                .into_iter()
+                .map(raft_readiness_blocker_from_matrixraft_blocker),
         );
     }
     if !metaserver_real_process_rollout_validated {
@@ -203,12 +196,9 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
                 + &operational_missing,
         );
         missing_evidence_fields.extend(
-            matrixraft_meta_process_rollout_blockers(
-                "metaserver_report",
-                metaserver_report,
-            )
-            .into_iter()
-            .map(raft_readiness_blocker_from_matrixraft_blocker),
+            matrixraft_meta_process_rollout_blockers("metaserver_report", metaserver_report)
+                .into_iter()
+                .map(raft_readiness_blocker_from_matrixraft_blocker),
         );
     }
     if !multi_process_log_store_validation_present {

@@ -296,9 +296,11 @@ def direct_context_pack_response_cache_key(
     shard_size: int,
     request: Json,
 ) -> str:
-    del target
     ranking = request.get("ranking") if isinstance(request, dict) else {}
+    backend_label = target._backend_label() if callable(getattr(target, "_backend_label", None)) else ""
     payload = {
+        "backend": backend_label,
+        "storage_prefix": str(getattr(target, "_storage_prefix", "") or ""),
         "count_key": count_key,
         "record_hash_key": record_hash_key,
         "shard_size": int(shard_size),

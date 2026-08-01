@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 try:
@@ -14,6 +15,22 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 Json = dict[str, Any]
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _normalize_observed_at_ms(value: Any) -> int:
+    if isinstance(value, bool):
+        raise MatrixArkError("agent_hook.observed_at_ms must be an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return int(stripped)
+    raise MatrixArkError("agent_hook.observed_at_ms must be an integer")
 
 
 def validate_hook(hook: Json | None) -> Json | None:
@@ -37,10 +54,12 @@ def validate_hook(hook: Json | None) -> Json | None:
         raise MatrixArkError("agent_hook.trigger must be a string")
     require_string(hook, "source")
     require_string(hook, "hook_id")
-    if not isinstance(hook.get("observed_at_ms"), int):
-        raise MatrixArkError("agent_hook.observed_at_ms must be an integer")
-    if not isinstance(hook.get("auto_captured"), bool):
+    normalized = dict(hook)
+    observed_at_ms = normalized.get("observed_at_ms")
+    normalized["observed_at_ms"] = _now_ms() if observed_at_ms is None else _normalize_observed_at_ms(observed_at_ms)
+    normalized.setdefault("auto_captured", True)
+    if not isinstance(normalized.get("auto_captured"), bool):
         raise MatrixArkError("agent_hook.auto_captured must be a boolean")
-    if "idempotency_key" in hook and not isinstance(hook["idempotency_key"], str):
+    if "idempotency_key" in normalized and not isinstance(normalized["idempotency_key"], str):
         raise MatrixArkError("agent_hook.idempotency_key must be a string")
-    return hook
+    return normalized
