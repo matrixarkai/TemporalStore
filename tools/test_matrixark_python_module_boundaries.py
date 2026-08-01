@@ -1909,6 +1909,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
 
     def test_modular_async_ingest_reports_session_buffer_readiness(self) -> None:
         async_mod = importlib.import_module("tools.matrixark_mcp_async_ingest")
+        agent_hook_mod = importlib.import_module("tools.matrixark_agent_hook")
+        budget_mod = importlib.import_module("tools.matrixark_mcp_budget_pack")
         runtime_mod = importlib.import_module("tools.matrixark_mcp_session_runtime")
 
         class Batch:
@@ -2009,9 +2011,68 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(173, scheduled_task["idle_commit_deadline_ms"])
         self.assertEqual(1, scheduled_task["idle_commit_pending_event_count"])
         self.assertEqual(1, scheduled_task["idle_commit_pending_message_count"])
-        self.assertEqual(["provisional"], scheduled_task["source_extraction_phases"])
-        self.assertEqual("provisional", scheduled_task["extraction_phase"])
+        self.assertEqual(["pending_async"], scheduled_task["source_extraction_phases"])
+        self.assertEqual("pending_async", scheduled_task["extraction_phase"])
         self.assertFalse(scheduled_task["final_session_boundary"])
+
+        feature_prompt = (
+            "Focus on OpenViking/VikingMem feature parity for session memory, "
+            "no testing or monitoring evidence in this pass."
+        )
+        feature_metadata = agent_hook_mod.agent_memory_selection_metadata(
+            {"messages": [{"role": "user", "content": feature_prompt}]},
+            event="UserPromptSubmit",
+            text=feature_prompt,
+            messages=[{"role": "user", "content": feature_prompt}],
+        )
+        self.assertEqual(["memory_feature"], feature_metadata["source_profile_memory_classes"])
+        self.assertEqual(["memory_feature"], feature_metadata["source_profile_memory_kinds"])
+        target = Target()
+        feature_envelope = {
+            **envelope,
+            "metadata": {
+                "hook_type": "before_llm",
+                "codex_event": "UserPromptSubmit",
+                "codex_memory_selection": feature_metadata["codex_memory_selection"],
+            },
+            "messages": [{"role": "user", "content": feature_prompt}],
+            "ingestion_time_ms": 223,
+        }
+        feature_result = async_mod.lightweight_async_accept(
+            target,
+            {**args, "session_buffer_threshold": 20},
+            envelope=feature_envelope,
+            hook=None,
+            idle_commit_result={},
+        )
+        feature_event = next(record for record in target.records if record["record_type"] == "context_event")
+        feature_idle_task = next(
+            record
+            for record in target.records
+            if record.get("record_type") == "matrixark_async_pipeline_task"
+            and record.get("status") == "idle_commit_scheduled"
+        )
+        feature_index_names = {
+            str(record.get("index_name") or "")
+            for record in target.records
+            if record.get("record_type") == "context_index"
+            and record.get("data_model") == "context_event"
+        }
+        self.assertEqual(["memory_feature"], feature_event["source_profile_memory_classes"])
+        self.assertEqual(["memory_feature"], feature_event["source_profile_memory_kinds"])
+        self.assertEqual("memory_feature", feature_event["profile_memory_class"])
+        self.assertEqual("memory_feature", feature_event["profile_memory_kind"])
+        self.assertEqual(
+            "pending_async_memory_feature_event",
+            budget_mod.candidate_memory_layer_name({**feature_event, "ref_type": "event"}),
+        )
+        self.assertEqual(["memory_feature"], feature_idle_task["source_profile_memory_classes"])
+        self.assertEqual(["memory_feature"], feature_idle_task["source_profile_memory_kinds"])
+        self.assertIn("profile_memory_class:memory_feature", feature_index_names)
+        self.assertIn("profile_memory_kind:memory_feature", feature_index_names)
+        self.assertIsNone(feature_result["auto_batch_extract_result"])
+        self.assertEqual(273, feature_result["session_buffer"]["idle_commit_deadline_ms"])
+        self.assertEqual(223, feature_result["session_buffer"]["idle_commit_cutoff_ms"])
 
         class BufferAdapter:
             def __init__(self) -> None:

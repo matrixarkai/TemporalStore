@@ -194,6 +194,35 @@ def candidate_memory_layer_name(candidate: Json) -> str:
     memory_scope = str(candidate.get("memory_scope") or metadata.get("memory_scope") or "")
     session_continuity = str(candidate.get("session_continuity") or metadata.get("session_continuity") or "")
     profile_memory_kind = str(candidate.get("profile_memory_kind") or metadata.get("profile_memory_kind") or "")
+    profile_memory_class = str(candidate.get("profile_memory_class") or metadata.get("profile_memory_class") or "")
+    source_profile_memory_classes = {
+        str(value or "").strip()
+        for value in (
+            candidate.get("source_profile_memory_classes")
+            if isinstance(candidate.get("source_profile_memory_classes"), list)
+            else metadata.get("source_profile_memory_classes", [])
+            if isinstance(metadata.get("source_profile_memory_classes"), list)
+            else []
+        )
+        if str(value or "").strip()
+    }
+    source_profile_memory_kinds = {
+        str(value or "").strip()
+        for value in (
+            candidate.get("source_profile_memory_kinds")
+            if isinstance(candidate.get("source_profile_memory_kinds"), list)
+            else metadata.get("source_profile_memory_kinds", [])
+            if isinstance(metadata.get("source_profile_memory_kinds"), list)
+            else []
+        )
+        if str(value or "").strip()
+    }
+    is_memory_feature = (
+        profile_memory_kind == "memory_feature"
+        or profile_memory_class == "memory_feature"
+        or "memory_feature" in source_profile_memory_kinds
+        or "memory_feature" in source_profile_memory_classes
+    )
     if context_class == "resource_entity_fact":
         return "resource_entity_fact"
     if context_class == "resource_fact":
@@ -204,21 +233,33 @@ def candidate_memory_layer_name(candidate: Json) -> str:
         return "skill_section"
     if ref_type == "compression" or context_class == "compression":
         if memory_scope == "user_profile" and session_continuity == "cross_session":
+            if is_memory_feature:
+                return "cross_session_memory_feature_compression"
             return "profile_compression"
         if session_continuity == "same_session":
+            if is_memory_feature:
+                return "same_session_memory_feature_compression"
             return "same_session_compression"
         if session_continuity == "cross_session":
             return "cross_session_compression"
         return "compression"
     if ref_type == "summary" or context_class == "summary":
         if memory_scope == "user_profile" and session_continuity == "cross_session":
+            if is_memory_feature:
+                return "cross_session_memory_feature_summary"
             return "profile_summary"
         if session_continuity == "same_session":
+            if is_memory_feature:
+                return "same_session_memory_feature_summary"
             return "same_session_summary"
         if session_continuity == "cross_session":
             return "cross_session_summary"
         return "summary"
     if ref_type == "segment":
+        if is_memory_feature and session_continuity == "same_session":
+            return "same_session_memory_feature_segment"
+        if is_memory_feature and session_continuity == "cross_session":
+            return "cross_session_memory_feature_segment"
         if session_continuity == "same_session":
             return "same_session_segment"
         if session_continuity == "cross_session":
@@ -226,7 +267,15 @@ def candidate_memory_layer_name(candidate: Json) -> str:
         return "session_neutral_segment"
     if ref_type == "event":
         if is_pending_async_candidate(candidate):
+            if is_memory_feature:
+                return "pending_async_memory_feature_event"
+            if memory_scope == "user_profile" and session_continuity == "cross_session":
+                return "pending_async_memory_feature_event"
             return "pending_async_event"
+        if is_memory_feature and session_continuity == "same_session":
+            return "same_session_memory_feature_event"
+        if is_memory_feature and session_continuity == "cross_session":
+            return "cross_session_memory_feature_event"
         if session_continuity == "same_session":
             return "same_session_event"
         if session_continuity == "cross_session":
@@ -236,8 +285,12 @@ def candidate_memory_layer_name(candidate: Json) -> str:
         if memory_scope == "user_profile":
             if profile_memory_kind == "codex_outcome":
                 return "cross_session_codex_outcome_entity"
+            if is_memory_feature:
+                return "cross_session_memory_feature_entity"
             return "profile_entity"
         if session_continuity == "same_session":
+            if is_memory_feature:
+                return "same_session_memory_feature_entity"
             return "same_session_entity"
         if session_continuity == "cross_session":
             return "cross_session_entity"
