@@ -481,6 +481,29 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 event="Stop",
             ),
         )
+        self.assertEqual(
+            "First assistant decision.\nSecond assistant decision.",
+            hook.payload_text(
+                {"assistant_outputs": ["First assistant decision.", "Second assistant decision."]},
+                event="Stop",
+            ),
+        )
+
+    def test_payload_text_prefers_assistant_alias_from_mixed_stop_messages(self) -> None:
+        payload = {
+            "hook_event_name": "Stop",
+            "messages": [
+                {"role": "user", "content": "prompt should not be extracted as assistant memory"},
+                {"role": "assistant_response", "content": "Decision: alias assistant response wins."},
+                {"role": "llm", "content": "Result: LLM alias is also assistant memory."},
+            ],
+        }
+
+        text = hook.payload_text(payload, event="Stop")
+
+        self.assertIn("Decision: alias assistant response wins.", text)
+        self.assertIn("Result: LLM alias is also assistant memory.", text)
+        self.assertNotIn("prompt should not be extracted", text)
 
     def test_payload_text_prefers_tool_role_from_mixed_tool_messages(self) -> None:
         payload = {
@@ -496,6 +519,24 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             "Exit code: 0\nRan 11 tests\nOK",
             hook.payload_text(payload, event="PostToolUse"),
         )
+
+    def test_payload_text_prefers_tool_alias_from_mixed_tool_messages(self) -> None:
+        payload = {
+            "hook_event_name": "PostToolUse",
+            "messages": [
+                {"role": "user_prompt", "content": "run the tests"},
+                {"role": "assistant_output", "content": "I will run validation."},
+                {"role": "tool_result", "content": "Exit code: 0\nRan 13 tests\nOK"},
+                {"role": "function_call_output", "content": "pushed commit abc123 to origin/main"},
+            ],
+        }
+
+        text = hook.payload_text(payload, event="PostToolUse")
+
+        self.assertIn("Exit code: 0\nRan 13 tests\nOK", text)
+        self.assertIn("pushed commit abc123 to origin/main", text)
+        self.assertNotIn("run the tests", text)
+        self.assertNotIn("I will run validation", text)
 
     def test_payload_text_extracts_terminal_output_for_tool_events(self) -> None:
         self.assertEqual(
