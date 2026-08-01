@@ -2946,6 +2946,20 @@ def pushed_main_commit_from_text(text: str) -> str:
     match = re.search(r"\bpushed commit\s+([0-9a-f]{7,40})\b", compact, re.IGNORECASE)
     if match:
         return match.group(1)
+    match = re.search(
+        r"\b(?:git\s+push|push|published|publish|pushed)\s+(?:accepted|succeeded|completed|done|sent|landed)?\b.{0,80}?\b(?:main|origin/main)\b.{0,40}?\b(?:at|as|commit)?\s*([0-9a-f]{7,40})\b",
+        compact,
+        re.IGNORECASE,
+    )
+    if match:
+        return match.group(1)
+    match = re.search(
+        r"\b(?:git\s+push|push|published|publish|pushed)\s+(?:accepted|succeeded|completed|done|sent|landed)?\b.{0,80}?\b([0-9a-f]{7,40})\b.{0,40}?\b(?:to\s+)?(?:main|origin/main)\b",
+        compact,
+        re.IGNORECASE,
+    )
+    if match:
+        return match.group(1)
     match = re.search(r"\b([0-9a-f]{7,40})\s+(?:refs/heads/main|origin/main)\b", compact, re.IGNORECASE)
     if match:
         return match.group(1)

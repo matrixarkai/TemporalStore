@@ -225,6 +225,27 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(["assistant"], by_name["assistant_decision:outcome"]["source_roles"])
         self.assertEqual(["assistant_event"], by_name["assistant_decision:outcome"]["source_refs"])
 
+    def test_assistant_push_success_prose_becomes_outcome_memory(self) -> None:
+        examples = [
+            ("Done - git push accepted to main at abc1234 after the hook pipeline test suite passed.", "abc1234"),
+            ("Push succeeded on main: def5678 after 165 tests passed.", "def5678"),
+            ("Published fedcba9 to main and validation passed.", "fedcba9"),
+        ]
+        for raw, commit_hash in examples:
+            selected = matrixark_codex_hook.selected_assistant_memory_text(raw)
+            entities = matrixark_mcp_core.extract_batch_entities(
+                [{"role": "assistant", "content": selected}],
+                {"source_event_ids": ["assistant_event"]},
+            )
+            by_name = {entity["entity_name"]: entity for entity in entities}
+
+            self.assertIn(f"pushed commit {commit_hash}", selected, raw)
+            self.assertIn("assistant_decision:outcome", by_name, raw)
+            self.assertIn(commit_hash, by_name["assistant_decision:outcome"]["state"])
+            self.assertEqual(["assistant"], by_name["assistant_decision:outcome"]["source_roles"])
+            self.assertNotIn("tool_evidence", by_name)
+            self.assertNotIn("tool_evidence:outcome", by_name)
+
     def test_tool_memory_selection_normalizes_common_test_result_summaries(self) -> None:
         noisy_tool_output = "\n".join(
             [
