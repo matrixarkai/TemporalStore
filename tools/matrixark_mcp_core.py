@@ -2934,7 +2934,6 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         ("correction", r"\b(?:correction|correct|wrong|instead|updated|changed)\s+([^.;!?]{2,140})"),
         ("approval_state", r"\b(?:approved|approval)\s+([^.;!?]{2,140})"),
         ("confirmation", r"\b(?:yes|confirmed|approved|correct|looks good)\b([^.;!?]{0,120})"),
-        ("tool_evidence", r"\b(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|pushed|commit\s+[0-9a-f]{7,40}|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|error|failed|fatal)\b([^.;!?]{0,180})"),
     ]
     for entity_type, pattern in patterns:
         for match in re.finditer(pattern, text, re.IGNORECASE):
