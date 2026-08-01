@@ -2453,6 +2453,10 @@ PROFILE_MEMORY_QUERY_RE = re.compile(
     r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|identity profile|communication profile|workspace profile|openviking|vikingmem|mem0|memory feature parity|feature parity|feature[- ]focused memor(?:y|ies)|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionality only|memory functionalit(?:y|ies)|memory algorithms?|memory algos?|no testing|no teseting|no monitoring|no debugging|no evidence|no evident|session memory|remember about me|remember about|what should (?:i|you|we) remember|standing instructions?|standing preferences?|persistent instructions?|saved preferences?|know about (?:me|my|the user)|what (?:have|did) i (?:tell|told) you|what (?:are|were|do|did) my preferences|what do i prefer|do i prefer|my preferences|my .*?(?:policy|policies|instruction|instructions|preference|preferences)|told you before|from previous sessions?|across sessions?|across conversations?|between conversations?|how should (?:you|codex) (?:address|reply|respond|answer)|what (?:is|are) my (?:name|nickname|pronouns?|preferred language|preferred format|communication style|response style|workspace rules?|repo rules?|repository rules?|branch rules?|build rules?|deployment rules?)|what (?:workspace|repo|repository|branch|build|deployment|github|remote) rules? (?:do|should) (?:you|codex) remember|what (?:workflow|workflows|rules?|instructions?|preferences?) (?:do|should) (?:you|codex) follow)\b"
 )
 
+FEATURE_MEMORY_QUERY_RE = re.compile(
+    r"\b(?:openviking|vikingmem|mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionalit(?:y|ies)|algorithms?|algos?|memory feature|session memory|profile memory|cross[- ]session memory|long[- ]term memory|threshold|idle batch|batch extraction)\b"
+)
+
 FEATURE_SCOPE_EXCLUSION_RE = re.compile(
     r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\s+"
     r"(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b"
@@ -5608,13 +5612,25 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
 
     normalized_question_type = str(question_type or "fact").strip().lower()
     query_text = str(args.get("query") or ranking.get("query") or "")
+    query_lower = query_text.lower()
     profile_memory_query = normalized_question_type == "profile_memory" or bool(
-        query_text and PROFILE_MEMORY_QUERY_RE.search(query_text.lower())
+        query_lower and PROFILE_MEMORY_QUERY_RE.search(query_lower)
     )
-    cross_session_allowed = session_scope == "prefer" or profile_memory_query
+    feature_memory_query = bool(query_lower and FEATURE_MEMORY_QUERY_RE.search(query_lower))
+    cross_session_query = normalized_question_type in {
+        "current_state",
+        "latest",
+        "multi_hop",
+        "date",
+        "broad_exploration",
+        "evidence",
+        "benchmark_quality",
+    }
+    cross_session_allowed = session_scope == "prefer" or profile_memory_query or feature_memory_query or cross_session_query
     default_enabled = cross_session_allowed and remote_budget_tokens > 0
     enabled = bool(config.get("enabled", default_enabled)) and cross_session_allowed and remote_budget_tokens > 0
-    if profile_memory_query:
+    profile_budget_query = profile_memory_query or feature_memory_query
+    if profile_budget_query:
         default_ratio = DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO
         question_budget_reason = "profile_memory_queries_need_long_term profile and cross-session state"
     elif normalized_question_type in {"current_state", "latest"}:
@@ -5632,12 +5648,12 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     else:
         default_ratio = DEFAULT_CROSS_SESSION_BUDGET_RATIO
         question_budget_reason = "normal_queries_keep_cross_session_small so current session/resources/skills dominate"
-    default_max_budget_ratio = DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO if profile_memory_query else DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO
+    default_max_budget_ratio = DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO if profile_budget_query else DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO
     max_budget_ratio = max(0.0, min(1.0, float(config.get("max_budget_ratio", default_max_budget_ratio))))
     budget_ratio = float_arg(config, "budget_ratio", min(default_ratio, max_budget_ratio), minimum=0.0, maximum=max_budget_ratio)
     max_budget_default = (
         DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS
-        if profile_memory_query
+        if profile_budget_query
         else DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS
     )
     max_budget_tokens = integer_arg(config, "max_budget_tokens", max_budget_default, minimum=0)
@@ -5675,9 +5691,9 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
         ratio_budget_cap if ratio_budget_cap > 0 else remote_budget_tokens,
         max_budget_tokens if max_budget_tokens > 0 else remote_budget_tokens,
     )
-    max_sessions_default = DEFAULT_CROSS_SESSION_PROFILE_MAX_SESSIONS if profile_memory_query else DEFAULT_CROSS_SESSION_MAX_SESSIONS
-    max_candidates_default = DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES if profile_memory_query else DEFAULT_CROSS_SESSION_MAX_CANDIDATES
-    min_bridge_default = DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS if profile_memory_query else DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS
+    max_sessions_default = DEFAULT_CROSS_SESSION_PROFILE_MAX_SESSIONS if profile_budget_query else DEFAULT_CROSS_SESSION_MAX_SESSIONS
+    max_candidates_default = DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES if profile_budget_query else DEFAULT_CROSS_SESSION_MAX_CANDIDATES
+    min_bridge_default = DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS if profile_budget_query else DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS
     max_sessions = integer_arg(config, "max_sessions", max_sessions_default, minimum=0)
     max_candidates = integer_arg(config, "max_candidates", max_candidates_default, minimum=0)
     min_entity_bridge_refs = integer_arg(config, "min_entity_bridge_refs", min_bridge_default, minimum=0)
@@ -5694,6 +5710,10 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
         "decision": (
             "always_consider_same_user_cross_session_for_profile_memory"
             if enabled and profile_memory_query and session_scope != "prefer"
+            else "always_consider_same_user_cross_session_for_feature_memory"
+            if enabled and feature_memory_query and session_scope != "prefer"
+            else "always_consider_same_user_cross_session_for_query_type"
+            if enabled and cross_session_query and session_scope != "prefer"
             else "always_consider_same_user_cross_session_when_session_scope_prefer"
             if enabled
             else "disabled_by_session_scope_or_budget"
