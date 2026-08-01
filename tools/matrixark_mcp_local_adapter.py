@@ -8189,6 +8189,7 @@ class MatrixArkLocalAdapter:
                 profile_revision = previous_profile_revision + 1
                 previous_profile_updated_at_ms = int(previous_profile.get("updated_at_ms") or 0)
                 profile_memory_class = profile_memory_class_for_entity_type(promoted_entity.get("entity_type"))
+                profile_memory_kind = profile_memory_kind_for_entity_type(promoted_entity.get("entity_type"))
                 profile_entity_hashes.append(profile_entity_hash)
                 profile_promotion_summary.append(
                     {
@@ -8197,6 +8198,7 @@ class MatrixArkLocalAdapter:
                         "entity_type": promoted_entity["entity_type"],
                         "entity_name": promoted_entity["entity_name"],
                         "profile_memory_class": profile_memory_class,
+                        "profile_memory_kind": profile_memory_kind,
                         "source_session_ids": profile_source_session_ids,
                         "source_entity_count": len(profile_source_entity_hashes),
                         "source_ref_count": len(profile_source_refs),
@@ -8228,6 +8230,7 @@ class MatrixArkLocalAdapter:
                     "entity_type": promoted_entity["entity_type"],
                     "entity_name": promoted_entity["entity_name"],
                     "profile_memory_class": profile_memory_class,
+                    "profile_memory_kind": profile_memory_kind,
                     "state": promoted_entity["state"],
                     "previous_state": promoted_entity.get("previous_state", ""),
                     "confidence": promoted_entity["confidence"],
@@ -8287,6 +8290,7 @@ class MatrixArkLocalAdapter:
                         "entity_type": promoted_entity["entity_type"],
                         "entity_name": promoted_entity["entity_name"],
                         "profile_memory_class": profile_memory_class,
+                        "profile_memory_kind": profile_memory_kind,
                         "source_event_ids": profile_source_event_ids,
                         "source_session_ids": profile_source_session_ids,
                         "source_entity_hashes": profile_source_entity_hashes,
@@ -9646,6 +9650,7 @@ class MatrixArkLocalAdapter:
             explicit_status = str(first_value("session_continuity") or "")
             explicit_memory_scope = str(first_value("memory_scope") or "")
             explicit_profile_memory_class = str(first_value("profile_memory_class") or "")
+            explicit_profile_memory_kind = str(first_value("profile_memory_kind") or "")
             explicit_profile_current = first_explicit_bool("profile_entity_current", candidate, record, embedding_metadata)
             if explicit_status in {"same_session", "cross_session"} and explicit_memory_scope == "user_profile":
                 status = explicit_status
@@ -9690,6 +9695,7 @@ class MatrixArkLocalAdapter:
                 "continuity_reason": reason,
                 "memory_scope": first_value("memory_scope"),
                 "profile_memory_class": explicit_profile_memory_class,
+                "profile_memory_kind": explicit_profile_memory_kind,
                 "event_type": first_value("event_type"),
                 "classification": first_value("classification"),
                 "extraction_status": first_value("extraction_status", first_value("status")),
@@ -10750,6 +10756,15 @@ class MatrixArkLocalAdapter:
                     else ""
                 )
             ).strip()
+            profile_memory_kind = str(
+                record.get("profile_memory_kind")
+                or entity_metadata.get("profile_memory_kind")
+                or (
+                    profile_memory_kind_for_entity_type(record.get("entity_type"))
+                    if is_profile_entity_bridge
+                    else ""
+                )
+            ).strip()
             profile_class_term = context_index_name("profile_memory_class", profile_memory_class)
             profile_class_matched_query = bool(
                 profile_class_term
@@ -10797,6 +10812,7 @@ class MatrixArkLocalAdapter:
                 "entity_type": record.get("entity_type", ""),
                 "entity_name": record.get("entity_name", ""),
                 "profile_memory_class": profile_memory_class,
+                "profile_memory_kind": profile_memory_kind,
                 "context_class": "resource_entity_fact" if record.get("source_chunk_hash") else "entity",
                 "source_chunk_hash": record.get("source_chunk_hash"),
                 "source_ref": record.get("source_ref", ""),
@@ -11313,6 +11329,11 @@ class MatrixArkLocalAdapter:
                         or entity_metadata.get("profile_memory_class")
                         or profile_memory_class_for_entity_type(record.get("entity_type"))
                     ).strip()
+                    profile_memory_kind = str(
+                        record.get("profile_memory_kind")
+                        or entity_metadata.get("profile_memory_kind")
+                        or profile_memory_kind_for_entity_type(record.get("entity_type"))
+                    ).strip()
                     profile_class_term = context_index_name("profile_memory_class", profile_memory_class)
                     profile_class_matched_query = bool(
                         profile_class_term
@@ -11356,6 +11377,7 @@ class MatrixArkLocalAdapter:
                             "entity_type": record.get("entity_type", ""),
                             "entity_name": record.get("entity_name", ""),
                             "profile_memory_class": profile_memory_class,
+                            "profile_memory_kind": profile_memory_kind,
                             "context_class": "entity",
                             "source_roles": record.get("source_roles", []),
                             "source_role_counts": record.get("source_role_counts", {}),
