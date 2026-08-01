@@ -5689,6 +5689,11 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     event_type = str(candidate.get("event_type") or candidate.get("entity_type") or candidate.get("topic") or "").lower()
     has_citation = bool(candidate.get("source_ref") or candidate.get("citation") or candidate.get("source_chunk_hash"))
     profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
+    is_codex_outcome_compression = ref_type == "compression" and profile_memory_kind == "codex_outcome"
+    if is_codex_outcome_compression and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
+        return 0.46
+    if is_codex_outcome_compression and question_type in {"profile_memory", "multi_hop", "date"}:
+        return 0.34
     if ref_type == "entity" and profile_memory_kind == "codex_outcome" and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
         return 0.52
     if ref_type == "entity" and is_codex_outcome_entity_type(event_type) and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
@@ -5772,6 +5777,8 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
 
 def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float, float, float]:
     score = float(candidate.get("score", 0.0))
+    profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
+    ref_type = str(candidate.get("ref_type") or "")
     pending_async_penalty = 0.32 if is_pending_async_candidate(candidate) else 0.0
     boosted = clamp01(
         score
@@ -5781,10 +5788,17 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
         - pending_async_penalty
     )
     token_efficiency = boosted / max(1, token_count(str(candidate.get("text", ""))))
-    if candidate.get("ref_type") == "compression" and question_type in {"fact", "current_state", "multi_hop"}:
+    if ref_type == "compression" and question_type in {"fact", "current_state", "multi_hop"}:
         source_count = len(candidate.get("source_event_ids", []) or [])
         if source_count >= 2:
             token_efficiency *= 1.5
+    if ref_type == "compression" and profile_memory_kind == "codex_outcome":
+        source_count = len(candidate.get("source_event_ids", []) or [])
+        if question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
+            token_efficiency *= 1.35 if source_count >= 2 else 1.15
+            boosted = clamp01(boosted + 0.08)
+        elif question_type in {"profile_memory", "multi_hop", "date"}:
+            token_efficiency *= 1.20 if source_count >= 2 else 1.08
     ref_priority = 0.0
     query_specificity = 0.0
     try:
@@ -5795,12 +5809,17 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
         keyword_score = max(0, int(candidate.get("keyword_score") or 0))
     except (TypeError, ValueError):
         keyword_score = 0
-    if candidate.get("ref_type") == "entity" and question_type in {"current_state", "latest", "evidence", "benchmark_quality", "profile_memory"}:
+    if ref_type == "entity" and question_type in {"current_state", "latest", "evidence", "benchmark_quality", "profile_memory"}:
         query_specificity = clamp01(sparse_score + min(0.45, 0.08 * keyword_score))
         boosted = clamp01(boosted + min(0.18, 0.12 * sparse_score + 0.02 * keyword_score))
-    if candidate.get("ref_type") == "entity":
+    if ref_type == "compression" and profile_memory_kind == "codex_outcome":
+        if question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
+            ref_priority = 0.82
+            query_specificity = clamp01(sparse_score + min(0.35, 0.06 * keyword_score))
+        elif question_type in {"profile_memory", "multi_hop", "date"}:
+            ref_priority = 0.62
+    elif ref_type == "entity":
         entity_type = str(candidate.get("entity_type") or candidate.get("event_type") or "").strip().lower()
-        profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
         if question_type in {"current_state", "latest"}:
             if profile_memory_kind == "codex_outcome":
                 ref_priority = 1.0
@@ -5974,6 +5993,16 @@ def memory_layer_for_serving_ref(ref: Json) -> str:
     if sharing_scope in {"tenant_shared", "global_shared"} or ref_type in {"resource_chunk", "skill_section"}:
         return "shared_context"
     memory_scope = str(ref.get("memory_scope") or metadata.get("memory_scope") or "").strip().lower()
+    profile_memory_kind = str(ref.get("profile_memory_kind") or metadata.get("profile_memory_kind") or "").strip().lower()
+    ref_layer = candidate_memory_layer_name(ref)
+    if ref_layer in {
+        "cross_session_codex_outcome_compression",
+        "cross_session_codex_outcome_summary",
+        "cross_session_codex_outcome_entity",
+    }:
+        return "cross_session_codex_outcome"
+    if profile_memory_kind == "codex_outcome":
+        return "cross_session_codex_outcome"
     if memory_scope in {"user_profile", "profile", "cross_session_profile"}:
         return "profile"
     if memory_scope in {"session", "session_memory"}:
