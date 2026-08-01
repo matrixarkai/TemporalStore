@@ -6634,6 +6634,8 @@ def candidate_memory_layer_name(candidate: Json) -> str:
                 return "cross_session_memory_feature_compression"
             return "profile_compression"
         if session_continuity == "same_session":
+            if is_memory_feature_memory:
+                return "same_session_memory_feature_compression"
             return "same_session_compression"
         if session_continuity == "cross_session":
             return "cross_session_compression"
@@ -6646,11 +6648,17 @@ def candidate_memory_layer_name(candidate: Json) -> str:
                 return "cross_session_memory_feature_summary"
             return "profile_summary"
         if session_continuity == "same_session":
+            if is_memory_feature_memory:
+                return "same_session_memory_feature_summary"
             return "same_session_summary"
         if session_continuity == "cross_session":
             return "cross_session_summary"
         return "summary"
     if ref_type == "segment":
+        if is_memory_feature_memory and session_continuity == "same_session":
+            return "same_session_memory_feature_segment"
+        if is_memory_feature_memory and session_continuity == "cross_session":
+            return "cross_session_memory_feature_segment"
         if is_codex_outcome_memory and session_continuity == "same_session":
             return "same_session_codex_outcome_segment"
         if is_codex_outcome_memory and session_continuity == "cross_session":
@@ -6662,7 +6670,13 @@ def candidate_memory_layer_name(candidate: Json) -> str:
         return "session_neutral_segment"
     if ref_type == "event":
         if is_pending_async_candidate(candidate):
+            if is_memory_feature_memory:
+                return "pending_async_memory_feature_event"
             return "pending_async_event"
+        if is_memory_feature_memory and session_continuity == "same_session":
+            return "same_session_memory_feature_event"
+        if is_memory_feature_memory and session_continuity == "cross_session":
+            return "cross_session_memory_feature_event"
         if is_codex_outcome_memory and session_continuity == "same_session":
             return "same_session_codex_outcome_event"
         if is_codex_outcome_memory and session_continuity == "cross_session":
@@ -6680,8 +6694,12 @@ def candidate_memory_layer_name(candidate: Json) -> str:
                 return "cross_session_memory_feature_entity"
             return "profile_entity"
         if session_continuity == "same_session":
+            if profile_memory_kind == "memory_feature":
+                return "same_session_memory_feature_entity"
             return "same_session_entity"
         if session_continuity == "cross_session":
+            if profile_memory_kind == "memory_feature":
+                return "cross_session_memory_feature_entity"
             return "cross_session_entity"
         return "session_entity"
     return context_class or ref_type or "unknown"
@@ -7001,6 +7019,7 @@ def select_token_budgeted_refs(
     extraction_phase_used_tokens: Json = {phase: 0 for phase in normalized_extraction_phase_budget_tokens}
     extraction_phase_selected_ref_counts: Json = {phase: 0 for phase in normalized_extraction_phase_budget_tokens}
     profile_entity_bridge_layers = {
+        "same_session_memory_feature_entity",
         "profile_entity",
         "cross_session_codex_outcome_entity",
         "cross_session_memory_feature_entity",
@@ -7017,10 +7036,12 @@ def select_token_budgeted_refs(
         "cross_session_codex_outcome_summary",
         "cross_session_memory_feature_summary",
         "same_session_summary",
+        "same_session_memory_feature_summary",
         "cross_session_summary",
         "profile_compression",
         "cross_session_codex_outcome_compression",
         "cross_session_memory_feature_compression",
+        "same_session_memory_feature_compression",
     }
     summary_profile_entity_floor_enabled = bool(
         any(normalized_memory_layer_budget_tokens.get(layer) for layer in profile_entity_bridge_layers)
@@ -7410,6 +7431,7 @@ def select_token_budgeted_refs(
                     "cross_session_codex_outcome_summary",
                     "cross_session_memory_feature_summary",
                     "same_session_summary",
+                    "same_session_memory_feature_summary",
                     "cross_session_summary",
                 }
                 and not (
@@ -7423,6 +7445,8 @@ def select_token_budgeted_refs(
                         "cross_session_codex_outcome_compression",
                         "cross_session_memory_feature_summary",
                         "cross_session_memory_feature_compression",
+                        "same_session_memory_feature_summary",
+                        "same_session_memory_feature_compression",
                     }
                 )
             )
