@@ -688,7 +688,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             records_to_append.append(
                 compact_context_embedding_record({
                     "record_type": "context_embedding",
-                    "embedding_type": "entity_state",
+                    "embedding_type": "profile_entity_state",
                     "ref_type": "entity",
                     "ref_hash": profile_entity_hash,
                     "node_hash": profile_node_hash,
