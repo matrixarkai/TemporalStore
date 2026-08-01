@@ -9757,18 +9757,66 @@ class MatrixArkLocalAdapter:
                 })
             )
 
+        batch_profile_memory_class_values = {
+            str(value or "").strip().lower() for value in source_profile_memory_classes
+        }
+        batch_profile_memory_kind_values = {
+            str(value or "").strip().lower() for value in source_profile_memory_kinds
+        }
+        batch_feature_only = bool(feature_scope_excludes_outcome_evidence(batch_text))
         batch_has_memory_feature = (
-            "memory_feature" in {str(value or "").strip().lower() for value in source_profile_memory_classes}
-            or "memory_feature" in {str(value or "").strip().lower() for value in source_profile_memory_kinds}
+            "memory_feature" in batch_profile_memory_class_values
+            or "memory_feature" in batch_profile_memory_kind_values
             or int(entity_type_counts.get("memory_feature_profile") or 0) > 0
+            or batch_feature_only
         )
-        batch_profile_memory_class = "memory_feature" if batch_has_memory_feature else ""
-        batch_profile_memory_kind = "memory_feature" if batch_has_memory_feature else ""
+        batch_has_codex_outcome = (
+            not batch_feature_only
+            and (
+                "codex_outcome" in batch_profile_memory_class_values
+                or "codex_outcome" in batch_profile_memory_kind_values
+                or any(normalize_message_role(role) in {"assistant", "tool"} for role in source_roles)
+                or any(
+                    str(policy or "").strip()
+                    in {"selected_assistant_decision_outcome_only", "selected_tool_evidence_only"}
+                    for policy in source_memory_selection_policies
+                )
+                or any(
+                    str(event or "").strip()
+                    in {
+                        "PreviousAssistantBackfill",
+                        "PreviousToolOutputBackfill",
+                        "Stop",
+                        "SubagentStop",
+                        "PostCompact",
+                        "PostToolUse",
+                        "PreToolUse",
+                        "PermissionRequest",
+                    }
+                    for event in source_codex_events
+                )
+            )
+        )
+        if batch_has_codex_outcome:
+            batch_profile_memory_class = "codex_outcome"
+            batch_profile_memory_kind = "codex_outcome"
+        elif batch_has_memory_feature:
+            batch_profile_memory_class = "memory_feature"
+            batch_profile_memory_kind = "memory_feature"
+        else:
+            batch_profile_memory_class = ""
+            batch_profile_memory_kind = ""
         batch_source_profile_memory_classes = ordered_unique_any(
-            list(source_profile_memory_classes) + ([batch_profile_memory_class] if batch_profile_memory_class else [])
+            list(source_profile_memory_classes)
+            + (["codex_outcome"] if batch_has_codex_outcome else [])
+            + (["memory_feature"] if batch_has_memory_feature else [])
+            + ([batch_profile_memory_class] if batch_profile_memory_class else [])
         )
         batch_source_profile_memory_kinds = ordered_unique_any(
-            list(source_profile_memory_kinds) + ([batch_profile_memory_kind] if batch_profile_memory_kind else [])
+            list(source_profile_memory_kinds)
+            + (["codex_outcome"] if batch_has_codex_outcome else [])
+            + (["memory_feature"] if batch_has_memory_feature else [])
+            + ([batch_profile_memory_kind] if batch_profile_memory_kind else [])
         )
 
         summary_hash = stable_hash(f"batch_summary:{batch_id_hash}")
