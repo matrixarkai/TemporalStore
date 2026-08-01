@@ -4714,6 +4714,93 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         finally:
             matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
 
+    def test_fast_hook_threshold_commit_arms_idle_for_uncommitted_tail(self) -> None:
+        original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
+        matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                adapter = FastHookLocalAdapter(Path(tmp_dir) / "matrixark-fast-hook-threshold-tail-idle.jsonl")
+
+                class Server:
+                    def __init__(self) -> None:
+                        self.adapter = adapter
+
+                base_scope = {
+                    "event": "UserPromptSubmit",
+                    "account_id": "acct_fast_threshold_tail_idle",
+                    "tenant_id": "tenant_fast_threshold_tail_idle",
+                    "user_id": "user_fast_threshold_tail_idle",
+                    "session_id": "session_fast_threshold_tail_idle",
+                    "team": "codex",
+                    "project": "temporalstore",
+                    "idle_commit_timeout_ms": 120000,
+                    "understanding_provider": "rules",
+                    "segment_provider": "deterministic",
+                }
+                server = Server()
+                seed_args = {**base_scope, "session_commit_threshold": 20}
+                first = matrixark_codex_hook.fast_async_hook_ingest(
+                    server,
+                    args=Namespace(**seed_args),
+                    text="First live prompt should wait in the threshold buffer.",
+                    role="user",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={"session_id_source": "payload_field", "turn_id": "tail-idle-1"},
+                )
+                second = matrixark_codex_hook.fast_async_hook_ingest(
+                    server,
+                    args=Namespace(**seed_args),
+                    text="Second assistant response should also wait in the buffer.",
+                    role="assistant",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={"session_id_source": "payload_field", "turn_id": "tail-idle-2"},
+                )
+                self.assertEqual("deferred", first["auto_batch_extract_result"]["status"])
+                self.assertEqual("deferred", second["auto_batch_extract_result"]["status"])
+
+                threshold_args = {**base_scope, "session_commit_threshold": 2}
+                third = matrixark_codex_hook.fast_async_hook_ingest(
+                    server,
+                    args=Namespace(**threshold_args),
+                    text="Third live prompt is the uncommitted tail that must be idle armed.",
+                    role="user",
+                    agent_context={"workspace_root": "/repo"},
+                    hook={"session_id_source": "payload_field", "turn_id": "tail-idle-3"},
+                )
+                commit = third["auto_batch_extract_result"]
+                self.assertEqual("committed", commit["status"])
+                self.assertEqual("threshold", commit["trigger_policy"])
+                self.assertEqual(2, commit["committed_event_count"])
+                self.assertTrue(commit["tail_idle_commit_scheduled"])
+                self.assertEqual(1, commit["tail_pending_event_count"])
+                self.assertEqual(1, commit["tail_pending_message_count"])
+                self.assertTrue(third["session_buffer"]["tail_idle_commit_scheduled"])
+                self.assertTrue(third["session_buffer"]["idle_commit_scheduled"])
+
+                scope = {
+                    "account_id": base_scope["account_id"],
+                    "tenant_id": base_scope["tenant_id"],
+                    "user_id": base_scope["user_id"],
+                    "session_id": base_scope["session_id"],
+                }
+                pending_after = adapter.pending_session_events(scope)
+                self.assertEqual(1, len(pending_after))
+                self.assertEqual(third["event_id_hash"], pending_after[0]["event_id_hash"])
+                self.assertIn("uncommitted tail", pending_after[0]["text"])
+                idle_tasks = [
+                    record
+                    for record in adapter.read_all()
+                    if record.get("record_type") == "matrixark_async_pipeline_task"
+                    and record.get("status") == "idle_commit_scheduled"
+                    and record.get("reason") == "session_buffer_threshold_tail_idle_deadline"
+                ]
+                self.assertEqual(1, len(idle_tasks))
+                self.assertEqual(1, idle_tasks[0]["idle_commit_pending_event_count"])
+                self.assertEqual(1, idle_tasks[0]["idle_commit_pending_message_count"])
+                self.assertIn("user", idle_tasks[0]["source_roles"])
+        finally:
+            matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = original_auto_batch
+
     def test_fast_hook_threshold_commit_counts_messages_inside_buffered_event(self) -> None:
         original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
         matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True

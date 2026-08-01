@@ -5293,6 +5293,64 @@ def fast_async_hook_ingest(
                     **session_commit_result,
                     "memory_layers_written": memory_layers_written,
                 }
+    tail_idle_commit_scheduled = False
+    tail_idle_commit_deadline_ms = 0
+    tail_idle_commit_cutoff_ms = 0
+    tail_pending_event_count = 0
+    tail_pending_message_count = 0
+    if (
+        should_threshold_commit
+        and callable(pending_session_events)
+        and successful_session_commit_status(session_commit_result.get("status") if isinstance(session_commit_result, dict) else "")
+        and idle_timeout_ms > 0
+    ):
+        try:
+            tail_pending = list(pending_session_events(scope))
+        except Exception:
+            tail_pending = []
+        tail_pending_event_count = len(tail_pending)
+        tail_pending_message_count = pending_session_message_count(tail_pending)
+        if tail_pending_event_count > 0:
+            tail_lineage = pending_session_buffer_lineage(
+                tail_pending,
+                fallback_role=role,
+                fallback_hook_type=hook_type,
+                fallback_codex_event=args.event,
+            )
+            tail_idle_commit_deadline_ms = now + idle_timeout_ms
+            tail_idle_commit_cutoff_ms = now
+            tail_idle_commit_scheduled = True
+            enqueue(
+                [
+                    {
+                        "record_type": "matrixark_async_pipeline_task",
+                        "task_hash": stable_int_hash(f"async_pipeline_idle_commit_tail:{event_id_hash}:{tail_pending_event_count}"),
+                        "event_id_hash": event_id_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "scope": scope,
+                        "status": "idle_commit_scheduled",
+                        "stages": ["extraction", "summary", "compression", "embedding"],
+                        "reason": "session_buffer_threshold_tail_idle_deadline",
+                        "trigger_policy": "idle_timeout",
+                        "auto_batch_extract": auto_batch_extract_on_ingest,
+                        "threshold_messages": threshold,
+                        "idle_commit_timeout_ms": idle_timeout_ms,
+                        "idle_commit_deadline_ms": tail_idle_commit_deadline_ms,
+                        "idle_commit_cutoff_ms": tail_idle_commit_cutoff_ms,
+                        "idle_commit_pending_event_count": tail_pending_event_count,
+                        "idle_commit_pending_message_count": tail_pending_message_count,
+                        **tail_lineage,
+                        "source_extraction_phases": ["provisional"],
+                        "extraction_phase": "provisional",
+                        "final_session_boundary": False,
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "created_at_ms": now,
+                        "updated_at_ms": now,
+                    }
+                ]
+            )
     auto_batch_extract_result: Json = {}
     if should_threshold_commit:
         auto_batch_extract_result = session_commit_result or {
@@ -5309,6 +5367,15 @@ def fast_async_hook_ingest(
             "extraction_phase": "provisional",
             "final_session_boundary": False,
         }
+        if tail_idle_commit_scheduled and isinstance(auto_batch_extract_result, dict):
+            auto_batch_extract_result = {
+                **auto_batch_extract_result,
+                "tail_idle_commit_scheduled": True,
+                "tail_pending_event_count": tail_pending_event_count,
+                "tail_pending_message_count": tail_pending_message_count,
+                "tail_idle_commit_deadline_ms": tail_idle_commit_deadline_ms,
+                "tail_idle_commit_cutoff_ms": tail_idle_commit_cutoff_ms,
+            }
     elif should_pre_ingest_idle_commit:
         auto_batch_extract_result = pre_ingest_idle_commit_result
     elif should_idle_commit:
@@ -5354,9 +5421,12 @@ def fast_async_hook_ingest(
             "threshold_messages": threshold,
             "threshold_ready": should_threshold_commit,
             "idle_commit_timeout_ms": idle_timeout_ms,
-            "idle_commit_deadline_ms": idle_commit_deadline_ms if should_schedule_idle_commit else 0,
-            "idle_commit_cutoff_ms": idle_commit_cutoff_ms if should_schedule_idle_commit else 0,
-            "idle_commit_scheduled": should_schedule_idle_commit,
+            "idle_commit_deadline_ms": tail_idle_commit_deadline_ms if tail_idle_commit_scheduled else idle_commit_deadline_ms if should_schedule_idle_commit else 0,
+            "idle_commit_cutoff_ms": tail_idle_commit_cutoff_ms if tail_idle_commit_scheduled else idle_commit_cutoff_ms if should_schedule_idle_commit else 0,
+            "idle_commit_scheduled": bool(should_schedule_idle_commit or tail_idle_commit_scheduled),
+            "tail_idle_commit_scheduled": tail_idle_commit_scheduled,
+            "tail_pending_event_count": tail_pending_event_count,
+            "tail_pending_message_count": tail_pending_message_count,
             "threshold_commit_scheduled": threshold_commit_scheduled,
             "idle_ready": should_idle_commit,
             "pre_ingest_idle_ready": should_pre_ingest_idle_commit,
