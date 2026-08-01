@@ -5977,6 +5977,20 @@ def candidate_memory_selection_policies(candidate: Json) -> set[str]:
     return policy_names
 
 
+def candidate_is_feature_profile_memory(candidate: Json) -> bool:
+    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    profile_memory_kind = str(candidate.get("profile_memory_kind") or metadata.get("profile_memory_kind") or "").strip().lower()
+    profile_memory_class = str(candidate.get("profile_memory_class") or metadata.get("profile_memory_class") or "").strip().lower()
+    for source in [candidate, metadata]:
+        source_classes = source.get("source_profile_memory_classes")
+        if isinstance(source_classes, list) and any(str(value or "").strip().lower() == "memory_feature" for value in source_classes):
+            return True
+        source_kinds = source.get("source_profile_memory_kinds")
+        if isinstance(source_kinds, list) and any(str(value or "").strip().lower() == "memory_feature" for value in source_kinds):
+            return True
+    return profile_memory_kind == "memory_feature" or profile_memory_class == "memory_feature"
+
+
 def memory_selection_policy_ref_boost(candidate: Json, question_type: str) -> float:
     policies = candidate_memory_selection_policies(candidate)
     if not policies:
@@ -6006,6 +6020,7 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     event_type = str(candidate.get("event_type") or candidate.get("entity_type") or candidate.get("topic") or "").lower()
     has_citation = bool(candidate.get("source_ref") or candidate.get("citation") or candidate.get("source_chunk_hash"))
     profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
+    is_feature_profile_memory = candidate_is_feature_profile_memory(candidate)
     memory_scope = str(candidate.get("memory_scope") or "").strip().lower()
     session_continuity = str(candidate.get("session_continuity") or "").strip().lower()
     policy_boost = memory_selection_policy_ref_boost(candidate, question_type)
@@ -6022,7 +6037,7 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
         return 0.52 + policy_boost
     if ref_type == "entity" and is_codex_outcome_entity_type(event_type) and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
         return 0.48 + policy_boost
-    if question_type == "profile_memory" and profile_memory_kind in {"durable_profile", "memory_feature"}:
+    if question_type == "profile_memory" and (profile_memory_kind == "durable_profile" or is_feature_profile_memory):
         if ref_type == "entity":
             return 0.50 + policy_boost
         if ref_type in {"summary", "compression"}:
@@ -6112,6 +6127,7 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
 def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float, float, float]:
     score = float(candidate.get("score", 0.0))
     profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
+    is_feature_profile_memory = candidate_is_feature_profile_memory(candidate)
     ref_type = str(candidate.get("ref_type") or "")
     memory_scope = str(candidate.get("memory_scope") or "").strip().lower()
     session_continuity = str(candidate.get("session_continuity") or "").strip().lower()
@@ -6147,7 +6163,7 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
             boosted = clamp01(boosted + 0.08)
         elif question_type in {"profile_memory", "multi_hop", "date"}:
             token_efficiency *= 1.20 if source_count >= 2 else 1.08
-    if question_type == "profile_memory" and profile_memory_kind in {"durable_profile", "memory_feature"}:
+    if question_type == "profile_memory" and (profile_memory_kind == "durable_profile" or is_feature_profile_memory):
         source_count = len(candidate.get("source_event_ids", []) or [])
         source_entity_count = len(candidate.get("source_entity_hashes", []) or [])
         if ref_type in {"summary", "compression"}:
@@ -6201,7 +6217,7 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
                 ref_priority = 1.0
             elif entity_type == "assistant_decision":
                 ref_priority = 0.95 if codex_outcome_terms else 0.7
-        elif question_type == "profile_memory" and profile_memory_kind in {"durable_profile", "memory_feature"}:
+        elif question_type == "profile_memory" and (profile_memory_kind == "durable_profile" or is_feature_profile_memory):
             ref_priority = max(ref_priority, 0.98 if profile_current else 0.95)
         elif (
             question_type == "profile_memory"
@@ -6218,7 +6234,7 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
             ref_priority += 0.30 if entity_type == "assistant_decision" else 0.12
         if profile_current and memory_scope == "user_profile" and session_continuity == "cross_session":
             ref_priority += min(0.08, 0.02 + 0.01 * profile_revision)
-    elif question_type == "profile_memory" and profile_memory_kind in {"durable_profile", "memory_feature"} and ref_type in {"summary", "compression"}:
+    elif question_type == "profile_memory" and (profile_memory_kind == "durable_profile" or is_feature_profile_memory) and ref_type in {"summary", "compression"}:
         ref_priority = 0.82
         query_specificity = clamp01(sparse_score + min(0.35, 0.06 * keyword_score))
     elif question_type in {"evidence", "benchmark_quality"} and str(candidate.get("event_type") or "").strip().lower() == "tool_evidence":
