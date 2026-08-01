@@ -11847,6 +11847,59 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(layer_budget["by_session_continuity"]["cross_session"]["refs"], 1)
             self.assertGreaterEqual(layer_budget["by_memory_scope"]["user_profile"]["refs"], 1)
 
+    def test_batch_extraction_keeps_entity_source_event_ids_role_specific(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-role-specific-entity-source-events.jsonl")
+            scope = {
+                "account_id": "acct_role_specific_events",
+                "tenant_id": "tenant_role_specific_events",
+                "user_id": "user_role_specific_events",
+                "session_id": "session_role_specific_events",
+            }
+            result = adapter.batch_extract(
+                {
+                    "scope": scope,
+                    "messages": [
+                        {"role": "user", "content": "Please keep extracting live Codex memory."},
+                        {
+                            "role": "assistant",
+                            "content": "Decision: profile promotion keeps marker amber sextant.",
+                        },
+                        {
+                            "role": "tool",
+                            "content": "Exit code: 0; validation passed for marker granite violin.",
+                        },
+                    ],
+                    "metadata": {"hook_type": "hook_boundary", "codex_event": "Stop"},
+                    "force": True,
+                }
+            )
+
+            self.assertEqual("accepted", result["status"])
+            records = adapter.read_all()
+            event_hash_by_role = {
+                record["source_role"]: record["event_id_hash"]
+                for record in records
+                if record.get("record_type") == "context_event"
+            }
+            self.assertIn("assistant", event_hash_by_role)
+            self.assertIn("tool", event_hash_by_role)
+            profile_entities = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
+            ]
+            assistant_entity = next(
+                record for record in profile_entities if record.get("entity_type") == "assistant_decision"
+            )
+            tool_entity = next(record for record in profile_entities if record.get("entity_type") == "tool_evidence")
+            self.assertEqual([event_hash_by_role["assistant"]], assistant_entity["source_event_ids"])
+            self.assertEqual([event_hash_by_role["tool"]], tool_entity["source_event_ids"])
+            self.assertNotIn(event_hash_by_role["tool"], assistant_entity["source_event_ids"])
+            self.assertNotIn(event_hash_by_role["assistant"], tool_entity["source_event_ids"])
+
     def test_session_buffer_events_preserve_memory_selection_lineage_after_threshold_commit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-buffer-selection-lineage.jsonl")
