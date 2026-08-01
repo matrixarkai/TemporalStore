@@ -9,9 +9,9 @@ import time
 from typing import Any
 
 try:
-    from tools.matrixark_mcp_core import Json, access_scope_matches_before_scoring, now_ms, optional_object
+    from tools.matrixark_mcp_core import CODEX_OUTCOME_QUERY_RE, Json, access_scope_matches_before_scoring, now_ms, optional_object
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import Json, access_scope_matches_before_scoring, now_ms, optional_object
+    from matrixark_mcp_core import CODEX_OUTCOME_QUERY_RE, Json, access_scope_matches_before_scoring, now_ms, optional_object
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -80,6 +80,23 @@ def codex_user_goal_budget_query(args: Json, ranking: Json, *, question_type: st
     )
 
 
+def codex_outcome_budget_query(args: Json, ranking: Json, *, question_type: str = "fact") -> bool:
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    if normalized_question_type not in {"evidence", "current_state", "latest", "benchmark_quality"}:
+        return False
+    query = str(args.get("query") or ranking.get("query") or "").strip()
+    if not query:
+        return False
+    lower = query.lower()
+    return bool(
+        CODEX_OUTCOME_QUERY_RE.search(lower)
+        or re.search(
+            r"\b(?:assistant decision|tool evidence|validation evidence|pushed commit|blocked work|next action|what did codex|what was done)\b",
+            lower,
+        )
+    )
+
+
 def auto_source_role_budget_tokens(
     args: Json,
     ranking: Json,
@@ -104,7 +121,9 @@ def auto_source_role_budget_tokens(
     fractions = optional_object(args, "source_role_budget_fractions") or optional_object(ranking, "source_role_budget_fractions")
     defaults = {"assistant": 0.45, "tool": 0.35, "user": 0.60}
     normalized_question_type = str(question_type or "fact").strip().lower()
-    if codex_user_goal_budget_query(args, ranking, question_type=question_type):
+    if codex_outcome_budget_query(args, ranking, question_type=question_type):
+        defaults.update({"assistant": 0.55, "tool": 0.55, "user": 0.40})
+    elif codex_user_goal_budget_query(args, ranking, question_type=question_type):
         defaults.update({"assistant": 0.35, "tool": 0.25, "user": 0.70})
     elif normalized_question_type in {"current_state", "latest"}:
         defaults.update({"assistant": 0.50, "tool": 0.40, "user": 0.50})
@@ -164,14 +183,26 @@ def auto_memory_selection_policy_budget_tokens(
     )
     defaults = {
         "selected_user_prompt": 0.45,
+        "selected_assistant_profile_fact": 0.35,
         "selected_assistant_decision_outcome_only": 0.30,
         "selected_tool_evidence_only": 0.30,
     }
     normalized_question_type = str(question_type or "fact").strip().lower()
-    if codex_user_goal_budget_query(args, ranking, question_type=question_type):
+    if codex_outcome_budget_query(args, ranking, question_type=question_type):
+        defaults.update(
+            {
+                "selected_user_prompt": 0.35,
+                "selected_assistant_profile_fact": 0.35,
+                "selected_assistant_decision_outcome_only": 0.58,
+                "selected_tool_evidence_only": 0.55,
+                "selected_profile_current_state": 0.55,
+            }
+        )
+    elif codex_user_goal_budget_query(args, ranking, question_type=question_type):
         defaults.update(
             {
                 "selected_user_prompt": 0.70,
+                "selected_assistant_profile_fact": 0.45,
                 "selected_assistant_decision_outcome_only": 0.30,
                 "selected_tool_evidence_only": 0.25,
                 "selected_profile_current_state": 0.55,
@@ -181,6 +212,7 @@ def auto_memory_selection_policy_budget_tokens(
         defaults.update(
             {
                 "selected_user_prompt": 0.40,
+                "selected_assistant_profile_fact": 0.55,
                 "selected_assistant_decision_outcome_only": 0.45,
                 "selected_tool_evidence_only": 0.30,
                 "selected_profile_current_state": 0.50,
@@ -190,6 +222,7 @@ def auto_memory_selection_policy_budget_tokens(
         defaults.update(
             {
                 "selected_user_prompt": 0.35,
+                "selected_assistant_profile_fact": 0.65,
                 "selected_assistant_decision_outcome_only": 0.40,
                 "selected_tool_evidence_only": 0.30,
                 "selected_profile_current_state": 0.65,
@@ -199,6 +232,7 @@ def auto_memory_selection_policy_budget_tokens(
         defaults.update(
             {
                 "selected_user_prompt": 0.25,
+                "selected_assistant_profile_fact": 0.30,
                 "selected_assistant_decision_outcome_only": 0.50,
                 "selected_tool_evidence_only": 0.65,
                 "selected_profile_current_state": 0.40,
@@ -208,6 +242,7 @@ def auto_memory_selection_policy_budget_tokens(
         defaults.update(
             {
                 "selected_user_prompt": 0.35,
+                "selected_assistant_profile_fact": 0.45,
                 "selected_assistant_decision_outcome_only": 0.45,
                 "selected_tool_evidence_only": 0.50,
             }
@@ -254,9 +289,30 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         "same_session_segment": 0.35,
         "cross_session_segment": 0.25,
         "profile_entity": 0.40,
+        "cross_session_codex_outcome_entity": 0.25,
     }
     normalized_question_type = str(question_type or "fact").strip().lower()
-    if normalized_question_type in {"current_state", "latest"}:
+    if codex_outcome_budget_query(args, ranking, question_type=question_type):
+        defaults.update(
+            {
+                "summary": 0.18,
+                "profile_summary": 0.35,
+                "same_session_summary": 0.18,
+                "cross_session_summary": 0.32,
+                "compression": 0.25,
+                "profile_compression": 0.35,
+                "same_session_compression": 0.20,
+                "cross_session_compression": 0.32,
+                "pending_async_event": 0.20,
+                "same_session_event": 0.35,
+                "cross_session_event": 0.38,
+                "same_session_segment": 0.30,
+                "cross_session_segment": 0.35,
+                "profile_entity": 0.45,
+                "cross_session_codex_outcome_entity": 0.62,
+            }
+        )
+    elif normalized_question_type in {"current_state", "latest"}:
         defaults.update(
             {
                 "summary": 0.15,
@@ -273,6 +329,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "same_session_segment": 0.30,
                 "cross_session_segment": 0.30,
                 "profile_entity": 0.55,
+                "cross_session_codex_outcome_entity": 0.45,
             }
         )
     elif normalized_question_type == "profile_memory":
@@ -292,6 +349,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "same_session_segment": 0.25,
                 "cross_session_segment": 0.40,
                 "profile_entity": 0.60,
+                "cross_session_codex_outcome_entity": 0.30,
             }
         )
     elif normalized_question_type in {"multi_hop", "date"}:
@@ -311,6 +369,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "same_session_segment": 0.35,
                 "cross_session_segment": 0.35,
                 "profile_entity": 0.45,
+                "cross_session_codex_outcome_entity": 0.40,
             }
         )
     elif normalized_question_type == "benchmark_quality":
@@ -330,6 +389,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "same_session_segment": 0.30,
                 "cross_session_segment": 0.35,
                 "profile_entity": 0.50,
+                "cross_session_codex_outcome_entity": 0.58,
             }
         )
     elif normalized_question_type in {"broad_exploration", "evidence"}:
@@ -349,6 +409,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "same_session_segment": 0.40,
                 "cross_session_segment": 0.30,
                 "profile_entity": 0.45,
+                "cross_session_codex_outcome_entity": 0.45,
             }
         )
     budgets: Json = {}
