@@ -141,6 +141,11 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     text = str(candidate.get("text", "")).lower()
     event_type = str(candidate.get("event_type") or candidate.get("entity_type") or candidate.get("topic") or "").lower()
     has_citation = bool(candidate.get("source_ref") or candidate.get("citation") or candidate.get("source_chunk_hash"))
+    profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
+    if ref_type == "entity" and profile_memory_kind == "codex_outcome" and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
+        return 0.52
+    if ref_type == "entity" and profile_memory_kind == "durable_profile" and question_type == "profile_memory":
+        return 0.46
     if question_type == "procedure":
         if ref_type == "skill_section":
             return 0.36
@@ -222,12 +227,18 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
     current_state_priority = 0.0
     if question_type in {"current_state", "latest"} and candidate.get("ref_type") == "entity":
         entity_type = str(candidate.get("entity_type") or candidate.get("event_type") or "").strip().lower()
-        if bool(candidate.get("profile_current_state_representative")) or bool(candidate.get("profile_current_state_boost")):
+        profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
+        if profile_memory_kind == "codex_outcome":
+            current_state_priority = 1.0
+        elif bool(candidate.get("profile_current_state_representative")) or bool(candidate.get("profile_current_state_boost")):
             current_state_priority = 1.0
         elif entity_type in {"assistant_decision", "tool_evidence"}:
             current_state_priority = 0.75
         elif str(candidate.get("memory_scope") or "") == "user_profile" and str(candidate.get("session_continuity") or "") == "cross_session":
             current_state_priority = 0.5
+    elif question_type == "profile_memory" and candidate.get("ref_type") == "entity":
+        if str(candidate.get("profile_memory_kind") or "").strip().lower() == "durable_profile":
+            current_state_priority = 0.9
     return (boosted, current_state_priority, token_efficiency, score)
 
 

@@ -211,6 +211,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(*location_terms)
     if re.search(r"\b(prefer|preference|favorite|like|likes|love|loves)\b", lower):
         add_group(context_index_name("entity_type", "preference"), context_index_name("event_type", "preference_update"))
+        add_group(context_index_name("profile_memory_kind", "durable_profile"))
     if re.search(r"\b(friend|partner|mother|father|sister|brother|wife|husband|manager|teammate|relationship|family|child|children|son|daughter|pet)\b", lower):
         add_group(context_index_name("entity_type", "relationship"), context_index_name("entity_type", "family_profile"))
     if re.search(r"\b(job|role|work|works|position|status|company|employer)\b", lower):
@@ -248,6 +249,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("memory_selection_policy", "selected_assistant_decision_outcome_only"),
             context_index_name("memory_selection_policy", "selected_tool_evidence_only"),
             context_index_name("source_type", "message"),
+            context_index_name("profile_memory_kind", "codex_outcome"),
         )
         outcome_terms = codex_outcome_fact_index_terms(query)
         if outcome_terms:
@@ -263,6 +265,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(
             context_index_name("memory_selection_policy", "selected_tool_evidence_only"),
             context_index_name("memory_selection_policy", "selected_assistant_decision_outcome_only"),
+            context_index_name("profile_memory_kind", "codex_outcome"),
         )
         metric_terms = benchmark_quality_index_terms(query)
         if metric_terms:
@@ -272,10 +275,18 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
     if re.search(r"\b(user profile|profile memory|long[- ]term memory|profile entity|profile entities|profile summary|profile summaries|current profile|latest profile|identity profile|communication profile|workspace profile|preferred language|preferred format|communication style|response style|workspace rules?|repo rules?|repository rules?|branch rules?|build rules?|deployment rules?)\b", lower) or question_type == "profile_memory":
         add_group(context_index_name("memory_scope", "user_profile"), context_index_name("session_continuity", "cross_session"))
         add_group(context_index_name("profile_entity_current", "true"), context_index_name("profile_summary_current", "true"))
+        add_group(
+            context_index_name("profile_memory_kind", "durable_profile"),
+            context_index_name("profile_memory_kind", "codex_outcome"),
+        )
     if question_type in {"current_state", "latest"} and re.search(r"\b(profile|cross[- ]session|long[- ]term|memory|entity|entities)\b", lower):
         add_group(context_index_name("profile_entity_current", "true"), context_index_name("profile_summary_current", "true"))
     if re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
-        add_group(context_index_name("entity_type", "tool_evidence"), context_index_name("event_type", "tool_evidence"))
+        add_group(
+            context_index_name("entity_type", "tool_evidence"),
+            context_index_name("event_type", "tool_evidence"),
+            context_index_name("profile_memory_kind", "codex_outcome"),
+        )
         outcome_terms = codex_outcome_fact_index_terms(query)
         if outcome_terms:
             add_group(*outcome_terms)
@@ -562,6 +573,10 @@ def candidate_index_terms(
         add_source_lineage_terms()
     elif record_type == "context_entity":
         terms.add(context_index_name("entity_type", record.get("entity_type")))
+        if record.get("profile_memory_class") not in (None, "", [], {}):
+            terms.add(context_index_name("profile_memory_class", record.get("profile_memory_class")))
+        if record.get("profile_memory_kind") not in (None, "", [], {}):
+            terms.add(context_index_name("profile_memory_kind", record.get("profile_memory_kind")))
         entity_name = record.get("entity_name")
         if entity_name not in (None, "", [], {}):
             terms.add(context_index_name("entity_name", normalized_index_value(entity_name).replace(":", "_")))
