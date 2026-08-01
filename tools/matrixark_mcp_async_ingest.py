@@ -9,6 +9,7 @@ try:
     from tools.matrixark_mcp_core import (
         Json,
         MatrixArkError,
+        candidate_memory_layer_name,
         context_index_name,
         context_index_posting_record,
         embedding_for_text,
@@ -28,6 +29,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         Json,
         MatrixArkError,
+        candidate_memory_layer_name,
         context_index_name,
         context_index_posting_record,
         embedding_for_text,
@@ -163,12 +165,23 @@ def _lightweight_source_layer_lineage(memory_layer_fields: Json) -> Json:
 
 def _lightweight_context_event_index_terms(source_counts: Json, memory_layer_fields: Json, envelope: Json) -> list[str]:
     policy_lineage = _lightweight_memory_policy_lineage(envelope)
+    memory_layer = candidate_memory_layer_name(
+        {
+            "record_type": "context_event",
+            "ref_type": "event",
+            "event_type": "pending_async",
+            **memory_layer_fields,
+            **policy_lineage,
+        }
+    )
     terms = [
         context_index_name("event_type", "pending_async"),
         context_index_name("classification", "pending_async_extraction"),
         context_index_name("status", "pending"),
         context_index_name("source_type", envelope.get("kind", "message")),
     ]
+    if memory_layer:
+        terms.append(context_index_name("memory_layer", memory_layer))
     for field in ["memory_scope", "session_continuity", "extraction_phase"]:
         value = str(memory_layer_fields.get(field) or "").strip()
         if value:
@@ -286,6 +299,15 @@ def lightweight_async_accept(
         "final_session_boundary": False,
     }
     source_layer_lineage = _lightweight_source_layer_lineage(memory_layer_fields)
+    memory_layer = candidate_memory_layer_name(
+        {
+            "record_type": "context_event",
+            "ref_type": "event",
+            "event_type": "pending_async",
+            **memory_layer_fields,
+            **policy_lineage,
+        }
+    )
     event_embedding = embedding_for_text(text)
     event_embedding_record: Json = {
         "record_type": "context_embedding",
@@ -302,6 +324,7 @@ def lightweight_async_accept(
         **memory_layer_fields,
         **source_layer_lineage,
         **policy_lineage,
+        **({"memory_layer": memory_layer} if memory_layer else {}),
     }
     event_index_terms = _lightweight_context_event_index_terms(source_counts, memory_layer_fields, envelope)
     event_index_records = [
@@ -361,6 +384,7 @@ def lightweight_async_accept(
                 **memory_layer_fields,
                 **source_layer_lineage,
                 **policy_lineage,
+                **({"memory_layer": memory_layer} if memory_layer else {}),
                 "async_processing": True,
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
@@ -395,6 +419,7 @@ def lightweight_async_accept(
                 **memory_layer_fields,
                 **source_layer_lineage,
                 **policy_lineage,
+                **({"memory_layer": memory_layer} if memory_layer else {}),
                 "created_at_ms": envelope["ingestion_time_ms"],
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
@@ -487,6 +512,7 @@ def lightweight_async_accept(
                 **memory_layer_fields,
                 **source_layer_lineage,
                 **policy_lineage,
+                **({"memory_layer": memory_layer} if memory_layer else {}),
                 "created_at_ms": envelope["ingestion_time_ms"],
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
