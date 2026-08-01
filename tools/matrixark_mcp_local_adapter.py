@@ -1352,7 +1352,8 @@ ASSISTANT_PROFILE_FACT_LINEAGE_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
     for pattern in [
         r"\b(?:user|you)\b.{0,96}\b(?:prefer|prefers|preference|likes|wants|needs|asked|requires|required|always|never|avoid|remember)\b",
-        r"\b(?:i(?:'ll| will)? remember|remembered|noted|got it)\b.{0,140}\b(?:prefer|preference|want|need|always|never|avoid|profile|memory)\b",
+        r"\b(?:i(?:'ll| will)? remember|remembered|noted|got it|understood)\b.{0,140}\b(?:prefer|preference|want|need|always|never|avoid|profile|memory|workspace|repo|branch|reply|respond|format|style)\b",
+        r"\b(?:i(?:'ll| will)|codex will|assistant will)\b.{0,64}\b(?:remember|keep|use|follow|prefer|avoid|not use|always use|make sure)\b",
         r"\b(?:standing instruction|standing preference|user profile|long[- ]term memor(?:y|ies)|saved preference|persistent instruction)\b",
         r"\b(?:call me|my name is|user(?:'s)? name is|user goes by|pronouns?|address (?:me|the user))\b",
         r"\b(?:reply|respond|answer|write|communication style|response style|answer style|preferred language|preferred format|timezone|time zone|locale)\b.{0,120}\b(?:concise|brief|detailed|bullets?|markdown|language|tone|style|format|timezone|locale)\b",
