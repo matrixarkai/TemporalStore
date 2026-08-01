@@ -19,7 +19,6 @@ pub mod raft;
 pub mod readiness;
 pub mod rebalance;
 pub mod redis;
-pub mod replica_replay;
 pub mod sdk;
 pub mod shared_store;
 pub mod storage_config;
@@ -223,11 +222,6 @@ pub use rebalance::{
     SchedulerLifecycleToken, ShardMovePlan, ShardReplica, ShardReplicaState, ShardRole,
 };
 pub use redis::{execute_redis_command, read_command, serve_redis_proxy, RespValue};
-pub use replica_replay::{
-    HttpReplicaStreamSource, ReplicaReplayCursor, ReplicaReplayError, ReplicaReplayLoop,
-    ReplicaReplayOptions, ReplicaReplayReport, ReplicaReplayRequest, ReplicaReplayResponse,
-    ReplicaStreamSource,
-};
 pub use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, MultiLayerCache};
 #[cfg(feature = "matrixobject")]
 pub use matrixobject_store::MatrixObjectObjectStore;
