@@ -54,7 +54,21 @@ def _idle_commit_schedule(args: Json, envelope: Json, pending_event_count: int, 
     }
 
 
+def _metadata_string_values(metadata: Json, *fields: str) -> list[str]:
+    values: list[str] = []
+    for field in fields:
+        raw = metadata.get(field)
+        if isinstance(raw, list):
+            values.extend(str(item or "").strip() for item in raw)
+        elif isinstance(raw, dict):
+            values.extend(str(key or "").strip() for key, count in raw.items() if count)
+        else:
+            values.append(str(raw or "").strip())
+    return ordered_unique([value for value in values if value])
+
+
 def _lightweight_context_event_index_terms(source_counts: Json, memory_layer_fields: Json, envelope: Json) -> list[str]:
+    metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
     terms = [
         context_index_name("event_type", "pending_async"),
         context_index_name("classification", "pending_async_extraction"),
@@ -71,6 +85,28 @@ def _lightweight_context_event_index_terms(source_counts: Json, memory_layer_fie
         terms.append(context_index_name("hook_type", hook_type))
     for codex_event in source_counts.get("source_codex_event_counts", {}):
         terms.append(context_index_name("codex_event", codex_event))
+    selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
+    policy_values = _metadata_string_values(
+        metadata,
+        "source_memory_selection_policies",
+        "source_memory_selection_policy_counts",
+        "memory_selection_policy",
+    )
+    policy_values.extend(_metadata_string_values(selection, "policies", "policy_counts", "policy"))
+    for policy in ordered_unique(policy_values):
+        terms.append(context_index_name("memory_selection_policy", policy))
+    for profile_kind in _metadata_string_values(
+        metadata,
+        "source_profile_memory_kinds",
+        "profile_memory_kind",
+    ):
+        terms.append(context_index_name("profile_memory_kind", profile_kind))
+    for profile_class in _metadata_string_values(
+        metadata,
+        "source_profile_memory_classes",
+        "profile_memory_class",
+    ):
+        terms.append(context_index_name("profile_memory_class", profile_class))
     return ordered_unique(terms)
 
 
