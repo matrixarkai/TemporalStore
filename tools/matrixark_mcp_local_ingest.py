@@ -31,9 +31,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 try:
-    from tools.matrixark_mcp_async_ingest import lightweight_async_accept
+    from tools.matrixark_mcp_async_ingest import lightweight_async_accept, _source_count_summary
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_async_ingest import lightweight_async_accept
+    from matrixark_mcp_async_ingest import lightweight_async_accept, _source_count_summary
 
 try:
     from tools.matrixark_mcp_ingest_setup import prepare_ingest_context
@@ -83,6 +83,7 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
     backend_readiness = ingest_start["backend_readiness"]
     idle_commit_result = ingest_start["idle_commit_result"]
     lightweight_result = ingest_start["lightweight_result"]
+    source_counts = _source_count_summary(envelope, hook)
     if lightweight_result is not None:
         return lightweight_result
     prior_records = [] if args.get("skip_prior_context") else self.read_all()
@@ -280,6 +281,7 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
                 "auto_batch_extract": auto_batch_extract,
                 "threshold_messages": session_buffer_threshold,
                 **idle_schedule,
+                **source_counts,
                 "source_extraction_phases": ["provisional"],
                 "extraction_phase": "provisional",
                 "final_session_boundary": False,
