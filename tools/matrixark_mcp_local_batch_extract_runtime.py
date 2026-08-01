@@ -26,6 +26,7 @@ try:
         now_ms,
         one_pass_memory_extraction,
         ordered_unique_any,
+        profile_memory_class_for_entity_type,
         secondary_index_budget_summary,
         stable_hash,
         summarize_text,
@@ -52,6 +53,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         now_ms,
         one_pass_memory_extraction,
         ordered_unique_any,
+        profile_memory_class_for_entity_type,
         secondary_index_budget_summary,
         stable_hash,
         summarize_text,
@@ -486,6 +488,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             profile_source_refs = ordered_unique_any(
                 list(previous_profile.get("source_refs", [])) + list(promoted_entity.get("source_refs", []))
             )
+            profile_memory_class = profile_memory_class_for_entity_type(promoted_entity.get("entity_type"))
             profile_source_event_ids = ordered_unique_any(
                 list(previous_profile.get("source_event_ids", [])) + event_hashes
             )
@@ -534,6 +537,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "entity_type": promoted_entity["entity_type"],
                     "entity_name": promoted_entity["entity_name"],
                     "source_session_ids": profile_source_session_ids,
+                    "profile_memory_class": profile_memory_class,
                     "policy": profile_promotion_policy,
                     "blocker": "",
                 }
@@ -548,6 +552,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "access_scope": profile_scope,
                 "entity_type": promoted_entity["entity_type"],
                 "entity_name": promoted_entity["entity_name"],
+                "profile_memory_class": profile_memory_class,
                 "state": promoted_entity["state"],
                 "previous_state": promoted_entity.get("previous_state", ""),
                 "confidence": promoted_entity["confidence"],
@@ -594,6 +599,9 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "model": embedding_model_name(),
                     "vector": profile_entity_vector,
                     "scope": profile_scope,
+                    "entity_type": promoted_entity["entity_type"],
+                    "entity_name": promoted_entity["entity_name"],
+                    "profile_memory_class": profile_memory_class,
                     "source_event_ids": profile_source_event_ids,
                     "source_session_ids": profile_source_session_ids,
                     "source_entity_hashes": profile_source_entity_hashes,
@@ -644,6 +652,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "source_hook_type_counts": profile_source_hook_type_counts,
                 "source_codex_events": profile_source_codex_events,
                 "source_codex_event_counts": profile_source_codex_event_counts,
+                "profile_memory_class": profile_memory_class,
                 "source_memory_selection_policies": profile_source_memory_selection_policies,
                 "source_memory_selection_policy_counts": profile_source_memory_selection_policy_counts,
                 "profile_promotion_policy": profile_promotion_policy,

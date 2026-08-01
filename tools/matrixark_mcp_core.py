@@ -3609,6 +3609,27 @@ def context_index_name(kind: str, value: Any) -> str:
     return f"{kind}:{normalized}" if normalized else ""
 
 
+def profile_memory_class_for_entity_type(entity_type: Any) -> str:
+    normalized = normalized_index_value(entity_type)
+    if normalized in {"identity_profile"}:
+        return "identity"
+    if normalized in {"communication_profile"}:
+        return "communication"
+    if normalized in {"workspace_profile"}:
+        return "workspace"
+    if normalized in {"preference", "approval_state", "confirmation", "correction"}:
+        return "preference"
+    if normalized in {"relationship", "family_profile", "job_status", "location"}:
+        return "personal_context"
+    if normalized in {"current_plan"}:
+        return "task_context"
+    if normalized in {"assistant_decision", "tool_evidence"}:
+        return "codex_outcome"
+    if normalized in {"resource_fact"}:
+        return "resource_context"
+    return "general"
+
+
 def non_default_classification(value: Any) -> str:
     classification = str(value or "").strip().upper()
     return "" if classification in {"", "NEW_EVENT"} else classification
@@ -4617,12 +4638,15 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
     if re.search(r"\b(name|nickname|call me|called|pronoun|pronouns|who am i|who is the user|address me)\b", lower):
         add_group(context_index_name("entity_type", "identity_profile"))
+        add_group(context_index_name("profile_memory_class", "identity"))
         add_group(context_index_name("memory_scope", "user_profile"))
     if re.search(r"\b(language|locale|timezone|time zone|tone|style|format|bullet|bullets|markdown|concise|brief|detailed|reply|respond|answer style|communication style)\b", lower):
         add_group(context_index_name("entity_type", "communication_profile"))
+        add_group(context_index_name("profile_memory_class", "communication"))
         add_group(context_index_name("memory_scope", "user_profile"))
     if re.search(r"\b(workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|build|deploy|deployment|rustraft|temporalstore|matrixark)\b", lower):
         add_group(context_index_name("entity_type", "workspace_profile"))
+        add_group(context_index_name("profile_memory_class", "workspace"))
         add_group(context_index_name("memory_scope", "user_profile"))
     if re.search(r"\b(friend|partner|mother|father|sister|brother|wife|husband|manager|teammate|relationship|family|child|children|son|daughter|pet)\b", lower):
         add_group(context_index_name("entity_type", "relationship"), context_index_name("entity_type", "family_profile"))
@@ -4653,6 +4677,15 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
     if re.search(r"\b(user profile|profile memory|long[- ]term memory|profile entity|profile entities|profile summary|profile summaries)\b", lower):
         add_group(context_index_name("memory_scope", "user_profile"))
         add_group(context_index_name("profile_entity_current", "true"), context_index_name("profile_summary_current", "true"))
+        add_group(
+            context_index_name("profile_memory_class", "identity"),
+            context_index_name("profile_memory_class", "communication"),
+            context_index_name("profile_memory_class", "workspace"),
+            context_index_name("profile_memory_class", "preference"),
+            context_index_name("profile_memory_class", "personal_context"),
+            context_index_name("profile_memory_class", "task_context"),
+            context_index_name("profile_memory_class", "codex_outcome"),
+        )
         add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
     if re.search(r"\b(cross[- ]session|across sessions|between sessions|multi[- ]session|long[- ]term)\b", lower):
         add_group(context_index_name("session_continuity", "cross_session"))
@@ -4950,6 +4983,8 @@ def candidate_index_terms(
         add_direct_layer_terms()
     elif record_type == "context_entity":
         terms.add(context_index_name("entity_type", record.get("entity_type")))
+        if record.get("profile_memory_class") not in (None, "", [], {}):
+            terms.add(context_index_name("profile_memory_class", record.get("profile_memory_class")))
         entity_name = record.get("entity_name")
         if entity_name not in (None, "", [], {}):
             terms.add(context_index_name("entity_name", normalized_index_value(entity_name).replace(":", "_")))

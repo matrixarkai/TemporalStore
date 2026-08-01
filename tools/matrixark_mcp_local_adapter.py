@@ -8121,6 +8121,7 @@ class MatrixArkLocalAdapter:
                 previous_profile_revision = int(previous_profile.get("profile_revision") or 0)
                 profile_revision = previous_profile_revision + 1
                 previous_profile_updated_at_ms = int(previous_profile.get("updated_at_ms") or 0)
+                profile_memory_class = profile_memory_class_for_entity_type(promoted_entity.get("entity_type"))
                 profile_entity_hashes.append(profile_entity_hash)
                 profile_promotion_summary.append(
                     {
@@ -8128,6 +8129,7 @@ class MatrixArkLocalAdapter:
                         "session_entity_hash": entity_hash,
                         "entity_type": promoted_entity["entity_type"],
                         "entity_name": promoted_entity["entity_name"],
+                        "profile_memory_class": profile_memory_class,
                         "source_session_ids": profile_source_session_ids,
                         "source_entity_count": len(profile_source_entity_hashes),
                         "source_ref_count": len(profile_source_refs),
@@ -8158,6 +8160,7 @@ class MatrixArkLocalAdapter:
                     "access_scope": profile_scope,
                     "entity_type": promoted_entity["entity_type"],
                     "entity_name": promoted_entity["entity_name"],
+                    "profile_memory_class": profile_memory_class,
                     "state": promoted_entity["state"],
                     "previous_state": promoted_entity.get("previous_state", ""),
                     "confidence": promoted_entity["confidence"],
@@ -8216,6 +8219,7 @@ class MatrixArkLocalAdapter:
                         "scope": profile_scope,
                         "entity_type": promoted_entity["entity_type"],
                         "entity_name": promoted_entity["entity_name"],
+                        "profile_memory_class": profile_memory_class,
                         "source_event_ids": profile_source_event_ids,
                         "source_session_ids": profile_source_session_ids,
                         "source_entity_hashes": profile_source_entity_hashes,
