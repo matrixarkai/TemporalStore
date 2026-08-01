@@ -50,6 +50,27 @@ def attach_memory_layer(record: Json) -> Json:
     return {**record, "memory_layer": layer}
 
 
+def add_codex_selection_policies(bucket: Json, selection: Json, add_count_fn: object) -> None:
+    if not isinstance(selection, dict):
+        return
+    counted: set[str] = set()
+    if isinstance(selection.get("policy_counts"), dict):
+        for policy, count in selection["policy_counts"].items():
+            policy_name = str(policy or "").strip()
+            if policy_name:
+                counted.add(policy_name)
+            add_count_fn(bucket, policy, count)
+    if isinstance(selection.get("policies"), list):
+        for policy in selection["policies"]:
+            policy_name = str(policy or "").strip()
+            if policy_name and policy_name not in counted:
+                counted.add(policy_name)
+                add_count_fn(bucket, policy)
+    primary_policy = str(selection.get("policy") or "").strip()
+    if primary_policy and primary_policy not in counted:
+        add_count_fn(bucket, primary_policy)
+
+
 def _event_source_count_summary(envelope: Json, hook: Json | None) -> Json:
     metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
     hook = hook if isinstance(hook, dict) else {}
@@ -130,7 +151,7 @@ def _event_source_count_summary(envelope: Json, hook: Json | None) -> Json:
     else:
         add_values(selection_policy_counts, metadata.get("source_memory_selection_policies"))
         selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
-        add_count(selection_policy_counts, selection.get("policy"))
+        add_codex_selection_policies(selection_policy_counts, selection, add_count)
     add_values(profile_memory_class_counts, metadata.get("source_profile_memory_classes"))
     add_values(profile_memory_class_counts, metadata.get("profile_memory_class"))
     add_values(profile_memory_kind_counts, metadata.get("source_profile_memory_kinds"))
@@ -387,7 +408,7 @@ def _pending_source_count_summary(records: list[Json]) -> Json:
                 if isinstance(event_metadata.get("codex_memory_selection"), dict)
                 else {}
             )
-            add_count(selection_policy_counts, selection.get("policy"))
+            add_codex_selection_policies(selection_policy_counts, selection, add_count)
         for source in [record, event_metadata]:
             add_values(profile_memory_class_counts, source.get("source_profile_memory_classes"))
             add_values(profile_memory_class_counts, source.get("profile_memory_class"))
