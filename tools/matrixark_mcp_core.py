@@ -2412,6 +2412,11 @@ PROFILE_MEMORY_QUERY_RE = re.compile(
     r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|identity profile|communication profile|workspace profile|openviking|vikingmem|mem0|memory feature parity|feature parity|feature[- ]focused memor(?:y|ies)|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionality only|memory functionalit(?:y|ies)|memory algorithms?|memory algos?|no testing|no teseting|no monitoring|no debugging|no evidence|no evident|session memory|remember about me|remember about|what should (?:i|you|we) remember|standing instructions?|standing preferences?|persistent instructions?|saved preferences?|know about (?:me|my|the user)|what (?:have|did) i (?:tell|told) you|what (?:are|were|do|did) my preferences|what do i prefer|do i prefer|my preferences|my .*?(?:policy|policies|instruction|instructions|preference|preferences)|told you before|from previous sessions?|across sessions?|across conversations?|between conversations?|how should (?:you|codex) (?:address|reply|respond|answer)|what (?:is|are) my (?:name|nickname|pronouns?|preferred language|preferred format|communication style|response style|workspace rules?|repo rules?|repository rules?|branch rules?|build rules?|deployment rules?)|what (?:workspace|repo|repository|branch|build|deployment|github|remote) rules? (?:do|should) (?:you|codex) remember|what (?:workflow|workflows|rules?|instructions?|preferences?) (?:do|should) (?:you|codex) follow)\b"
 )
 
+FEATURE_SCOPE_EXCLUSION_RE = re.compile(
+    r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\s+"
+    r"(?:testing|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b"
+)
+
 CODEX_OUTCOME_QUERY_RE = re.compile(r"\b(?:codex|assistant|agent)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|validated|verified|push(?:ed)?|publish(?:ed)?|deploy(?:ed)?|release(?:d)?|merge(?:d)?|commit(?:ted)?|rebase(?:d)?|failed|blocked|blocker|done|outcome|decision|decided|next action)\b|\bwhat (?:was|were|did)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|validated|verified|push(?:ed)?|publish(?:ed)?|deploy(?:ed)?|release(?:d)?|merge(?:d)?|commit(?:ted)?|failed|blocked|done)\b|\bwhat did (?:you|we)\b.{0,80}\b(?:implement|fix|change|update|configure|enable|disable|install|migrate|recover|restore|clean|validate|verify|push|publish|deploy|release|merge|commit|rebase|fail|block|decide|do)\b|\b(?:show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:assistant decision|tool evidence|validation evidence|pushed commit|blocked work|failed validation|validation result|test result|tests? passed|pushed commit|deployment result|deploy(?:ed)? result|install(?:ed)? result|configured result|configuration result|recovery result|migration result|merge result|publish(?:ed)? result|release result|outcome facts?)\b|\b(?:what|which|show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:tests? passed|validation (?:passed|result|evidence)|pushed commit|commit (?:was )?pushed|push result|rebase result|deploy(?:ed)? result|deployment result|install(?:ed)? result|configured result|configuration result|recovery result|migration result|merge result|publish(?:ed)? result|release result)\b|\bwhat (?:failed|was blocked|blocked)\b.{0,80}\b(?:memory work|work|validation|commit|push|deploy|deployment|install|configuration|migration|recovery|merge|publish|release|tool|codex|temporalstore)\b")
 
 QUERY_INDEX_LABELS: dict[str, str] = {
@@ -4822,6 +4827,7 @@ def keyword_candidates_from_query(query: str) -> list[str]:
 
 def deterministic_secondary_index_filter_groups(query: str, question_type: str) -> list[set[str]]:
     lower = query.lower()
+    feature_scope_excludes_evidence = bool(FEATURE_SCOPE_EXCLUSION_RE.search(lower))
     groups: list[set[str]] = []
 
     def add_group(*terms: str) -> None:
@@ -4897,7 +4903,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
     if PROFILE_MEMORY_QUERY_RE.search(lower):
         add_group(context_index_name("memory_scope", "user_profile"))
         add_group(context_index_name("profile_entity_current", "true"), context_index_name("profile_summary_current", "true"))
-        add_group(
+        profile_memory_class_terms = [
             context_index_name("profile_memory_class", "identity"),
             context_index_name("profile_memory_class", "communication"),
             context_index_name("profile_memory_class", "workspace"),
@@ -4905,13 +4911,17 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("profile_memory_class", "preference"),
             context_index_name("profile_memory_class", "personal_context"),
             context_index_name("profile_memory_class", "task_context"),
-            context_index_name("profile_memory_class", "codex_outcome"),
-        )
-        add_group(
+        ]
+        if not feature_scope_excludes_evidence:
+            profile_memory_class_terms.append(context_index_name("profile_memory_class", "codex_outcome"))
+        add_group(*profile_memory_class_terms)
+        profile_memory_kind_terms = [
             context_index_name("profile_memory_kind", "durable_profile"),
-            context_index_name("profile_memory_kind", "codex_outcome"),
             context_index_name("profile_memory_kind", "memory_feature"),
-        )
+        ]
+        if not feature_scope_excludes_evidence:
+            profile_memory_kind_terms.append(context_index_name("profile_memory_kind", "codex_outcome"))
+        add_group(*profile_memory_kind_terms)
         add_group(
             context_index_name("memory_layer", "cross_session_memory_feature_entity"),
             context_index_name("memory_layer", "cross_session_memory_feature_summary"),
@@ -4923,7 +4933,10 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
     if re.search(r"\b(session[- ]local|same[- ]session|current session|this session|session specific|session-specific)\b", lower):
         add_group(context_index_name("memory_scope", "session"))
         add_group(context_index_name("session_continuity", "same_session"))
-    if CODEX_OUTCOME_QUERY_RE.search(lower) or re.search(r"\b(assistant|decision|decided|done|implemented|fixed|changed|updated|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|validated|verified|push(?:ed)?|publish(?:ed)?|deploy(?:ed)?|release(?:d)?|merge(?:d)?|commit(?:ted)?|rebase(?:d)?|failed|blocked|final answer|what did codex|what did you|what did we|what was done|next action)\b", lower):
+    if not feature_scope_excludes_evidence and (
+        CODEX_OUTCOME_QUERY_RE.search(lower)
+        or re.search(r"\b(assistant|decision|decided|done|implemented|fixed|changed|updated|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|validated|verified|push(?:ed)?|publish(?:ed)?|deploy(?:ed)?|release(?:d)?|merge(?:d)?|commit(?:ted)?|rebase(?:d)?|failed|blocked|final answer|what did codex|what did you|what did we|what was done|next action)\b", lower)
+    ):
         add_group(
             context_index_name("entity_type", "assistant_decision"),
             context_index_name("entity_type", "codex_next_action"),
@@ -4952,7 +4965,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         outcome_terms = codex_outcome_fact_index_terms(query)
         if outcome_terms:
             add_group(*outcome_terms)
-    if re.search(r"\b(benchmark|workload|latency|p50|p90|p95|p99|throughput|qps|ops/s|req/s|hit[- ]?rate|read[- ]?hit|quality|recall|precision|locomo|longmemeval|memory[- ]?quality)\b", lower):
+    if not feature_scope_excludes_evidence and re.search(r"\b(benchmark|workload|latency|p50|p90|p95|p99|throughput|qps|ops/s|req/s|hit[- ]?rate|read[- ]?hit|quality|recall|precision|locomo|longmemeval|memory[- ]?quality)\b", lower):
         add_group(
             context_index_name("entity_type", "tool_evidence"),
             context_index_name("event_type", "tool_evidence"),
@@ -4977,7 +4990,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             add_group(*metric_terms)
         if re.search(r"\b(hit[- ]?rate|read[- ]?hit|quality|recall|precision|locomo|longmemeval|memory[- ]?quality)\b", lower):
             add_group(context_index_name("memory_scope", "user_profile"), context_index_name("session_continuity", "cross_session"))
-    if re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|published|deploy(?:ed)?|deployment|release(?:d)?|merge(?:d)?|rebase(?:d)?|configured|configuration|enabled|disabled|installed|migrated|recovered|restored|cleaned|promoted|indexed|budgeted|batched|flushed|validation|benchmark|blocker)\b", lower):
+    if not feature_scope_excludes_evidence and re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|published|deploy(?:ed)?|deployment|release(?:d)?|merge(?:d)?|rebase(?:d)?|configured|configuration|enabled|disabled|installed|migrated|recovered|restored|cleaned|promoted|indexed|budgeted|batched|flushed|validation|benchmark|blocker)\b", lower):
         add_group(
             context_index_name("entity_type", "tool_evidence"),
             context_index_name("entity_type", "codex_validation"),
@@ -5009,7 +5022,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
         if re.search(r"\b(assistant|decision|outcome|final answer|what did codex|what did you|what did we|what was done|done|fixed|implemented)\b", lower):
             add_group(context_index_name("memory_selection_policy", "selected_assistant_decision_outcome_only"))
-        if re.search(r"\b(tool|tool output|tool result|evidence|test|tests|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
+        if not feature_scope_excludes_evidence and re.search(r"\b(tool|tool output|tool result|evidence|test|tests|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
             add_group(context_index_name("memory_selection_policy", "selected_tool_evidence_only"))
     if re.search(r"\b(lossy|truncated|dropped|omitted|shortened|summarized output|large output)\b", lower):
         add_group(context_index_name("memory_selection_quality", "lossy"))
