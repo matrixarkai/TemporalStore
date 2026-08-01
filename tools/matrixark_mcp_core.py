@@ -2703,6 +2703,20 @@ def tool_evidence_memory_text(text: str) -> str:
     return summarize_text(" ".join(selected) if selected else compact, limit=260)
 
 
+def profile_entity_type_for_memory_text(text: str) -> str:
+    """Classify durable personal memory into profile layers used by retrieval."""
+    lower = " ".join(str(text or "").lower().split())
+    if not lower:
+        return ""
+    if re.search(r"\b(?:call me|my name is|i am called|i'm called|user(?:'s)? name|user goes by|pronouns?|address (?:me|the user)|nickname)\b", lower):
+        return "identity_profile"
+    if re.search(r"\b(?:reply|respond|answer|write|communication style|response style|answer style|preferred language|preferred format|language|locale|timezone|time zone|tone|style|format|bullets?|bullet points?|markdown|concise|brief|detailed)\b", lower):
+        return "communication_profile"
+    if re.search(r"\b(?:workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|folder|build|deploy|deployment|rustraft|temporalstore|matrixark)\b", lower):
+        return "workspace_profile"
+    return ""
+
+
 def normalized_extraction_message_role(role: Any) -> str:
     role_name = str(role or "").strip().lower()
     return {
@@ -2891,18 +2905,22 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 directive = clean_patch_value(match.group(0))
                 if not directive:
                     continue
-                prefix = "user directive" if entity_type == "preference" else "user plan"
+                directive_entity_type = profile_entity_type_for_memory_text(directive) or entity_type
+                if directive_entity_type.endswith("_profile"):
+                    prefix = "user profile"
+                else:
+                    prefix = "user directive" if directive_entity_type == "preference" else "user plan"
                 state = summarize_text(f"{prefix}: {directive}", limit=220)
                 entities.append(
                     {
-                        "entity_type": entity_type,
-                        "entity_name": summarize_text(f"{entity_type}:{directive}", limit=96),
+                        "entity_type": directive_entity_type,
+                        "entity_name": summarize_text(f"{directive_entity_type}:{directive}", limit=96),
                         "state": state,
                         "confidence": 0.86,
                         "source_refs": source_refs_for_role("user"),
                         "source_roles": ["user"],
                         "source_role_counts": {"user": 1},
-                        "operator": normalize_entity_operator(None, entity_type),
+                        "operator": normalize_entity_operator(None, directive_entity_type),
                         "field_patches": [entity_patch("", summarize_text(state, limit=180))],
                     }
                 )

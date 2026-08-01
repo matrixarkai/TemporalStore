@@ -191,6 +191,20 @@ def tool_evidence_memory_text(text: str) -> str:
     return summarize_text(" ".join(selected) if selected else compact, limit=260)
 
 
+def profile_entity_type_for_memory_text(text: str) -> str:
+    """Classify durable personal memory into profile layers used by retrieval."""
+    lower = " ".join(str(text or "").lower().split())
+    if not lower:
+        return ""
+    if re.search(r"\b(?:call me|my name is|i am called|i'm called|user(?:'s)? name|user goes by|pronouns?|address (?:me|the user)|nickname)\b", lower):
+        return "identity_profile"
+    if re.search(r"\b(?:reply|respond|answer|write|communication style|response style|answer style|preferred language|preferred format|language|locale|timezone|time zone|tone|style|format|bullets?|bullet points?|markdown|concise|brief|detailed)\b", lower):
+        return "communication_profile"
+    if re.search(r"\b(?:workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|folder|build|deploy|deployment|rustraft|temporalstore|matrixark)\b", lower):
+        return "workspace_profile"
+    return ""
+
+
 def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     entities: list[Json] = []
     text = text_from_messages(messages)
@@ -225,15 +239,16 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
             directive = clean_patch_value(match.group(1))
             if not directive:
                 continue
+            entity_type = profile_entity_type_for_memory_text(match.group(0)) or "preference"
             state = summarize_text(f"user directive: {directive}", limit=220)
             entities.append(
                 {
-                    "entity_type": "preference",
-                    "entity_name": "preference",
+                    "entity_type": entity_type,
+                    "entity_name": canonical_entity_name(entity_type, directive) or entity_type,
                     "state": state,
                     "confidence": 0.84,
                     "source_refs": source_refs,
-                    "operator": normalize_entity_operator(None, "preference"),
+                    "operator": normalize_entity_operator(None, entity_type),
                     "field_patches": [entity_patch("", summarize_text(state, limit=180))],
                 }
             )
@@ -288,6 +303,14 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         ("job_status", r"\b(?:job|role|work|works|position|status)\s+(?:is|as|at|with)?\s*([^.;!?]{2,120})"),
         ("current_plan", r"\b(?:plan|plans|planning|going to|will)\s+([^.;!?]{2,140})"),
         ("family_profile", r"\b(?:family|child|children|son|daughter|pet|dog|cat)\s+([^.;!?]{0,120})"),
+        ("identity_profile", r"\b(?:call me|my name is|i am called|i'm called)\s+([^.;!?]{2,80})"),
+        ("identity_profile", r"\b(?:user(?:'s)? name is|user goes by|user prefers to be called)\s+([^.;!?]{2,80})"),
+        ("identity_profile", r"\b(?:my pronouns are|user(?:'s)? pronouns are)\s+([^.;!?]{2,80})"),
+        ("communication_profile", r"\b(?:reply|respond|answer|write)\s+(?:to\s+me\s+)?(?:in|with|using)\s+([^.;!?]{2,140})"),
+        ("communication_profile", r"\b(?:communication style|response style|answer style|preferred language|preferred format|timezone|time zone|locale)[:\s]+([^.;!?]{2,160})"),
+        ("workspace_profile", r"\b(?:always|please|must|should|use|keep|prefer)\s+([^.;!?]{2,180}?\b(?:ubuntu|wsl|linux|repo|repository|workspace|worktree|folder|branch|main|remote|github|rustraft|temporalstore|matrixark|build|deploy|deployment))"),
+        ("workspace_profile", r"\b(?:do not|don't|never|avoid|stop)\s+([^.;!?]{2,180}?\b(?:windows|folder|repo|repository|worktree|branch|remote|build|deploy|deployment))"),
+        ("workspace_profile", r"\b(?:workspace|repo|repository|branch|remote|github|build|deployment|deploy|ubuntu|wsl|linux|rustraft|temporalstore|matrixark)[:\s]+([^.;!?]{2,180})"),
         ("correction", r"\b(?:correction|correct|wrong|instead|updated|changed)\s+([^.;!?]{2,140})"),
         ("approval_state", r"\b(?:approved|approval)\s+([^.;!?]{2,140})"),
         ("confirmation", r"\b(?:yes|confirmed|approved|correct|looks good)\b([^.;!?]{0,120})"),
@@ -359,6 +382,9 @@ def infer_entity_field_patches(entity_type: str, value: str, text: str) -> list[
         "job_status",
         "current_plan",
         "family_profile",
+        "identity_profile",
+        "communication_profile",
+        "workspace_profile",
         "relationship",
         "approval_state",
         "correction",
@@ -383,6 +409,9 @@ def canonical_entity_name(entity_type: str, value: str) -> str:
         "job_status",
         "current_plan",
         "family_profile",
+        "identity_profile",
+        "communication_profile",
+        "workspace_profile",
         "correction",
         "confirmation",
         "assistant_decision",
