@@ -2457,6 +2457,9 @@ PROFILE_MEMORY_STANDING_RULE_QUERY_RE = re.compile(
     r"\b(?:which|what|where|should|must|need)\b.{0,80}\b(?:repo|repository|folder|workspace|worktree|ubuntu|wsl|linux|windows|branch|remote|github|main branch|build|deploy|deployment|push)\b.{0,80}\b(?:use|work|build|push|commit|rebase|download|clone|store|keep|follow|prefer)\b"
     r"|\b(?:use|work|build|push|commit|rebase|download|clone|store|keep|follow|prefer)\b.{0,80}\b(?:repo|repository|folder|workspace|worktree|ubuntu|wsl|linux|windows|branch|remote|github|main branch|build|deploy|deployment|push)\b.{0,80}\b(?:which|what|where|should|must|need)\b"
     r"|\b(?:which|what|where|should|must|need)\b.{0,80}\b(?:use|work|build|push|commit|rebase|download|clone|store|keep|follow|prefer)\b.{0,80}\b(?:repo|repository|folder|workspace|worktree|ubuntu|wsl|linux|windows|branch|remote|github|main branch|temporalstore|rustraft|matrixark)\b"
+    r"|\b(?:what|which|how)\b.{0,80}\b(?:always|default|standing|persistent)\b.{0,80}\b(?:do|behav(?:e|ior)|rules?|instructions?|preferences?|follow|remember)\b"
+    r"|\b(?:what|which|how)\b.{0,80}\b(?:do|behav(?:e|ior)|follow|remember)\b.{0,80}\b(?:always|by default|default|standing|persistent)\b"
+    r"|\b(?:always|default|standing|persistent)\b.{0,80}\b(?:rules?|instructions?|preferences?|behaviou?r|workflow|workflows)\b"
 )
 
 FEATURE_MEMORY_QUERY_RE = re.compile(
