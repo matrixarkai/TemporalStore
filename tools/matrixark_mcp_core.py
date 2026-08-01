@@ -2865,7 +2865,7 @@ def codex_outcome_fact_entities(
 ) -> list[Json]:
     source_role = "tool" if role_name == "tool" else "assistant"
     entities: list[Json] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     for raw_line in str(text or "").splitlines():
         compact_line = " ".join(raw_line.split()).strip(" -*")
         for candidate in re.split(r"\s*;\s*", compact_line):
@@ -2876,15 +2876,17 @@ def codex_outcome_fact_entities(
             if not kind:
                 continue
             entity_type = codex_outcome_entity_type(kind)
-            key = (entity_type, source_role)
+            normalized_fact = normalized_index_value(line)
+            key = (entity_type, source_role, normalized_fact)
             if key in seen:
                 continue
             seen.add(key)
             state = summarize_text(f"{source_role} {kind}: {line}", limit=220)
+            entity_name = summarize_text(f"{entity_type}:{normalized_fact or line}", limit=96)
             entities.append(
                 {
                     "entity_type": entity_type,
-                    "entity_name": entity_type,
+                    "entity_name": entity_name,
                     "state": state,
                     "confidence": 0.9 if kind in {"outcome", "validation"} else 0.86,
                     "source_refs": source_refs,
