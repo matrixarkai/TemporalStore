@@ -1,0 +1,771 @@
+{
+  "cpp_contract": {
+    "append_object_returns_object_info": true,
+    "backend": "cpp",
+    "checks": {
+      "object_cc:AppendCommittedObjectChangeLocked\\(\\\"append_object\\\"": true,
+      "object_cc:Status\\s+ObjectStore::AppendObject": true,
+      "object_cc:const\\s+uint64_t\\s+previous_size": true,
+      "object_cc:info\\.extents\\s*=\\s*extents": true,
+      "object_cc:info\\.offset\\s*=\\s*extents\\.front\\(\\)\\.offset": true,
+      "object_cc:info\\.size\\s*=\\s*appended_size": true,
+      "object_h:Status\\s+AppendObject": true,
+      "object_h:std::vector<ObjectExtent>\\s+extents": true,
+      "object_h:struct\\s+ObjectInfo": true,
+      "object_h:uint64_t\\s+offset\\s*=\\s*0": true,
+      "rpc_cc:\\[extent_prefix\\s*\\+\\s*\\\"length\\\"\\]\\s*=\\s*std::to_string\\(info\\.extents\\[i\\]\\.length\\)": true,
+      "rpc_cc:\\[extent_prefix\\s*\\+\\s*\\\"offset\\\"\\]\\s*=\\s*std::to_string\\(info\\.extents\\[i\\]\\.offset\\)": true,
+      "rpc_cc:\\[prefix\\s*\\+\\s*\\\"offset\\\"\\]\\s*=\\s*std::to_string\\(info\\.offset\\)": true,
+      "rpc_cc:request\\.method\\s*==\\s*\\\"AppendObject\\\"": true,
+      "rust_api:->\\s*Result<ObjectMetadata,\\s*ObjectError>": true,
+      "rust_api:pub\\s+extents:\\s+Vec<ObjectExtent>": true,
+      "rust_api:pub\\s+fn\\s+append_object": true,
+      "rust_api:pub\\s+struct\\s+ObjectMetadata": true
+    },
+    "evidence_type": "source_contract",
+    "matrixobject_commit": "64a2206151b6467797748b829a6f3fe920ed45e9",
+    "matrixobject_repo": "/root/src/github-services/MatrixObjectStore",
+    "rpc_exposes_offset_and_extents": true,
+    "rust_matrixobject_api_exposes_metadata": true,
+    "source_files": {
+      "object_cc": "/root/src/github-services/MatrixObjectStore/matrixobjectstore/objectstore/objectstore.cc",
+      "objectstore_h": "/root/src/github-services/MatrixObjectStore/matrixobjectstore/objectstore/objectstore.h",
+      "objectstore_rpc_cc": "/root/src/github-services/MatrixObjectStore/matrixobjectstore/objectstore/objectstore_rpc.cc",
+      "rust_lib": "/root/src/github-services/MatrixObjectStore/rust/matrixobjectstore-rs/src/lib.rs"
+    }
+  },
+  "cpp_runtime": {
+    "appends": [
+      {
+        "bytes": 64,
+        "end_offset": 64,
+        "extent_count": 1,
+        "first_physical_offset": 0,
+        "index": 0,
+        "indexed_latency_us": 14323.375,
+        "latency_us": 6142.718,
+        "object_size": 64,
+        "start_offset": 0,
+        "version": 1
+      },
+      {
+        "bytes": 64,
+        "end_offset": 128,
+        "extent_count": 2,
+        "first_physical_offset": 0,
+        "index": 1,
+        "indexed_latency_us": 19757.46,
+        "latency_us": 10471.298,
+        "object_size": 128,
+        "start_offset": 64,
+        "version": 2
+      },
+      {
+        "bytes": 64,
+        "end_offset": 192,
+        "extent_count": 3,
+        "first_physical_offset": 0,
+        "index": 2,
+        "indexed_latency_us": 18692.287,
+        "latency_us": 9096.572,
+        "object_size": 192,
+        "start_offset": 128,
+        "version": 3
+      },
+      {
+        "bytes": 64,
+        "end_offset": 256,
+        "extent_count": 4,
+        "first_physical_offset": 0,
+        "index": 3,
+        "indexed_latency_us": 19771.771,
+        "latency_us": 9587.429,
+        "object_size": 256,
+        "start_offset": 192,
+        "version": 4
+      },
+      {
+        "bytes": 64,
+        "end_offset": 320,
+        "extent_count": 5,
+        "first_physical_offset": 0,
+        "index": 4,
+        "indexed_latency_us": 21323.795,
+        "latency_us": 8712.603,
+        "object_size": 320,
+        "start_offset": 256,
+        "version": 5
+      },
+      {
+        "bytes": 64,
+        "end_offset": 384,
+        "extent_count": 6,
+        "first_physical_offset": 0,
+        "index": 5,
+        "indexed_latency_us": 18161.38,
+        "latency_us": 8540.791,
+        "object_size": 384,
+        "start_offset": 320,
+        "version": 6
+      },
+      {
+        "bytes": 64,
+        "end_offset": 448,
+        "extent_count": 7,
+        "first_physical_offset": 0,
+        "index": 6,
+        "indexed_latency_us": 18800.214,
+        "latency_us": 8955.518,
+        "object_size": 448,
+        "start_offset": 384,
+        "version": 7
+      },
+      {
+        "bytes": 64,
+        "end_offset": 512,
+        "extent_count": 8,
+        "first_physical_offset": 0,
+        "index": 7,
+        "indexed_latency_us": 19014.845,
+        "latency_us": 10358.671,
+        "object_size": 512,
+        "start_offset": 448,
+        "version": 8
+      }
+    ],
+    "engine": "cpp_matrixobjectstore",
+    "entries": 8,
+    "full_read_matches": true,
+    "offset_index_extent_count": 8,
+    "offset_index_matches": true,
+    "offset_index_object_size": 356,
+    "offsets_contiguous": true,
+    "offsets_monotonic": true,
+    "read_cache_bytes": 0,
+    "read_cache_hits": 14,
+    "read_cache_max_bytes": 67108864,
+    "read_cache_misses": 3,
+    "read_cache_pages": 0,
+    "read_full_latency_us": 4546.661,
+    "read_tail_latency_us": 3094.613,
+    "reopen_latency_us": 3409.465,
+    "reopened_extent_count": 8,
+    "reopened_object_size": 512,
+    "reopened_recovered_all_bytes": true,
+    "root": "/root/src/github-services/TemporalStore/docs/benchmarks/shared_store_blob_append_parity_incremental_journal_64a_current_release/cpp_matrixobjectstore_runtime_root",
+    "status": "passed",
+    "tail_read_matches": true,
+    "total_bytes": 512,
+    "value_bytes": 64
+  },
+  "cpp_runtime_command": {
+    "argv": [
+      "/root/src/github-services/MatrixObjectStore/build-mvp/matrixobjectstore/objectstore/objectstore_append_blob_parity_report",
+      "/root/src/github-services/TemporalStore/docs/benchmarks/shared_store_blob_append_parity_incremental_journal_64a_current_release/cpp_matrixobjectstore_runtime_root",
+      "8",
+      "64"
+    ],
+    "elapsed_ms": 189.747,
+    "mode": "executed",
+    "returncode": 0,
+    "stderr_tail": ""
+  },
+  "cpp_runtime_summary": {
+    "append_latency_avg_us": 8983.2,
+    "full_read_matches": true,
+    "indexed_append_latency_avg_us": 18730.641,
+    "offset_index_extent_count": 8,
+    "offset_index_matches": true,
+    "offset_index_object_size": 356,
+    "offsets_contiguous": true,
+    "offsets_monotonic": true,
+    "read_cache_bytes": 0,
+    "read_cache_hits": 14,
+    "read_cache_max_bytes": 67108864,
+    "read_cache_misses": 3,
+    "read_cache_pages": 0,
+    "read_full_latency_us": 4546.661,
+    "read_tail_latency_us": 3094.613,
+    "reopen_latency_us": 3409.465,
+    "reopened_extent_count": 8,
+    "reopened_recovered_all_bytes": true,
+    "runtime_valid": true,
+    "tail_read_matches": true
+  },
+  "generated_at_unix": 1785604723,
+  "parity": {
+    "blockers": [],
+    "checks": {
+      "append_latency_ratio_within_2x_when_comparable": true,
+      "cpp_append_object_returns_object_info": true,
+      "cpp_full_read_matches": true,
+      "cpp_offset_index_matches": true,
+      "cpp_offsets_contiguous": true,
+      "cpp_offsets_monotonic": true,
+      "cpp_reopen_recovered_all_bytes": true,
+      "cpp_rpc_exposes_offset_and_extents": true,
+      "cpp_runtime_cache_metrics_available": true,
+      "cpp_runtime_valid": true,
+      "cpp_tail_read_matches": true,
+      "matrixobject_rust_api_exposes_metadata": true,
+      "retrieval_vs_cpp_full_read_latency_ratio_within_2x_when_comparable": true,
+      "rust_async_flush_reports_include_offsets": true,
+      "rust_durable_reopen_equivalent_to_cpp": true,
+      "rust_offset_index_maps_oplog_to_blob_offsets": true,
+      "rust_offset_slices_decode_expected_frames": true,
+      "rust_offsets_contiguous": true,
+      "rust_offsets_monotonic": true,
+      "rust_replay_recovered_all_records": true,
+      "rust_retrieval_recovered_all_records": true,
+      "rust_runtime_valid": true,
+      "rust_secondary_replay_recovered_all_records": true,
+      "rust_single_node_reload_recovered_all_records": true,
+      "rust_snapshot_reopen_cache_metrics_available": true,
+      "rust_snapshot_reopen_recovered_all_records": true,
+      "rust_snapshot_reopen_restores_offset_metadata": true,
+      "rust_sync_reports_include_offsets": true
+    },
+    "feature_mismatches": [],
+    "latency_ratios": {
+      "comparable": true,
+      "rust_direct_publish_avg_us_to_cpp_indexed_append_avg_us": 0.881,
+      "rust_retrieval_avg_us_to_cpp_full_read_us": 0.049,
+      "threshold": "<=2.0x for Rust direct publish vs C++ indexed append when durable offset semantics are comparable"
+    },
+    "note": "Rust TemporalStore MatrixObject append-blob runtime evidence now validates WAL frame offsets, a protobuf oplog-index offset metadata sidecar, and incremental journal reopen/readback. C++ MatrixObjectStore runtime evidence covers incremental disk-root reopen/readback.",
+    "root_cause": "Rust originally appeared much faster because the MatrixObject binding benchmark used an in-memory MatrixObjectStore, while the C++ benchmark used a disk-root ObjectStore, FlushForShutdown, process-style reopen, extent metadata recovery, and range reads. Rust now persists protobuf oplog-offset metadata and validates MatrixObjectStore reload from an incremental checksummed journal path. The latency gate compares Rust direct publish with C++ indexed append, because both include durable offset metadata; sync writer and async flush are reported separately.",
+    "status": "passed"
+  },
+  "rust_command": {
+    "mode": "loaded",
+    "path": "/tmp/rust_parity_64a_runtime.json",
+    "returncode": 0,
+    "stderr_tail": ""
+  },
+  "rust_runtime": {
+    "async_writer": {
+      "blob_object_length": 1272,
+      "blob_physical_extent_count": 160,
+      "enqueue_latencies_us": [
+        23,
+        0,
+        0,
+        0,
+        3,
+        0,
+        0,
+        0
+      ],
+      "flush_latency_us": 372157,
+      "flush_report": {
+        "flushed": 8,
+        "last_oplog_index": 8,
+        "last_wal_blob_end_offset": 1272,
+        "last_wal_blob_object_length": 1272,
+        "last_wal_blob_start_offset": 1113,
+        "remaining": 0
+      },
+      "replay": {
+        "replay_latency_us": 145084,
+        "replay_report": {
+          "applied": 8,
+          "last_oplog_index": 8
+        },
+        "retrieval_latencies_us": [
+          478,
+          92,
+          86,
+          89,
+          314,
+          323,
+          217,
+          162
+        ],
+        "retrieval_ok": true,
+        "retrieved_records": 8,
+        "secondary_replay_latency_us": 141653,
+        "secondary_replay_report": {
+          "applied": 8,
+          "last_oplog_index": 8
+        },
+        "secondary_retrieval_ok": true,
+        "secondary_retrieved_records": 8,
+        "single_node_reload_latency_us": 152311,
+        "single_node_reload_ok": true,
+        "single_node_reload_report": {
+          "applied": 8,
+          "last_oplog_index": 8
+        },
+        "single_node_reload_retrieved_records": 8
+      },
+      "shard_id": 3,
+      "write_reports": [
+        {
+          "oplog_index": 1,
+          "published": false,
+          "queued": true,
+          "wal_blob_bytes_written": null,
+          "wal_blob_end_offset": null,
+          "wal_blob_object_length": null,
+          "wal_blob_start_offset": null
+        },
+        {
+          "oplog_index": 2,
+          "published": false,
+          "queued": true,
+          "wal_blob_bytes_written": null,
+          "wal_blob_end_offset": null,
+          "wal_blob_object_length": null,
+          "wal_blob_start_offset": null
+        },
+        {
+          "oplog_index": 3,
+          "published": false,
+          "queued": true,
+          "wal_blob_bytes_written": null,
+          "wal_blob_end_offset": null,
+          "wal_blob_object_length": null,
+          "wal_blob_start_offset": null
+        },
+        {
+          "oplog_index": 4,
+          "published": false,
+          "queued": true,
+          "wal_blob_bytes_written": null,
+          "wal_blob_end_offset": null,
+          "wal_blob_object_length": null,
+          "wal_blob_start_offset": null
+        },
+        {
+          "oplog_index": 5,
+          "published": false,
+          "queued": true,
+          "wal_blob_bytes_written": null,
+          "wal_blob_end_offset": null,
+          "wal_blob_object_length": null,
+          "wal_blob_start_offset": null
+        },
+        {
+          "oplog_index": 6,
+          "published": false,
+          "queued": true,
+          "wal_blob_bytes_written": null,
+          "wal_blob_end_offset": null,
+          "wal_blob_object_length": null,
+          "wal_blob_start_offset": null
+        },
+        {
+          "oplog_index": 7,
+          "published": false,
+          "queued": true,
+          "wal_blob_bytes_written": null,
+          "wal_blob_end_offset": null,
+          "wal_blob_object_length": null,
+          "wal_blob_start_offset": null
+        },
+        {
+          "oplog_index": 8,
+          "published": false,
+          "queued": true,
+          "wal_blob_bytes_written": null,
+          "wal_blob_end_offset": null,
+          "wal_blob_object_length": null,
+          "wal_blob_start_offset": null
+        }
+      ]
+    },
+    "backend": "rust",
+    "direct_publish": {
+      "append_receipts": [
+        {
+          "bytes_written": 160,
+          "end_offset": 160,
+          "first_physical_offset": 0,
+          "key": "cluster-a/shards/1/shared/oplog/oplog.protobuf.blob",
+          "object_length": 160,
+          "physical_extent_count": 20,
+          "start_offset": 0
+        },
+        {
+          "bytes_written": 160,
+          "end_offset": 320,
+          "first_physical_offset": 0,
+          "key": "cluster-a/shards/1/shared/oplog/oplog.protobuf.blob",
+          "object_length": 320,
+          "physical_extent_count": 40,
+          "start_offset": 160
+        },
+        {
+          "bytes_written": 160,
+          "end_offset": 480,
+          "first_physical_offset": 0,
+          "key": "cluster-a/shards/1/shared/oplog/oplog.protobuf.blob",
+          "object_length": 480,
+          "physical_extent_count": 60,
+          "start_offset": 320
+        },
+        {
+          "bytes_written": 160,
+          "end_offset": 640,
+          "first_physical_offset": 0,
+          "key": "cluster-a/shards/1/shared/oplog/oplog.protobuf.blob",
+          "object_length": 640,
+          "physical_extent_count": 80,
+          "start_offset": 480
+        },
+        {
+          "bytes_written": 160,
+          "end_offset": 800,
+          "first_physical_offset": 0,
+          "key": "cluster-a/shards/1/shared/oplog/oplog.protobuf.blob",
+          "object_length": 800,
+          "physical_extent_count": 100,
+          "start_offset": 640
+        },
+        {
+          "bytes_written": 160,
+          "end_offset": 960,
+          "first_physical_offset": 0,
+          "key": "cluster-a/shards/1/shared/oplog/oplog.protobuf.blob",
+          "object_length": 960,
+          "physical_extent_count": 120,
+          "start_offset": 800
+        },
+        {
+          "bytes_written": 160,
+          "end_offset": 1120,
+          "first_physical_offset": 0,
+          "key": "cluster-a/shards/1/shared/oplog/oplog.protobuf.blob",
+          "object_length": 1120,
+          "physical_extent_count": 140,
+          "start_offset": 960
+        },
+        {
+          "bytes_written": 160,
+          "end_offset": 1280,
+          "first_physical_offset": 0,
+          "key": "cluster-a/shards/1/shared/oplog/oplog.protobuf.blob",
+          "object_length": 1280,
+          "physical_extent_count": 160,
+          "start_offset": 1120
+        }
+      ],
+      "blob_key": "cluster-a/shards/1/shared/oplog/oplog.protobuf.blob",
+      "blob_object_length": 1280,
+      "blob_physical_extent_count": 160,
+      "offset_frame_validation": {
+        "all_offsets_decode_expected_frame": true,
+        "checked_frames": 8,
+        "contiguous_coverage_bytes": 1280,
+        "matched_frames": 8
+      },
+      "offset_index_validation": {
+        "all_metadata_ranges_match_append_receipts": true,
+        "all_oplog_indexes_have_offset_metadata": true,
+        "checked_entries": 8,
+        "matched_entries": 8
+      },
+      "publish_latencies_us": [
+        7512,
+        9099,
+        15930,
+        16154,
+        16347,
+        18186,
+        23323,
+        25450
+      ],
+      "replay": {
+        "replay_latency_us": 202819,
+        "replay_report": {
+          "applied": 8,
+          "last_oplog_index": 8
+        },
+        "retrieval_latencies_us": [
+          372,
+          115,
+          88,
+          77,
+          610,
+          303,
+          194,
+          150
+        ],
+        "retrieval_ok": true,
+        "retrieved_records": 8,
+        "secondary_replay_latency_us": 219735,
+        "secondary_replay_report": {
+          "applied": 8,
+          "last_oplog_index": 8
+        },
+        "secondary_retrieval_ok": true,
+        "secondary_retrieved_records": 8,
+        "single_node_reload_latency_us": 164990,
+        "single_node_reload_ok": true,
+        "single_node_reload_report": {
+          "applied": 8,
+          "last_oplog_index": 8
+        },
+        "single_node_reload_retrieved_records": 8
+      },
+      "shard_id": 1
+    },
+    "entry_count": 8,
+    "journal_reopen": {
+      "cache_after_retrieval": {
+        "bytes": 13906,
+        "compressed_fill_bytes": 0,
+        "compressed_fill_pages": 0,
+        "direct_fill_bytes": 13914,
+        "direct_fill_pages": 1876,
+        "ec_fill_bytes": 0,
+        "ec_fill_pages": 0,
+        "entries": 1874,
+        "evictions": 0,
+        "hits": 6228,
+        "max_bytes": 201326592,
+        "misses": 1876,
+        "pressure": false
+      },
+      "cache_before_replay": {
+        "bytes": 12952,
+        "compressed_fill_bytes": 0,
+        "compressed_fill_pages": 0,
+        "direct_fill_bytes": 12952,
+        "direct_fill_pages": 1738,
+        "ec_fill_bytes": 0,
+        "ec_fill_pages": 0,
+        "entries": 1738,
+        "evictions": 0,
+        "hits": 5334,
+        "max_bytes": 201326592,
+        "misses": 1738,
+        "pressure": false
+      },
+      "cache_metrics_available": true,
+      "reopened_offset_metadata_ok": true,
+      "reopened_replay_recovered_all_records": true,
+      "reopened_retrieval_recovered_all_records": true,
+      "replay_latency_total_us": 784829,
+      "retrieval_latency_avg_us": 303,
+      "snapshot_bytes": 16428,
+      "snapshot_disk_read_latency_us": 72,
+      "snapshot_disk_write_latency_us": 0,
+      "snapshot_export_latency_us": 0,
+      "snapshot_import_latency_us": 452899,
+      "snapshot_sha256": "17b08005d6c1ffcd076c717d8ece8c1c745d001b607383a1a686cef4269273cd"
+    },
+    "matrixobject_mode": "rust_matrixobject_incremental_journal_protobuf_append_blob",
+    "schema": "temporalstore_shared_store_append_blob_parity_report_v1",
+    "summary": {
+      "append_latency_avg_us": 15315,
+      "append_latency_p95_us": 35209,
+      "async_flush_reports_include_offsets": true,
+      "direct_offset_index_maps_oplog_to_blob_offsets": true,
+      "direct_offset_slices_decode_expected_frames": true,
+      "direct_offsets_contiguous": true,
+      "direct_offsets_monotonic": true,
+      "replay_latency_total_us": 499930,
+      "replay_recovered_all_records": true,
+      "retrieval_latency_avg_us": 221,
+      "retrieval_recovered_all_records": true,
+      "secondary_replay_recovered_all_records": true,
+      "single_node_reload_recovered_all_records": true,
+      "snapshot_reopen_cache_metrics_available": true,
+      "snapshot_reopen_recovered_all_records": true,
+      "snapshot_reopen_restores_offset_metadata": true,
+      "sync_reports_include_offsets": true
+    },
+    "sync_writer": {
+      "blob_object_length": 1264,
+      "blob_physical_extent_count": 160,
+      "replay": {
+        "replay_latency_us": 152027,
+        "replay_report": {
+          "applied": 8,
+          "last_oplog_index": 8
+        },
+        "retrieval_latencies_us": [
+          368,
+          101,
+          89,
+          96,
+          313,
+          313,
+          192,
+          179
+        ],
+        "retrieval_ok": true,
+        "retrieved_records": 8,
+        "secondary_replay_latency_us": 158690,
+        "secondary_replay_report": {
+          "applied": 8,
+          "last_oplog_index": 8
+        },
+        "secondary_retrieval_ok": true,
+        "secondary_retrieved_records": 8,
+        "single_node_reload_latency_us": 163644,
+        "single_node_reload_ok": true,
+        "single_node_reload_report": {
+          "applied": 8,
+          "last_oplog_index": 8
+        },
+        "single_node_reload_retrieved_records": 8
+      },
+      "shard_id": 2,
+      "write_latencies_us": [
+        23129,
+        23977,
+        24881,
+        27924,
+        32429,
+        32319,
+        35680,
+        35209
+      ],
+      "write_reports": [
+        {
+          "oplog_index": 1,
+          "published": true,
+          "queued": false,
+          "wal_blob_bytes_written": 158,
+          "wal_blob_end_offset": 158,
+          "wal_blob_object_length": 158,
+          "wal_blob_start_offset": 0
+        },
+        {
+          "oplog_index": 2,
+          "published": true,
+          "queued": false,
+          "wal_blob_bytes_written": 158,
+          "wal_blob_end_offset": 316,
+          "wal_blob_object_length": 316,
+          "wal_blob_start_offset": 158
+        },
+        {
+          "oplog_index": 3,
+          "published": true,
+          "queued": false,
+          "wal_blob_bytes_written": 158,
+          "wal_blob_end_offset": 474,
+          "wal_blob_object_length": 474,
+          "wal_blob_start_offset": 316
+        },
+        {
+          "oplog_index": 4,
+          "published": true,
+          "queued": false,
+          "wal_blob_bytes_written": 158,
+          "wal_blob_end_offset": 632,
+          "wal_blob_object_length": 632,
+          "wal_blob_start_offset": 474
+        },
+        {
+          "oplog_index": 5,
+          "published": true,
+          "queued": false,
+          "wal_blob_bytes_written": 158,
+          "wal_blob_end_offset": 790,
+          "wal_blob_object_length": 790,
+          "wal_blob_start_offset": 632
+        },
+        {
+          "oplog_index": 6,
+          "published": true,
+          "queued": false,
+          "wal_blob_bytes_written": 158,
+          "wal_blob_end_offset": 948,
+          "wal_blob_object_length": 948,
+          "wal_blob_start_offset": 790
+        },
+        {
+          "oplog_index": 7,
+          "published": true,
+          "queued": false,
+          "wal_blob_bytes_written": 158,
+          "wal_blob_end_offset": 1106,
+          "wal_blob_object_length": 1106,
+          "wal_blob_start_offset": 948
+        },
+        {
+          "oplog_index": 8,
+          "published": true,
+          "queued": false,
+          "wal_blob_bytes_written": 158,
+          "wal_blob_end_offset": 1264,
+          "wal_blob_object_length": 1264,
+          "wal_blob_start_offset": 1106
+        }
+      ]
+    },
+    "value_bytes": 64
+  },
+  "rust_summary": {
+    "append_latency_avg_us": 15315,
+    "append_latency_p95_us": 35209,
+    "async_enqueue_latency_avg_us": 3.25,
+    "async_flush_latency_us": 372157,
+    "async_flush_reports_include_offsets": true,
+    "cache_after_retrieval": {
+      "bytes": 13906,
+      "compressed_fill_bytes": 0,
+      "compressed_fill_pages": 0,
+      "direct_fill_bytes": 13914,
+      "direct_fill_pages": 1876,
+      "ec_fill_bytes": 0,
+      "ec_fill_pages": 0,
+      "entries": 1874,
+      "evictions": 0,
+      "hits": 6228,
+      "max_bytes": 201326592,
+      "misses": 1876,
+      "pressure": false
+    },
+    "cache_before_replay": {
+      "bytes": 12952,
+      "compressed_fill_bytes": 0,
+      "compressed_fill_pages": 0,
+      "direct_fill_bytes": 12952,
+      "direct_fill_pages": 1738,
+      "ec_fill_bytes": 0,
+      "ec_fill_pages": 0,
+      "entries": 1738,
+      "evictions": 0,
+      "hits": 5334,
+      "max_bytes": 201326592,
+      "misses": 1738,
+      "pressure": false
+    },
+    "direct_offset_index_maps_oplog_to_blob_offsets": true,
+    "direct_offset_slices_decode_expected_frames": true,
+    "direct_publish_latency_avg_us": 16500.125,
+    "durable_reopen_caveat": "Rust MatrixObjectStore now reloads from an incremental checksummed journal path; C++ uses incremental disk-root ObjectStore reopen.",
+    "durable_reopen_equivalent": true,
+    "matrixobject_mode": "rust_matrixobject_incremental_journal_protobuf_append_blob",
+    "offsets_contiguous": true,
+    "offsets_monotonic": true,
+    "replay_latency_total_us": 499930,
+    "replay_recovered_all_records": true,
+    "retrieval_latency_avg_us": 221,
+    "retrieval_recovered_all_records": true,
+    "runtime_valid": true,
+    "secondary_replay_latency_total_us": 520078,
+    "secondary_replay_recovered_all_records": true,
+    "single_node_reload_latency_total_us": 480945,
+    "single_node_reload_recovered_all_records": true,
+    "snapshot_bytes": 16428,
+    "snapshot_disk_read_latency_us": 72,
+    "snapshot_disk_write_latency_us": 0,
+    "snapshot_export_latency_us": 0,
+    "snapshot_import_latency_us": 452899,
+    "snapshot_reopen_cache_metrics_available": true,
+    "snapshot_reopen_recovered_all_records": true,
+    "snapshot_reopen_restores_offset_metadata": true,
+    "storage_semantics": "incremental_journal_reopen_matrixobject_binding",
+    "sync_reports_include_offsets": true,
+    "sync_writer_latency_avg_us": 29443.5
+  },
+  "schema": "temporalstore_shared_store_blob_append_cpp_rust_parity_v1",
+  "temporalstore_commit": "3105e71b4b48922c0e01d4bd57b7624b90733afa",
+  "temporalstore_repo": "/root/src/github-services/TemporalStore"
+}
