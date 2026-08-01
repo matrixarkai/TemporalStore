@@ -7073,6 +7073,37 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(policy["enabled"])
             self.assertEqual("allow_durable_profile_bridge_inside_session_only_scope", policy["decision"])
 
+            prefer_policy = matrixark_mcp_core.build_cross_session_policy(
+                {"query": "TemporalStore repository location"},
+                {},
+                question_type="fact",
+                session_scope="prefer",
+                remote_budget_tokens=160,
+            )
+            self.assertTrue(prefer_policy["enabled"])
+            self.assertEqual(1, prefer_policy["min_entity_bridge_refs"])
+            self.assertEqual("always_consider_same_user_cross_session_when_session_scope_prefer", prefer_policy["decision"])
+
+            prefer_pack = adapter.retrieve(
+                {
+                    "scope": current_scope,
+                    "session_scope": "prefer",
+                    "question_type": "fact",
+                    "query": "TemporalStore repository location",
+                    "max_context_tokens": 160,
+                    "ranking": {"max_selected_refs": 4, "min_similarity_score": 0.0},
+                    "audit_mode": "off",
+                }
+            )
+            prefer_profile_ref = next(
+                ref
+                for ref in prefer_pack["selected_refs"]
+                if ref.get("ref_type") == "entity"
+                and ref.get("entity_name") == "temporalstore_repo_location"
+            )
+            self.assertEqual("user_profile", prefer_profile_ref["memory_scope"])
+            self.assertEqual("cross_session", prefer_profile_ref["session_continuity"])
+
             pack = adapter.retrieve(
                 {
                     "scope": current_scope,

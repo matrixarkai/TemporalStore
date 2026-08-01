@@ -5817,7 +5817,11 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     )
     max_sessions_default = DEFAULT_CROSS_SESSION_PROFILE_MAX_SESSIONS if profile_budget_query else DEFAULT_CROSS_SESSION_MAX_SESSIONS
     max_candidates_default = DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES if profile_budget_query else DEFAULT_CROSS_SESSION_MAX_CANDIDATES
-    min_bridge_default = DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS if profile_budget_query else DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS
+    min_bridge_default = (
+        DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS
+        if profile_budget_query
+        else (1 if enabled and session_scope == "prefer" and remote_budget_tokens > 0 else DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS)
+    )
     max_sessions = integer_arg(config, "max_sessions", max_sessions_default, minimum=0)
     max_candidates = integer_arg(config, "max_candidates", max_candidates_default, minimum=0)
     min_entity_bridge_refs = integer_arg(config, "min_entity_bridge_refs", min_bridge_default, minimum=0)
