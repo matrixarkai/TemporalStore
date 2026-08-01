@@ -5302,6 +5302,8 @@ def candidate_index_terms(
             terms.add(context_index_name("profile_memory_class", record.get("profile_memory_class")))
         if record.get("profile_memory_kind") not in (None, "", [], {}):
             terms.add(context_index_name("profile_memory_kind", record.get("profile_memory_kind")))
+        for profile_class in record.get("source_profile_memory_classes", [])[:8] if isinstance(record.get("source_profile_memory_classes"), list) else []:
+            terms.add(context_index_name("profile_memory_class", profile_class))
         for profile_kind in record.get("source_profile_memory_kinds", [])[:8] if isinstance(record.get("source_profile_memory_kinds"), list) else []:
             terms.add(context_index_name("profile_memory_kind", profile_kind))
         if not require_oss_understanding() and not record.get("event_type"):
@@ -5320,6 +5322,10 @@ def candidate_index_terms(
             terms.add(context_index_name("profile_memory_class", record.get("profile_memory_class")))
         if record.get("profile_memory_kind") not in (None, "", [], {}):
             terms.add(context_index_name("profile_memory_kind", record.get("profile_memory_kind")))
+        for profile_class in record.get("source_profile_memory_classes", [])[:8] if isinstance(record.get("source_profile_memory_classes"), list) else []:
+            terms.add(context_index_name("profile_memory_class", profile_class))
+        for profile_kind in record.get("source_profile_memory_kinds", [])[:8] if isinstance(record.get("source_profile_memory_kinds"), list) else []:
+            terms.add(context_index_name("profile_memory_kind", profile_kind))
         entity_name = record.get("entity_name")
         if entity_name not in (None, "", [], {}):
             terms.add(context_index_name("entity_name", normalized_index_value(entity_name).replace(":", "_")))
@@ -5335,6 +5341,8 @@ def candidate_index_terms(
             terms.add(context_index_name("profile_memory_class", record.get("profile_memory_class")))
         if record.get("profile_memory_kind") not in (None, "", [], {}):
             terms.add(context_index_name("profile_memory_kind", record.get("profile_memory_kind")))
+        for profile_class in record.get("source_profile_memory_classes", [])[:8] if isinstance(record.get("source_profile_memory_classes"), list) else []:
+            terms.add(context_index_name("profile_memory_class", profile_class))
         for profile_kind in record.get("source_profile_memory_kinds", [])[:8]:
             terms.add(context_index_name("profile_memory_kind", profile_kind))
         if bool(record.get("profile_summary_current")):
@@ -5360,6 +5368,10 @@ def candidate_index_terms(
             terms.add(context_index_name("profile_memory_class", record.get("profile_memory_class")))
         if record.get("profile_memory_kind") not in (None, "", [], {}):
             terms.add(context_index_name("profile_memory_kind", record.get("profile_memory_kind")))
+        for profile_class in record.get("source_profile_memory_classes", [])[:8] if isinstance(record.get("source_profile_memory_classes"), list) else []:
+            terms.add(context_index_name("profile_memory_class", profile_class))
+        for profile_kind in record.get("source_profile_memory_kinds", [])[:8] if isinstance(record.get("source_profile_memory_kinds"), list) else []:
+            terms.add(context_index_name("profile_memory_kind", profile_kind))
         terms.update(codex_outcome_fact_index_terms(record.get("topic"), record.get("text"), record.get("summary_text"), record.get("event_type")))
         terms.update(benchmark_quality_index_terms(record.get("topic"), record.get("text"), record.get("summary_text")))
         add_direct_layer_terms()
