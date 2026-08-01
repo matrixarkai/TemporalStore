@@ -10238,6 +10238,30 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("source_roles", compact_event)
             self.assertNotIn("source_role_counts", compact_event)
 
+            feature_event_ref = {
+                "ref_type": "event",
+                "text": "feature preference: focus on functionality parity before monitoring.",
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+                "profile_memory_kind": "memory_feature",
+                "profile_memory_class": "memory_feature",
+            }
+            self.assertEqual(
+                "same_session_memory_feature_event",
+                compact_context_pack_ref(feature_event_ref)["memory_layer"],
+            )
+            cross_feature_segment_ref = {
+                "ref_type": "segment",
+                "text": "cross-session memory preference about feature-only work.",
+                "memory_scope": "session",
+                "session_continuity": "cross_session",
+                "source_profile_memory_kinds": ["memory_feature"],
+            }
+            self.assertEqual(
+                "cross_session_memory_feature_segment",
+                compact_context_pack_ref(cross_feature_segment_ref)["memory_layer"],
+            )
+
             compact_default = compact_context_pack_ref(ref)
             self.assertNotIn("source_event_ids", compact_default)
             self.assertNotIn("source_ref", compact_default)
