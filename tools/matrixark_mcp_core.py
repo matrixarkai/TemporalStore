@@ -3094,12 +3094,8 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     ]
     assistant_messages = [item for _index, item in assistant_message_items]
     assistant_text = text_from_messages(assistant_messages) if assistant_messages else ""
-    if assistant_text and re.search(
-        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|published|deployed|released|merged|rebased|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|will|next|choose|chose|use|keep|remove|blocked|blocker|failed|failure|error|rejected|updated|changed|validated|validation|verified|promoted|indexed|budgeted|batched|flushed|profile|cross[- ]session|memory|gap|risk|warning)\b",
-        assistant_text,
-        re.IGNORECASE,
-    ):
-        assistant_refs = source_refs_for_role("assistant")
+    assistant_refs = source_refs_for_role("assistant") if assistant_text else []
+    if assistant_text:
         assistant_profile_entity_type = profile_entity_type_for_memory_text(assistant_text)
         if assistant_profile_entity_type == "memory_feature_profile":
             state = summarize_text(f"assistant memory feature policy: {assistant_text}", limit=220)
@@ -3116,30 +3112,6 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                     "field_patches": [entity_patch("", summarize_text(state, limit=180))],
                 }
             )
-        if not feature_scope_memory_only:
-            decision_state = summarize_text(assistant_decision_memory_text(assistant_text), limit=220)
-            entities.append(
-                {
-                    "entity_type": "assistant_decision",
-                    "entity_name": "assistant_decision",
-                    "state": decision_state,
-                    "confidence": 0.82,
-                    "source_refs": assistant_refs,
-                    "source_roles": ["assistant"],
-                    "source_role_counts": {"assistant": len(assistant_messages)},
-                    "operator": normalize_entity_operator(None, "assistant_decision"),
-                    "field_patches": [entity_patch("", summarize_text(decision_state, limit=180))],
-                }
-            )
-            for message_index, message in assistant_message_items:
-                entities.extend(
-                    codex_outcome_fact_entities(
-                        str(message.get("content") or ""),
-                        role_name="assistant",
-                        source_refs=[source_ref_for_message_index(message_index)],
-                        source_count=1,
-                    )
-                )
         assistant_profile_fact_patterns = [
             r"\b(?:i(?:'ll| will)?|codex will|assistant will)\s+(?:remember|keep|use|follow|prefer|avoid|stop using|not use|always use|make sure)\b[:\s]+([^.;!?\n]{4,220})",
             r"\b(?:noted|got it|understood|i(?:'ll| will)? remember|remembered)\b[:\s]+(?:that\s+)?([^.;!?\n]{4,220})",
@@ -3169,6 +3141,35 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                         "operator": normalize_entity_operator(None, fact_entity_type),
                         "field_patches": [entity_patch("", summarize_text(state, limit=180))],
                     }
+                )
+    if assistant_text and re.search(
+        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|published|deployed|released|merged|rebased|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|will|next|choose|chose|use|keep|remove|blocked|blocker|failed|failure|error|rejected|updated|changed|validated|validation|verified|promoted|indexed|budgeted|batched|flushed|profile|cross[- ]session|memory|gap|risk|warning)\b",
+        assistant_text,
+        re.IGNORECASE,
+    ):
+        if not feature_scope_memory_only:
+            decision_state = summarize_text(assistant_decision_memory_text(assistant_text), limit=220)
+            entities.append(
+                {
+                    "entity_type": "assistant_decision",
+                    "entity_name": "assistant_decision",
+                    "state": decision_state,
+                    "confidence": 0.82,
+                    "source_refs": assistant_refs,
+                    "source_roles": ["assistant"],
+                    "source_role_counts": {"assistant": len(assistant_messages)},
+                    "operator": normalize_entity_operator(None, "assistant_decision"),
+                    "field_patches": [entity_patch("", summarize_text(decision_state, limit=180))],
+                }
+            )
+            for message_index, message in assistant_message_items:
+                entities.extend(
+                    codex_outcome_fact_entities(
+                        str(message.get("content") or ""),
+                        role_name="assistant",
+                        source_refs=[source_ref_for_message_index(message_index)],
+                        source_count=1,
+                    )
                 )
     patterns = [
         ("preference", r"\b(?:prefer|prefers|favorite|likes?|loves?)\s+([^.;!?]{2,120})"),
@@ -3216,6 +3217,8 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "approved",
                 "approved.",
             }:
+                continue
+            if feature_scope_memory_only and entity_type in {"relationship", "location", "job_status", "family_profile"}:
                 continue
             entity_name = canonical_entity_name(entity_type, value)
             field_patches = infer_entity_field_patches(entity_type, value, profile_pattern_text)
