@@ -11,6 +11,46 @@ test corpora, and documented behavioral parity evidence.
 Open-source boundary: no brpc/thrift in Rust. Rust production-readiness claims
 must be backed by readiness reports, shared corpus runs, or harness evidence.
 
+## Quick Start (single node in Docker)
+
+The fastest way to a working local TemporalStore is one container running the
+Rust metaserver + datanode. You need [Docker](docs/INSTALL.md#step-0-install-docker-if-you-dont-have-it)
+and a clone of this repo — nothing else installed on the host.
+
+```bash
+git clone https://github.com/bjmeetsfo/TemporalStore.git
+cd TemporalStore
+docker compose -f docker-compose.single-node.yml up --build
+```
+
+The first run builds a lean image (Rust toolchain lives inside the build stage,
+not on your machine) and starts a node listening on:
+
+- `http://127.0.0.1:17101` — metaserver: cluster metadata and health
+- `http://127.0.0.1:17102` — datanode: health, plus writes/reads via `POST /execute`
+
+From another terminal, health-check it and do a write/read round trip:
+
+```bash
+curl http://127.0.0.1:17102/health
+
+# write: key "hello" = bytes for "world"
+curl -sS http://127.0.0.1:17102/execute -H 'content-type: application/json' \
+  -d '{"shard_id":1,"command":{"kind":"string_set","key":"hello","value":[119,111,114,108,100]}}'
+
+# read it back
+curl -sS http://127.0.0.1:17102/execute -H 'content-type: application/json' \
+  -d '{"shard_id":1,"command":{"kind":"string_get","key":"hello"}}'
+```
+
+Data persists in the `temporalstore-data` Docker volume across restarts. Stop the
+node with `Ctrl-C`; remove the node and its data with
+`docker compose -f docker-compose.single-node.yml down -v`.
+
+Running on macOS or Windows, or prefer a native (non-Docker) build? The
+[Install Guide](docs/INSTALL.md) walks through Docker setup and every supported
+path step by step.
+
 ## Current Status
 
 - License: Apache-2.0.
