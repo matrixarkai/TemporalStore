@@ -269,7 +269,7 @@ def profile_entity_type_for_memory_text(text: str) -> str:
 
 FEATURE_SCOPE_EXCLUSION_RE = re.compile(
     r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\s+"
-    r"(?:testing|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b"
+    r"(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b"
 )
 
 
