@@ -4254,7 +4254,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             pending_event = next(
                 record
                 for record in records
-                if record.get("record_type") == "context_event" and record.get("event_type") == "pending_async"
+                if record.get("record_type") == "context_event" and record.get("extraction_phase") == "pending_async"
             )
             self.assertEqual("shell_command", raw_message["tool_name"])
             self.assertEqual("ok", raw_message["tool_status"])
@@ -4313,6 +4313,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
 
             self.assertEqual("accepted", result["status"])
+            self.assertEqual("skipped_tool_result_raw_capture", result["raw_ingestion_status"])
             self.assertEqual("accepted", result["serving_projection_status"])
             self.assertEqual("pending", result["async_pipeline_status"])
             self.assertEqual(1, result["session_buffer"]["pending_event_count"])
@@ -4320,10 +4321,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertFalse(result["session_buffer"]["threshold_ready"])
             self.assertTrue(result["session_buffer"]["idle_commit_scheduled"])
             records = adapter.read_all()
+            self.assertFalse(any(record.get("record_type") == "agent_message" for record in records))
             pending_event = next(
                 record
                 for record in records
-                if record.get("record_type") == "context_event" and record.get("event_type") == "pending_async"
+                if record.get("record_type") == "context_event" and record.get("extraction_phase") == "pending_async"
             )
             self.assertEqual("tool", pending_event["role"])
             self.assertEqual(["selected_tool_evidence_only"], pending_event["source_memory_selection_policies"])

@@ -238,7 +238,7 @@ HOOK_FAST_ASYNC_INGEST = _env_bool("MATRIXARK_HOOK_FAST_ASYNC_INGEST", True)
 HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH = _env_bool("MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH", False)
 HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT = _env_int("MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT", 2, minimum=1)
 HOOK_COMPACT_HOT_PREFIX_ONLY = os.environ.get("MATRIXARK_HOOK_COMPACT_HOT_PREFIX_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}
-HOOK_TOOL_RESULT_RAW = _env_bool("MATRIXARK_HOOK_TOOL_RESULT_RAW", True)
+HOOK_TOOL_RESULT_RAW = _env_bool("MATRIXARK_HOOK_TOOL_RESULT_RAW", False)
 HOOK_TOOL_RESULT_SERVING = _env_bool("MATRIXARK_HOOK_TOOL_RESULT_SERVING", True)
 HOOK_TOOL_RESULT_ROLLOUT_BACKFILL = _env_bool("MATRIXARK_HOOK_TOOL_RESULT_ROLLOUT_BACKFILL", False)
 TOOL_HOOK_EVENTS = {"PostToolUse", "PreToolUse", "PermissionRequest"}
@@ -5108,11 +5108,17 @@ def fast_async_hook_ingest(
             "idle_commit_result": pre_ingest_idle_commit_result,
             "auto_batch_extract_result": pre_ingest_idle_commit_result if should_pre_ingest_idle_commit else {},
         }
-    raw_ingestion_status = "unavailable"
-    if callable(enqueue_raw):
+    should_write_raw_record = not (
+        role == "tool"
+        and is_tool_hook_event(tool_policy_event)
+        and not HOOK_TOOL_RESULT_RAW
+        and not HOOK_TOOL_RESULT_ROLLOUT_BACKFILL
+    )
+    raw_ingestion_status = "skipped_tool_result_raw_capture" if not should_write_raw_record else "unavailable"
+    if should_write_raw_record and callable(enqueue_raw):
         enqueue_raw([raw_record])
         raw_ingestion_status = "accepted"
-    else:
+    elif should_write_raw_record:
         append_raw = getattr(adapter, "_append_raw_ingestion_records", None)
         if callable(append_raw):
             append_raw([raw_record])
