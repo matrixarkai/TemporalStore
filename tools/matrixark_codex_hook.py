@@ -3100,12 +3100,12 @@ ASSISTANT_PROFILE_MEMORY_POLICY_PATTERNS = [
 
 FEATURE_SCOPE_EXCLUSION_RE = re.compile(
     r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\s+"
-    r"(?:testing|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b",
+    r"(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b",
     re.IGNORECASE,
 )
 
 FEATURE_MEMORY_POLICY_RE = re.compile(
-    r"\b(?:openviking|vikingmem|mem0|feature parity|feature[- ]focused|features? only|features? referring to|functionalit(?:y|ies)|algorithms?|memory feature|long[- ]term memory|session memory|profile memory|cross[- ]session memory|threshold|idle batch|batch extraction)\b",
+    r"\b(?:openviking|vikingmem|mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionalit(?:y|ies)|algorithms?|memory feature|long[- ]term memory|session memory|profile memory|cross[- ]session memory|threshold|idle batch|batch extraction)\b",
     re.IGNORECASE,
 )
 
@@ -3853,7 +3853,7 @@ def codex_feature_scope_excludes_audit(query: str) -> bool:
     return bool(
         re.search(
             r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\s+"
-            r"(?:testing|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b",
+            r"(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b",
             str(query or "").lower(),
         )
     )
