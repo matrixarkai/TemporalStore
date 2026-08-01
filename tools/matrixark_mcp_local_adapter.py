@@ -346,10 +346,7 @@ def should_promote_session_entity_to_profile(entity: Json) -> bool:
 
 
 def compact_context_embedding_record(record: Json) -> Json:
-    compacted = dict(record)
-    for field in EMBEDDING_LINEAGE_DEBUG_FIELDS:
-        compacted.pop(field, None)
-    return compacted
+    return compact_hot_context_embedding_record(record)
 
 
 def _ref_list_value(item: Json, field: str) -> list[Any]:

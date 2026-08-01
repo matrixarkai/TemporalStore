@@ -769,6 +769,43 @@ EMBEDDING_LINEAGE_DEBUG_FIELDS = {
     "summary_generation_policy",
     "dirty_hash",
 }
+HOT_EMBEDDING_COMPACT_TYPES = {"event_text", "entity_state", "profile_entity_state", "segment_text"}
+HOT_SESSION_SUMMARY_EMBEDDING_COMPACT_TYPES = {"batch_l0"}
+HOT_EMBEDDING_LINEAGE_FIELDS = {
+    "source_roles",
+    "source_role_counts",
+    "source_hook_types",
+    "source_hook_type_counts",
+    "source_codex_events",
+    "source_codex_event_counts",
+    "source_memory_selection_policies",
+    "source_memory_selection_policy_counts",
+    "source_memory_selection_lossy_count",
+    "source_memory_selection_complete_count",
+    "source_memory_selection_dropped_text_chars",
+    "source_memory_selection_dropped_line_count",
+    "source_memory_selection_retained_text_ratio_avg",
+    "source_memory_selection_retained_line_ratio_avg",
+    "source_memory_scopes",
+    "source_session_continuities",
+    "source_extraction_phases",
+    "source_profile_promotion_policies",
+    "source_profile_promotion_blockers",
+    "promoted_from_memory_scope",
+    "extraction_phase",
+    "final_session_boundary",
+}
+
+
+def compact_hot_context_embedding_record(record: Json) -> Json:
+    compacted = dict(record)
+    for field in EMBEDDING_LINEAGE_DEBUG_FIELDS:
+        compacted.pop(field, None)
+    if str(compacted.get("record_type") or "") != "context_embedding":
+        return compacted
+    for field in HOT_EMBEDDING_LINEAGE_FIELDS:
+        compacted.pop(field, None)
+    return compacted
 
 
 def legacy_hook_type_from_codex_event(event: Any) -> str:
@@ -1079,8 +1116,7 @@ def materialize_serving_records(record: Json) -> list[Json]:
             if field in record and record[field] not in (None, "", [], {})
         }
         debug_type = "embedding_lineage_detail"
-        for field in EMBEDDING_LINEAGE_DEBUG_FIELDS:
-            serving.pop(field, None)
+        serving = compact_hot_context_embedding_record(serving)
 
     if not debug_payload or not ENABLE_CONTEXT_DEBUG_RECORDS:
         return [serving]

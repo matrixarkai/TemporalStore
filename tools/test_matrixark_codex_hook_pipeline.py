@@ -5811,11 +5811,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 self.assertGreaterEqual(len(committed_event_embeddings), 1)
                 self.assertEqual("session", committed_event_embeddings[0]["memory_scope"])
                 self.assertEqual("same_session", committed_event_embeddings[0]["session_continuity"])
-                self.assertIn(
-                    committed_event_embeddings[0].get("extraction_phase"),
-                    {"pending_async", "provisional"},
-                )
-                self.assertFalse(committed_event_embeddings[0].get("final_session_boundary"))
+                self.assertNotIn("extraction_phase", committed_event_embeddings[0])
+                self.assertNotIn("final_session_boundary", committed_event_embeddings[0])
                 self.assertNotIn("source_roles", committed_event_embeddings[0])
                 self.assertNotIn("source_role_counts", committed_event_embeddings[0])
                 self.assertNotIn("source_hook_types", committed_event_embeddings[0])

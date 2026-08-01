@@ -17,6 +17,7 @@ try:
         candidate_index_terms,
         candidate_memory_layer_name,
         collect_prior_context,
+        compact_hot_context_embedding_record,
         context_index_posting_record,
         embedding_execution_mode_name,
         embedding_fallback_used,
@@ -47,6 +48,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         candidate_index_terms,
         candidate_memory_layer_name,
         collect_prior_context,
+        compact_hot_context_embedding_record,
         context_index_posting_record,
         embedding_execution_mode_name,
         embedding_fallback_used,
@@ -70,10 +72,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 def compact_context_embedding_record(record: Json) -> Json:
-    compacted = dict(record)
-    for field in EMBEDDING_LINEAGE_DEBUG_FIELDS:
-        compacted.pop(field, None)
-    return compacted
+    return compact_hot_context_embedding_record(record)
 
 
 def attach_memory_layer(record: Json) -> Json:
