@@ -5808,6 +5808,55 @@ def candidate_codex_outcome_terms(candidate: Json) -> set[str]:
     )
 
 
+def inferred_memory_selection_policies_for_candidate(candidate: Json) -> set[str]:
+    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    sources = [candidate, metadata]
+    role_names: set[str] = set()
+    for source in sources:
+        scalar_role = normalize_message_role(source.get("role") or source.get("source_role"))
+        if scalar_role:
+            role_names.add(scalar_role)
+        roles = source.get("source_roles")
+        if isinstance(roles, list):
+            role_names.update(normalize_message_role(role) for role in roles if normalize_message_role(role))
+        role_counts = source.get("source_role_counts") if isinstance(source.get("source_role_counts"), dict) else {}
+        for role, count in role_counts.items():
+            try:
+                amount = int(count or 0)
+            except (TypeError, ValueError):
+                amount = 0
+            role_name = normalize_message_role(role)
+            if role_name and amount > 0:
+                role_names.add(role_name)
+    entity_type = str(
+        candidate.get("entity_type")
+        or candidate.get("event_type")
+        or metadata.get("entity_type")
+        or metadata.get("event_type")
+        or ""
+    ).strip().lower()
+    profile_memory_kind = str(candidate.get("profile_memory_kind") or metadata.get("profile_memory_kind") or "").strip().lower()
+    profile_memory_class = str(candidate.get("profile_memory_class") or metadata.get("profile_memory_class") or "").strip().lower()
+    memory_scope = str(candidate.get("memory_scope") or metadata.get("memory_scope") or "").strip().lower()
+    policies: set[str] = set()
+    if "user" in role_names or entity_type == "user_prompt":
+        policies.add("selected_user_prompt")
+    if "tool" in role_names or entity_type == "tool_evidence":
+        policies.add("selected_tool_evidence_only")
+    if "assistant" in role_names or entity_type in CODEX_OUTCOME_ENTITY_TYPES or entity_type == "assistant_decision":
+        policies.add("selected_assistant_decision_outcome_only")
+    if (
+        "assistant" in role_names
+        and (
+            profile_memory_kind in {"durable_profile", "memory_feature"}
+            or profile_memory_class in {"identity", "communication", "workspace", "memory_feature", "preference", "personal_context", "task_context"}
+            or memory_scope in {"user_profile", "profile", "cross_session_profile"}
+        )
+    ):
+        policies.add("selected_assistant_profile_fact")
+    return policies
+
+
 def candidate_memory_selection_policies(candidate: Json) -> set[str]:
     policy_names: set[str] = set()
     metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
@@ -5836,6 +5885,7 @@ def candidate_memory_selection_policies(candidate: Json) -> set[str]:
         selection_policy = str(selection.get("policy") or "").strip()
         if selection_policy:
             policy_names.add(selection_policy)
+    policy_names.update(inferred_memory_selection_policies_for_candidate(candidate))
     return policy_names
 
 
@@ -7089,31 +7139,7 @@ def select_token_budgeted_refs(
         return result
 
     def candidate_memory_selection_policy_names(candidate: Json) -> set[str]:
-        policy_names: set[str] = set()
-        sources = [candidate]
-        metadata = candidate.get("metadata")
-        if isinstance(metadata, dict):
-            sources.append(metadata)
-        for source in sources:
-            policies = source.get("source_memory_selection_policies")
-            if isinstance(policies, list):
-                policy_names.update(str(policy or "").strip() for policy in policies if str(policy or "").strip())
-            policy_counts = (
-                source.get("source_memory_selection_policy_counts")
-                if isinstance(source.get("source_memory_selection_policy_counts"), dict)
-                else {}
-            )
-            for policy, count in policy_counts.items():
-                policy_name = str(policy or "").strip()
-                if not policy_name:
-                    continue
-                try:
-                    source_count = int(count or 0)
-                except (TypeError, ValueError):
-                    source_count = 0
-                if source_count > 0:
-                    policy_names.add(policy_name)
-        return policy_names
+        return candidate_memory_selection_policies(candidate)
 
     def candidate_extraction_phase_name(candidate: Json) -> str:
         phase = str(candidate.get("extraction_phase") or "").strip().lower()
