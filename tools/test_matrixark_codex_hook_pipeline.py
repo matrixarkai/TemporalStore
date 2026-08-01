@@ -11910,6 +11910,62 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 tool_entity["source_memory_selection_policies"],
             )
 
+    def test_batch_extraction_keeps_segment_selection_policies_role_specific(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-role-specific-segment-policies.jsonl")
+            scope = {
+                "account_id": "acct_role_specific_segments",
+                "tenant_id": "tenant_role_specific_segments",
+                "user_id": "user_role_specific_segments",
+                "session_id": "session_role_specific_segments",
+            }
+            result = adapter.batch_extract(
+                {
+                    "scope": scope,
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "Decision: keep assistant segment marker prism ledger for memory retrieval.",
+                        },
+                        {
+                            "role": "tool",
+                            "content": "Exit code: 0; tool segment marker copper orbit validation passed and blocker cleared.",
+                        },
+                    ],
+                    "metadata": {"hook_type": "hook_boundary", "codex_event": "Stop"},
+                    "force": True,
+                }
+            )
+
+            self.assertEqual("accepted", result["status"])
+            records = adapter.read_all()
+            segments = [record for record in records if record.get("record_type") == "context_segment"]
+            self.assertTrue(segments)
+            assistant_segments = [
+                record
+                for record in segments
+                if "assistant" in record.get("source_roles", [])
+                and "prism ledger" in str(record.get("text") or record.get("summary_text") or "")
+            ]
+            tool_segments = [
+                record
+                for record in segments
+                if "tool" in record.get("source_roles", [])
+                and "copper orbit" in str(record.get("text") or record.get("summary_text") or "")
+            ]
+            self.assertTrue(assistant_segments, segments)
+            self.assertTrue(tool_segments, segments)
+            self.assertIn(
+                "selected_assistant_decision_outcome_only",
+                assistant_segments[0]["source_memory_selection_policies"],
+            )
+            self.assertNotIn("selected_tool_evidence_only", assistant_segments[0]["source_memory_selection_policies"])
+            self.assertIn("selected_tool_evidence_only", tool_segments[0]["source_memory_selection_policies"])
+            self.assertNotIn(
+                "selected_assistant_decision_outcome_only",
+                tool_segments[0]["source_memory_selection_policies"],
+            )
+
     def test_session_buffer_events_preserve_memory_selection_lineage_after_threshold_commit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-buffer-selection-lineage.jsonl")
