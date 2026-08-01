@@ -1719,6 +1719,49 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("final", matches[0]["extraction_phase"])
         self.assertTrue(matches[0]["final_session_boundary"])
 
+    def test_event_candidate_preserves_live_memory_layer_tags(self) -> None:
+        builders = importlib.import_module("tools.matrixark_mcp_retrieve_candidate_builders")
+        budget_mod = importlib.import_module("tools.matrixark_mcp_budget_pack")
+        record = {
+            "record_type": "context_event",
+            "event_id_hash": 303,
+            "node_hash": 404,
+            "node_path": ["tenant:tenant_live", "user:user_live", "session:session_live"],
+            "text": "user: live hook event waiting for async extraction",
+            "memory_scope": "session",
+            "session_continuity": "same_session",
+            "extraction_phase": "pending_async",
+            "final_session_boundary": False,
+            "source_memory_scopes": ["session"],
+            "source_session_continuities": ["same_session"],
+            "source_extraction_phases": ["pending_async"],
+            "updated_at_ms": 123,
+        }
+
+        candidate = builders.event_candidate(
+            record,
+            envelope={"ingestion_time_ms": 123},
+            record_scope={"tenant_id": "tenant_live", "user_id": "user_live", "session_id": "session_live"},
+            index_terms={"memory_scope:session", "extraction_phase:pending_async"},
+            event_type="pending_async",
+            origin_score=0.8,
+            keyword_score=2,
+            sparse_score=0.4,
+            embedding_score=0.3,
+            node_score=0.2,
+            metadata={},
+            text=record["text"],
+        )
+
+        self.assertEqual("session", candidate["memory_scope"])
+        self.assertEqual("same_session", candidate["session_continuity"])
+        self.assertEqual("pending_async", candidate["extraction_phase"])
+        self.assertFalse(candidate["final_session_boundary"])
+        self.assertEqual(["session"], candidate["source_memory_scopes"])
+        self.assertEqual(["same_session"], candidate["source_session_continuities"])
+        self.assertEqual(["pending_async"], candidate["source_extraction_phases"])
+        self.assertEqual("pending_async_event", budget_mod.candidate_memory_layer_name(candidate))
+
 
     def test_python_and_rust_retrieval_drop_reasons_stay_in_parity(self) -> None:
         python_source = (TOOLS_DIR / "matrixark_mcp_budget_pack.py").read_text(encoding="utf-8")
