@@ -3575,6 +3575,17 @@ def text_from_payload_messages(value: Any, *, preferred_roles: set[str] | None =
 
 
 def payload_text(payload: Json, *, event: str = "") -> str:
+    normalized_event = str(event or payload.get("hook_event_name") or payload.get("hookEventName") or "").strip()
+
+    def select_memory_text(value: str) -> str:
+        if normalized_event == "UserPromptSubmit":
+            return selected_user_prompt_memory_text(value)
+        if normalized_event in {"Stop", "PostCompact", "SubagentStop"}:
+            return selected_assistant_memory_text(value)
+        if normalized_event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
+            return selected_tool_memory_text(value, payload)
+        return value
+
     assistant_paths = [
         ["last_agent_message"],
         ["last_assistant_message"],
@@ -3753,7 +3764,6 @@ def payload_text(payload: Json, *, event: str = "") -> str:
         ["turn", "input"],
         ["raw_text"],
     ]
-    normalized_event = str(event or payload.get("hook_event_name") or payload.get("hookEventName") or "").strip()
     if normalized_event in {"Stop", "PostCompact", "SubagentStop"}:
         direct = first_string_at(payload, assistant_paths + prompt_paths)
     elif normalized_event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
@@ -3761,9 +3771,7 @@ def payload_text(payload: Json, *, event: str = "") -> str:
     else:
         direct = first_string_at(payload, prompt_paths + assistant_paths + tool_paths)
     if direct:
-        if normalized_event == "UserPromptSubmit":
-            return selected_user_prompt_memory_text(direct)
-        return direct
+        return select_memory_text(direct)
     structured_keys = ["content", "output", "response"]
     if normalized_event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
         structured_keys = [
@@ -3825,9 +3833,7 @@ def payload_text(payload: Json, *, event: str = "") -> str:
     for key in structured_keys:
         text = text_from_content_value(payload.get(key))
         if text:
-            if normalized_event == "UserPromptSubmit":
-                return selected_user_prompt_memory_text(text)
-            return text
+            return select_memory_text(text)
     preferred_roles: set[str] = set()
     if normalized_event in {"Stop", "PostCompact", "SubagentStop"}:
         preferred_roles = {"assistant"}
@@ -3838,11 +3844,9 @@ def payload_text(payload: Json, *, event: str = "") -> str:
     for key in ["messages", "items", "input"]:
         text = text_from_payload_messages(payload.get(key), preferred_roles=preferred_roles)
         if text:
-            if normalized_event == "UserPromptSubmit":
-                return selected_user_prompt_memory_text(text)
-            return text
+            return select_memory_text(text)
     if payload and not identity_only_payload(payload):
-        return json.dumps(payload, sort_keys=True)[:4000]
+        return select_memory_text(json.dumps(payload, sort_keys=True)[:4000])
     return ""
 
 
