@@ -1294,6 +1294,31 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             for child in value:
                 self.assert_no_default_context_pack_debug_lineage(child)
 
+    def test_context_pack_debug_normalizes_codex_tool_role_aliases(self) -> None:
+        ref = {
+            "ref_type": "entity",
+            "entity_type": "tool_evidence",
+            "text": "tool evidence: Validation: 17 tests passed",
+            "source_roles": ["function_call_output", "custom_tool_call_output", "tool-output"],
+            "source_role_counts": {
+                "function_call_output": 1,
+                "custom_tool_call_output": 2,
+                "tool-output": 1,
+            },
+            "budget_source_roles": ["tool_call_output"],
+            "budget_source_role_counts": {"tool_call_output": 4},
+        }
+
+        default_ref = compact_context_pack_ref(ref)
+        self.assertNotIn("source_roles", default_ref)
+        self.assertNotIn("source_role_counts", default_ref)
+
+        debug_ref = compact_context_pack_ref(ref, include_debug=True)
+        self.assertEqual(["tool"], debug_ref["source_roles"])
+        self.assertEqual({"tool": 4}, debug_ref["source_role_counts"])
+        self.assertEqual(["tool"], debug_ref["budget_source_roles"])
+        self.assertEqual({"tool": 4}, debug_ref["budget_source_role_counts"])
+
     def test_hook_layer_summary_surfaces_memory_selection_policy_budget(self) -> None:
         pack = {
             "context_pack_id": "pack-selection-budget",
