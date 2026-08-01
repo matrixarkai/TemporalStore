@@ -14,7 +14,7 @@ use temporalstore_rust::{
     DistributedRaftCommandResponse, DistributedRaftProposeRequest, DistributedRaftReadRequest,
     ProductionRaftEngineKind, ProductionRaftNode, ProductionRaftRuntime,
     ProductionRaftRuntimeOptions, RaftConfig, RaftControlLeadershipRequest, RaftFailoverReport,
-    RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, RaftTransport, Status,
+    RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, Status,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 
@@ -363,41 +363,6 @@ fn handle(
                 },
             };
             json_response(200, &response)
-        }
-        ("POST", "/raft/admin/catch_up") => {
-            if !local_admin_enabled {
-                return json_response(403, &Status::error("forbidden", "local admin disabled"));
-            }
-            match parse_json::<RaftAdminCatchUpRequest>(&request.body) {
-                Ok(req) => {
-                    let cluster = runtime.cluster();
-                    let status = cluster
-                        .build_install_snapshot_request(req.node_id)
-                        .and_then(|snapshot| {
-                            let response = match runtime.transport().install_snapshot(snapshot) {
-                                Ok(response) => response,
-                                Err(err) => {
-                                    let _ = cluster.finish_snapshot_send(req.node_id, false);
-                                    return Err(err);
-                                }
-                            };
-                            if response.success {
-                                cluster.finish_snapshot_send(req.node_id, true)?;
-                                cluster.catch_up(req.node_id)
-                            } else {
-                                cluster.finish_snapshot_send(req.node_id, false)?;
-                                Err(temporalstore_rust::RaftError::Transport(format!(
-                                    "snapshot install rejected by node {}: {:?}",
-                                    req.node_id, response.reject_reason
-                                )))
-                            }
-                        })
-                        .map(|_| Status::ok())
-                        .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
-                    json_response(200, &RaftAdminLivenessResponse { status })
-                }
-                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
-            }
         }
         ("POST", "/raft/admin/bootstrap_external_snapshot") => {
             if !local_admin_enabled {
