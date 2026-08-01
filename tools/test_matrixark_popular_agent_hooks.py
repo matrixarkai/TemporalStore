@@ -779,7 +779,10 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         for script_name in ["install_linux_temporalstore.sh", "install_macos_temporalstore.sh"]:
             with self.subTest(script_name=script_name):
                 script = (repo / "tools" / script_name).read_text()
-                self.assertIn('event="\\${1:-\\${MATRIXARK_AGENT_EVENT:-\\${CODEX_HOOK_EVENT:-UserPromptSubmit}}}"', script)
+                self.assertIn('event="\\${MATRIXARK_AGENT_EVENT:-\\${CODEX_HOOK_EVENT:-UserPromptSubmit}}"', script)
+                self.assertIn('if [[ "\\${1:-}" != "" && "\\${1:-}" != --* ]]; then', script)
+                self.assertIn('event="\\$1"', script)
+                self.assertIn("  shift", script)
                 self.assertIn('--event "\\$event" --backend temporalstore-rust "\\$@"', script)
                 self.assertNotIn("--event UserPromptSubmit --backend temporalstore-rust", script)
 
