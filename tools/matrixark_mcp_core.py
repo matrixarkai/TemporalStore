@@ -2795,6 +2795,24 @@ def is_codex_outcome_entity_type(entity_type: Any) -> bool:
     return normalized in CODEX_OUTCOME_ENTITY_TYPES or normalized in {"assistant_decision", "tool_evidence", "codex_outcome_fact"}
 
 
+def semantic_source_role_for_entity_type(entity_type: Any, role_names: set[str] | None = None) -> str:
+    normalized = normalized_index_value(entity_type)
+    if normalized in {"assistant_decision", "assistant_response"}:
+        return "assistant"
+    if normalized == "tool_evidence":
+        return "tool"
+    if normalized in {"user_requirement", "user_preference"}:
+        return "user"
+    if normalized in CODEX_OUTCOME_ENTITY_TYPES or normalized == "codex_outcome_fact":
+        roles = {normalize_message_role(role) for role in (role_names or set()) if normalize_message_role(role)}
+        if "tool" in roles:
+            return "tool"
+        if "assistant" in roles:
+            return "assistant"
+        return "assistant"
+    return ""
+
+
 def codex_outcome_fact_index_terms(*values: Any) -> set[str]:
     text = " ".join(str(value or "") for value in values)
     lower = text.lower()
@@ -6615,14 +6633,7 @@ def select_token_budgeted_refs(
                 role_names.update(normalize_message_role(role) for role in roles if normalize_message_role(role))
         metadata_entity_type = metadata.get("entity_type") if isinstance(metadata, dict) else ""
         entity_type = str(candidate.get("entity_type") or metadata_entity_type or "").strip().lower()
-        role_specific_entity_types = {
-            "assistant_decision": "assistant",
-            "assistant_response": "assistant",
-            "tool_evidence": "tool",
-            "user_requirement": "user",
-            "user_preference": "user",
-        }
-        semantic_role = role_specific_entity_types.get(entity_type)
+        semantic_role = semantic_source_role_for_entity_type(entity_type, role_names)
         if semantic_role and semantic_role in role_names:
             return {semantic_role}
         for source in sources:
@@ -6645,13 +6656,7 @@ def select_token_budgeted_refs(
         metadata = candidate.get("metadata")
         metadata_entity_type = metadata.get("entity_type") if isinstance(metadata, dict) else ""
         entity_type = str(candidate.get("entity_type") or metadata_entity_type or "").strip().lower()
-        semantic_role = {
-            "assistant_decision": "assistant",
-            "assistant_response": "assistant",
-            "tool_evidence": "tool",
-            "user_requirement": "user",
-            "user_preference": "user",
-        }.get(entity_type)
+        semantic_role = semantic_source_role_for_entity_type(entity_type, role_names)
         if semantic_role and semantic_role in role_names:
             return {semantic_role: 1}
         normalized_source_counts: Json = {}
