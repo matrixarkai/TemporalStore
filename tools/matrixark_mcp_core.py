@@ -6425,8 +6425,20 @@ def candidate_memory_layer_name(candidate: Json) -> str:
     memory_scope = str(candidate.get("memory_scope") or metadata.get("memory_scope") or "")
     session_continuity = str(candidate.get("session_continuity") or metadata.get("session_continuity") or "")
     profile_memory_kind = str(candidate.get("profile_memory_kind") or metadata.get("profile_memory_kind") or "").strip().lower()
+    source_profile_memory_kinds = {
+        str(value or "").strip().lower()
+        for value in (
+            candidate.get("source_profile_memory_kinds")
+            if isinstance(candidate.get("source_profile_memory_kinds"), list)
+            else metadata.get("source_profile_memory_kinds", [])
+            if isinstance(metadata.get("source_profile_memory_kinds"), list)
+            else []
+        )
+        if str(value or "").strip()
+    }
     event_type = str(candidate.get("event_type") or metadata.get("event_type") or candidate.get("entity_type") or metadata.get("entity_type") or "").strip().lower()
-    is_codex_outcome_memory = profile_memory_kind == "codex_outcome" or event_type in {"assistant_response", "assistant_decision", "tool_evidence", *CODEX_OUTCOME_ENTITY_TYPES}
+    is_codex_outcome_memory = profile_memory_kind == "codex_outcome" or "codex_outcome" in source_profile_memory_kinds or event_type in {"assistant_response", "assistant_decision", "tool_evidence", *CODEX_OUTCOME_ENTITY_TYPES}
+    is_memory_feature_memory = profile_memory_kind == "memory_feature" or "memory_feature" in source_profile_memory_kinds
     if context_class == "resource_entity_fact":
         return "resource_entity_fact"
     if context_class == "resource_fact":
@@ -6437,9 +6449,9 @@ def candidate_memory_layer_name(candidate: Json) -> str:
         return "skill_section"
     if ref_type == "compression" or context_class == "compression":
         if memory_scope == "user_profile" and session_continuity == "cross_session":
-            if profile_memory_kind == "codex_outcome":
+            if is_codex_outcome_memory:
                 return "cross_session_codex_outcome_compression"
-            if profile_memory_kind == "memory_feature":
+            if is_memory_feature_memory:
                 return "cross_session_memory_feature_compression"
             return "profile_compression"
         if session_continuity == "same_session":
@@ -6449,9 +6461,9 @@ def candidate_memory_layer_name(candidate: Json) -> str:
         return "compression"
     if ref_type == "summary" or context_class == "summary":
         if memory_scope == "user_profile" and session_continuity == "cross_session":
-            if profile_memory_kind == "codex_outcome":
+            if is_codex_outcome_memory:
                 return "cross_session_codex_outcome_summary"
-            if profile_memory_kind == "memory_feature":
+            if is_memory_feature_memory:
                 return "cross_session_memory_feature_summary"
             return "profile_summary"
         if session_continuity == "same_session":
