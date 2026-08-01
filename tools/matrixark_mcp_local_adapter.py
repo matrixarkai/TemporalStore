@@ -977,6 +977,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         "cross_session_segment": 0.25,
         "profile_entity": 0.40,
         "cross_session_codex_outcome_entity": 0.25,
+        "cross_session_memory_feature_entity": 0.25,
         "cross_session_codex_outcome_summary": 0.25,
         "cross_session_codex_outcome_compression": 0.25,
     }
@@ -999,6 +1000,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.35,
                 "profile_entity": 0.45,
                 "cross_session_codex_outcome_entity": 0.62,
+                "cross_session_memory_feature_entity": 0.35,
                 "cross_session_codex_outcome_summary": 0.45,
                 "cross_session_codex_outcome_compression": 0.45,
             }
@@ -1021,6 +1023,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.30,
                 "profile_entity": 0.55,
                 "cross_session_codex_outcome_entity": 0.45,
+                "cross_session_memory_feature_entity": 0.50,
                 "cross_session_codex_outcome_summary": 0.35,
                 "cross_session_codex_outcome_compression": 0.35,
             }
@@ -1043,6 +1046,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.40,
                 "profile_entity": 0.60,
                 "cross_session_codex_outcome_entity": 0.30,
+                "cross_session_memory_feature_entity": 0.65,
                 "cross_session_codex_outcome_summary": 0.35,
                 "cross_session_codex_outcome_compression": 0.35,
             }
@@ -1065,6 +1069,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.35,
                 "profile_entity": 0.45,
                 "cross_session_codex_outcome_entity": 0.40,
+                "cross_session_memory_feature_entity": 0.45,
                 "cross_session_codex_outcome_summary": 0.35,
                 "cross_session_codex_outcome_compression": 0.35,
             }
@@ -1087,6 +1092,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.35,
                 "profile_entity": 0.50,
                 "cross_session_codex_outcome_entity": 0.58,
+                "cross_session_memory_feature_entity": 0.35,
                 "cross_session_codex_outcome_summary": 0.45,
                 "cross_session_codex_outcome_compression": 0.45,
             }
@@ -1109,6 +1115,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.30,
                 "profile_entity": 0.45,
                 "cross_session_codex_outcome_entity": 0.45,
+                "cross_session_memory_feature_entity": 0.45,
                 "cross_session_codex_outcome_summary": 0.35,
                 "cross_session_codex_outcome_compression": 0.35,
             }
@@ -1238,6 +1245,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
         "cross_session_segment": 0.25,
         "profile_entity": 0.45,
         "cross_session_codex_outcome_entity": 0.25,
+        "cross_session_memory_feature_entity": 0.25,
         "cross_session_codex_outcome_summary": 0.25,
         "cross_session_codex_outcome_compression": 0.25,
     }
@@ -1252,6 +1260,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_segment": 0.30,
                 "profile_entity": 0.55,
                 "cross_session_codex_outcome_entity": 0.45,
+                "cross_session_memory_feature_entity": 0.50,
                 "cross_session_codex_outcome_summary": 0.35,
                 "cross_session_codex_outcome_compression": 0.35,
             }
@@ -1271,6 +1280,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_segment": 0.40,
                 "profile_entity": 0.60,
                 "cross_session_codex_outcome_entity": 0.30,
+                "cross_session_memory_feature_entity": 0.65,
                 "cross_session_codex_outcome_summary": 0.35,
                 "cross_session_codex_outcome_compression": 0.35,
             }
@@ -1284,6 +1294,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_segment": 0.35,
                 "profile_entity": 0.50,
                 "cross_session_codex_outcome_entity": 0.40,
+                "cross_session_memory_feature_entity": 0.45,
                 "cross_session_codex_outcome_summary": 0.35,
                 "cross_session_codex_outcome_compression": 0.35,
             }
@@ -1300,6 +1311,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_segment": 0.35,
                 "profile_entity": 0.50,
                 "cross_session_codex_outcome_entity": 0.58,
+                "cross_session_memory_feature_entity": 0.35,
                 "cross_session_codex_outcome_summary": 0.45,
                 "cross_session_codex_outcome_compression": 0.45,
             }
@@ -1318,6 +1330,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_segment": 0.30,
                 "profile_entity": 0.50,
                 "cross_session_codex_outcome_entity": 0.45,
+                "cross_session_memory_feature_entity": 0.45,
                 "cross_session_codex_outcome_summary": 0.35,
                 "cross_session_codex_outcome_compression": 0.35,
             }

@@ -290,6 +290,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         "cross_session_segment": 0.25,
         "profile_entity": 0.40,
         "cross_session_codex_outcome_entity": 0.25,
+        "cross_session_memory_feature_entity": 0.25,
     }
     normalized_question_type = str(question_type or "fact").strip().lower()
     if codex_outcome_budget_query(args, ranking, question_type=question_type):
@@ -310,6 +311,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.35,
                 "profile_entity": 0.45,
                 "cross_session_codex_outcome_entity": 0.62,
+                "cross_session_memory_feature_entity": 0.35,
             }
         )
     elif normalized_question_type in {"current_state", "latest"}:
@@ -330,6 +332,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.30,
                 "profile_entity": 0.55,
                 "cross_session_codex_outcome_entity": 0.45,
+                "cross_session_memory_feature_entity": 0.50,
             }
         )
     elif normalized_question_type == "profile_memory":
@@ -350,6 +353,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.40,
                 "profile_entity": 0.60,
                 "cross_session_codex_outcome_entity": 0.30,
+                "cross_session_memory_feature_entity": 0.65,
             }
         )
     elif normalized_question_type in {"multi_hop", "date"}:
@@ -370,6 +374,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.35,
                 "profile_entity": 0.45,
                 "cross_session_codex_outcome_entity": 0.40,
+                "cross_session_memory_feature_entity": 0.45,
             }
         )
     elif normalized_question_type == "benchmark_quality":
@@ -390,6 +395,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.35,
                 "profile_entity": 0.50,
                 "cross_session_codex_outcome_entity": 0.58,
+                "cross_session_memory_feature_entity": 0.35,
             }
         )
     elif normalized_question_type in {"broad_exploration", "evidence"}:
@@ -410,6 +416,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_segment": 0.30,
                 "profile_entity": 0.45,
                 "cross_session_codex_outcome_entity": 0.45,
+                "cross_session_memory_feature_entity": 0.45,
             }
         )
     budgets: Json = {}
