@@ -57,6 +57,8 @@ def _event_source_count_summary(envelope: Json, hook: Json | None) -> Json:
     hook_type_counts: Json = {}
     codex_event_counts: Json = {}
     selection_policy_counts: Json = {}
+    profile_memory_class_counts: Json = {}
+    profile_memory_kind_counts: Json = {}
     selection_lossy_count = 0
     selection_complete_count = 0
     selection_dropped_text_chars = 0
@@ -129,6 +131,10 @@ def _event_source_count_summary(envelope: Json, hook: Json | None) -> Json:
         add_values(selection_policy_counts, metadata.get("source_memory_selection_policies"))
         selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
         add_count(selection_policy_counts, selection.get("policy"))
+    add_values(profile_memory_class_counts, metadata.get("source_profile_memory_classes"))
+    add_values(profile_memory_class_counts, metadata.get("profile_memory_class"))
+    add_values(profile_memory_kind_counts, metadata.get("source_profile_memory_kinds"))
+    add_values(profile_memory_kind_counts, metadata.get("profile_memory_kind"))
     selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
     if selection:
         selection_lossy_count += 1 if bool(selection.get("selection_lossy")) else 0
@@ -182,6 +188,10 @@ def _event_source_count_summary(envelope: Json, hook: Json | None) -> Json:
     if selection_policy_counts:
         result["source_memory_selection_policies"] = sorted(selection_policy_counts)
         result["source_memory_selection_policy_counts"] = dict(sorted(selection_policy_counts.items()))
+    if profile_memory_class_counts:
+        result["source_profile_memory_classes"] = sorted(profile_memory_class_counts)
+    if profile_memory_kind_counts:
+        result["source_profile_memory_kinds"] = sorted(profile_memory_kind_counts)
     if selection_lossy_count:
         result["source_memory_selection_lossy_count"] = selection_lossy_count
     if selection_complete_count:
@@ -241,6 +251,8 @@ def session_commit_memory_layers_written(
     source_roles: list[str] | None = None,
     source_hook_types: list[str] | None = None,
     source_codex_events: list[str] | None = None,
+    source_profile_memory_classes: list[str] | None = None,
+    source_profile_memory_kinds: list[str] | None = None,
 ) -> Json:
     entities_written = int(batch_result.get("entities_written") or 0)
     profile_entities_written = int(batch_result.get("profile_entities_written") or 0)
@@ -261,6 +273,11 @@ def session_commit_memory_layers_written(
         "source_roles": source_roles,
         "source_hook_types": source_hook_types,
         "source_codex_events": source_codex_events,
+        "source_profile_memory_classes": source_profile_memory_classes,
+        "source_profile_memory_kinds": source_profile_memory_kinds,
+        "profile_promotion_policy": batch_result.get("profile_promotion_policy"),
+        "profile_promotion_importance_gate": bool(batch_result.get("profile_promotion_importance_gate", False)),
+        "profile_promotion_blocker": batch_result.get("profile_promotion_blocker"),
     }
     return {key: value for key, value in layers.items() if value not in (None, "", [], {})}
 
@@ -270,6 +287,8 @@ def _pending_source_count_summary(records: list[Json]) -> Json:
     hook_type_counts: Json = {}
     codex_event_counts: Json = {}
     selection_policy_counts: Json = {}
+    profile_memory_class_counts: Json = {}
+    profile_memory_kind_counts: Json = {}
     selection_lossy_count = 0
     selection_complete_count = 0
     selection_dropped_text_chars = 0
@@ -369,6 +388,11 @@ def _pending_source_count_summary(records: list[Json]) -> Json:
                 else {}
             )
             add_count(selection_policy_counts, selection.get("policy"))
+        for source in [record, event_metadata]:
+            add_values(profile_memory_class_counts, source.get("source_profile_memory_classes"))
+            add_values(profile_memory_class_counts, source.get("profile_memory_class"))
+            add_values(profile_memory_kind_counts, source.get("source_profile_memory_kinds"))
+            add_values(profile_memory_kind_counts, source.get("profile_memory_kind"))
         selection_lossy_count += add_int(record.get("source_memory_selection_lossy_count"))
         selection_lossy_count += add_int(event_metadata.get("source_memory_selection_lossy_count"))
         selection_complete_count += add_int(record.get("source_memory_selection_complete_count"))
@@ -419,6 +443,10 @@ def _pending_source_count_summary(records: list[Json]) -> Json:
     if selection_policy_counts:
         result["source_memory_selection_policies"] = sorted(selection_policy_counts)
         result["source_memory_selection_policy_counts"] = dict(sorted(selection_policy_counts.items()))
+    if profile_memory_class_counts:
+        result["source_profile_memory_classes"] = sorted(profile_memory_class_counts)
+    if profile_memory_kind_counts:
+        result["source_profile_memory_kinds"] = sorted(profile_memory_kind_counts)
     if selection_lossy_count:
         result["source_memory_selection_lossy_count"] = selection_lossy_count
     if selection_complete_count:
@@ -477,11 +505,20 @@ def append_session_commit_task_progress(
     source_memory_selection_policies: list[str] | None = None,
     source_memory_selection_policy_counts: Json | None = None,
     source_memory_selection_retention: Json | None = None,
+    source_profile_memory_classes: list[str] | None = None,
+    source_profile_memory_kinds: list[str] | None = None,
+    profile_promotion_summary: list[Json] | None = None,
+    profile_promotion_policy: str | None = None,
+    profile_promotion_importance_gate: bool | None = None,
+    profile_promotion_blocker: str | None = None,
 ) -> None:
     records: list[Json] = []
     source_memory_selection_policies = source_memory_selection_policies or []
     source_memory_selection_policy_counts = source_memory_selection_policy_counts or {}
     source_memory_selection_retention = source_memory_selection_retention or {}
+    source_profile_memory_classes = source_profile_memory_classes or []
+    source_profile_memory_kinds = source_profile_memory_kinds or []
+    profile_promotion_summary = profile_promotion_summary or []
     buffer_key = list(session_buffer_key_from_scope(scope))
     buffer_key_hash = stable_hash(":".join(buffer_key))
     for event_id in source_event_ids:
@@ -509,6 +546,12 @@ def append_session_commit_task_progress(
                 "source_codex_event_counts": source_codex_event_counts,
                 "source_memory_selection_policies": source_memory_selection_policies,
                 "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                "source_profile_memory_classes": source_profile_memory_classes,
+                "source_profile_memory_kinds": source_profile_memory_kinds,
+                "profile_promotion_summary": profile_promotion_summary,
+                "profile_promotion_policy": profile_promotion_policy,
+                "profile_promotion_importance_gate": bool(profile_promotion_importance_gate),
+                "profile_promotion_blocker": profile_promotion_blocker,
                 **source_memory_selection_retention,
                 "summary_refresh_status": memory_layers_written.get("summary_refresh_status"),
                 "summary_dirty_nodes": memory_layers_written.get("summary_dirty_nodes", 0),
@@ -538,6 +581,12 @@ def append_session_commit_task_progress(
                 "source_codex_event_counts": source_codex_event_counts,
                 "source_memory_selection_policies": source_memory_selection_policies,
                 "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                "source_profile_memory_classes": source_profile_memory_classes,
+                "source_profile_memory_kinds": source_profile_memory_kinds,
+                "profile_promotion_summary": profile_promotion_summary,
+                "profile_promotion_policy": profile_promotion_policy,
+                "profile_promotion_importance_gate": bool(profile_promotion_importance_gate),
+                "profile_promotion_blocker": profile_promotion_blocker,
                 **source_memory_selection_retention,
                 "updated_at_ms": updated_at_ms,
             }
@@ -958,6 +1007,8 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
                 source_hook_type_counts[hook_name] = int(source_hook_type_counts.get(hook_name) or 0) + int(count or 0)
     source_memory_selection_policies = source_counts.get("source_memory_selection_policies", [])
     source_memory_selection_policy_counts = source_counts.get("source_memory_selection_policy_counts", {})
+    source_profile_memory_classes = source_counts.get("source_profile_memory_classes", [])
+    source_profile_memory_kinds = source_counts.get("source_profile_memory_kinds", [])
     source_memory_selection_retention: Json = {
         key: source_counts.get(key)
         for key in [
@@ -986,6 +1037,12 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "source_memory_selection_policies": source_memory_selection_policies,
             "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
             **source_memory_selection_retention,
+        }
+    if source_profile_memory_classes or source_profile_memory_kinds:
+        metadata = {
+            **metadata,
+            "source_profile_memory_classes": source_profile_memory_classes,
+            "source_profile_memory_kinds": source_profile_memory_kinds,
         }
     storage_options = normalize_storage_options(args, metadata)
     if "node_path" not in metadata:
@@ -1023,11 +1080,16 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         source_roles=source_roles,
         source_hook_types=source_hook_types,
         source_codex_events=source_codex_events,
+        source_profile_memory_classes=source_profile_memory_classes,
+        source_profile_memory_kinds=source_profile_memory_kinds,
     )
     if source_memory_selection_policies:
         memory_layers_written["source_memory_selection_policies"] = source_memory_selection_policies
         memory_layers_written["source_memory_selection_policy_counts"] = source_memory_selection_policy_counts
         memory_layers_written.update(source_memory_selection_retention)
+    if source_profile_memory_classes or source_profile_memory_kinds:
+        memory_layers_written["source_profile_memory_classes"] = source_profile_memory_classes
+        memory_layers_written["source_profile_memory_kinds"] = source_profile_memory_kinds
     committed_at_ms = now_ms()
     adapter.append(
         {
@@ -1060,7 +1122,13 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
             "source_codex_event_counts": source_codex_event_counts,
             "source_memory_selection_policies": source_memory_selection_policies,
             "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            "source_profile_memory_classes": source_profile_memory_classes,
+            "source_profile_memory_kinds": source_profile_memory_kinds,
             **source_memory_selection_retention,
+            "profile_promotion_summary": batch_result.get("profile_promotion_summary", []),
+            "profile_promotion_policy": batch_result.get("profile_promotion_policy"),
+            "profile_promotion_importance_gate": bool(batch_result.get("profile_promotion_importance_gate", False)),
+            "profile_promotion_blocker": batch_result.get("profile_promotion_blocker"),
             "idle_timeout_ms": idle_timeout_ms,
             "idle_elapsed_ms": idle_elapsed_ms,
             "trigger_evidence": trigger_evidence,
@@ -1083,6 +1151,12 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         source_memory_selection_policies=source_memory_selection_policies,
         source_memory_selection_policy_counts=source_memory_selection_policy_counts,
         source_memory_selection_retention=source_memory_selection_retention,
+        source_profile_memory_classes=source_profile_memory_classes,
+        source_profile_memory_kinds=source_profile_memory_kinds,
+        profile_promotion_summary=batch_result.get("profile_promotion_summary", []),
+        profile_promotion_policy=batch_result.get("profile_promotion_policy"),
+        profile_promotion_importance_gate=bool(batch_result.get("profile_promotion_importance_gate", False)),
+        profile_promotion_blocker=batch_result.get("profile_promotion_blocker"),
         commit_id_hash=commit_id_hash,
         batch_id_hash=batch_result.get("batch_id_hash"),
         scope=scope,
@@ -1114,7 +1188,13 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
         "source_codex_event_counts": source_codex_event_counts,
         "source_memory_selection_policies": source_memory_selection_policies,
         "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+        "source_profile_memory_classes": source_profile_memory_classes,
+        "source_profile_memory_kinds": source_profile_memory_kinds,
         **source_memory_selection_retention,
+        "profile_promotion_summary": batch_result.get("profile_promotion_summary", []),
+        "profile_promotion_policy": batch_result.get("profile_promotion_policy"),
+        "profile_promotion_importance_gate": bool(batch_result.get("profile_promotion_importance_gate", False)),
+        "profile_promotion_blocker": batch_result.get("profile_promotion_blocker"),
         "commit_reason": commit_reason,
         "trigger_policy": trigger_policy,
         "extraction_phase": extraction_phase,

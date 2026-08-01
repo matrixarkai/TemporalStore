@@ -2172,7 +2172,11 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                     "entities_written": 3,
                     "profile_entities_written": 1,
                     "indexes_written": 5,
-                    "summary_refresh": {"status": "dirty_marked", "dirty_hashes": [10, 11]},
+                    "summary_refresh": {"status": "dirty_marked", "dirty_hashes": [10, 11], "profile_dirty_hashes": [12]},
+                    "profile_promotion_summary": [{"entity_hash": 44, "profile_entity_hash": 55}],
+                    "profile_promotion_policy": "always_when_profile_scope_available",
+                    "profile_promotion_importance_gate": False,
+                    "profile_promotion_blocker": "",
                 }
 
             def append(self, record):
@@ -2220,6 +2224,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                             "retained_text_ratio": 1.0,
                             "retained_line_ratio": 1.0,
                         },
+                        "source_profile_memory_classes": ["memory_feature"],
+                        "source_profile_memory_kinds": ["memory_feature"],
                     },
                     "ingestion_time_ms": 100,
                 },
@@ -2259,10 +2265,18 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual({"selected_user_prompt": 1}, committed["source_memory_selection_policy_counts"])
         self.assertEqual(1, committed["source_memory_selection_complete_count"])
         self.assertEqual(1.0, committed["source_memory_selection_retained_text_ratio_avg"])
+        self.assertEqual(["memory_feature"], committed["source_profile_memory_classes"])
+        self.assertEqual(["memory_feature"], committed["source_profile_memory_kinds"])
+        self.assertEqual("always_when_profile_scope_available", committed["profile_promotion_policy"])
+        self.assertFalse(committed["profile_promotion_importance_gate"])
+        self.assertEqual("", committed["profile_promotion_blocker"])
+        self.assertEqual([{"entity_hash": 44, "profile_entity_hash": 55}], committed["profile_promotion_summary"])
         self.assertEqual(
             {"selected_user_prompt": 1},
             adapter.batch_extract_calls[0]["metadata"]["source_memory_selection_policy_counts"],
         )
+        self.assertEqual(["memory_feature"], adapter.batch_extract_calls[0]["metadata"]["source_profile_memory_classes"])
+        self.assertEqual(["memory_feature"], adapter.batch_extract_calls[0]["metadata"]["source_profile_memory_kinds"])
         self.assertEqual(committed["trigger_evidence"], adapter.appended[0]["trigger_evidence"])
         self.assertEqual(committed["source_role_counts"], adapter.appended[0]["source_role_counts"])
         self.assertEqual(committed["source_hook_type_counts"], adapter.appended[0]["source_hook_type_counts"])
@@ -2271,11 +2285,19 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             committed["source_memory_selection_policy_counts"],
             adapter.appended[0]["source_memory_selection_policy_counts"],
         )
+        self.assertEqual(["memory_feature"], adapter.appended[0]["source_profile_memory_classes"])
+        self.assertEqual(["memory_feature"], adapter.appended[0]["source_profile_memory_kinds"])
+        self.assertEqual("always_when_profile_scope_available", adapter.appended[0]["profile_promotion_policy"])
+        self.assertEqual(committed["profile_promotion_summary"], adapter.appended[0]["profile_promotion_summary"])
         async_task = next(record for record in adapter.appended if record["record_type"] == "matrixark_async_pipeline_task")
         self.assertEqual(committed["source_role_counts"], async_task["source_role_counts"])
         self.assertEqual(committed["source_hook_type_counts"], async_task["source_hook_type_counts"])
         self.assertEqual(committed["source_codex_event_counts"], async_task["source_codex_event_counts"])
         self.assertEqual(committed["source_memory_selection_policy_counts"], async_task["source_memory_selection_policy_counts"])
+        self.assertEqual(["memory_feature"], async_task["source_profile_memory_classes"])
+        self.assertEqual(["memory_feature"], async_task["source_profile_memory_kinds"])
+        self.assertEqual("always_when_profile_scope_available", async_task["profile_promotion_policy"])
+        self.assertEqual(committed["profile_promotion_summary"], async_task["profile_promotion_summary"])
         self.assertEqual(1, async_task["source_memory_selection_complete_count"])
         committed_buffer = next(
             record
