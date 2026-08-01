@@ -19,10 +19,75 @@ For a local laptop install, the metaserver and datanode run on localhost and
 store data under a persistent local directory. Codex hook support is optional
 and can be enabled after the storage service passes a smoke test.
 
+## Simplest Path: Single Node In Docker
+
+If you just want a working TemporalStore on any OS and do not need a native
+build, use the single-node Docker image. You need only Docker (see
+[Step 0](#step-0-install-docker-if-you-dont-have-it)) and a clone of this repo:
+
+```bash
+git clone https://github.com/bjmeetsfo/TemporalStore.git
+cd TemporalStore
+docker compose -f docker-compose.single-node.yml up --build
+```
+
+This builds a lean image (the Rust toolchain lives inside the build stage, so
+nothing but Docker is installed on the host) and starts one node:
+
+```text
+http://127.0.0.1:17101   metaserver (metadata, health)
+http://127.0.0.1:17102   datanode   (health + writes/reads via POST /execute)
+```
+
+Verify it from another terminal:
+
+```bash
+curl http://127.0.0.1:17102/health
+curl -sS http://127.0.0.1:17102/execute -H 'content-type: application/json' \
+  -d '{"shard_id":1,"command":{"kind":"string_set","key":"hello","value":[119,111,114,108,100]}}'
+curl -sS http://127.0.0.1:17102/execute -H 'content-type: application/json' \
+  -d '{"shard_id":1,"command":{"kind":"string_get","key":"hello"}}'
+```
+
+Data persists in the `temporalstore-data` volume. Remove the node and its data
+with `docker compose -f docker-compose.single-node.yml down -v`.
+
+Want a native install, or Codex hook integration? Pick a path below.
+
+## Step 0: Install Docker (If You Don't Have It)
+
+Skip this if `docker run --rm hello-world` already works.
+
+**Ubuntu / Debian Linux** — official convenience script, then let your user run
+Docker without `sudo`:
+
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker "$USER"   # log out/in (or run: newgrp docker)
+docker run --rm hello-world
+```
+
+**macOS** — Docker Desktop (GUI) or Colima (CLI-only), via Homebrew:
+
+```bash
+brew install --cask docker      # then launch Docker.app once
+# or, headless:  brew install colima docker && colima start
+docker run --rm hello-world
+```
+
+**Windows** — install [Docker Desktop](https://www.docker.com/products/docker-desktop/),
+enable the WSL 2 backend (run `wsl --install` once from an elevated PowerShell if
+needed), start Docker Desktop, then in PowerShell:
+
+```powershell
+docker run --rm hello-world
+```
+
 ## Choose One Install Path
 
 | Platform | Recommended path | Start here |
 | --- | --- | --- |
+| Any (simplest) | Single-node Docker image | [Single Node In Docker](#simplest-path-single-node-in-docker) |
 | Windows | Docker Desktop with Linux container | [Windows Docker](windows_docker_install.md) |
 | Ubuntu Linux | Native Rust service | [Linux](linux_deploy.md) |
 | macOS | Native Rust service | [macOS](macos_deploy.md) |
@@ -157,6 +222,29 @@ Register this command as the Codex `UserPromptSubmit` hook:
 
 ```text
 %USERPROFILE%\.matrixark\hooks\matrixark-codex-hook-rust-docker.cmd
+```
+
+## Prebuilt Images (Optional)
+
+By default every Docker path here **builds the image locally** from source — the
+`docker compose ... up --build` and `Dockerfile.single-node` steps above need no
+registry access and no prebuilt artifact.
+
+There is not yet a public TemporalStore image on a shared registry, so "pull an
+image" only applies if your team publishes one internally. When you have such an
+image, skip the local build and point the installer at it:
+
+```powershell
+# Windows: use an image already loaded locally
+powershell -ExecutionPolicy Bypass `
+  -File .\tools\install_windows_docker_temporalstore.ps1 `
+  -ImageName <registry>/<image>:<tag> -PullImage
+```
+
+```bash
+# Linux/macOS: pull, then run it as a single node
+docker pull <registry>/<image>:<tag>
+docker run --rm -p 17101:17101 -p 17102:17102 <registry>/<image>:<tag>
 ```
 
 ## Verify The Service
