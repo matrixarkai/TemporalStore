@@ -455,6 +455,33 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("Done. Mixed payload no longer stores the prompt.", text)
         self.assertNotIn("original prompt should stay out", text)
 
+    def test_payload_text_extracts_assistant_output_aliases_for_stop_events(self) -> None:
+        self.assertEqual(
+            "Decision: capture assistant output alias.",
+            hook.payload_text(
+                {"assistant_output": "Decision: capture assistant output alias."},
+                event="Stop",
+            ),
+        )
+        self.assertEqual(
+            "Done. LLM response should be ingested.",
+            hook.payload_text(
+                {"params": {"llm_response": "Done. LLM response should be ingested."}},
+                event="Stop",
+            ),
+        )
+        self.assertEqual(
+            "Implemented model response memory capture.",
+            hook.payload_text(
+                {
+                    "model_response": [
+                        {"text": "Implemented model response memory capture."},
+                    ]
+                },
+                event="Stop",
+            ),
+        )
+
     def test_payload_text_prefers_tool_role_from_mixed_tool_messages(self) -> None:
         payload = {
             "hook_event_name": "PostToolUse",
