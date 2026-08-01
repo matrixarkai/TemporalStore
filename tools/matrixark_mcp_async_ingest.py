@@ -11,6 +11,8 @@ try:
         MatrixArkError,
         context_index_name,
         context_index_posting_record,
+        embedding_for_text,
+        embedding_model_name,
         messages_from_event_record,
         normalize_message_role,
         normalized_node_path,
@@ -26,6 +28,8 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         MatrixArkError,
         context_index_name,
         context_index_posting_record,
+        embedding_for_text,
+        embedding_model_name,
         messages_from_event_record,
         normalize_message_role,
         normalized_node_path,
@@ -206,6 +210,21 @@ def lightweight_async_accept(
         "extraction_phase": "pending_async",
         "final_session_boundary": False,
     }
+    event_embedding = embedding_for_text(text)
+    event_embedding_record: Json = {
+        "record_type": "context_embedding",
+        "embedding_type": "event_text",
+        "ref_type": "event",
+        "ref_hash": event_id_hash,
+        "node_hash": node_hash,
+        "node_path": node_path,
+        "dim": len(event_embedding),
+        "model": embedding_model_name(),
+        "vector": event_embedding,
+        "scope": envelope["scope"],
+        "updated_at_ms": envelope["ingestion_time_ms"],
+        **memory_layer_fields,
+    }
     event_index_terms = _lightweight_context_event_index_terms(source_counts, memory_layer_fields, envelope)
     event_index_records = [
         {
@@ -238,6 +257,7 @@ def lightweight_async_accept(
             source_hash=event_id_hash,
             dirty_reason="new_event",
         )
+        target.append(event_embedding_record)
         target.append(
             {
                 "record_type": "context_event",
