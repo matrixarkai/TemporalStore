@@ -3105,6 +3105,10 @@ FEATURE_SCOPE_EXCLUSION_RE = re.compile(
     r"(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b",
     re.IGNORECASE,
 )
+FEATURE_SCOPE_EXCLUDED_DIMENSION_RE = re.compile(
+    r"\b(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b",
+    re.IGNORECASE,
+)
 
 FEATURE_MEMORY_POLICY_RE = re.compile(
     r"\b(?:openviking|vikingmem|mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionalit(?:y|ies)|algorithms?|memory feature|long[- ]term memory|session memory|profile memory|cross[- ]session memory|threshold|idle batch|batch extraction)\b",
@@ -3114,7 +3118,14 @@ FEATURE_MEMORY_POLICY_RE = re.compile(
 
 def feature_scope_memory_only_policy(text: str) -> bool:
     compact = " ".join(str(text or "").split())
-    return bool(compact and FEATURE_SCOPE_EXCLUSION_RE.search(compact) and FEATURE_MEMORY_POLICY_RE.search(compact))
+    if not compact or not FEATURE_MEMORY_POLICY_RE.search(compact):
+        return False
+    if FEATURE_SCOPE_EXCLUSION_RE.search(compact):
+        return True
+    return bool(
+        re.search(r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\b", compact, re.IGNORECASE)
+        and FEATURE_SCOPE_EXCLUDED_DIMENSION_RE.search(compact)
+    )
 
 
 def selected_assistant_profile_fact_policy(text: str) -> bool:

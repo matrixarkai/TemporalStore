@@ -2485,6 +2485,9 @@ FEATURE_SCOPE_EXCLUSION_RE = re.compile(
     r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\s+"
     r"(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b"
 )
+FEATURE_SCOPE_EXCLUDED_DIMENSION_RE = re.compile(
+    r"\b(?:testing|teseting|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b"
+)
 
 CODEX_OUTCOME_QUERY_RE = re.compile(r"\b(?:codex|assistant|agent)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|validated|verified|push(?:ed)?|publish(?:ed)?|deploy(?:ed)?|release(?:d)?|merge(?:d)?|commit(?:ted)?|rebase(?:d)?|failed|blocked|blocker|done|outcome|decision|decided|next action)\b|\bwhat (?:was|were|did)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|validated|verified|push(?:ed)?|publish(?:ed)?|deploy(?:ed)?|release(?:d)?|merge(?:d)?|commit(?:ted)?|failed|blocked|done)\b|\bwhat did (?:you|we)\b.{0,80}\b(?:implement|fix|change|update|configure|enable|disable|install|migrate|recover|restore|clean|validate|verify|push|publish|deploy|release|merge|commit|rebase|fail|block|decide|do)\b|\b(?:show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:assistant decision|tool evidence|validation evidence|pushed commit|blocked work|failed validation|validation result|test result|tests? passed|pushed commit|deployment result|deploy(?:ed)? result|install(?:ed)? result|configured result|configuration result|recovery result|migration result|merge result|publish(?:ed)? result|release result|outcome facts?)\b|\b(?:what|which|show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:tests? passed|validation (?:passed|result|evidence)|pushed commit|commit (?:was )?pushed|push result|rebase result|deploy(?:ed)? result|deployment result|install(?:ed)? result|configured result|configuration result|recovery result|migration result|merge result|publish(?:ed)? result|release result)\b|\bwhat (?:failed|was blocked|blocked)\b.{0,80}\b(?:memory work|work|validation|commit|push|deploy|deployment|install|configuration|migration|recovery|merge|publish|release|tool|codex|temporalstore)\b")
 
@@ -2804,17 +2807,25 @@ def profile_entity_type_for_memory_text(text: str) -> str:
         return ""
     if re.search(r"\b(?:call me|my name is|i am called|i'm called|user(?:'s)? name|user goes by|pronouns?|address (?:me|the user)|nickname)\b", lower):
         return "identity_profile"
-    if re.search(r"\b(?:reply|respond|answer|write|communication style|response style|answer style|preferred language|preferred format|language|locale|timezone|time zone|tone|style|format|bullets?|bullet points?|markdown|concise|brief|detailed)\b", lower):
-        return "communication_profile"
     if re.search(r"\b(?:feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionality|functionalities|functionality only|algorithms?|algos?|implementation focus|no testing|no teseting|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no evident|no eviden[ct]e|feature work only|code changes only|openviking|vikingmem|mem0|long[- ]term memory|session memory|profile memory|cross[- ]session memory|threshold|idle batch|batch extraction)\b", lower):
         return "memory_feature_profile"
+    if re.search(r"\b(?:reply|respond|answer|write|communication style|response style|answer style|preferred language|preferred format|language|locale|timezone|time zone|tone|style|format|bullets?|bullet points?|markdown|concise|brief|detailed)\b", lower):
+        return "communication_profile"
     if re.search(r"\b(?:workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|folder|build|deploy|deployment|rustraft|temporalstore|matrixark)\b", lower):
         return "workspace_profile"
     return ""
 
 
 def feature_scope_excludes_outcome_evidence(text: str) -> bool:
-    return bool(FEATURE_SCOPE_EXCLUSION_RE.search(str(text or "").lower())) and profile_entity_type_for_memory_text(text) == "memory_feature_profile"
+    lower = str(text or "").lower()
+    feature_memory = profile_entity_type_for_memory_text(text) == "memory_feature_profile"
+    if not feature_memory:
+        return False
+    if FEATURE_SCOPE_EXCLUSION_RE.search(lower):
+        return True
+    if re.search(r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\b", lower):
+        return bool(FEATURE_SCOPE_EXCLUDED_DIMENSION_RE.search(lower))
+    return False
 
 
 def assistant_profile_fact_memory_text(text: str) -> bool:
