@@ -8710,6 +8710,50 @@ class MatrixArkLocalAdapter:
                     resolved.append(int(source_event_ids[ref_value]))
             return ordered_unique_any(resolved) or list(source_event_ids or event_hashes)
 
+        def memory_selection_policy_counts_for_entity(entity: Json, roles: list[str], role_counts: Json) -> Json:
+            explicit_counts = (
+                entity.get("source_memory_selection_policy_counts")
+                if isinstance(entity.get("source_memory_selection_policy_counts"), dict)
+                else {}
+            )
+            if explicit_counts:
+                scoped: Json = {}
+                for policy, count in explicit_counts.items():
+                    policy_name = str(policy or "").strip()
+                    if not policy_name:
+                        continue
+                    try:
+                        amount = max(0, int(count or 0))
+                    except (TypeError, ValueError):
+                        continue
+                    if amount:
+                        scoped[policy_name] = int(scoped.get(policy_name, 0)) + amount
+                if scoped:
+                    return scoped
+            allowed_by_role = {
+                "assistant": {"selected_assistant_profile_fact", "selected_assistant_decision_outcome_only"},
+                "tool": {"selected_tool_evidence_only"},
+                "user": {"selected_user_prompt", "selected_user_profile_fact"},
+            }
+            allowed = {
+                policy
+                for role in roles
+                for policy in allowed_by_role.get(normalize_message_role(role), set())
+            }
+            scoped = {
+                policy: count
+                for policy, count in source_memory_selection_policy_counts.items()
+                if policy in allowed
+            }
+            if scoped:
+                return dict(scoped)
+            inferred: Json = {}
+            for role in roles:
+                role_name = normalize_message_role(role)
+                for policy in sorted(allowed_by_role.get(role_name, set())):
+                    inferred[policy] = max(1, int(role_counts.get(role_name, 0) or 0))
+            return inferred or dict(source_memory_selection_policy_counts)
+
         profile_scope = {
             key: value
             for key, value in envelope["scope"].items()
@@ -8784,6 +8828,12 @@ class MatrixArkLocalAdapter:
             if not entity_source_role_counts:
                 entity_source_role_counts = source_role_counts
             entity_source_event_ids = source_event_ids_for_entity(entity)
+            entity_source_memory_selection_policy_counts = memory_selection_policy_counts_for_entity(
+                entity,
+                entity_source_roles,
+                entity_source_role_counts,
+            )
+            entity_source_memory_selection_policies = sorted(entity_source_memory_selection_policy_counts)
             entity_type_counts[updated_entity["entity_type"]] = int(entity_type_counts.get(updated_entity["entity_type"], 0)) + 1
             entity_hashes.append(entity_hash)
             session_profile_memory_class = profile_memory_class_for_entity_type(updated_entity.get("entity_type"))
@@ -8812,8 +8862,8 @@ class MatrixArkLocalAdapter:
                 "source_hook_type_counts": source_hook_type_counts,
                 "source_codex_events": source_codex_events,
                 "source_codex_event_counts": source_codex_event_counts,
-                "source_memory_selection_policies": source_memory_selection_policies,
-                "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                "source_memory_selection_policies": entity_source_memory_selection_policies,
+                "source_memory_selection_policy_counts": entity_source_memory_selection_policy_counts,
                 "source_profile_memory_classes": source_profile_memory_classes,
                 "source_profile_memory_kinds": source_profile_memory_kinds,
                 **source_memory_selection_retention,
@@ -8891,8 +8941,8 @@ class MatrixArkLocalAdapter:
                     "source_hook_type_counts": source_hook_type_counts,
                     "source_codex_events": source_codex_events,
                     "source_codex_event_counts": source_codex_event_counts,
-                    "source_memory_selection_policies": source_memory_selection_policies,
-                    "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                    "source_memory_selection_policies": entity_source_memory_selection_policies,
+                    "source_memory_selection_policy_counts": entity_source_memory_selection_policy_counts,
                     "source_profile_memory_classes": source_profile_memory_classes,
                     "source_profile_memory_kinds": source_profile_memory_kinds,
                     **source_memory_selection_retention,
@@ -8994,12 +9044,12 @@ class MatrixArkLocalAdapter:
                     profile_source_codex_event_counts[codex_event] = int(profile_source_codex_event_counts.get(codex_event, 0)) + int(count)
                 profile_source_memory_selection_policies = ordered_unique_any(
                     list(previous_profile.get("source_memory_selection_policies", []))
-                    + source_memory_selection_policies
+                    + entity_source_memory_selection_policies
                 )
                 profile_source_memory_selection_policy_counts: Json = dict(
                     previous_profile.get("source_memory_selection_policy_counts", {})
                 )
-                for policy, count in source_memory_selection_policy_counts.items():
+                for policy, count in entity_source_memory_selection_policy_counts.items():
                     profile_source_memory_selection_policy_counts[policy] = int(
                         profile_source_memory_selection_policy_counts.get(policy, 0)
                     ) + int(count)
