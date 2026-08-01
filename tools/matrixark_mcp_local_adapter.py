@@ -1309,6 +1309,7 @@ ASSISTANT_PROFILE_FACT_LINEAGE_PATTERNS = [
         r"\b(?:i(?:'ll| will)? remember|remembered|noted|got it)\b.{0,140}\b(?:prefer|preference|want|need|always|never|avoid|profile|memory)\b",
         r"\b(?:standing instruction|standing preference|user profile|long[- ]term memor(?:y|ies)|saved preference|persistent instruction)\b",
         r"\b(?:call me|my name is|user(?:'s)? name is|user goes by|pronouns?|address (?:me|the user))\b",
+        r"\b(?:reply|respond|answer|write|communication style|response style|answer style|preferred language|preferred format|timezone|time zone|locale)\b.{0,120}\b(?:concise|brief|detailed|bullets?|markdown|language|tone|style|format|timezone|locale)\b",
     ]
 ]
 
