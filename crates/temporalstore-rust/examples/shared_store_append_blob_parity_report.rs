@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use matrixobjectstore_rs::StoreOptions;
+use prost::Message;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use temporalstore_rust::shared_store::{
     ReplayReport, SharedStoreFlushReport, SharedStoreReplicator, SharedStoreStorageMode,
     SharedStoreWalAppendMode, SharedStoreWalEntry, SharedStoreWriteReport,
@@ -28,6 +30,30 @@ struct Report {
     summary: Summary,
 }
 
+#[derive(Clone, PartialEq, Message)]
+struct ReportWalFrameProto {
+    #[prost(uint64, tag = "1")]
+    shard_id: u64,
+    #[prost(uint64, tag = "2")]
+    oplog_index: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    command_payload: Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    command_byte_size: u64,
+    #[prost(string, tag = "5")]
+    command_sha256: String,
+    #[prost(uint32, tag = "6")]
+    command_encoding: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct OffsetFrameValidation {
+    checked_frames: usize,
+    matched_frames: usize,
+    all_offsets_decode_expected_frame: bool,
+    contiguous_coverage_bytes: u64,
+}
+
 #[derive(Debug, Serialize)]
 struct PublishPhaseReport {
     shard_id: u64,
@@ -36,6 +62,7 @@ struct PublishPhaseReport {
     append_receipts: Vec<AppendBlobReceipt>,
     blob_object_length: u64,
     blob_physical_extent_count: usize,
+    offset_frame_validation: OffsetFrameValidation,
     replay: ReplayPhaseReport,
 }
 
@@ -68,12 +95,23 @@ struct ReplayPhaseReport {
     retrieval_latencies_us: Vec<u128>,
     retrieved_records: u64,
     retrieval_ok: bool,
+    secondary_replay_latency_us: u128,
+    secondary_replay_report: ReplayReport,
+    secondary_retrieved_records: u64,
+    secondary_retrieval_ok: bool,
+    single_node_reload_latency_us: u128,
+    single_node_reload_report: ReplayReport,
+    single_node_reload_retrieved_records: u64,
+    single_node_reload_ok: bool,
 }
 
 #[derive(Debug, Serialize)]
 struct Summary {
     direct_offsets_monotonic: bool,
     direct_offsets_contiguous: bool,
+    direct_offset_slices_decode_expected_frames: bool,
+    secondary_replay_recovered_all_records: bool,
+    single_node_reload_recovered_all_records: bool,
     sync_reports_include_offsets: bool,
     async_flush_reports_include_offsets: bool,
     replay_recovered_all_records: bool,
@@ -169,6 +207,19 @@ async fn main() {
     let summary = Summary {
         direct_offsets_monotonic: offsets_monotonic(&direct_publish.append_receipts),
         direct_offsets_contiguous: offsets_contiguous(&direct_publish.append_receipts),
+        direct_offset_slices_decode_expected_frames: direct_publish
+            .offset_frame_validation
+            .all_offsets_decode_expected_frame,
+        secondary_replay_recovered_all_records: direct_publish.replay.secondary_retrieved_records
+            == entry_count
+            && sync_writer.replay.secondary_retrieved_records == entry_count
+            && async_writer.replay.secondary_retrieved_records == entry_count,
+        single_node_reload_recovered_all_records: direct_publish
+            .replay
+            .single_node_reload_retrieved_records
+            == entry_count
+            && sync_writer.replay.single_node_reload_retrieved_records == entry_count
+            && async_writer.replay.single_node_reload_retrieved_records == entry_count,
         sync_reports_include_offsets: sync_writer.write_reports.iter().all(|report| {
             report.wal_blob_start_offset.is_some()
                 && report.wal_blob_end_offset.is_some()
@@ -236,6 +287,8 @@ async fn run_direct_publish(
     }
     let blob_key = blob_key(shard_id);
     let metadata = matrixobject_metadata(&store, &blob_key);
+    let offset_frame_validation =
+        validate_offset_frames(&store, &blob_key, &append_receipts, shard_id);
     PublishPhaseReport {
         shard_id,
         blob_key,
@@ -243,6 +296,7 @@ async fn run_direct_publish(
         append_receipts,
         blob_object_length: metadata.length,
         blob_physical_extent_count: metadata.extents.len(),
+        offset_frame_validation,
         replay: replay_and_retrieve(root, replicator, shard_id, entry_count, "direct").await,
     }
 }
@@ -335,12 +389,60 @@ async fn replay_and_retrieve(
         .expect("replay");
     let replay_latency_us = replay_start.elapsed().as_micros();
 
+    let (retrieved_records, retrieval_latencies_us) =
+        retrieve_records(&follower, shard_id, entry_count, phase);
+
+    let secondary = test_engine(root, &format!("secondary-{phase}-{shard_id}"));
+    secondary.load_shard(shard_id);
+    let secondary_replay_start = Instant::now();
+    let secondary_replay_report = replicator
+        .replay_wal_strict(shard_id, 0, &secondary)
+        .await
+        .expect("secondary replay");
+    let secondary_replay_latency_us = secondary_replay_start.elapsed().as_micros();
+    let (secondary_retrieved_records, _) =
+        retrieve_records(&secondary, shard_id, entry_count, phase);
+
+    let single_node_reload = test_engine(root, &format!("single-node-reload-{phase}-{shard_id}"));
+    single_node_reload.load_shard(shard_id);
+    let single_node_reload_start = Instant::now();
+    let single_node_reload_report = replicator
+        .replay_wal_strict(shard_id, 0, &single_node_reload)
+        .await
+        .expect("single-node reload replay");
+    let single_node_reload_latency_us = single_node_reload_start.elapsed().as_micros();
+    let (single_node_reload_retrieved_records, _) =
+        retrieve_records(&single_node_reload, shard_id, entry_count, phase);
+
+    ReplayPhaseReport {
+        replay_latency_us,
+        replay_report,
+        retrieval_latencies_us,
+        retrieved_records,
+        retrieval_ok: retrieved_records == entry_count,
+        secondary_replay_latency_us,
+        secondary_replay_report,
+        secondary_retrieved_records,
+        secondary_retrieval_ok: secondary_retrieved_records == entry_count,
+        single_node_reload_latency_us,
+        single_node_reload_report,
+        single_node_reload_retrieved_records,
+        single_node_reload_ok: single_node_reload_retrieved_records == entry_count,
+    }
+}
+
+fn retrieve_records(
+    engine: &TemporalEngine,
+    shard_id: u64,
+    entry_count: u64,
+    phase: &str,
+) -> (u64, Vec<u128>) {
     let mut retrieved_records = 0;
     let mut retrieval_latencies_us = Vec::new();
     for index in 1..=entry_count {
         let key = key_for(shard_id, index, phase);
         let start = Instant::now();
-        let response = follower
+        let response = engine
             .execute(ExecuteRequest {
                 shard_id,
                 command: Command::StringGet { key },
@@ -351,14 +453,64 @@ async fn replay_and_retrieve(
             retrieved_records += 1;
         }
     }
+    (retrieved_records, retrieval_latencies_us)
+}
 
-    ReplayPhaseReport {
-        replay_latency_us,
-        replay_report,
-        retrieval_latencies_us,
-        retrieved_records,
-        retrieval_ok: retrieved_records == entry_count,
+fn validate_offset_frames(
+    store: &MatrixObjectObjectStore,
+    blob_key: &str,
+    receipts: &[AppendBlobReceipt],
+    shard_id: u64,
+) -> OffsetFrameValidation {
+    let object = store
+        .inner()
+        .lock()
+        .expect("matrixobject lock poisoned")
+        .get_object("temporalstore-shared", blob_key)
+        .expect("matrixobject blob");
+    let bytes = object.data;
+    let mut matched_frames = 0usize;
+    let mut contiguous_coverage_bytes = 0u64;
+    for (expected_index, receipt) in receipts.iter().enumerate() {
+        let start = receipt.start_offset as usize;
+        let end = receipt.end_offset as usize;
+        if end > bytes.len() || start >= end || end - start < 4 {
+            continue;
+        }
+        let slice = &bytes[start..end];
+        let frame_len = u32::from_be_bytes(
+            slice[0..4]
+                .try_into()
+                .expect("frame length slice is exactly 4 bytes"),
+        ) as usize;
+        if frame_len + 4 != slice.len() {
+            continue;
+        }
+        let Ok(frame) = ReportWalFrameProto::decode(&slice[4..]) else {
+            continue;
+        };
+        let command_sha256 = sha256_hex(&frame.command_payload);
+        if frame.shard_id == shard_id
+            && frame.oplog_index == expected_index as u64 + 1
+            && frame.command_byte_size == frame.command_payload.len() as u64
+            && frame.command_sha256 == command_sha256
+        {
+            matched_frames += 1;
+            contiguous_coverage_bytes = receipt.end_offset;
+        }
     }
+    OffsetFrameValidation {
+        checked_frames: receipts.len(),
+        matched_frames,
+        all_offsets_decode_expected_frame: matched_frames == receipts.len(),
+        contiguous_coverage_bytes,
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
 }
 
 fn matrixobject_metadata(

@@ -72,13 +72,17 @@ def _load_rust_runtime_report(args: argparse.Namespace) -> tuple[dict[str, Any],
     command = [
         "cargo",
         "run",
+    ]
+    if args.rust_profile == "release":
+        command.append("--release")
+    command.extend([
         "-p",
         "temporalstore-rust",
         "--features",
         "matrixobject",
         "--example",
         "shared_store_append_blob_parity_report",
-    ]
+    ])
     started = time.time()
     result = _run(command, cwd=ROOT, env=env, timeout=args.timeout_seconds)
     command_report = {
@@ -227,6 +231,23 @@ def _cpp_contract(matrixobject_repo: Path) -> dict[str, Any]:
 
 
 
+
+def _rust_replay_latency_total_us(rust_report: dict[str, Any], field: str) -> int | None:
+    if not isinstance(rust_report, dict):
+        return None
+    total = 0
+    found = False
+    for phase in ("direct_publish", "sync_writer", "async_writer"):
+        value = (
+            rust_report.get(phase, {})
+            .get("replay", {})
+            .get(field)
+        )
+        if isinstance(value, int):
+            total += value
+            found = True
+    return total if found else None
+
 def _cpp_runtime_summary(cpp_report: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(cpp_report, dict):
         return {"runtime_valid": False, "reason": "missing runtime report"}
@@ -266,6 +287,15 @@ def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
         "runtime_valid": rust_report.get("schema") == "temporalstore_shared_store_append_blob_parity_report_v1",
         "offsets_monotonic": bool(summary.get("direct_offsets_monotonic")),
         "offsets_contiguous": bool(summary.get("direct_offsets_contiguous")),
+        "direct_offset_slices_decode_expected_frames": bool(
+            summary.get("direct_offset_slices_decode_expected_frames")
+        ),
+        "secondary_replay_recovered_all_records": bool(
+            summary.get("secondary_replay_recovered_all_records")
+        ),
+        "single_node_reload_recovered_all_records": bool(
+            summary.get("single_node_reload_recovered_all_records")
+        ),
         "sync_reports_include_offsets": bool(summary.get("sync_reports_include_offsets")),
         "async_flush_reports_include_offsets": bool(summary.get("async_flush_reports_include_offsets")),
         "replay_recovered_all_records": bool(summary.get("replay_recovered_all_records")),
@@ -274,16 +304,47 @@ def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
         "append_latency_p95_us": summary.get("append_latency_p95_us"),
         "replay_latency_total_us": summary.get("replay_latency_total_us"),
         "retrieval_latency_avg_us": summary.get("retrieval_latency_avg_us"),
+        "secondary_replay_latency_total_us": _rust_replay_latency_total_us(
+            rust_report, "secondary_replay_latency_us"
+        ),
+        "single_node_reload_latency_total_us": _rust_replay_latency_total_us(
+            rust_report, "single_node_reload_latency_us"
+        ),
     }
 
+
+
+def _latency_ratio(numerator: Any, denominator: Any) -> float | None:
+    if not isinstance(numerator, (int, float)) or not isinstance(denominator, (int, float)):
+        return None
+    if denominator <= 0:
+        return None
+    return round(float(numerator) / float(denominator), 3)
 
 def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runtime: dict[str, Any]) -> dict[str, Any]:
     rust_summary = _rust_summary(rust)
     cpp_summary = _cpp_runtime_summary(cpp_runtime)
+    append_latency_ratio = _latency_ratio(
+        rust_summary.get("append_latency_avg_us"),
+        cpp_summary.get("append_latency_avg_us"),
+    )
+    full_read_latency_ratio = _latency_ratio(
+        rust_summary.get("retrieval_latency_avg_us"),
+        cpp_summary.get("read_full_latency_us"),
+    )
     checks = {
         "rust_runtime_valid": bool(rust_summary.get("runtime_valid")),
         "rust_offsets_monotonic": bool(rust_summary.get("offsets_monotonic")),
         "rust_offsets_contiguous": bool(rust_summary.get("offsets_contiguous")),
+        "rust_offset_slices_decode_expected_frames": bool(
+            rust_summary.get("direct_offset_slices_decode_expected_frames")
+        ),
+        "rust_secondary_replay_recovered_all_records": bool(
+            rust_summary.get("secondary_replay_recovered_all_records")
+        ),
+        "rust_single_node_reload_recovered_all_records": bool(
+            rust_summary.get("single_node_reload_recovered_all_records")
+        ),
         "rust_sync_reports_include_offsets": bool(rust_summary.get("sync_reports_include_offsets")),
         "rust_async_flush_reports_include_offsets": bool(
             rust_summary.get("async_flush_reports_include_offsets")
@@ -303,16 +364,27 @@ def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runti
         "matrixobject_rust_api_exposes_metadata": bool(
             cpp_contract.get("rust_matrixobject_api_exposes_metadata")
         ),
+        "append_latency_ratio_within_2x": append_latency_ratio is not None
+        and append_latency_ratio <= 2.0,
+        "retrieval_vs_cpp_full_read_latency_ratio_within_2x": full_read_latency_ratio is not None
+        and full_read_latency_ratio <= 2.0,
     }
     blockers = [name for name, passed in checks.items() if not passed]
     return {
         "status": "passed" if not blockers else "failed",
         "checks": checks,
         "blockers": blockers,
+        "latency_ratios": {
+            "rust_append_avg_us_to_cpp_append_avg_us": append_latency_ratio,
+            "rust_retrieval_avg_us_to_cpp_full_read_us": full_read_latency_ratio,
+            "threshold": "<=2.0x for this bounded local parity harness",
+        },
         "note": (
             "Rust TemporalStore MatrixObject append-blob runtime evidence is compared with "
             "C++ MatrixObjectStore runtime append/reopen/readback evidence and source "
-            "contract checks for offset/extents propagation."
+            "contract checks for offset/extents propagation. Rust also validates that "
+            "reported byte offsets slice exact WAL frames for secondary replay and "
+            "single-node reload from shared blob state."
         ),
     }
 
@@ -331,6 +403,14 @@ def _render_html(report: dict[str, Any]) -> str:
         ("Rust total replay latency us", rust_summary.get("replay_latency_total_us")),
         ("Rust avg retrieval latency us", rust_summary.get("retrieval_latency_avg_us")),
         ("C++ avg append latency us", cpp_runtime_summary.get("append_latency_avg_us")),
+        (
+            "Rust/C++ append avg latency ratio",
+            report["parity"].get("latency_ratios", {}).get("rust_append_avg_us_to_cpp_append_avg_us"),
+        ),
+        (
+            "Rust retrieval/C++ full read latency ratio",
+            report["parity"].get("latency_ratios", {}).get("rust_retrieval_avg_us_to_cpp_full_read_us"),
+        ),
         ("C++ reopen latency us", cpp_runtime_summary.get("reopen_latency_us")),
         ("C++ full read latency us", cpp_runtime_summary.get("read_full_latency_us")),
         ("C++ tail read latency us", cpp_runtime_summary.get("read_tail_latency_us")),
@@ -382,6 +462,7 @@ def main() -> int:
     parser.add_argument("--entries", type=int, default=8)
     parser.add_argument("--value-bytes", type=int, default=64)
     parser.add_argument("--timeout-seconds", type=int, default=180)
+    parser.add_argument("--rust-profile", choices=["release", "dev"], default="release")
     parser.add_argument("--rust-report")
     parser.add_argument("--cpp-runtime-report")
     parser.add_argument("--cpp-runtime-bin")
