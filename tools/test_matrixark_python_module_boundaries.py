@@ -1589,6 +1589,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
 
     def test_moduleized_summary_candidate_preserves_profile_memory_fields(self) -> None:
         builders = importlib.import_module("tools.matrixark_mcp_retrieve_candidate_builders")
+        budget_mod = importlib.import_module("tools.matrixark_mcp_budget_pack")
         continuity = importlib.import_module("tools.matrixark_mcp_retrieve_continuity")
         record = {
             "record_type": "context_summary",
@@ -1609,10 +1610,19 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "source_codex_event_counts": {"PreviousAssistantBackfill": 1},
             "source_memory_selection_policies": ["selected_assistant_decision_outcome_only"],
             "source_memory_selection_policy_counts": {"selected_assistant_decision_outcome_only": 2},
+            "source_profile_promotion_policies": ["always_when_profile_scope_available"],
+            "source_profile_promotion_blockers": ["profile_scope_missing"],
+            "source_profile_memory_classes": ["memory_feature"],
+            "source_profile_memory_kinds": ["memory_feature"],
             "source_memory_scopes": ["user_profile"],
             "source_session_continuities": ["cross_session"],
             "source_extraction_phases": ["final"],
+            "source_entity_types": ["assistant_decision", "tool_evidence"],
             "source_final_session_boundary_count": 1,
+            "profile_summary_current": True,
+            "profile_memory_class": "memory_feature",
+            "profile_memory_kind": "memory_feature",
+            "profile_promotion_policy": "always_when_profile_scope_available",
             "scope": {
                 "account_id": "acct",
                 "tenant_id": "tenant",
@@ -1656,7 +1666,20 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             {"selected_assistant_decision_outcome_only": 2},
             annotated["source_memory_selection_policy_counts"],
         )
+        self.assertEqual(
+            ["always_when_profile_scope_available"],
+            annotated["source_profile_promotion_policies"],
+        )
+        self.assertEqual(["profile_scope_missing"], annotated["source_profile_promotion_blockers"])
+        self.assertEqual(["memory_feature"], annotated["source_profile_memory_classes"])
+        self.assertEqual(["memory_feature"], annotated["source_profile_memory_kinds"])
+        self.assertEqual(["assistant_decision", "tool_evidence"], annotated["source_entity_types"])
         self.assertTrue(annotated["final_session_boundary"])
+        self.assertTrue(annotated["profile_summary_current"])
+        self.assertEqual("memory_feature", annotated["profile_memory_class"])
+        self.assertEqual("memory_feature", annotated["profile_memory_kind"])
+        self.assertEqual("always_when_profile_scope_available", annotated["profile_promotion_policy"])
+        self.assertEqual("profile_summary", budget_mod.candidate_memory_layer_name(annotated))
         self.assertEqual(["assistant"], annotated["source_roles"])
         self.assertEqual({"assistant": 2}, annotated["source_role_counts"])
         self.assertEqual(["PreviousAssistantBackfill"], annotated["source_codex_events"])
