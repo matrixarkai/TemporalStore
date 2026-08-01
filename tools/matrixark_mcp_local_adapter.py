@@ -1909,6 +1909,42 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
     return lineage
 
 
+def compression_profile_layer_values(records: list[Json]) -> Json:
+    profile_classes: set[str] = set()
+    profile_kinds: set[str] = set()
+    for record in records:
+        for value in record.get("source_profile_memory_classes", []) if isinstance(record.get("source_profile_memory_classes"), list) else []:
+            text = str(value or "").strip()
+            if text:
+                profile_classes.add(text)
+        for value in record.get("source_profile_memory_kinds", []) if isinstance(record.get("source_profile_memory_kinds"), list) else []:
+            text = str(value or "").strip()
+            if text:
+                profile_kinds.add(text)
+        profile_class = str(record.get("profile_memory_class") or "").strip()
+        profile_kind = str(record.get("profile_memory_kind") or "").strip()
+        if profile_class:
+            profile_classes.add(profile_class)
+        if profile_kind:
+            profile_kinds.add(profile_kind)
+        event_type = str(record.get("event_type") or "").strip().lower()
+        policies = record.get("source_memory_selection_policies") if isinstance(record.get("source_memory_selection_policies"), list) else []
+        if event_type in {"assistant_response", "tool_evidence", "assistant_decision"} or any(
+            str(policy or "") in {"selected_assistant_decision_outcome_only", "selected_tool_evidence_only"}
+            for policy in policies
+        ):
+            profile_classes.add("codex_outcome")
+            profile_kinds.add("codex_outcome")
+    classes = sorted(profile_classes)
+    kinds = sorted(profile_kinds)
+    return {
+        "source_profile_memory_classes": classes,
+        "source_profile_memory_kinds": kinds,
+        "profile_memory_class": classes[0] if len(classes) == 1 else ("mixed" if classes else ""),
+        "profile_memory_kind": "codex_outcome" if "codex_outcome" in kinds else (kinds[0] if len(kinds) == 1 else ("mixed" if kinds else "")),
+    }
+
+
 def compression_context_index_terms(record: Json) -> list[str]:
     try:
         from tools.matrixark_mcp_indexing import benchmark_quality_index_terms
@@ -1929,6 +1965,8 @@ def compression_context_index_terms(record: Json) -> list[str]:
         ("source_extraction_phases", "extraction_phase"),
         ("source_profile_promotion_policies", "profile_promotion_policy"),
         ("source_profile_promotion_blockers", "profile_promotion_blocker"),
+        ("source_profile_memory_classes", "profile_memory_class"),
+        ("source_profile_memory_kinds", "profile_memory_kind"),
     ]:
         values = record.get(field)
         if isinstance(values, list):
@@ -1937,6 +1975,8 @@ def compression_context_index_terms(record: Json) -> list[str]:
         ("memory_scope", "memory_scope"),
         ("session_continuity", "session_continuity"),
         ("extraction_phase", "extraction_phase"),
+        ("profile_memory_class", "profile_memory_class"),
+        ("profile_memory_kind", "profile_memory_kind"),
     ]:
         value = str(record.get(field) or "").strip()
         if value:
@@ -4323,6 +4363,7 @@ class MatrixArkLocalAdapter:
             )
         compression_id_hash = stable_hash(f"compress:{scope}:{node_hash}:{source_start_ms}:{source_end_ms}:{source_event_ids}")
         source_lineage = source_event_lineage_summary(selected)
+        profile_lineage = compression_profile_layer_values(selected)
         record = {
             "record_type": "context_compression_event",
             "compression_id_hash": compression_id_hash,
@@ -4336,6 +4377,7 @@ class MatrixArkLocalAdapter:
             "source_event_ids": source_event_ids,
             "source_event_count": len(source_event_ids),
             **source_lineage,
+            **profile_lineage,
             "truncated_source_events": truncated,
             "operator": "TIME_COMPRESS",
             "compression_mode": mode,
@@ -4387,6 +4429,10 @@ class MatrixArkLocalAdapter:
                 "source_memory_scopes": record.get("source_memory_scopes", []),
                 "source_session_continuities": record.get("source_session_continuities", []),
                 "source_extraction_phases": record.get("source_extraction_phases", []),
+                "source_profile_memory_classes": record.get("source_profile_memory_classes", []),
+                "source_profile_memory_kinds": record.get("source_profile_memory_kinds", []),
+                "profile_memory_class": record.get("profile_memory_class", ""),
+                "profile_memory_kind": record.get("profile_memory_kind", ""),
                 "memory_scope": record.get("memory_scope", ""),
                 "session_continuity": record.get("session_continuity", ""),
                 "updated_at_ms": compressed_time_ms,
@@ -11257,6 +11303,10 @@ class MatrixArkLocalAdapter:
                 "source_extraction_phases": record.get("source_extraction_phases", []),
                 "source_profile_promotion_policies": record.get("source_profile_promotion_policies", []),
                 "source_profile_promotion_blockers": record.get("source_profile_promotion_blockers", []),
+                "source_profile_memory_classes": record.get("source_profile_memory_classes", []),
+                "source_profile_memory_kinds": record.get("source_profile_memory_kinds", []),
+                "profile_memory_class": record.get("profile_memory_class", ""),
+                "profile_memory_kind": record.get("profile_memory_kind", ""),
                 "source_final_session_boundary_count": record.get("source_final_session_boundary_count", 0),
                 "scope": candidate_access_scope(record),
                 "updated_at_ms": record.get("compressed_time_ms", record.get("updated_at_ms", now_ms())),
