@@ -2945,6 +2945,8 @@ def is_codex_outcome_entity_type(entity_type: Any) -> bool:
 
 def semantic_source_role_for_entity_type(entity_type: Any, role_names: set[str] | None = None) -> str:
     normalized = normalized_index_value(entity_type)
+    if normalized in {"memory_feature_profile", "identity_profile", "communication_profile", "workspace_profile"}:
+        return "profile"
     if normalized in {"assistant_decision", "assistant_response"}:
         return "assistant"
     if normalized == "tool_evidence":
@@ -7543,6 +7545,8 @@ def select_token_budgeted_refs(
         metadata_entity_type = metadata.get("entity_type") if isinstance(metadata, dict) else ""
         entity_type = str(candidate.get("entity_type") or metadata_entity_type or "").strip().lower()
         semantic_role = semantic_source_role_for_entity_type(entity_type, role_names)
+        if semantic_role == "profile":
+            return {semantic_role}
         if semantic_role and semantic_role in role_names:
             return {semantic_role}
         for source in sources:
@@ -7566,6 +7570,8 @@ def select_token_budgeted_refs(
         metadata_entity_type = metadata.get("entity_type") if isinstance(metadata, dict) else ""
         entity_type = str(candidate.get("entity_type") or metadata_entity_type or "").strip().lower()
         semantic_role = semantic_source_role_for_entity_type(entity_type, role_names)
+        if semantic_role == "profile":
+            return {semantic_role: 1}
         if semantic_role and semantic_role in role_names:
             return {semantic_role: 1}
         normalized_source_counts: Json = {}
