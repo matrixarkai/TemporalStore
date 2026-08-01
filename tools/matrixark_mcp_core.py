@@ -4746,7 +4746,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("classification", "correction"),
             context_index_name("segment_topic", "correction"),
         )
-    if re.search(r"\b(user profile|profile memory|long[- ]term memory|profile entity|profile entities|profile summary|profile summaries)\b", lower):
+    if PROFILE_MEMORY_QUERY_RE.search(lower):
         add_group(context_index_name("memory_scope", "user_profile"))
         add_group(context_index_name("profile_entity_current", "true"), context_index_name("profile_summary_current", "true"))
         add_group(
