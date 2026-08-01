@@ -74,6 +74,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "memory_selection_policy:selected_profile_current_state": "selected profile current state standing instruction durable preference",
     "memory_selection_policy:selected_user_prompt": "selected user prompt explicit request instruction preference",
     "memory_selection_policy:selected_user_profile_fact": "selected user profile fact standing preference durable instruction",
+    "memory_selection_policy:selected_assistant_profile_fact": "selected assistant stated user profile preference standing instruction durable memory",
     "memory_selection_policy:selected_assistant_decision_outcome_only": "selected assistant decision outcome final answer implemented changed pushed",
     "memory_selection_policy:selected_tool_evidence_only": "selected tool evidence validation test result commit push benchmark",
     "codex_outcome:next": "codex assistant next action follow up next step",
@@ -323,6 +324,10 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         if not feature_scope_excludes_evidence:
             profile_memory_kind_terms.append(context_index_name("profile_memory_kind", "codex_outcome"))
         add_group(*profile_memory_kind_terms)
+        add_group(
+            context_index_name("memory_selection_policy", "selected_user_profile_fact"),
+            context_index_name("memory_selection_policy", "selected_assistant_profile_fact"),
+        )
     if question_type in {"current_state", "latest"} and re.search(r"\b(profile|cross[- ]session|long[- ]term|memory|entity|entities)\b", lower):
         add_group(context_index_name("profile_entity_current", "true"), context_index_name("profile_summary_current", "true"))
     if not feature_scope_excludes_evidence and re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|published|deploy(?:ed)?|deployment|release(?:d)?|merge(?:d)?|rebase(?:d)?|configured|configuration|enabled|disabled|installed|migrated|recovered|restored|cleaned|promoted|indexed|budgeted|batched|flushed|validation|benchmark|blocker)\b", lower):

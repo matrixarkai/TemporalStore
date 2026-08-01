@@ -816,6 +816,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("memory_scope:user_profile", flattened)
         self.assertIn("session_continuity:cross_session", flattened)
         self.assertIn("profile_summary_current:true", flattened)
+        self.assertIn("memory_selection_policy:selected_user_profile_fact", flattened)
+        self.assertIn("memory_selection_policy:selected_assistant_profile_fact", flattened)
 
         session_groups = infer_secondary_index_filter_groups(
             "Show session-specific same-session context entities",
@@ -837,6 +839,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "profile_entity_current:true",
             "profile_summary_current:true",
             "memory_selection_policy:selected_profile_current_state",
+            "memory_selection_policy:selected_user_profile_fact",
+            "memory_selection_policy:selected_assistant_profile_fact",
             "memory_selection_policy:selected_assistant_decision_outcome_only",
             "memory_selection_policy:selected_tool_evidence_only",
             "source_role:user",

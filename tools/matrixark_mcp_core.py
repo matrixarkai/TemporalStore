@@ -4982,8 +4982,10 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
     if re.search(r"\b(prefer|preference|favorite|like|likes|love|loves|avoid|never|do not|don't|doesn't|should not|must not|standing instruction|standing preference|persistent instruction|saved preference|remember(?:ed)?)\b", lower):
         add_group(context_index_name("entity_type", "preference"), context_index_name("event_type", "preference_update"))
         add_group(context_index_name("profile_memory_kind", "durable_profile"))
-        add_group(context_index_name("memory_selection_policy", "selected_user_profile_fact"))
-        add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
+        add_group(
+            context_index_name("memory_selection_policy", "selected_user_profile_fact"),
+            context_index_name("memory_selection_policy", "selected_assistant_profile_fact"),
+        )
     if re.search(r"\b(name|nickname|call me|called|pronoun|pronouns|who am i|who is the user|address me)\b", lower):
         add_group(context_index_name("entity_type", "identity_profile"))
         add_group(context_index_name("profile_memory_class", "identity"))
@@ -5084,7 +5086,10 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("memory_layer", "cross_session_memory_feature_summary"),
             context_index_name("memory_layer", "cross_session_memory_feature_compression"),
         )
-        add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
+        add_group(
+            context_index_name("memory_selection_policy", "selected_user_profile_fact"),
+            context_index_name("memory_selection_policy", "selected_assistant_profile_fact"),
+        )
     if re.search(r"\b(cross[- ]session|across sessions|between sessions|multi[- ]session|long[- ]term)\b", lower):
         add_group(context_index_name("session_continuity", "cross_session"))
     if re.search(r"\b(session[- ]local|same[- ]session|current session|this session|session specific|session-specific)\b", lower):
