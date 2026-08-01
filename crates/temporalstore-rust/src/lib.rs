@@ -10,6 +10,8 @@ pub mod engine;
 pub mod http;
 pub mod index_log;
 pub mod ingestion;
+#[cfg(feature = "matrixobject")]
+pub mod matrixobject_store;
 pub mod meta;
 pub mod partition_id;
 pub mod proxy;
@@ -227,10 +229,13 @@ pub use replica_replay::{
     ReplicaStreamSource,
 };
 pub use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, MultiLayerCache};
+#[cfg(feature = "matrixobject")]
+pub use matrixobject_store::MatrixObjectObjectStore;
 pub use shared_store::{
     ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreGcReport,
     SharedStoreOplogEntry, SharedStoreOplogObject, SharedStorePageSegment, SharedStoreReplayCursor,
     SharedStoreReplicationError, SharedStoreReplicator, SharedStoreRetryPolicy,
+    SharedStoreWalAppendMode,
     SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWriteReport,
 };
 pub use types::{

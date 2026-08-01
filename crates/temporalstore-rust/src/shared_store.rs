@@ -1,9 +1,10 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use temporalstore_snapshot::object_store::{ObjectStore, ObjectStoreError};
@@ -11,6 +12,7 @@ use thiserror::Error;
 
 use crate::block_store::{BlockStoreError, LocalBlockStore};
 use crate::engine::TemporalEngine;
+use crate::sdk::{self, v1};
 use crate::types::{Command, ExecuteRequest, ShardId, Status};
 
 #[derive(Debug, Error)]
@@ -23,6 +25,8 @@ pub enum SharedStoreReplicationError {
     BlockStore(#[from] BlockStoreError),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("protobuf decode error: {0}")]
+    ProtobufDecode(#[from] prost::DecodeError),
     #[error("checksum mismatch for {path}: expected {expected}, got {actual}")]
     ChecksumMismatch {
         path: String,
@@ -128,6 +132,18 @@ impl SharedStoreStorageMode {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SharedStoreWalAppendMode {
+    JsonPerKey,
+    ProtobufAppendBlob,
+}
+
+impl Default for SharedStoreWalAppendMode {
+    fn default() -> Self {
+        Self::JsonPerKey
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SharedStoreWriteReport {
     pub oplog_index: u64,
     pub published: bool,
@@ -174,6 +190,7 @@ pub struct SharedStoreReplicator<O> {
     cluster_id: String,
     object_store: Arc<O>,
     retry_policy: SharedStoreRetryPolicy,
+    wal_append_mode: SharedStoreWalAppendMode,
 }
 
 impl<O> Clone for SharedStoreReplicator<O> {
@@ -182,8 +199,25 @@ impl<O> Clone for SharedStoreReplicator<O> {
             cluster_id: self.cluster_id.clone(),
             object_store: Arc::clone(&self.object_store),
             retry_policy: self.retry_policy,
+            wal_append_mode: self.wal_append_mode,
         }
     }
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct SharedStoreWalFrameProto {
+    #[prost(uint64, tag = "1")]
+    shard_id: u64,
+    #[prost(uint64, tag = "2")]
+    oplog_index: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    command_payload: Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    command_byte_size: u64,
+    #[prost(string, tag = "5")]
+    command_sha256: String,
+    #[prost(uint32, tag = "6")]
+    command_encoding: u32,
 }
 
 #[derive(Debug)]
@@ -209,6 +243,7 @@ where
             cluster_id: cluster_id.into(),
             object_store,
             retry_policy: SharedStoreRetryPolicy::default(),
+            wal_append_mode: SharedStoreWalAppendMode::default(),
         }
     }
 
@@ -224,7 +259,13 @@ where
                 max_attempts: retry_policy.max_attempts.max(1),
                 backoff_ms: retry_policy.backoff_ms,
             },
+            wal_append_mode: SharedStoreWalAppendMode::default(),
         }
+    }
+
+    pub fn with_wal_append_mode(mut self, mode: SharedStoreWalAppendMode) -> Self {
+        self.wal_append_mode = mode;
+        self
     }
 
     pub async fn publish_oplog_entry(
@@ -238,6 +279,12 @@ where
         &self,
         entry: SharedStoreWalEntry,
     ) -> Result<(), SharedStoreReplicationError> {
+        if matches!(
+            self.wal_append_mode,
+            SharedStoreWalAppendMode::ProtobufAppendBlob
+        ) {
+            return self.publish_wal_entry_protobuf_blob(entry).await;
+        }
         let key = self.oplog_key(entry.shard_id, entry.oplog_index);
         let entry_bytes = serde_json::to_vec(&entry)?;
         let object = SharedStoreWalObject {
@@ -246,6 +293,17 @@ where
             entry_sha256: sha256_hex(&entry_bytes),
         };
         self.put_with_retry(&key, Bytes::from(serde_json::to_vec(&object)?))
+            .await?;
+        Ok(())
+    }
+
+    async fn publish_wal_entry_protobuf_blob(
+        &self,
+        entry: SharedStoreWalEntry,
+    ) -> Result<(), SharedStoreReplicationError> {
+        let key = self.oplog_blob_key(entry.shard_id);
+        let frame = encode_wal_proto_frame(&entry)?;
+        self.append_blob_with_retry(&key, Bytes::from(frame))
             .await?;
         Ok(())
     }
@@ -447,21 +505,16 @@ where
         after_wal_index: u64,
         engine: &TemporalEngine,
     ) -> Result<ReplayReport, SharedStoreReplicationError> {
-        let mut keys = self.object_store.list(&self.oplog_prefix(shard_id)).await?;
-        keys.sort();
+        let wal_entries = self.load_wal_entries(shard_id).await?;
 
         let mut report = ReplayReport {
             applied: 0,
             last_oplog_index: after_wal_index,
         };
-        for key in keys {
-            let Some(oplog_index) = parse_oplog_index(&key) else {
-                continue;
-            };
+        for (oplog_index, entry) in wal_entries {
             if oplog_index <= after_wal_index {
                 continue;
             }
-            let entry = self.read_oplog_entry(&key).await?;
             let response = engine.execute(ExecuteRequest {
                 shard_id,
                 command: entry.command,
@@ -494,18 +547,14 @@ where
         after_wal_index: u64,
         engine: &TemporalEngine,
     ) -> Result<ReplayReport, SharedStoreReplicationError> {
-        let mut keys = self.object_store.list(&self.oplog_prefix(shard_id)).await?;
-        keys.sort();
+        let wal_entries = self.load_wal_entries(shard_id).await?;
 
         let mut expected = after_wal_index + 1;
         let mut report = ReplayReport {
             applied: 0,
             last_oplog_index: after_wal_index,
         };
-        for key in keys {
-            let Some(oplog_index) = parse_oplog_index(&key) else {
-                continue;
-            };
+        for (oplog_index, entry) in wal_entries {
             if oplog_index <= after_wal_index {
                 continue;
             }
@@ -515,7 +564,6 @@ where
                     actual: oplog_index,
                 });
             }
-            let entry = self.read_oplog_entry(&key).await?;
             let response = engine.execute(ExecuteRequest {
                 shard_id,
                 command: entry.command,
@@ -777,6 +825,10 @@ where
         )
     }
 
+    fn oplog_blob_key(&self, shard_id: ShardId) -> String {
+        format!("{}oplog.protobuf.blob", self.oplog_prefix(shard_id))
+    }
+
     fn replay_cursor_key(&self, shard_id: ShardId) -> String {
         format!("{}replay_cursor.json", self.shard_prefix(shard_id))
     }
@@ -814,6 +866,33 @@ where
         Ok(serde_json::from_slice(&bytes)?)
     }
 
+    async fn load_wal_entries(
+        &self,
+        shard_id: ShardId,
+    ) -> Result<BTreeMap<u64, SharedStoreWalEntry>, SharedStoreReplicationError> {
+        let mut entries = BTreeMap::new();
+        let mut keys = self.object_store.list(&self.oplog_prefix(shard_id)).await?;
+        keys.sort();
+        for key in keys {
+            let Some(oplog_index) = parse_oplog_index(&key) else {
+                continue;
+            };
+            let entry = self.read_oplog_entry(&key).await?;
+            entries.insert(oplog_index, entry);
+        }
+
+        match self.object_store.get(&self.oplog_blob_key(shard_id)).await {
+            Ok(bytes) => {
+                for entry in decode_wal_proto_blob(&bytes)? {
+                    entries.insert(entry.oplog_index, entry);
+                }
+            }
+            Err(ObjectStoreError::NotFound(_)) => {}
+            Err(err) => return Err(err.into()),
+        }
+        Ok(entries)
+    }
+
     async fn put_with_retry(
         &self,
         key: &str,
@@ -823,6 +902,30 @@ where
         let mut last_error = None;
         for attempt in 0..attempts {
             match self.object_store.put(key, bytes.clone()).await {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    last_error = Some(err);
+                    if attempt + 1 < attempts && self.retry_policy.backoff_ms > 0 {
+                        tokio::time::sleep(Duration::from_millis(self.retry_policy.backoff_ms))
+                            .await;
+                    }
+                }
+            }
+        }
+        Err(last_error
+            .expect("retry loop must record failed object-store error")
+            .into())
+    }
+
+    async fn append_blob_with_retry(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<(), SharedStoreReplicationError> {
+        let attempts = self.retry_policy.max_attempts.max(1);
+        let mut last_error = None;
+        for attempt in 0..attempts {
+            match self.object_store.append_blob(key, bytes.clone()).await {
                 Ok(()) => return Ok(()),
                 Err(err) => {
                     last_error = Some(err);
@@ -968,6 +1071,252 @@ fn verify_checksum(
         });
     }
     Ok(())
+}
+
+const WAL_COMMAND_ENCODING_JSON_SERDE: u32 = 0;
+const WAL_COMMAND_ENCODING_SDK_PROTO: u32 = 1;
+
+fn encode_wal_proto_frame(
+    entry: &SharedStoreWalEntry,
+) -> Result<Vec<u8>, SharedStoreReplicationError> {
+    let (command_payload, command_encoding) = match command_to_sdk_proto(&entry.command) {
+        Some(command) => (command.encode_to_vec(), WAL_COMMAND_ENCODING_SDK_PROTO),
+        None => (
+            serde_json::to_vec(&entry.command)?,
+            WAL_COMMAND_ENCODING_JSON_SERDE,
+        ),
+    };
+    let frame = SharedStoreWalFrameProto {
+        shard_id: entry.shard_id,
+        oplog_index: entry.oplog_index,
+        command_byte_size: command_payload.len() as u64,
+        command_sha256: sha256_hex(&command_payload),
+        command_payload,
+        command_encoding,
+    };
+    let mut encoded = frame.encode_to_vec();
+    let mut out = Vec::with_capacity(4 + encoded.len());
+    out.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+    out.append(&mut encoded);
+    Ok(out)
+}
+
+fn decode_wal_proto_blob(
+    bytes: &[u8],
+) -> Result<Vec<SharedStoreWalEntry>, SharedStoreReplicationError> {
+    let mut cursor = 0usize;
+    let mut entries = Vec::new();
+    while cursor < bytes.len() {
+        if bytes.len().saturating_sub(cursor) < 4 {
+            return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "truncated protobuf WAL frame length",
+            )));
+        }
+        let len = u32::from_be_bytes(
+            bytes[cursor..cursor + 4]
+                .try_into()
+                .expect("length slice is exactly 4 bytes"),
+        ) as usize;
+        cursor += 4;
+        if bytes.len().saturating_sub(cursor) < len {
+            return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "truncated protobuf WAL frame payload",
+            )));
+        }
+        let frame = SharedStoreWalFrameProto::decode(&bytes[cursor..cursor + len])?;
+        cursor += len;
+        verify_checksum(
+            "protobuf-wal-blob",
+            &frame.command_payload,
+            frame.command_byte_size,
+            &frame.command_sha256,
+        )?;
+        let command = match frame.command_encoding {
+            WAL_COMMAND_ENCODING_SDK_PROTO => {
+                let command = v1::Command::decode(frame.command_payload.as_slice())?;
+                sdk::sdk_command_to_types(command).map_err(|status| {
+                    SharedStoreReplicationError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        status.to_string(),
+                    ))
+                })?
+            }
+            WAL_COMMAND_ENCODING_JSON_SERDE => serde_json::from_slice(&frame.command_payload)?,
+            other => {
+                return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("unsupported protobuf WAL command encoding {other}"),
+                )));
+            }
+        };
+        entries.push(SharedStoreWalEntry {
+            shard_id: frame.shard_id,
+            oplog_index: frame.oplog_index,
+            command,
+        });
+    }
+    Ok(entries)
+}
+
+fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
+    let kind = match command {
+        Command::CommonExpire { key, ttl_ms } => {
+            v1::command::Kind::CommonExpire(v1::CommonExpire {
+                key: key.clone(),
+                ttl_ms: *ttl_ms,
+            })
+        }
+        Command::CommonExists { key } => {
+            v1::command::Kind::CommonExists(v1::CommonExists { key: key.clone() })
+        }
+        Command::StringSet { key, value } => v1::command::Kind::StringSet(v1::StringSet {
+            key: key.clone(),
+            value: value.clone(),
+            ttl_ms: 0,
+        }),
+        Command::StringSetEx { key, value, ttl_ms } => {
+            v1::command::Kind::StringSet(v1::StringSet {
+                key: key.clone(),
+                value: value.clone(),
+                ttl_ms: *ttl_ms,
+            })
+        }
+        Command::StringGet { key } => {
+            v1::command::Kind::StringGet(v1::StringGet { key: key.clone() })
+        }
+        Command::StringDelete { key } => {
+            v1::command::Kind::StringDelete(v1::StringDelete { key: key.clone() })
+        }
+        Command::HashSet { key, field, value } => v1::command::Kind::HashSet(v1::HashSet {
+            key: key.clone(),
+            field: field.clone(),
+            value: value.clone(),
+        }),
+        Command::HashGet { key, field } => v1::command::Kind::HashGet(v1::HashGet {
+            key: key.clone(),
+            field: field.clone(),
+        }),
+        Command::HashMultiSet { key, entries } => {
+            v1::command::Kind::HashMultiSet(v1::HashMultiSet {
+                key: key.clone(),
+                entries: entries
+                    .iter()
+                    .map(|(field, value)| v1::HashEntry {
+                        field: field.clone(),
+                        value: value.clone(),
+                    })
+                    .collect(),
+            })
+        }
+        Command::HashMultiGet { key, fields } => {
+            v1::command::Kind::HashMultiGet(v1::HashMultiGet {
+                key: key.clone(),
+                fields: fields.clone(),
+            })
+        }
+        Command::SetAdd { key, member } => v1::command::Kind::SetAdd(v1::SetAdd {
+            key: key.clone(),
+            member: member.clone(),
+        }),
+        Command::SetMembers { key } => {
+            v1::command::Kind::SetMembers(v1::SetMembers { key: key.clone() })
+        }
+        Command::FeatureAppend { key, points } => {
+            v1::command::Kind::FeatureAppend(v1::FeatureAppend {
+                key: key.clone(),
+                points: points
+                    .iter()
+                    .map(|point| v1::FeaturePoint {
+                        timestamp_ms: point.timestamp_ms,
+                        value: point.value.clone(),
+                    })
+                    .collect(),
+            })
+        }
+        Command::FeatureQuery {
+            key,
+            start_ms,
+            end_ms,
+            count,
+        } => v1::command::Kind::FeatureQuery(v1::FeatureQuery {
+            key: key.clone(),
+            start_ms: *start_ms,
+            end_ms: *end_ms,
+            limit: count.unwrap_or(0).min(u32::MAX as usize) as u32,
+        }),
+        Command::SequenceAdd { key, rows } => {
+            v1::command::Kind::SequenceAppend(v1::SequenceAppend {
+                key: key.clone(),
+                rows: rows
+                    .iter()
+                    .map(|row| v1::SequenceFeatureRow {
+                        timestamp_ms: row.timestamp_ms,
+                        gid: row.gid,
+                        action_type: row.action_type,
+                        duration: row.duration,
+                        author_id: row.author_id,
+                    })
+                    .collect(),
+            })
+        }
+        Command::SequenceQuery {
+            key,
+            start_ms,
+            end_ms,
+            count,
+            filters,
+        } if filters.is_empty() => v1::command::Kind::SequenceQuery(v1::SequenceQuery {
+            key: key.clone(),
+            start_ms: *start_ms,
+            end_ms: *end_ms,
+            limit: (*count).min(u32::MAX as usize) as u32,
+        }),
+        Command::IpsAdd {
+            key,
+            timestamp_ms,
+            instance,
+        } => v1::command::Kind::IpsAdd(v1::IpsAdd {
+            key: key.clone(),
+            timestamp_ms: *timestamp_ms,
+            payload: instance.clone(),
+        }),
+        Command::IpsQueryRange {
+            key,
+            start_ms,
+            end_ms,
+            count,
+        } => v1::command::Kind::IpsQuery(v1::IpsQuery {
+            key: key.clone(),
+            start_ms: *start_ms,
+            end_ms: *end_ms,
+            limit: count.unwrap_or(0).min(u32::MAX as usize) as u32,
+        }),
+        Command::RiskIncrement {
+            key,
+            timestamp_ms,
+            amount,
+        } => v1::command::Kind::RiskIncrement(v1::RiskIncrement {
+            key: key.clone(),
+            family: String::new(),
+            delta: *amount,
+            timestamp_ms: *timestamp_ms,
+        }),
+        Command::RiskQuery {
+            key,
+            start_ms,
+            end_ms,
+            aggregator,
+        } => v1::command::Kind::RiskQuery(v1::RiskQuery {
+            key: key.clone(),
+            family: aggregator.clone(),
+            start_ms: *start_ms,
+            end_ms: *end_ms,
+        }),
+        _ => return None,
+    };
+    Some(v1::Command { kind: Some(kind) })
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -1625,6 +1974,91 @@ mod tests {
         assert_eq!(checkpoint_gc.deleted_checkpoints, 2);
         assert_eq!(checkpoint_gc.retained_checkpoint_ids.len(), 1);
         assert_eq!(replicator.list_checkpoints(1).await.unwrap().len(), 1);
+    }
+
+    #[cfg(feature = "matrixobject")]
+    #[tokio::test]
+    async fn shared_store_protobuf_append_blob_replays_matrixobject_blob() {
+        use crate::matrixobject_store::MatrixObjectObjectStore;
+        use matrixobjectstore_rs::StoreOptions;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            MatrixObjectObjectStore::new(
+                "temporalstore-shared",
+                StoreOptions {
+                    segment_size: 16,
+                    max_extent_bytes: 4,
+                    chunk_size: 4,
+                    ..StoreOptions::default()
+                },
+            )
+            .unwrap(),
+        );
+        let replicator = SharedStoreReplicator::new("cluster-a", store.clone())
+            .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+
+        for (oplog_index, key, value) in [
+            (1, "proto-a", b"one".to_vec()),
+            (2, "proto-b", b"two".to_vec()),
+        ] {
+            replicator
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    oplog_index,
+                    command: Command::StringSet {
+                        key: key.to_string(),
+                        value,
+                    },
+                })
+                .await
+                .unwrap();
+        }
+
+        let blob_key = "cluster-a/shards/1/shared/oplog/oplog.protobuf.blob";
+        assert_eq!(
+            store
+                .list("cluster-a/shards/1/shared/oplog/")
+                .await
+                .unwrap(),
+            vec![blob_key.to_string()]
+        );
+        assert!(!store.get(blob_key).await.unwrap().is_empty());
+        let matrixobject_blob = store
+            .inner()
+            .lock()
+            .expect("matrixobject lock poisoned")
+            .get_object("temporalstore-shared", blob_key)
+            .unwrap();
+        assert!(
+            matrixobject_blob.metadata.extents.len() > 1,
+            "protobuf WAL frames should be appended into one MatrixObject blob"
+        );
+
+        let restarted = SharedStoreReplicator::new("cluster-a", store)
+            .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+        let follower = test_engine(dir.path(), "follower");
+        follower.load_shard(1);
+        assert_eq!(
+            restarted.replay_wal_strict(1, 0, &follower).await.unwrap(),
+            ReplayReport {
+                applied: 2,
+                last_oplog_index: 2,
+            }
+        );
+        for (key, value) in [("proto-a", b"one".to_vec()), ("proto-b", b"two".to_vec())] {
+            assert_eq!(
+                follower
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringGet {
+                            key: key.to_string()
+                        },
+                    })
+                    .response,
+                CommandResponse::Bytes { value: Some(value) }
+            );
+        }
     }
 
     #[derive(Debug)]
