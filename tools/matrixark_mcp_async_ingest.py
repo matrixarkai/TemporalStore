@@ -138,6 +138,12 @@ def lightweight_async_accept(
     node_path = normalized_node_path(envelope, node_hint)
     node_hash = stable_hash("/".join(node_path))
     source_counts = _source_count_summary(envelope, hook)
+    memory_layer_fields: Json = {
+        "memory_scope": "session",
+        "session_continuity": "same_session",
+        "extraction_phase": "pending_async",
+        "final_session_boundary": False,
+    }
     node_materialization = target.ensure_context_node_path(
         node_path=node_path,
         scope=envelope["scope"],
@@ -175,6 +181,7 @@ def lightweight_async_accept(
                 "agent_hook": hook,
                 "storage_options": envelope.get("storage_options", {}),
                 **source_counts,
+                **memory_layer_fields,
                 "async_processing": True,
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
@@ -199,6 +206,7 @@ def lightweight_async_accept(
                 "stages": ["extraction", "summary", "compression", "embedding"],
                 "reason": "sync_accept_async_processing",
                 **source_counts,
+                **memory_layer_fields,
                 "created_at_ms": envelope["ingestion_time_ms"],
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
@@ -288,6 +296,8 @@ def lightweight_async_accept(
                 "threshold_messages": session_buffer_threshold,
                 **idle_schedule,
                 **source_counts,
+                "memory_scope": "session",
+                "session_continuity": "same_session",
                 "source_extraction_phases": ["provisional"],
                 "extraction_phase": "provisional",
                 "final_session_boundary": False,
