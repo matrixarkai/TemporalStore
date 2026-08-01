@@ -2966,6 +2966,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     patterns = [
         ("preference", r"\b(?:prefer|prefers|favorite|likes?|loves?)\s+([^.;!?]{2,120})"),
         ("preference", r"\b(?:you|user)\s+(?:always|usually|prefer(?:s)?|like(?:s)?|want(?:s)?|need(?:s)?)\s+([^.;!?]{2,140})"),
+        ("preference", r"\b(?:you|user)\s+(?:never|avoid(?:s)?|do(?:es)?\s+not|don't|doesn't|cannot|can't|should\s+not|must\s+not)\s+([^.;!?]{2,140})"),
         ("preference", r"\b(?:i(?:'ll| will)?\s+remember|remembered|noted|got it)[:\s]+(?:that\s+)?(?:you|user)\s+([^.;!?]{2,160})"),
         ("preference", r"\b(?:standing instruction|standing preference|saved preference|persistent instruction)[:\s]+([^.;!?]{2,180})"),
         ("relationship", r"\b(?:friend|partner|mother|father|sister|brother|wife|husband|manager|teammate)\s+([^.;!?]{0,120})"),
@@ -3041,6 +3042,13 @@ def infer_entity_field_patches(entity_type: str, value: str, text: str) -> list[
         replace = clean_patch_value(preference.group(1))
         search = clean_patch_value(preference.group(2))
         patches.append(entity_patch(search, replace))
+    negative_preference = re.search(
+        r"\b(?:never|avoid(?:s)?|do(?:es)?\s+not|don't|doesn't|cannot|can't|should\s+not|must\s+not)\s+([^.;!?]+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if entity_type == "preference" and negative_preference and not patches:
+        patches.append(entity_patch("", "avoid " + clean_patch_value(negative_preference.group(1))))
     evolving_entity_types = {
         "preference",
         "location",
@@ -4557,7 +4565,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         if question_type == "date" or re.search(r"\b(before|after|as of|used to|previously|formerly)\b", lower):
             location_terms.append(context_index_name("source_type", "message"))
         add_group(*location_terms)
-    if re.search(r"\b(prefer|preference|favorite|like|likes|love|loves|standing instruction|standing preference|persistent instruction|saved preference|remember(?:ed)?)\b", lower):
+    if re.search(r"\b(prefer|preference|favorite|like|likes|love|loves|avoid|never|do not|don't|doesn't|should not|must not|standing instruction|standing preference|persistent instruction|saved preference|remember(?:ed)?)\b", lower):
         add_group(context_index_name("entity_type", "preference"), context_index_name("event_type", "preference_update"))
         add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
     if re.search(r"\b(friend|partner|mother|father|sister|brother|wife|husband|manager|teammate|relationship|family|child|children|son|daughter|pet)\b", lower):
