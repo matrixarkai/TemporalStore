@@ -1386,11 +1386,26 @@ def session_buffer_key(envelope: Json) -> tuple[str, str, str, str]:
 def messages_from_event_record(record: Json) -> list[Json]:
     messages = record.get("envelope", {}).get("messages", [])
     if isinstance(messages, list) and messages:
-        normalized = [
-            {"role": str(message.get("role") or "user"), "content": str(message.get("content") or "")}
-            for message in messages
-            if isinstance(message, dict) and "role" in message and "content" in message and str(message.get("content") or "")
-        ]
+        normalized = []
+        for message in messages:
+            if not (
+                isinstance(message, dict)
+                and "role" in message
+                and "content" in message
+                and str(message.get("content") or "")
+            ):
+                continue
+            normalized_message = {
+                "role": str(message.get("role") or "user"),
+                "content": str(message.get("content") or ""),
+            }
+            metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+            if metadata:
+                normalized_message["metadata"] = dict(metadata)
+            original_role = str(message.get("original_role") or "").strip()
+            if original_role:
+                normalized_message["original_role"] = original_role
+            normalized.append(normalized_message)
         if normalized:
             return normalized
     text = str(record.get("text", ""))

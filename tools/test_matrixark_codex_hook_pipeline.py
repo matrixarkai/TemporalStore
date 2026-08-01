@@ -11819,6 +11819,38 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 1,
             )
 
+    def test_pending_event_message_reconstruction_preserves_memory_selection_metadata(self) -> None:
+        original_message = {
+            "role": "assistant",
+            "content": (
+                "I will focus on OpenViking feature parity for session memory; "
+                "no testing, monitoring, debugging, or evidence for this step."
+            ),
+            "metadata": {
+                "codex_memory_selection": {
+                    "policy": "selected_assistant_profile_fact",
+                    "policies": ["selected_assistant_profile_fact"],
+                }
+            },
+        }
+        pending_event = {
+            "record_type": "context_event",
+            "event_id_hash": 7701,
+            "text": f"{original_message['role']}: {original_message['content']}",
+            "envelope": {"messages": [original_message]},
+        }
+
+        reconstructed = matrixark_mcp_core.messages_from_event_record(pending_event)
+
+        self.assertEqual(original_message["metadata"], reconstructed[0]["metadata"])
+        self.assertEqual(
+            "memory_feature",
+            matrixark_mcp_local_adapter.context_event_type_for_message(
+                reconstructed[0],
+                "pending_async",
+            ),
+        )
+
     def test_lightweight_async_assistant_and_tool_pending_events_keep_semantic_types(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-lightweight-pending-role-types.jsonl")
