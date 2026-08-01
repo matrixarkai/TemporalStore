@@ -4646,18 +4646,22 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(*location_terms)
     if re.search(r"\b(prefer|preference|favorite|like|likes|love|loves|avoid|never|do not|don't|doesn't|should not|must not|standing instruction|standing preference|persistent instruction|saved preference|remember(?:ed)?)\b", lower):
         add_group(context_index_name("entity_type", "preference"), context_index_name("event_type", "preference_update"))
+        add_group(context_index_name("profile_memory_kind", "durable_profile"))
         add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
     if re.search(r"\b(name|nickname|call me|called|pronoun|pronouns|who am i|who is the user|address me)\b", lower):
         add_group(context_index_name("entity_type", "identity_profile"))
         add_group(context_index_name("profile_memory_class", "identity"))
+        add_group(context_index_name("profile_memory_kind", "durable_profile"))
         add_group(context_index_name("memory_scope", "user_profile"))
     if re.search(r"\b(language|locale|timezone|time zone|tone|style|format|bullet|bullets|markdown|concise|brief|detailed|reply|respond|answer style|communication style)\b", lower):
         add_group(context_index_name("entity_type", "communication_profile"))
         add_group(context_index_name("profile_memory_class", "communication"))
+        add_group(context_index_name("profile_memory_kind", "durable_profile"))
         add_group(context_index_name("memory_scope", "user_profile"))
     if re.search(r"\b(workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|build|deploy|deployment|rustraft|temporalstore|matrixark)\b", lower):
         add_group(context_index_name("entity_type", "workspace_profile"))
         add_group(context_index_name("profile_memory_class", "workspace"))
+        add_group(context_index_name("profile_memory_kind", "durable_profile"))
         add_group(context_index_name("memory_scope", "user_profile"))
     if re.search(r"\b(friend|partner|mother|father|sister|brother|wife|husband|manager|teammate|relationship|family|child|children|son|daughter|pet)\b", lower):
         add_group(context_index_name("entity_type", "relationship"), context_index_name("entity_type", "family_profile"))
@@ -4697,6 +4701,10 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("profile_memory_class", "task_context"),
             context_index_name("profile_memory_class", "codex_outcome"),
         )
+        add_group(
+            context_index_name("profile_memory_kind", "durable_profile"),
+            context_index_name("profile_memory_kind", "codex_outcome"),
+        )
         add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
     if re.search(r"\b(cross[- ]session|across sessions|between sessions|multi[- ]session|long[- ]term)\b", lower):
         add_group(context_index_name("session_continuity", "cross_session"))
@@ -4714,6 +4722,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("memory_selection_policy", "selected_assistant_decision_outcome_only"),
             context_index_name("memory_selection_policy", "selected_tool_evidence_only"),
             context_index_name("source_type", "message"),
+            context_index_name("profile_memory_kind", "codex_outcome"),
         )
         outcome_terms = codex_outcome_fact_index_terms(query)
         if outcome_terms:
@@ -4729,6 +4738,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(
             context_index_name("memory_selection_policy", "selected_tool_evidence_only"),
             context_index_name("memory_selection_policy", "selected_assistant_decision_outcome_only"),
+            context_index_name("profile_memory_kind", "codex_outcome"),
         )
         metric_terms = benchmark_quality_index_terms(query)
         if metric_terms:
@@ -4740,6 +4750,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("entity_type", "tool_evidence"),
             context_index_name("event_type", "tool_evidence"),
             context_index_name("source_role", "tool"),
+            context_index_name("profile_memory_kind", "codex_outcome"),
         )
         outcome_terms = codex_outcome_fact_index_terms(query)
         if outcome_terms:
@@ -5548,6 +5559,11 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     text = str(candidate.get("text", "")).lower()
     event_type = str(candidate.get("event_type") or candidate.get("entity_type") or candidate.get("topic") or "").lower()
     has_citation = bool(candidate.get("source_ref") or candidate.get("citation") or candidate.get("source_chunk_hash"))
+    profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
+    if ref_type == "entity" and profile_memory_kind == "codex_outcome" and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
+        return 0.52
+    if ref_type == "entity" and profile_memory_kind == "durable_profile" and question_type == "profile_memory":
+        return 0.46
     if question_type == "procedure":
         if ref_type == "skill_section":
             return 0.36
@@ -5653,8 +5669,11 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
         boosted = clamp01(boosted + min(0.18, 0.12 * sparse_score + 0.02 * keyword_score))
     if candidate.get("ref_type") == "entity":
         entity_type = str(candidate.get("entity_type") or candidate.get("event_type") or "").strip().lower()
+        profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
         if question_type in {"current_state", "latest"}:
-            if entity_type == "assistant_decision":
+            if profile_memory_kind == "codex_outcome":
+                ref_priority = 1.0
+            elif entity_type == "assistant_decision":
                 ref_priority = 1.0
             elif entity_type == "tool_evidence":
                 ref_priority = 0.9
@@ -5664,10 +5683,14 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
                 ref_priority = 0.5
         elif question_type in {"evidence", "benchmark_quality"}:
             codex_outcome_terms = candidate_codex_outcome_terms(candidate)
-            if entity_type == "tool_evidence":
+            if profile_memory_kind == "codex_outcome":
+                ref_priority = 1.0
+            elif entity_type == "tool_evidence":
                 ref_priority = 1.0
             elif entity_type == "assistant_decision":
                 ref_priority = 0.95 if codex_outcome_terms else 0.7
+        elif question_type == "profile_memory" and profile_memory_kind == "durable_profile":
+            ref_priority = max(ref_priority, 0.9)
         if (
             str(candidate.get("memory_scope") or "") == "user_profile"
             and str(candidate.get("session_continuity") or "") == "cross_session"
