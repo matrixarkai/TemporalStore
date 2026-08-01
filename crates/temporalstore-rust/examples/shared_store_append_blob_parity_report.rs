@@ -17,7 +17,7 @@ use temporalstore_snapshot::object_store::AppendBlobReceipt;
 
 const DEFAULT_ENTRY_COUNT: u64 = 8;
 const DEFAULT_VALUE_BYTES: usize = 64;
-const PERSISTENT_SNAPSHOT_FILE: &str = "matrixobjectstore-persistent.snapshot";
+const PERSISTENT_JOURNAL_FILE: &str = "matrixobjectstore-incremental.journal";
 
 #[derive(Debug, Serialize)]
 struct Report {
@@ -29,7 +29,7 @@ struct Report {
     direct_publish: PublishPhaseReport,
     sync_writer: WriterPhaseReport,
     async_writer: AsyncWriterPhaseReport,
-    snapshot_reopen: SnapshotReopenReport,
+    journal_reopen: JournalReopenReport,
     summary: Summary,
 }
 
@@ -118,7 +118,7 @@ struct MatrixObjectCacheStatsReport {
 }
 
 #[derive(Debug, Serialize)]
-struct SnapshotReopenReport {
+struct JournalReopenReport {
     snapshot_export_latency_us: u128,
     snapshot_disk_write_latency_us: u128,
     snapshot_disk_read_latency_us: u128,
@@ -196,11 +196,11 @@ async fn main() {
         .max(1);
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let persistent_snapshot_path = dir.path().join(PERSISTENT_SNAPSHOT_FILE);
+    let persistent_journal_path = dir.path().join(PERSISTENT_JOURNAL_FILE);
     let store = Arc::new(
         MatrixObjectObjectStore::new(
             "temporalstore-shared",
-            matrixobject_options(Some(&persistent_snapshot_path)),
+            matrixobject_options(Some(&persistent_journal_path)),
         )
         .expect("matrixobject store"),
     );
@@ -234,10 +234,9 @@ async fn main() {
         value_bytes,
     )
     .await;
-    let snapshot_reopen = run_snapshot_reopen(
+    let journal_reopen = run_journal_reopen(
         dir.path(),
-        store.clone(),
-        persistent_snapshot_path,
+        persistent_journal_path,
         1,
         entry_count,
         &["direct", "sync", "async"],
@@ -272,11 +271,10 @@ async fn main() {
             && direct_publish
                 .offset_index_validation
                 .all_metadata_ranges_match_append_receipts,
-        snapshot_reopen_restores_offset_metadata: snapshot_reopen.reopened_offset_metadata_ok,
-        snapshot_reopen_recovered_all_records: snapshot_reopen
-            .reopened_replay_recovered_all_records
-            && snapshot_reopen.reopened_retrieval_recovered_all_records,
-        snapshot_reopen_cache_metrics_available: snapshot_reopen.cache_metrics_available,
+        snapshot_reopen_restores_offset_metadata: journal_reopen.reopened_offset_metadata_ok,
+        snapshot_reopen_recovered_all_records: journal_reopen.reopened_replay_recovered_all_records
+            && journal_reopen.reopened_retrieval_recovered_all_records,
+        snapshot_reopen_cache_metrics_available: journal_reopen.cache_metrics_available,
         secondary_replay_recovered_all_records: direct_publish.replay.secondary_retrieved_records
             == entry_count
             && sync_writer.replay.secondary_retrieved_records == entry_count
@@ -319,13 +317,13 @@ async fn main() {
     let report = Report {
         schema: "temporalstore_shared_store_append_blob_parity_report_v1",
         backend: "rust",
-        matrixobject_mode: "rust_matrixobject_persistent_snapshot_protobuf_append_blob",
+        matrixobject_mode: "rust_matrixobject_incremental_journal_protobuf_append_blob",
         entry_count,
         value_bytes,
         direct_publish,
         sync_writer,
         async_writer,
-        snapshot_reopen,
+        journal_reopen,
         summary,
     };
     println!(
@@ -334,12 +332,12 @@ async fn main() {
     );
 }
 
-fn matrixobject_options(persistent_snapshot_path: Option<&std::path::Path>) -> StoreOptions {
+fn matrixobject_options(persistent_journal_path: Option<&std::path::Path>) -> StoreOptions {
     StoreOptions {
         segment_size: 32,
         max_extent_bytes: 8,
         chunk_size: 8,
-        persistent_snapshot_path: persistent_snapshot_path
+        persistent_journal_path: persistent_journal_path
             .map(|path| path.to_string_lossy().to_string())
             .unwrap_or_default(),
         ..StoreOptions::default()
@@ -518,39 +516,29 @@ async fn replay_and_retrieve(
     }
 }
 
-async fn run_snapshot_reopen(
+async fn run_journal_reopen(
     root: &std::path::Path,
-    store: Arc<MatrixObjectObjectStore>,
-    persistent_snapshot_path: std::path::PathBuf,
+    persistent_journal_path: std::path::PathBuf,
     direct_shard_id: u64,
     entry_count: u64,
     phases: &[&str],
-) -> SnapshotReopenReport {
-    let flush_start = Instant::now();
-    store
-        .inner()
-        .lock()
-        .expect("matrixobject lock poisoned")
-        .flush_persistent_snapshot()
-        .expect("flush persistent matrixobject snapshot");
-    let snapshot_export_latency_us = flush_start.elapsed().as_micros();
-    let snapshot_bytes = std::fs::read(&persistent_snapshot_path)
-        .expect("read persistent matrixobject snapshot bytes for checksum");
-    let snapshot_sha256 = sha256_hex(&snapshot_bytes);
-    let snapshot_disk_write_latency_us = snapshot_export_latency_us;
+) -> JournalReopenReport {
     let disk_read_start = Instant::now();
-    let restored_snapshot_bytes = std::fs::read(&persistent_snapshot_path)
-        .expect("read persistent matrixobject snapshot");
+    let journal_bytes = std::fs::read(&persistent_journal_path)
+        .expect("read persistent matrixobject journal bytes for checksum");
     let snapshot_disk_read_latency_us = disk_read_start.elapsed().as_micros();
+    let snapshot_sha256 = sha256_hex(&journal_bytes);
     let import_start = Instant::now();
     let reopened_store = Arc::new(
         MatrixObjectObjectStore::new(
             "temporalstore-shared",
-            matrixobject_options(Some(&persistent_snapshot_path)),
+            matrixobject_options(Some(&persistent_journal_path)),
         )
-        .expect("reopen persistent matrixobject snapshot"),
+        .expect("reopen persistent matrixobject journal"),
     );
     let snapshot_import_latency_us = import_start.elapsed().as_micros();
+    let snapshot_export_latency_us = 0;
+    let snapshot_disk_write_latency_us = 0;
     let reopened_replicator = SharedStoreReplicator::new("cluster-a", reopened_store.clone())
         .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
     let reopened_offset_metadata_ok = !reopened_replicator
@@ -572,7 +560,7 @@ async fn run_snapshot_reopen(
         let replay_report = reopened_replicator
             .replay_wal_strict(shard_id, 0, &engine)
             .await
-            .expect("snapshot reopened replay");
+            .expect("journal reopened replay");
         replay_latency_total_us += replay_start.elapsed().as_micros();
         replay_ok &= replay_report.applied == entry_count as usize;
         let (retrieved, latencies) = retrieve_records(&engine, shard_id, entry_count, phase);
@@ -583,12 +571,12 @@ async fn run_snapshot_reopen(
     let cache_after_retrieval = matrixobject_cache_stats(&reopened_store);
     let cache_metrics_available = cache_after_retrieval.max_bytes > 0;
 
-    SnapshotReopenReport {
+    JournalReopenReport {
         snapshot_export_latency_us,
         snapshot_disk_write_latency_us,
         snapshot_disk_read_latency_us,
         snapshot_import_latency_us,
-        snapshot_bytes: restored_snapshot_bytes.len() as u64,
+        snapshot_bytes: journal_bytes.len() as u64,
         snapshot_sha256,
         reopened_offset_metadata_ok,
         cache_before_replay,

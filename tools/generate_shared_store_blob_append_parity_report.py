@@ -298,7 +298,7 @@ def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
             "runtime_valid": False,
             "reason": "missing summary",
         }
-    snapshot_reopen = rust_report.get("snapshot_reopen", {})
+    snapshot_reopen = rust_report.get("journal_reopen") or rust_report.get("snapshot_reopen", {})
     snapshot_reopen_ok = bool(summary.get("snapshot_reopen_restores_offset_metadata")) and bool(
         summary.get("snapshot_reopen_recovered_all_records")
     )
@@ -309,9 +309,9 @@ def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
     return {
         "runtime_valid": rust_report.get("schema") == "temporalstore_shared_store_append_blob_parity_report_v1",
         "matrixobject_mode": rust_report.get("matrixobject_mode"),
-        "storage_semantics": "persistent_snapshot_path_reopen_matrixobject_binding",
+        "storage_semantics": "incremental_journal_reopen_matrixobject_binding",
         "durable_reopen_equivalent": snapshot_reopen_ok,
-        "durable_reopen_caveat": "Rust MatrixObjectStore now reloads from a configured persistent snapshot path; C++ still uses an incremental disk-root ObjectStore reopen.",
+        "durable_reopen_caveat": "Rust MatrixObjectStore now reloads from an incremental checksummed journal path; C++ uses incremental disk-root ObjectStore reopen.",
         "snapshot_reopen_restores_offset_metadata": bool(summary.get("snapshot_reopen_restores_offset_metadata")),
         "snapshot_reopen_recovered_all_records": bool(summary.get("snapshot_reopen_recovered_all_records")),
         "snapshot_reopen_cache_metrics_available": cache_metrics_available,
@@ -379,11 +379,7 @@ def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runti
     feature_mismatches = []
     if not rust_summary.get("durable_reopen_equivalent"):
         feature_mismatches.append(
-            "Rust MatrixObject binding did not prove disk snapshot reopen with offset metadata and records restored"
-        )
-    if rust_summary.get("durable_reopen_equivalent"):
-        feature_mismatches.append(
-            "Durability mechanism differs: Rust evidence is persistent snapshot-path reopen; C++ evidence is incremental disk-root ObjectStore reopen"
+            "Rust MatrixObject binding did not prove incremental journal/disk reopen with offset metadata and records restored"
         )
     checks = {
         "rust_runtime_valid": bool(rust_summary.get("runtime_valid")),
@@ -462,14 +458,13 @@ def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runti
             "an in-memory MatrixObjectStore, while the C++ benchmark used a disk-root ObjectStore, "
             "FlushForShutdown, process-style reopen, extent metadata recovery, and range reads. "
             "Rust now persists protobuf oplog-offset metadata and validates MatrixObjectStore reload "
-            "from a configured persistent snapshot path. The latency gate compares Rust direct publish "
+            "from an incremental checksummed journal path. The latency gate compares Rust direct publish "
             "with C++ indexed append, because both include durable offset metadata; sync writer and "
-            "async flush are reported separately. Rust durability is still snapshot-file based rather "
-            "than C++ incremental disk-root reopen."
+            "async flush are reported separately."
         ),
         "note": (
             "Rust TemporalStore MatrixObject append-blob runtime evidence now validates WAL frame "
-            "offsets, a protobuf oplog-index offset metadata sidecar, and persistent snapshot-path "
+            "offsets, a protobuf oplog-index offset metadata sidecar, and incremental journal "
             "reopen/readback. C++ MatrixObjectStore runtime evidence covers incremental disk-root "
             "reopen/readback."
         ),
