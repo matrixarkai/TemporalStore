@@ -5808,6 +5808,59 @@ def candidate_codex_outcome_terms(candidate: Json) -> set[str]:
     )
 
 
+def candidate_memory_selection_policies(candidate: Json) -> set[str]:
+    policy_names: set[str] = set()
+    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    for source in [candidate, metadata]:
+        policies = source.get("source_memory_selection_policies")
+        if isinstance(policies, list):
+            policy_names.update(str(policy or "").strip() for policy in policies if str(policy or "").strip())
+        counts = (
+            source.get("source_memory_selection_policy_counts")
+            if isinstance(source.get("source_memory_selection_policy_counts"), dict)
+            else {}
+        )
+        for policy, count in counts.items():
+            policy_name = str(policy or "").strip()
+            if not policy_name:
+                continue
+            try:
+                amount = int(count or 0)
+            except (TypeError, ValueError):
+                amount = 0
+            if amount > 0:
+                policy_names.add(policy_name)
+        selection = source.get("codex_memory_selection") if isinstance(source.get("codex_memory_selection"), dict) else {}
+        if isinstance(selection.get("policies"), list):
+            policy_names.update(str(policy or "").strip() for policy in selection.get("policies", []) if str(policy or "").strip())
+        selection_policy = str(selection.get("policy") or "").strip()
+        if selection_policy:
+            policy_names.add(selection_policy)
+    return policy_names
+
+
+def memory_selection_policy_ref_boost(candidate: Json, question_type: str) -> float:
+    policies = candidate_memory_selection_policies(candidate)
+    if not policies:
+        return 0.0
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    boost = 0.0
+    if "selected_assistant_profile_fact" in policies and normalized_question_type == "profile_memory":
+        boost = max(boost, 0.24)
+    if "selected_user_prompt" in policies and normalized_question_type in {"profile_memory", "current_state", "latest", "multi_hop", "date"}:
+        boost = max(boost, 0.18)
+    if "selected_assistant_decision_outcome_only" in policies and normalized_question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
+        boost = max(boost, 0.22)
+    if "selected_tool_evidence_only" in policies and normalized_question_type in {"evidence", "benchmark_quality", "current_state", "latest"}:
+        boost = max(boost, 0.24)
+    if normalized_question_type == "fact":
+        if "selected_user_prompt" in policies:
+            boost = max(boost, 0.08)
+        if {"selected_assistant_decision_outcome_only", "selected_tool_evidence_only"} & policies:
+            boost = max(boost, 0.10)
+    return boost
+
+
 def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     ref_type = str(candidate.get("ref_type", ""))
     context_class = str(candidate.get("context_class") or ref_type)
@@ -5817,31 +5870,32 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
     memory_scope = str(candidate.get("memory_scope") or "").strip().lower()
     session_continuity = str(candidate.get("session_continuity") or "").strip().lower()
+    policy_boost = memory_selection_policy_ref_boost(candidate, question_type)
     is_codex_outcome_compression = ref_type == "compression" and profile_memory_kind == "codex_outcome"
     if is_codex_outcome_compression and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
-        return 0.46
+        return 0.46 + policy_boost
     if is_codex_outcome_compression and question_type in {"profile_memory", "multi_hop", "date"}:
-        return 0.34
+        return 0.34 + policy_boost
     if ref_type == "segment" and profile_memory_kind == "codex_outcome" and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
-        return 0.30
+        return 0.30 + policy_boost
     if ref_type == "segment" and profile_memory_kind == "codex_outcome" and question_type in {"profile_memory", "multi_hop", "date"}:
-        return 0.20
+        return 0.20 + policy_boost
     if ref_type == "entity" and profile_memory_kind == "codex_outcome" and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
-        return 0.52
+        return 0.52 + policy_boost
     if ref_type == "entity" and is_codex_outcome_entity_type(event_type) and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
-        return 0.48
+        return 0.48 + policy_boost
     if question_type == "profile_memory" and profile_memory_kind in {"durable_profile", "memory_feature"}:
         if ref_type == "entity":
-            return 0.50
+            return 0.50 + policy_boost
         if ref_type in {"summary", "compression"}:
-            return 0.38
+            return 0.38 + policy_boost
         if ref_type == "segment":
-            return 0.24
+            return 0.24 + policy_boost
     if question_type == "profile_memory" and memory_scope == "user_profile" and session_continuity == "cross_session":
         if ref_type == "entity":
-            return 0.42
+            return 0.42 + policy_boost
         if ref_type in {"summary", "compression"}:
-            return 0.30
+            return 0.30 + policy_boost
     if question_type == "procedure":
         if ref_type == "skill_section":
             return 0.36
@@ -5878,23 +5932,23 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     if question_type == "evidence":
         if ref_type == "entity" and event_type == "tool_evidence":
             if candidate_codex_outcome_terms(candidate):
-                return 0.42
-            return 0.36
+                return 0.42 + policy_boost
+            return 0.36 + policy_boost
         if ref_type == "entity" and event_type == "assistant_decision":
-            return 0.50 if candidate_codex_outcome_terms(candidate) else 0.28
+            return (0.50 if candidate_codex_outcome_terms(candidate) else 0.28) + policy_boost
         if ref_type == "resource_chunk" and has_citation:
             return 0.30
         if ref_type == "event":
             if event_type in {"assistant_response", "assistant_decision", "tool_evidence"} and candidate_codex_outcome_terms(candidate):
                 return 0.30
             return 0.24
-        return 0.05 if ref_type == "segment" else 0.0
+        return (0.05 if ref_type == "segment" else 0.0) + policy_boost
     if question_type == "date":
         if ref_type == "event" and re.search(r"\b(20\d{2}|19\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|monday|tuesday|wednesday|thursday|friday|saturday|sunday|before|after|on)\b", text):
-            return 0.28
-        return 0.08 if ref_type == "entity" else 0.0
+            return 0.28 + policy_boost
+        return (0.08 if ref_type == "entity" else 0.0) + policy_boost
     if question_type == "multi_hop":
-        return 0.14 if ref_type in {"entity", "segment"} else 0.04
+        return (0.14 if ref_type in {"entity", "segment"} else 0.04) + policy_boost
     if question_type == "why_emotion":
         return 0.18 if re.search(r"\b(because|reason|felt|feel|happy|sad|angry|worried|excited|concerned)\b", text) else 0.0
     if question_type == "fact":
@@ -5906,15 +5960,15 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
         if negated_approval and not affirmative_approval:
             return -0.12
         if affirmative_approval:
-            return 0.38 if ref_type in {"event", "entity"} else 0.26
+            return (0.38 if ref_type in {"event", "entity"} else 0.26) + policy_boost
         if context_class in {"resource_fact", "resource_entity_fact"}:
             return 0.30
         if ref_type in {"entity", "event"}:
-            return 0.18
+            return 0.18 + policy_boost
         if ref_type == "resource_chunk" and has_citation:
             return 0.06
-        return 0.03
-    return 0.0
+        return 0.03 + policy_boost
+    return policy_boost
 
 
 def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float, float, float]:
