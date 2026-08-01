@@ -15,6 +15,7 @@ try:
         Json,
         apply_entity_patches,
         candidate_index_terms,
+        candidate_memory_layer_name,
         collect_prior_context,
         context_index_posting_record,
         embedding_execution_mode_name,
@@ -44,6 +45,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         Json,
         apply_entity_patches,
         candidate_index_terms,
+        candidate_memory_layer_name,
         collect_prior_context,
         context_index_posting_record,
         embedding_execution_mode_name,
@@ -72,6 +74,23 @@ def compact_context_embedding_record(record: Json) -> Json:
     for field in EMBEDDING_LINEAGE_DEBUG_FIELDS:
         compacted.pop(field, None)
     return compacted
+
+
+def attach_memory_layer(record: Json) -> Json:
+    """Stamp the retrieval layer on newly materialized memory records."""
+    if str(record.get("record_type") or "") not in {
+        "context_event",
+        "context_entity",
+        "context_segment",
+        "context_summary",
+        "context_compression_event",
+        "context_embedding",
+    }:
+        return record
+    layer = candidate_memory_layer_name(record)
+    if not layer or layer == "unknown":
+        return record
+    return {**record, "memory_layer": layer}
 
 
 ASSISTANT_PROFILE_FACT_LINEAGE_PATTERNS = [
@@ -372,6 +391,8 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "storage_options": envelope.get("storage_options", {}),
                     "extraction_phase": extraction_phase,
                     "final_session_boundary": final_session_boundary,
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
                     "source_role": str(message.get("role") or ""),
                     "source_roles": [str(message.get("role") or "")] if str(message.get("role") or "") else [],
                     "source_role_counts": {str(message.get("role") or ""): 1} if str(message.get("role") or "") else {},
@@ -1115,6 +1136,7 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
     all_dirty_hashes = ordered_unique_any(list(dirty_hashes) + profile_dirty_hashes)
     records_to_append.extend(dirty_records)
     records_to_append.extend(event_records_to_append)
+    records_to_append = [attach_memory_layer(record) for record in records_to_append]
     self.append_many(records_to_append)
     summary_refresh = {
         "status": "dirty_marked",
