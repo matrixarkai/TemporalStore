@@ -9384,8 +9384,10 @@ class MatrixArkLocalAdapter:
                 "fallback_reason": reason,
                 "memory_layer_budget": serving_memory_layer_budget_value,
                 "source_role_budget": source_role_budget_policy,
+                "source_role_budget_policy": source_role_budget_policy,
                 "memory_layer_budget_policy": memory_layer_budget_policy,
                 "memory_selection_policy_budget_policy": memory_selection_policy_budget_policy,
+                "extraction_phase_budget_policy": extraction_phase_budget_policy,
                 "async_pipeline_readiness": async_pipeline_readiness,
                 "session_continuity": {
                     "mode": "fallback_recent_context",
