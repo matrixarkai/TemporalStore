@@ -9418,6 +9418,21 @@ class MatrixArkLocalAdapter:
                     profile_source_memory_selection_policy_counts[policy] = int(
                         profile_source_memory_selection_policy_counts.get(policy, 0)
                     ) + int(count)
+                profile_source_memory_layers = ordered_unique_any(
+                    list(previous_profile.get("source_memory_layers", []))
+                    + list(entity_source_memory_layers)
+                )
+                profile_source_memory_layer_counts: Json = dict(
+                    previous_profile.get("source_memory_layer_counts", {})
+                    if isinstance(previous_profile.get("source_memory_layer_counts"), dict)
+                    else {}
+                )
+                for layer, count in entity_source_memory_layer_counts.items():
+                    layer_name = str(layer or "").strip()
+                    if layer_name:
+                        profile_source_memory_layer_counts[layer_name] = int(
+                            profile_source_memory_layer_counts.get(layer_name, 0)
+                        ) + int(count)
                 if profile_promotion_scope_available:
                     profile_source_memory_selection_policies = ordered_unique_any(
                         profile_source_memory_selection_policies + ["selected_profile_current_state"]
@@ -9557,6 +9572,8 @@ class MatrixArkLocalAdapter:
                     "source_codex_event_counts": profile_source_codex_event_counts,
                     "source_memory_selection_policies": profile_source_memory_selection_policies,
                     "source_memory_selection_policy_counts": profile_source_memory_selection_policy_counts,
+                    "source_memory_layers": profile_source_memory_layers,
+                    "source_memory_layer_counts": profile_source_memory_layer_counts,
                     "source_profile_memory_classes": profile_source_profile_memory_classes,
                     "source_profile_memory_kinds": profile_source_profile_memory_kinds,
                     **profile_source_memory_selection_retention,
