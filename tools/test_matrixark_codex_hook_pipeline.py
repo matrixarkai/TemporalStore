@@ -11851,6 +11851,125 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             ),
         )
 
+    def test_batch_extract_scopes_mixed_pending_event_lineage_per_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-mixed-pending-lineage.jsonl")
+            scope = {
+                "account_id": "acct_mixed_pending_lineage",
+                "tenant_id": "tenant_mixed_pending_lineage",
+                "user_id": "user_mixed_pending_lineage",
+                "session_id": "session_mixed_pending_lineage",
+            }
+            messages = [
+                {
+                    "role": "user",
+                    "content": "Remember mixed lineage user prompt marker amber atlas.",
+                    "metadata": {
+                        "codex_memory_selection": {
+                            "policy": "selected_user_prompt",
+                            "policies": ["selected_user_prompt"],
+                        }
+                    },
+                },
+                {
+                    "role": "assistant",
+                    "content": (
+                        "I will focus on OpenViking feature parity for session memory; "
+                        "no testing, monitoring, debugging, or evidence."
+                    ),
+                    "metadata": {
+                        "codex_memory_selection": {
+                            "policy": "selected_assistant_profile_fact",
+                            "policies": ["selected_assistant_profile_fact"],
+                        }
+                    },
+                },
+                {
+                    "role": "tool",
+                    "content": "Exit code: 0; Ran 3 focused tests; validation passed marker copper chisel.",
+                    "metadata": {
+                        "codex_memory_selection": {
+                            "policy": "selected_tool_evidence_only",
+                            "policies": ["selected_tool_evidence_only"],
+                        }
+                    },
+                },
+            ]
+            source_event_records = [
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 8101,
+                    "source_roles": ["user"],
+                    "source_role_counts": {"user": 1},
+                    "source_hook_types": ["before_llm"],
+                    "source_hook_type_counts": {"before_llm": 1},
+                    "source_codex_events": ["UserPromptSubmit"],
+                    "source_codex_event_counts": {"UserPromptSubmit": 1},
+                    "source_memory_selection_policies": ["selected_user_prompt"],
+                    "source_memory_selection_policy_counts": {"selected_user_prompt": 1},
+                },
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 8102,
+                    "source_roles": ["assistant"],
+                    "source_role_counts": {"assistant": 1},
+                    "source_hook_types": ["after_llm"],
+                    "source_hook_type_counts": {"after_llm": 1},
+                    "source_codex_events": ["Stop"],
+                    "source_codex_event_counts": {"Stop": 1},
+                    "source_memory_selection_policies": ["selected_assistant_profile_fact"],
+                    "source_memory_selection_policy_counts": {"selected_assistant_profile_fact": 1},
+                    "source_profile_memory_classes": ["memory_feature"],
+                    "source_profile_memory_kinds": ["memory_feature"],
+                },
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 8103,
+                    "source_roles": ["tool"],
+                    "source_role_counts": {"tool": 1},
+                    "source_hook_types": ["tool_result"],
+                    "source_hook_type_counts": {"tool_result": 1},
+                    "source_codex_events": ["PostToolUse"],
+                    "source_codex_event_counts": {"PostToolUse": 1},
+                    "source_memory_selection_policies": ["selected_tool_evidence_only"],
+                    "source_memory_selection_policy_counts": {"selected_tool_evidence_only": 1},
+                },
+            ]
+
+            result = adapter.batch_extract(
+                {
+                    "scope": scope,
+                    "messages": messages,
+                    "threshold_messages": 3,
+                    "force": True,
+                    "derive_from_existing_events": True,
+                    "source_event_ids": [8101, 8102, 8103],
+                    "source_event_records": source_event_records,
+                    "skip_prior_context": True,
+                    "metadata": {"node_path": adapter.default_session_node_path(scope)},
+                }
+            )
+
+            self.assertEqual("accepted", result["status"])
+            events = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") == "context_event"
+                and record.get("status") == "extraction_committed"
+            ]
+            by_role = {record["source_role"]: record for record in events}
+            self.assertEqual(["before_llm"], by_role["user"]["source_hook_types"])
+            self.assertEqual(["UserPromptSubmit"], by_role["user"]["source_codex_events"])
+            self.assertEqual(["selected_user_prompt"], by_role["user"]["source_memory_selection_policies"])
+            self.assertEqual("memory_feature", by_role["assistant"]["event_type"])
+            self.assertEqual(["after_llm"], by_role["assistant"]["source_hook_types"])
+            self.assertEqual(["Stop"], by_role["assistant"]["source_codex_events"])
+            self.assertEqual(["selected_assistant_profile_fact"], by_role["assistant"]["source_memory_selection_policies"])
+            self.assertEqual(["memory_feature"], by_role["assistant"]["source_profile_memory_classes"])
+            self.assertEqual(["tool_result"], by_role["tool"]["source_hook_types"])
+            self.assertEqual(["PostToolUse"], by_role["tool"]["source_codex_events"])
+            self.assertEqual(["selected_tool_evidence_only"], by_role["tool"]["source_memory_selection_policies"])
+
     def test_lightweight_async_assistant_and_tool_pending_events_keep_semantic_types(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-lightweight-pending-role-types.jsonl")
