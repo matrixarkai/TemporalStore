@@ -1302,15 +1302,33 @@ def deferred_idle_auto_batch_result(
     }
 
 
+ASSISTANT_PROFILE_FACT_LINEAGE_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"\b(?:user|you)\b.{0,96}\b(?:prefer|prefers|preference|likes|wants|needs|asked|requires|required|always|never|avoid|remember)\b",
+        r"\b(?:i(?:'ll| will)? remember|remembered|noted|got it)\b.{0,140}\b(?:prefer|preference|want|need|always|never|avoid|profile|memory)\b",
+        r"\b(?:standing instruction|standing preference|user profile|long[- ]term memor(?:y|ies)|saved preference|persistent instruction)\b",
+    ]
+]
+
+
+def assistant_profile_fact_lineage_text(text: Any) -> bool:
+    compact = " ".join(str(text or "").split())
+    return bool(compact and any(pattern.search(compact) for pattern in ASSISTANT_PROFILE_FACT_LINEAGE_PATTERNS))
+
+
 def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
     metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
     role_counts: Json = {}
+    assistant_text_parts: list[str] = []
     for message in envelope.get("messages", []):
         if not isinstance(message, dict):
             continue
         role = normalize_message_role(message.get("role"))
         if role:
             role_counts[role] = int(role_counts.get(role, 0)) + 1
+        if role == "assistant":
+            assistant_text_parts.append(str(message.get("content") or ""))
     roles = set(role_counts)
     metadata_scalar_role = normalize_message_role(metadata.get("source_role"))
     if metadata_scalar_role:
@@ -1443,8 +1461,13 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
             selection_lossy_count += 1
         else:
             selection_complete_count += 1
+    assistant_policy = (
+        "selected_assistant_profile_fact"
+        if assistant_profile_fact_lineage_text("\n".join(assistant_text_parts) or metadata.get("text") or envelope.get("text"))
+        else "selected_assistant_decision_outcome_only"
+    )
     inferred_policy_by_role = {
-        "assistant": "selected_assistant_decision_outcome_only",
+        "assistant": assistant_policy,
         "tool": "selected_tool_evidence_only",
         "user": "selected_user_prompt",
     }
