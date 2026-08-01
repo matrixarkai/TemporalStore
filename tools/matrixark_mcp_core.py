@@ -6934,6 +6934,7 @@ def candidate_memory_layer_name(candidate: Json) -> str:
         or profile_memory_class == "memory_feature"
         or "memory_feature" in source_profile_memory_kinds
         or "memory_feature" in source_profile_memory_classes
+        or event_type == "memory_feature"
     )
     if context_class == "resource_entity_fact":
         return "resource_entity_fact"
