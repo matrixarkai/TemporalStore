@@ -3761,7 +3761,7 @@ def apply_hook_auto_batch_ingest_options(
     auto_batch_extract = should_auto_batch_extract_on_ingest(event)
     ingest_args["auto_batch_extract"] = auto_batch_extract
     ingest_args["session_buffer_threshold"] = session_commit_threshold
-    if auto_batch_extract and idle_commit_timeout_ms > 0:
+    if auto_batch_extract and idle_commit_timeout_ms >= 0:
         ingest_args["idle_commit_timeout_ms"] = idle_commit_timeout_ms
     else:
         ingest_args.pop("idle_commit_timeout_ms", None)
