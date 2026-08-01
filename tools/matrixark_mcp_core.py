@@ -3185,6 +3185,22 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     ]
     tool_messages = [item for _index, item in tool_message_items]
     tool_text = text_from_messages(tool_messages) if tool_messages else ""
+    tool_profile_entity_type = profile_entity_type_for_memory_text(tool_text)
+    if tool_profile_entity_type == "memory_feature_profile":
+        state = summarize_text(f"tool memory feature result: {tool_evidence_memory_text(tool_text)}", limit=220)
+        entities.append(
+            {
+                "entity_type": tool_profile_entity_type,
+                "entity_name": tool_profile_entity_type,
+                "state": state,
+                "confidence": 0.84,
+                "source_refs": source_refs_for_role("tool"),
+                "source_roles": ["tool"],
+                "source_role_counts": {"tool": len(tool_messages)},
+                "operator": normalize_entity_operator(None, tool_profile_entity_type),
+                "field_patches": [entity_patch("", summarize_text(state, limit=180))],
+            }
+        )
     if tool_text and not feature_scope_memory_only:
         tool_refs = source_refs_for_role("tool")
         evidence_state = summarize_text(tool_evidence_memory_text(tool_text), limit=220)
