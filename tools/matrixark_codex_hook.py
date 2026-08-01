@@ -3097,6 +3097,10 @@ def selected_assistant_outcome_facts(text: str, *, max_facts: int = 6) -> list[s
         target = " to origin/main" if re.search(r"\b(?:origin/main|refs/heads/main|HEAD\s*->\s*main)\b", compact, re.IGNORECASE) else ""
         add_fact(f"Outcome: pushed commit {pushed_commit}{target}")
 
+    has_test_failure = bool(
+        re.search(r"\b[1-9]\d*\s+(?:failed|failures|errors)\b", compact, re.IGNORECASE)
+        or re.search(r"\b(?:validation|tests?)\s+failed\b", compact, re.IGNORECASE)
+    ) and not re.search(r"\b0\s+failed\b", compact, re.IGNORECASE)
     tests_match = re.search(r"\b(?:ran\s+)?(\d+)\s+tests?\s+(?:passed|ok|succeeded)\b", compact, re.IGNORECASE)
     if not tests_match:
         tests_match = re.search(r"\bran\s+(\d+)\s+tests?\b", compact, re.IGNORECASE)
@@ -3106,9 +3110,9 @@ def selected_assistant_outcome_facts(text: str, *, max_facts: int = 6) -> list[s
             compact,
             re.IGNORECASE,
         )
-    if tests_match:
+    if tests_match and not has_test_failure:
         add_fact(f"Validation: {tests_match.group(1)} tests passed")
-    elif re.search(r"\b(?:tests?|validation|py_compile|unittest|pytest|cargo test|cargo check)\b.{0,80}\b(?:passed|ok|succeeded|clean)\b", compact, re.IGNORECASE):
+    elif not has_test_failure and re.search(r"\b(?:tests?|validation|py_compile|unittest|pytest|cargo test|cargo check)\b.{0,80}\b(?:passed|ok|succeeded|clean)\b", compact, re.IGNORECASE):
         add_fact("Validation: tests passed")
 
     has_real_blocker = bool(

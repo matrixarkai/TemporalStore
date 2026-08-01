@@ -274,7 +274,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         by_name = {entity["entity_name"]: entity for entity in entities}
 
         self.assertIn("Blocker:", selected)
+        self.assertNotIn("Validation: 165 tests passed", selected)
         self.assertIn("assistant_decision:blocker", by_name)
+        self.assertNotIn("assistant_decision:validation", by_name)
         self.assertIn("1 failed", by_name["assistant_decision:blocker"]["state"])
 
     def test_tool_memory_selection_normalizes_common_test_result_summaries(self) -> None:
