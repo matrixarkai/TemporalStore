@@ -6003,8 +6003,12 @@ def memory_layer_for_serving_ref(ref: Json) -> str:
         "cross_session_codex_outcome_compression",
         "cross_session_codex_outcome_summary",
         "cross_session_codex_outcome_entity",
+        "cross_session_codex_outcome_event",
+        "cross_session_codex_outcome_segment",
     }:
         return "cross_session_codex_outcome"
+    if ref_layer in {"same_session_codex_outcome_event", "same_session_codex_outcome_segment"}:
+        return "session_codex_outcome"
     if profile_memory_kind == "codex_outcome":
         session_continuity = str(ref.get("session_continuity") or metadata.get("session_continuity") or "").strip().lower()
         if memory_scope in {"user_profile", "profile", "cross_session_profile"} or session_continuity == "cross_session":
@@ -6247,7 +6251,9 @@ def candidate_memory_layer_name(candidate: Json) -> str:
     context_class = str(candidate.get("context_class") or metadata.get("context_class") or ref_type)
     memory_scope = str(candidate.get("memory_scope") or metadata.get("memory_scope") or "")
     session_continuity = str(candidate.get("session_continuity") or metadata.get("session_continuity") or "")
-    profile_memory_kind = str(candidate.get("profile_memory_kind") or metadata.get("profile_memory_kind") or "")
+    profile_memory_kind = str(candidate.get("profile_memory_kind") or metadata.get("profile_memory_kind") or "").strip().lower()
+    event_type = str(candidate.get("event_type") or metadata.get("event_type") or candidate.get("entity_type") or metadata.get("entity_type") or "").strip().lower()
+    is_codex_outcome_memory = profile_memory_kind == "codex_outcome" or event_type in {"assistant_response", "assistant_decision", "tool_evidence", *CODEX_OUTCOME_ENTITY_TYPES}
     if context_class == "resource_entity_fact":
         return "resource_entity_fact"
     if context_class == "resource_fact":
@@ -6277,6 +6283,10 @@ def candidate_memory_layer_name(candidate: Json) -> str:
             return "cross_session_summary"
         return "summary"
     if ref_type == "segment":
+        if is_codex_outcome_memory and session_continuity == "same_session":
+            return "same_session_codex_outcome_segment"
+        if is_codex_outcome_memory and session_continuity == "cross_session":
+            return "cross_session_codex_outcome_segment"
         if session_continuity == "same_session":
             return "same_session_segment"
         if session_continuity == "cross_session":
@@ -6285,6 +6295,10 @@ def candidate_memory_layer_name(candidate: Json) -> str:
     if ref_type == "event":
         if is_pending_async_candidate(candidate):
             return "pending_async_event"
+        if is_codex_outcome_memory and session_continuity == "same_session":
+            return "same_session_codex_outcome_event"
+        if is_codex_outcome_memory and session_continuity == "cross_session":
+            return "cross_session_codex_outcome_event"
         if session_continuity == "same_session":
             return "same_session_event"
         if session_continuity == "cross_session":

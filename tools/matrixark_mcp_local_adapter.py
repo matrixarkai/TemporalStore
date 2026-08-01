@@ -874,6 +874,71 @@ def auto_memory_selection_policy_budget_tokens(
     return budgets, mode
 
 
+def codex_outcome_event_segment_layer_fractions(question_type: str, *, outcome_query: bool = False) -> Json:
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    defaults: Json = {
+        "same_session_codex_outcome_event": 0.22,
+        "cross_session_codex_outcome_event": 0.20,
+        "same_session_codex_outcome_segment": 0.20,
+        "cross_session_codex_outcome_segment": 0.18,
+    }
+    if outcome_query:
+        defaults.update(
+            {
+                "same_session_codex_outcome_event": 0.45,
+                "cross_session_codex_outcome_event": 0.42,
+                "same_session_codex_outcome_segment": 0.38,
+                "cross_session_codex_outcome_segment": 0.36,
+            }
+        )
+    elif normalized_question_type in {"current_state", "latest"}:
+        defaults.update(
+            {
+                "same_session_codex_outcome_event": 0.35,
+                "cross_session_codex_outcome_event": 0.30,
+                "same_session_codex_outcome_segment": 0.30,
+                "cross_session_codex_outcome_segment": 0.28,
+            }
+        )
+    elif normalized_question_type == "profile_memory":
+        defaults.update(
+            {
+                "same_session_codex_outcome_event": 0.25,
+                "cross_session_codex_outcome_event": 0.35,
+                "same_session_codex_outcome_segment": 0.22,
+                "cross_session_codex_outcome_segment": 0.32,
+            }
+        )
+    elif normalized_question_type in {"multi_hop", "date"}:
+        defaults.update(
+            {
+                "same_session_codex_outcome_event": 0.35,
+                "cross_session_codex_outcome_event": 0.35,
+                "same_session_codex_outcome_segment": 0.32,
+                "cross_session_codex_outcome_segment": 0.32,
+            }
+        )
+    elif normalized_question_type == "benchmark_quality":
+        defaults.update(
+            {
+                "same_session_codex_outcome_event": 0.42,
+                "cross_session_codex_outcome_event": 0.45,
+                "same_session_codex_outcome_segment": 0.35,
+                "cross_session_codex_outcome_segment": 0.40,
+            }
+        )
+    elif normalized_question_type in {"broad_exploration", "evidence"}:
+        defaults.update(
+            {
+                "same_session_codex_outcome_event": 0.38,
+                "cross_session_codex_outcome_event": 0.35,
+                "same_session_codex_outcome_segment": 0.34,
+                "cross_session_codex_outcome_segment": 0.32,
+            }
+        )
+    return defaults
+
+
 def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_tokens: int, question_type: str = "fact") -> tuple[Json, str]:
     mode = _default_memory_budget_mode(
         args,
@@ -1042,6 +1107,12 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_codex_outcome_compression": 0.35,
             }
         )
+    defaults.update(
+        codex_outcome_event_segment_layer_fractions(
+            normalized_question_type,
+            outcome_query=codex_outcome_budget_query(args, ranking, question_type=question_type),
+        )
+    )
     budgets: Json = {}
     for layer, default_fraction in defaults.items():
         raw_fraction = fractions.get(layer, default_fraction) if isinstance(fractions, dict) else default_fraction
@@ -1244,6 +1315,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "cross_session_codex_outcome_compression": 0.35,
             }
         )
+    fractions.update(codex_outcome_event_segment_layer_fractions(normalized_question_type))
     return {
         layer: max(1, int(remote_budget * fraction))
         for layer, fraction in fractions.items()
