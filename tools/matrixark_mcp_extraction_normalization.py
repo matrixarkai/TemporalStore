@@ -495,28 +495,35 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
             }
         )
     if user_text:
-        for match in re.finditer(
-            r"\b(?:remember(?:\s+that)?|please\s+always|always|keep|use)\b[:\s]+([^.;!?\n]{4,180})",
-            user_text,
-            re.IGNORECASE,
-        ):
-            directive = clean_patch_value(match.group(1))
-            if not directive:
-                continue
-            entity_type = profile_entity_type_for_memory_text(match.group(0)) or "preference"
-            state = summarize_text(f"user directive: {directive}", limit=220)
-            entities.append(
-                {
-                    "entity_type": entity_type,
-                    "entity_name": canonical_entity_name(entity_type, directive) or entity_type,
-                    "state": state,
-                    "confidence": 0.84,
-                    "source_refs": source_refs_for_role("user"),
-                    **role_lineage("user"),
-                    "operator": normalize_entity_operator(None, entity_type),
-                    "field_patches": [entity_patch("", summarize_text(state, limit=180))],
-                }
-            )
+        user_directive_patterns = [
+            ("current_plan", r"\bgoal\s*:\s*([^.;!?\n]{4,220})"),
+            ("current_plan", r"\b(?:please\s+)?(?:implement|fix|add|remove|replace|move)\s+([^.;!?\n]{4,180})"),
+            ("preference", r"\b(?:remember(?:\s+that)?|please\s+always|always|keep|use|prefer|make\s+sure(?:\s+to)?)\b[:\s]+([^.;!?\n]{4,180})"),
+            ("preference", r"\b(?:do\s+not|don't|never|avoid|stop)\s+([^.;!?\n]{4,180})"),
+            ("current_plan", r"\b(?:we\s+should|should|need\s+to|must|have\s+to|let's|lets|please)\s+([^.;!?\n]{4,180})"),
+        ]
+        for entity_type, pattern in user_directive_patterns:
+            for match in re.finditer(pattern, user_text, re.IGNORECASE):
+                directive = clean_patch_value(match.group(0))
+                if not directive:
+                    continue
+                directive_entity_type = profile_entity_type_for_memory_text(directive) or entity_type
+                prefix = "user profile" if directive_entity_type.endswith("_profile") else (
+                    "user directive" if directive_entity_type == "preference" else "user plan"
+                )
+                state = summarize_text(f"{prefix}: {directive}", limit=220)
+                entities.append(
+                    {
+                        "entity_type": directive_entity_type,
+                        "entity_name": summarize_text(f"{directive_entity_type}:{directive}", limit=96),
+                        "state": state,
+                        "confidence": 0.86,
+                        "source_refs": source_refs_for_role("user"),
+                        **role_lineage("user"),
+                        "operator": normalize_entity_operator(None, directive_entity_type),
+                        "field_patches": [entity_patch("", summarize_text(state, limit=180))],
+                    }
+                )
     tool_messages = [
         item
         for item in messages
@@ -625,16 +632,22 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 )
     patterns = [
         ("preference", r"\b(?:prefer|prefers|favorite|likes?|loves?)\s+([^.;!?]{2,120})"),
+        ("preference", r"\b(?:you|user)\s+(?:always|usually|prefer(?:s)?|like(?:s)?|want(?:s)?|need(?:s)?)\s+([^.;!?]{2,140})"),
+        ("preference", r"\b(?:you|user)\s+(?:never|avoid(?:s)?|do(?:es)?\s+not|don't|doesn't|cannot|can't|should\s+not|must\s+not)\s+([^.;!?]{2,140})"),
+        ("preference", r"\b(?:i(?:'ll| will)?\s+remember|remembered|noted|got it)[:\s]+(?:that\s+)?(?:you|user)\s+([^.;!?]{2,160})"),
+        ("preference", r"\b(?:standing instruction|standing preference|saved preference|persistent instruction)[:\s]+([^.;!?]{2,180})"),
         ("relationship", r"\b(?:friend|partner|mother|father|sister|brother|wife|husband|manager|teammate)\s+([^.;!?]{0,120})"),
         ("location", r"\b(?:live|lives|moved|moving|located|staying)\s+(?:in|to|at)?\s*([^.;!?]{2,120})"),
         ("job_status", r"\b(?:job|role|work|works|position|status)\s+(?:is|as|at|with)?\s*([^.;!?]{2,120})"),
         ("current_plan", r"\b(?:plan|plans|planning|going to|will)\s+([^.;!?]{2,140})"),
+        ("current_plan", r"\b(?:you|user)\s+(?:asked|requested|required|requires|need(?:s)?|want(?:s)?)\s+(?:me\s+|codex\s+|us\s+|to\s+)?([^.;!?]{2,160})"),
         ("family_profile", r"\b(?:family|child|children|son|daughter|pet|dog|cat)\s+([^.;!?]{0,120})"),
         ("identity_profile", r"\b(?:call me|my name is|i am called|i'm called)\s+([^.;!?]{2,80})"),
         ("identity_profile", r"\b(?:user(?:'s)? name is|user goes by|user prefers to be called)\s+([^.;!?]{2,80})"),
         ("identity_profile", r"\b(?:my pronouns are|user(?:'s)? pronouns are)\s+([^.;!?]{2,80})"),
         ("communication_profile", r"\b(?:reply|respond|answer|write)\s+(?:to\s+me\s+)?(?:in|with|using)\s+([^.;!?]{2,140})"),
-        ("communication_profile", r"\b(?:communication style|response style|answer style|preferred language|preferred format|timezone|time zone|locale)[:\s]+([^.;!?]{2,160})"),
+        ("communication_profile", r"\b(?:use|prefer|likes?|wants?)\s+([^.;!?]{2,120}?\b(?:tone|style|format|bullets?|bullet points?|markdown|language|locale|timezone|time zone|concise|detailed|brief))"),
+        ("communication_profile", r"\b(?:communication style|response style|answer style|writing style|preferred language|preferred format|timezone|time zone|locale)[:\s]+([^.;!?]{2,160})"),
         ("workspace_profile", r"\b(?:always|please|must|should|use|keep|prefer)\s+([^.;!?]{2,180}?\b(?:ubuntu|wsl|linux|repo|repository|workspace|worktree|folder|branch|main|remote|github|rustraft|temporalstore|matrixark|build|deploy|deployment))"),
         ("workspace_profile", r"\b(?:do not|don't|never|avoid|stop)\s+([^.;!?]{2,180}?\b(?:windows|folder|repo|repository|worktree|branch|remote|build|deploy|deployment))"),
         ("workspace_profile", r"\b(?:workspace|repo|repository|branch|remote|github|build|deployment|deploy|ubuntu|wsl|linux|rustraft|temporalstore|matrixark)[:\s]+([^.;!?]{2,180})"),
