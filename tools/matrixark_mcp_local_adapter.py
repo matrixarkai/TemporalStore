@@ -1210,6 +1210,17 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
             outcome_query=outcome_query,
         )
     )
+    if feature_scope_budget_query(args, ranking):
+        for outcome_layer in [
+            "same_session_codex_outcome_event",
+            "cross_session_codex_outcome_event",
+            "same_session_codex_outcome_segment",
+            "cross_session_codex_outcome_segment",
+            "cross_session_codex_outcome_entity",
+            "cross_session_codex_outcome_summary",
+            "cross_session_codex_outcome_compression",
+        ]:
+            defaults[outcome_layer] = 0.0
     defaults["cross_session_memory_feature_summary"] = max(
         defaults.get("cross_session_memory_feature_entity", 0.25),
         defaults.get("profile_summary", 0.30),
@@ -1233,6 +1244,8 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
             fraction = max(0.0, min(1.0, float(raw_fraction)))
         except (TypeError, ValueError):
             fraction = default_fraction
+        if fraction <= 0.0:
+            continue
         amount = max(1, int(remote_budget * fraction))
         if amount:
             budgets[layer] = amount
@@ -1299,6 +1312,8 @@ def auto_extraction_phase_budget_tokens(
             fraction = max(0.0, min(1.0, float(raw_fraction)))
         except (TypeError, ValueError):
             fraction = default_fraction
+        if fraction <= 0.0:
+            continue
         amount = max(1, int(remote_budget * fraction))
         if amount:
             budgets[phase] = amount
@@ -1472,6 +1487,17 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
             outcome_query=outcome_query,
         )
     )
+    if feature_scope_budget_query(args, ranking):
+        for outcome_layer in [
+            "same_session_codex_outcome_event",
+            "cross_session_codex_outcome_event",
+            "same_session_codex_outcome_segment",
+            "cross_session_codex_outcome_segment",
+            "cross_session_codex_outcome_entity",
+            "cross_session_codex_outcome_summary",
+            "cross_session_codex_outcome_compression",
+        ]:
+            fractions[outcome_layer] = 0.0
     fractions["cross_session_memory_feature_summary"] = max(
         fractions.get("cross_session_memory_feature_entity", 0.25),
         fractions.get("profile_summary", 0.30),
@@ -1491,6 +1517,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
     return {
         layer: max(1, int(remote_budget * fraction))
         for layer, fraction in fractions.items()
+        if fraction > 0.0
     }, mode
 
 
