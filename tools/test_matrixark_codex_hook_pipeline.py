@@ -341,6 +341,43 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("codex_outcome:outcome", terms)
             self.assertNotIn("codex_outcome:blocker", terms)
 
+    def test_payload_text_compacts_assistant_and_tool_outputs_at_ingestion_boundary(self) -> None:
+        assistant_raw = "\n".join(
+            [
+                "verbose implementation details " * 80,
+                "Implemented profile memory retrieval and pushed commit face123 to origin/main.",
+                "Validation: 44 tests passed.",
+                "Next: continue feature parity work.",
+            ]
+        )
+        assistant_selected = matrixark_codex_hook.payload_text(
+            {"last_assistant_message": assistant_raw},
+            event="Stop",
+        )
+        self.assertIn("Outcome: pushed commit face123 to origin/main", assistant_selected)
+        self.assertIn("Validation: 44 tests passed", assistant_selected)
+        self.assertNotIn("verbose implementation details verbose implementation", assistant_selected)
+
+        tool_raw = "\n".join(
+            [
+                "build line " * 120,
+                "Exit code: 0",
+                "Ran 45 tests in 0.02s",
+                "To https://github.com/bjmeetsfo/TemporalStore.git",
+                "   39f93050..bee1234  HEAD -> main",
+            ]
+        )
+        tool_selected = matrixark_codex_hook.payload_text(
+            {"tool_result": tool_raw, "tool_name": "shell_command", "status": "ok"},
+            event="PostToolUse",
+        )
+        self.assertIn("tool_name=shell_command", tool_selected)
+        self.assertIn("tool_status=ok", tool_selected)
+        self.assertIn("Exit code: 0", tool_selected)
+        self.assertIn("Ran 45 tests", tool_selected)
+        self.assertIn("pushed commit bee1234 to origin/main", tool_selected)
+        self.assertNotIn("build line build line", tool_selected)
+
     def test_user_prompt_selection_keeps_goal_and_task_memory_without_large_context(self) -> None:
         large_prompt = "\n".join(
             [
