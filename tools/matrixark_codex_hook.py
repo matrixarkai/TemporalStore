@@ -4213,9 +4213,11 @@ def pending_session_buffer_lineage(records: list[Json], *, fallback_role: str, f
     source_roles: list[str] = []
     source_hook_types: list[str] = []
     source_codex_events: list[str] = []
+    source_memory_selection_policies: list[str] = []
     source_role_counts: Json = {}
     source_hook_type_counts: Json = {}
     source_codex_event_counts: Json = {}
+    source_memory_selection_policy_counts: Json = {}
 
     def add_count(bucket: Json, value: Any, *, normalize_role: bool = False, count: int = 1) -> None:
         label = normalize_message_role(value) if normalize_role else str(value or "").strip()
@@ -4261,6 +4263,21 @@ def pending_session_buffer_lineage(records: list[Json], *, fallback_role: str, f
             if codex_event:
                 source_codex_events.append(codex_event)
                 add_count(source_codex_event_counts, codex_event)
+        add_values(
+            metadata.get("source_memory_selection_policies"),
+            source_memory_selection_policies,
+            source_memory_selection_policy_counts,
+        )
+        add_values(
+            record.get("source_memory_selection_policies"),
+            source_memory_selection_policies,
+            source_memory_selection_policy_counts,
+        )
+        selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
+        selection_policy = str(selection.get("policy") or "").strip()
+        if selection_policy:
+            source_memory_selection_policies.append(selection_policy)
+            add_count(source_memory_selection_policy_counts, selection_policy)
 
     if not source_roles and fallback_role:
         source_roles.append(fallback_role)
@@ -4288,6 +4305,8 @@ def pending_session_buffer_lineage(records: list[Json], *, fallback_role: str, f
         "source_hook_type_counts": source_hook_type_counts,
         "source_codex_events": ordered(source_codex_events),
         "source_codex_event_counts": source_codex_event_counts,
+        "source_memory_selection_policies": ordered(source_memory_selection_policies),
+        "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
     }
 
 
@@ -4561,6 +4580,12 @@ def fast_async_hook_ingest(
             idle_elapsed_before_ingest_ms = max(idle_elapsed_before_ingest_ms, idle_timeout_ms)
     auto_batch_extract_on_ingest = should_auto_batch_extract_on_ingest(args.event)
     commit_extraction_options: Json = hook_session_commit_extraction_options(args)
+    pending_before_ingest_lineage = pending_session_buffer_lineage(
+        pending_before_ingest,
+        fallback_role="",
+        fallback_hook_type="",
+        fallback_codex_event="",
+    )
     should_pre_ingest_idle_commit = (
         auto_batch_extract_on_ingest
         and callable(session_commit)
@@ -4579,6 +4604,11 @@ def fast_async_hook_ingest(
         )
         pre_idle_args: Json = {
             "scope": scope,
+            "metadata": {
+                **pending_before_ingest_lineage,
+                "node_path": node_path,
+                "commit_source": "codex_hook_fast_async_pre_ingest_idle",
+            },
             "threshold_messages": threshold,
             "force": False,
             "commit_reason": "idle_timeout",
@@ -4693,6 +4723,11 @@ def fast_async_hook_ingest(
         fallback_hook_type=hook_type,
         fallback_codex_event=args.event,
     )
+    pending_commit_metadata: Json = {
+        **pending_lineage,
+        "node_path": node_path,
+        "commit_source": "codex_hook_fast_async",
+    }
     should_boundary_commit = should_commit_session(args.event)
     should_threshold_commit = (
         not should_boundary_commit
@@ -4775,6 +4810,7 @@ def fast_async_hook_ingest(
         commit_reason = commit_reason_for_event(args.event) if should_boundary_commit else "threshold"
         commit_args: Json = {
             "scope": scope,
+            "metadata": pending_commit_metadata,
             "threshold_messages": threshold,
             "force": should_boundary_commit and commit_reason != "idle_timeout",
             "commit_reason": commit_reason,
