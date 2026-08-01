@@ -30,9 +30,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_metrics import MatrixArkServiceMetrics
 
 try:
-    from tools.matrixark_mcp_session_policy import auto_batch_extract_enabled
+    from tools.matrixark_mcp_session_policy import auto_batch_extract_enabled, session_boundary_commit_requested
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_session_policy import auto_batch_extract_enabled
+    from matrixark_mcp_session_policy import auto_batch_extract_enabled, session_boundary_commit_requested
 
 try:
     from tools.matrixark_mcp_retrieve_pack_builder import (
@@ -6249,6 +6249,7 @@ class MatrixArkLocalAdapter:
             pending_message_count = session_event_message_count(pending_events)
             auto_batch_result: Json | None = None
             auto_batch_extract = auto_batch_extract_enabled(args, kind=envelope["kind"])
+            session_boundary_commit = session_boundary_commit_requested(args, hook=hook)
             session_buffer_threshold = args.get("session_buffer_threshold", 20)
             if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
                 raise MatrixArkError("session_buffer_threshold must be a positive integer")
@@ -6258,15 +6259,15 @@ class MatrixArkLocalAdapter:
                 and idle_commit_result.get("status") in {"accepted", "committed"}
                 and idle_commit_result.get("trigger_policy") == "idle_timeout"
             )
-            if auto_batch_extract and threshold_ready:
+            if auto_batch_extract and (session_boundary_commit or threshold_ready):
                 auto_batch_result = self.session_commit(
                     {
                         "scope": envelope["scope"],
                         "metadata": envelope["metadata"],
                         "threshold_messages": session_buffer_threshold,
-                        "force": False,
-                        "max_messages": session_buffer_threshold,
-                        "commit_reason": "threshold",
+                        "force": session_boundary_commit,
+                        "max_messages": None if session_boundary_commit else session_buffer_threshold,
+                        "commit_reason": "hook_boundary" if session_boundary_commit else "threshold",
                         "understanding_provider": args.get("understanding_provider"),
                         "extraction_provider": args.get("extraction_provider"),
                         "segment_provider": args.get("segment_provider"),
@@ -6332,6 +6333,7 @@ class MatrixArkLocalAdapter:
                     "pending_message_count": pending_message_count,
                     "threshold_messages": session_buffer_threshold,
                     "threshold_ready": threshold_ready,
+                    "session_boundary_commit": session_boundary_commit,
                     "idle_ready": idle_ready,
                     "idle_commit_scheduled": idle_commit_scheduled,
                     "auto_batch_extract": auto_batch_extract,
@@ -7365,6 +7367,7 @@ class MatrixArkLocalAdapter:
         pending_message_count = session_event_message_count(pending_events)
         auto_batch_result: Json | None = None
         auto_batch_extract = auto_batch_extract_enabled(args, kind=envelope["kind"])
+        session_boundary_commit = session_boundary_commit_requested(args, hook=hook)
         session_buffer_threshold = args.get("session_buffer_threshold", 20)
         if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
             raise MatrixArkError("session_buffer_threshold must be a positive integer")
@@ -7374,15 +7377,15 @@ class MatrixArkLocalAdapter:
             and idle_commit_result.get("status") in {"accepted", "committed"}
             and idle_commit_result.get("trigger_policy") == "idle_timeout"
         )
-        if auto_batch_extract and threshold_ready:
+        if auto_batch_extract and (session_boundary_commit or threshold_ready):
             auto_batch_result = self.session_commit(
                 {
                     "scope": hot_record_scope,
                     "metadata": envelope["metadata"],
                     "threshold_messages": session_buffer_threshold,
-                    "force": False,
-                    "max_messages": session_buffer_threshold,
-                    "commit_reason": "threshold",
+                    "force": session_boundary_commit,
+                    "max_messages": None if session_boundary_commit else session_buffer_threshold,
+                    "commit_reason": "hook_boundary" if session_boundary_commit else "threshold",
                     "understanding_provider": args.get("understanding_provider"),
                     "extraction_provider": args.get("extraction_provider"),
                     "segment_provider": args.get("segment_provider"),
@@ -7498,6 +7501,7 @@ class MatrixArkLocalAdapter:
                 "pending_message_count": pending_message_count,
                 "threshold_messages": session_buffer_threshold,
                 "threshold_ready": threshold_ready,
+                "session_boundary_commit": session_boundary_commit,
                 "idle_ready": idle_ready,
                 "idle_commit_scheduled": idle_commit_scheduled,
                 "auto_batch_extract": auto_batch_extract,
