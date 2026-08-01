@@ -6914,6 +6914,10 @@ class MatrixArkLocalAdapter:
                 updated_at_ms=envelope["ingestion_time_ms"],
             )
             source_memory_scopes, source_session_continuities = pending_extraction_memory_layer_intent(envelope["scope"])
+            pending_event_type = "pending_async"
+            if len(envelope["messages"]) == 1:
+                pending_event_type = context_event_type_for_message(envelope["messages"][0], pending_event_type)
+            pending_lineage = context_source_lineage(envelope, hook)
             with self.write_batch("message_ingest_sync_accept"):
                 summary_dirty_hashes = self.mark_node_summary_dirty(
                     node_path=node_path,
@@ -6934,20 +6938,29 @@ class MatrixArkLocalAdapter:
                         "text": text,
                         "summary_text": summarize_text(text),
                         "classification": "PENDING_ASYNC_EXTRACTION",
-                        "event_type": "pending_async",
+                        "event_type": pending_event_type,
+                        "batch_event_type": "pending_async",
                         "status": "pending",
                         "source_kind": envelope.get("kind", "message"),
                         "envelope": envelope,
                         "internal_extraction": {
                             "mode": "async_pending",
                             "classification": "PENDING_ASYNC_EXTRACTION",
-                            "event_type": "pending_async",
+                            "event_type": pending_event_type,
+                            "batch_event_type": "pending_async",
                             "status": "pending",
                         },
                         "agent_hook": hook,
                         **source_lineage,
+                        **pending_lineage,
                         "storage_options": envelope.get("storage_options", {}),
                         "async_processing": True,
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "source_memory_scopes": source_memory_scopes,
+                        "source_session_continuities": source_session_continuities,
+                        "extraction_phase": "pending_async",
+                        "final_session_boundary": False,
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
