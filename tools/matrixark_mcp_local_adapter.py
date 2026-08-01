@@ -851,6 +851,7 @@ def auto_memory_selection_policy_budget_tokens(
     )
     defaults = {
         "selected_user_prompt": 0.45,
+        "selected_user_profile_fact": 0.35,
         "selected_assistant_profile_fact": 0.35,
         "selected_assistant_decision_outcome_only": 0.30,
         "selected_tool_evidence_only": 0.30,
@@ -860,6 +861,7 @@ def auto_memory_selection_policy_budget_tokens(
         defaults.update(
             {
                 "selected_user_prompt": 0.35,
+                "selected_user_profile_fact": 0.45,
                 "selected_assistant_profile_fact": 0.35,
                 "selected_assistant_decision_outcome_only": 0.58,
                 "selected_tool_evidence_only": 0.55,
@@ -870,6 +872,7 @@ def auto_memory_selection_policy_budget_tokens(
         defaults.update(
             {
                 "selected_user_prompt": 0.70,
+                "selected_user_profile_fact": 0.55,
                 "selected_assistant_profile_fact": 0.45,
                 "selected_assistant_decision_outcome_only": 0.30,
                 "selected_tool_evidence_only": 0.25,
@@ -880,6 +883,7 @@ def auto_memory_selection_policy_budget_tokens(
         defaults.update(
             {
                 "selected_user_prompt": 0.40,
+                "selected_user_profile_fact": 0.60,
                 "selected_assistant_profile_fact": 0.55,
                 "selected_assistant_decision_outcome_only": 0.45,
                 "selected_tool_evidence_only": 0.30,
@@ -890,6 +894,7 @@ def auto_memory_selection_policy_budget_tokens(
         defaults.update(
             {
                 "selected_user_prompt": 0.35,
+                "selected_user_profile_fact": 0.70,
                 "selected_assistant_profile_fact": 0.65,
                 "selected_assistant_decision_outcome_only": 0.40,
                 "selected_tool_evidence_only": 0.30,
@@ -900,6 +905,7 @@ def auto_memory_selection_policy_budget_tokens(
         defaults.update(
             {
                 "selected_user_prompt": 0.25,
+                "selected_user_profile_fact": 0.35,
                 "selected_assistant_profile_fact": 0.30,
                 "selected_assistant_decision_outcome_only": 0.50,
                 "selected_tool_evidence_only": 0.65,
@@ -910,6 +916,7 @@ def auto_memory_selection_policy_budget_tokens(
         defaults.update(
             {
                 "selected_user_prompt": 0.35,
+                "selected_user_profile_fact": 0.45,
                 "selected_assistant_profile_fact": 0.45,
                 "selected_assistant_decision_outcome_only": 0.45,
                 "selected_tool_evidence_only": 0.50,
@@ -1752,10 +1759,16 @@ def assistant_profile_fact_lineage_text(text: Any) -> bool:
     return bool(compact and any(pattern.search(compact) for pattern in ASSISTANT_PROFILE_FACT_LINEAGE_PATTERNS))
 
 
+def user_profile_fact_lineage_text(text: Any) -> bool:
+    compact = " ".join(str(text or "").split())
+    return bool(compact and any(pattern.search(compact) for pattern in ASSISTANT_PROFILE_FACT_LINEAGE_PATTERNS))
+
+
 def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
     metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
     role_counts: Json = {}
     assistant_text_parts: list[str] = []
+    user_text_parts: list[str] = []
     for message in envelope.get("messages", []):
         if not isinstance(message, dict):
             continue
@@ -1764,6 +1777,8 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
             role_counts[role] = int(role_counts.get(role, 0)) + 1
         if role == "assistant":
             assistant_text_parts.append(str(message.get("content") or ""))
+        elif role == "user":
+            user_text_parts.append(str(message.get("content") or ""))
     roles = set(role_counts)
     metadata_scalar_role = normalize_message_role(metadata.get("source_role"))
     if metadata_scalar_role:
@@ -1914,10 +1929,14 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
             if assistant_feature_memory_only
             else "selected_assistant_decision_outcome_only"
         )
+    user_lineage_text = "\n".join(user_text_parts) or (metadata.get("text") if "user" in roles else "")
+    user_policies = ["selected_user_prompt"]
+    if user_profile_fact_lineage_text(user_lineage_text):
+        user_policies.append("selected_user_profile_fact")
     inferred_policy_by_role = {
         "assistant": assistant_policies,
         "tool": "selected_tool_evidence_only",
-        "user": "selected_user_prompt",
+        "user": user_policies,
     }
     for role, count in role_counts.items():
         policies = inferred_policy_by_role.get(role)
@@ -1986,6 +2005,7 @@ def context_event_type_for_message(message: Json, default_event_type: str) -> st
         return by_role[role]
     by_policy = {
         "selected_user_prompt": "user_prompt",
+        "selected_user_profile_fact": "user_prompt",
         "selected_assistant_profile_fact": "assistant_response",
         "selected_assistant_decision_outcome_only": "assistant_response",
         "selected_tool_evidence_only": "tool_evidence",
@@ -8287,6 +8307,11 @@ class MatrixArkLocalAdapter:
             for message in envelope.get("messages", [])
             if isinstance(message, dict) and normalize_message_role(message.get("role")) == "assistant"
         ]
+        user_text_parts = [
+            str(message.get("content") or "")
+            for message in envelope.get("messages", [])
+            if isinstance(message, dict) and normalize_message_role(message.get("role")) == "user"
+        ]
         assistant_lineage_text = "\n".join(assistant_text_parts) or envelope_metadata.get("text") or envelope.get("text")
         assistant_policies: list[str] = []
         assistant_feature_memory_only = feature_scope_excludes_outcome_evidence(assistant_lineage_text)
@@ -8296,10 +8321,14 @@ class MatrixArkLocalAdapter:
             assistant_policies.append("selected_assistant_decision_outcome_only")
         if assistant_feature_memory_only and not assistant_policies:
             assistant_policies.append("selected_assistant_profile_fact")
+        user_lineage_text = "\n".join(user_text_parts) or (envelope_metadata.get("text") if source_role_counts.get("user") else "")
+        user_policies = ["selected_user_prompt"]
+        if user_profile_fact_lineage_text(user_lineage_text):
+            user_policies.append("selected_user_profile_fact")
         inferred_policy_by_role = {
             "assistant": assistant_policies,
             "tool": ["selected_tool_evidence_only"],
-            "user": ["selected_user_prompt"],
+            "user": user_policies,
         }
         for role, count in source_role_counts.items():
             for policy_name in inferred_policy_by_role.get(role, []):

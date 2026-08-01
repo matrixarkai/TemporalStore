@@ -2508,6 +2508,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "profile_memory_kind:memory_feature": "memory feature durable preference openviking vikingmem feature focused features only no testing no monitoring no debugging no evidence no evident",
     "memory_selection_policy:selected_profile_current_state": "selected profile current state standing instruction durable preference",
     "memory_selection_policy:selected_user_prompt": "selected user prompt explicit request instruction preference",
+    "memory_selection_policy:selected_user_profile_fact": "selected user profile fact standing preference durable instruction",
     "memory_selection_policy:selected_assistant_profile_fact": "selected assistant stated user profile preference standing instruction durable memory",
     "memory_selection_policy:selected_assistant_decision_outcome_only": "selected assistant decision outcome final answer implemented changed pushed",
     "memory_selection_policy:selected_tool_evidence_only": "selected tool evidence validation test result commit push benchmark",
@@ -3084,7 +3085,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 directive = clean_patch_value(match.group(0))
                 if not directive:
                     continue
-                directive_entity_type = profile_entity_type_for_memory_text(directive) or entity_type
+                directive_entity_type = entity_type if entity_type == "current_plan" else profile_entity_type_for_memory_text(directive) or entity_type
                 if directive_entity_type.endswith("_profile"):
                     prefix = "user profile"
                 else:
@@ -4981,6 +4982,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
     if re.search(r"\b(prefer|preference|favorite|like|likes|love|loves|avoid|never|do not|don't|doesn't|should not|must not|standing instruction|standing preference|persistent instruction|saved preference|remember(?:ed)?)\b", lower):
         add_group(context_index_name("entity_type", "preference"), context_index_name("event_type", "preference_update"))
         add_group(context_index_name("profile_memory_kind", "durable_profile"))
+        add_group(context_index_name("memory_selection_policy", "selected_user_profile_fact"))
         add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
     if re.search(r"\b(name|nickname|call me|called|pronoun|pronouns|who am i|who is the user|address me)\b", lower):
         add_group(context_index_name("entity_type", "identity_profile"))
@@ -5003,6 +5005,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(context_index_name("profile_memory_kind", "memory_feature"))
         add_group(
             context_index_name("memory_selection_policy", "selected_user_prompt"),
+            context_index_name("memory_selection_policy", "selected_user_profile_fact"),
             context_index_name("memory_selection_policy", "selected_assistant_profile_fact"),
             context_index_name("memory_selection_policy", "selected_profile_current_state"),
         )
@@ -5173,6 +5176,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         if re.search(r"\b(user prompt|prompt|user request|request)\b", lower):
             add_group(context_index_name("memory_selection_policy", "selected_user_prompt"))
         if re.search(r"\b(profile fact|preference|standing instruction|standing preference|remembered|user profile|long[- ]term memory)\b", lower):
+            add_group(context_index_name("memory_selection_policy", "selected_user_profile_fact"))
             add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
         if re.search(r"\b(assistant|decision|outcome|final answer|what did codex|what did you|what did we|what was done|done|fixed|implemented)\b", lower):
             add_group(context_index_name("memory_selection_policy", "selected_assistant_decision_outcome_only"))
@@ -6072,6 +6076,15 @@ def inferred_memory_selection_policies_for_candidate(candidate: Json) -> set[str
     policies: set[str] = set()
     if "user" in role_names or entity_type == "user_prompt":
         policies.add("selected_user_prompt")
+    if (
+        "user" in role_names
+        and (
+            profile_memory_kind in {"durable_profile", "memory_feature"}
+            or profile_memory_class in {"identity", "communication", "workspace", "memory_feature", "preference", "personal_context", "task_context"}
+            or memory_scope in {"user_profile", "profile", "cross_session_profile"}
+        )
+    ):
+        policies.add("selected_user_profile_fact")
     if "tool" in role_names or entity_type == "tool_evidence":
         policies.add("selected_tool_evidence_only")
     if "assistant" in role_names or entity_type in CODEX_OUTCOME_ENTITY_TYPES or entity_type == "assistant_decision":
@@ -6140,8 +6153,10 @@ def memory_selection_policy_ref_boost(candidate: Json, question_type: str) -> fl
         return 0.0
     normalized_question_type = str(question_type or "fact").strip().lower()
     boost = 0.0
-    if "selected_assistant_profile_fact" in policies and normalized_question_type == "profile_memory":
+    if {"selected_assistant_profile_fact", "selected_user_profile_fact"} & policies and normalized_question_type == "profile_memory":
         boost = max(boost, 0.24)
+    if "selected_user_profile_fact" in policies and normalized_question_type in {"current_state", "latest", "multi_hop", "date"}:
+        boost = max(boost, 0.20)
     if "selected_user_prompt" in policies and normalized_question_type in {"profile_memory", "current_state", "latest", "multi_hop", "date"}:
         boost = max(boost, 0.18)
     if "selected_assistant_decision_outcome_only" in policies and normalized_question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:

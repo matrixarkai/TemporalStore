@@ -111,6 +111,11 @@ def assistant_profile_fact_lineage_text(text: Any) -> bool:
     return bool(compact and any(pattern.search(compact) for pattern in ASSISTANT_PROFILE_FACT_LINEAGE_PATTERNS))
 
 
+def user_profile_fact_lineage_text(text: Any) -> bool:
+    compact = " ".join(str(text or "").split())
+    return bool(compact and any(pattern.search(compact) for pattern in ASSISTANT_PROFILE_FACT_LINEAGE_PATTERNS))
+
+
 def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
     envelope = batch_start["envelope"]
     extraction_context_messages = args.get("extraction_context_messages", [])
@@ -301,16 +306,25 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         for message in extraction_envelope.get("messages", [])
         if isinstance(message, dict) and normalize_message_role(message.get("role")) == "assistant"
     ]
+    user_text_parts = [
+        str(message.get("content") or "")
+        for message in extraction_envelope.get("messages", [])
+        if isinstance(message, dict) and normalize_message_role(message.get("role")) == "user"
+    ]
     assistant_lineage_text = "\n".join(assistant_text_parts) or envelope_metadata.get("text") or envelope.get("text")
     assistant_policies: list[str] = []
     if assistant_profile_fact_lineage_text(assistant_lineage_text):
         assistant_policies.append("selected_assistant_profile_fact")
     if assistant_lineage_text or source_role_counts.get("assistant"):
         assistant_policies.append("selected_assistant_decision_outcome_only")
+    user_lineage_text = "\n".join(user_text_parts) or (envelope_metadata.get("text") if source_role_counts.get("user") else "")
+    user_policies = ["selected_user_prompt"]
+    if user_profile_fact_lineage_text(user_lineage_text):
+        user_policies.append("selected_user_profile_fact")
     inferred_policy_by_role = {
         "assistant": assistant_policies,
         "tool": ["selected_tool_evidence_only"],
-        "user": ["selected_user_prompt"],
+        "user": user_policies,
     }
     for role, count in source_role_counts.items():
         for policy_name in inferred_policy_by_role.get(role, []):
