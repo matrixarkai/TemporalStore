@@ -6884,6 +6884,9 @@ def is_resource_or_skill_candidate(candidate: Json) -> bool:
 
 def candidate_memory_layer_name(candidate: Json) -> str:
     metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
+    explicit_memory_layer = str(candidate.get("memory_layer") or metadata.get("memory_layer") or "").strip()
+    if explicit_memory_layer:
+        return explicit_memory_layer
     record_type = str(candidate.get("record_type") or metadata.get("record_type") or "")
     ref_type = str(candidate.get("ref_type") or metadata.get("ref_type") or "")
     if not ref_type and record_type == "context_event":
