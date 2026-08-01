@@ -1,4 +1,3 @@
-use std::fs;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -18,6 +17,7 @@ use temporalstore_snapshot::object_store::AppendBlobReceipt;
 
 const DEFAULT_ENTRY_COUNT: u64 = 8;
 const DEFAULT_VALUE_BYTES: usize = 64;
+const PERSISTENT_SNAPSHOT_FILE: &str = "matrixobjectstore-persistent.snapshot";
 
 #[derive(Debug, Serialize)]
 struct Report {
@@ -196,15 +196,11 @@ async fn main() {
         .max(1);
 
     let dir = tempfile::tempdir().expect("tempdir");
+    let persistent_snapshot_path = dir.path().join(PERSISTENT_SNAPSHOT_FILE);
     let store = Arc::new(
         MatrixObjectObjectStore::new(
             "temporalstore-shared",
-            StoreOptions {
-                segment_size: 32,
-                max_extent_bytes: 8,
-                chunk_size: 8,
-                ..StoreOptions::default()
-            },
+            matrixobject_options(Some(&persistent_snapshot_path)),
         )
         .expect("matrixobject store"),
     );
@@ -241,6 +237,7 @@ async fn main() {
     let snapshot_reopen = run_snapshot_reopen(
         dir.path(),
         store.clone(),
+        persistent_snapshot_path,
         1,
         entry_count,
         &["direct", "sync", "async"],
@@ -322,7 +319,7 @@ async fn main() {
     let report = Report {
         schema: "temporalstore_shared_store_append_blob_parity_report_v1",
         backend: "rust",
-        matrixobject_mode: "rust_matrixobject_in_memory_protobuf_append_blob",
+        matrixobject_mode: "rust_matrixobject_persistent_snapshot_protobuf_append_blob",
         entry_count,
         value_bytes,
         direct_publish,
@@ -337,11 +334,14 @@ async fn main() {
     );
 }
 
-fn matrixobject_options() -> StoreOptions {
+fn matrixobject_options(persistent_snapshot_path: Option<&std::path::Path>) -> StoreOptions {
     StoreOptions {
         segment_size: 32,
         max_extent_bytes: 8,
         chunk_size: 8,
+        persistent_snapshot_path: persistent_snapshot_path
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default(),
         ..StoreOptions::default()
     }
 }
@@ -521,29 +521,34 @@ async fn replay_and_retrieve(
 async fn run_snapshot_reopen(
     root: &std::path::Path,
     store: Arc<MatrixObjectObjectStore>,
+    persistent_snapshot_path: std::path::PathBuf,
     direct_shard_id: u64,
     entry_count: u64,
     phases: &[&str],
 ) -> SnapshotReopenReport {
-    let export_start = Instant::now();
-    let snapshot_bytes = store.snapshot_bytes().expect("matrixobject snapshot");
-    let snapshot_export_latency_us = export_start.elapsed().as_micros();
+    let flush_start = Instant::now();
+    store
+        .inner()
+        .lock()
+        .expect("matrixobject lock poisoned")
+        .flush_persistent_snapshot()
+        .expect("flush persistent matrixobject snapshot");
+    let snapshot_export_latency_us = flush_start.elapsed().as_micros();
+    let snapshot_bytes = std::fs::read(&persistent_snapshot_path)
+        .expect("read persistent matrixobject snapshot bytes for checksum");
     let snapshot_sha256 = sha256_hex(&snapshot_bytes);
-    let snapshot_path = root.join("matrixobjectstore.snapshot.bin");
-    let disk_write_start = Instant::now();
-    fs::write(&snapshot_path, &snapshot_bytes).expect("write matrixobject snapshot");
-    let snapshot_disk_write_latency_us = disk_write_start.elapsed().as_micros();
+    let snapshot_disk_write_latency_us = snapshot_export_latency_us;
     let disk_read_start = Instant::now();
-    let restored_snapshot_bytes = fs::read(&snapshot_path).expect("read matrixobject snapshot");
+    let restored_snapshot_bytes = std::fs::read(&persistent_snapshot_path)
+        .expect("read persistent matrixobject snapshot");
     let snapshot_disk_read_latency_us = disk_read_start.elapsed().as_micros();
     let import_start = Instant::now();
     let reopened_store = Arc::new(
-        MatrixObjectObjectStore::from_snapshot_bytes(
+        MatrixObjectObjectStore::new(
             "temporalstore-shared",
-            matrixobject_options(),
-            &restored_snapshot_bytes,
+            matrixobject_options(Some(&persistent_snapshot_path)),
         )
-        .expect("reopen matrixobject snapshot"),
+        .expect("reopen persistent matrixobject snapshot"),
     );
     let snapshot_import_latency_us = import_start.elapsed().as_micros();
     let reopened_replicator = SharedStoreReplicator::new("cluster-a", reopened_store.clone())
