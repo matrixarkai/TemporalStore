@@ -7,6 +7,7 @@ try:
     from tools.matrixark_mcp_core import (
         Json,
         MatrixArkError,
+        candidate_memory_layer_name,
         canonical_storage_route,
         context_index_posting_record,
         legacy_hook_type_from_codex_event,
@@ -25,6 +26,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         Json,
         MatrixArkError,
+        candidate_memory_layer_name,
         canonical_storage_route,
         context_index_posting_record,
         legacy_hook_type_from_codex_event,
@@ -39,6 +41,13 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         session_buffer_key,
         stable_hash,
     )
+
+
+def attach_memory_layer(record: Json) -> Json:
+    layer = candidate_memory_layer_name(record)
+    if not layer or layer == "unknown":
+        return record
+    return {**record, "memory_layer": layer}
 
 
 def _event_source_count_summary(envelope: Json, hook: Json | None) -> Json:
@@ -477,7 +486,7 @@ def append_session_commit_task_progress(
     buffer_key_hash = stable_hash(":".join(buffer_key))
     for event_id in source_event_ids:
         records.append(
-            {
+            attach_memory_layer({
                 "record_type": "matrixark_async_pipeline_task",
                 "task_hash": stable_hash(f"async_pipeline:{event_id}"),
                 "event_id_hash": event_id,
@@ -505,7 +514,7 @@ def append_session_commit_task_progress(
                 "summary_dirty_nodes": memory_layers_written.get("summary_dirty_nodes", 0),
                 "memory_layers_written": memory_layers_written,
                 "updated_at_ms": updated_at_ms,
-            }
+            })
         )
         records.append(
             {
@@ -754,7 +763,7 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
                     f"Session finalized after {len(prior_commits)} provisional commit(s) "
                     f"covering {len(unique_event_ids)} event(s)."
                 )
-                boundary_record: Json = {
+                boundary_record: Json = attach_memory_layer({
                     "record_type": "context_session_boundary",
                     "boundary_hash": boundary_hash,
                     "node_hash": node_hash,
@@ -774,8 +783,8 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
                     "session_continuity": "same_session",
                     "created_at_ms": finalized_at_ms,
                     "updated_at_ms": finalized_at_ms,
-                }
-                summary_record: Json = {
+                })
+                summary_record: Json = attach_memory_layer({
                     "record_type": "context_summary",
                     "summary_type": "session_final",
                     "summary_hash": summary_hash,
@@ -793,7 +802,7 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
                     "extraction_phase": "final",
                     "final_session_boundary": True,
                     "updated_at_ms": finalized_at_ms,
-                }
+                })
                 summary_index_names = [
                     "summary_type:session_final",
                     "memory_scope:session",
