@@ -8870,6 +8870,7 @@ class MatrixArkLocalAdapter:
             topic_text = " ".join([str(segment.get("topic") or ""), str(segment.get("summary_text") or ""), str(segment.get("text") or "")]).lower()
             has_memory_feature = (
                 "memory_feature" in {str(kind or "").strip().lower() for kind in source_profile_memory_kinds}
+                or "memory_feature" in {str(cls or "").strip().lower() for cls in source_profile_memory_classes}
                 or (
                     "selected_assistant_profile_fact" in policy_set
                     and "selected_assistant_decision_outcome_only" not in policy_set
