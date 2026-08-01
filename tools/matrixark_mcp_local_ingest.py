@@ -77,6 +77,42 @@ def idle_commit_schedule(args: Json, envelope: Json, pending_event_count: int, p
     }
 
 
+def deferred_idle_auto_batch_result(
+    *,
+    idle_commit_result: Json | None,
+    pending_event_count: int,
+    pending_message_count: int,
+    threshold_messages: int,
+    idle_commit_timeout_ms: int | None,
+) -> Json | None:
+    if not isinstance(idle_commit_result, dict):
+        return None
+    if idle_commit_result.get("status") != "deferred":
+        return None
+    if str(idle_commit_result.get("commit_reason") or "") != "idle_timeout":
+        return None
+    try:
+        timeout_ms = int(idle_commit_timeout_ms) if idle_commit_timeout_ms is not None else None
+    except (TypeError, ValueError):
+        timeout_ms = None
+    if timeout_ms is None or timeout_ms <= 0:
+        return None
+    return {
+        "status": "deferred",
+        "trigger_policy": "idle_timeout",
+        "commit_reason": "idle_timeout",
+        "reason": "session_buffer_idle_deadline_armed",
+        "pending_event_count": pending_event_count,
+        "pending_message_count": pending_message_count,
+        "threshold_messages": threshold_messages,
+        "idle_commit_timeout_ms": timeout_ms,
+        "idle_elapsed_ms": idle_commit_result.get("idle_elapsed_ms", 0),
+        "idle_commit_scheduled": pending_event_count > 0,
+        "extraction_phase": "provisional",
+        "final_session_boundary": False,
+    }
+
+
 def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
     envelope = ingest_start["envelope"]
     hook = ingest_start["hook"]
@@ -244,6 +280,11 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
         if session_buffer_enabled and auto_batch_extract and pending_event_count and not threshold_ready
         else {}
     )
+    idle_ready = bool(
+        isinstance(idle_commit_result, dict)
+        and idle_commit_result.get("status") in {"accepted", "committed"}
+        and idle_commit_result.get("trigger_policy") == "idle_timeout"
+    )
     if auto_batch_extract and (session_boundary_commit or threshold_ready):
         auto_batch_result = self.session_commit(
             {
@@ -287,7 +328,23 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
             },
             hook=hook,
         )
-    if idle_schedule and auto_batch_result is None:
+    elif auto_batch_extract and idle_ready and isinstance(idle_commit_result, dict):
+        auto_batch_result = idle_commit_result
+    elif auto_batch_extract:
+        auto_batch_result = deferred_idle_auto_batch_result(
+            idle_commit_result=idle_commit_result,
+            pending_event_count=pending_event_count,
+            pending_message_count=pending_message_count,
+            threshold_messages=session_buffer_threshold,
+            idle_commit_timeout_ms=args.get("idle_commit_timeout_ms"),
+        )
+    idle_commit_scheduled = bool(
+        isinstance(auto_batch_result, dict)
+        and auto_batch_result.get("status") == "deferred"
+        and auto_batch_result.get("trigger_policy") == "idle_timeout"
+        and auto_batch_result.get("idle_commit_scheduled")
+    )
+    if (idle_schedule and auto_batch_result is None) or idle_commit_scheduled:
         self.append(
             {
                 "record_type": "matrixark_async_pipeline_task",
@@ -349,6 +406,8 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
         session_buffer_threshold=session_buffer_threshold,
         threshold_ready=threshold_ready,
         idle_schedule=idle_schedule,
+        idle_ready=idle_ready,
+        idle_commit_scheduled=idle_commit_scheduled,
         auto_batch_extract=auto_batch_extract,
         session_boundary_commit=session_boundary_commit,
         idle_commit_result=idle_commit_result,
