@@ -35,6 +35,31 @@ impl MatrixObjectObjectStore {
         self
     }
 
+    pub fn from_snapshot_bytes(
+        bucket: impl Into<String>,
+        options: StoreOptions,
+        snapshot_bytes: &[u8],
+    ) -> Result<Self, ObjectStoreError> {
+        let bucket = bucket.into();
+        let mut inner = MatrixObjectStore::new(options).map_err(map_matrixobject_error)?;
+        inner
+            .install_snapshot_bytes(snapshot_bytes)
+            .map_err(map_matrixobject_error)?;
+        Ok(Self {
+            bucket,
+            content_type: "application/octet-stream".to_string(),
+            inner: Arc::new(Mutex::new(inner)),
+        })
+    }
+
+    pub fn snapshot_bytes(&self) -> Result<Vec<u8>, ObjectStoreError> {
+        let inner = self.inner.lock().expect("matrixobject lock poisoned");
+        inner
+            .export_snapshot()
+            .to_bytes()
+            .map_err(map_matrixobject_error)
+    }
+
     pub fn inner(&self) -> Arc<Mutex<MatrixObjectStore>> {
         Arc::clone(&self.inner)
     }

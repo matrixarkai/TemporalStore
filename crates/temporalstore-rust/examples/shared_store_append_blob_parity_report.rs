@@ -1,3 +1,4 @@
+use std::fs;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -28,6 +29,7 @@ struct Report {
     direct_publish: PublishPhaseReport,
     sync_writer: WriterPhaseReport,
     async_writer: AsyncWriterPhaseReport,
+    snapshot_reopen: SnapshotReopenReport,
     summary: Summary,
 }
 
@@ -99,6 +101,21 @@ struct AsyncWriterPhaseReport {
 }
 
 #[derive(Debug, Serialize)]
+struct SnapshotReopenReport {
+    snapshot_export_latency_us: u128,
+    snapshot_disk_write_latency_us: u128,
+    snapshot_disk_read_latency_us: u128,
+    snapshot_import_latency_us: u128,
+    snapshot_bytes: u64,
+    snapshot_sha256: String,
+    reopened_offset_metadata_ok: bool,
+    reopened_replay_recovered_all_records: bool,
+    reopened_retrieval_recovered_all_records: bool,
+    replay_latency_total_us: u128,
+    retrieval_latency_avg_us: u128,
+}
+
+#[derive(Debug, Serialize)]
 struct ReplayPhaseReport {
     replay_latency_us: u128,
     replay_report: ReplayReport,
@@ -121,6 +138,8 @@ struct Summary {
     direct_offsets_contiguous: bool,
     direct_offset_slices_decode_expected_frames: bool,
     direct_offset_index_maps_oplog_to_blob_offsets: bool,
+    snapshot_reopen_restores_offset_metadata: bool,
+    snapshot_reopen_recovered_all_records: bool,
     secondary_replay_recovered_all_records: bool,
     single_node_reload_recovered_all_records: bool,
     sync_reports_include_offsets: bool,
@@ -198,6 +217,14 @@ async fn main() {
         value_bytes,
     )
     .await;
+    let snapshot_reopen = run_snapshot_reopen(
+        dir.path(),
+        store.clone(),
+        1,
+        entry_count,
+        &["direct", "sync", "async"],
+    )
+    .await;
 
     let append_latencies = direct_publish
         .publish_latencies_us
@@ -227,6 +254,10 @@ async fn main() {
             && direct_publish
                 .offset_index_validation
                 .all_metadata_ranges_match_append_receipts,
+        snapshot_reopen_restores_offset_metadata: snapshot_reopen.reopened_offset_metadata_ok,
+        snapshot_reopen_recovered_all_records: snapshot_reopen
+            .reopened_replay_recovered_all_records
+            && snapshot_reopen.reopened_retrieval_recovered_all_records,
         secondary_replay_recovered_all_records: direct_publish.replay.secondary_retrieved_records
             == entry_count
             && sync_writer.replay.secondary_retrieved_records == entry_count
@@ -275,12 +306,22 @@ async fn main() {
         direct_publish,
         sync_writer,
         async_writer,
+        snapshot_reopen,
         summary,
     };
     println!(
         "{}",
         serde_json::to_string_pretty(&report).expect("json report")
     );
+}
+
+fn matrixobject_options() -> StoreOptions {
+    StoreOptions {
+        segment_size: 32,
+        max_extent_bytes: 8,
+        chunk_size: 8,
+        ..StoreOptions::default()
+    }
 }
 
 async fn run_direct_publish(
@@ -452,6 +493,77 @@ async fn replay_and_retrieve(
         single_node_reload_report,
         single_node_reload_retrieved_records,
         single_node_reload_ok: single_node_reload_retrieved_records == entry_count,
+    }
+}
+
+async fn run_snapshot_reopen(
+    root: &std::path::Path,
+    store: Arc<MatrixObjectObjectStore>,
+    direct_shard_id: u64,
+    entry_count: u64,
+    phases: &[&str],
+) -> SnapshotReopenReport {
+    let export_start = Instant::now();
+    let snapshot_bytes = store.snapshot_bytes().expect("matrixobject snapshot");
+    let snapshot_export_latency_us = export_start.elapsed().as_micros();
+    let snapshot_sha256 = sha256_hex(&snapshot_bytes);
+    let snapshot_path = root.join("matrixobjectstore.snapshot.bin");
+    let disk_write_start = Instant::now();
+    fs::write(&snapshot_path, &snapshot_bytes).expect("write matrixobject snapshot");
+    let snapshot_disk_write_latency_us = disk_write_start.elapsed().as_micros();
+    let disk_read_start = Instant::now();
+    let restored_snapshot_bytes = fs::read(&snapshot_path).expect("read matrixobject snapshot");
+    let snapshot_disk_read_latency_us = disk_read_start.elapsed().as_micros();
+    let import_start = Instant::now();
+    let reopened_store = Arc::new(
+        MatrixObjectObjectStore::from_snapshot_bytes(
+            "temporalstore-shared",
+            matrixobject_options(),
+            &restored_snapshot_bytes,
+        )
+        .expect("reopen matrixobject snapshot"),
+    );
+    let snapshot_import_latency_us = import_start.elapsed().as_micros();
+    let reopened_replicator = SharedStoreReplicator::new("cluster-a", reopened_store.clone())
+        .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+    let reopened_offset_metadata_ok = !reopened_replicator
+        .load_wal_offset_metadata(direct_shard_id)
+        .await
+        .expect("reopened offset metadata")
+        .is_empty();
+
+    let mut replay_latency_total_us = 0u128;
+    let mut retrieval_latencies = Vec::new();
+    let mut replay_ok = true;
+    let mut retrieval_ok = true;
+    for (phase_index, phase) in phases.iter().enumerate() {
+        let shard_id = phase_index as u64 + 1;
+        let engine = test_engine(root, &format!("snapshot-reopen-{phase}-{shard_id}"));
+        engine.load_shard(shard_id);
+        let replay_start = Instant::now();
+        let replay_report = reopened_replicator
+            .replay_wal_strict(shard_id, 0, &engine)
+            .await
+            .expect("snapshot reopened replay");
+        replay_latency_total_us += replay_start.elapsed().as_micros();
+        replay_ok &= replay_report.applied == entry_count as usize;
+        let (retrieved, latencies) = retrieve_records(&engine, shard_id, entry_count, phase);
+        retrieval_ok &= retrieved == entry_count;
+        retrieval_latencies.extend(latencies);
+    }
+
+    SnapshotReopenReport {
+        snapshot_export_latency_us,
+        snapshot_disk_write_latency_us,
+        snapshot_disk_read_latency_us,
+        snapshot_import_latency_us,
+        snapshot_bytes: restored_snapshot_bytes.len() as u64,
+        snapshot_sha256,
+        reopened_offset_metadata_ok,
+        reopened_replay_recovered_all_records: replay_ok,
+        reopened_retrieval_recovered_all_records: retrieval_ok,
+        replay_latency_total_us,
+        retrieval_latency_avg_us: avg(&retrieval_latencies),
     }
 }
 

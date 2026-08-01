@@ -283,11 +283,23 @@ def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
             "runtime_valid": False,
             "reason": "missing summary",
         }
+    snapshot_reopen = rust_report.get("snapshot_reopen", {})
+    snapshot_reopen_ok = bool(summary.get("snapshot_reopen_restores_offset_metadata")) and bool(
+        summary.get("snapshot_reopen_recovered_all_records")
+    )
     return {
         "runtime_valid": rust_report.get("schema") == "temporalstore_shared_store_append_blob_parity_report_v1",
         "matrixobject_mode": rust_report.get("matrixobject_mode"),
-        "storage_semantics": "in_memory_matrixobject_binding",
-        "durable_reopen_equivalent": False,
+        "storage_semantics": "snapshot_disk_roundtrip_matrixobject_binding",
+        "durable_reopen_equivalent": snapshot_reopen_ok,
+        "durable_reopen_caveat": "Rust uses whole-store snapshot bytes written to disk and re-imported; C++ uses an incremental disk-root ObjectStore reopen.",
+        "snapshot_reopen_restores_offset_metadata": bool(summary.get("snapshot_reopen_restores_offset_metadata")),
+        "snapshot_reopen_recovered_all_records": bool(summary.get("snapshot_reopen_recovered_all_records")),
+        "snapshot_export_latency_us": snapshot_reopen.get("snapshot_export_latency_us"),
+        "snapshot_disk_write_latency_us": snapshot_reopen.get("snapshot_disk_write_latency_us"),
+        "snapshot_disk_read_latency_us": snapshot_reopen.get("snapshot_disk_read_latency_us"),
+        "snapshot_import_latency_us": snapshot_reopen.get("snapshot_import_latency_us"),
+        "snapshot_bytes": snapshot_reopen.get("snapshot_bytes"),
         "offsets_monotonic": bool(summary.get("direct_offsets_monotonic")),
         "offsets_contiguous": bool(summary.get("direct_offsets_contiguous")),
         "direct_offset_slices_decode_expected_frames": bool(
@@ -341,7 +353,11 @@ def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runti
     feature_mismatches = []
     if not rust_summary.get("durable_reopen_equivalent"):
         feature_mismatches.append(
-            "Rust MatrixObject binding benchmark is in-memory and lacks C++ ObjectStore disk-root reopen semantics"
+            "Rust MatrixObject binding did not prove disk snapshot reopen with offset metadata and records restored"
+        )
+    if rust_summary.get("durable_reopen_equivalent"):
+        feature_mismatches.append(
+            "Durability mechanism differs: Rust evidence is whole-store snapshot disk roundtrip; C++ evidence is incremental disk-root ObjectStore reopen"
         )
     checks = {
         "rust_runtime_valid": bool(rust_summary.get("runtime_valid")),
@@ -352,6 +368,12 @@ def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runti
         ),
         "rust_offset_index_maps_oplog_to_blob_offsets": bool(
             rust_summary.get("direct_offset_index_maps_oplog_to_blob_offsets")
+        ),
+        "rust_snapshot_reopen_restores_offset_metadata": bool(
+            rust_summary.get("snapshot_reopen_restores_offset_metadata")
+        ),
+        "rust_snapshot_reopen_recovered_all_records": bool(
+            rust_summary.get("snapshot_reopen_recovered_all_records")
         ),
         "rust_durable_reopen_equivalent_to_cpp": bool(
             rust_summary.get("durable_reopen_equivalent")
@@ -405,17 +427,17 @@ def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runti
         },
         "feature_mismatches": feature_mismatches,
         "root_cause": (
-            "Rust appeared much faster because the current Rust MatrixObject binding benchmark uses "
-            "an in-memory MatrixObjectStore, while the C++ benchmark uses a disk-root ObjectStore, "
+            "Rust originally appeared much faster because the MatrixObject binding benchmark used "
+            "an in-memory MatrixObjectStore, while the C++ benchmark used a disk-root ObjectStore, "
             "FlushForShutdown, process-style reopen, extent metadata recovery, and range reads. "
-            "The Rust path now persists protobuf oplog-offset metadata, but latency parity remains "
-            "not comparable until Rust exposes equivalent durable MatrixObject reopen semantics."
+            "Rust now persists protobuf oplog-offset metadata and validates a whole-store snapshot "
+            "disk roundtrip/reopen, but its durability mechanism is still snapshot-based rather than "
+            "C++ incremental disk-root reopen."
         ),
         "note": (
             "Rust TemporalStore MatrixObject append-blob runtime evidence now validates WAL frame "
-            "offsets and a protobuf oplog-index offset metadata sidecar. C++ MatrixObjectStore "
-            "runtime evidence still covers disk reopen/readback semantics that the Rust binding "
-            "does not currently expose."
+            "offsets, a protobuf oplog-index offset metadata sidecar, and snapshot disk reopen. "
+            "C++ MatrixObjectStore runtime evidence covers incremental disk-root reopen/readback."
         ),
     }
 
@@ -433,6 +455,10 @@ def _render_html(report: dict[str, Any]) -> str:
         ("Rust p95 append latency us", rust_summary.get("append_latency_p95_us")),
         ("Rust MatrixObject mode", rust_summary.get("matrixobject_mode")),
         ("Rust durable reopen equivalent", rust_summary.get("durable_reopen_equivalent")),
+        ("Rust durable reopen caveat", rust_summary.get("durable_reopen_caveat")),
+        ("Rust snapshot bytes", rust_summary.get("snapshot_bytes")),
+        ("Rust snapshot export latency us", rust_summary.get("snapshot_export_latency_us")),
+        ("Rust snapshot import latency us", rust_summary.get("snapshot_import_latency_us")),
         ("Rust total replay latency us", rust_summary.get("replay_latency_total_us")),
         ("Rust avg retrieval latency us", rust_summary.get("retrieval_latency_avg_us")),
         ("C++ avg append latency us", cpp_runtime_summary.get("append_latency_avg_us")),
