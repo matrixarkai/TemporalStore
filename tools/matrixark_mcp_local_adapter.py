@@ -739,6 +739,11 @@ def codex_user_goal_budget_query(args: Json, ranking: Json, *, question_type: st
     )
 
 
+def feature_scope_budget_query(args: Json, ranking: Json) -> bool:
+    query = str(args.get("query") or ranking.get("query") or ranking.get("question") or "")
+    return feature_scope_excludes_outcome_evidence(query)
+
+
 def auto_source_role_budget_tokens(
     args: Json,
     ranking: Json,
@@ -777,6 +782,8 @@ def auto_source_role_budget_tokens(
         defaults.update({"assistant": 0.50, "tool": 0.60, "user": 0.30})
     elif normalized_question_type in {"broad_exploration", "multi_hop", "date"}:
         defaults.update({"assistant": 0.45, "tool": 0.45, "user": 0.50})
+    if feature_scope_budget_query(args, ranking):
+        defaults["tool"] = 0.0
     budgets: Json = {}
     for role, default_fraction in defaults.items():
         raw_fraction = fractions.get(role, default_fraction) if isinstance(fractions, dict) else default_fraction
@@ -784,6 +791,8 @@ def auto_source_role_budget_tokens(
             fraction = max(0.0, min(1.0, float(raw_fraction)))
         except (TypeError, ValueError):
             fraction = default_fraction
+        if fraction <= 0.0:
+            continue
         amount = max(1, int(remote_budget * fraction))
         if amount:
             budgets[role] = amount
@@ -906,6 +915,9 @@ def auto_memory_selection_policy_budget_tokens(
                 "selected_tool_evidence_only": 0.50,
             }
         )
+    if feature_scope_budget_query(args, ranking):
+        defaults["selected_assistant_decision_outcome_only"] = 0.0
+        defaults["selected_tool_evidence_only"] = 0.0
     budgets: Json = {}
     for policy, default_fraction in defaults.items():
         raw_fraction = fractions.get(policy, default_fraction) if isinstance(fractions, dict) else default_fraction
@@ -913,6 +925,8 @@ def auto_memory_selection_policy_budget_tokens(
             fraction = max(0.0, min(1.0, float(raw_fraction)))
         except (TypeError, ValueError):
             fraction = default_fraction
+        if fraction <= 0.0:
+            continue
         amount = max(1, int(remote_budget * fraction))
         if amount:
             budgets[policy] = amount
