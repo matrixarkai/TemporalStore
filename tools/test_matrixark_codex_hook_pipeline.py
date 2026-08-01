@@ -11534,6 +11534,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("provisional", result["auto_batch_extract_result"]["extraction_phase"])
             self.assertFalse(result["auto_batch_extract_result"]["final_session_boundary"])
             self.assertEqual(1, len(adapter.pending_session_events(scope)))
+            pending_event = next(record for record in adapter.read_all() if record.get("record_type") == "context_event")
+            self.assertEqual("user_prompt", pending_event["event_type"])
+            self.assertEqual("pending_async", pending_event["batch_event_type"])
+            self.assertEqual("session", pending_event["memory_scope"])
+            self.assertEqual("same_session", pending_event["session_continuity"])
+            self.assertEqual(["session", "user_profile"], pending_event["source_memory_scopes"])
+            self.assertEqual(["same_session", "cross_session"], pending_event["source_session_continuities"])
+            self.assertEqual(["user"], pending_event["source_roles"])
+            self.assertEqual({"user": 1}, pending_event["source_role_counts"])
+            self.assertEqual(["selected_user_prompt"], pending_event["source_memory_selection_policies"])
 
     def test_lightweight_async_ingest_reports_idle_commit_as_auto_batch_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -11665,7 +11675,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertTrue(
                 any(
-                    record.get("entity_type") == "preference"
+                    record.get("entity_type") == "workspace_profile"
                     and "/root/src/github-services" in str(record.get("state") or "")
                     for record in profile_entities
                 )
