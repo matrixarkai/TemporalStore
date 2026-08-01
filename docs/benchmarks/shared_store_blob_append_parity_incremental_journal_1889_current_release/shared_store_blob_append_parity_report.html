@@ -18,31 +18,31 @@
   <p><span class="pill">passed</span></p>
   <h2>Summary</h2>
   <table><tbody><tr><td>Status</td><td>passed</td></tr>
-<tr><td>TemporalStore commit</td><td>9f632a0340d6bddfc3a145090462e29ea463a8cd</td></tr>
+<tr><td>TemporalStore commit</td><td>39a86efbeccc32fc7d619125a5ac5298e7a071d2</td></tr>
 <tr><td>MatrixObject commit</td><td>1889c66cfb85dc7b4e6c318e8985550a7e956e87</td></tr>
-<tr><td>Rust mixed avg append latency us</td><td>14789</td></tr>
-<tr><td>Rust direct publish avg latency us</td><td>14746.625</td></tr>
-<tr><td>Rust sync writer avg latency us</td><td>29616.875</td></tr>
-<tr><td>Rust async enqueue avg latency us</td><td>4.0</td></tr>
-<tr><td>Rust async flush latency us</td><td>340328</td></tr>
-<tr><td>Rust p95 append latency us</td><td>33125</td></tr>
+<tr><td>Rust mixed avg append latency us</td><td>14307</td></tr>
+<tr><td>Rust direct publish avg latency us</td><td>15643.0</td></tr>
+<tr><td>Rust sync writer avg latency us</td><td>27274.375</td></tr>
+<tr><td>Rust async enqueue avg latency us</td><td>5.0</td></tr>
+<tr><td>Rust async flush latency us</td><td>355211</td></tr>
+<tr><td>Rust p95 append latency us</td><td>31941</td></tr>
 <tr><td>Rust MatrixObject mode</td><td>rust_matrixobject_incremental_journal_protobuf_append_blob</td></tr>
 <tr><td>Rust durable reopen equivalent</td><td>True</td></tr>
 <tr><td>Rust durable reopen caveat</td><td>Rust MatrixObjectStore now reloads from an incremental checksummed journal path; C++ uses incremental disk-root ObjectStore reopen.</td></tr>
 <tr><td>Rust snapshot bytes</td><td>16428</td></tr>
 <tr><td>Rust snapshot export latency us</td><td>0</td></tr>
-<tr><td>Rust snapshot import latency us</td><td>443531</td></tr>
-<tr><td>Rust total replay latency us</td><td>473637</td></tr>
-<tr><td>Rust avg retrieval latency us</td><td>192</td></tr>
-<tr><td>C++ raw append avg latency us</td><td>11472.544</td></tr>
-<tr><td>C++ indexed append avg latency us</td><td>22014.314</td></tr>
+<tr><td>Rust snapshot import latency us</td><td>1013519</td></tr>
+<tr><td>Rust total replay latency us</td><td>480184</td></tr>
+<tr><td>Rust avg retrieval latency us</td><td>232</td></tr>
+<tr><td>C++ raw append avg latency us</td><td>9632.984</td></tr>
+<tr><td>C++ indexed append avg latency us</td><td>20272.21</td></tr>
 <tr><td>C++ offset index matches</td><td>True</td></tr>
 <tr><td>C++ offset index object size</td><td>356</td></tr>
-<tr><td>Rust direct/C++ indexed append latency ratio</td><td>0.67</td></tr>
-<tr><td>Rust retrieval/C++ full read latency ratio</td><td>0.054</td></tr>
-<tr><td>C++ reopen latency us</td><td>2877.895</td></tr>
-<tr><td>C++ full read latency us</td><td>3579.18</td></tr>
-<tr><td>C++ tail read latency us</td><td>6923.758</td></tr>
+<tr><td>Rust direct/C++ indexed append latency ratio</td><td>0.772</td></tr>
+<tr><td>Rust retrieval/C++ full read latency ratio</td><td>0.065</td></tr>
+<tr><td>C++ reopen latency us</td><td>2498.092</td></tr>
+<tr><td>C++ full read latency us</td><td>3577.368</td></tr>
+<tr><td>C++ tail read latency us</td><td>8192.335</td></tr>
 <tr><td>C++ reopened extent count</td><td>8</td></tr>
 <tr><td>Rust cache after retrieval</td><td>{&#x27;entries&#x27;: 1874, &#x27;bytes&#x27;: 13906, &#x27;max_bytes&#x27;: 201326592, &#x27;hits&#x27;: 6228, &#x27;misses&#x27;: 1876, &#x27;evictions&#x27;: 0, &#x27;direct_fill_pages&#x27;: 1876, &#x27;direct_fill_bytes&#x27;: 13914, &#x27;compressed_fill_pages&#x27;: 0, &#x27;compressed_fill_bytes&#x27;: 0, &#x27;ec_fill_pages&#x27;: 0, &#x27;ec_fill_bytes&#x27;: 0, &#x27;pressure&#x27;: False}</td></tr>
 <tr><td>C++ read cache bytes</td><td>0</td></tr>
@@ -123,8 +123,8 @@
         &quot;extent_count&quot;: 1,
         &quot;first_physical_offset&quot;: 0,
         &quot;index&quot;: 0,
-        &quot;indexed_latency_us&quot;: 27531.47,
-        &quot;latency_us&quot;: 10604.671,
+        &quot;indexed_latency_us&quot;: 17439.748,
+        &quot;latency_us&quot;: 6806.963,
         &quot;object_size&quot;: 64,
         &quot;start_offset&quot;: 0,
         &quot;version&quot;: 1
@@ -135,8 +135,8 @@
         &quot;extent_count&quot;: 2,
         &quot;first_physical_offset&quot;: 0,
         &quot;index&quot;: 1,
-        &quot;indexed_latency_us&quot;: 23313.85,
-        &quot;latency_us&quot;: 14572.758,
+        &quot;indexed_latency_us&quot;: 18934.754,
+        &quot;latency_us&quot;: 9462.919,
         &quot;object_size&quot;: 128,
         &quot;start_offset&quot;: 64,
         &quot;version&quot;: 2
@@ -147,8 +147,8 @@
         &quot;extent_count&quot;: 3,
         &quot;first_physical_offset&quot;: 0,
         &quot;index&quot;: 2,
-        &quot;indexed_latency_us&quot;: 24947.375,
-        &quot;latency_us&quot;: 14061.349,
+        &quot;indexed_latency_us&quot;: 24608.362,
+        &quot;latency_us&quot;: 12586.401,
         &quot;object_size&quot;: 192,
         &quot;start_offset&quot;: 128,
         &quot;version&quot;: 3
@@ -159,8 +159,8 @@
         &quot;extent_count&quot;: 4,
         &quot;first_physical_offset&quot;: 0,
         &quot;index&quot;: 3,
-        &quot;indexed_latency_us&quot;: 20949.296,
-        &quot;latency_us&quot;: 9774.01,
+        &quot;indexed_latency_us&quot;: 21712.375,
+        &quot;latency_us&quot;: 9308.733,
         &quot;object_size&quot;: 256,
         &quot;start_offset&quot;: 192,
         &quot;version&quot;: 4
@@ -171,8 +171,8 @@
         &quot;extent_count&quot;: 5,
         &quot;first_physical_offset&quot;: 0,
         &quot;index&quot;: 4,
-        &quot;indexed_latency_us&quot;: 21850.694,
-        &quot;latency_us&quot;: 12589.473,
+        &quot;indexed_latency_us&quot;: 19837.066,
+        &quot;latency_us&quot;: 9955.576,
         &quot;object_size&quot;: 320,
         &quot;start_offset&quot;: 256,
         &quot;version&quot;: 5
@@ -183,8 +183,8 @@
         &quot;extent_count&quot;: 6,
         &quot;first_physical_offset&quot;: 0,
         &quot;index&quot;: 5,
-        &quot;indexed_latency_us&quot;: 19961.082,
-        &quot;latency_us&quot;: 10474.19,
+        &quot;indexed_latency_us&quot;: 19010.783,
+        &quot;latency_us&quot;: 10094.764,
         &quot;object_size&quot;: 384,
         &quot;start_offset&quot;: 320,
         &quot;version&quot;: 6
@@ -195,8 +195,8 @@
         &quot;extent_count&quot;: 7,
         &quot;first_physical_offset&quot;: 0,
         &quot;index&quot;: 6,
-        &quot;indexed_latency_us&quot;: 19361.351,
-        &quot;latency_us&quot;: 10564.68,
+        &quot;indexed_latency_us&quot;: 21289.33,
+        &quot;latency_us&quot;: 9868.716,
         &quot;object_size&quot;: 448,
         &quot;start_offset&quot;: 384,
         &quot;version&quot;: 7
@@ -207,8 +207,8 @@
         &quot;extent_count&quot;: 8,
         &quot;first_physical_offset&quot;: 0,
         &quot;index&quot;: 7,
-        &quot;indexed_latency_us&quot;: 18199.39,
-        &quot;latency_us&quot;: 9139.222,
+        &quot;indexed_latency_us&quot;: 19345.263,
+        &quot;latency_us&quot;: 8979.801,
         &quot;object_size&quot;: 512,
         &quot;start_offset&quot;: 448,
         &quot;version&quot;: 8
@@ -227,9 +227,9 @@
     &quot;read_cache_max_bytes&quot;: 67108864,
     &quot;read_cache_misses&quot;: 3,
     &quot;read_cache_pages&quot;: 0,
-    &quot;read_full_latency_us&quot;: 3579.18,
-    &quot;read_tail_latency_us&quot;: 6923.758,
-    &quot;reopen_latency_us&quot;: 2877.895,
+    &quot;read_full_latency_us&quot;: 3577.368,
+    &quot;read_tail_latency_us&quot;: 8192.335,
+    &quot;reopen_latency_us&quot;: 2498.092,
     &quot;reopened_extent_count&quot;: 8,
     &quot;reopened_object_size&quot;: 512,
     &quot;reopened_recovered_all_bytes&quot;: true,
@@ -246,15 +246,15 @@
       &quot;8&quot;,
       &quot;64&quot;
     ],
-    &quot;elapsed_ms&quot;: 222.978,
+    &quot;elapsed_ms&quot;: 204.48,
     &quot;mode&quot;: &quot;executed&quot;,
     &quot;returncode&quot;: 0,
     &quot;stderr_tail&quot;: &quot;&quot;
   },
   &quot;cpp_runtime_summary&quot;: {
-    &quot;append_latency_avg_us&quot;: 11472.544,
+    &quot;append_latency_avg_us&quot;: 9632.984,
     &quot;full_read_matches&quot;: true,
-    &quot;indexed_append_latency_avg_us&quot;: 22014.314,
+    &quot;indexed_append_latency_avg_us&quot;: 20272.21,
     &quot;offset_index_extent_count&quot;: 8,
     &quot;offset_index_matches&quot;: true,
     &quot;offset_index_object_size&quot;: 356,
@@ -265,15 +265,15 @@
     &quot;read_cache_max_bytes&quot;: 67108864,
     &quot;read_cache_misses&quot;: 3,
     &quot;read_cache_pages&quot;: 0,
-    &quot;read_full_latency_us&quot;: 3579.18,
-    &quot;read_tail_latency_us&quot;: 6923.758,
-    &quot;reopen_latency_us&quot;: 2877.895,
+    &quot;read_full_latency_us&quot;: 3577.368,
+    &quot;read_tail_latency_us&quot;: 8192.335,
+    &quot;reopen_latency_us&quot;: 2498.092,
     &quot;reopened_extent_count&quot;: 8,
     &quot;reopened_recovered_all_bytes&quot;: true,
     &quot;runtime_valid&quot;: true,
     &quot;tail_read_matches&quot;: true
   },
-  &quot;generated_at_unix&quot;: 1785603950,
+  &quot;generated_at_unix&quot;: 1785604149,
   &quot;parity&quot;: {
     &quot;blockers&quot;: [],
     &quot;checks&quot;: {
@@ -309,8 +309,8 @@
     &quot;feature_mismatches&quot;: [],
     &quot;latency_ratios&quot;: {
       &quot;comparable&quot;: true,
-      &quot;rust_direct_publish_avg_us_to_cpp_indexed_append_avg_us&quot;: 0.67,
-      &quot;rust_retrieval_avg_us_to_cpp_full_read_us&quot;: 0.054,
+      &quot;rust_direct_publish_avg_us_to_cpp_indexed_append_avg_us&quot;: 0.772,
+      &quot;rust_retrieval_avg_us_to_cpp_full_read_us&quot;: 0.065,
       &quot;threshold&quot;: &quot;&lt;=2.0x for Rust direct publish vs C++ indexed append when durable offset semantics are comparable&quot;
     },
     &quot;note&quot;: &quot;Rust TemporalStore MatrixObject append-blob runtime evidence now validates WAL frame offsets, a protobuf oplog-index offset metadata sidecar, and incremental journal reopen/readback. C++ MatrixObjectStore runtime evidence covers incremental disk-root reopen/readback.&quot;,
@@ -329,26 +329,26 @@
       &quot;--example&quot;,
       &quot;shared_store_append_blob_parity_report&quot;
     ],
-    &quot;elapsed_ms&quot;: 212444.812,
+    &quot;elapsed_ms&quot;: 5106.721,
     &quot;mode&quot;: &quot;executed&quot;,
     &quot;returncode&quot;: 0,
-    &quot;stderr_tail&quot;: &quot;   Compiling temporalstore-rust v0.1.0 (/root/src/github-services/TemporalStore/crates/temporalstore-rust)\nwarning: function `model_id_for_kind` is never used\n     --&gt; crates/temporalstore-rust/src/engine.rs:10775:4\n      |\n10775 | fn model_id_for_kind(kind: &amp;str) -&gt; u16 {\n      |    ^^^^^^^^^^^^^^^^^\n      |\n      = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: function `context_event_timeline_key_for_write` is never used\n  --&gt; crates/temporalstore-rust/src/engine/context.rs:97:15\n   |\n97 | pub(super) fn context_event_timeline_key_for_write(\n   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: `temporalstore-rust` (lib) generated 2 warnings\n    Finished `release` profile [optimized] target(s) in 3m 28s\n     Running `target/release/examples/shared_store_append_blob_parity_report`\n&quot;
+    &quot;stderr_tail&quot;: &quot;warning: function `model_id_for_kind` is never used\n     --&gt; crates/temporalstore-rust/src/engine.rs:10775:4\n      |\n10775 | fn model_id_for_kind(kind: &amp;str) -&gt; u16 {\n      |    ^^^^^^^^^^^^^^^^^\n      |\n      = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: function `context_event_timeline_key_for_write` is never used\n  --&gt; crates/temporalstore-rust/src/engine/context.rs:97:15\n   |\n97 | pub(super) fn context_event_timeline_key_for_write(\n   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: `temporalstore-rust` (lib) generated 2 warnings\n    Finished `release` profile [optimized] target(s) in 0.32s\n     Running `target/release/examples/shared_store_append_blob_parity_report`\n&quot;
   },
   &quot;rust_runtime&quot;: {
     &quot;async_writer&quot;: {
       &quot;blob_object_length&quot;: 1272,
       &quot;blob_physical_extent_count&quot;: 160,
       &quot;enqueue_latencies_us&quot;: [
-        31,
-        0,
-        0,
-        0,
+        24,
         1,
         0,
         0,
+        14,
+        0,
+        1,
         0
       ],
-      &quot;flush_latency_us&quot;: 340328,
+      &quot;flush_latency_us&quot;: 355211,
       &quot;flush_report&quot;: {
         &quot;flushed&quot;: 8,
         &quot;last_oplog_index&quot;: 8,
@@ -358,31 +358,31 @@
         &quot;remaining&quot;: 0
       },
       &quot;replay&quot;: {
-        &quot;replay_latency_us&quot;: 162354,
+        &quot;replay_latency_us&quot;: 150752,
         &quot;replay_report&quot;: {
           &quot;applied&quot;: 8,
           &quot;last_oplog_index&quot;: 8
         },
         &quot;retrieval_latencies_us&quot;: [
-          323,
-          104,
-          112,
-          89,
-          330,
-          329,
-          218,
-          143
+          302,
+          107,
+          96,
+          105,
+          337,
+          298,
+          219,
+          140
         ],
         &quot;retrieval_ok&quot;: true,
         &quot;retrieved_records&quot;: 8,
-        &quot;secondary_replay_latency_us&quot;: 143911,
+        &quot;secondary_replay_latency_us&quot;: 147566,
         &quot;secondary_replay_report&quot;: {
           &quot;applied&quot;: 8,
           &quot;last_oplog_index&quot;: 8
         },
         &quot;secondary_retrieval_ok&quot;: true,
         &quot;secondary_retrieved_records&quot;: 8,
-        &quot;single_node_reload_latency_us&quot;: 152765,
+        &quot;single_node_reload_latency_us&quot;: 164451,
         &quot;single_node_reload_ok&quot;: true,
         &quot;single_node_reload_report&quot;: {
           &quot;applied&quot;: 8,
@@ -558,41 +558,41 @@
         &quot;matched_entries&quot;: 8
       },
       &quot;publish_latencies_us&quot;: [
-        12113,
-        11042,
-        10588,
-        12444,
-        14124,
-        17060,
-        19228,
-        21374
+        7935,
+        10199,
+        10594,
+        15641,
+        15530,
+        19533,
+        24475,
+        21237
       ],
       &quot;replay&quot;: {
-        &quot;replay_latency_us&quot;: 149433,
+        &quot;replay_latency_us&quot;: 182923,
         &quot;replay_report&quot;: {
           &quot;applied&quot;: 8,
           &quot;last_oplog_index&quot;: 8
         },
         &quot;retrieval_latencies_us&quot;: [
-          276,
-          77,
-          66,
-          70,
-          399,
-          276,
-          167,
-          154
+          307,
+          92,
+          146,
+          156,
+          436,
+          317,
+          186,
+          184
         ],
         &quot;retrieval_ok&quot;: true,
         &quot;retrieved_records&quot;: 8,
-        &quot;secondary_replay_latency_us&quot;: 165012,
+        &quot;secondary_replay_latency_us&quot;: 154208,
         &quot;secondary_replay_report&quot;: {
           &quot;applied&quot;: 8,
           &quot;last_oplog_index&quot;: 8
         },
         &quot;secondary_retrieval_ok&quot;: true,
         &quot;secondary_retrieved_records&quot;: 8,
-        &quot;single_node_reload_latency_us&quot;: 166800,
+        &quot;single_node_reload_latency_us&quot;: 168800,
         &quot;single_node_reload_ok&quot;: true,
         &quot;single_node_reload_report&quot;: {
           &quot;applied&quot;: 8,
@@ -638,28 +638,28 @@
       &quot;reopened_offset_metadata_ok&quot;: true,
       &quot;reopened_replay_recovered_all_records&quot;: true,
       &quot;reopened_retrieval_recovered_all_records&quot;: true,
-      &quot;replay_latency_total_us&quot;: 614654,
-      &quot;retrieval_latency_avg_us&quot;: 333,
+      &quot;replay_latency_total_us&quot;: 718899,
+      &quot;retrieval_latency_avg_us&quot;: 230,
       &quot;snapshot_bytes&quot;: 16428,
-      &quot;snapshot_disk_read_latency_us&quot;: 79,
+      &quot;snapshot_disk_read_latency_us&quot;: 68,
       &quot;snapshot_disk_write_latency_us&quot;: 0,
       &quot;snapshot_export_latency_us&quot;: 0,
-      &quot;snapshot_import_latency_us&quot;: 443531,
-      &quot;snapshot_sha256&quot;: &quot;4f6b55b4f5a5e56f7dc89b297c0537fae4f817100dea13f7505a5fd3ae420e68&quot;
+      &quot;snapshot_import_latency_us&quot;: 1013519,
+      &quot;snapshot_sha256&quot;: &quot;f13170ba4a10661b69c8cf643c094e278faedcba118a05b325be82635c85f37b&quot;
     },
     &quot;matrixobject_mode&quot;: &quot;rust_matrixobject_incremental_journal_protobuf_append_blob&quot;,
     &quot;schema&quot;: &quot;temporalstore_shared_store_append_blob_parity_report_v1&quot;,
     &quot;summary&quot;: {
-      &quot;append_latency_avg_us&quot;: 14789,
-      &quot;append_latency_p95_us&quot;: 33125,
+      &quot;append_latency_avg_us&quot;: 14307,
+      &quot;append_latency_p95_us&quot;: 31941,
       &quot;async_flush_reports_include_offsets&quot;: true,
       &quot;direct_offset_index_maps_oplog_to_blob_offsets&quot;: true,
       &quot;direct_offset_slices_decode_expected_frames&quot;: true,
       &quot;direct_offsets_contiguous&quot;: true,
       &quot;direct_offsets_monotonic&quot;: true,
-      &quot;replay_latency_total_us&quot;: 473637,
+      &quot;replay_latency_total_us&quot;: 480184,
       &quot;replay_recovered_all_records&quot;: true,
-      &quot;retrieval_latency_avg_us&quot;: 192,
+      &quot;retrieval_latency_avg_us&quot;: 232,
       &quot;retrieval_recovered_all_records&quot;: true,
       &quot;secondary_replay_recovered_all_records&quot;: true,
       &quot;single_node_reload_recovered_all_records&quot;: true,
@@ -672,31 +672,31 @@
       &quot;blob_object_length&quot;: 1264,
       &quot;blob_physical_extent_count&quot;: 160,
       &quot;replay&quot;: {
-        &quot;replay_latency_us&quot;: 161850,
+        &quot;replay_latency_us&quot;: 146509,
         &quot;replay_report&quot;: {
           &quot;applied&quot;: 8,
           &quot;last_oplog_index&quot;: 8
         },
         &quot;retrieval_latencies_us&quot;: [
-          300,
-          101,
-          81,
-          63,
-          292,
-          319,
-          201,
-          134
+          379,
+          170,
+          110,
+          86,
+          406,
+          369,
+          325,
+          317
         ],
         &quot;retrieval_ok&quot;: true,
         &quot;retrieved_records&quot;: 8,
-        &quot;secondary_replay_latency_us&quot;: 160012,
+        &quot;secondary_replay_latency_us&quot;: 158792,
         &quot;secondary_replay_report&quot;: {
           &quot;applied&quot;: 8,
           &quot;last_oplog_index&quot;: 8
         },
         &quot;secondary_retrieval_ok&quot;: true,
         &quot;secondary_retrieved_records&quot;: 8,
-        &quot;single_node_reload_latency_us&quot;: 145755,
+        &quot;single_node_reload_latency_us&quot;: 143186,
         &quot;single_node_reload_ok&quot;: true,
         &quot;single_node_reload_report&quot;: {
           &quot;applied&quot;: 8,
@@ -706,14 +706,14 @@
       },
       &quot;shard_id&quot;: 2,
       &quot;write_latencies_us&quot;: [
-        21608,
-        20796,
-        28659,
-        27098,
-        32442,
-        33109,
-        33125,
-        40098
+        19886,
+        20458,
+        25910,
+        26671,
+        31941,
+        27859,
+        31328,
+        34142
       ],
       &quot;write_reports&quot;: [
         {
@@ -793,10 +793,10 @@
     &quot;value_bytes&quot;: 64
   },
   &quot;rust_summary&quot;: {
-    &quot;append_latency_avg_us&quot;: 14789,
-    &quot;append_latency_p95_us&quot;: 33125,
-    &quot;async_enqueue_latency_avg_us&quot;: 4.0,
-    &quot;async_flush_latency_us&quot;: 340328,
+    &quot;append_latency_avg_us&quot;: 14307,
+    &quot;append_latency_p95_us&quot;: 31941,
+    &quot;async_enqueue_latency_avg_us&quot;: 5.0,
+    &quot;async_flush_latency_us&quot;: 355211,
     &quot;async_flush_reports_include_offsets&quot;: true,
     &quot;cache_after_retrieval&quot;: {
       &quot;bytes&quot;: 13906,
@@ -830,35 +830,35 @@
     },
     &quot;direct_offset_index_maps_oplog_to_blob_offsets&quot;: true,
     &quot;direct_offset_slices_decode_expected_frames&quot;: true,
-    &quot;direct_publish_latency_avg_us&quot;: 14746.625,
+    &quot;direct_publish_latency_avg_us&quot;: 15643.0,
     &quot;durable_reopen_caveat&quot;: &quot;Rust MatrixObjectStore now reloads from an incremental checksummed journal path; C++ uses incremental disk-root ObjectStore reopen.&quot;,
     &quot;durable_reopen_equivalent&quot;: true,
     &quot;matrixobject_mode&quot;: &quot;rust_matrixobject_incremental_journal_protobuf_append_blob&quot;,
     &quot;offsets_contiguous&quot;: true,
     &quot;offsets_monotonic&quot;: true,
-    &quot;replay_latency_total_us&quot;: 473637,
+    &quot;replay_latency_total_us&quot;: 480184,
     &quot;replay_recovered_all_records&quot;: true,
-    &quot;retrieval_latency_avg_us&quot;: 192,
+    &quot;retrieval_latency_avg_us&quot;: 232,
     &quot;retrieval_recovered_all_records&quot;: true,
     &quot;runtime_valid&quot;: true,
-    &quot;secondary_replay_latency_total_us&quot;: 468935,
+    &quot;secondary_replay_latency_total_us&quot;: 460566,
     &quot;secondary_replay_recovered_all_records&quot;: true,
-    &quot;single_node_reload_latency_total_us&quot;: 465320,
+    &quot;single_node_reload_latency_total_us&quot;: 476437,
     &quot;single_node_reload_recovered_all_records&quot;: true,
     &quot;snapshot_bytes&quot;: 16428,
-    &quot;snapshot_disk_read_latency_us&quot;: 79,
+    &quot;snapshot_disk_read_latency_us&quot;: 68,
     &quot;snapshot_disk_write_latency_us&quot;: 0,
     &quot;snapshot_export_latency_us&quot;: 0,
-    &quot;snapshot_import_latency_us&quot;: 443531,
+    &quot;snapshot_import_latency_us&quot;: 1013519,
     &quot;snapshot_reopen_cache_metrics_available&quot;: true,
     &quot;snapshot_reopen_recovered_all_records&quot;: true,
     &quot;snapshot_reopen_restores_offset_metadata&quot;: true,
     &quot;storage_semantics&quot;: &quot;incremental_journal_reopen_matrixobject_binding&quot;,
     &quot;sync_reports_include_offsets&quot;: true,
-    &quot;sync_writer_latency_avg_us&quot;: 29616.875
+    &quot;sync_writer_latency_avg_us&quot;: 27274.375
   },
   &quot;schema&quot;: &quot;temporalstore_shared_store_blob_append_cpp_rust_parity_v1&quot;,
-  &quot;temporalstore_commit&quot;: &quot;9f632a0340d6bddfc3a145090462e29ea463a8cd&quot;,
+  &quot;temporalstore_commit&quot;: &quot;39a86efbeccc32fc7d619125a5ac5298e7a071d2&quot;,
   &quot;temporalstore_repo&quot;: &quot;/root/src/github-services/TemporalStore&quot;
 }</pre>
 </body>
