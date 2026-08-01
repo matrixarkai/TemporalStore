@@ -8,6 +8,7 @@ from typing import Any
 
 try:
     from tools.matrixark_mcp_core import (
+        CODEX_OUTCOME_ENTITY_TYPES,
         EMBEDDING_LINEAGE_DEBUG_FIELDS,
         MAX_PRIOR_MESSAGES,
         Json,
@@ -36,6 +37,7 @@ try:
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
+        CODEX_OUTCOME_ENTITY_TYPES,
         EMBEDDING_LINEAGE_DEBUG_FIELDS,
         MAX_PRIOR_MESSAGES,
         Json,
@@ -255,6 +257,18 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         for policy_name in ordered_unique_any(selection_values):
             source_memory_selection_policy_counts[policy_name] = 1
     source_memory_selection_policies = sorted(source_memory_selection_policy_counts)
+    source_memory_selection_retention: Json = {
+        key: envelope_metadata.get(key)
+        for key in [
+            "source_memory_selection_lossy_count",
+            "source_memory_selection_complete_count",
+            "source_memory_selection_dropped_text_chars",
+            "source_memory_selection_dropped_line_count",
+            "source_memory_selection_retained_text_ratio_avg",
+            "source_memory_selection_retained_line_ratio_avg",
+        ]
+        if envelope_metadata.get(key) not in (None, "", [], {})
+    }
     batch_summary = extraction["batch_summary"]
 
     event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
@@ -474,7 +488,15 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             previous_profile = previous_profile_entity or {}
             previous_profile_state = str(previous_profile.get("state") or "")
             promoted_state = str(promoted_entity.get("state") or "")
-            if previous_profile_state and previous_profile_state.lower() not in promoted_state.lower():
+            cumulative_profile_entity_types = {"assistant_decision", "tool_evidence", *CODEX_OUTCOME_ENTITY_TYPES}
+            should_accumulate_profile_state = (
+                str(updated_entity.get("entity_type") or "") in cumulative_profile_entity_types
+            )
+            if (
+                should_accumulate_profile_state
+                and previous_profile_state
+                and previous_profile_state.lower() not in promoted_state.lower()
+            ):
                 promoted_entity = {
                     **promoted_entity,
                     "state": summarize_text(previous_profile_state + " " + promoted_state, limit=320),
@@ -532,6 +554,56 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     1,
                     int(profile_source_memory_selection_policy_counts.get("selected_profile_current_state", 0) or 0),
                 )
+            profile_source_memory_selection_retention: Json = {}
+            for key in [
+                "source_memory_selection_lossy_count",
+                "source_memory_selection_complete_count",
+                "source_memory_selection_dropped_text_chars",
+                "source_memory_selection_dropped_line_count",
+            ]:
+                try:
+                    profile_source_memory_selection_retention[key] = max(0, int(previous_profile.get(key) or 0)) + max(
+                        0,
+                        int(source_memory_selection_retention.get(key) or 0),
+                    )
+                except (TypeError, ValueError):
+                    pass
+            for key in [
+                "source_memory_selection_retained_text_ratio_avg",
+                "source_memory_selection_retained_line_ratio_avg",
+            ]:
+                try:
+                    previous_ratio = float(previous_profile.get(key))
+                except (TypeError, ValueError):
+                    previous_ratio = 1.0
+                try:
+                    current_ratio = float(source_memory_selection_retention.get(key))
+                except (TypeError, ValueError):
+                    current_ratio = 1.0
+                profile_source_memory_selection_retention[key] = round(min(previous_ratio, current_ratio), 6)
+            previous_promotion_policy = str(previous_profile.get("profile_promotion_policy") or "").strip()
+            previous_promotion_blocker = str(previous_profile.get("profile_promotion_blocker") or "").strip()
+            profile_source_promotion_policies = ordered_unique_any(
+                list(previous_profile.get("source_profile_promotion_policies", []))
+                + ([previous_promotion_policy] if previous_promotion_policy else [])
+                + ([profile_promotion_policy] if profile_promotion_policy else [])
+            )
+            profile_source_promotion_blockers = ordered_unique_any(
+                list(previous_profile.get("source_profile_promotion_blockers", []))
+                + ([previous_promotion_blocker] if previous_promotion_blocker else [])
+                + ([profile_promotion_blocker] if profile_promotion_blocker else [])
+            )
+            profile_source_memory_scopes = ordered_unique_any(
+                list(previous_profile.get("source_memory_scopes", []))
+                + [previous_profile.get("memory_scope"), "session", "user_profile"]
+            )
+            profile_source_session_continuities = ordered_unique_any(
+                list(previous_profile.get("source_session_continuities", []))
+                + [previous_profile.get("session_continuity"), "same_session", "cross_session"]
+            )
+            previous_profile_revision = int(previous_profile.get("profile_revision") or 0)
+            profile_revision = previous_profile_revision + 1
+            previous_profile_updated_at_ms = int(previous_profile.get("updated_at_ms") or 0)
             profile_entity_hashes.append(profile_entity_hash)
             profile_promotion_summary.append(
                 {
@@ -540,8 +612,18 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "entity_type": promoted_entity["entity_type"],
                     "entity_name": promoted_entity["entity_name"],
                     "source_session_ids": profile_source_session_ids,
+                    "source_entity_count": len(profile_source_entity_hashes),
+                    "source_event_count": len(profile_source_event_ids),
                     "profile_memory_class": profile_memory_class,
                     "profile_memory_kind": profile_memory_kind,
+                    "source_memory_selection_policies": profile_source_memory_selection_policies,
+                    "source_memory_selection_policy_counts": profile_source_memory_selection_policy_counts,
+                    **profile_source_memory_selection_retention,
+                    "source_profile_promotion_policies": profile_source_promotion_policies,
+                    "source_profile_promotion_blockers": profile_source_promotion_blockers,
+                    "source_memory_scopes": profile_source_memory_scopes,
+                    "source_session_continuities": profile_source_session_continuities,
+                    "profile_revision": profile_revision,
                     "policy": profile_promotion_policy,
                     "blocker": "",
                 }
@@ -574,6 +656,11 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "source_codex_event_counts": profile_source_codex_event_counts,
                 "source_memory_selection_policies": profile_source_memory_selection_policies,
                 "source_memory_selection_policy_counts": profile_source_memory_selection_policy_counts,
+                **profile_source_memory_selection_retention,
+                "source_profile_promotion_policies": profile_source_promotion_policies,
+                "source_profile_promotion_blockers": profile_source_promotion_blockers,
+                "source_memory_scopes": profile_source_memory_scopes,
+                "source_session_continuities": profile_source_session_continuities,
                 "source_batch_id_hash": batch_id_hash,
                 "extraction_context_event_ids": extraction_context_event_ids,
                 "field_patches": promoted_entity.get("field_patches", []),
@@ -585,6 +672,12 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "profile_promotion_policy": profile_promotion_policy,
                 "profile_promotion_importance_gate": profile_promotion_importance_gate,
                 "profile_promotion_blocker": "",
+                "profile_revision": profile_revision,
+                "profile_entity_current": True,
+                "supersedes_session_entity_hash": entity_hash,
+                "supersedes_session_entity_hashes": profile_source_entity_hashes,
+                "previous_profile_revision": previous_profile_revision,
+                "previous_profile_updated_at_ms": previous_profile_updated_at_ms,
                 "extraction_phase": extraction_phase,
                 "final_session_boundary": final_session_boundary,
                 "updated_at_ms": envelope["ingestion_time_ms"],
@@ -619,12 +712,22 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     "source_codex_event_counts": profile_source_codex_event_counts,
                     "source_memory_selection_policies": profile_source_memory_selection_policies,
                     "source_memory_selection_policy_counts": profile_source_memory_selection_policy_counts,
+                    **profile_source_memory_selection_retention,
+                    "source_profile_promotion_policies": profile_source_promotion_policies,
+                    "source_profile_promotion_blockers": profile_source_promotion_blockers,
+                    "source_memory_scopes": profile_source_memory_scopes,
+                    "source_session_continuities": profile_source_session_continuities,
                     "memory_scope": "user_profile",
                     "session_continuity": "cross_session",
                     "promoted_from_memory_scope": "session",
                     "profile_promotion_policy": profile_promotion_policy,
                     "profile_promotion_importance_gate": profile_promotion_importance_gate,
                     "profile_promotion_blocker": "",
+                    "profile_revision": profile_revision,
+                    "profile_entity_current": True,
+                    "profile_source_session_count": len(profile_source_session_ids),
+                    "profile_source_entity_count": len(profile_source_entity_hashes),
+                    "profile_source_event_count": len(profile_source_event_ids),
                     "extraction_phase": extraction_phase,
                     "final_session_boundary": final_session_boundary,
                     "extraction_context_event_ids": extraction_context_event_ids,
@@ -662,8 +765,15 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 "profile_memory_kind": profile_memory_kind,
                 "source_memory_selection_policies": profile_source_memory_selection_policies,
                 "source_memory_selection_policy_counts": profile_source_memory_selection_policy_counts,
+                **profile_source_memory_selection_retention,
+                "source_profile_promotion_policies": profile_source_promotion_policies,
+                "source_profile_promotion_blockers": profile_source_promotion_blockers,
+                "source_memory_scopes": profile_source_memory_scopes,
+                "source_session_continuities": profile_source_session_continuities,
                 "profile_promotion_policy": profile_promotion_policy,
                 "profile_promotion_blocker": "",
+                "profile_revision": profile_revision,
+                "profile_entity_current": True,
                 "extraction_phase": extraction_phase,
                 "final_session_boundary": final_session_boundary,
             }
