@@ -687,7 +687,7 @@ def feature_profile_memory_budget_query(args: Json, ranking: Json, *, question_t
         PROFILE_MEMORY_QUERY_RE.search(lower)
         or PROFILE_MEMORY_STANDING_RULE_QUERY_RE.search(lower)
         or FEATURE_MEMORY_BUDGET_QUERY_RE.search(lower)
-        or (FEATURE_SCOPE_EXCLUSION_RE.search(lower) and "feature" in lower)
+        or feature_scope_excludes_outcome_evidence(query)
     )
 
 
