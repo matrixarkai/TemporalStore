@@ -16,6 +16,7 @@ try:
         DEFAULT_RETRIEVAL_MIN_SCORE,
         DEFAULT_TOP_K_PER_LAYER,
         FEATURE_SCOPE_EXCLUSION_RE,
+        PROFILE_MEMORY_QUERY_RE,
         HARD_MAX_CHILDREN_SCORED_PER_PARENT,
         TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
         Json,
@@ -44,6 +45,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         DEFAULT_RETRIEVAL_MIN_SCORE,
         DEFAULT_TOP_K_PER_LAYER,
         FEATURE_SCOPE_EXCLUSION_RE,
+        PROFILE_MEMORY_QUERY_RE,
         HARD_MAX_CHILDREN_SCORED_PER_PARENT,
         TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
         Json,
@@ -274,6 +276,8 @@ def retrieval_query_budget_plan(
     default_max_context_tokens: int,
 ) -> Json:
     question_type = str(args.get("question_type") or infer_query_type(query))
+    if PROFILE_MEMORY_QUERY_RE.search(str(query or "").lower()):
+        question_type = "profile_memory"
     retrieval_session_scope = str(args.get("session_scope") or ranking.get("session_scope") or "prefer").strip().lower()
     if retrieval_session_scope not in {"prefer", "only"}:
         raise MatrixArkError("session_scope must be prefer or only")
