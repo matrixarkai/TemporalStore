@@ -55,6 +55,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "entity_type:assistant_decision": "assistant decision final answer done implemented chose decided next action",
     "event_type:assistant_response": "assistant response final answer outcome done implemented fixed decision",
     "event_type:user_prompt": "user prompt request asks asked requirement instruction",
+    "entity_type:memory_feature_profile": "memory feature parity openviking vikingmem mem0 extraction retrieval profile session threshold idle batch feature focused",
     "entity_type:tool_evidence": "tool evidence tests passed failed exit code commit push rebase validation benchmark blocker",
     "event_type:tool_evidence": "tool event evidence tests passed failed exit code commit push rebase validation benchmark blocker",
     "memory_scope:user_profile": "user profile long term memory profile entity profile summary durable cross session user state",
@@ -63,6 +64,8 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "session_continuity:same_session": "same session current conversation active turn local context",
     "profile_entity_current:true": "current profile entity latest durable user state standing preference instruction",
     "profile_summary_current:true": "current profile summary latest durable long term memory profile overview",
+    "profile_memory_class:memory_feature": "memory feature profile openviking vikingmem feature parity extraction retrieval budget",
+    "profile_memory_kind:memory_feature": "memory feature durable preference openviking vikingmem feature focused no testing no monitoring",
     "memory_selection_policy:selected_profile_current_state": "selected profile current state standing instruction durable preference",
     "memory_selection_policy:selected_user_prompt": "selected user prompt explicit request instruction preference",
     "memory_selection_policy:selected_assistant_decision_outcome_only": "selected assistant decision outcome final answer implemented changed pushed",
@@ -212,6 +215,11 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
     if re.search(r"\b(prefer|preference|favorite|like|likes|love|loves)\b", lower):
         add_group(context_index_name("entity_type", "preference"), context_index_name("event_type", "preference_update"))
         add_group(context_index_name("profile_memory_kind", "durable_profile"))
+    if re.search(r"\b(openviking|vikingmem|mem0|feature parity|feature[- ]focused|functionality|functionalities|algorithms?|implementation focus|no testing|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no eviden[ct]e|feature work only|code changes only|session memory|profile memory|cross[- ]session memory|threshold|idle batch|batch extraction)\b", lower):
+        add_group(context_index_name("entity_type", "memory_feature_profile"))
+        add_group(context_index_name("profile_memory_class", "memory_feature"))
+        add_group(context_index_name("profile_memory_kind", "memory_feature"))
+        add_group(context_index_name("memory_scope", "user_profile"))
     if re.search(r"\b(friend|partner|mother|father|sister|brother|wife|husband|manager|teammate|relationship|family|child|children|son|daughter|pet)\b", lower):
         add_group(context_index_name("entity_type", "relationship"), context_index_name("entity_type", "family_profile"))
     if re.search(r"\b(job|role|work|works|position|status|company|employer)\b", lower):
@@ -278,6 +286,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(
             context_index_name("profile_memory_kind", "durable_profile"),
             context_index_name("profile_memory_kind", "codex_outcome"),
+            context_index_name("profile_memory_kind", "memory_feature"),
         )
     if question_type in {"current_state", "latest"} and re.search(r"\b(profile|cross[- ]session|long[- ]term|memory|entity|entities)\b", lower):
         add_group(context_index_name("profile_entity_current", "true"), context_index_name("profile_summary_current", "true"))

@@ -144,7 +144,7 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
     if ref_type == "entity" and profile_memory_kind == "codex_outcome" and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
         return 0.52
-    if ref_type == "entity" and profile_memory_kind == "durable_profile" and question_type == "profile_memory":
+    if ref_type == "entity" and profile_memory_kind in {"durable_profile", "memory_feature"} and question_type == "profile_memory":
         return 0.46
     if question_type == "procedure":
         if ref_type == "skill_section":
@@ -237,7 +237,7 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
         elif str(candidate.get("memory_scope") or "") == "user_profile" and str(candidate.get("session_continuity") or "") == "cross_session":
             current_state_priority = 0.5
     elif question_type == "profile_memory" and candidate.get("ref_type") == "entity":
-        if str(candidate.get("profile_memory_kind") or "").strip().lower() == "durable_profile":
+        if str(candidate.get("profile_memory_kind") or "").strip().lower() in {"durable_profile", "memory_feature"}:
             current_state_priority = 0.9
     return (boosted, current_state_priority, token_efficiency, score)
 

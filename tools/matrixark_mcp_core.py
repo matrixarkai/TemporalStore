@@ -2419,6 +2419,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "entity_type:identity_profile": "identity name nickname pronouns call me address user",
     "entity_type:communication_profile": "communication style language locale concise detailed bullet format tone",
     "entity_type:workspace_profile": "workspace repo branch remote main github ubuntu wsl build deployment folder rust cpp temporalstore",
+    "entity_type:memory_feature_profile": "memory feature parity openviking vikingmem mem0 extraction retrieval profile session threshold idle batch feature focused",
     "event_type:status_update": "job status role work update",
     "entity_type:current_plan": "plan current plan goal user request requirement upcoming task schedule next milestone",
     "event_type:plan_update": "plan update going to schedule will next",
@@ -2448,6 +2449,8 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "session_continuity:same_session": "same session current conversation active turn local context",
     "profile_entity_current:true": "current profile entity latest durable user state standing preference instruction",
     "profile_summary_current:true": "current profile summary latest durable long term memory profile overview",
+    "profile_memory_class:memory_feature": "memory feature profile openviking vikingmem feature parity extraction retrieval budget",
+    "profile_memory_kind:memory_feature": "memory feature durable preference openviking vikingmem feature focused no testing no monitoring",
     "memory_selection_policy:selected_profile_current_state": "selected profile current state standing instruction durable preference",
     "memory_selection_policy:selected_user_prompt": "selected user prompt explicit request instruction preference",
     "memory_selection_policy:selected_assistant_profile_fact": "selected assistant stated user profile preference standing instruction durable memory",
@@ -2724,7 +2727,7 @@ def profile_entity_type_for_memory_text(text: str) -> str:
     if re.search(r"\b(?:reply|respond|answer|write|communication style|response style|answer style|preferred language|preferred format|language|locale|timezone|time zone|tone|style|format|bullets?|bullet points?|markdown|concise|brief|detailed)\b", lower):
         return "communication_profile"
     if re.search(r"\b(?:feature parity|feature[- ]focused|functionality|functionalities|algorithms?|implementation focus|no testing|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no eviden[ct]e|feature work only|code changes only|openviking|vikingmem|mem0|long[- ]term memory|session memory|profile memory|cross[- ]session memory|threshold|idle batch|batch extraction)\b", lower):
-        return "workspace_profile"
+        return "memory_feature_profile"
     if re.search(r"\b(?:workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|folder|build|deploy|deployment|rustraft|temporalstore|matrixark)\b", lower):
         return "workspace_profile"
     return ""
@@ -3772,6 +3775,8 @@ def profile_memory_class_for_entity_type(entity_type: Any) -> str:
         return "communication"
     if normalized in {"workspace_profile"}:
         return "workspace"
+    if normalized in {"memory_feature_profile"}:
+        return "memory_feature"
     if normalized in {"preference", "approval_state", "confirmation", "correction"}:
         return "preference"
     if normalized in {"relationship", "family_profile", "job_status", "location"}:
@@ -3793,6 +3798,8 @@ def profile_memory_kind_for_entity_type(entity_type: Any) -> str:
         return "resource_context"
     if normalized in {"current_plan"}:
         return "task_context"
+    if normalized in {"memory_feature_profile"}:
+        return "memory_feature"
     return "durable_profile"
 
 
@@ -4818,6 +4825,11 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(context_index_name("profile_memory_class", "workspace"))
         add_group(context_index_name("profile_memory_kind", "durable_profile"))
         add_group(context_index_name("memory_scope", "user_profile"))
+    if re.search(r"\b(openviking|vikingmem|mem0|feature parity|feature[- ]focused|functionality|functionalities|algorithms?|implementation focus|no testing|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no eviden[ct]e|feature work only|code changes only|session memory|profile memory|cross[- ]session memory|threshold|idle batch|batch extraction)\b", lower):
+        add_group(context_index_name("entity_type", "memory_feature_profile"))
+        add_group(context_index_name("profile_memory_class", "memory_feature"))
+        add_group(context_index_name("profile_memory_kind", "memory_feature"))
+        add_group(context_index_name("memory_scope", "user_profile"))
     if re.search(r"\b(friend|partner|mother|father|sister|brother|wife|husband|manager|teammate|relationship|family|child|children|son|daughter|pet)\b", lower):
         add_group(context_index_name("entity_type", "relationship"), context_index_name("entity_type", "family_profile"))
     if re.search(r"\b(job|role|work|works|position|status|company|employer)\b", lower):
@@ -4851,6 +4863,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("profile_memory_class", "identity"),
             context_index_name("profile_memory_class", "communication"),
             context_index_name("profile_memory_class", "workspace"),
+            context_index_name("profile_memory_class", "memory_feature"),
             context_index_name("profile_memory_class", "preference"),
             context_index_name("profile_memory_class", "personal_context"),
             context_index_name("profile_memory_class", "task_context"),
@@ -4859,6 +4872,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(
             context_index_name("profile_memory_kind", "durable_profile"),
             context_index_name("profile_memory_kind", "codex_outcome"),
+            context_index_name("profile_memory_kind", "memory_feature"),
         )
         add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
     if re.search(r"\b(cross[- ]session|across sessions|between sessions|multi[- ]session|long[- ]term)\b", lower):
@@ -5774,7 +5788,7 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
         return 0.52
     if ref_type == "entity" and is_codex_outcome_entity_type(event_type) and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
         return 0.48
-    if question_type == "profile_memory" and profile_memory_kind == "durable_profile":
+    if question_type == "profile_memory" and profile_memory_kind in {"durable_profile", "memory_feature"}:
         if ref_type == "entity":
             return 0.50
         if ref_type in {"summary", "compression"}:
@@ -5885,7 +5899,7 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
             boosted = clamp01(boosted + 0.08)
         elif question_type in {"profile_memory", "multi_hop", "date"}:
             token_efficiency *= 1.20 if source_count >= 2 else 1.08
-    if question_type == "profile_memory" and profile_memory_kind == "durable_profile":
+    if question_type == "profile_memory" and profile_memory_kind in {"durable_profile", "memory_feature"}:
         source_count = len(candidate.get("source_event_ids", []) or [])
         source_entity_count = len(candidate.get("source_entity_hashes", []) or [])
         if ref_type in {"summary", "compression"}:
@@ -5937,7 +5951,7 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
                 ref_priority = 1.0
             elif entity_type == "assistant_decision":
                 ref_priority = 0.95 if codex_outcome_terms else 0.7
-        elif question_type == "profile_memory" and profile_memory_kind == "durable_profile":
+        elif question_type == "profile_memory" and profile_memory_kind in {"durable_profile", "memory_feature"}:
             ref_priority = max(ref_priority, 0.95)
         elif (
             question_type == "profile_memory"
@@ -5952,7 +5966,7 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
             and entity_type in {"assistant_decision", "tool_evidence"}
         ):
             ref_priority += 0.30 if entity_type == "assistant_decision" else 0.12
-    elif question_type == "profile_memory" and profile_memory_kind == "durable_profile" and ref_type in {"summary", "compression"}:
+    elif question_type == "profile_memory" and profile_memory_kind in {"durable_profile", "memory_feature"} and ref_type in {"summary", "compression"}:
         ref_priority = 0.82
         query_specificity = clamp01(sparse_score + min(0.35, 0.06 * keyword_score))
     elif question_type in {"evidence", "benchmark_quality"} and str(candidate.get("event_type") or "").strip().lower() == "tool_evidence":
@@ -9160,7 +9174,7 @@ def cross_session_rerank_adjustment(candidate: Json, question_type: str) -> floa
     profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
     has_citation = bool(candidate.get("source_ref") or candidate.get("citation") or candidate.get("source_chunk_hash"))
     if question_type == "profile_memory":
-        if memory_scope == "user_profile" or profile_memory_kind == "durable_profile":
+        if memory_scope == "user_profile" or profile_memory_kind in {"durable_profile", "memory_feature"}:
             if ref_type == "entity":
                 return 0.16
             if ref_type in {"summary", "compression"}:
