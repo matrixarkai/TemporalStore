@@ -2995,6 +2995,31 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 source_count=len(assistant_messages),
             )
         )
+        assistant_profile_fact_patterns = [
+            r"\b(?:i(?:'ll| will)?|codex will|assistant will)\s+(?:remember|keep|use|follow|prefer|avoid|stop using|not use|always use|make sure)\b[:\s]+([^.;!?\n]{4,220})",
+            r"\b(?:noted|got it|understood|i(?:'ll| will)? remember|remembered)\b[:\s]+(?:that\s+)?([^.;!?\n]{4,220})",
+            r"\b(?:i(?:'ll| will) keep|i(?:'ll| will) use|i(?:'ll| will) avoid|i(?:'ll| will) make sure)\s+([^.;!?\n]{4,220})",
+        ]
+        for pattern in assistant_profile_fact_patterns:
+            for match in re.finditer(pattern, assistant_text, re.IGNORECASE):
+                fact_text = clean_patch_value(match.group(1) if match.groups() else match.group(0))
+                if not fact_text:
+                    continue
+                fact_entity_type = profile_entity_type_for_memory_text(fact_text) or "preference"
+                state = summarize_text(f"assistant profile fact: {fact_text}", limit=220)
+                entities.append(
+                    {
+                        "entity_type": fact_entity_type,
+                        "entity_name": summarize_text(f"{fact_entity_type}:{fact_text}", limit=96),
+                        "state": state,
+                        "confidence": 0.84,
+                        "source_refs": assistant_refs,
+                        "source_roles": ["assistant"],
+                        "source_role_counts": {"assistant": len(assistant_messages)},
+                        "operator": normalize_entity_operator(None, fact_entity_type),
+                        "field_patches": [entity_patch("", summarize_text(state, limit=180))],
+                    }
+                )
     patterns = [
         ("preference", r"\b(?:prefer|prefers|favorite|likes?|loves?)\s+([^.;!?]{2,120})"),
         ("preference", r"\b(?:you|user)\s+(?:always|usually|prefer(?:s)?|like(?:s)?|want(?:s)?|need(?:s)?)\s+([^.;!?]{2,140})"),
