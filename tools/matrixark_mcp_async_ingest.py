@@ -71,8 +71,40 @@ def _metadata_string_values(metadata: Json, *fields: str) -> list[str]:
     return ordered_unique([value for value in values if value])
 
 
-def _lightweight_context_event_index_terms(source_counts: Json, memory_layer_fields: Json, envelope: Json) -> list[str]:
+def _lightweight_memory_policy_lineage(envelope: Json) -> Json:
     metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
+    selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
+    policies = ordered_unique(
+        _metadata_string_values(
+            metadata,
+            "source_memory_selection_policies",
+            "source_memory_selection_policy_counts",
+            "memory_selection_policy",
+        )
+        + _metadata_string_values(selection, "policies", "policy_counts", "policy")
+    )
+    policy_counts = {policy: 1 for policy in policies}
+    profile_kinds = ordered_unique(
+        _metadata_string_values(metadata, "source_profile_memory_kinds", "profile_memory_kind")
+    )
+    profile_classes = ordered_unique(
+        _metadata_string_values(metadata, "source_profile_memory_classes", "profile_memory_class")
+    )
+    lineage: Json = {}
+    if policies:
+        lineage["source_memory_selection_policies"] = policies
+        lineage["source_memory_selection_policy_counts"] = policy_counts
+    if profile_kinds:
+        lineage["source_profile_memory_kinds"] = profile_kinds
+        lineage["profile_memory_kind"] = profile_kinds[0]
+    if profile_classes:
+        lineage["source_profile_memory_classes"] = profile_classes
+        lineage["profile_memory_class"] = profile_classes[0]
+    return lineage
+
+
+def _lightweight_context_event_index_terms(source_counts: Json, memory_layer_fields: Json, envelope: Json) -> list[str]:
+    policy_lineage = _lightweight_memory_policy_lineage(envelope)
     terms = [
         context_index_name("event_type", "pending_async"),
         context_index_name("classification", "pending_async_extraction"),
@@ -89,27 +121,11 @@ def _lightweight_context_event_index_terms(source_counts: Json, memory_layer_fie
         terms.append(context_index_name("hook_type", hook_type))
     for codex_event in source_counts.get("source_codex_event_counts", {}):
         terms.append(context_index_name("codex_event", codex_event))
-    selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
-    policy_values = _metadata_string_values(
-        metadata,
-        "source_memory_selection_policies",
-        "source_memory_selection_policy_counts",
-        "memory_selection_policy",
-    )
-    policy_values.extend(_metadata_string_values(selection, "policies", "policy_counts", "policy"))
-    for policy in ordered_unique(policy_values):
+    for policy in policy_lineage.get("source_memory_selection_policies", []):
         terms.append(context_index_name("memory_selection_policy", policy))
-    for profile_kind in _metadata_string_values(
-        metadata,
-        "source_profile_memory_kinds",
-        "profile_memory_kind",
-    ):
+    for profile_kind in policy_lineage.get("source_profile_memory_kinds", []):
         terms.append(context_index_name("profile_memory_kind", profile_kind))
-    for profile_class in _metadata_string_values(
-        metadata,
-        "source_profile_memory_classes",
-        "profile_memory_class",
-    ):
+    for profile_class in policy_lineage.get("source_profile_memory_classes", []):
         terms.append(context_index_name("profile_memory_class", profile_class))
     return ordered_unique(terms)
 
@@ -204,6 +220,7 @@ def lightweight_async_accept(
     node_path = normalized_node_path(envelope, node_hint)
     node_hash = stable_hash("/".join(node_path))
     source_counts = _source_count_summary(envelope, hook)
+    policy_lineage = _lightweight_memory_policy_lineage(envelope)
     memory_layer_fields: Json = {
         "memory_scope": "session",
         "session_continuity": "same_session",
@@ -224,6 +241,7 @@ def lightweight_async_accept(
         "scope": envelope["scope"],
         "updated_at_ms": envelope["ingestion_time_ms"],
         **memory_layer_fields,
+        **policy_lineage,
     }
     event_index_terms = _lightweight_context_event_index_terms(source_counts, memory_layer_fields, envelope)
     event_index_records = [
@@ -281,6 +299,7 @@ def lightweight_async_accept(
                 "storage_options": envelope.get("storage_options", {}),
                 **source_counts,
                 **memory_layer_fields,
+                **policy_lineage,
                 "async_processing": True,
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
@@ -313,6 +332,7 @@ def lightweight_async_accept(
                 "reason": "sync_accept_async_processing",
                 **source_counts,
                 **memory_layer_fields,
+                **policy_lineage,
                 "created_at_ms": envelope["ingestion_time_ms"],
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
