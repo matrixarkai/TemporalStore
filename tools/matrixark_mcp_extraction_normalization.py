@@ -137,23 +137,30 @@ def assistant_decision_memory_text(text: str) -> str:
     if not compact:
         return ""
     selected: list[str] = []
-    decision_line_pattern = re.compile(
-        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|blocked|next|follow[- ]?up|will|use|keep|remove|updated|changed|validated|verified|profile|cross[- ]session|memory|gap|risk|warning)\b",
+    primary_decision_line_pattern = re.compile(
+        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|published|deployed|released|merged|rebased|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|blocked|next|follow[- ]?up|will|use|keep|remove|updated|changed|validated|verified|promoted|indexed|budgeted|batched|flushed)\b",
         re.IGNORECASE,
     )
-    for raw_line in str(text).splitlines():
-        line = " ".join(raw_line.split()).strip(" -*")
-        if not line:
-            continue
-        if decision_line_pattern.search(line):
-            selected.append(line)
-        if len(selected) >= 4:
+    secondary_decision_line_pattern = re.compile(
+        r"\b(?:profile|cross[- ]session|memory|gap|risk|warning)\b",
+        re.IGNORECASE,
+    )
+    normalized_lines = [" ".join(raw_line.split()).strip(" -*") for raw_line in str(text).splitlines()]
+    for pattern in [primary_decision_line_pattern, secondary_decision_line_pattern]:
+        for line in normalized_lines:
+            if not line:
+                continue
+            if pattern.search(line):
+                selected.append(line)
+            if len(selected) >= 4:
+                break
+        if selected:
             break
     if not selected:
         selected = [
             match.group(0).strip()
             for match in re.finditer(
-                r"[^.!?\n]*(?:decision|decided|done|implemented|fixed|committed|pushed|blocked|next|will|updated|changed|validated|verified|profile|cross[- ]session|memory|gap|risk|warning)[^.!?\n]*[.!?]?",
+                r"[^.!?\n]*(?:decision|decided|done|implemented|fixed|committed|pushed|published|deployed|released|merged|rebased|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|blocked|next|will|updated|changed|validated|verified|promoted|indexed|budgeted|batched|flushed|profile|cross[- ]session|memory|gap|risk|warning)[^.!?\n]*[.!?]?",
                 str(text),
                 flags=re.IGNORECASE,
             )
@@ -168,7 +175,7 @@ def tool_evidence_memory_text(text: str) -> str:
         return ""
     selected: list[str] = []
     evidence_line_pattern = re.compile(
-        r"\b(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|pushed|rebase|benchmark|validation)\b",
+        r"\b(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|\d+\s+passed\b|tests?\s+(?:passed|failed)|test\s+result:\s+ok|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|pushed|published|deployed|released|merged|rebased|rebase|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|promoted|indexed|budgeted|batched|flushed|benchmark|validation|built|compiled)\b",
         re.IGNORECASE,
     )
     for raw_line in str(text).splitlines():
@@ -183,7 +190,7 @@ def tool_evidence_memory_text(text: str) -> str:
         selected = [
             match.group(0).strip()
             for match in re.finditer(
-                r"[^.!?\n]*(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|pushed|rebase|benchmark|validation)[^.!?\n]*[.!?]?",
+                r"[^.!?\n]*(?:exit code:\s*-?\d+|ran\s+\d+\s+tests?|tests?\s+(?:passed|failed)|ok\b|failed\b|error\b|fatal\b|commit\s+[0-9a-f]{7,40}|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)|pushed|published|deployed|released|merged|rebased|rebase|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|promoted|indexed|budgeted|batched|flushed|benchmark|validation|built|compiled)[^.!?\n]*[.!?]?",
                 str(text),
                 flags=re.IGNORECASE,
             )
@@ -200,6 +207,8 @@ def profile_entity_type_for_memory_text(text: str) -> str:
         return "identity_profile"
     if re.search(r"\b(?:reply|respond|answer|write|communication style|response style|answer style|preferred language|preferred format|language|locale|timezone|time zone|tone|style|format|bullets?|bullet points?|markdown|concise|brief|detailed)\b", lower):
         return "communication_profile"
+    if re.search(r"\b(?:feature parity|feature[- ]focused|functionality|functionalities|algorithms?|implementation focus|no testing|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no eviden[ct]e|feature work only|code changes only|openviking|vikingmem|mem0|long[- ]term memory|session memory|profile memory|cross[- ]session memory|threshold|idle batch|batch extraction)\b", lower):
+        return "memory_feature_profile"
     if re.search(r"\b(?:workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|folder|build|deploy|deployment|rustraft|temporalstore|matrixark)\b", lower):
         return "workspace_profile"
     return ""
