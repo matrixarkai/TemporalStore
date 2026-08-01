@@ -3195,10 +3195,20 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         ("approval_state", r"\b(?:approved|approval)\s+([^.;!?]{2,140})"),
         ("confirmation", r"\b(?:yes|confirmed|approved|correct|looks good)\b([^.;!?]{0,120})"),
     ]
+    profile_pattern_messages = [
+        item
+        for item in messages
+        if normalized_extraction_message_role(item.get("role")) in {"user", "assistant"}
+        and str(item.get("content") or "").strip()
+    ]
+    profile_pattern_text = text_from_messages(profile_pattern_messages)
+    profile_pattern_lower = profile_pattern_text.lower()
     for entity_type, pattern in patterns:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
+        if not profile_pattern_text:
+            break
+        for match in re.finditer(pattern, profile_pattern_text, re.IGNORECASE):
             value = " ".join(match.group(1).split()).strip(" :-") if match.groups() else ""
-            if entity_type == "confirmation" and not envelope.get("context_pack_id") and not lower.strip() in {
+            if entity_type == "confirmation" and not envelope.get("context_pack_id") and not profile_pattern_lower.strip() in {
                 "yes",
                 "yes.",
                 "correct",
@@ -3208,13 +3218,13 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
             }:
                 continue
             entity_name = canonical_entity_name(entity_type, value)
-            field_patches = infer_entity_field_patches(entity_type, value, text)
+            field_patches = infer_entity_field_patches(entity_type, value, profile_pattern_text)
             lineage = source_lineage_for_match(match.group(0))
             entities.append(
                 {
                     "entity_type": entity_type,
                     "entity_name": entity_name or entity_type,
-                    "state": summarize_text(value or text, limit=220),
+                    "state": summarize_text(value or profile_pattern_text, limit=220),
                     "confidence": 0.82 if value else 0.66,
                     "source_refs": lineage["source_refs"],
                     "source_roles": lineage["source_roles"],
