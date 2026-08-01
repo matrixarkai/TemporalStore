@@ -11268,6 +11268,8 @@ class MatrixArkLocalAdapter:
                 "source_codex_event_counts": first_dict("source_codex_event_counts"),
                 "source_memory_selection_policies": first_list("source_memory_selection_policies"),
                 "source_memory_selection_policy_counts": first_dict("source_memory_selection_policy_counts"),
+                "source_memory_layers": first_list("source_memory_layers"),
+                "source_memory_layer_counts": first_dict("source_memory_layer_counts"),
                 "source_memory_selection_lossy_count": first_value("source_memory_selection_lossy_count", 0),
                 "source_memory_selection_complete_count": first_value("source_memory_selection_complete_count", 0),
                 "source_memory_selection_dropped_text_chars": first_value("source_memory_selection_dropped_text_chars", 0),
