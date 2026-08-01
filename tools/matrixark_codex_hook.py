@@ -4498,9 +4498,9 @@ def fast_hook_event_projection_records(*, event_record: Json, updated_at_ms: int
     if memory_layer and memory_layer != "unknown":
         projection_lineage["memory_layer"] = memory_layer
     vector = embedding_for_text(text)
-    records: list[Json] = [
-        compact_context_embedding_record(
-            attach_memory_layer({
+    embedding_record = compact_context_embedding_record(
+        attach_memory_layer(
+            {
                 "record_type": "context_embedding",
                 "embedding_type": "event_text",
                 "ref_type": "event",
@@ -4515,12 +4515,15 @@ def fast_hook_event_projection_records(*, event_record: Json, updated_at_ms: int
                 "classification": event_record.get("classification", ""),
                 "extraction_status": event_record.get("extraction_status", ""),
                 "extraction_mode": event_record.get("extraction_mode", ""),
-                **serving_lineage,
+                **projection_lineage,
                 "projection_phase": "fast_hook_pending_async",
                 "updated_at_ms": updated_at_ms,
-            })
+            }
         )
-    ]
+    )
+    if scope:
+        embedding_record["access_scope"] = scope
+    records: list[Json] = [embedding_record]
     secondary_index_budget = new_secondary_index_budget()
     index_terms = take_secondary_index_terms(
         sorted(candidate_index_terms(event_record, {}, {})),

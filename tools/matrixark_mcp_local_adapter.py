@@ -3354,7 +3354,27 @@ class MatrixArkLocalAdapter:
         raw_records = self.read_all()
         node_scope_by_hash: dict[int, Json] = {}
         embedding_scope_by_ref: dict[tuple[str, Any], Json] = {}
+        ref_scope_by_key: dict[tuple[str, Any], Json] = {}
+
+        def remember_ref_scope(ref_type: str, ref_hash: Any, source_record: Json) -> None:
+            if ref_hash in (None, ""):
+                return
+            source_scope = candidate_access_scope(source_record)
+            if source_scope:
+                ref_scope_by_key.setdefault((ref_type, ref_hash), source_scope)
+
         for source_record in raw_records:
+            source_record_type = str(source_record.get("record_type") or "")
+            if source_record_type == "context_event":
+                remember_ref_scope("event", source_record.get("event_id_hash"), source_record)
+            elif source_record_type == "context_entity":
+                remember_ref_scope("entity", source_record.get("entity_hash"), source_record)
+            elif source_record_type == "context_segment":
+                remember_ref_scope("segment", source_record.get("segment_hash"), source_record)
+            elif source_record_type == "context_summary":
+                remember_ref_scope("summary", source_record.get("summary_hash") or source_record.get("node_hash"), source_record)
+            elif source_record_type == "context_compression_event":
+                remember_ref_scope("compression", source_record.get("compression_id_hash"), source_record)
             if source_record.get("record_type") == "context_embedding" and source_record.get("ref_hash") not in (None, ""):
                 embedding_scope = candidate_access_scope(source_record)
                 if embedding_scope:
@@ -3388,6 +3408,10 @@ class MatrixArkLocalAdapter:
             record_scope = candidate_access_scope(record)
             if record_scope:
                 return record_scope
+            if record.get("record_type") == "context_embedding":
+                ref_scope = ref_scope_by_key.get((str(record.get("ref_type") or ""), record.get("ref_hash")))
+                if ref_scope:
+                    return ref_scope
             ref_scope_fields = {
                 "context_event": ("event", "event_id_hash"),
                 "context_entity": ("entity", "entity_hash"),
@@ -6073,7 +6097,27 @@ class MatrixArkLocalAdapter:
         if table == "messages":
             return self._dashboard_message_rows(records, scope)
         node_scope_by_hash: dict[int, Json] = {}
+        ref_scope_by_key: dict[tuple[str, Any], Json] = {}
+
+        def remember_ref_scope(ref_type: str, ref_hash: Any, source_record: Json) -> None:
+            if ref_hash in (None, ""):
+                return
+            source_scope = self._dashboard_record_scope(source_record)
+            if source_scope:
+                ref_scope_by_key.setdefault((ref_type, ref_hash), source_scope)
+
         for source_record in records:
+            source_record_type = str(source_record.get("record_type") or "")
+            if source_record_type == "context_event":
+                remember_ref_scope("event", source_record.get("event_id_hash"), source_record)
+            elif source_record_type == "context_entity":
+                remember_ref_scope("entity", source_record.get("entity_hash"), source_record)
+            elif source_record_type == "context_segment":
+                remember_ref_scope("segment", source_record.get("segment_hash"), source_record)
+            elif source_record_type == "context_summary":
+                remember_ref_scope("summary", source_record.get("summary_hash") or source_record.get("node_hash"), source_record)
+            elif source_record_type == "context_compression_event":
+                remember_ref_scope("compression", source_record.get("compression_id_hash"), source_record)
             try:
                 source_node_hash = int(source_record.get("node_hash") or 0)
             except (TypeError, ValueError):
@@ -6086,8 +6130,25 @@ class MatrixArkLocalAdapter:
 
         def dashboard_scope(record: Json) -> Json:
             record_scope = self._dashboard_record_scope(record)
+            if (
+                record_scope
+                and scope.get("account_id")
+                and not record_scope.get("account_id")
+                and (record_scope.get("tenant_id") or record_scope.get("user_id") or record_scope.get("session_id"))
+            ):
+                record_scope = {**record_scope, "account_id": scope.get("account_id")}
             if record_scope:
                 return record_scope
+            if record.get("record_type") == "context_embedding":
+                ref_scope = ref_scope_by_key.get((str(record.get("ref_type") or ""), record.get("ref_hash")))
+                if ref_scope:
+                    if (
+                        scope.get("account_id")
+                        and not ref_scope.get("account_id")
+                        and (ref_scope.get("tenant_id") or ref_scope.get("user_id") or ref_scope.get("session_id"))
+                    ):
+                        ref_scope = {**ref_scope, "account_id": scope.get("account_id")}
+                    return ref_scope
             try:
                 node_hash = int(record.get("node_hash") or 0)
             except (TypeError, ValueError):
@@ -6541,6 +6602,21 @@ class MatrixArkLocalAdapter:
                     -int(row.get("updated_at_ms") or row.get("created_at_ms") or 0),
                 )
             )
+        elif table == "indexes":
+            data_model_priority = {
+                "context_batch_commit": 0,
+                "context_profile_entity": 1,
+                "context_entity": 2,
+                "context_summary": 3,
+                "context_segment": 4,
+                "context_event": 5,
+            }
+            rows.sort(
+                key=lambda row: (
+                    data_model_priority.get(str(row.get("data_model") or ""), 9),
+                    -int(row.get("updated_at_ms") or row.get("created_at_ms") or row.get("timestamp_key_ms") or 0),
+                )
+            )
         else:
             rows.sort(key=lambda row: int(row.get("updated_at_ms") or row.get("created_at_ms") or 0), reverse=True)
         return rows
@@ -6918,6 +6994,7 @@ class MatrixArkLocalAdapter:
             if len(envelope["messages"]) == 1:
                 pending_event_type = context_event_type_for_message(envelope["messages"][0], pending_event_type)
             pending_lineage = context_source_lineage(envelope, hook)
+            pending_event_vector = embedding_for_text(text)
             with self.write_batch("message_ingest_sync_accept"):
                 summary_dirty_hashes = self.mark_node_summary_dirty(
                     node_path=node_path,
@@ -6963,6 +7040,37 @@ class MatrixArkLocalAdapter:
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
                 self.append(pending_event_record)
+                pending_embedding_record = compact_context_embedding_record(
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "event_text",
+                        "ref_type": "event",
+                        "ref_hash": event_id_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "dim": len(pending_event_vector),
+                        "model": embedding_model_name(),
+                        "vector": pending_event_vector,
+                        "scope": envelope["scope"],
+                        "memory_scope": "session",
+                        "session_continuity": "same_session",
+                        "memory_layer": "pending_async_event",
+                        "event_type": pending_event_type,
+                        "batch_event_type": "pending_async",
+                        "classification": "PENDING_ASYNC_EXTRACTION",
+                        "status": "pending",
+                        "source_kind": envelope.get("kind", "message"),
+                        **pending_lineage,
+                        "source_memory_scopes": source_memory_scopes,
+                        "source_session_continuities": source_session_continuities,
+                        "source_extraction_phases": ["pending_async"],
+                        "extraction_phase": "pending_async",
+                        "final_session_boundary": False,
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
+                pending_embedding_record["access_scope"] = envelope["scope"]
+                self.append(pending_embedding_record)
                 for index_name in candidate_index_terms(pending_event_record, {}, {}):
                     event_index = context_index_posting_record(
                         index_name=index_name,
@@ -10977,7 +11085,27 @@ class MatrixArkLocalAdapter:
         )
         memory_inventory = retrieval_memory_inventory(inventory_record_result["records"], retrieval_scope)
         node_scope_by_hash: dict[int, Json] = {}
+        ref_scope_by_key: dict[tuple[str, Any], Json] = {}
+
+        def remember_ref_scope(ref_type: str, ref_hash: Any, source_record: Json) -> None:
+            if ref_hash in (None, ""):
+                return
+            source_scope = candidate_access_scope(source_record)
+            if source_scope:
+                ref_scope_by_key.setdefault((ref_type, ref_hash), source_scope)
+
         for source_record in records:
+            source_record_type = str(source_record.get("record_type") or "")
+            if source_record_type == "context_event":
+                remember_ref_scope("event", source_record.get("event_id_hash"), source_record)
+            elif source_record_type == "context_entity":
+                remember_ref_scope("entity", source_record.get("entity_hash"), source_record)
+            elif source_record_type == "context_segment":
+                remember_ref_scope("segment", source_record.get("segment_hash"), source_record)
+            elif source_record_type == "context_summary":
+                remember_ref_scope("summary", source_record.get("summary_hash") or source_record.get("node_hash"), source_record)
+            elif source_record_type == "context_compression_event":
+                remember_ref_scope("compression", source_record.get("compression_id_hash"), source_record)
             try:
                 source_node_hash = int(source_record.get("node_hash") or 0)
             except (TypeError, ValueError):
@@ -11006,6 +11134,10 @@ class MatrixArkLocalAdapter:
             record_scope = candidate_access_scope(record)
             if record_scope:
                 return record_scope
+            if record.get("record_type") == "context_embedding":
+                ref_scope = ref_scope_by_key.get((str(record.get("ref_type") or ""), record.get("ref_hash")))
+                if ref_scope:
+                    return ref_scope
             try:
                 node_hash = int(record.get("node_hash") or 0)
             except (TypeError, ValueError):
