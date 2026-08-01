@@ -92,6 +92,114 @@ def idle_commit_resolution_lineage(task: Json) -> Json:
     }
 
 
+def pending_session_message_count(records: list[Json]) -> int:
+    count = 0
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
+        messages = envelope.get("messages") if isinstance(envelope.get("messages"), list) else []
+        if messages:
+            count += len(messages)
+        else:
+            count += 1
+    return count
+
+
+def commit_session_buffer_before_retrieval(
+    target: Any,
+    args: Json,
+    *,
+    scope: Json,
+    threshold: int,
+    pending_events: list[Json],
+) -> Json:
+    session_commit = getattr(target, "session_commit", None)
+    if not callable(session_commit):
+        return {"status": "unavailable", "reason": "session_commit_missing"}
+    pending_event_count = len(pending_events)
+    pending_message_count = pending_session_message_count(pending_events)
+    if pending_event_count < threshold and pending_message_count < threshold:
+        return {
+            "status": "not_ready",
+            "pending_event_count": pending_event_count,
+            "pending_message_count": pending_message_count,
+            "threshold_messages": threshold,
+        }
+    commit_args: Json = {
+        "scope": scope,
+        "metadata": optional_object(args, "metadata"),
+        "threshold_messages": max(1, threshold),
+        "max_messages": max(1, threshold),
+        "force": False,
+        "commit_reason": "threshold",
+        "skip_prior_context": bool(args.get("skip_prior_context", False)),
+        "storage_options": normalize_storage_options(args),
+    }
+    for field in [
+        "understanding_provider",
+        "extraction_provider",
+        "segment_provider",
+        "segment_model",
+        "segment_model_path",
+        "segment_max_new_tokens",
+        "segment_provider_fallback",
+    ]:
+        if args.get(field) not in (None, "", [], {}):
+            commit_args[field] = args.get(field)
+    try:
+        commit_result = session_commit(commit_args)
+    except Exception as exc:
+        return {
+            "status": "error",
+            "reason": "session_commit_failed",
+            "pending_event_count": pending_event_count,
+            "pending_message_count": pending_message_count,
+            "threshold_messages": threshold,
+            "error": str(exc)[:240],
+        }
+    commit_status = commit_result.get("status") if isinstance(commit_result, dict) else ""
+    committed_event_count = int(commit_result.get("committed_event_count") or 0) if isinstance(commit_result, dict) else 0
+    cache_invalidation: Json = {}
+    if commit_status == "committed" and committed_event_count > 0:
+        cache_invalidation = retrieve_cache_helpers.invalidate_context_pack_cache(target)
+    summary: Json = {
+        "status": "committed" if commit_status == "committed" else "attempted",
+        "trigger_policy": "threshold",
+        "commit_result_status": commit_status,
+        "pending_event_count": pending_event_count,
+        "pending_message_count": pending_message_count,
+        "threshold_messages": threshold,
+        "committed_event_count": committed_event_count,
+        **cache_invalidation,
+    }
+    if isinstance(commit_result, dict):
+        for field in [
+            "commit_id_hash",
+            "batch_id_hash",
+            "source_event_ids",
+            "source_roles",
+            "source_role_counts",
+            "source_hook_types",
+            "source_hook_type_counts",
+            "source_codex_events",
+            "source_codex_event_counts",
+            "source_memory_selection_policies",
+            "source_memory_selection_policy_counts",
+            "memory_layers_written",
+            "summary_refresh",
+            "profile_promotion_summary",
+            "profile_promotion_policy",
+            "profile_promotion_blocker",
+            "pending_deferred_event_count",
+            "pending_deferred_message_count",
+        ]:
+            value = commit_result.get(field)
+            if value not in (None, "", [], {}):
+                summary[field] = value
+    return summary
+
+
 def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, scope: Json) -> Json:
     enabled = (
         args.get("pre_retrieval_idle_commit_flush")
@@ -155,9 +263,6 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
             deadline_ms = 0
         if deadline_ms > 0 and deadline_ms <= current_time_ms:
             due_tasks.append(record)
-    if not due_tasks:
-        return {**result, "status": "no_due_idle_commits", "due_task_count": 0}
-    due_tasks.sort(key=lambda item: int(item.get("idle_commit_deadline_ms") or item.get("updated_at_ms") or 0))
 
     def positive_int(value: Any, default: int = 0) -> int:
         try:
@@ -165,6 +270,44 @@ def pre_retrieval_idle_commit_flush(target: Any, args: Json, ranking: Json, *, s
         except (TypeError, ValueError):
             return default
         return parsed if parsed > 0 else default
+
+    if not due_tasks:
+        pending_session_events = getattr(target, "pending_session_events", None)
+        pending_events: list[Json] = []
+        if callable(pending_session_events):
+            try:
+                pending_events = list(pending_session_events(scope))
+            except Exception as exc:
+                return {**result, "status": "error", "reason": "pending_session_events_failed", "error": str(exc)[:240]}
+        if args.get("session_buffer_threshold") not in (None, "", [], {}):
+            threshold = positive_int(args.get("session_buffer_threshold"), 20)
+        elif ranking.get("session_buffer_threshold") not in (None, "", [], {}):
+            threshold = positive_int(ranking.get("session_buffer_threshold"), 20)
+        else:
+            threshold = 20
+        threshold_result = commit_session_buffer_before_retrieval(
+            target,
+            args,
+            scope=scope,
+            threshold=threshold,
+            pending_events=pending_events,
+        )
+        if threshold_result.get("status") in {"committed", "attempted", "error"}:
+            return {
+                **result,
+                **threshold_result,
+                "due_task_count": 0,
+                "reason": threshold_result.get("reason") or "pre_retrieval_threshold_commit",
+            }
+        return {
+            **result,
+            "status": "no_due_idle_commits",
+            "due_task_count": 0,
+            "pending_event_count": threshold_result.get("pending_event_count", len(pending_events)),
+            "pending_message_count": threshold_result.get("pending_message_count", pending_session_message_count(pending_events)),
+            "threshold_messages": threshold,
+        }
+    due_tasks.sort(key=lambda item: int(item.get("idle_commit_deadline_ms") or item.get("updated_at_ms") or 0))
 
     # Flush through the newest due cutoff. A retrieval can arrive after several
     # hook events have independently scheduled idle commits; using only the
