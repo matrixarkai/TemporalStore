@@ -2823,6 +2823,44 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
             else:
                 refs.append(str(index))
         return refs or source_refs
+
+    def source_lineage_for_match(snippet: str) -> Json:
+        needle = " ".join(str(snippet or "").lower().split()).strip()
+        refs: list[str] = []
+        role_counts: Json = {}
+        for index, item in enumerate(messages):
+            content = str(item.get("content") or "")
+            if not content.strip():
+                continue
+            haystack = " ".join(content.lower().split())
+            if needle and needle not in haystack:
+                continue
+            role = normalized_extraction_message_role(item.get("role"))
+            if not role:
+                continue
+            if isinstance(source_event_ids, list) and index < len(source_event_ids):
+                refs.append(str(source_event_ids[index]))
+            else:
+                refs.append(str(index))
+            role_counts[role] = int(role_counts.get(role, 0)) + 1
+        if not refs:
+            for index, item in enumerate(messages):
+                if not str(item.get("content") or "").strip():
+                    continue
+                role = normalized_extraction_message_role(item.get("role"))
+                if not role:
+                    continue
+                if isinstance(source_event_ids, list) and index < len(source_event_ids):
+                    refs.append(str(source_event_ids[index]))
+                else:
+                    refs.append(str(index))
+                role_counts[role] = int(role_counts.get(role, 0)) + 1
+        return {
+            "source_refs": ordered_unique(refs) or source_refs,
+            "source_roles": sorted(role_counts),
+            "source_role_counts": role_counts,
+        }
+
     user_messages = [
         item
         for item in messages
@@ -2949,13 +2987,16 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 continue
             entity_name = canonical_entity_name(entity_type, value)
             field_patches = infer_entity_field_patches(entity_type, value, text)
+            lineage = source_lineage_for_match(match.group(0))
             entities.append(
                 {
                     "entity_type": entity_type,
                     "entity_name": entity_name or entity_type,
                     "state": summarize_text(value or text, limit=220),
                     "confidence": 0.82 if value else 0.66,
-                    "source_refs": source_refs,
+                    "source_refs": lineage["source_refs"],
+                    "source_roles": lineage["source_roles"],
+                    "source_role_counts": lineage["source_role_counts"],
                     "operator": normalize_entity_operator(None, entity_type),
                     "field_patches": field_patches,
                 }
