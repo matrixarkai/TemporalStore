@@ -3873,6 +3873,7 @@ def codex_retrieve_audit_options(query: str) -> Json:
 
 def codex_retrieve_cross_session_options(query: str = "") -> Json:
     question_type = codex_retrieve_question_type(query)
+    feature_memory_query = feature_scope_memory_only_policy(query) or bool(FEATURE_MEMORY_POLICY_RE.search(str(query or "")))
     options: Json = {
         "enabled": True,
         "budget_ratio": 0.12,
@@ -3882,7 +3883,7 @@ def codex_retrieve_cross_session_options(query: str = "") -> Json:
         "min_entity_bridge_refs": 1,
         "preferred_ref_types": ["entity", "summary", "compression", "event", "segment"],
     }
-    if question_type == "profile_memory":
+    if question_type == "profile_memory" or feature_memory_query:
         options.update(
             {
                 "budget_ratio": 0.30,
