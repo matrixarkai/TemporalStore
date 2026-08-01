@@ -2040,11 +2040,7 @@ def context_event_type_for_message(message: Json, default_event_type: str) -> st
     policy = str(selection.get("policy") or "").strip()
     if policy:
         policies.add(policy)
-    if (
-        role == "assistant"
-        and "selected_assistant_profile_fact" in policies
-        and feature_scope_excludes_outcome_evidence(content)
-    ):
+    if role == "assistant" and feature_scope_excludes_outcome_evidence(content):
         return "memory_feature"
     if role == "user" and feature_scope_excludes_outcome_evidence(content):
         return "memory_feature"
@@ -9032,65 +9028,67 @@ class MatrixArkLocalAdapter:
                     message,
                     default_retention=source_memory_selection_retention,
                 )
-                event_records_to_append.append(
-                    {
-                        "record_type": "context_event",
-                        "event_id_hash": event_id_hash,
-                        "event_time_ms": event_time_ms,
-                        "event_time_key": f"{event_time_ms:020d}:{event_id_hash}",
-                        "batch_id_hash": batch_id_hash,
-                        "segment_hash": segment_hash_by_position.get(_index),
-                        "parent_segment_hash": segment_hash_by_position.get(_index),
-                        "parent_segment_hashes": segment_hashes_by_position.get(_index, []),
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "scope": envelope["scope"],
-                        "access_scope": envelope["scope"],
-                        "text": event_text,
-                        "summary_text": summarize_text(event_text),
+                event_record = {
+                    "record_type": "context_event",
+                    "event_id_hash": event_id_hash,
+                    "event_time_ms": event_time_ms,
+                    "event_time_key": f"{event_time_ms:020d}:{event_id_hash}",
+                    "batch_id_hash": batch_id_hash,
+                    "segment_hash": segment_hash_by_position.get(_index),
+                    "parent_segment_hash": segment_hash_by_position.get(_index),
+                    "parent_segment_hashes": segment_hashes_by_position.get(_index, []),
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "scope": envelope["scope"],
+                    "access_scope": envelope["scope"],
+                    "text": event_text,
+                    "summary_text": summarize_text(event_text),
+                    "classification": extraction["classification"],
+                    "event_type": event_type,
+                    "batch_event_type": extraction["event_type"],
+                    "status": "extraction_committed" if derive_from_existing_events else "observed",
+                    "source_kind": envelope.get("kind", "message"),
+                    "envelope": {
+                        **envelope,
+                        "messages": [message],
+                    },
+                    "internal_extraction": {
+                        "mode": extraction["mode"],
                         "classification": extraction["classification"],
                         "event_type": event_type,
                         "batch_event_type": extraction["event_type"],
-                        "status": "extraction_committed" if derive_from_existing_events else "observed",
-                        "source_kind": envelope.get("kind", "message"),
-                        "envelope": {
-                            **envelope,
-                            "messages": [message],
-                        },
-                        "internal_extraction": {
-                            "mode": extraction["mode"],
-                            "classification": extraction["classification"],
-                            "event_type": event_type,
-                            "batch_event_type": extraction["event_type"],
-                            "batch_id_hash": batch_id_hash,
-                        },
-                        "prior_context": prior_context,
-                        "agent_hook": hook,
-                        **source_lineage,
-                        "source_role": event_role,
-                        "original_source_role": original_event_role,
-                        "source_roles": [event_role] if event_role else [],
-                        "source_role_counts": {event_role: 1} if event_role else {},
-                        "source_hook_types": event_hook_types,
-                        "source_hook_type_counts": event_hook_type_counts,
-                        "source_codex_events": event_codex_events,
-                        "source_codex_event_counts": event_codex_event_counts,
-                        "source_memory_selection_policies": event_memory_selection_policies,
-                        "source_memory_selection_policy_counts": event_memory_selection_policy_counts,
-                        "profile_memory_class": event_profile_memory_class,
-                        "profile_memory_kind": event_profile_memory_kind,
-                        "source_profile_memory_classes": event_profile_memory_classes,
-                        "source_profile_memory_kinds": event_profile_memory_kinds,
-                        **event_memory_selection_retention,
-                        "storage_options": envelope.get("storage_options", {}),
-                        "updated_at_ms": envelope["ingestion_time_ms"],
-                        "memory_scope": "session",
-                        "session_continuity": "same_session",
-                        "extraction_phase": extraction_phase,
-                        "final_session_boundary": final_session_boundary,
-                        "extraction_context_event_ids": extraction_context_event_ids,
-                    }
-                )
+                        "batch_id_hash": batch_id_hash,
+                    },
+                    "prior_context": prior_context,
+                    "agent_hook": hook,
+                    **source_lineage,
+                    "source_role": event_role,
+                    "original_source_role": original_event_role,
+                    "source_roles": [event_role] if event_role else [],
+                    "source_role_counts": {event_role: 1} if event_role else {},
+                    "source_hook_types": event_hook_types,
+                    "source_hook_type_counts": event_hook_type_counts,
+                    "source_codex_events": event_codex_events,
+                    "source_codex_event_counts": event_codex_event_counts,
+                    "source_memory_selection_policies": event_memory_selection_policies,
+                    "source_memory_selection_policy_counts": event_memory_selection_policy_counts,
+                    "profile_memory_class": event_profile_memory_class,
+                    "profile_memory_kind": event_profile_memory_kind,
+                    "source_profile_memory_classes": event_profile_memory_classes,
+                    "source_profile_memory_kinds": event_profile_memory_kinds,
+                    **event_memory_selection_retention,
+                    "storage_options": envelope.get("storage_options", {}),
+                    "updated_at_ms": envelope["ingestion_time_ms"],
+                    "memory_scope": "session",
+                    "session_continuity": "same_session",
+                    "extraction_phase": extraction_phase,
+                    "final_session_boundary": final_session_boundary,
+                    "extraction_context_event_ids": extraction_context_event_ids,
+                }
+                event_memory_layer = candidate_memory_layer_name(event_record)
+                if event_memory_layer:
+                    event_record["memory_layer"] = event_memory_layer
+                event_records_to_append.append(event_record)
                 event_records_to_append.append(
                     compact_context_embedding_record({
                         "record_type": "context_embedding",
@@ -9105,6 +9103,7 @@ class MatrixArkLocalAdapter:
                         "scope": envelope["scope"],
                         "memory_scope": "session",
                         "session_continuity": "same_session",
+                        "memory_layer": event_memory_layer,
                         "event_type": event_type,
                         "batch_event_type": extraction["event_type"],
                         "source_role": event_role,
