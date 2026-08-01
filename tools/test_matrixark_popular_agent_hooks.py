@@ -14,6 +14,7 @@ from pathlib import Path
 
 import matrixark_agent_config
 import matrixark_agent_hook
+import matrixark_mcp_local_adapter
 
 
 class MatrixArkPopularAgentHooksTest(unittest.TestCase):
@@ -607,6 +608,38 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
             ["selected_user_prompt", "selected_user_profile_fact"],
             metadata["codex_memory_selection"]["policies"],
         )
+
+    def test_generic_agent_messages_carry_per_message_memory_selection(self) -> None:
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Always use Ubuntu folders for TemporalStore and never use Windows repos.",
+                },
+                {
+                    "role": "assistant",
+                    "content": "Outcome: pushed commit 123abcd to origin/main.",
+                },
+            ]
+        }
+
+        messages = matrixark_agent_hook.hook_messages_from_payload(
+            payload,
+            event="response",
+            text="",
+        )
+
+        user_counts = matrixark_mcp_local_adapter.memory_selection_policy_counts_for_message(messages[0])
+        assistant_counts = matrixark_mcp_local_adapter.memory_selection_policy_counts_for_message(messages[1])
+        self.assertEqual(
+            {"selected_user_prompt": 1, "selected_user_profile_fact": 1},
+            user_counts,
+        )
+        self.assertEqual(
+            {"selected_assistant_decision_outcome_only": 1},
+            assistant_counts,
+        )
+        self.assertNotIn("selected_user_profile_fact", assistant_counts)
 
     def test_generic_agent_hook_normalizes_assistant_and_tool_role_aliases(self) -> None:
         payload = {

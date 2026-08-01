@@ -2017,6 +2017,57 @@ def context_event_type_for_message(message: Json, default_event_type: str) -> st
     return default_event_type or "conversation_event"
 
 
+def memory_selection_policy_counts_for_message(message: Json, *, default_counts: Json | None = None) -> Json:
+    role = normalize_message_role(message.get("role")) if isinstance(message, dict) else ""
+    content = str(message.get("content") or "") if isinstance(message, dict) else ""
+    metadata = message.get("metadata") if isinstance(message, dict) and isinstance(message.get("metadata"), dict) else {}
+    selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
+    policies: list[str] = []
+    if isinstance(selection.get("policies"), list):
+        policies.extend(str(policy or "").strip() for policy in selection.get("policies", []))
+    selection_policy = str(selection.get("policy") or "").strip()
+    if selection_policy:
+        policies.append(selection_policy)
+    if not policies and role == "user":
+        policies.append("selected_user_prompt")
+        if user_profile_fact_lineage_text(content):
+            policies.append("selected_user_profile_fact")
+    elif not policies and role == "assistant":
+        feature_memory_only = feature_scope_excludes_outcome_evidence(content)
+        if assistant_profile_fact_lineage_text(content) or feature_memory_only:
+            policies.append("selected_assistant_profile_fact")
+        if content and not feature_memory_only:
+            policies.append("selected_assistant_decision_outcome_only")
+    elif not policies and role == "tool":
+        policies.append("selected_tool_evidence_only")
+    counts: Json = {}
+    for policy in ordered_unique_any([policy for policy in policies if policy]):
+        counts[policy] = 1
+    if counts:
+        return counts
+    return dict(default_counts or {})
+
+
+def memory_selection_retention_for_message(message: Json, *, default_retention: Json | None = None) -> Json:
+    metadata = message.get("metadata") if isinstance(message, dict) and isinstance(message.get("metadata"), dict) else {}
+    selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
+    if not selection:
+        return dict(default_retention or {})
+    retention: Json = {
+        "source_memory_selection_lossy_count": 1 if bool(selection.get("selection_lossy")) else 0,
+        "source_memory_selection_complete_count": 0 if bool(selection.get("selection_lossy")) else 1,
+    }
+    for source_key, target_key in [
+        ("dropped_text_chars", "source_memory_selection_dropped_text_chars"),
+        ("dropped_line_count", "source_memory_selection_dropped_line_count"),
+        ("retained_text_ratio", "source_memory_selection_retained_text_ratio_avg"),
+        ("retained_line_ratio", "source_memory_selection_retained_line_ratio_avg"),
+    ]:
+        if selection.get(source_key) not in (None, ""):
+            retention[target_key] = selection.get(source_key)
+    return retention
+
+
 def source_event_lineage_summary(records: list[Json]) -> Json:
     role_counts: Json = {}
     hook_type_counts: Json = {}
@@ -8410,6 +8461,15 @@ class MatrixArkLocalAdapter:
                 event_role = normalize_message_role(message.get("role"))
                 original_event_role = str(message.get("original_role") or message.get("role") or "").strip().lower()
                 event_type = context_event_type_for_message(message, str(extraction["event_type"] or ""))
+                event_memory_selection_policy_counts = memory_selection_policy_counts_for_message(
+                    message,
+                    default_counts=source_memory_selection_policy_counts,
+                )
+                event_memory_selection_policies = sorted(event_memory_selection_policy_counts)
+                event_memory_selection_retention = memory_selection_retention_for_message(
+                    message,
+                    default_retention=source_memory_selection_retention,
+                )
                 event_records_to_append.append(
                     {
                         "record_type": "context_event",
@@ -8453,9 +8513,9 @@ class MatrixArkLocalAdapter:
                         "source_hook_type_counts": source_hook_type_counts,
                         "source_codex_events": source_codex_events,
                         "source_codex_event_counts": source_codex_event_counts,
-                        "source_memory_selection_policies": source_memory_selection_policies,
-                        "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
-                        **source_memory_selection_retention,
+                        "source_memory_selection_policies": event_memory_selection_policies,
+                        "source_memory_selection_policy_counts": event_memory_selection_policy_counts,
+                        **event_memory_selection_retention,
                         "storage_options": envelope.get("storage_options", {}),
                         "updated_at_ms": envelope["ingestion_time_ms"],
                         "memory_scope": "session",
@@ -8488,9 +8548,9 @@ class MatrixArkLocalAdapter:
                         "source_hook_type_counts": source_hook_type_counts,
                         "source_codex_events": source_codex_events,
                         "source_codex_event_counts": source_codex_event_counts,
-                        "source_memory_selection_policies": source_memory_selection_policies,
-                        "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
-                        **source_memory_selection_retention,
+                        "source_memory_selection_policies": event_memory_selection_policies,
+                        "source_memory_selection_policy_counts": event_memory_selection_policy_counts,
+                        **event_memory_selection_retention,
                         "extraction_context_event_ids": extraction_context_event_ids,
                         "extraction_phase": extraction_phase,
                         "final_session_boundary": final_session_boundary,

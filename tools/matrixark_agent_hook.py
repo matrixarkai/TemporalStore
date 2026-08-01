@@ -573,6 +573,20 @@ def normalized_hook_message_role(role: str, *, event: str) -> str:
 
 
 def hook_messages_from_payload(payload: Json, *, event: str, text: str) -> list[Json]:
+    def message_for_role(role: str, content: str, *, original_content: str | None = None) -> Json:
+        normalized_role = normalized_hook_message_role(role, event=event)
+        selected_content = compact_for_role(normalized_role, content)
+        message: Json = {"role": normalized_role, "content": selected_content}
+        selection = codex_memory_selection_metadata(
+            role=normalized_role,
+            event=event,
+            text=selected_content,
+            original_text=content if original_content is None else original_content,
+        )
+        if selection:
+            message["metadata"] = {"codex_memory_selection": selection}
+        return message
+
     def compact_for_role(role: str, content: str) -> str:
         normalized_role = normalized_hook_message_role(role, event=event)
         if normalized_role == "assistant":
@@ -591,10 +605,10 @@ def hook_messages_from_payload(payload: Json, *, event: str, text: str) -> list[
                 content = str(item.get("content") or item.get("text") or item.get("message") or "").strip()
                 if content:
                     role = normalized_hook_message_role(str(item.get("role") or role_for_agent_event(event)).strip(), event=event)
-                    messages.append({"role": role, "content": compact_for_role(role, content)})
+                    messages.append(message_for_role(role, content))
             elif isinstance(item, str) and item.strip():
                 role = normalized_hook_message_role(role_for_agent_event(event), event=event)
-                messages.append({"role": role, "content": compact_for_role(role, item.strip())})
+                messages.append(message_for_role(role, item.strip()))
     if messages:
         return messages
     if norm(event) in TOOL_EVENTS:
@@ -617,9 +631,9 @@ def hook_messages_from_payload(payload: Json, *, event: str, text: str) -> list[
                             tool_texts.append(item_text)
         evidence = selected_tool_evidence_text("\n".join(tool_texts) or text)
         if evidence:
-            return [{"role": "tool", "content": evidence}]
+            return [message_for_role("tool", evidence, original_content="\n".join(tool_texts) or text)]
     role = role_for_agent_event(event)
-    return [{"role": role, "content": compact_for_role(role, text)}]
+    return [message_for_role(role, text)]
 
 
 def agent_memory_selection_metadata(payload: Json, *, event: str, text: str, messages: list[Json]) -> Json:
@@ -659,12 +673,24 @@ def agent_memory_selection_metadata(payload: Json, *, event: str, text: str, mes
     for role in sorted(selected_by_role):
         selected_text = "\n".join(selected_by_role.get(role, []))
         original_text = "\n".join(original_by_role.get(role, [])) or selected_text
-        selection = codex_memory_selection_metadata(
-            role=role,
-            event=event,
-            text=selected_text,
-            original_text=original_text,
-        )
+        role_messages = [
+            message
+            for message in messages
+            if normalized_hook_message_role(str(message.get("role") or role_for_agent_event(event)).strip(), event=event)
+            == role
+        ]
+        if len(role_messages) == 1:
+            metadata = role_messages[0].get("metadata") if isinstance(role_messages[0].get("metadata"), dict) else {}
+            selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
+        else:
+            selection = {}
+        if not selection:
+            selection = codex_memory_selection_metadata(
+                role=role,
+                event=event,
+                text=selected_text,
+                original_text=original_text,
+            )
         if not selection:
             continue
         selection_policies = selection.get("policies")
