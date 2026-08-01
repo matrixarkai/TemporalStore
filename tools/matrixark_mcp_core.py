@@ -7013,13 +7013,30 @@ def candidate_memory_layer_name(candidate: Json) -> str:
         )
         if str(value or "").strip()
     }
+    source_memory_layers = {
+        str(value or "").strip().lower()
+        for value in (
+            candidate.get("source_memory_layers")
+            if isinstance(candidate.get("source_memory_layers"), list)
+            else metadata.get("source_memory_layers", [])
+            if isinstance(metadata.get("source_memory_layers"), list)
+            else []
+        )
+        if str(value or "").strip()
+    }
     event_type = str(candidate.get("event_type") or metadata.get("event_type") or candidate.get("entity_type") or metadata.get("entity_type") or "").strip().lower()
-    is_codex_outcome_memory = profile_memory_kind == "codex_outcome" or "codex_outcome" in source_profile_memory_kinds or event_type in {"assistant_response", "assistant_decision", "tool_evidence", *CODEX_OUTCOME_ENTITY_TYPES}
+    is_codex_outcome_memory = (
+        profile_memory_kind == "codex_outcome"
+        or "codex_outcome" in source_profile_memory_kinds
+        or any("codex_outcome" in layer for layer in source_memory_layers)
+        or event_type in {"assistant_response", "assistant_decision", "tool_evidence", *CODEX_OUTCOME_ENTITY_TYPES}
+    )
     is_memory_feature_memory = (
         profile_memory_kind == "memory_feature"
         or profile_memory_class == "memory_feature"
         or "memory_feature" in source_profile_memory_kinds
         or "memory_feature" in source_profile_memory_classes
+        or any("memory_feature" in layer for layer in source_memory_layers)
         or event_type == "memory_feature"
     )
     if context_class == "resource_entity_fact":
