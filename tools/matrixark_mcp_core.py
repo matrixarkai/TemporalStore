@@ -5505,13 +5505,16 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     default_enabled = session_scope == "prefer" and remote_budget_tokens > 0
     enabled = bool(config.get("enabled", default_enabled)) and session_scope == "prefer" and remote_budget_tokens > 0
     normalized_question_type = str(question_type or "fact").strip().lower()
-    profile_memory_query = normalized_question_type == "profile_memory"
-    if normalized_question_type in {"current_state", "latest", "profile_memory"}:
-        default_ratio = DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO if profile_memory_query else DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO
-        if profile_memory_query:
-            question_budget_reason = "profile_memory_queries_need_long_term profile and cross-session state"
-        else:
-            question_budget_reason = "current_state_or_latest_queries_need_prior entity state and stale blockers"
+    query_text = str(args.get("query") or ranking.get("query") or "")
+    profile_memory_query = normalized_question_type == "profile_memory" or bool(
+        query_text and PROFILE_MEMORY_QUERY_RE.search(query_text.lower())
+    )
+    if profile_memory_query:
+        default_ratio = DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO
+        question_budget_reason = "profile_memory_queries_need_long_term profile and cross-session state"
+    elif normalized_question_type in {"current_state", "latest"}:
+        default_ratio = DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO
+        question_budget_reason = "current_state_or_latest_queries_need_prior entity state and stale blockers"
     elif normalized_question_type in {"multi_hop", "date"}:
         default_ratio = DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO
         question_budget_reason = (
