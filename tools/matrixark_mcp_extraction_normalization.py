@@ -214,12 +214,126 @@ def profile_entity_type_for_memory_text(text: str) -> str:
     return ""
 
 
+def normalized_index_value(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+
+
+CODEX_OUTCOME_CHANGE_RE = re.compile(
+    r"\b(?:changed|updated|implemented|added|removed|fixed|configured|enabled|disabled|installed|upgraded|downgraded|migrated|recovered|restored|cleaned|deleted|moved|renamed|wired|integrated|extracted|promoted|indexed|budgeted|ranked|batched|flushed|synced|consumed|hooked|captured)\b",
+    re.IGNORECASE,
+)
+CODEX_OUTCOME_PUBLISH_RE = re.compile(
+    r"\b(?:outcome|pushed|published|deployed|released|uploaded|merged|rebased|fast[- ]?forward(?:ed)?|commit\s+[0-9a-f]{7,40}|origin/main|refs/heads/main|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main)|[0-9a-f]{7,40}\s+(?:head|[^\s]+)\s*->\s*(?:main|origin/main))\b",
+    re.IGNORECASE,
+)
+CODEX_OUTCOME_BENCHMARK_RE = re.compile(
+    r"\b(?:benchmark|benchmarked|p50|p99|throughput|latency|qps|ops/sec|requests/sec)\b",
+    re.IGNORECASE,
+)
+
+
+def codex_outcome_fact_kind(line: str) -> str:
+    normalized = " ".join(str(line or "").split()).strip().lower()
+    if not normalized:
+        return ""
+    has_real_blocker = bool(
+        re.search(r"\b(?:blocked|blocker|failure|error|missing|rejected|fatal)\b", normalized)
+        or re.search(r"\b[1-9]\d*\s+(?:failed|failures|errors)\b", normalized)
+        or (re.search(r"\bfailed\b", normalized) and not re.search(r"\b0\s+failed\b", normalized))
+    )
+    if normalized.startswith("next:") or re.search(r"\b(?:next|follow[- ]?up)\b", normalized):
+        return "next"
+    if normalized.startswith("blocker:") or has_real_blocker:
+        return "blocker"
+    if normalized.startswith("outcome:") or CODEX_OUTCOME_PUBLISH_RE.search(normalized):
+        return "outcome"
+    if normalized.startswith("changed:") or CODEX_OUTCOME_CHANGE_RE.search(normalized):
+        return "changed"
+    if normalized.startswith("benchmark:") or CODEX_OUTCOME_BENCHMARK_RE.search(normalized):
+        return "benchmark"
+    return ""
+
+
+def codex_outcome_entity_type(kind: str) -> str:
+    return {
+        "next": "codex_next_action",
+        "blocker": "codex_blocker",
+        "outcome": "codex_publish_outcome",
+        "changed": "codex_code_change",
+        "benchmark": "codex_benchmark_result",
+    }.get(str(kind or "").strip().lower(), "codex_outcome_fact")
+
+
+def codex_outcome_fact_entities(
+    text: str,
+    *,
+    role_name: str,
+    source_refs: list[str],
+    source_count: int,
+) -> list[Json]:
+    source_role = "tool" if role_name == "tool" else "assistant"
+    entities: list[Json] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def outcome_candidate_chunks(compact_line: str) -> list[str]:
+        chunks: list[str] = []
+        for semicolon_part in re.split(r"\s*;\s*", compact_line):
+            for sentence in re.split(
+                r"(?<=[.!?])\s+(?=(?:I|We|Codex|Assistant|Tool|Next|Changed|Outcome|Blocked|Implemented|Fixed|Added|Removed|Updated|Configured|Installed|Pushed|Published|Deployed|Merged|Rebased|Recovered|Promoted|Indexed|Budgeted|Batched|Flushed)\b)",
+                semicolon_part,
+            ):
+                chunk = sentence.strip()
+                if chunk:
+                    chunks.append(chunk)
+        return chunks or ([compact_line] if compact_line else [])
+
+    for raw_line in str(text or "").splitlines():
+        compact_line = " ".join(raw_line.split()).strip(" -*")
+        for candidate in outcome_candidate_chunks(compact_line):
+            line = summarize_text(re.sub(r"^(?:assistant|tool)\s*:\s*", "", candidate, flags=re.IGNORECASE), limit=220)
+            if not line:
+                continue
+            kind = codex_outcome_fact_kind(line)
+            if not kind:
+                continue
+            entity_type = codex_outcome_entity_type(kind)
+            normalized_fact = normalized_index_value(line)
+            key = (entity_type, source_role, normalized_fact)
+            if key in seen:
+                continue
+            seen.add(key)
+            state = summarize_text(f"{source_role} {kind}: {line}", limit=220)
+            entities.append(
+                {
+                    "entity_type": entity_type,
+                    "entity_name": summarize_text(f"{entity_type}:{normalized_fact or line}", limit=96),
+                    "state": state,
+                    "confidence": 0.9 if kind == "outcome" else 0.86,
+                    "source_refs": source_refs,
+                    "source_roles": [source_role],
+                    "source_role_counts": {source_role: source_count},
+                    "operator": normalize_entity_operator(None, entity_type),
+                    "field_patches": [entity_patch("", summarize_text(state, limit=180))],
+                }
+            )
+            if len(entities) >= 8:
+                break
+        if len(entities) >= 8:
+            break
+    return entities
+
+
 def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     entities: list[Json] = []
     text = text_from_messages(messages)
     lower = text.lower()
     source_event_ids = envelope.get("source_event_ids", [])
     source_refs = [str(ref) for ref in source_event_ids] if isinstance(source_event_ids, list) and source_event_ids else [str(index) for index, _ in enumerate(messages)]
+    def source_ref_for_message_index(index: int) -> str:
+        if isinstance(source_event_ids, list) and index < len(source_event_ids):
+            return str(source_event_ids[index])
+        return str(index)
+
     def source_refs_for_role(role_name: str) -> list[str]:
         refs: list[str] = []
         for index, item in enumerate(messages):
@@ -227,10 +341,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 continue
             if not str(item.get("content") or "").strip():
                 continue
-            if isinstance(source_event_ids, list) and index < len(source_event_ids):
-                refs.append(str(source_event_ids[index]))
-            else:
-                refs.append(str(index))
+            refs.append(source_ref_for_message_index(index))
         return refs or source_refs
     user_messages = [
         item
@@ -283,6 +394,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     ]
     tool_text = text_from_messages(tool_messages) if tool_messages else ""
     if tool_text:
+        tool_refs = source_refs_for_role("tool")
         evidence_state = summarize_text(tool_evidence_memory_text(tool_text), limit=220)
         entities.append(
             {
@@ -290,11 +402,26 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "entity_name": "tool_evidence",
                 "state": evidence_state,
                 "confidence": 0.86,
-                "source_refs": source_refs_for_role("tool"),
+                "source_refs": tool_refs,
                 "operator": normalize_entity_operator(None, "tool_evidence"),
                 "field_patches": [entity_patch("", summarize_text(evidence_state, limit=180))],
             }
         )
+        for message_index, message in enumerate(messages):
+            role = str(message.get("role") or "").lower()
+            if role not in {"tool", "tool_result", "tool_output", "function"}:
+                continue
+            content = str(message.get("content") or "").strip()
+            if not content:
+                continue
+            entities.extend(
+                codex_outcome_fact_entities(
+                    content,
+                    role_name="tool",
+                    source_refs=[source_ref_for_message_index(message_index)],
+                    source_count=1,
+                )
+            )
     assistant_messages = [
         item
         for item in messages
@@ -320,6 +447,21 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "field_patches": [entity_patch("", summarize_text(decision_state, limit=180))],
             }
         )
+        for message_index, message in enumerate(messages):
+            role = str(message.get("role") or "").lower()
+            if role not in {"assistant", "agent", "llm", "assistant_response", "ai", "bot", "model"}:
+                continue
+            content = str(message.get("content") or "").strip()
+            if not content:
+                continue
+            entities.extend(
+                codex_outcome_fact_entities(
+                    content,
+                    role_name="assistant",
+                    source_refs=[source_ref_for_message_index(message_index)],
+                    source_count=1,
+                )
+            )
         assistant_profile_fact_patterns = [
             r"\b(?:i(?:'ll| will)?|codex will|assistant will)\s+(?:remember|keep|use|follow|prefer|avoid|stop using|not use|always use|make sure)\b[:\s]+([^.;!?\n]{4,220})",
             r"\b(?:noted|got it|understood|i(?:'ll| will)? remember|remembered)\b[:\s]+(?:that\s+)?([^.;!?\n]{4,220})",
