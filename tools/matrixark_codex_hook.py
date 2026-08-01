@@ -29,10 +29,12 @@ try:
         local_account_user_id,
         memory_hierarchy_contract_from_recall_policy,
         messages_from_event_record,
+        new_secondary_index_budget,
         normalize_message_role,
         pending_extraction_memory_layer_intent,
         serving_memory_layer_budget,
         serving_memory_layer_pressure,
+        take_secondary_index_terms,
     )
     from tools.matrixark_mcp_context_pack import (
         serving_async_pipeline_readiness,
@@ -51,10 +53,12 @@ except ModuleNotFoundError:
         local_account_user_id,
         memory_hierarchy_contract_from_recall_policy,
         messages_from_event_record,
+        new_secondary_index_budget,
         normalize_message_role,
         pending_extraction_memory_layer_intent,
         serving_memory_layer_budget,
         serving_memory_layer_pressure,
+        take_secondary_index_terms,
     )
     from matrixark_mcp_context_pack import (
         serving_async_pipeline_readiness,
@@ -4188,7 +4192,12 @@ def fast_hook_event_projection_records(*, event_record: Json, updated_at_ms: int
             "updated_at_ms": updated_at_ms,
         })
     ]
-    for index_name in sorted(candidate_index_terms(event_record, {}, {})):
+    secondary_index_budget = new_secondary_index_budget()
+    index_terms = take_secondary_index_terms(
+        sorted(candidate_index_terms(event_record, {}, {})),
+        secondary_index_budget,
+    )
+    for index_name in index_terms:
         index_record = context_index_posting_record(
             index_name=index_name,
             data_model="context_event",
