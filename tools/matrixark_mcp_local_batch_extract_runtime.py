@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import time
+import re
 from typing import Any
 
 try:
@@ -71,6 +72,25 @@ def compact_context_embedding_record(record: Json) -> Json:
     for field in EMBEDDING_LINEAGE_DEBUG_FIELDS:
         compacted.pop(field, None)
     return compacted
+
+
+ASSISTANT_PROFILE_FACT_LINEAGE_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"\b(?:user|you)\b.{0,96}\b(?:prefer|prefers|preference|likes|wants|needs|asked|requires|required|always|never|avoid|remember)\b",
+        r"\b(?:i(?:'ll| will)? remember|remembered|noted|got it|understood)\b.{0,140}\b(?:prefer|preference|want|need|always|never|avoid|profile|memory|workspace|repo|branch|reply|respond|format|style)\b",
+        r"\b(?:i(?:'ll| will)|codex will|assistant will)\b.{0,64}\b(?:remember|keep|use|follow|prefer|avoid|not use|always use|make sure)\b",
+        r"\b(?:standing instruction|standing preference|user profile|long[- ]term memor(?:y|ies)|saved preference|persistent instruction)\b",
+        r"\b(?:call me|my name is|user(?:'s)? name is|user goes by|pronouns?|address (?:me|the user))\b",
+        r"\b(?:reply|respond|answer|write|communication style|response style|answer style|preferred language|preferred format|timezone|time zone|locale)\b.{0,120}\b(?:concise|brief|detailed|bullets?|markdown|language|tone|style|format|timezone|locale)\b",
+        r"\b(?:workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|build|deploy|deployment|rustraft|temporalstore|matrixark)\b.{0,140}\b(?:always|prefer|use|keep|must|should|avoid|never|don't|push|build|deploy)\b",
+    ]
+]
+
+
+def assistant_profile_fact_lineage_text(text: Any) -> bool:
+    compact = " ".join(str(text or "").split())
+    return bool(compact and any(pattern.search(compact) for pattern in ASSISTANT_PROFILE_FACT_LINEAGE_PATTERNS))
 
 
 def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
@@ -258,6 +278,27 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             selection_values.append(selection_policy)
         for policy_name in ordered_unique_any(selection_values):
             source_memory_selection_policy_counts[policy_name] = 1
+    assistant_text_parts = [
+        str(message.get("content") or "")
+        for message in extraction_envelope.get("messages", [])
+        if isinstance(message, dict) and normalize_message_role(message.get("role")) == "assistant"
+    ]
+    assistant_lineage_text = "\n".join(assistant_text_parts) or envelope_metadata.get("text") or envelope.get("text")
+    assistant_policies: list[str] = []
+    if assistant_profile_fact_lineage_text(assistant_lineage_text):
+        assistant_policies.append("selected_assistant_profile_fact")
+    if assistant_lineage_text or source_role_counts.get("assistant"):
+        assistant_policies.append("selected_assistant_decision_outcome_only")
+    inferred_policy_by_role = {
+        "assistant": assistant_policies,
+        "tool": ["selected_tool_evidence_only"],
+        "user": ["selected_user_prompt"],
+    }
+    for role, count in source_role_counts.items():
+        for policy_name in inferred_policy_by_role.get(role, []):
+            if not policy_name or policy_name in source_memory_selection_policy_counts:
+                continue
+            source_memory_selection_policy_counts[policy_name] = max(1, int(count or 0))
     source_memory_selection_policies = sorted(source_memory_selection_policy_counts)
     source_memory_selection_retention: Json = {
         key: envelope_metadata.get(key)
