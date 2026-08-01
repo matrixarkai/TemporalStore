@@ -549,7 +549,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     assistant_messages = [
         item
         for item in messages
-        if str(item.get("role") or "").lower() in {"assistant", "agent", "llm"}
+        if normalize_source_role(item.get("role")) == "assistant"
         and str(item.get("content") or "").strip()
     ]
     assistant_text = text_from_messages(assistant_messages) if assistant_messages else ""
@@ -573,8 +573,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
             }
         )
         for message_index, message in enumerate(messages):
-            role = str(message.get("role") or "").lower()
-            if role not in {"assistant", "agent", "llm", "assistant_response", "ai", "bot", "model"}:
+            if normalize_source_role(message.get("role")) != "assistant":
                 continue
             content = str(message.get("content") or "").strip()
             if not content:
