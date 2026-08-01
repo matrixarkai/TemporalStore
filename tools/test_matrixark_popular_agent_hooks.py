@@ -774,6 +774,15 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         self.assertIn("TODO/planned", examples)
         self.assertNotIn("--agent openclaw --event UserPromptSubmit", examples)
 
+    def test_installed_codex_wrappers_forward_actual_hook_event(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        for script_name in ["install_linux_temporalstore.sh", "install_macos_temporalstore.sh"]:
+            with self.subTest(script_name=script_name):
+                script = (repo / "tools" / script_name).read_text()
+                self.assertIn('event="\\${1:-\\${MATRIXARK_AGENT_EVENT:-\\${CODEX_HOOK_EVENT:-UserPromptSubmit}}}"', script)
+                self.assertIn('--event "\\$event" --backend temporalstore-rust "\\$@"', script)
+                self.assertNotIn("--event UserPromptSubmit --backend temporalstore-rust", script)
+
 
 if __name__ == "__main__":
     unittest.main()
