@@ -3118,11 +3118,16 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
             r"\b(?:noted|got it|understood|i(?:'ll| will)? remember|remembered)\b[:\s]+(?:that\s+)?([^.;!?\n]{4,220})",
             r"\b(?:i(?:'ll| will) keep|i(?:'ll| will) use|i(?:'ll| will) avoid|i(?:'ll| will) make sure)\s+([^.;!?\n]{4,220})",
         ]
+        seen_assistant_profile_facts: set[str] = set()
         for pattern in assistant_profile_fact_patterns:
             for match in re.finditer(pattern, assistant_text, re.IGNORECASE):
                 fact_text = clean_patch_value(match.group(1) if match.groups() else match.group(0))
                 if not fact_text:
                     continue
+                fact_key = re.sub(r"\s+", " ", fact_text.lower()).strip(" .,:;-")
+                if any(fact_key in seen or seen in fact_key for seen in seen_assistant_profile_facts):
+                    continue
+                seen_assistant_profile_facts.add(fact_key)
                 fact_entity_type = profile_entity_type_for_memory_text(fact_text) or "preference"
                 state = summarize_text(f"assistant profile fact: {fact_text}", limit=220)
                 entities.append(
