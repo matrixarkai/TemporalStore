@@ -4209,6 +4209,88 @@ def pending_session_message_count(records: list[Json]) -> int:
     return sum(len(messages_from_event_record(record)) for record in records)
 
 
+def pending_session_buffer_lineage(records: list[Json], *, fallback_role: str, fallback_hook_type: str, fallback_codex_event: str) -> Json:
+    source_roles: list[str] = []
+    source_hook_types: list[str] = []
+    source_codex_events: list[str] = []
+    source_role_counts: Json = {}
+    source_hook_type_counts: Json = {}
+    source_codex_event_counts: Json = {}
+
+    def add_count(bucket: Json, value: Any, *, normalize_role: bool = False, count: int = 1) -> None:
+        label = normalize_message_role(value) if normalize_role else str(value or "").strip()
+        if not label:
+            return
+        bucket[label] = int(bucket.get(label, 0) or 0) + max(1, int(count or 1))
+
+    def add_values(values: Any, target: list[str], counts: Json, *, normalize_role: bool = False) -> None:
+        if isinstance(values, list):
+            for value in values:
+                label = normalize_message_role(value) if normalize_role else str(value or "").strip()
+                if label:
+                    target.append(label)
+                    add_count(counts, label, normalize_role=False)
+
+    for record in records:
+        envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else {}
+        metadata = envelope.get("metadata", {}) if isinstance(envelope.get("metadata"), dict) else {}
+        hook = record.get("agent_hook", {}) if isinstance(record.get("agent_hook"), dict) else {}
+        for message in messages_from_event_record(record):
+            role = normalize_message_role(message.get("role"))
+            if role:
+                source_roles.append(role)
+                add_count(source_role_counts, role)
+        add_values(metadata.get("source_roles"), source_roles, source_role_counts, normalize_role=True)
+        add_values(record.get("source_roles"), source_roles, source_role_counts, normalize_role=True)
+        for value in [record.get("source_role"), envelope.get("source_role"), metadata.get("source_role")]:
+            role = normalize_message_role(value)
+            if role:
+                source_roles.append(role)
+                add_count(source_role_counts, role)
+        add_values(metadata.get("source_hook_types"), source_hook_types, source_hook_type_counts)
+        add_values(record.get("source_hook_types"), source_hook_types, source_hook_type_counts)
+        for value in [record.get("hook_type"), envelope.get("hook_type"), metadata.get("hook_type"), hook.get("hook_type")]:
+            hook_type = str(value or "").strip()
+            if hook_type:
+                source_hook_types.append(hook_type)
+                add_count(source_hook_type_counts, hook_type)
+        add_values(metadata.get("source_codex_events"), source_codex_events, source_codex_event_counts)
+        add_values(record.get("source_codex_events"), source_codex_events, source_codex_event_counts)
+        for value in [record.get("codex_event"), envelope.get("codex_event"), metadata.get("codex_event"), hook.get("codex_event"), hook.get("trigger")]:
+            codex_event = str(value or "").strip()
+            if codex_event:
+                source_codex_events.append(codex_event)
+                add_count(source_codex_event_counts, codex_event)
+
+    if not source_roles and fallback_role:
+        source_roles.append(fallback_role)
+        add_count(source_role_counts, fallback_role, normalize_role=True)
+    if not source_hook_types and fallback_hook_type:
+        source_hook_types.append(fallback_hook_type)
+        add_count(source_hook_type_counts, fallback_hook_type)
+    if not source_codex_events and fallback_codex_event:
+        source_codex_events.append(fallback_codex_event)
+        add_count(source_codex_event_counts, fallback_codex_event)
+
+    def ordered(values: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            if value and value not in seen:
+                seen.add(value)
+                result.append(value)
+        return result
+
+    return {
+        "source_roles": ordered(source_roles),
+        "source_role_counts": source_role_counts,
+        "source_hook_types": ordered(source_hook_types),
+        "source_hook_type_counts": source_hook_type_counts,
+        "source_codex_events": ordered(source_codex_events),
+        "source_codex_event_counts": source_codex_event_counts,
+    }
+
+
 def fast_async_hook_ingest(
     server: Any,
     *,
@@ -4595,6 +4677,7 @@ def fast_async_hook_ingest(
         )
     pending_event_count = 0
     pending_message_count = 0
+    pending_after_ingest: list[Json] = []
     if callable(pending_session_events):
         try:
             pending_after_ingest = list(pending_session_events(scope))
@@ -4603,6 +4686,13 @@ def fast_async_hook_ingest(
         except Exception:
             pending_event_count = 0
             pending_message_count = 0
+            pending_after_ingest = []
+    pending_lineage = pending_session_buffer_lineage(
+        pending_after_ingest,
+        fallback_role=role,
+        fallback_hook_type=hook_type,
+        fallback_codex_event=args.event,
+    )
     should_boundary_commit = should_commit_session(args.event)
     should_threshold_commit = (
         not should_boundary_commit
@@ -4640,12 +4730,7 @@ def fast_async_hook_ingest(
                     "idle_commit_cutoff_ms": idle_commit_cutoff_ms,
                     "idle_commit_pending_event_count": pending_event_count,
                     "idle_commit_pending_message_count": pending_message_count,
-                    "source_roles": [role] if role else [],
-                    "source_role_counts": {role: 1} if role else {},
-                    "source_hook_types": [hook_type] if hook_type else [],
-                    "source_hook_type_counts": {hook_type: 1} if hook_type else {},
-                    "source_codex_events": [args.event] if args.event else [],
-                    "source_codex_event_counts": {args.event: 1} if args.event else {},
+                    **pending_lineage,
                     "source_extraction_phases": ["provisional"],
                     "extraction_phase": "provisional",
                     "final_session_boundary": False,
@@ -4674,12 +4759,7 @@ def fast_async_hook_ingest(
                     "threshold_messages": threshold,
                     "threshold_pending_event_count": pending_event_count,
                     "threshold_pending_message_count": pending_message_count,
-                    "source_roles": [role] if role else [],
-                    "source_role_counts": {role: 1} if role else {},
-                    "source_hook_types": [hook_type] if hook_type else [],
-                    "source_hook_type_counts": {hook_type: 1} if hook_type else {},
-                    "source_codex_events": [args.event] if args.event else [],
-                    "source_codex_event_counts": {args.event: 1} if args.event else {},
+                    **pending_lineage,
                     "source_extraction_phases": ["provisional"],
                     "extraction_phase": "provisional",
                     "final_session_boundary": False,
