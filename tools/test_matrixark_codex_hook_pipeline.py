@@ -11899,6 +11899,10 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual([event_hash_by_role["tool"]], tool_entity["source_event_ids"])
             self.assertNotIn(event_hash_by_role["tool"], assistant_entity["source_event_ids"])
             self.assertNotIn(event_hash_by_role["assistant"], tool_entity["source_event_ids"])
+            self.assertEqual({"hook_boundary": 1}, assistant_entity["source_hook_type_counts"])
+            self.assertEqual({"hook_boundary": 1}, tool_entity["source_hook_type_counts"])
+            self.assertEqual({"Stop": 1}, assistant_entity["source_codex_event_counts"])
+            self.assertEqual({"Stop": 1}, tool_entity["source_codex_event_counts"])
             self.assertIn(
                 "selected_assistant_decision_outcome_only",
                 assistant_entity["source_memory_selection_policies"],
@@ -11959,8 +11963,12 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "selected_assistant_decision_outcome_only",
                 assistant_segments[0]["source_memory_selection_policies"],
             )
+            self.assertEqual({"hook_boundary": 1}, assistant_segments[0]["source_hook_type_counts"])
+            self.assertEqual({"Stop": 1}, assistant_segments[0]["source_codex_event_counts"])
             self.assertNotIn("selected_tool_evidence_only", assistant_segments[0]["source_memory_selection_policies"])
             self.assertIn("selected_tool_evidence_only", tool_segments[0]["source_memory_selection_policies"])
+            self.assertEqual({"hook_boundary": 1}, tool_segments[0]["source_hook_type_counts"])
+            self.assertEqual({"Stop": 1}, tool_segments[0]["source_codex_event_counts"])
             self.assertNotIn(
                 "selected_assistant_decision_outcome_only",
                 tool_segments[0]["source_memory_selection_policies"],
