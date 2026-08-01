@@ -1126,6 +1126,14 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
             outcome_query=codex_outcome_budget_query(args, ranking, question_type=question_type),
         )
     )
+    defaults["cross_session_memory_feature_summary"] = max(
+        defaults.get("cross_session_memory_feature_entity", 0.25),
+        defaults.get("profile_summary", 0.30),
+    )
+    defaults["cross_session_memory_feature_compression"] = max(
+        defaults.get("cross_session_memory_feature_entity", 0.25),
+        defaults.get("profile_compression", 0.25),
+    )
     budgets: Json = {}
     for layer, default_fraction in defaults.items():
         raw_fraction = fractions.get(layer, default_fraction) if isinstance(fractions, dict) else default_fraction
@@ -1340,6 +1348,14 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
             normalized_question_type,
             outcome_query=outcome_query,
         )
+    )
+    fractions["cross_session_memory_feature_summary"] = max(
+        fractions.get("cross_session_memory_feature_entity", 0.25),
+        fractions.get("profile_summary", 0.30),
+    )
+    fractions["cross_session_memory_feature_compression"] = max(
+        fractions.get("cross_session_memory_feature_entity", 0.25),
+        fractions.get("profile_compression", 0.25),
     )
     return {
         layer: max(1, int(remote_budget * fraction))

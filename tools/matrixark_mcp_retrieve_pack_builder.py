@@ -57,6 +57,8 @@ def memory_layer_name(ref: Json) -> str:
         return "skill_section"
     if ref_type == "compression" or context_class == "compression":
         if memory_scope == "user_profile" and session_continuity == "cross_session":
+            if profile_memory_kind == "memory_feature":
+                return "cross_session_memory_feature_compression"
             return "profile_compression"
         if session_continuity == "same_session":
             return "same_session_compression"
@@ -65,6 +67,8 @@ def memory_layer_name(ref: Json) -> str:
         return "compression"
     if ref_type == "summary" or context_class == "summary":
         if memory_scope == "user_profile" and session_continuity == "cross_session":
+            if profile_memory_kind == "memory_feature":
+                return "cross_session_memory_feature_summary"
             return "profile_summary"
         if session_continuity == "same_session":
             return "same_session_summary"
@@ -544,7 +548,13 @@ def memory_layer_pressure_summary(selected_budget: Json, dropped_budget: Json) -
         return int(bucket_data.get("dropped_refs", bucket_data.get("dropped_count", 0)))
     def dropped_count_in(dimension: str, bucket: str) -> int:
         return int(dimension_data.get(dimension, {}).get(bucket, {}).get("dropped_count", 0))
-    summary_layer_names = ["summary", "profile_summary", "same_session_summary", "cross_session_summary"]
+    summary_layer_names = [
+        "summary",
+        "profile_summary",
+        "cross_session_memory_feature_summary",
+        "same_session_summary",
+        "cross_session_summary",
+    ]
     summary["profile_entity_pressure"] = dropped_in("by_memory_layer", "profile_entity") > 0
     summary["pending_async_event_pressure"] = dropped_in("by_memory_layer", "pending_async_event") > 0
     summary["same_session_event_pressure"] = dropped_in("by_memory_layer", "same_session_event") > 0
