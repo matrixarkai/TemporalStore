@@ -6993,6 +6993,17 @@ class MatrixArkLocalAdapter:
             pending_event_type = "pending_async"
             if len(envelope["messages"]) == 1:
                 pending_event_type = context_event_type_for_message(envelope["messages"][0], pending_event_type)
+            pending_profile_memory_fields: Json = {}
+            if (
+                pending_event_type == "memory_feature"
+                or profile_entity_type_for_memory_text(text) == "memory_feature_profile"
+            ):
+                pending_profile_memory_fields = {
+                    "profile_memory_class": "memory_feature",
+                    "profile_memory_kind": "memory_feature",
+                    "source_profile_memory_classes": ["memory_feature"],
+                    "source_profile_memory_kinds": ["memory_feature"],
+                }
             pending_lineage = context_source_lineage(envelope, hook)
             pending_event_vector = embedding_for_text(text)
             with self.write_batch("message_ingest_sync_accept"):
@@ -7035,6 +7046,7 @@ class MatrixArkLocalAdapter:
                     "session_continuity": "same_session",
                     "source_memory_scopes": source_memory_scopes,
                     "source_session_continuities": source_session_continuities,
+                    **pending_profile_memory_fields,
                     "extraction_phase": "pending_async",
                     "final_session_boundary": False,
                     "updated_at_ms": envelope["ingestion_time_ms"],
@@ -7065,6 +7077,7 @@ class MatrixArkLocalAdapter:
                         "source_memory_scopes": source_memory_scopes,
                         "source_session_continuities": source_session_continuities,
                         "source_extraction_phases": ["pending_async"],
+                        **pending_profile_memory_fields,
                         "extraction_phase": "pending_async",
                         "final_session_boundary": False,
                         "updated_at_ms": envelope["ingestion_time_ms"],
@@ -7101,6 +7114,7 @@ class MatrixArkLocalAdapter:
                         **source_event_lineage_summary([source_lineage]),
                         "source_memory_scopes": source_memory_scopes,
                         "source_session_continuities": source_session_continuities,
+                        **pending_profile_memory_fields,
                         "created_at_ms": envelope["ingestion_time_ms"],
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
