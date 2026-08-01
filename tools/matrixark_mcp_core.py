@@ -2922,6 +2922,12 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     lower = text.lower()
     source_event_ids = envelope.get("source_event_ids", [])
     source_refs = [str(ref) for ref in source_event_ids] if isinstance(source_event_ids, list) and source_event_ids else [str(index) for index, _ in enumerate(messages)]
+
+    def source_ref_for_message_index(index: int) -> str:
+        if isinstance(source_event_ids, list) and index < len(source_event_ids):
+            return str(source_event_ids[index])
+        return str(index)
+
     def source_refs_for_role(role_name: str) -> list[str]:
         refs: list[str] = []
         for index, item in enumerate(messages):
@@ -3011,12 +3017,13 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                         "field_patches": [entity_patch("", summarize_text(state, limit=180))],
                     }
                 )
-    tool_messages = [
-        item
-        for item in messages
+    tool_message_items = [
+        (index, item)
+        for index, item in enumerate(messages)
         if normalized_extraction_message_role(item.get("role")) == "tool"
         and str(item.get("content") or "").strip()
     ]
+    tool_messages = [item for _index, item in tool_message_items]
     tool_text = text_from_messages(tool_messages) if tool_messages else ""
     if tool_text:
         tool_refs = source_refs_for_role("tool")
@@ -3034,20 +3041,22 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "field_patches": [entity_patch("", summarize_text(evidence_state, limit=180))],
             }
         )
-        entities.extend(
-            codex_outcome_fact_entities(
-                tool_text,
-                role_name="tool",
-                source_refs=tool_refs,
-                source_count=len(tool_messages),
+        for message_index, message in tool_message_items:
+            entities.extend(
+                codex_outcome_fact_entities(
+                    str(message.get("content") or ""),
+                    role_name="tool",
+                    source_refs=[source_ref_for_message_index(message_index)],
+                    source_count=1,
+                )
             )
-        )
-    assistant_messages = [
-        item
-        for item in messages
+    assistant_message_items = [
+        (index, item)
+        for index, item in enumerate(messages)
         if normalized_extraction_message_role(item.get("role")) == "assistant"
         and str(item.get("content") or "").strip()
     ]
+    assistant_messages = [item for _index, item in assistant_message_items]
     assistant_text = text_from_messages(assistant_messages) if assistant_messages else ""
     if assistant_text and re.search(
         r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|published|deployed|released|merged|rebased|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|will|next|choose|chose|use|keep|remove|blocked|blocker|failed|failure|error|rejected|updated|changed|validated|validation|verified|promoted|indexed|budgeted|batched|flushed|profile|cross[- ]session|memory|gap|risk|warning)\b",
@@ -3069,14 +3078,15 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "field_patches": [entity_patch("", summarize_text(decision_state, limit=180))],
             }
         )
-        entities.extend(
-            codex_outcome_fact_entities(
-                assistant_text,
-                role_name="assistant",
-                source_refs=assistant_refs,
-                source_count=len(assistant_messages),
+        for message_index, message in assistant_message_items:
+            entities.extend(
+                codex_outcome_fact_entities(
+                    str(message.get("content") or ""),
+                    role_name="assistant",
+                    source_refs=[source_ref_for_message_index(message_index)],
+                    source_count=1,
+                )
             )
-        )
         assistant_profile_fact_patterns = [
             r"\b(?:i(?:'ll| will)?|codex will|assistant will)\s+(?:remember|keep|use|follow|prefer|avoid|stop using|not use|always use|make sure)\b[:\s]+([^.;!?\n]{4,220})",
             r"\b(?:noted|got it|understood|i(?:'ll| will)? remember|remembered)\b[:\s]+(?:that\s+)?([^.;!?\n]{4,220})",
