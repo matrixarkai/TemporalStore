@@ -301,6 +301,22 @@ def build_node_summary_refresh_records(
         "source_memory_selection_policy_counts",
         "source_memory_selection_policies",
     )
+    source_profile_promotion_policies = source_values(
+        "source_profile_promotion_policies",
+        "profile_promotion_policy",
+    )
+    source_profile_promotion_blockers = source_values(
+        "source_profile_promotion_blockers",
+        "profile_promotion_blocker",
+    )
+    source_profile_memory_classes = source_values(
+        "source_profile_memory_classes",
+        "profile_memory_class",
+    )
+    source_profile_memory_kinds = source_values(
+        "source_profile_memory_kinds",
+        "profile_memory_kind",
+    )
     source_memory_scopes = source_values("source_memory_scopes", "memory_scope")
     source_session_continuities = source_values("source_session_continuities", "session_continuity")
     source_extraction_phases = sorted(
@@ -358,6 +374,27 @@ def build_node_summary_refresh_records(
             "user_profile" in source_memory_scopes
             or any(str(part).startswith("profile:") for part in node_path)
         )
+        profile_memory_class = (
+            "memory_feature"
+            if "memory_feature" in source_profile_memory_classes
+            else source_profile_memory_classes[0]
+            if source_profile_memory_classes
+            else ""
+        )
+        profile_memory_kind = (
+            "memory_feature"
+            if "memory_feature" in source_profile_memory_kinds
+            else source_profile_memory_kinds[0]
+            if source_profile_memory_kinds
+            else ""
+        )
+        profile_promotion_policy = (
+            "always_when_profile_scope_available"
+            if "always_when_profile_scope_available" in source_profile_promotion_policies
+            else source_profile_promotion_policies[0]
+            if source_profile_promotion_policies
+            else ""
+        )
         summary_record = {
             "record_type": "context_summary",
             "summary_type": level,
@@ -378,6 +415,10 @@ def build_node_summary_refresh_records(
             "source_codex_event_counts": source_codex_event_counts,
             "source_memory_selection_policies": source_memory_selection_policies,
             "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+            "source_profile_promotion_policies": source_profile_promotion_policies,
+            "source_profile_promotion_blockers": source_profile_promotion_blockers,
+            "source_profile_memory_classes": source_profile_memory_classes,
+            "source_profile_memory_kinds": source_profile_memory_kinds,
             "source_memory_scopes": source_memory_scopes,
             "source_session_continuities": source_session_continuities,
             "source_extraction_phases": source_extraction_phases,
@@ -387,6 +428,9 @@ def build_node_summary_refresh_records(
             "extraction_phase": "final" if "final" in source_extraction_phases else ("provisional" if "provisional" in source_extraction_phases else ""),
             "final_session_boundary": source_final_session_boundary_count > 0,
             "profile_summary_current": profile_summary_current,
+            "profile_memory_class": profile_memory_class,
+            "profile_memory_kind": profile_memory_kind,
+            "profile_promotion_policy": profile_promotion_policy,
             "source_operator_hashes": source_operator_hashes,
             "summary_generation_policy": summary_policy,
             "dirty_hash": dirty_hash,
@@ -432,6 +476,10 @@ def build_node_summary_refresh_records(
                 "source_codex_event_counts": source_codex_event_counts,
                 "source_memory_selection_policies": source_memory_selection_policies,
                 "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                "source_profile_promotion_policies": source_profile_promotion_policies,
+                "source_profile_promotion_blockers": source_profile_promotion_blockers,
+                "source_profile_memory_classes": source_profile_memory_classes,
+                "source_profile_memory_kinds": source_profile_memory_kinds,
                 "source_memory_scopes": source_memory_scopes,
                 "source_session_continuities": source_session_continuities,
                 "source_extraction_phases": source_extraction_phases,
@@ -441,6 +489,9 @@ def build_node_summary_refresh_records(
                 "extraction_phase": "final" if "final" in source_extraction_phases else ("provisional" if "provisional" in source_extraction_phases else ""),
                 "final_session_boundary": source_final_session_boundary_count > 0,
                 "profile_summary_current": profile_summary_current,
+                "profile_memory_class": profile_memory_class,
+                "profile_memory_kind": profile_memory_kind,
+                "profile_promotion_policy": profile_promotion_policy,
                 "scope": scope,
                 "updated_at_ms": refreshed_at_ms,
             })
@@ -460,6 +511,10 @@ def build_node_summary_refresh_records(
         "source_codex_event_counts": source_codex_event_counts,
         "source_memory_selection_policies": source_memory_selection_policies,
         "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+        "source_profile_promotion_policies": source_profile_promotion_policies,
+        "source_profile_promotion_blockers": source_profile_promotion_blockers,
+        "source_profile_memory_classes": source_profile_memory_classes,
+        "source_profile_memory_kinds": source_profile_memory_kinds,
         "source_memory_scopes": source_memory_scopes,
         "source_session_continuities": source_session_continuities,
         "source_extraction_phases": source_extraction_phases,
@@ -666,6 +721,10 @@ def refresh_dirty_node_summaries(
         source_codex_event_counts = summary_refresh_records.get("source_codex_event_counts", {})
         source_memory_selection_policies = summary_refresh_records.get("source_memory_selection_policies", [])
         source_memory_selection_policy_counts = summary_refresh_records.get("source_memory_selection_policy_counts", {})
+        source_profile_promotion_policies = summary_refresh_records.get("source_profile_promotion_policies", [])
+        source_profile_promotion_blockers = summary_refresh_records.get("source_profile_promotion_blockers", [])
+        source_profile_memory_classes = summary_refresh_records.get("source_profile_memory_classes", [])
+        source_profile_memory_kinds = summary_refresh_records.get("source_profile_memory_kinds", [])
         source_memory_scopes = summary_refresh_records.get("source_memory_scopes", [])
         source_session_continuities = summary_refresh_records.get("source_session_continuities", [])
         source_extraction_phases = summary_refresh_records.get("source_extraction_phases", [])
@@ -726,6 +785,10 @@ def refresh_dirty_node_summaries(
                     "source_codex_event_counts": source_codex_event_counts,
                     "source_memory_selection_policies": source_memory_selection_policies,
                     "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                    "source_profile_promotion_policies": source_profile_promotion_policies,
+                    "source_profile_promotion_blockers": source_profile_promotion_blockers,
+                    "source_profile_memory_classes": source_profile_memory_classes,
+                    "source_profile_memory_kinds": source_profile_memory_kinds,
                     "source_memory_scopes": source_memory_scopes,
                     "source_session_continuities": source_session_continuities,
                     "source_extraction_phases": source_extraction_phases,
@@ -779,6 +842,10 @@ def refresh_dirty_node_summaries(
                 "source_codex_event_counts": source_codex_event_counts,
                 "source_memory_selection_policies": source_memory_selection_policies,
                 "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                "source_profile_promotion_policies": source_profile_promotion_policies,
+                "source_profile_promotion_blockers": source_profile_promotion_blockers,
+                "source_profile_memory_classes": source_profile_memory_classes,
+                "source_profile_memory_kinds": source_profile_memory_kinds,
                 "source_memory_scopes": source_memory_scopes,
                 "source_session_continuities": source_session_continuities,
                 "source_extraction_phases": source_extraction_phases,

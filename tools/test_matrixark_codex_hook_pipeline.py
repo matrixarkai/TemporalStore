@@ -1166,9 +1166,15 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "source_memory_selection_policies": ["selected_tool_evidence_only"],
             "source_memory_selection_policy_counts": {"selected_tool_evidence_only": 1},
             "source_event_ids": [525254],
+            "source_profile_promotion_policies": ["always_when_profile_scope_available"],
+            "source_profile_memory_classes": ["memory_feature"],
+            "source_profile_memory_kinds": ["memory_feature"],
             "memory_scope": "user_profile",
             "session_continuity": "cross_session",
             "extraction_phase": "provisional",
+            "profile_memory_class": "memory_feature",
+            "profile_memory_kind": "memory_feature",
+            "profile_promotion_policy": "always_when_profile_scope_available",
         }
 
         class RuntimeRefreshAdapter:
@@ -1223,6 +1229,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         refreshed = refresh["refreshed"][0]
         self.assertEqual(["selected_tool_evidence_only"], refreshed["source_memory_selection_policies"])
         self.assertEqual({"selected_tool_evidence_only": 2}, refreshed["source_memory_selection_policy_counts"])
+        self.assertEqual(["always_when_profile_scope_available"], refreshed["source_profile_promotion_policies"])
+        self.assertEqual(["memory_feature"], refreshed["source_profile_memory_classes"])
+        self.assertEqual(["memory_feature"], refreshed["source_profile_memory_kinds"])
         self.assertEqual({"tool": 2}, refreshed["source_role_counts"])
         self.assertEqual({"tool_result": 2}, refreshed["source_hook_type_counts"])
         self.assertEqual({"PostToolUse": 2}, refreshed["source_codex_event_counts"])
@@ -1233,9 +1242,36 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             if record.get("record_type") == "context_summary_refresh_audit"
         )
         self.assertEqual({"selected_tool_evidence_only": 2}, audit["source_memory_selection_policy_counts"])
+        self.assertEqual(["always_when_profile_scope_available"], audit["source_profile_promotion_policies"])
+        self.assertEqual(["memory_feature"], audit["source_profile_memory_classes"])
+        self.assertEqual(["memory_feature"], audit["source_profile_memory_kinds"])
         self.assertEqual({"tool": 2}, audit["source_role_counts"])
         self.assertEqual({"tool_result": 2}, audit["source_hook_type_counts"])
         self.assertEqual({"PostToolUse": 2}, audit["source_codex_event_counts"])
+        summaries = [
+            record
+            for record in adapter.records
+            if record.get("record_type") == "context_summary"
+            and record.get("node_hash") == node_hash
+        ]
+        self.assertTrue(summaries)
+        for summary in summaries:
+            self.assertEqual(["always_when_profile_scope_available"], summary["source_profile_promotion_policies"])
+            self.assertEqual(["memory_feature"], summary["source_profile_memory_classes"])
+            self.assertEqual(["memory_feature"], summary["source_profile_memory_kinds"])
+            self.assertEqual("memory_feature", summary["profile_memory_class"])
+            self.assertEqual("memory_feature", summary["profile_memory_kind"])
+            self.assertEqual("always_when_profile_scope_available", summary["profile_promotion_policy"])
+        summary_index_names = {
+            str(record.get("index_name") or "")
+            for record in adapter.records
+            if record.get("record_type") == "context_index"
+            and record.get("data_model") == "context_summary"
+            and record.get("node_hash") == node_hash
+        }
+        self.assertIn("profile_memory_class:memory_feature", summary_index_names)
+        self.assertIn("profile_memory_kind:memory_feature", summary_index_names)
+        self.assertIn("profile_promotion_policy:always_when_profile_scope_available", summary_index_names)
 
     def assert_no_default_context_pack_debug_lineage(self, value: object) -> None:
         hidden_keys = {
