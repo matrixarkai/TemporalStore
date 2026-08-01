@@ -646,6 +646,57 @@ def _source_lineage_summary(records: list[Json]) -> Json:
     })
     if extraction_phases:
         lineage["source_extraction_phases"] = extraction_phases
+    final_session_boundary_count = sum(1 for record in records if bool(record.get("final_session_boundary")))
+    if final_session_boundary_count:
+        lineage["source_final_session_boundary_count"] = final_session_boundary_count
+    profile_classes = sorted({
+        str(value).strip()
+        for record in records
+        for value in [
+            *(record.get("source_profile_memory_classes", []) if isinstance(record.get("source_profile_memory_classes"), list) else []),
+            record.get("profile_memory_class"),
+        ]
+        if str(value or "").strip()
+    })
+    if profile_classes:
+        lineage["source_profile_memory_classes"] = profile_classes
+        lineage["profile_memory_class"] = profile_classes[0] if len(profile_classes) == 1 else "mixed"
+    profile_kinds = sorted({
+        str(value).strip()
+        for record in records
+        for value in [
+            *(record.get("source_profile_memory_kinds", []) if isinstance(record.get("source_profile_memory_kinds"), list) else []),
+            record.get("profile_memory_kind"),
+        ]
+        if str(value or "").strip()
+    })
+    if profile_kinds:
+        lineage["source_profile_memory_kinds"] = profile_kinds
+        lineage["profile_memory_kind"] = profile_kinds[0] if len(profile_kinds) == 1 else "mixed"
+    promotion_policies = sorted({
+        str(value).strip()
+        for record in records
+        for value in [
+            *(record.get("source_profile_promotion_policies", []) if isinstance(record.get("source_profile_promotion_policies"), list) else []),
+            record.get("profile_promotion_policy"),
+        ]
+        if str(value or "").strip()
+    })
+    if promotion_policies:
+        lineage["source_profile_promotion_policies"] = promotion_policies
+        lineage["profile_promotion_policy"] = promotion_policies[0] if len(promotion_policies) == 1 else "mixed"
+    promotion_blockers = sorted({
+        str(value).strip()
+        for record in records
+        for value in [
+            *(record.get("source_profile_promotion_blockers", []) if isinstance(record.get("source_profile_promotion_blockers"), list) else []),
+            record.get("profile_promotion_blocker"),
+        ]
+        if str(value or "").strip()
+    })
+    if promotion_blockers:
+        lineage["source_profile_promotion_blockers"] = promotion_blockers
+        lineage["profile_promotion_blocker"] = promotion_blockers[0] if len(promotion_blockers) == 1 else "mixed"
     return {key: value for key, value in lineage.items() if value not in (None, "", [], {})}
 
 
@@ -863,6 +914,22 @@ def session_commit(adapter: object, args: Json, *, hook: Json | None = None) -> 
                     phase_name = str(phase or "").strip().lower()
                     if phase_name:
                         summary_index_names.append(f"source_extraction_phase:{phase_name}")
+                for profile_class in source_lineage.get("source_profile_memory_classes", []) or []:
+                    class_name = str(profile_class or "").strip().lower()
+                    if class_name:
+                        summary_index_names.append(f"profile_memory_class:{class_name}")
+                for profile_kind in source_lineage.get("source_profile_memory_kinds", []) or []:
+                    kind_name = str(profile_kind or "").strip().lower()
+                    if kind_name:
+                        summary_index_names.append(f"profile_memory_kind:{kind_name}")
+                for policy in source_lineage.get("source_profile_promotion_policies", []) or []:
+                    policy_name = str(policy or "").strip().lower()
+                    if policy_name:
+                        summary_index_names.append(f"profile_promotion_policy:{policy_name}")
+                for blocker in source_lineage.get("source_profile_promotion_blockers", []) or []:
+                    blocker_name = str(blocker or "").strip().lower()
+                    if blocker_name:
+                        summary_index_names.append(f"profile_promotion_blocker:{blocker_name}")
                 summary_indexes = [
                     context_index_posting_record(
                         index_name=index_name,
