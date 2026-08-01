@@ -480,7 +480,7 @@ def refresh_final_selected_budget_policies(selected: list[Json], dropped_over_bu
 def suppress_extracted_represented_pending_events(selected: list[Json], dropped_over_budget: Json) -> tuple[list[Json], int]:
     extracted_selected_event_ids: set[int] = set()
     for item in selected:
-        if candidate_memory_layer_name(item) == "pending_async_event":
+        if is_pending_async_candidate(item):
             continue
         for field in [
             "source_event_ids",
@@ -514,7 +514,7 @@ def suppress_extracted_represented_pending_events(selected: list[Json], dropped_
         except (TypeError, ValueError):
             pending_event_id = 0
         if (
-            candidate_memory_layer_name(item) == "pending_async_event"
+            is_pending_async_candidate(item)
             and pending_event_id
             and pending_event_id in extracted_selected_event_ids
         ):
