@@ -6258,6 +6258,8 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         item["profile_memory_class"] = profile_memory_class
     if bool(ref.get("profile_entity_current") or metadata.get("profile_entity_current")):
         item["profile_entity_current"] = True
+    if bool(ref.get("profile_summary_current") or metadata.get("profile_summary_current")):
+        item["profile_summary_current"] = True
     lineage_fields = [
         "source_session_ids",
         "source_roles",
