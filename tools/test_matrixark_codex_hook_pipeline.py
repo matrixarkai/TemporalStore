@@ -1016,6 +1016,75 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 1,
             )
 
+    def test_assistant_feature_focus_response_promotes_to_profile_memory(self) -> None:
+        raw = (
+            "Next focus: live ingestion should preserve assistant responses, profile promotion, "
+            "retrieval budgets, secondary indexes, and context summaries."
+        )
+        selected = matrixark_codex_hook.selected_assistant_memory_text(raw)
+        metadata = matrixark_codex_hook.codex_memory_selection_metadata(
+            role="assistant",
+            event="Stop",
+            text=selected,
+            original_text=raw,
+        )
+        self.assertIn("live ingestion", selected)
+        self.assertIn("retrieval budgets", selected)
+        self.assertIn("selected_assistant_profile_fact", metadata["policies"])
+        self.assertEqual("memory_feature", metadata["profile_memory_class"])
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-assistant-feature-focus-profile.jsonl")
+            base_scope = {
+                "account_id": "acct_assistant_feature_focus",
+                "tenant_id": "tenant_assistant_feature_focus",
+                "user_id": "user_assistant_feature_focus",
+            }
+            result = adapter.batch_extract(
+                {
+                    "scope": {**base_scope, "session_id": "session_assistant_feature_focus_1"},
+                    "messages": [{"role": "assistant", "content": selected, "metadata": {"codex_memory_selection": metadata}}],
+                    "metadata": {
+                        "hook_type": "after_llm",
+                        "codex_event": "Stop",
+                        "codex_memory_selection": metadata,
+                    },
+                    "force": True,
+                }
+            )
+            self.assertEqual("accepted", result["status"])
+
+            profile_entities = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
+                and record.get("entity_type") == "memory_feature_profile"
+            ]
+            self.assertTrue(profile_entities)
+            self.assertIn("profile promotion", profile_entities[-1]["state"])
+            self.assertIn("retrieval budgets", profile_entities[-1]["state"])
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**base_scope, "session_id": "session_assistant_feature_focus_2"},
+                    "session_scope": "prefer",
+                    "query": "What is the active memory feature focus?",
+                    "max_context_tokens": 220,
+                    "audit_mode": "off",
+                    "ranking": {"max_selected_refs": 2, "min_similarity_score": 0.0},
+                }
+            )
+            selected_refs = [
+                ref
+                for ref in pack["selected_refs"]
+                if ref.get("entity_type") == "memory_feature_profile"
+                and ref.get("memory_scope") == "user_profile"
+            ]
+            self.assertTrue(selected_refs, pack["selected_refs"])
+            self.assertIn("assistant responses", selected_refs[0]["text"])
+
     def test_query_helper_oss_labels_cover_profile_memory_layers(self) -> None:
         labels = matrixark_mcp_query.QUERY_INDEX_LABELS
         core_labels = matrixark_mcp_core.QUERY_INDEX_LABELS

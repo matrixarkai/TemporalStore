@@ -75,7 +75,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "entity_type:assistant_decision": "assistant decision final answer done implemented chose decided next action",
     "event_type:assistant_response": "assistant response final answer outcome done implemented fixed decision",
     "event_type:user_prompt": "user prompt request asks asked requirement instruction",
-    "entity_type:memory_feature_profile": "memory feature parity openviking vikingmem mem0 extraction retrieval profile session threshold idle batch feature focused features only no testing monitoring debugging evidence",
+    "entity_type:memory_feature_profile": "memory feature parity openviking vikingmem mem0 extraction retrieval profile session threshold idle batch live ingestion profile promotion retrieval budget secondary index context event context entity context summary feature focused features only no testing monitoring debugging evidence",
     "entity_type:tool_evidence": "tool evidence tests passed failed exit code commit push rebase validation benchmark blocker",
     "event_type:tool_evidence": "tool event evidence tests passed failed exit code commit push rebase validation benchmark blocker",
     "memory_scope:user_profile": "user profile long term memory profile entity profile summary durable cross session user state",
@@ -84,8 +84,8 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "session_continuity:same_session": "same session current conversation active turn local context",
     "profile_entity_current:true": "current profile entity latest durable user state standing preference instruction",
     "profile_summary_current:true": "current profile summary latest durable long term memory profile overview",
-    "profile_memory_class:memory_feature": "memory feature profile openviking vikingmem feature parity extraction retrieval budget",
-    "profile_memory_kind:memory_feature": "memory feature durable preference openviking vikingmem feature focused features only no testing no monitoring no debugging no evidence no evident",
+    "profile_memory_class:memory_feature": "memory feature profile openviking vikingmem feature parity extraction retrieval budget live ingestion profile promotion secondary index context event context entity context summary",
+    "profile_memory_kind:memory_feature": "memory feature durable preference openviking vikingmem feature focused features only no testing no monitoring no debugging no evidence no evident live ingestion profile promotion retrieval budget",
     "memory_selection_policy:selected_profile_current_state": "selected profile current state standing instruction durable preference",
     "memory_selection_policy:selected_user_prompt": "selected user prompt explicit request instruction preference",
     "memory_selection_policy:selected_user_profile_fact": "selected user profile fact standing preference durable instruction",
@@ -239,7 +239,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(context_index_name("entity_type", "preference"), context_index_name("event_type", "preference_update"))
         add_group(context_index_name("profile_memory_kind", "durable_profile"))
         add_group(context_index_name("memory_selection_policy", "selected_user_profile_fact"))
-    if re.search(r"\b(openviking|vikingmem|mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionality|functionalities|functionality only|algorithms?|algos?|implementation focus|no testing|no teseting|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no evident|no eviden[ct]e|feature work only|code changes only|session memory|profile memory|cross[- ]session memory|threshold|idle batch|batch extraction)\b", lower) or ACTIVE_MEMORY_GOAL_QUERY_RE.search(lower):
+    if re.search(r"\b(openviking|vikingmem|mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionality|functionalities|functionality only|algorithms?|algos?|implementation focus|no testing|no teseting|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no evident|no eviden[ct]e|feature work only|code changes only|session memory|profile memory|cross[- ]session memory|live ingestion|memory ingestion|threshold|idle batch|batch extraction|profile promotion|retrieval budgets?|memory retrieval|secondary indexes?|context events?|context entit(?:y|ies)|context summaries?|contextpacks?)\b", lower) or ACTIVE_MEMORY_GOAL_QUERY_RE.search(lower):
         add_group(context_index_name("entity_type", "memory_feature_profile"))
         add_group(context_index_name("profile_memory_class", "memory_feature"))
         add_group(context_index_name("profile_memory_kind", "memory_feature"))
