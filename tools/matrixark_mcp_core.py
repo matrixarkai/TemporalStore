@@ -1583,10 +1583,12 @@ def normalize_extracted_entities(raw_entities: Any, *, fallback_text: str, sourc
         if not isinstance(raw, dict):
             continue
         entity_type = re.sub(r"[^a-z0-9_]+", "_", str(raw.get("entity_type") or raw.get("type") or "entity").lower()).strip("_") or "entity"
-        entity_name = summarize_text(str(raw.get("entity_name") or raw.get("name") or entity_type).strip(), limit=96)
+        raw_entity_name = str(raw.get("entity_name") or raw.get("name") or "").strip()
+        entity_name = summarize_text(raw_entity_name or entity_type, limit=96)
         state = summarize_text(str(raw.get("state") or raw.get("value") or raw.get("summary") or fallback_text).strip(), limit=320)
         if not state:
             continue
+        entity_name = canonical_entity_name(entity_type, raw_entity_name or state)
         try:
             confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.82))))
         except (TypeError, ValueError):
