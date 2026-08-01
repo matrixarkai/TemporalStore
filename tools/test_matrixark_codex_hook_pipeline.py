@@ -246,6 +246,37 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertNotIn("tool_evidence", by_name)
             self.assertNotIn("tool_evidence:outcome", by_name)
 
+    def test_assistant_zero_failed_summary_does_not_create_blocker_memory(self) -> None:
+        selected = matrixark_codex_hook.selected_assistant_memory_text(
+            "Ran 166 tests; 0 failed; pushed commit abc1234 to origin/main."
+        )
+        entities = matrixark_mcp_core.extract_batch_entities(
+            [{"role": "assistant", "content": selected}],
+            {"source_event_ids": ["assistant_event"]},
+        )
+        by_name = {entity["entity_name"]: entity for entity in entities}
+
+        self.assertIn("Outcome: pushed commit abc1234", selected)
+        self.assertIn("Validation: 166 tests passed", selected)
+        self.assertNotIn("Blocker:", selected)
+        self.assertIn("assistant_decision:outcome", by_name)
+        self.assertIn("assistant_decision:validation", by_name)
+        self.assertNotIn("assistant_decision:blocker", by_name)
+
+    def test_assistant_nonzero_failed_summary_still_creates_blocker_memory(self) -> None:
+        selected = matrixark_codex_hook.selected_assistant_memory_text(
+            "Validation failed: 165 passed; 1 failed."
+        )
+        entities = matrixark_mcp_core.extract_batch_entities(
+            [{"role": "assistant", "content": selected}],
+            {"source_event_ids": ["assistant_event"]},
+        )
+        by_name = {entity["entity_name"]: entity for entity in entities}
+
+        self.assertIn("Blocker:", selected)
+        self.assertIn("assistant_decision:blocker", by_name)
+        self.assertIn("1 failed", by_name["assistant_decision:blocker"]["state"])
+
     def test_tool_memory_selection_normalizes_common_test_result_summaries(self) -> None:
         noisy_tool_output = "\n".join(
             [

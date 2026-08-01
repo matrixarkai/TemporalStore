@@ -2897,7 +2897,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     ]
     assistant_text = text_from_messages(assistant_messages) if assistant_messages else ""
     if assistant_text and re.search(
-        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|will|next|choose|chose|use|keep|remove|blocked|updated|changed|validated|verified|profile|cross[- ]session|memory|gap|risk|warning)\b",
+        r"\b(?:decision|decided|done|implemented|fixed|committed|pushed|will|next|choose|chose|use|keep|remove|blocked|blocker|failed|failure|error|rejected|updated|changed|validated|validation|verified|profile|cross[- ]session|memory|gap|risk|warning)\b",
         assistant_text,
         re.IGNORECASE,
     ):

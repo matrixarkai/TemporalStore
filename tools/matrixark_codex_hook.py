@@ -3086,7 +3086,7 @@ def selected_assistant_outcome_facts(text: str, *, max_facts: int = 6) -> list[s
     facts: list[str] = []
 
     def add_fact(value: str) -> None:
-        fact = " ".join(str(value or "").split()).strip(" ;,.")
+        fact = " ".join(str(value or "").replace(";", ",").split()).strip(" ;,.")
         if not fact:
             return
         if fact not in facts:
@@ -3111,8 +3111,20 @@ def selected_assistant_outcome_facts(text: str, *, max_facts: int = 6) -> list[s
     elif re.search(r"\b(?:tests?|validation|py_compile|unittest|pytest|cargo test|cargo check)\b.{0,80}\b(?:passed|ok|succeeded|clean)\b", compact, re.IGNORECASE):
         add_fact("Validation: tests passed")
 
-    if re.search(r"\b(?:blocked|blocker|failed|failure|error|missing|rejected)\b", compact, re.IGNORECASE):
-        blocker_match = re.search(r"[^.?!]*(?:blocked|blocker|failed|failure|error|missing|rejected)[^.?!]*[.?!]?", compact, re.IGNORECASE)
+    has_real_blocker = bool(
+        re.search(r"\b(?:blocked|blocker|failure|error|missing|rejected)\b", compact, re.IGNORECASE)
+        or re.search(r"\b[1-9]\d*\s+(?:failed|failures|errors)\b", compact, re.IGNORECASE)
+        or (
+            re.search(r"\bfailed\b", compact, re.IGNORECASE)
+            and not re.search(r"\b0\s+failed\b", compact, re.IGNORECASE)
+        )
+    )
+    if has_real_blocker:
+        blocker_match = re.search(
+            r"[^.?!]*(?:blocked|blocker|failed|failure|error|missing|rejected)[^.?!]*[.?!]?",
+            compact,
+            re.IGNORECASE,
+        )
         if blocker_match:
             add_fact("Blocker: " + blocker_match.group(0).strip(" .?!")[:180])
 
