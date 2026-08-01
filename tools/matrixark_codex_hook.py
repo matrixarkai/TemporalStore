@@ -4966,7 +4966,7 @@ def run_idle_commit_worker_only(args: argparse.Namespace, session_id_source: str
                     **codex_agent_hook(
                         hook_type="session_commit",
                         hook_id=f"idle_commit_worker:{args.session_id}:{int(time.time() * 1000)}",
-                        idempotency_key=f"idle-commit-worker:{args.session_id}",
+                        idempotency_key=f"idle-commit-worker:{args.session_id}:{args.idle_commit_cutoff_ms or int(time.time() * 1000)}",
                         trigger="IdleTimeout:worker",
                         session_id_source=session_id_source,
                         identity=codex_identity,
@@ -5399,6 +5399,9 @@ def main() -> int:
                     "query": query,
                     "question_type": question_type,
                     "max_context_tokens": args.max_context_tokens,
+                    "session_buffer_threshold": args.session_commit_threshold,
+                    "idle_commit_timeout_ms": args.idle_commit_timeout_ms,
+                    "storage_options": hook_storage_options(),
                     "audit_mode": "telemetry_only",
                     "audit_sample_rate": 0.0,
                     **(
