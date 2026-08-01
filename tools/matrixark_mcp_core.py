@@ -1816,6 +1816,7 @@ ONE_PASS_MEMORY_SCHEMA: Json = {
         "job_status",
         "current_plan",
         "family_profile",
+        "identity_profile",
         "correction",
         "confirmation",
     ],
@@ -2375,6 +2376,7 @@ UNDERSTANDING_LABELS: dict[str, str] = {
     "location": "current location city moved to lives in staying at",
     "relationship": "relationship manager sister brother teammate family person",
     "family_profile": "family profile pet dog cat child sibling household fact",
+    "identity_profile": "user identity name nickname pronouns how to address user",
     "current_plan": "current plan goal user request requirement upcoming action task to complete next milestone",
     "session": "general conversation memory useful session fact",
 }
@@ -2405,6 +2407,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "entity_type:relationship": "relationship manager sister brother teammate family person",
     "entity_type:family_profile": "family pet dog cat child household",
     "entity_type:job_status": "job role work status position responsibility",
+    "entity_type:identity_profile": "identity name nickname pronouns call me address user",
     "event_type:status_update": "job status role work update",
     "entity_type:current_plan": "plan current plan goal user request requirement upcoming task schedule next milestone",
     "event_type:plan_update": "plan update going to schedule will next",
@@ -2975,6 +2978,9 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         ("current_plan", r"\b(?:plan|plans|planning|going to|will)\s+([^.;!?]{2,140})"),
         ("current_plan", r"\b(?:you|user)\s+(?:asked|requested|required|requires|need(?:s)?|want(?:s)?)\s+(?:me\s+|codex\s+|us\s+|to\s+)?([^.;!?]{2,160})"),
         ("family_profile", r"\b(?:family|child|children|son|daughter|pet|dog|cat)\s+([^.;!?]{0,120})"),
+        ("identity_profile", r"\b(?:call me|my name is|i am called|i'm called)\s+([^.;!?]{2,80})"),
+        ("identity_profile", r"\b(?:user(?:'s)? name is|user goes by|user prefers to be called)\s+([^.;!?]{2,80})"),
+        ("identity_profile", r"\b(?:my pronouns are|user(?:'s)? pronouns are)\s+([^.;!?]{2,80})"),
         ("correction", r"\b(?:correction|correct|wrong|instead|updated|changed)\s+([^.;!?]{2,140})"),
         ("approval_state", r"\b(?:approved|approval)\s+([^.;!?]{2,140})"),
         ("confirmation", r"\b(?:yes|confirmed|approved|correct|looks good)\b([^.;!?]{0,120})"),
@@ -3055,6 +3061,7 @@ def infer_entity_field_patches(entity_type: str, value: str, text: str) -> list[
         "job_status",
         "current_plan",
         "family_profile",
+        "identity_profile",
         "relationship",
         "approval_state",
         "correction",
@@ -3079,6 +3086,7 @@ def canonical_entity_name(entity_type: str, value: str) -> str:
         "job_status",
         "current_plan",
         "family_profile",
+        "identity_profile",
         "correction",
         "confirmation",
         "assistant_decision",
@@ -4568,6 +4576,9 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
     if re.search(r"\b(prefer|preference|favorite|like|likes|love|loves|avoid|never|do not|don't|doesn't|should not|must not|standing instruction|standing preference|persistent instruction|saved preference|remember(?:ed)?)\b", lower):
         add_group(context_index_name("entity_type", "preference"), context_index_name("event_type", "preference_update"))
         add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
+    if re.search(r"\b(name|nickname|call me|called|pronoun|pronouns|who am i|who is the user|address me)\b", lower):
+        add_group(context_index_name("entity_type", "identity_profile"))
+        add_group(context_index_name("memory_scope", "user_profile"))
     if re.search(r"\b(friend|partner|mother|father|sister|brother|wife|husband|manager|teammate|relationship|family|child|children|son|daughter|pet)\b", lower):
         add_group(context_index_name("entity_type", "relationship"), context_index_name("entity_type", "family_profile"))
     if re.search(r"\b(job|role|work|works|position|status|company|employer)\b", lower):
