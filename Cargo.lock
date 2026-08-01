@@ -723,7 +723,7 @@ dependencies = [
 [[package]]
 name = "matrixobjectstore-rs"
 version = "0.1.0"
-source = "git+https://github.com/bjmeetsfo/MatrixObjectStore.git?rev=c106b4ab7edc78c86fd15e8af4ffb2442ec30f4c#c106b4ab7edc78c86fd15e8af4ffb2442ec30f4c"
+source = "git+https://github.com/bjmeetsfo/MatrixObjectStore.git?rev=b9430853d953d7b2ccb402e2c07acda292e123fd#b9430853d953d7b2ccb402e2c07acda292e123fd"
 
 [[package]]
 name = "matrixraft"
