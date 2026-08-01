@@ -3065,6 +3065,21 @@ ASSISTANT_MEMORY_LINE_PATTERNS = [
 ]
 
 
+ASSISTANT_PROFILE_MEMORY_POLICY_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"\b(?:user|you)\b.{0,96}\b(?:prefer|prefers|preference|likes|wants|needs|asked|requires|required|always|never|avoid|remember)\b",
+        r"\b(?:i(?:'ll| will)? remember|remembered|noted|got it)\b.{0,140}\b(?:prefer|preference|want|need|always|never|avoid|profile|memory)\b",
+        r"\b(?:standing instruction|standing preference|user profile|long[- ]term memor(?:y|ies)|saved preference)\b",
+    ]
+]
+
+
+def selected_assistant_profile_fact_policy(text: str) -> bool:
+    compact = " ".join(str(text or "").split())
+    return bool(compact and any(pattern.search(compact) for pattern in ASSISTANT_PROFILE_MEMORY_POLICY_PATTERNS))
+
+
 def normalize_assistant_memory_line(line: str) -> str:
     stripped = str(line or "").strip()
     stripped = re.sub(r"^(?:#{1,6}\s+|>\s+)", "", stripped).strip()
@@ -3305,7 +3320,11 @@ def codex_memory_selection_metadata(*, role: str, event: str, text: str, origina
         max_chars = 4096
         max_lines = 80
     elif normalized_role == "assistant":
-        policy = "selected_assistant_decision_outcome_only"
+        policy = (
+            "selected_assistant_profile_fact"
+            if selected_assistant_profile_fact_policy(selected_text or original)
+            else "selected_assistant_decision_outcome_only"
+        )
         truncation_marker = "[assistant memory truncated]"
         max_chars = 4096
         max_lines = 48

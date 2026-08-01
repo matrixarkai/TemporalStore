@@ -2430,6 +2430,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "profile_summary_current:true": "current profile summary latest durable long term memory profile overview",
     "memory_selection_policy:selected_profile_current_state": "selected profile current state standing instruction durable preference",
     "memory_selection_policy:selected_user_prompt": "selected user prompt explicit request instruction preference",
+    "memory_selection_policy:selected_assistant_profile_fact": "selected assistant stated user profile preference standing instruction durable memory",
     "memory_selection_policy:selected_assistant_decision_outcome_only": "selected assistant decision outcome final answer implemented changed pushed",
     "memory_selection_policy:selected_tool_evidence_only": "selected tool evidence validation test result commit push benchmark",
     "source_role:user": "user prompt explicit instruction preference request",
@@ -4554,6 +4555,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(*location_terms)
     if re.search(r"\b(prefer|preference|favorite|like|likes|love|loves)\b", lower):
         add_group(context_index_name("entity_type", "preference"), context_index_name("event_type", "preference_update"))
+        add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
     if re.search(r"\b(friend|partner|mother|father|sister|brother|wife|husband|manager|teammate|relationship|family|child|children|son|daughter|pet)\b", lower):
         add_group(context_index_name("entity_type", "relationship"), context_index_name("entity_type", "family_profile"))
     if re.search(r"\b(job|role|work|works|position|status|company|employer)\b", lower):
@@ -4583,6 +4585,7 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
     if re.search(r"\b(user profile|profile memory|long[- ]term memory|profile entity|profile entities|profile summary|profile summaries)\b", lower):
         add_group(context_index_name("memory_scope", "user_profile"))
         add_group(context_index_name("profile_entity_current", "true"), context_index_name("profile_summary_current", "true"))
+        add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
     if re.search(r"\b(cross[- ]session|across sessions|between sessions|multi[- ]session|long[- ]term)\b", lower):
         add_group(context_index_name("session_continuity", "cross_session"))
     if re.search(r"\b(session[- ]local|same[- ]session|current session|this session|session specific|session-specific)\b", lower):
@@ -4639,6 +4642,8 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
     if re.search(r"\b(selected|bounded|retained|extracted|memory selection|memory-selection)\b", lower):
         if re.search(r"\b(user prompt|prompt|user request|request)\b", lower):
             add_group(context_index_name("memory_selection_policy", "selected_user_prompt"))
+        if re.search(r"\b(profile fact|preference|standing instruction|standing preference|remembered|user profile|long[- ]term memory)\b", lower):
+            add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
         if re.search(r"\b(assistant|decision|outcome|final answer|what did codex|what did you|what did we|what was done|done|fixed|implemented)\b", lower):
             add_group(context_index_name("memory_selection_policy", "selected_assistant_decision_outcome_only"))
         if re.search(r"\b(tool|tool output|tool result|evidence|test|tests|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
