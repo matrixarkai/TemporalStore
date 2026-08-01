@@ -151,7 +151,6 @@ start_all() {
     TS_CACHE_DIR="$DATA_DIR/cache" \
     TS_PAGE_STORE_DIR="$DATA_DIR/pages" \
     TS_INDEX_DIR="$DATA_DIR/indexes" \
-    TS_REPLICA_REPLAY_CURSOR_DIR="$DATA_DIR/replica-replay-cursors" \
     "$DATANODE_BIN"
   wait_tcp "$DATANODE_ADDR" matrixark_rust_datanode
 

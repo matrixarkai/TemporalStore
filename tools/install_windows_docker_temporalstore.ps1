@@ -224,7 +224,7 @@ COPY matrixark_rust_direct_sdk /usr/local/bin/matrixark_rust_direct_sdk
 RUN chmod +x /usr/local/bin/matrixark_rust_*
 VOLUME ["/var/lib/temporalstore"]
 EXPOSE $MetaPort $DataPort
-CMD ["bash", "-lc", "mkdir -p /var/lib/temporalstore/cache /var/lib/temporalstore/pages /var/lib/temporalstore/indexes /var/lib/temporalstore/replica-replay-cursors /var/lib/temporalstore/logs; TS_META_BIND_ADDR=0.0.0.0:$MetaPort TS_META_ADDR=127.0.0.1:$MetaPort matrixark_rust_metaserver > /var/lib/temporalstore/logs/metaserver.log 2>&1 & sleep 1; TS_META_ADDR=127.0.0.1:$MetaPort TS_SERVER_BIND_ADDR=0.0.0.0:$DataPort TS_SERVER_ADDR=127.0.0.1:$DataPort TS_SERVER_ADVERTISE_ADDR=127.0.0.1:$DataPort TS_CACHE_DIR=/var/lib/temporalstore/cache TS_PAGE_STORE_DIR=/var/lib/temporalstore/pages TS_INDEX_DIR=/var/lib/temporalstore/indexes TS_REPLICA_REPLAY_CURSOR_DIR=/var/lib/temporalstore/replica-replay-cursors TS_CACHE_MEMORY_BYTES=$CacheMemoryBytes matrixark_rust_datanode > /var/lib/temporalstore/logs/datanode.log 2>&1 & tail -f /var/lib/temporalstore/logs/metaserver.log /var/lib/temporalstore/logs/datanode.log"]
+CMD ["bash", "-lc", "mkdir -p /var/lib/temporalstore/cache /var/lib/temporalstore/pages /var/lib/temporalstore/indexes /var/lib/temporalstore/logs; TS_META_BIND_ADDR=0.0.0.0:$MetaPort TS_META_ADDR=127.0.0.1:$MetaPort matrixark_rust_metaserver > /var/lib/temporalstore/logs/metaserver.log 2>&1 & sleep 1; TS_META_ADDR=127.0.0.1:$MetaPort TS_SERVER_BIND_ADDR=0.0.0.0:$DataPort TS_SERVER_ADDR=127.0.0.1:$DataPort TS_SERVER_ADVERTISE_ADDR=127.0.0.1:$DataPort TS_CACHE_DIR=/var/lib/temporalstore/cache TS_PAGE_STORE_DIR=/var/lib/temporalstore/pages TS_INDEX_DIR=/var/lib/temporalstore/indexes TS_CACHE_MEMORY_BYTES=$CacheMemoryBytes matrixark_rust_datanode > /var/lib/temporalstore/logs/datanode.log 2>&1 & tail -f /var/lib/temporalstore/logs/metaserver.log /var/lib/temporalstore/logs/datanode.log"]
 "@
     Set-Content -LiteralPath (Join-Path $context "Dockerfile") -Value $dockerfile -Encoding ascii
     Write-Host "Docker context: $context"
@@ -398,7 +398,7 @@ function Install-CodexHookWrapperIfRequested {
   -e TS_CACHE_DIR=/var/lib/temporalstore/cache `
   -e TS_PAGE_STORE_DIR=/var/lib/temporalstore/pages `
   -e TS_INDEX_DIR=/var/lib/temporalstore/indexes `
-  -e TS_REPLICA_REPLAY_CURSOR_DIR=/var/lib/temporalstore/replica-replay-cursors `
+  -e `
   '$ContainerName' matrixark_rust_proxy --serve
 exit `$LASTEXITCODE
 "@
