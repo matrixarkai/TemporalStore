@@ -1661,21 +1661,29 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
             selection_lossy_count += 1
         else:
             selection_complete_count += 1
-    assistant_policy = (
-        "selected_assistant_profile_fact"
-        if assistant_profile_fact_lineage_text("\n".join(assistant_text_parts) or metadata.get("text") or envelope.get("text"))
-        else "selected_assistant_decision_outcome_only"
-    )
+    assistant_policies: list[str] = []
+    assistant_lineage_text = "\n".join(assistant_text_parts) or metadata.get("text") or envelope.get("text")
+    if assistant_profile_fact_lineage_text(assistant_lineage_text):
+        assistant_policies.append("selected_assistant_profile_fact")
+    if assistant_lineage_text:
+        assistant_policies.append("selected_assistant_decision_outcome_only")
+    if not assistant_policies:
+        assistant_policies.append("selected_assistant_decision_outcome_only")
     inferred_policy_by_role = {
-        "assistant": assistant_policy,
+        "assistant": assistant_policies,
         "tool": "selected_tool_evidence_only",
         "user": "selected_user_prompt",
     }
     for role, count in role_counts.items():
-        policy = inferred_policy_by_role.get(role)
-        if not policy or policy in memory_selection_policy_counts:
+        policies = inferred_policy_by_role.get(role)
+        if isinstance(policies, str):
+            policies = [policies]
+        if not policies:
             continue
-        memory_selection_policy_counts[policy] = max(1, int(count or 0))
+        for policy in policies:
+            if not policy or policy in memory_selection_policy_counts:
+                continue
+            memory_selection_policy_counts[policy] = max(1, int(count or 0))
     entity_type = ""
     if "tool" in roles:
         entity_type = "tool_evidence"
@@ -1713,6 +1721,7 @@ def context_event_type_for_message(message: Json, default_event_type: str) -> st
         return by_role[role]
     metadata = message.get("metadata") if isinstance(message, dict) and isinstance(message.get("metadata"), dict) else {}
     selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
+    policies = selection.get("policies") if isinstance(selection.get("policies"), list) else []
     policy = str(selection.get("policy") or "").strip()
     by_policy = {
         "selected_user_prompt": "user_prompt",
@@ -1720,6 +1729,10 @@ def context_event_type_for_message(message: Json, default_event_type: str) -> st
         "selected_assistant_decision_outcome_only": "assistant_response",
         "selected_tool_evidence_only": "tool_evidence",
     }
+    for policy_value in policies:
+        event_type = by_policy.get(str(policy_value or "").strip())
+        if event_type:
+            return event_type
     return by_policy.get(policy, default_event_type or "conversation_event")
 
 
