@@ -327,6 +327,8 @@ def retrieval_query_budget_plan(
         memory_layer_budget_tokens, memory_layer_budget_mode = pre_refresh_helpers.pre_retrieval_summary_refresh_memory_layer_budget_tokens(
             remote_budget_tokens=remote_context_budget_tokens,
             question_type=question_type,
+            args=args,
+            ranking=ranking,
         )
     memory_selection_policy_budget_tokens = (
         optional_object(args, "memory_selection_policy_budget_tokens")

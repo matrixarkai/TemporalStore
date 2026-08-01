@@ -669,14 +669,21 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
     *,
     remote_budget_tokens: int,
     question_type: str = "fact",
+    args: Json | None = None,
+    ranking: Json | None = None,
 ) -> tuple[Json, str]:
     try:
         remote_budget = max(0, int(remote_budget_tokens or 0))
     except (TypeError, ValueError):
         remote_budget = 0
+    args = args if isinstance(args, dict) else {}
+    ranking = ranking if isinstance(ranking, dict) else {}
     normalized_question_type = str(question_type or "fact").strip().lower()
+    feature_profile_query = feature_profile_memory_budget_query(args, ranking, question_type=question_type)
     mode = "pre_retrieval_summary_refresh_balanced"
-    if normalized_question_type in {"current_state", "latest"}:
+    if feature_profile_query:
+        mode = "pre_retrieval_summary_refresh_feature_profile_memory"
+    elif normalized_question_type in {"current_state", "latest"}:
         mode = "pre_retrieval_summary_refresh_current_state"
     elif normalized_question_type == "profile_memory":
         mode = "pre_retrieval_summary_refresh_profile_memory"
@@ -714,7 +721,27 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
         "current_state",
         "latest",
     }
-    if normalized_question_type in {"current_state", "latest"}:
+    if feature_profile_query:
+        fractions.update(
+            {
+                "summary": 0.15,
+                "profile_summary": 0.50,
+                "same_session_summary": 0.15,
+                "cross_session_summary": 0.45,
+                "profile_compression": 0.45,
+                "cross_session_compression": 0.40,
+                "same_session_event": 0.25,
+                "cross_session_event": 0.35,
+                "same_session_segment": 0.25,
+                "cross_session_segment": 0.35,
+                "profile_entity": 0.65,
+                "cross_session_codex_outcome_entity": 0.20,
+                "cross_session_memory_feature_entity": 0.75,
+                "cross_session_codex_outcome_summary": 0.20,
+                "cross_session_codex_outcome_compression": 0.20,
+            }
+        )
+    elif normalized_question_type in {"current_state", "latest"}:
         fractions.update(
             {
                 "profile_summary": 0.35,
@@ -839,11 +866,17 @@ def pre_retrieval_summary_refresh_enabled(args: Json, ranking: Json) -> bool:
 
 
 def pre_retrieval_summary_refresh_limit(args: Json, ranking: Json) -> int:
-    raw_limit = args.get("pre_retrieval_summary_refresh_limit") or ranking.get("pre_retrieval_summary_refresh_limit") or PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT
+    raw_limit = args.get("pre_retrieval_summary_refresh_limit") or ranking.get("pre_retrieval_summary_refresh_limit")
+    explicit_limit = raw_limit not in (None, "", [], {})
+    if not explicit_limit:
+        raw_limit = PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT
     try:
-        return max(1, int(raw_limit))
+        limit = max(1, int(raw_limit))
     except (TypeError, ValueError):
-        return PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT
+        limit = PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT
+    if not explicit_limit and feature_profile_memory_budget_query(args, ranking):
+        return max(limit, 4)
+    return limit
 
 
 def fresh_idle_commit_summary_refresh_state(idle_commit: Json | None) -> Json:
