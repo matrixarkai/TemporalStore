@@ -3455,10 +3455,28 @@ class MatrixArkLocalAdapter:
                 record_value = record_scope.get(field)
                 if query_value and record_value and query_value != record_value:
                     return False
+            tenant_string_matched = bool(
+                query_scope.get("tenant_id")
+                and record_scope.get("tenant_id")
+                and query_scope.get("tenant_id") == record_scope.get("tenant_id")
+            )
+            user_string_matched = bool(
+                query_scope.get("user_id")
+                and record_scope.get("user_id")
+                and query_scope.get("user_id") == record_scope.get("user_id")
+            )
             try:
-                if query_scope.get("tenant_hash") and record_key_parts.get("t") != int(query_scope.get("tenant_hash")):
+                if (
+                    query_scope.get("tenant_hash")
+                    and not tenant_string_matched
+                    and record_key_parts.get("t") != int(query_scope.get("tenant_hash"))
+                ):
                     return False
-                if query_scope.get("user_hash") and record_key_parts.get("u") != int(query_scope.get("user_hash")):
+                if (
+                    query_scope.get("user_hash")
+                    and not user_string_matched
+                    and record_key_parts.get("u") != int(query_scope.get("user_hash"))
+                ):
                     return False
             except (TypeError, ValueError):
                 return False

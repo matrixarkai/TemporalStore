@@ -6985,6 +6985,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 {**base_scope, "session_id": "session_profile_bridge_prior"},
                 {**identity, "session_id": "session_profile_bridge_prior"},
             )
+            promoted_profile_scope = {
+                "account_id": base_scope["account_id"],
+                "tenant_id": base_scope["tenant_id"],
+                "user_id": base_scope["user_id"],
+            }
             adapter.append_many(
                 [
                     {
@@ -7036,7 +7041,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "profile_entity_current": True,
                         "profile_current_state_representative": True,
                         "source_session_ids": ["session_profile_bridge_prior"],
-                        "scope": prior_scope,
+                        "scope": promoted_profile_scope,
+                        "access_scope": promoted_profile_scope,
                         "updated_at_ms": 3000,
                     },
                 ]
