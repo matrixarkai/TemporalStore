@@ -5560,13 +5560,14 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     else:
         raise MatrixArkError("cross_session must be an object or boolean")
 
-    default_enabled = session_scope == "prefer" and remote_budget_tokens > 0
-    enabled = bool(config.get("enabled", default_enabled)) and session_scope == "prefer" and remote_budget_tokens > 0
     normalized_question_type = str(question_type or "fact").strip().lower()
     query_text = str(args.get("query") or ranking.get("query") or "")
     profile_memory_query = normalized_question_type == "profile_memory" or bool(
         query_text and PROFILE_MEMORY_QUERY_RE.search(query_text.lower())
     )
+    cross_session_allowed = session_scope == "prefer" or profile_memory_query
+    default_enabled = cross_session_allowed and remote_budget_tokens > 0
+    enabled = bool(config.get("enabled", default_enabled)) and cross_session_allowed and remote_budget_tokens > 0
     if profile_memory_query:
         default_ratio = DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO
         question_budget_reason = "profile_memory_queries_need_long_term profile and cross-session state"
@@ -5644,7 +5645,13 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     return {
         "enabled": enabled,
         "mode": "prefer" if enabled else "disabled",
-        "decision": "always_consider_same_user_cross_session_when_session_scope_prefer" if enabled else "disabled_by_session_scope_or_budget",
+        "decision": (
+            "always_consider_same_user_cross_session_for_profile_memory"
+            if enabled and profile_memory_query and session_scope != "prefer"
+            else "always_consider_same_user_cross_session_when_session_scope_prefer"
+            if enabled
+            else "disabled_by_session_scope_or_budget"
+        ),
         "question_type": normalized_question_type,
         "question_budget_reason": question_budget_reason,
         "budget_ratio": round(budget_ratio, 6),
