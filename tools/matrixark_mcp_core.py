@@ -6410,8 +6410,16 @@ def memory_layer_for_serving_ref(ref: Json) -> str:
     }:
         return "cross_session_codex_outcome"
     if ref_layer in {
+        "pending_async_memory_feature_event",
+        "same_session_memory_feature_compression",
+        "same_session_memory_feature_summary",
+        "same_session_memory_feature_segment",
+        "same_session_memory_feature_event",
+        "same_session_memory_feature_entity",
         "cross_session_memory_feature_compression",
         "cross_session_memory_feature_summary",
+        "cross_session_memory_feature_segment",
+        "cross_session_memory_feature_event",
         "cross_session_memory_feature_entity",
     }:
         return ref_layer

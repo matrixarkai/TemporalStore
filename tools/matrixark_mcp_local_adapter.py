@@ -8176,6 +8176,12 @@ class MatrixArkLocalAdapter:
                     continue
                 source_memory_selection_policy_counts[policy_name] = max(source_lineage_count, int(count or 0), 1)
         source_memory_selection_policies = sorted(source_memory_selection_policy_counts)
+        source_profile_memory_classes = source_lineage.get("source_profile_memory_classes", [])
+        if not isinstance(source_profile_memory_classes, list):
+            source_profile_memory_classes = []
+        source_profile_memory_kinds = source_lineage.get("source_profile_memory_kinds", [])
+        if not isinstance(source_profile_memory_kinds, list):
+            source_profile_memory_kinds = []
         source_memory_selection_retention: Json = {
             key: envelope_metadata.get(key)
             for key in [
