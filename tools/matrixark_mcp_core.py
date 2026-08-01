@@ -1817,6 +1817,7 @@ ONE_PASS_MEMORY_SCHEMA: Json = {
         "current_plan",
         "family_profile",
         "identity_profile",
+        "communication_profile",
         "correction",
         "confirmation",
     ],
@@ -2377,6 +2378,7 @@ UNDERSTANDING_LABELS: dict[str, str] = {
     "relationship": "relationship manager sister brother teammate family person",
     "family_profile": "family profile pet dog cat child sibling household fact",
     "identity_profile": "user identity name nickname pronouns how to address user",
+    "communication_profile": "user communication style language locale response format tone",
     "current_plan": "current plan goal user request requirement upcoming action task to complete next milestone",
     "session": "general conversation memory useful session fact",
 }
@@ -2408,6 +2410,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "entity_type:family_profile": "family pet dog cat child household",
     "entity_type:job_status": "job role work status position responsibility",
     "entity_type:identity_profile": "identity name nickname pronouns call me address user",
+    "entity_type:communication_profile": "communication style language locale concise detailed bullet format tone",
     "event_type:status_update": "job status role work update",
     "entity_type:current_plan": "plan current plan goal user request requirement upcoming task schedule next milestone",
     "event_type:plan_update": "plan update going to schedule will next",
@@ -2981,6 +2984,9 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         ("identity_profile", r"\b(?:call me|my name is|i am called|i'm called)\s+([^.;!?]{2,80})"),
         ("identity_profile", r"\b(?:user(?:'s)? name is|user goes by|user prefers to be called)\s+([^.;!?]{2,80})"),
         ("identity_profile", r"\b(?:my pronouns are|user(?:'s)? pronouns are)\s+([^.;!?]{2,80})"),
+        ("communication_profile", r"\b(?:reply|respond|answer|write)\s+(?:to\s+me\s+)?(?:in|with|using)\s+([^.;!?]{2,140})"),
+        ("communication_profile", r"\b(?:use|prefer|likes?|wants?)\s+([^.;!?]{2,120}?\b(?:tone|style|format|bullets?|bullet points?|markdown|language|locale|timezone|time zone|concise|detailed|brief))"),
+        ("communication_profile", r"\b(?:communication style|response style|answer style|writing style|preferred language|preferred format|timezone|time zone|locale)[:\s]+([^.;!?]{2,160})"),
         ("correction", r"\b(?:correction|correct|wrong|instead|updated|changed)\s+([^.;!?]{2,140})"),
         ("approval_state", r"\b(?:approved|approval)\s+([^.;!?]{2,140})"),
         ("confirmation", r"\b(?:yes|confirmed|approved|correct|looks good)\b([^.;!?]{0,120})"),
@@ -3062,6 +3068,7 @@ def infer_entity_field_patches(entity_type: str, value: str, text: str) -> list[
         "current_plan",
         "family_profile",
         "identity_profile",
+        "communication_profile",
         "relationship",
         "approval_state",
         "correction",
@@ -3087,6 +3094,7 @@ def canonical_entity_name(entity_type: str, value: str) -> str:
         "current_plan",
         "family_profile",
         "identity_profile",
+        "communication_profile",
         "correction",
         "confirmation",
         "assistant_decision",
@@ -4578,6 +4586,9 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         add_group(context_index_name("memory_selection_policy", "selected_assistant_profile_fact"))
     if re.search(r"\b(name|nickname|call me|called|pronoun|pronouns|who am i|who is the user|address me)\b", lower):
         add_group(context_index_name("entity_type", "identity_profile"))
+        add_group(context_index_name("memory_scope", "user_profile"))
+    if re.search(r"\b(language|locale|timezone|time zone|tone|style|format|bullet|bullets|markdown|concise|brief|detailed|reply|respond|answer style|communication style)\b", lower):
+        add_group(context_index_name("entity_type", "communication_profile"))
         add_group(context_index_name("memory_scope", "user_profile"))
     if re.search(r"\b(friend|partner|mother|father|sister|brother|wife|husband|manager|teammate|relationship|family|child|children|son|daughter|pet)\b", lower):
         add_group(context_index_name("entity_type", "relationship"), context_index_name("entity_type", "family_profile"))
