@@ -4892,6 +4892,14 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("memory_selection_policy", "selected_profile_current_state"),
         )
         add_group(
+            context_index_name("memory_layer", "pending_async_memory_feature_event"),
+            context_index_name("memory_layer", "same_session_memory_feature_event"),
+            context_index_name("memory_layer", "same_session_memory_feature_segment"),
+            context_index_name("memory_layer", "same_session_memory_feature_entity"),
+            context_index_name("memory_layer", "same_session_memory_feature_summary"),
+            context_index_name("memory_layer", "same_session_memory_feature_compression"),
+            context_index_name("memory_layer", "cross_session_memory_feature_event"),
+            context_index_name("memory_layer", "cross_session_memory_feature_segment"),
             context_index_name("memory_layer", "cross_session_memory_feature_entity"),
             context_index_name("memory_layer", "cross_session_memory_feature_summary"),
             context_index_name("memory_layer", "cross_session_memory_feature_compression"),
@@ -4946,6 +4954,14 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             profile_memory_kind_terms.append(context_index_name("profile_memory_kind", "codex_outcome"))
         add_group(*profile_memory_kind_terms)
         add_group(
+            context_index_name("memory_layer", "pending_async_memory_feature_event"),
+            context_index_name("memory_layer", "same_session_memory_feature_event"),
+            context_index_name("memory_layer", "same_session_memory_feature_segment"),
+            context_index_name("memory_layer", "same_session_memory_feature_entity"),
+            context_index_name("memory_layer", "same_session_memory_feature_summary"),
+            context_index_name("memory_layer", "same_session_memory_feature_compression"),
+            context_index_name("memory_layer", "cross_session_memory_feature_event"),
+            context_index_name("memory_layer", "cross_session_memory_feature_segment"),
             context_index_name("memory_layer", "cross_session_memory_feature_entity"),
             context_index_name("memory_layer", "cross_session_memory_feature_summary"),
             context_index_name("memory_layer", "cross_session_memory_feature_compression"),
