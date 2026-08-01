@@ -3079,6 +3079,7 @@ ASSISTANT_MEMORY_LINE_PATTERNS = [
         r"\b(?:call me|my name is|user(?:'s)? name is|user goes by|pronouns?|address (?:me|the user))\b",
         r"\b(?:reply|respond|answer|write|communication style|response style|answer style|preferred language|preferred format|timezone|time zone|locale)\b.{0,120}\b(?:concise|brief|detailed|bullets?|markdown|language|tone|style|format|timezone|locale)\b",
         r"\b(?:workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|build|deploy|deployment|rustraft|temporalstore|matrixark)\b.{0,140}\b(?:always|prefer|use|keep|must|should|avoid|never|don't|push|build|deploy)\b",
+        r"\b(?:i(?:'ll| will)|codex will|assistant will|going forward|from now on)\b.{0,80}\b(?:use|keep|follow|prefer|avoid|never use|not use|always use|push|build|deploy)\b.{0,140}\b(?:workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|build|deploy|deployment|rustraft|temporalstore|matrixark)\b",
         r"\b(?:openviking|vikingmem|mem0|feature parity|feature[- ]focused|functionalit(?:y|ies)|algorithms?|no testing|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no eviden[ct]e|threshold|idle batch|batch extraction)\b",
     ]
 ]
@@ -3093,6 +3094,7 @@ ASSISTANT_PROFILE_MEMORY_POLICY_PATTERNS = [
         r"\b(?:call me|my name is|user(?:'s)? name is|user goes by|pronouns?|address (?:me|the user))\b",
         r"\b(?:reply|respond|answer|write|communication style|response style|answer style|preferred language|preferred format|timezone|time zone|locale)\b.{0,120}\b(?:concise|brief|detailed|bullets?|markdown|language|tone|style|format|timezone|locale)\b",
         r"\b(?:workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|build|deploy|deployment|rustraft|temporalstore|matrixark)\b.{0,140}\b(?:always|prefer|use|keep|must|should|avoid|never|don't|push|build|deploy)\b",
+        r"\b(?:i(?:'ll| will)|codex will|assistant will|going forward|from now on)\b.{0,80}\b(?:use|keep|follow|prefer|avoid|never use|not use|always use|push|build|deploy)\b.{0,140}\b(?:workspace|repo|repository|branch|remote|github|origin/main|main branch|ubuntu|wsl|linux|windows folder|worktree|build|deploy|deployment|rustraft|temporalstore|matrixark)\b",
         r"\b(?:openviking|vikingmem|mem0|feature parity|feature[- ]focused|functionalit(?:y|ies)|algorithms?|no testing|no tests?|skip tests?|without tests?|no monitoring|no debugging|no debug|no evidence|no eviden[ct]e|threshold|idle batch|batch extraction)\b",
     ]
 ]
