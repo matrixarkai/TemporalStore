@@ -829,6 +829,20 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         source = (repo / "tools" / "matrixark_agent_hook.py").read_text()
         self.assertIn("text = payload_text(payload, event=args.event) or args.query", source)
 
+    def test_generic_agent_stop_payload_accepts_llm_response_alias(self) -> None:
+        text = matrixark_agent_hook.payload_text(
+            {"llm_response": "Done. Implemented profile extraction and pushed commit abc1234 to origin/main."},
+            event="Stop",
+        )
+        messages = matrixark_agent_hook.hook_messages_from_payload(
+            {},
+            event="Stop",
+            text=text,
+        )
+
+        self.assertEqual("assistant", messages[0]["role"])
+        self.assertIn("Outcome: pushed commit abc1234 to origin/main", messages[0]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()
