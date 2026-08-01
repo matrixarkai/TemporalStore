@@ -6632,7 +6632,7 @@ def entity_current_state_key(candidate: Json) -> tuple[str, str] | None:
 
 
 def prefer_profile_entities_for_current_state(candidates: list[Json], question_type: str) -> list[Json]:
-    if question_type not in {"current_state", "latest"}:
+    if question_type not in {"current_state", "latest", "profile_memory"}:
         return candidates
     latest_profile_by_entity: dict[tuple[str, str], Json] = {}
     latest_profile_by_source_entity_hash: dict[Any, Json] = {}
