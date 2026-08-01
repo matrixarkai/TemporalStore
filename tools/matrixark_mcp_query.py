@@ -34,7 +34,7 @@ PROFILE_MEMORY_QUERY_RE = re.compile(
     r"\b(user profile|profile memory|long[- ]term memor(?:y|ies)|cross[- ]session memor(?:y|ies)|profile entit(?:y|ies)|profile summar(?:y|ies)|identity profile|communication profile|workspace profile|openviking|vikingmem|mem0|memory feature parity|feature parity|feature[- ]focused memor(?:y|ies)|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionality only|memory functionalit(?:y|ies)|memory algorithms?|memory algos?|no testing|no teseting|no monitoring|no debugging|no evidence|no evident|session memory|remember about me|remember about|what should (?:i|you|we) remember|standing instructions?|standing preferences?|persistent instructions?|saved preferences?|know about (?:me|my|the user)|what (?:have|did) i (?:tell|told) you|what (?:are|were|do|did) my preferences|what do i prefer|do i prefer|my preferences|my .*?(?:policy|policies|instruction|instructions|preference|preferences)|told you before|from previous sessions?|across sessions?|across conversations?|between conversations?|how should (?:you|codex) (?:address|reply|respond|answer)|what (?:is|are) my (?:name|nickname|pronouns?|preferred language|preferred format|communication style|response style|workspace rules?|repo rules?|repository rules?|branch rules?|build rules?|deployment rules?)|what (?:workspace|repo|repository|branch|build|deployment|github|remote) rules? (?:do|should) (?:you|codex) remember|what (?:workflow|workflows|rules?|instructions?|preferences?) (?:do|should) (?:you|codex) follow)\b"
 )
 
-CODEX_OUTCOME_QUERY_RE = re.compile(r"\b(?:codex|assistant|agent)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|validated|verified|push(?:ed)?|commit(?:ted)?|rebased|failed|blocked|blocker|done|outcome|decision|decided|next action)\b|\bwhat (?:was|were|did)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|validated|verified|push(?:ed)?|commit(?:ted)?|failed|blocked|done)\b|\bwhat did (?:you|we)\b.{0,80}\b(?:implement|fix|change|update|validate|verify|push|commit|rebase|fail|block|decide|do)\b|\b(?:show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:assistant decision|tool evidence|validation evidence|pushed commit|blocked work|failed validation|validation result|test result|tests? passed|pushed commit)\b|\b(?:what|which|show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:tests? passed|validation (?:passed|result|evidence)|pushed commit|commit (?:was )?pushed|push result|rebase result)\b|\bwhat (?:failed|was blocked|blocked)\b.{0,80}\b(?:memory work|work|validation|commit|push|tool|codex|temporalstore)\b")
+CODEX_OUTCOME_QUERY_RE = re.compile(r"\b(?:codex|assistant|agent)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|validated|verified|push(?:ed)?|publish(?:ed)?|deploy(?:ed)?|release(?:d)?|merge(?:d)?|commit(?:ted)?|rebase(?:d)?|failed|blocked|blocker|done|outcome|decision|decided|next action)\b|\bwhat (?:was|were|did)\b.{0,80}\b(?:implement(?:ed)?|fixed|changed|updated|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|validated|verified|push(?:ed)?|publish(?:ed)?|deploy(?:ed)?|release(?:d)?|merge(?:d)?|commit(?:ted)?|failed|blocked|done)\b|\bwhat did (?:you|we)\b.{0,80}\b(?:implement|fix|change|update|configure|enable|disable|install|migrate|recover|restore|clean|validate|verify|push|publish|deploy|release|merge|commit|rebase|fail|block|decide|do)\b|\b(?:show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:assistant decision|tool evidence|validation evidence|pushed commit|blocked work|failed validation|validation result|test result|tests? passed|pushed commit|deployment result|deploy(?:ed)? result|install(?:ed)? result|configured result|configuration result|recovery result|migration result|merge result|publish(?:ed)? result|release result|outcome facts?)\b|\b(?:what|which|show|find|retrieve|summari[sz]e)\b.{0,80}\b(?:tests? passed|validation (?:passed|result|evidence)|pushed commit|commit (?:was )?pushed|push result|rebase result|deploy(?:ed)? result|deployment result|install(?:ed)? result|configured result|configuration result|recovery result|migration result|merge result|publish(?:ed)? result|release result)\b|\bwhat (?:failed|was blocked|blocked)\b.{0,80}\b(?:memory work|work|validation|commit|push|deploy|deployment|install|configuration|migration|recovery|merge|publish|release|tool|codex|temporalstore)\b")
 
 QUERY_INDEX_LABELS: dict[str, str] = {
     "entity_type:location": "location city moved lives staying where user is",
@@ -247,9 +247,15 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("classification", "correction"),
             context_index_name("segment_topic", "correction"),
         )
-    if CODEX_OUTCOME_QUERY_RE.search(lower) or re.search(r"\b(assistant|decision|decided|done|implemented|fixed|validated|verified|push(?:ed)?|commit(?:ted)?|failed|blocked|final answer|what did codex|what did you|what did we|what was done|next action)\b", lower):
+    if CODEX_OUTCOME_QUERY_RE.search(lower) or re.search(r"\b(assistant|decision|decided|done|implemented|fixed|changed|updated|configured|enabled|disabled|installed|migrated|recovered|restored|cleaned|validated|verified|push(?:ed)?|publish(?:ed)?|deploy(?:ed)?|release(?:d)?|merge(?:d)?|commit(?:ted)?|rebase(?:d)?|failed|blocked|final answer|what did codex|what did you|what did we|what was done|next action)\b", lower):
         add_group(
             context_index_name("entity_type", "assistant_decision"),
+            context_index_name("entity_type", "codex_next_action"),
+            context_index_name("entity_type", "codex_blocker"),
+            context_index_name("entity_type", "codex_validation"),
+            context_index_name("entity_type", "codex_publish_outcome"),
+            context_index_name("entity_type", "codex_code_change"),
+            context_index_name("entity_type", "codex_benchmark_result"),
             context_index_name("event_type", "assistant_response"),
             context_index_name("entity_type", "tool_evidence"),
             context_index_name("event_type", "tool_evidence"),
@@ -259,6 +265,13 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("memory_selection_policy", "selected_tool_evidence_only"),
             context_index_name("source_type", "message"),
             context_index_name("profile_memory_kind", "codex_outcome"),
+            context_index_name("memory_layer", "same_session_codex_outcome_event"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_event"),
+            context_index_name("memory_layer", "same_session_codex_outcome_segment"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_segment"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_entity"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_summary"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_compression"),
         )
         outcome_terms = codex_outcome_fact_index_terms(query)
         if outcome_terms:
@@ -268,6 +281,9 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("entity_type", "tool_evidence"),
             context_index_name("event_type", "tool_evidence"),
             context_index_name("entity_type", "assistant_decision"),
+            context_index_name("entity_type", "codex_validation"),
+            context_index_name("entity_type", "codex_benchmark_result"),
+            context_index_name("entity_type", "codex_publish_outcome"),
             context_index_name("event_type", "assistant_response"),
         )
         add_group(context_index_name("source_role", "tool"), context_index_name("source_role", "assistant"))
@@ -275,6 +291,10 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("memory_selection_policy", "selected_tool_evidence_only"),
             context_index_name("memory_selection_policy", "selected_assistant_decision_outcome_only"),
             context_index_name("profile_memory_kind", "codex_outcome"),
+            context_index_name("memory_layer", "same_session_codex_outcome_event"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_event"),
+            context_index_name("memory_layer", "same_session_codex_outcome_segment"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_segment"),
         )
         metric_terms = benchmark_quality_index_terms(query)
         if metric_terms:
@@ -291,11 +311,20 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
         )
     if question_type in {"current_state", "latest"} and re.search(r"\b(profile|cross[- ]session|long[- ]term|memory|entity|entities)\b", lower):
         add_group(context_index_name("profile_entity_current", "true"), context_index_name("profile_summary_current", "true"))
-    if re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
+    if re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|published|deploy(?:ed)?|deployment|release(?:d)?|merge(?:d)?|rebase(?:d)?|configured|configuration|enabled|disabled|installed|migrated|recovered|restored|cleaned|promoted|indexed|budgeted|batched|flushed|validation|benchmark|blocker)\b", lower):
         add_group(
             context_index_name("entity_type", "tool_evidence"),
+            context_index_name("entity_type", "codex_validation"),
+            context_index_name("entity_type", "codex_blocker"),
+            context_index_name("entity_type", "codex_publish_outcome"),
+            context_index_name("entity_type", "codex_benchmark_result"),
             context_index_name("event_type", "tool_evidence"),
+            context_index_name("source_role", "tool"),
             context_index_name("profile_memory_kind", "codex_outcome"),
+            context_index_name("memory_layer", "same_session_codex_outcome_event"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_event"),
+            context_index_name("memory_layer", "same_session_codex_outcome_segment"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_segment"),
         )
         outcome_terms = codex_outcome_fact_index_terms(query)
         if outcome_terms:
