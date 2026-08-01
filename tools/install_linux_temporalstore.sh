@@ -314,7 +314,8 @@ export MATRIXARK_TEMPORALSTORE_PREFIX="$hook_prefix"
 export MATRIXARK_TEMPORALSTORE_METASERVER="127.0.0.1:$meta_port"
 export MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS=60000
 export MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS=60000
-exec python3 "$repo/tools/matrixark_agent_hook.py" --agent codex --event UserPromptSubmit --backend temporalstore-rust "\$@"
+event="\${1:-\${MATRIXARK_AGENT_EVENT:-\${CODEX_HOOK_EVENT:-UserPromptSubmit}}}"
+exec python3 "$repo/tools/matrixark_agent_hook.py" --agent codex --event "\$event" --backend temporalstore-rust "\$@"
 EOF
   chmod +x "$proxy_wrapper" "$hook_wrapper"
   echo "Rust proxy wrapper: $proxy_wrapper"
