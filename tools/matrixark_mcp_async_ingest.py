@@ -13,10 +13,12 @@ try:
         context_index_posting_record,
         embedding_for_text,
         embedding_model_name,
+        feature_scope_excludes_outcome_evidence,
         messages_from_event_record,
         normalize_message_role,
         normalized_node_path,
         ordered_unique,
+        profile_entity_type_for_memory_text,
         session_buffer_key,
         stable_hash,
         summarize_text,
@@ -30,10 +32,12 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         context_index_posting_record,
         embedding_for_text,
         embedding_model_name,
+        feature_scope_excludes_outcome_evidence,
         messages_from_event_record,
         normalize_message_role,
         normalized_node_path,
         ordered_unique,
+        profile_entity_type_for_memory_text,
         session_buffer_key,
         stable_hash,
         summarize_text,
@@ -74,6 +78,13 @@ def _metadata_string_values(metadata: Json, *fields: str) -> list[str]:
 def _lightweight_memory_policy_lineage(envelope: Json) -> Json:
     metadata = envelope.get("metadata") if isinstance(envelope.get("metadata"), dict) else {}
     selection = metadata.get("codex_memory_selection") if isinstance(metadata.get("codex_memory_selection"), dict) else {}
+    messages = envelope.get("messages") if isinstance(envelope.get("messages"), list) else []
+    text = text_from_messages(messages)
+    roles = ordered_unique(
+        normalize_message_role(message.get("role"))
+        for message in messages
+        if isinstance(message, dict)
+    )
     policies = ordered_unique(
         _metadata_string_values(
             metadata,
@@ -92,6 +103,34 @@ def _lightweight_memory_policy_lineage(envelope: Json) -> Json:
         _metadata_string_values(metadata, "source_profile_memory_classes", "profile_memory_class")
         + _metadata_string_values(selection, "source_profile_memory_classes", "profile_memory_class")
     )
+    feature_memory_only = bool(feature_scope_excludes_outcome_evidence(text))
+    inferred_profile_type = profile_entity_type_for_memory_text(text)
+    if not profile_classes and (
+        inferred_profile_type == "memory_feature_profile"
+        or feature_memory_only
+    ):
+        profile_classes = ["memory_feature"]
+    if not profile_kinds and profile_classes == ["memory_feature"]:
+        profile_kinds = ["memory_feature"]
+    if (
+        not feature_memory_only
+        and not profile_classes
+        and any(role in {"assistant", "tool"} for role in roles)
+    ):
+        profile_classes = ["codex_outcome"]
+    if (
+        not feature_memory_only
+        and not profile_kinds
+        and profile_classes == ["codex_outcome"]
+    ):
+        profile_kinds = ["codex_outcome"]
+    if not policies and profile_kinds == ["codex_outcome"]:
+        policies = (
+            ["selected_tool_evidence_only"]
+            if "tool" in roles
+            else ["selected_assistant_decision_outcome_only"]
+        )
+        policy_counts = {policy: 1 for policy in policies}
     lineage: Json = {}
     if policies:
         lineage["source_memory_selection_policies"] = policies
