@@ -229,6 +229,10 @@ FEATURE_SCOPE_EXCLUDED_MEMORY_SELECTION_POLICIES = {
     "selected_assistant_decision_outcome_only",
 }
 
+FEATURE_SCOPE_EXCLUDED_SOURCE_ROLES = {
+    "tool",
+}
+
 
 def feature_scope_excludes_evidence(query: str) -> bool:
     return bool(FEATURE_SCOPE_EXCLUSION_RE.search(str(query or "").lower()))
@@ -237,11 +241,17 @@ def feature_scope_excludes_evidence(query: str) -> bool:
 def prune_feature_scope_evidence_budgets(
     *,
     query: str,
+    source_role_budget_tokens: Json,
     memory_layer_budget_tokens: Json,
     memory_selection_policy_budget_tokens: Json,
-) -> tuple[Json, Json]:
+) -> tuple[Json, Json, Json]:
     if not feature_scope_excludes_evidence(query):
-        return memory_layer_budget_tokens, memory_selection_policy_budget_tokens
+        return source_role_budget_tokens, memory_layer_budget_tokens, memory_selection_policy_budget_tokens
+    pruned_source_roles = {
+        role: tokens
+        for role, tokens in (source_role_budget_tokens or {}).items()
+        if str(role or "").strip().lower() not in FEATURE_SCOPE_EXCLUDED_SOURCE_ROLES
+    }
     pruned_memory_layers = {
         layer: tokens
         for layer, tokens in (memory_layer_budget_tokens or {}).items()
@@ -252,7 +262,7 @@ def prune_feature_scope_evidence_budgets(
         for policy, tokens in (memory_selection_policy_budget_tokens or {}).items()
         if str(policy or "").strip() not in FEATURE_SCOPE_EXCLUDED_MEMORY_SELECTION_POLICIES
     }
-    return pruned_memory_layers, pruned_selection_policies
+    return pruned_source_roles, pruned_memory_layers, pruned_selection_policies
 
 
 def retrieval_query_budget_plan(
@@ -346,8 +356,9 @@ def retrieval_query_budget_plan(
                 question_type=question_type,
             )
         )
-    memory_layer_budget_tokens, memory_selection_policy_budget_tokens = prune_feature_scope_evidence_budgets(
+    source_role_budget_tokens, memory_layer_budget_tokens, memory_selection_policy_budget_tokens = prune_feature_scope_evidence_budgets(
         query=query,
+        source_role_budget_tokens=source_role_budget_tokens,
         memory_layer_budget_tokens=memory_layer_budget_tokens,
         memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
     )
