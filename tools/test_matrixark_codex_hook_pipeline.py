@@ -11899,6 +11899,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual([event_hash_by_role["tool"]], tool_entity["source_event_ids"])
             self.assertNotIn(event_hash_by_role["tool"], assistant_entity["source_event_ids"])
             self.assertNotIn(event_hash_by_role["assistant"], tool_entity["source_event_ids"])
+            self.assertIn(
+                "selected_assistant_decision_outcome_only",
+                assistant_entity["source_memory_selection_policies"],
+            )
+            self.assertNotIn("selected_tool_evidence_only", assistant_entity["source_memory_selection_policies"])
+            self.assertIn("selected_tool_evidence_only", tool_entity["source_memory_selection_policies"])
+            self.assertNotIn(
+                "selected_assistant_decision_outcome_only",
+                tool_entity["source_memory_selection_policies"],
+            )
 
     def test_session_buffer_events_preserve_memory_selection_lineage_after_threshold_commit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
