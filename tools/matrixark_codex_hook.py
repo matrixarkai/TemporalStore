@@ -4142,6 +4142,8 @@ def fast_hook_summary_dirty_records(
     source_memory_selection_policies: list[str] | None = None,
     source_memory_selection_policy_counts: Json | None = None,
     source_lineage: Json | None = None,
+    profile_memory_class: str = "",
+    profile_memory_kind: str = "",
 ) -> list[Json]:
     records: list[Json] = []
     lineage = source_lineage if isinstance(source_lineage, dict) else {}
@@ -4165,6 +4167,15 @@ def fast_hook_summary_dirty_records(
         if amount > 0:
             selection_policy_counts[policy_name] = amount
     source_memory_scopes, source_session_continuities = pending_extraction_memory_layer_intent(scope)
+    profile_memory_class = str(profile_memory_class or "").strip()
+    profile_memory_kind = str(profile_memory_kind or "").strip()
+    profile_fields: Json = {}
+    if profile_memory_class:
+        profile_fields["profile_memory_class"] = profile_memory_class
+        profile_fields["source_profile_memory_classes"] = [profile_memory_class]
+    if profile_memory_kind:
+        profile_fields["profile_memory_kind"] = profile_memory_kind
+        profile_fields["source_profile_memory_kinds"] = [profile_memory_kind]
     for depth in range(1, len(node_path) + 1):
         prefix = node_path[:depth]
         prefix_hash = stable_int_hash("/".join(prefix))
@@ -4191,6 +4202,7 @@ def fast_hook_summary_dirty_records(
                 "source_extraction_phases": ["pending_async"],
                 "source_memory_selection_policies": selection_policies,
                 "source_memory_selection_policy_counts": selection_policy_counts,
+                **profile_fields,
                 "changed_ref_count": 1,
                 "propagate_depth": len(node_path),
                 "scope": scope,
@@ -4708,6 +4720,11 @@ def fast_async_hook_ingest(
         source_memory_selection_policies=source_memory_selection_policies,
         source_memory_selection_policy_counts=source_memory_selection_policy_counts,
         source_lineage=lineage,
+        **(
+            {"profile_memory_class": "memory_feature", "profile_memory_kind": "memory_feature"}
+            if FEATURE_MEMORY_POLICY_RE.search(str(text or ""))
+            else {}
+        ),
     )
     enqueue_raw = getattr(adapter, "enqueue_raw_ingestion_records", None)
     session_commit_result: Json = {}
