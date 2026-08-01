@@ -907,6 +907,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
         "profile_entity": 0.40,
         "cross_session_codex_outcome_entity": 0.25,
         "cross_session_codex_outcome_summary": 0.25,
+        "cross_session_codex_outcome_compression": 0.25,
     }
     normalized_question_type = str(question_type or "fact").strip().lower()
     if codex_outcome_budget_query(args, ranking, question_type=question_type):
@@ -928,6 +929,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "profile_entity": 0.45,
                 "cross_session_codex_outcome_entity": 0.62,
                 "cross_session_codex_outcome_summary": 0.45,
+                "cross_session_codex_outcome_compression": 0.45,
             }
         )
     elif normalized_question_type in {"current_state", "latest"}:
@@ -949,6 +951,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "profile_entity": 0.55,
                 "cross_session_codex_outcome_entity": 0.45,
                 "cross_session_codex_outcome_summary": 0.35,
+                "cross_session_codex_outcome_compression": 0.35,
             }
         )
     elif normalized_question_type == "profile_memory":
@@ -970,6 +973,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "profile_entity": 0.60,
                 "cross_session_codex_outcome_entity": 0.30,
                 "cross_session_codex_outcome_summary": 0.35,
+                "cross_session_codex_outcome_compression": 0.35,
             }
         )
     elif normalized_question_type in {"multi_hop", "date"}:
@@ -991,6 +995,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "profile_entity": 0.45,
                 "cross_session_codex_outcome_entity": 0.40,
                 "cross_session_codex_outcome_summary": 0.35,
+                "cross_session_codex_outcome_compression": 0.35,
             }
         )
     elif normalized_question_type == "benchmark_quality":
@@ -1012,6 +1017,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "profile_entity": 0.50,
                 "cross_session_codex_outcome_entity": 0.58,
                 "cross_session_codex_outcome_summary": 0.45,
+                "cross_session_codex_outcome_compression": 0.45,
             }
         )
     elif normalized_question_type in {"broad_exploration", "evidence"}:
@@ -1033,6 +1039,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "profile_entity": 0.45,
                 "cross_session_codex_outcome_entity": 0.45,
                 "cross_session_codex_outcome_summary": 0.35,
+                "cross_session_codex_outcome_compression": 0.35,
             }
         )
     budgets: Json = {}
@@ -1154,6 +1161,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
         "profile_entity": 0.45,
         "cross_session_codex_outcome_entity": 0.25,
         "cross_session_codex_outcome_summary": 0.25,
+        "cross_session_codex_outcome_compression": 0.25,
     }
     if normalized_question_type in {"current_state", "latest"}:
         fractions.update(
@@ -1167,6 +1175,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "profile_entity": 0.55,
                 "cross_session_codex_outcome_entity": 0.45,
                 "cross_session_codex_outcome_summary": 0.35,
+                "cross_session_codex_outcome_compression": 0.35,
             }
         )
     elif normalized_question_type == "profile_memory":
@@ -1185,6 +1194,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "profile_entity": 0.60,
                 "cross_session_codex_outcome_entity": 0.30,
                 "cross_session_codex_outcome_summary": 0.35,
+                "cross_session_codex_outcome_compression": 0.35,
             }
         )
     elif normalized_question_type in {"multi_hop", "date"}:
@@ -1197,6 +1207,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "profile_entity": 0.50,
                 "cross_session_codex_outcome_entity": 0.40,
                 "cross_session_codex_outcome_summary": 0.35,
+                "cross_session_codex_outcome_compression": 0.35,
             }
         )
     elif normalized_question_type == "benchmark_quality":
@@ -1212,6 +1223,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "profile_entity": 0.50,
                 "cross_session_codex_outcome_entity": 0.58,
                 "cross_session_codex_outcome_summary": 0.45,
+                "cross_session_codex_outcome_compression": 0.45,
             }
         )
     elif normalized_question_type in {"broad_exploration", "evidence"}:
@@ -1229,6 +1241,7 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 "profile_entity": 0.50,
                 "cross_session_codex_outcome_entity": 0.45,
                 "cross_session_codex_outcome_summary": 0.35,
+                "cross_session_codex_outcome_compression": 0.35,
             }
         )
     return {

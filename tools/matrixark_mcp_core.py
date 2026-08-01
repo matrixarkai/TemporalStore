@@ -6581,12 +6581,18 @@ def select_token_budgeted_refs(
     extraction_phase_used_tokens: Json = {phase: 0 for phase in normalized_extraction_phase_budget_tokens}
     extraction_phase_selected_ref_counts: Json = {phase: 0 for phase in normalized_extraction_phase_budget_tokens}
     profile_entity_bridge_layers = {"profile_entity", "cross_session_codex_outcome_entity"}
+    high_level_profile_memory_layers = {
+        "summary",
+        "profile_summary",
+        "cross_session_codex_outcome_summary",
+        "same_session_summary",
+        "cross_session_summary",
+        "profile_compression",
+        "cross_session_codex_outcome_compression",
+    }
     summary_profile_entity_floor_enabled = bool(
         any(normalized_memory_layer_budget_tokens.get(layer) for layer in profile_entity_bridge_layers)
-        and any(
-            normalized_memory_layer_budget_tokens.get(layer)
-            for layer in ["summary", "profile_summary", "cross_session_codex_outcome_summary", "same_session_summary", "cross_session_summary"]
-        )
+        and any(normalized_memory_layer_budget_tokens.get(layer) for layer in high_level_profile_memory_layers)
     )
     cross_session_profile_entity_floor_enabled = bool(
         cross_enabled
@@ -6857,8 +6863,7 @@ def select_token_budgeted_refs(
         candidate_cross_key = cross_session_key(candidate) if is_cross_session else ""
         candidate_memory_layer = candidate_memory_layer_name(candidate)
         is_broad_profile_summary = (
-            candidate_memory_layer
-            in {"summary", "profile_summary", "cross_session_codex_outcome_summary", "same_session_summary", "cross_session_summary"}
+            candidate_memory_layer in high_level_profile_memory_layers
             and normalized_question_type in {"broad_exploration", "profile_memory"}
         )
         if is_cross_session and not cross_enabled:
@@ -6933,7 +6938,7 @@ def select_token_budgeted_refs(
                     selected_ref_cap > 1
                     and
                     normalized_question_type in {"broad_exploration", "profile_memory"}
-                    and candidate_memory_layer in {"profile_summary", "cross_session_summary"}
+                    and candidate_memory_layer in {"profile_summary", "cross_session_summary", "profile_compression", "cross_session_codex_outcome_compression"}
                 )
             )
             or (
@@ -6943,7 +6948,7 @@ def select_token_budgeted_refs(
                     selected_ref_cap > 1
                     and
                     normalized_question_type in {"broad_exploration", "profile_memory"}
-                    and candidate_memory_layer in {"summary", "profile_summary", "cross_session_codex_outcome_summary", "same_session_summary", "cross_session_summary"}
+                    and candidate_memory_layer in high_level_profile_memory_layers
                 )
             )
         )
