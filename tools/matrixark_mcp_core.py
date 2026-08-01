@@ -2432,6 +2432,12 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "classification:correction": "correction wrong changed update",
     "segment_topic:correction": "correction updated stale changed",
     "entity_type:assistant_decision": "assistant decision final answer done implemented chose decided next action",
+    "entity_type:codex_next_action": "codex next action follow up plan todo upcoming work",
+    "entity_type:codex_blocker": "codex blocker blocked failed error missing rejected fatal risk",
+    "entity_type:codex_validation": "codex validation tests passed py_compile cargo check pytest verified",
+    "entity_type:codex_publish_outcome": "codex outcome commit pushed origin main remote branch publication",
+    "entity_type:codex_code_change": "codex changed implemented fixed added removed updated code change",
+    "entity_type:codex_benchmark_result": "codex benchmark p50 p99 throughput latency workload result",
     "event_type:assistant_response": "assistant response final answer outcome done implemented fixed decision",
     "event_type:user_prompt": "user prompt request asks asked requirement instruction",
     "entity_type:tool_evidence": "tool evidence tests passed failed exit code commit push rebase validation benchmark blocker",
@@ -2763,6 +2769,32 @@ def codex_outcome_fact_kind(line: str) -> str:
     return ""
 
 
+CODEX_OUTCOME_ENTITY_TYPES = {
+    "codex_next_action",
+    "codex_blocker",
+    "codex_validation",
+    "codex_publish_outcome",
+    "codex_code_change",
+    "codex_benchmark_result",
+}
+
+
+def codex_outcome_entity_type(kind: str) -> str:
+    return {
+        "next": "codex_next_action",
+        "blocker": "codex_blocker",
+        "validation": "codex_validation",
+        "outcome": "codex_publish_outcome",
+        "changed": "codex_code_change",
+        "benchmark": "codex_benchmark_result",
+    }.get(str(kind or "").strip().lower(), "codex_outcome_fact")
+
+
+def is_codex_outcome_entity_type(entity_type: Any) -> bool:
+    normalized = normalized_index_value(entity_type)
+    return normalized in CODEX_OUTCOME_ENTITY_TYPES or normalized in {"assistant_decision", "tool_evidence", "codex_outcome_fact"}
+
+
 def codex_outcome_fact_index_terms(*values: Any) -> set[str]:
     text = " ".join(str(value or "") for value in values)
     lower = text.lower()
@@ -2795,7 +2827,6 @@ def codex_outcome_fact_entities(
     source_refs: list[str],
     source_count: int,
 ) -> list[Json]:
-    entity_type = "tool_evidence" if role_name == "tool" else "assistant_decision"
     source_role = "tool" if role_name == "tool" else "assistant"
     entities: list[Json] = []
     seen: set[tuple[str, str]] = set()
@@ -2808,16 +2839,16 @@ def codex_outcome_fact_entities(
             kind = codex_outcome_fact_kind(line)
             if not kind:
                 continue
-            key = (entity_type, kind)
+            entity_type = codex_outcome_entity_type(kind)
+            key = (entity_type, source_role)
             if key in seen:
                 continue
             seen.add(key)
-            state_prefix = "tool evidence" if entity_type == "tool_evidence" else "assistant decision"
-            state = summarize_text(f"{state_prefix} {kind}: {line}", limit=220)
+            state = summarize_text(f"{source_role} {kind}: {line}", limit=220)
             entities.append(
                 {
                     "entity_type": entity_type,
-                    "entity_name": f"{entity_type}:{kind}",
+                    "entity_name": entity_type,
                     "state": state,
                     "confidence": 0.9 if kind in {"outcome", "validation"} else 0.86,
                     "source_refs": source_refs,
@@ -2827,9 +2858,9 @@ def codex_outcome_fact_entities(
                     "field_patches": [entity_patch("", summarize_text(state, limit=180))],
                 }
             )
-            if len(entities) >= 6:
+            if len(entities) >= 8:
                 break
-        if len(entities) >= 6:
+        if len(entities) >= 8:
             break
     return entities
 
@@ -3130,6 +3161,7 @@ def infer_entity_field_patches(entity_type: str, value: str, text: str) -> list[
         "confirmation",
         "assistant_decision",
         "tool_evidence",
+        *CODEX_OUTCOME_ENTITY_TYPES,
     }
     if entity_type in evolving_entity_types and not patches and value:
         patches.append(entity_patch("", summarize_text(value, limit=180)))
@@ -3155,6 +3187,7 @@ def canonical_entity_name(entity_type: str, value: str) -> str:
         "confirmation",
         "assistant_decision",
         "tool_evidence",
+        *CODEX_OUTCOME_ENTITY_TYPES,
     }:
         return entity_type
     if entity_type == "approval_state":
@@ -3196,6 +3229,8 @@ def entity_retention_priority(entity: Json) -> int:
         return 0
     if "user" in source_roles or entity_type in {"current_plan", "confirmation"}:
         return 1
+    if entity_type in CODEX_OUTCOME_ENTITY_TYPES:
+        return 2
     if entity_type in {"assistant_decision", "tool_evidence"} and ":" in entity_name:
         return 2
     if entity_type in {"assistant_decision", "tool_evidence"}:
@@ -3680,7 +3715,7 @@ def profile_memory_class_for_entity_type(entity_type: Any) -> str:
         return "personal_context"
     if normalized in {"current_plan"}:
         return "task_context"
-    if normalized in {"assistant_decision", "tool_evidence"}:
+    if is_codex_outcome_entity_type(normalized):
         return "codex_outcome"
     if normalized in {"resource_fact"}:
         return "resource_context"
@@ -3689,7 +3724,7 @@ def profile_memory_class_for_entity_type(entity_type: Any) -> str:
 
 def profile_memory_kind_for_entity_type(entity_type: Any) -> str:
     normalized = normalized_index_value(entity_type)
-    if normalized in {"assistant_decision", "tool_evidence"}:
+    if is_codex_outcome_entity_type(normalized):
         return "codex_outcome"
     if normalized.startswith("resource_") or normalized in {"resource_fact"}:
         return "resource_context"
@@ -4771,6 +4806,12 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
     if CODEX_OUTCOME_QUERY_RE.search(lower) or re.search(r"\b(assistant|decision|decided|done|implemented|fixed|validated|verified|push(?:ed)?|commit(?:ted)?|failed|blocked|final answer|what did codex|what did you|what did we|what was done|next action)\b", lower):
         add_group(
             context_index_name("entity_type", "assistant_decision"),
+            context_index_name("entity_type", "codex_next_action"),
+            context_index_name("entity_type", "codex_blocker"),
+            context_index_name("entity_type", "codex_validation"),
+            context_index_name("entity_type", "codex_publish_outcome"),
+            context_index_name("entity_type", "codex_code_change"),
+            context_index_name("entity_type", "codex_benchmark_result"),
             context_index_name("event_type", "assistant_response"),
             context_index_name("source_role", "assistant"),
             context_index_name("entity_type", "tool_evidence"),
@@ -4789,6 +4830,9 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("entity_type", "tool_evidence"),
             context_index_name("event_type", "tool_evidence"),
             context_index_name("entity_type", "assistant_decision"),
+            context_index_name("entity_type", "codex_validation"),
+            context_index_name("entity_type", "codex_benchmark_result"),
+            context_index_name("entity_type", "codex_publish_outcome"),
             context_index_name("event_type", "assistant_response"),
         )
         add_group(context_index_name("source_role", "tool"), context_index_name("source_role", "assistant"))
@@ -4805,6 +4849,10 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
     if re.search(r"\b(tool|evidence|test|tests|passed|failed|exit code|commit|pushed|push|rebase|validation|benchmark|blocker)\b", lower):
         add_group(
             context_index_name("entity_type", "tool_evidence"),
+            context_index_name("entity_type", "codex_validation"),
+            context_index_name("entity_type", "codex_blocker"),
+            context_index_name("entity_type", "codex_publish_outcome"),
+            context_index_name("entity_type", "codex_benchmark_result"),
             context_index_name("event_type", "tool_evidence"),
             context_index_name("source_role", "tool"),
             context_index_name("profile_memory_kind", "codex_outcome"),
@@ -5625,6 +5673,8 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
     if ref_type == "entity" and profile_memory_kind == "codex_outcome" and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
         return 0.52
+    if ref_type == "entity" and is_codex_outcome_entity_type(event_type) and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
+        return 0.48
     if ref_type == "entity" and profile_memory_kind == "durable_profile" and question_type == "profile_memory":
         return 0.46
     if question_type == "procedure":
@@ -5736,6 +5786,8 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
         if question_type in {"current_state", "latest"}:
             if profile_memory_kind == "codex_outcome":
                 ref_priority = 1.0
+            elif entity_type in CODEX_OUTCOME_ENTITY_TYPES:
+                ref_priority = 1.0
             elif entity_type == "assistant_decision":
                 ref_priority = 1.0
             elif entity_type == "tool_evidence":
@@ -5747,6 +5799,8 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
         elif question_type in {"evidence", "benchmark_quality"}:
             codex_outcome_terms = candidate_codex_outcome_terms(candidate)
             if profile_memory_kind == "codex_outcome":
+                ref_priority = 1.0
+            elif entity_type in CODEX_OUTCOME_ENTITY_TYPES:
                 ref_priority = 1.0
             elif entity_type == "tool_evidence":
                 ref_priority = 1.0
