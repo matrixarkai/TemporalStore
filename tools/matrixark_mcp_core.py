@@ -2945,7 +2945,15 @@ def is_codex_outcome_entity_type(entity_type: Any) -> bool:
 
 def semantic_source_role_for_entity_type(entity_type: Any, role_names: set[str] | None = None) -> str:
     normalized = normalized_index_value(entity_type)
-    if normalized in {"memory_feature_profile", "identity_profile", "communication_profile", "workspace_profile"}:
+    if profile_memory_kind_for_entity_type(normalized) == "durable_profile" or profile_memory_class_for_entity_type(normalized) in {
+        "identity",
+        "communication",
+        "workspace",
+        "memory_feature",
+        "preference",
+        "personal_context",
+        "task_context",
+    }:
         return "profile"
     if normalized in {"assistant_decision", "assistant_response"}:
         return "assistant"
