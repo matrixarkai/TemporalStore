@@ -239,6 +239,20 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         and str(item.get("content") or "").strip()
     ]
     user_text = text_from_messages(user_messages) if user_messages else ""
+    user_profile_entity_type = profile_entity_type_for_memory_text(user_text)
+    if user_profile_entity_type == "memory_feature_profile":
+        state = summarize_text(f"memory feature policy: {user_text}", limit=220)
+        entities.append(
+            {
+                "entity_type": user_profile_entity_type,
+                "entity_name": user_profile_entity_type,
+                "state": state,
+                "confidence": 0.86,
+                "source_refs": source_refs_for_role("user"),
+                "operator": normalize_entity_operator(None, user_profile_entity_type),
+                "field_patches": [entity_patch("", summarize_text(state, limit=180))],
+            }
+        )
     if user_text:
         for match in re.finditer(
             r"\b(?:remember(?:\s+that)?|please\s+always|always|keep|use)\b[:\s]+([^.;!?\n]{4,180})",
@@ -393,6 +407,7 @@ def infer_entity_field_patches(entity_type: str, value: str, text: str) -> list[
         "family_profile",
         "identity_profile",
         "communication_profile",
+        "memory_feature_profile",
         "workspace_profile",
         "relationship",
         "approval_state",
@@ -420,6 +435,7 @@ def canonical_entity_name(entity_type: str, value: str) -> str:
         "family_profile",
         "identity_profile",
         "communication_profile",
+        "memory_feature_profile",
         "workspace_profile",
         "correction",
         "confirmation",
