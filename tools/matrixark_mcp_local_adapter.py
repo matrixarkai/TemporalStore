@@ -1999,7 +1999,6 @@ def context_event_type_for_message(message: Json, default_event_type: str) -> st
     if (
         role == "assistant"
         and "selected_assistant_profile_fact" in policies
-        and "selected_assistant_decision_outcome_only" not in policies
         and feature_scope_excludes_outcome_evidence(content)
     ):
         return "memory_feature"

@@ -11970,6 +11970,32 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(["PostToolUse"], by_role["tool"]["source_codex_events"])
             self.assertEqual(["selected_tool_evidence_only"], by_role["tool"]["source_memory_selection_policies"])
 
+    def test_assistant_feature_scope_overrides_decision_policy_for_event_type(self) -> None:
+        message = {
+            "role": "assistant",
+            "content": (
+                "I will focus on OpenViking/VikingMem-style session memory features; "
+                "no testing, monitoring, debugging, or evidence in this step."
+            ),
+            "metadata": {
+                "codex_memory_selection": {
+                    "policies": [
+                        "selected_assistant_profile_fact",
+                        "selected_assistant_decision_outcome_only",
+                    ],
+                    "policy": "selected_assistant_profile_fact",
+                }
+            },
+        }
+
+        self.assertEqual(
+            "memory_feature",
+            matrixark_mcp_local_adapter.context_event_type_for_message(
+                message,
+                "pending_async",
+            ),
+        )
+
     def test_lightweight_async_assistant_and_tool_pending_events_keep_semantic_types(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-lightweight-pending-role-types.jsonl")
