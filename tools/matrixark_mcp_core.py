@@ -5757,6 +5757,8 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     event_type = str(candidate.get("event_type") or candidate.get("entity_type") or candidate.get("topic") or "").lower()
     has_citation = bool(candidate.get("source_ref") or candidate.get("citation") or candidate.get("source_chunk_hash"))
     profile_memory_kind = str(candidate.get("profile_memory_kind") or "").strip().lower()
+    memory_scope = str(candidate.get("memory_scope") or "").strip().lower()
+    session_continuity = str(candidate.get("session_continuity") or "").strip().lower()
     is_codex_outcome_compression = ref_type == "compression" and profile_memory_kind == "codex_outcome"
     if is_codex_outcome_compression and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
         return 0.46
@@ -5770,8 +5772,18 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
         return 0.52
     if ref_type == "entity" and is_codex_outcome_entity_type(event_type) and question_type in {"current_state", "latest", "evidence", "benchmark_quality"}:
         return 0.48
-    if ref_type == "entity" and profile_memory_kind == "durable_profile" and question_type == "profile_memory":
-        return 0.46
+    if question_type == "profile_memory" and profile_memory_kind == "durable_profile":
+        if ref_type == "entity":
+            return 0.50
+        if ref_type in {"summary", "compression"}:
+            return 0.38
+        if ref_type == "segment":
+            return 0.24
+    if question_type == "profile_memory" and memory_scope == "user_profile" and session_continuity == "cross_session":
+        if ref_type == "entity":
+            return 0.42
+        if ref_type in {"summary", "compression"}:
+            return 0.30
     if question_type == "procedure":
         if ref_type == "skill_section":
             return 0.36
@@ -5871,6 +5883,14 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
             boosted = clamp01(boosted + 0.08)
         elif question_type in {"profile_memory", "multi_hop", "date"}:
             token_efficiency *= 1.20 if source_count >= 2 else 1.08
+    if question_type == "profile_memory" and profile_memory_kind == "durable_profile":
+        source_count = len(candidate.get("source_event_ids", []) or [])
+        source_entity_count = len(candidate.get("source_entity_hashes", []) or [])
+        if ref_type in {"summary", "compression"}:
+            token_efficiency *= 1.35 if max(source_count, source_entity_count) >= 2 else 1.12
+            boosted = clamp01(boosted + 0.06)
+        elif ref_type == "entity":
+            boosted = clamp01(boosted + 0.04)
     ref_priority = 0.0
     query_specificity = 0.0
     try:
@@ -5916,7 +5936,13 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
             elif entity_type == "assistant_decision":
                 ref_priority = 0.95 if codex_outcome_terms else 0.7
         elif question_type == "profile_memory" and profile_memory_kind == "durable_profile":
-            ref_priority = max(ref_priority, 0.9)
+            ref_priority = max(ref_priority, 0.95)
+        elif (
+            question_type == "profile_memory"
+            and str(candidate.get("memory_scope") or "") == "user_profile"
+            and str(candidate.get("session_continuity") or "") == "cross_session"
+        ):
+            ref_priority = max(ref_priority, 0.72)
         if (
             str(candidate.get("memory_scope") or "") == "user_profile"
             and str(candidate.get("session_continuity") or "") == "cross_session"
@@ -5924,6 +5950,9 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
             and entity_type in {"assistant_decision", "tool_evidence"}
         ):
             ref_priority += 0.30 if entity_type == "assistant_decision" else 0.12
+    elif question_type == "profile_memory" and profile_memory_kind == "durable_profile" and ref_type in {"summary", "compression"}:
+        ref_priority = 0.82
+        query_specificity = clamp01(sparse_score + min(0.35, 0.06 * keyword_score))
     elif question_type in {"evidence", "benchmark_quality"} and str(candidate.get("event_type") or "").strip().lower() == "tool_evidence":
         ref_priority = 0.8
     return (boosted, ref_priority, query_specificity, token_efficiency, score)
