@@ -3817,6 +3817,28 @@ def codex_retrieve_question_type(query: str) -> str:
     return str(infer_query_type(str(query or "")) or "fact")
 
 
+def codex_feature_scope_excludes_audit(query: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:no|not|skip|without|exclude|excluding|ignore|omit)\s+"
+            r"(?:testing|tests?|monitoring|debugging|debug|evidence|evident|validation|benchmarks?)\b",
+            str(query or "").lower(),
+        )
+    )
+
+
+def codex_retrieve_audit_options(query: str) -> Json:
+    if codex_feature_scope_excludes_audit(query):
+        return {
+            "audit_mode": "off",
+            "audit_sample_rate": 0.0,
+        }
+    return {
+        "audit_mode": "telemetry_only",
+        "audit_sample_rate": 0.0,
+    }
+
+
 def codex_retrieve_cross_session_options(query: str = "") -> Json:
     question_type = codex_retrieve_question_type(query)
     options: Json = {
@@ -5618,8 +5640,7 @@ def main() -> int:
                     "session_buffer_threshold": args.session_commit_threshold,
                     "idle_commit_timeout_ms": args.idle_commit_timeout_ms,
                     "storage_options": hook_storage_options(),
-                    "audit_mode": "telemetry_only",
-                    "audit_sample_rate": 0.0,
+                    **codex_retrieve_audit_options(query),
                     **(
                         {
                             "pre_retrieval_summary_refresh": True,
