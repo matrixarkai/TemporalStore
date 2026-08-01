@@ -12182,6 +12182,72 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("session_profile_feature_accumulate_2", latest_profile["source_session_ids"])
             self.assertGreaterEqual(latest_profile["profile_revision"], 2)
 
+    def test_tool_feature_results_promote_to_profile_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-tool-feature-profile.jsonl")
+            scope = {
+                "account_id": "acct_tool_feature_profile",
+                "tenant_id": "tenant_tool_feature_profile",
+                "user_id": "user_tool_feature_profile",
+                "session_id": "session_tool_feature_profile",
+            }
+            result = adapter.batch_extract(
+                {
+                    "scope": scope,
+                    "messages": [
+                        {
+                            "role": "tool",
+                            "content": (
+                                "Exit code: 0; implemented OpenViking memory feature parity for live "
+                                "ingestion, profile promotion, and contextpack retrieval budgets."
+                            ),
+                        }
+                    ],
+                    "metadata": {"hook_type": "tool_result", "codex_event": "ToolResult"},
+                    "threshold_messages": 1,
+                    "force": True,
+                    "skip_prior_context": True,
+                }
+            )
+            self.assertEqual("accepted", result["status"])
+
+            profile_entities = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") == "context_entity"
+                and record.get("memory_scope") == "user_profile"
+                and record.get("session_continuity") == "cross_session"
+                and record.get("entity_type") == "memory_feature_profile"
+            ]
+            self.assertTrue(profile_entities)
+            latest_profile = profile_entities[-1]
+            self.assertIn("live ingestion", latest_profile["state"])
+            self.assertIn("profile promotion", latest_profile["state"])
+            self.assertIn("tool", latest_profile["source_roles"])
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {**scope, "session_id": "session_tool_feature_profile_later"},
+                    "query": "What is the current memory feature status for live ingestion and profile promotion?",
+                    "max_context_tokens": 180,
+                    "audit_mode": "off",
+                    "ranking": {
+                        "max_selected_refs": 4,
+                        "min_similarity_score": 0.0,
+                        "budget_fill_policy": "force_fill",
+                    },
+                }
+            )
+            self.assertTrue(
+                any(
+                    ref.get("ref_type") == "entity"
+                    and ref.get("entity_type") == "memory_feature_profile"
+                    and "profile promotion" in str(ref.get("text") or "")
+                    for ref in pack["selected_refs"]
+                ),
+                pack["selected_refs"],
+            )
+
     def test_lightweight_async_assistant_and_tool_pending_events_keep_semantic_types(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-lightweight-pending-role-types.jsonl")
