@@ -4465,6 +4465,7 @@ def fast_async_hook_ingest(
     agent_context: Json,
     hook: Json | None,
     original_text: str | None = None,
+    codex_event: str | None = None,
 ) -> Json:
     adapter = getattr(server, "adapter", None)
     enqueue = getattr(adapter, "_enqueue_direct_write", None)
@@ -4502,9 +4503,10 @@ def fast_async_hook_ingest(
         if tool_status:
             tool_fields["tool_status"] = tool_status
     source_memory_scopes, source_session_continuities = pending_extraction_memory_layer_intent(scope)
+    event_name = str(codex_event or args.event)
     selection_metadata = codex_memory_selection_metadata(
         role=role,
-        event=args.event,
+        event=event_name,
         text=text,
         original_text=original_text,
     )
@@ -4524,7 +4526,7 @@ def fast_async_hook_ingest(
     }
     metadata: Json = codex_hook_metadata(
         source="codex_hook_fast_async",
-        event=args.event,
+        event=event_name,
         agent_context=agent_context,
         session_id_source=str(agent_context.get("session_id_source") or ""),
         source_role=role,
@@ -4566,8 +4568,8 @@ def fast_async_hook_ingest(
         "source_role": role,
         "role": role,
         "text": text,
-        "codex_event": args.event,
-        "codex_api_event": args.event,
+        "codex_event": event_name,
+        "codex_api_event": event_name,
         **tool_fields,
         "messages": messages,
         "scope": scope,
@@ -4606,10 +4608,10 @@ def fast_async_hook_ingest(
         "source_role_counts": {role: 1} if role else {},
         "source_hook_types": [hook_type] if hook_type else [],
         "source_hook_type_counts": {hook_type: 1} if hook_type else {},
-        "codex_event": args.event,
-        "codex_api_event": args.event,
-        "source_codex_events": [args.event] if args.event else [],
-        "source_codex_event_counts": {args.event: 1} if args.event else {},
+        "codex_event": event_name,
+        "codex_api_event": event_name,
+        "source_codex_events": [event_name] if event_name else [],
+        "source_codex_event_counts": {event_name: 1} if event_name else {},
         "source_memory_scopes": source_memory_scopes,
         "source_session_continuities": source_session_continuities,
         "source_extraction_phases": ["pending_async"],
@@ -4628,7 +4630,7 @@ def fast_async_hook_ingest(
         "envelope": {
             "kind": "message",
             "source_role": role,
-            "codex_event": args.event,
+            "codex_event": event_name,
             "event_type": semantic_event_type,
             **tool_fields,
             "messages": messages,
@@ -4676,8 +4678,8 @@ def fast_async_hook_ingest(
         "source_role_counts": {role: 1} if role else {},
         "source_hook_types": [hook_type] if hook_type else [],
         "source_hook_type_counts": {hook_type: 1} if hook_type else {},
-        "source_codex_events": [args.event] if args.event else [],
-        "source_codex_event_counts": {args.event: 1} if args.event else {},
+        "source_codex_events": [event_name] if event_name else [],
+        "source_codex_event_counts": {event_name: 1} if event_name else {},
         "source_memory_scopes": source_memory_scopes,
         "source_session_continuities": source_session_continuities,
         "source_extraction_phases": ["pending_async"],
@@ -4701,7 +4703,7 @@ def fast_async_hook_ingest(
         updated_at_ms=now,
         source_role=role,
         hook_type=hook_type,
-        codex_event=args.event,
+        codex_event=event_name,
         source_memory_selection_policies=source_memory_selection_policies,
         source_memory_selection_policy_counts=source_memory_selection_policy_counts,
         source_lineage=lineage,
@@ -5450,6 +5452,7 @@ def main() -> int:
                         agent_context=agent_context,
                         hook=previous_tool_hook,
                         original_text=previous_tool_raw,
+                        codex_event="PreviousToolOutputBackfill",
                     )
                     if backfill_result:
                         trace.setdefault("fast_async_backfill", {})["previous_tool_output"] = backfill_result
@@ -5460,7 +5463,7 @@ def main() -> int:
                         hook_async_message_ingest_args(
                             common,
                             args,
-                            event=args.event,
+                            event="PreviousToolOutputBackfill",
                             role="tool",
                             text=previous_tool_output,
                             original_text=previous_tool_raw,
@@ -5501,6 +5504,7 @@ def main() -> int:
                         agent_context=agent_context,
                         hook=previous_assistant_hook,
                         original_text=previous_assistant_raw,
+                        codex_event="PreviousAssistantBackfill",
                     )
                     if backfill_result:
                         trace.setdefault("fast_async_backfill", {})["previous_assistant"] = backfill_result
@@ -5511,7 +5515,7 @@ def main() -> int:
                         hook_async_message_ingest_args(
                             common,
                             args,
-                            event=args.event,
+                            event="PreviousAssistantBackfill",
                             role="assistant",
                             text=previous_assistant,
                             original_text=previous_assistant_raw,
