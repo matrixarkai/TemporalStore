@@ -1722,6 +1722,7 @@ def idle_commit_scheduled_task_record(
     node_hash: int,
     node_path: list[str],
     scope: Json,
+    storage_options: Json | None = None,
     ingestion_time_ms: int,
     idle_commit_timeout_ms: int,
     pending_event_count: int,
@@ -1729,6 +1730,7 @@ def idle_commit_scheduled_task_record(
     threshold_messages: int,
 ) -> Json:
     deadline_ms = int(ingestion_time_ms or 0) + max(0, int(idle_commit_timeout_ms or 0))
+    requested_storage_options = dict(storage_options or {})
     return {
         "record_type": "matrixark_async_pipeline_task",
         "task_hash": stable_hash(f"async_pipeline_idle_commit:{event_id_hash}"),
@@ -1747,6 +1749,8 @@ def idle_commit_scheduled_task_record(
         "idle_commit_cutoff_ms": int(ingestion_time_ms or 0),
         "idle_commit_pending_event_count": pending_event_count,
         "idle_commit_pending_message_count": pending_message_count,
+        "requested_storage_options": requested_storage_options,
+        "storage_options": requested_storage_options,
         "source_extraction_phases": ["provisional"],
         "extraction_phase": "provisional",
         "final_session_boundary": False,
@@ -3956,6 +3960,125 @@ class MatrixArkLocalAdapter:
                 "created_at_ms": envelope["ingestion_time_ms"],
             }
         )
+
+    def drain_due_idle_session_commits(self, *, scope: Json, args: Json, hook: Json | None) -> Json:
+        now = now_ms()
+        records = self.read_all()
+        latest_status_by_task_hash: dict[int, str] = {}
+        latest_order_by_task_hash: dict[int, int] = {}
+        for index, record in enumerate(records):
+            if record.get("record_type") != "matrixark_async_pipeline_task":
+                continue
+            try:
+                task_hash = int(record.get("task_hash"))
+            except (TypeError, ValueError):
+                continue
+            latest_status_by_task_hash[task_hash] = str(record.get("status") or "")
+            latest_order_by_task_hash[task_hash] = index
+        due_tasks: list[Json] = []
+        requested_key = session_buffer_key_from_scope(scope)
+        for index, record in enumerate(records):
+            if record.get("record_type") != "matrixark_async_pipeline_task":
+                continue
+            if record.get("status") != "idle_commit_scheduled":
+                continue
+            try:
+                task_hash = int(record.get("task_hash"))
+                deadline_ms = int(record.get("idle_commit_deadline_ms") or 0)
+            except (TypeError, ValueError):
+                continue
+            if latest_order_by_task_hash.get(task_hash) != index:
+                continue
+            if latest_status_by_task_hash.get(task_hash) != "idle_commit_scheduled":
+                continue
+            if deadline_ms > now:
+                continue
+            task_scope = record.get("scope", {}) if isinstance(record.get("scope"), dict) else {}
+            if session_buffer_key_from_scope(task_scope) != requested_key:
+                continue
+            due_tasks.append(record)
+        due_tasks.sort(
+            key=lambda item: (
+                int(item.get("idle_commit_deadline_ms") or 0),
+                int(item.get("idle_commit_cutoff_ms") or 0),
+                int(item.get("event_id_hash") or 0),
+            )
+        )
+        drained: list[Json] = []
+        for task in due_tasks[:8]:
+            task_scope = task.get("scope", {}) if isinstance(task.get("scope"), dict) else scope
+            task_storage_options = (
+                task.get("requested_storage_options")
+                if isinstance(task.get("requested_storage_options"), dict)
+                else args.get("storage_options", {})
+            )
+            task_storage_options = dict(task_storage_options) if isinstance(task_storage_options, dict) else {}
+            route_value = str(task_storage_options.get("route") or "").strip().lower().replace("-", "_")
+            if route_value and route_value not in STORAGE_ROUTE_PRESETS:
+                task_storage_options = {}
+            result = self.session_commit(
+                {
+                    "scope": task_scope,
+                    "metadata": args.get("metadata", {}),
+                    "threshold_messages": task.get("threshold_messages", args.get("session_buffer_threshold", 20)),
+                    "force": False,
+                    "commit_before_ms": int(task.get("idle_commit_cutoff_ms") or 0),
+                    "idle_timeout_ms": int(task.get("idle_commit_timeout_ms") or 0),
+                    "commit_reason": "idle_timeout",
+                    "understanding_provider": args.get("understanding_provider"),
+                    "extraction_provider": args.get("extraction_provider"),
+                    "segment_provider": args.get("segment_provider"),
+                    "segment_model": args.get("segment_model"),
+                    "segment_model_path": args.get("segment_model_path"),
+                    "segment_max_new_tokens": args.get("segment_max_new_tokens"),
+                    "segment_provider_fallback": args.get("segment_provider_fallback"),
+                    "skip_prior_context": bool(args.get("skip_prior_context", False)),
+                    "storage_options": task_storage_options,
+                },
+                hook=hook,
+            )
+            try:
+                task_hash = int(task.get("task_hash"))
+            except (TypeError, ValueError):
+                task_hash = stable_hash(f"async_pipeline_idle_commit:{task.get('event_id_hash')}")
+            status = "idle_commit_committed" if result.get("status") in {"accepted", "committed"} else "idle_commit_skipped"
+            completion = {
+                "record_type": "matrixark_async_pipeline_task",
+                "task_hash": task_hash,
+                "event_id_hash": task.get("event_id_hash"),
+                "node_hash": task.get("node_hash"),
+                "node_path": task.get("node_path", []),
+                "scope": task_scope,
+                "status": status,
+                "stages": task.get("stages", ["extraction", "summary", "compression", "embedding"]),
+                "completed_stages": ["extraction"] if status == "idle_commit_committed" else [],
+                "remaining_stages": ["summary", "compression", "embedding"] if status == "idle_commit_committed" else task.get("stages", []),
+                "reason": "session_buffer_idle_deadline_drained",
+                "trigger_policy": "idle_timeout",
+                "commit_result_status": result.get("status"),
+                "commit_id_hash": result.get("commit_id_hash"),
+                "batch_id_hash": result.get("batch_id_hash"),
+                "idle_commit_deadline_ms": task.get("idle_commit_deadline_ms"),
+                "idle_commit_cutoff_ms": task.get("idle_commit_cutoff_ms"),
+                "updated_at_ms": now,
+            }
+            self.append(completion)
+            drained.append(
+                {
+                    "task_hash": task_hash,
+                    "event_id_hash": task.get("event_id_hash"),
+                    "status": status,
+                    "commit_result_status": result.get("status"),
+                    "commit_id_hash": result.get("commit_id_hash"),
+                    "batch_id_hash": result.get("batch_id_hash"),
+                }
+            )
+        return {
+            "status": "drained" if drained else "idle",
+            "due_task_count": len(due_tasks),
+            "drained_task_count": len(drained),
+            "drained": drained,
+        }
 
     def default_session_node_path(self, scope: Json) -> list[str]:
         tenant_id = str(scope.get("tenant_id") or "tenant_local_agent")
@@ -7038,6 +7161,13 @@ class MatrixArkLocalAdapter:
             bool(args.get("async_processing", False)) or args.get("wait") is False
         )
         if lightweight_async_accept:
+            due_idle_commit_result: Json | None = None
+            if auto_batch_extract_enabled(args, kind=envelope["kind"]):
+                due_idle_commit_result = self.drain_due_idle_session_commits(
+                    scope=envelope["scope"],
+                    args=args,
+                    hook=hook,
+                )
             text = text_from_messages(envelope["messages"])
             event_id_hash = stable_hash(
                 f"{envelope['kind']}:{text}:{envelope['scope']}:{envelope['ingestion_time_ms']}"
@@ -7271,6 +7401,7 @@ class MatrixArkLocalAdapter:
                         node_hash=node_hash,
                         node_path=node_path,
                         scope=envelope["scope"],
+                        storage_options=args.get("storage_options", {}) if isinstance(args.get("storage_options"), dict) else {},
                         ingestion_time_ms=int(envelope["ingestion_time_ms"]),
                         idle_commit_timeout_ms=int(idle_commit_timeout_ms),
                         pending_event_count=pending_event_count,
@@ -7307,6 +7438,7 @@ class MatrixArkLocalAdapter:
                     "auto_batch_extract": auto_batch_extract,
                 },
                 "idle_commit_result": idle_commit_result,
+                "due_idle_commit_result": due_idle_commit_result,
                 "auto_batch_extract_result": auto_batch_result,
                 "quality_warnings": ["async_processing_pending:extraction,summary,compression,embedding"],
             }
@@ -8335,6 +8467,17 @@ class MatrixArkLocalAdapter:
         pending_message_count = session_event_message_count(pending_events)
         auto_batch_result: Json | None = None
         auto_batch_extract = auto_batch_extract_enabled(args, kind=envelope["kind"])
+        due_idle_commit_result: Json | None = None
+        if auto_batch_extract:
+            due_idle_commit_result = self.drain_due_idle_session_commits(
+                scope=envelope["scope"],
+                args=args,
+                hook=hook,
+            )
+            if due_idle_commit_result.get("drained_task_count", 0):
+                pending_events = self.pending_session_events(envelope["scope"])
+                pending_event_count = len(pending_events)
+                pending_message_count = session_event_message_count(pending_events)
         session_boundary_commit = session_boundary_commit_requested(args, hook=hook)
         session_buffer_threshold = args.get("session_buffer_threshold", 20)
         if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
@@ -8418,6 +8561,7 @@ class MatrixArkLocalAdapter:
                     node_hash=record["node_hash"],
                     node_path=node_path,
                     scope=envelope["scope"],
+                    storage_options=args.get("storage_options", {}) if isinstance(args.get("storage_options"), dict) else {},
                     ingestion_time_ms=int(envelope["ingestion_time_ms"]),
                     idle_commit_timeout_ms=int(idle_commit_timeout_ms),
                     pending_event_count=pending_event_count,
@@ -8504,6 +8648,7 @@ class MatrixArkLocalAdapter:
                 "auto_batch_extract": auto_batch_extract,
             },
             "idle_commit_result": idle_commit_result,
+            "due_idle_commit_result": due_idle_commit_result,
             "auto_batch_extract_result": auto_batch_result,
         }
 
