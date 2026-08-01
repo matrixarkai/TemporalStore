@@ -349,51 +349,6 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_replica_replay_endpoint_pulls_remote_streams",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "server_replica_replay_endpoint_pulls_remote_streams",
-      "family": "storage/cache",
-      "classification": "move_to_shared",
-      "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_background_replica_replay_loop_pulls_remote_streams",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "server_background_replica_replay_loop_pulls_remote_streams",
-      "family": "storage/cache",
-      "classification": "move_to_shared",
-      "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_background_replica_replay_loop_discovers_primary_from_meta",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "server_background_replica_replay_loop_discovers_primary_from_meta",
-      "family": "storage/cache",
-      "classification": "move_to_shared",
-      "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_background_replica_replay_loop_resets_on_primary_route_change",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "server_background_replica_replay_loop_resets_on_primary_route_change",
-      "family": "storage/cache",
-      "classification": "move_to_shared",
-      "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_background_replica_replay_loop_reports_failures_with_backoff",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "server_background_replica_replay_loop_reports_failures_with_backoff",
-      "family": "storage/cache",
-      "classification": "move_to_shared",
-      "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
       "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_raft_execute_uses_consensus_state_for_writes_and_reads",
       "file": "crates/temporalstore-rust/src/bin/server.rs",
       "test_name": "server_raft_execute_uses_consensus_state_for_writes_and_reads",
@@ -4288,24 +4243,6 @@
       "family": "Redis/admin",
       "classification": "move_to_shared",
       "next_migration_target": "Redis/admin/API shared command-response corpus",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/replica_replay.rs::replica_replay_installs_pages_index_logs_and_wal_with_cursor_resume",
-      "file": "crates/temporalstore-rust/src/replica_replay.rs",
-      "test_name": "replica_replay_installs_pages_index_logs_and_wal_with_cursor_resume",
-      "family": "ops/scale",
-      "classification": "move_to_shared",
-      "next_migration_target": "ops/scale shared cases for readiness, fault/chaos, rolling restart, and SLO evidence",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/replica_replay.rs::replica_replay_can_pull_streams_over_http",
-      "file": "crates/temporalstore-rust/src/replica_replay.rs",
-      "test_name": "replica_replay_can_pull_streams_over_http",
-      "family": "ops/scale",
-      "classification": "move_to_shared",
-      "next_migration_target": "ops/scale shared cases for readiness, fault/chaos, rolling restart, and SLO evidence",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {

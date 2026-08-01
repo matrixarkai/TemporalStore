@@ -209,7 +209,6 @@ TS_SERVER_ADVERTISE_ADDR=127.0.0.1:$data_port
 TS_CACHE_DIR=$cache_dir
 TS_PAGE_STORE_DIR=$page_dir
 TS_INDEX_DIR=$index_dir
-TS_REPLICA_REPLAY_CURSOR_DIR=$cursor_dir
 TS_CACHE_MEMORY_BYTES=$cache_memory_bytes
 EOF
 }
@@ -304,7 +303,6 @@ set -euo pipefail
 export TS_CACHE_DIR="$cache_dir"
 export TS_PAGE_STORE_DIR="$page_dir"
 export TS_INDEX_DIR="$index_dir"
-export TS_REPLICA_REPLAY_CURSOR_DIR="$cursor_dir"
 exec "$bin_dir/matrixark_rust_proxy" --serve
 EOF
   cat > "$hook_wrapper" <<EOF
