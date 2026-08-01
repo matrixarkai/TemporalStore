@@ -8,6 +8,20 @@ from typing import Any
 
 Json = dict[str, Any]
 
+ROLE_ALIASES = {
+    "human": "user",
+    "prompt": "user",
+    "assistant_response": "assistant",
+    "agent": "assistant",
+    "ai": "assistant",
+    "bot": "assistant",
+    "llm": "assistant",
+    "model": "assistant",
+    "tool_result": "tool",
+    "tool_output": "tool",
+    "function": "tool",
+}
+
 try:
     from tools.matrixark_mcp_entity_ops import entity_patch
     from tools.matrixark_mcp_errors import MatrixArkError
@@ -40,6 +54,32 @@ def normalize_entity_operator(raw_operator: Any, entity_type: str) -> str:
     return operator
 
 
+def normalize_source_role(raw_role: Any) -> str:
+    role = str(raw_role or "").strip().lower()
+    return ROLE_ALIASES.get(role, role)
+
+
+def normalize_source_role_counts(raw_counts: Any, fallback_roles: list[str] | None = None) -> Json:
+    counts: Json = {}
+    if isinstance(raw_counts, dict):
+        for raw_role, raw_count in raw_counts.items():
+            role = normalize_source_role(raw_role)
+            if not role:
+                continue
+            try:
+                count = max(0, int(raw_count or 0))
+            except (TypeError, ValueError):
+                count = 0
+            if count:
+                counts[role] = int(counts.get(role, 0)) + count
+    if not counts and fallback_roles:
+        for role in fallback_roles:
+            normalized_role = normalize_source_role(role)
+            if normalized_role:
+                counts[normalized_role] = int(counts.get(normalized_role, 0)) + 1
+    return counts
+
+
 def normalize_extracted_entities(raw_entities: Any, *, fallback_text: str, source_refs: list[str], extracted_by: str) -> list[Json]:
     if not isinstance(raw_entities, list):
         return []
@@ -63,17 +103,28 @@ def normalize_extracted_entities(raw_entities: Any, *, fallback_text: str, sourc
         if not patches and entity_type not in {"confirmation", "correction"}:
             patches = [entity_patch("", state)]
         refs = raw.get("source_refs") if isinstance(raw.get("source_refs"), list) else source_refs
+        source_roles = [
+            role
+            for role in [normalize_source_role(value) for value in raw.get("source_roles", [])]
+            if role
+        ] if isinstance(raw.get("source_roles"), list) else []
+        source_role_counts = normalize_source_role_counts(raw.get("source_role_counts"), source_roles)
+        entity = {
+            "entity_type": entity_type,
+            "entity_name": entity_name or entity_type,
+            "state": state,
+            "confidence": round(confidence, 6),
+            "source_refs": [str(ref) for ref in refs] if refs else source_refs,
+            "operator": operator,
+            "field_patches": patches[:3],
+            "extracted_by": extracted_by,
+        }
+        if source_roles:
+            entity["source_roles"] = ordered_unique(source_roles)
+        if source_role_counts:
+            entity["source_role_counts"] = source_role_counts
         entities.append(
-            {
-                "entity_type": entity_type,
-                "entity_name": entity_name or entity_type,
-                "state": state,
-                "confidence": round(confidence, 6),
-                "source_refs": [str(ref) for ref in refs] if refs else source_refs,
-                "operator": operator,
-                "field_patches": patches[:3],
-                "extracted_by": extracted_by,
-            }
+            entity
         )
     return dedupe_entities(entities)
 
@@ -346,14 +397,59 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         return str(index)
 
     def source_refs_for_role(role_name: str) -> list[str]:
+        normalized_role_name = normalize_source_role(role_name)
         refs: list[str] = []
         for index, item in enumerate(messages):
-            if ({"human": "user", "prompt": "user", "assistant_response": "assistant", "agent": "assistant", "ai": "assistant", "bot": "assistant", "llm": "assistant", "model": "assistant", "tool_result": "tool", "tool_output": "tool", "function": "tool"}.get(str(item.get("role") or "").strip().lower(), str(item.get("role") or "").strip().lower())) != role_name:
+            if normalize_source_role(item.get("role")) != normalized_role_name:
                 continue
             if not str(item.get("content") or "").strip():
                 continue
             refs.append(source_ref_for_message_index(index))
         return refs or source_refs
+
+    def source_count_for_role(role_name: str) -> int:
+        normalized_role_name = normalize_source_role(role_name)
+        return sum(
+            1
+            for item in messages
+            if normalize_source_role(item.get("role")) == normalized_role_name
+            and str(item.get("content") or "").strip()
+        )
+
+    def role_lineage(role_name: str) -> Json:
+        normalized_role_name = normalize_source_role(role_name)
+        count = source_count_for_role(normalized_role_name)
+        if not normalized_role_name:
+            return {}
+        return {
+            "source_roles": [normalized_role_name],
+            "source_role_counts": {normalized_role_name: max(1, count)},
+        }
+
+    def profile_lineage_for_match(entity_type: str, value: str) -> Json:
+        probe = str(value or "").strip().lower()
+        if entity_type == "tool_evidence":
+            return role_lineage("tool")
+        if probe and probe in user_text.lower():
+            return role_lineage("user")
+        if probe and probe in assistant_text.lower():
+            return role_lineage("assistant")
+        if entity_type in {
+            "preference",
+            "location",
+            "job_status",
+            "current_plan",
+            "family_profile",
+            "identity_profile",
+            "communication_profile",
+            "memory_feature_profile",
+            "workspace_profile",
+            "approval_state",
+            "correction",
+            "confirmation",
+        }:
+            return role_lineage("user") if user_text else {}
+        return {}
     user_messages = [
         item
         for item in messages
@@ -371,6 +467,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "state": state,
                 "confidence": 0.86,
                 "source_refs": source_refs_for_role("user"),
+                **role_lineage("user"),
                 "operator": normalize_entity_operator(None, user_profile_entity_type),
                 "field_patches": [entity_patch("", summarize_text(state, limit=180))],
             }
@@ -392,7 +489,8 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                     "entity_name": canonical_entity_name(entity_type, directive) or entity_type,
                     "state": state,
                     "confidence": 0.84,
-                    "source_refs": source_refs,
+                    "source_refs": source_refs_for_role("user"),
+                    **role_lineage("user"),
                     "operator": normalize_entity_operator(None, entity_type),
                     "field_patches": [entity_patch("", summarize_text(state, limit=180))],
                 }
@@ -414,6 +512,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "state": evidence_state,
                 "confidence": 0.86,
                 "source_refs": tool_refs,
+                **role_lineage("tool"),
                 "operator": normalize_entity_operator(None, "tool_evidence"),
                 "field_patches": [entity_patch("", summarize_text(evidence_state, limit=180))],
             }
@@ -454,6 +553,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "state": decision_state,
                 "confidence": 0.82,
                 "source_refs": assistant_refs,
+                **role_lineage("assistant"),
                 "operator": normalize_entity_operator(None, "assistant_decision"),
                 "field_patches": [entity_patch("", summarize_text(decision_state, limit=180))],
             }
@@ -497,6 +597,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                         "state": state,
                         "confidence": 0.84,
                         "source_refs": assistant_refs,
+                        **role_lineage("assistant"),
                         "operator": normalize_entity_operator(None, fact_entity_type),
                         "field_patches": [entity_patch("", summarize_text(state, limit=180))],
                     }
@@ -535,6 +636,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 continue
             entity_name = canonical_entity_name(entity_type, value)
             field_patches = infer_entity_field_patches(entity_type, value, text)
+            role_lineage_fields = profile_lineage_for_match(entity_type, value or match.group(0))
             entities.append(
                 {
                     "entity_type": entity_type,
@@ -542,6 +644,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                     "state": summarize_text(value or text, limit=220),
                     "confidence": 0.82 if value else 0.66,
                     "source_refs": source_refs,
+                    **role_lineage_fields,
                     "operator": normalize_entity_operator(None, entity_type),
                     "field_patches": field_patches,
                 }
