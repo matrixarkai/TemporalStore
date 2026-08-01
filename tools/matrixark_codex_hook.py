@@ -21,6 +21,7 @@ try:
         canonical_account_id,
         canonical_tenant_id,
         candidate_index_terms,
+        candidate_memory_layer_name,
         context_index_posting_record,
         embedding_for_text,
         embedding_model_name,
@@ -45,6 +46,7 @@ except ModuleNotFoundError:
         canonical_account_id,
         canonical_tenant_id,
         candidate_index_terms,
+        candidate_memory_layer_name,
         context_index_posting_record,
         embedding_for_text,
         embedding_model_name,
@@ -118,6 +120,13 @@ def compact_context_embedding_record(record: Json) -> Json:
     for field in EMBEDDING_LINEAGE_DEBUG_FIELDS:
         compacted.pop(field, None)
     return compacted
+
+
+def attach_memory_layer(record: Json) -> Json:
+    layer = candidate_memory_layer_name(record)
+    if not layer or layer == "unknown":
+        return record
+    return {**record, "memory_layer": layer}
 
 
 def merge_role_bucket(target: Json, role: str, bucket: Any) -> None:
@@ -4175,27 +4184,32 @@ def fast_hook_event_projection_records(*, event_record: Json, updated_at_ms: int
         for key, value in projection_lineage.items()
         if value not in (None, "", [], {})
     }
+    memory_layer = candidate_memory_layer_name(event_record)
+    if memory_layer and memory_layer != "unknown":
+        projection_lineage["memory_layer"] = memory_layer
     vector = embedding_for_text(text)
     records: list[Json] = [
-        compact_context_embedding_record({
-            "record_type": "context_embedding",
-            "embedding_type": "event_text",
-            "ref_type": "event",
-            "ref_hash": event_id_hash,
-            "node_hash": node_hash,
-            "node_path": node_path,
-            "dim": len(vector),
-            "model": embedding_model_name(),
-            "vector": vector,
-            "scope": scope,
-            "event_type": semantic_event_type,
-            "classification": event_record.get("classification", ""),
-            "extraction_status": event_record.get("extraction_status", ""),
-            "extraction_mode": event_record.get("extraction_mode", ""),
-            **serving_lineage,
-            "projection_phase": "fast_hook_pending_async",
-            "updated_at_ms": updated_at_ms,
-        })
+        compact_context_embedding_record(
+            attach_memory_layer({
+                "record_type": "context_embedding",
+                "embedding_type": "event_text",
+                "ref_type": "event",
+                "ref_hash": event_id_hash,
+                "node_hash": node_hash,
+                "node_path": node_path,
+                "dim": len(vector),
+                "model": embedding_model_name(),
+                "vector": vector,
+                "scope": scope,
+                "event_type": semantic_event_type,
+                "classification": event_record.get("classification", ""),
+                "extraction_status": event_record.get("extraction_status", ""),
+                "extraction_mode": event_record.get("extraction_mode", ""),
+                **serving_lineage,
+                "projection_phase": "fast_hook_pending_async",
+                "updated_at_ms": updated_at_ms,
+            })
+        )
     ]
     secondary_index_budget = new_secondary_index_budget()
     index_terms = take_secondary_index_terms(
@@ -4589,6 +4603,7 @@ def fast_async_hook_ingest(
         raw_record["codex_memory_selection"] = selection_metadata
         record["codex_memory_selection"] = selection_metadata
         record["envelope"]["codex_memory_selection"] = selection_metadata
+    record = attach_memory_layer(record)
     projection_records = fast_hook_event_projection_records(event_record=record, updated_at_ms=now)
     pipeline_task: Json = {
         "record_type": "matrixark_async_pipeline_task",
