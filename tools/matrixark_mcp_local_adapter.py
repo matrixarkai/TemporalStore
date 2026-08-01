@@ -12076,6 +12076,24 @@ class MatrixArkLocalAdapter:
                         ],
                         *[
                             str(value)
+                            for value in (
+                                record.get("source_memory_layers")
+                                or embedding_metadata.get("source_memory_layers")
+                                or []
+                            )
+                            if str(value or "")
+                        ],
+                        *[
+                            str(value).replace("_", " ")
+                            for value in (
+                                record.get("source_memory_layers")
+                                or embedding_metadata.get("source_memory_layers")
+                                or []
+                            )
+                            if str(value or "")
+                        ],
+                        *[
+                            str(value)
                             for value in (record.get("source_memory_scopes") or embedding_metadata.get("source_memory_scopes") or [])
                             if str(value or "")
                         ],
@@ -12421,6 +12439,7 @@ class MatrixArkLocalAdapter:
                     str(record.get("entity_type") or "").strip() == "memory_feature_profile"
                     or profile_memory_kind == "memory_feature"
                     or profile_memory_class == "memory_feature"
+                    or any("memory_feature" in str(value or "") for value in record.get("source_memory_layers", []))
                 )
                 and (
                     any(context_index_name("entity_type", "memory_feature_profile") in group for group in secondary_index_filter_groups)
@@ -12431,16 +12450,18 @@ class MatrixArkLocalAdapter:
             profile_text_parts = [
                 profile_memory_class.replace("_", " "),
                 profile_memory_kind.replace("_", " "),
+                " ".join(str(value) for value in record.get("source_memory_layers", []) if str(value or "")),
+                " ".join(str(value).replace("_", " ") for value in record.get("source_memory_layers", []) if str(value or "")),
                 str(record.get("entity_type", "")),
                 str(record.get("entity_name", "")),
                 str(record.get("state", "")),
             ]
             profile_scoring_text = " ".join(part for part in profile_text_parts if part).strip()
-            sparse_score = sparse_lexical_score(query_terms, text)
-            keyword_score = len(query_terms.intersection(tokens(text)))
+            entity_hybrid_text = profile_scoring_text if is_profile_entity_bridge and profile_scoring_text else text
+            sparse_score = sparse_lexical_score(query_terms, entity_hybrid_text)
+            keyword_score = len(query_terms.intersection(tokens(entity_hybrid_text)))
             embedding_score = cosine(query_embedding, entity_embedding_vectors.get(record["entity_hash"], []))
             node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
-            entity_hybrid_text = profile_scoring_text if is_profile_entity_bridge and profile_scoring_text else text
             origin_score = min(
                 1.0,
                 0.12
@@ -12574,7 +12595,15 @@ class MatrixArkLocalAdapter:
             secondary_index_matched_count += 1
             if not admit_candidate_for_node(record):
                 continue
-            text = f"{record.get('topic', '')}: {record.get('summary_text', '')}"
+            segment_layer_text = " ".join(
+                [str(value) for value in record.get("source_memory_layers", []) if str(value or "")]
+                + [str(value).replace("_", " ") for value in record.get("source_memory_layers", []) if str(value or "")]
+            )
+            text = " ".join(
+                part
+                for part in [f"{record.get('topic', '')}: {record.get('summary_text', '')}", segment_layer_text]
+                if part.strip()
+            )
             sparse_score = sparse_lexical_score(query_terms, text)
             keyword_score = len(query_terms.intersection(tokens(text)))
             embedding_score = cosine(query_embedding, segment_embedding_vectors.get(record["segment_hash"], []))
