@@ -354,7 +354,28 @@ def _chunked_refs(refs: list[Any], *, limit: int) -> list[list[Any]]:
 
 def compact_context_index_postings(records: list[Json]) -> list[Json]:
     """Group ContextIndex writes into Feature-style timestamped posting rows."""
+    scalar_lineage_fields = [
+        "memory_scope",
+        "session_continuity",
+        "profile_memory_class",
+        "profile_memory_kind",
+        "profile_entity_current",
+        "profile_revision",
+        "promoted_from_memory_scope",
+        "extraction_phase",
+        "final_session_boundary",
+    ]
+    list_lineage_fields = [
+        "source_session_ids",
+        "source_entity_hashes",
+        "source_memory_scopes",
+        "source_session_continuities",
+        "source_profile_memory_classes",
+        "source_profile_memory_kinds",
+    ]
     grouped: dict[tuple[Any, ...], Json] = {}
+    grouped_scalar_values: dict[tuple[Any, ...], dict[str, set[str]]] = {}
+    grouped_list_values: dict[tuple[Any, ...], dict[str, list[Any]]] = {}
     passthrough: list[Json] = []
     order: list[tuple[Any, ...]] = []
     for record in records:
@@ -393,8 +414,22 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
                 value = record.get(field)
                 if value not in (None, "", [], {}):
                     grouped[key][field] = value
+            grouped_scalar_values[key] = {field: set() for field in scalar_lineage_fields}
+            grouped_list_values[key] = {field: [] for field in list_lineage_fields}
             order.append(key)
         posting = grouped[key]
+        for field in scalar_lineage_fields:
+            value = record.get(field)
+            if value not in (None, "", [], {}):
+                grouped_scalar_values[key][field].add(str(value))
+        for field in list_lineage_fields:
+            values = record.get(field)
+            if not isinstance(values, list):
+                value = record.get(field)
+                values = [value] if value not in (None, "", [], {}) else []
+            for value in values:
+                if value not in (None, "", [], {}) and str(value) not in {str(item) for item in grouped_list_values[key][field]}:
+                    grouped_list_values[key][field].append(value)
         node_hash = record.get("node_hash")
         if node_hash is not None and str(node_hash) not in {str(item) for item in posting.get("node_hashes", [])}:
             posting["node_hashes"].append(node_hash)
@@ -416,6 +451,23 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
     compacted_indexes: list[Json] = []
     for key in order:
         base = grouped[key]
+        for field, values in grouped_scalar_values.get(key, {}).items():
+            if len(values) == 1:
+                raw_value = next(iter(values))
+                if raw_value == "True":
+                    base[field] = True
+                elif raw_value == "False":
+                    base[field] = False
+                elif field == "profile_revision":
+                    try:
+                        base[field] = int(raw_value)
+                    except (TypeError, ValueError):
+                        base[field] = raw_value
+                else:
+                    base[field] = raw_value
+        for field, values in grouped_list_values.get(key, {}).items():
+            if values:
+                base[field] = values
         refs = []
         seen_ref_keys: set[str] = set()
         for ref in base.get("ref_hashes", []):

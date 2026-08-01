@@ -527,6 +527,12 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                 updated_at_ms=envelope["ingestion_time_ms"],
             )
             session_index["access_scope"] = envelope["scope"]
+            session_index["memory_scope"] = session_entity_record["memory_scope"]
+            session_index["session_continuity"] = session_entity_record["session_continuity"]
+            session_index["profile_memory_class"] = session_entity_record.get("profile_memory_class", "")
+            session_index["profile_memory_kind"] = session_entity_record.get("profile_memory_kind", "")
+            session_index["extraction_phase"] = session_entity_record["extraction_phase"]
+            session_index["final_session_boundary"] = session_entity_record["final_session_boundary"]
             session_index.pop("index_hash", None)
             records_to_append.append(session_index)
             entity_index_write_count += 1
@@ -848,6 +854,17 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
                     updated_at_ms=envelope["ingestion_time_ms"],
                 )
                 profile_index["access_scope"] = profile_scope
+                profile_index["memory_scope"] = profile_entity_record["memory_scope"]
+                profile_index["session_continuity"] = profile_entity_record["session_continuity"]
+                profile_index["profile_memory_class"] = profile_entity_record.get("profile_memory_class", "")
+                profile_index["profile_memory_kind"] = profile_entity_record.get("profile_memory_kind", "")
+                profile_index["profile_entity_current"] = profile_entity_record.get("profile_entity_current", False)
+                profile_index["profile_revision"] = profile_entity_record.get("profile_revision", 0)
+                profile_index["promoted_from_memory_scope"] = profile_entity_record.get("promoted_from_memory_scope", "")
+                profile_index["source_session_ids"] = profile_entity_record.get("source_session_ids", [])
+                profile_index["source_entity_hashes"] = profile_entity_record.get("source_entity_hashes", [])
+                profile_index["extraction_phase"] = profile_entity_record["extraction_phase"]
+                profile_index["final_session_boundary"] = profile_entity_record["final_session_boundary"]
                 profile_index.pop("index_hash", None)
                 records_to_append.append(profile_index)
                 entity_index_write_count += 1

@@ -345,19 +345,7 @@ def profile_promotion_decision(profile_node_hash: int) -> Json:
 
 
 def should_promote_session_entity_to_profile(entity: Json) -> bool:
-    entity_type = str(entity.get("entity_type") or "").strip()
-    profile_kind = profile_memory_kind_for_entity_type(entity_type)
-    profile_class = profile_memory_class_for_entity_type(entity_type)
-    if profile_kind in {"durable_profile", "memory_feature", "codex_outcome"}:
-        return True
-    return profile_class in {
-        "identity",
-        "communication",
-        "workspace",
-        "memory_feature",
-        "preference",
-        "personal_context",
-    }
+    return bool(entity)
 
 
 def compact_context_embedding_record(record: Json) -> Json:
@@ -3358,6 +3346,25 @@ class MatrixArkLocalAdapter:
         def recovered_scope_matches(record: Json, query_scope: Json) -> bool:
             return scope_matches(recovered_scope_for_query(record, query_scope), query_scope)
 
+        def session_scope_allows_record(record: Json, query_scope: Json) -> bool:
+            if session_scope_mode(query_scope) != "only":
+                return True
+            query_session = str(query_scope.get("session_id") or "").strip()
+            if not query_session:
+                return True
+            record_type = str(record.get("record_type") or "")
+            if not record_type.startswith("context_") and record_type != "matrixark_async_pipeline_task":
+                return True
+            memory_scope = str(record.get("memory_scope") or "").strip().lower()
+            session_continuity = str(record.get("session_continuity") or "").strip().lower()
+            if memory_scope in {"user_profile", "profile", "cross_session_profile"} or session_continuity == "cross_session":
+                return False
+            record_scope = recovered_scope_for_query(record, query_scope)
+            record_session = str(record_scope.get("session_id") or "").strip()
+            if record_session and record_session != query_session:
+                return False
+            return True
+
         def profile_summary_path_matches(record: Json, query_scope: Json) -> bool:
             if record.get("record_type") != "context_summary":
                 return False
@@ -3526,6 +3533,9 @@ class MatrixArkLocalAdapter:
                     continue
             if not record_matches_secondary_postings(record):
                 dropped_secondary_index += 1
+                continue
+            if not session_scope_allows_record(record, scope):
+                dropped_scope += 1
                 continue
             if (
                 record_type in {
@@ -4704,8 +4714,6 @@ class MatrixArkLocalAdapter:
                 child_summaries.append(record)
                 continue
             if record_type == "context_entity" and (is_same_node or is_direct_child):
-                if len(entity_states) >= max_entity_states:
-                    continue
                 try:
                     entity_hash = int(record.get("entity_hash") or 0)
                 except (TypeError, ValueError):
@@ -4742,19 +4750,42 @@ class MatrixArkLocalAdapter:
         # can still use their own direct recent events as a fallback source.
         use_direct_events = not child_summaries
         events = same_node_events if use_direct_events else []
+        codex_entity_priority = {
+            "tool_evidence": 0,
+            "codex_validation": 1,
+            "codex_publish_outcome": 2,
+            "assistant_decision": 3,
+            "codex_code_change": 4,
+            "codex_blocker": 5,
+            "codex_next_action": 6,
+        }
+
+        def entity_state_sort_key(record: Json) -> tuple[int, int]:
+            entity_type = str(record.get("entity_type") or "")
+            profile_kind = str(record.get("profile_memory_kind") or "")
+            try:
+                updated_at_ms = int(record.get("updated_at_ms") or record.get("created_at_ms") or 0)
+            except (TypeError, ValueError):
+                updated_at_ms = 0
+            return (
+                codex_entity_priority.get(entity_type, 20 if profile_kind == "codex_outcome" else 40),
+                -updated_at_ms,
+            )
+
+        selected_entity_states = sorted(entity_states, key=entity_state_sort_key)[:max_entity_states]
         policy = {
             "source_policy": "child_summaries_plus_state" if child_summaries else "direct_events_fallback",
             "raw_recursive_leaf_event_scan": False,
             "direct_child_count": len(direct_child_hashes),
             "used_direct_event_count": len(events),
             "used_child_summary_count": len(child_summaries),
-            "used_entity_state_count": len(entity_states),
+            "used_entity_state_count": len(selected_entity_states),
             "used_operator_state_count": len(operator_states),
         }
         return (
             list(reversed(events[:max_events])),
             list(reversed(child_summaries[:max_child_summaries])),
-            list(reversed(entity_states[:max_entity_states])),
+            list(reversed(selected_entity_states)),
             list(reversed(operator_states[:max_operator_states])),
             policy,
         )
@@ -8590,6 +8621,12 @@ class MatrixArkLocalAdapter:
                     updated_at_ms=envelope["ingestion_time_ms"],
                 )
                 session_index["access_scope"] = envelope["scope"]
+                session_index["memory_scope"] = session_entity_record["memory_scope"]
+                session_index["session_continuity"] = session_entity_record["session_continuity"]
+                session_index["profile_memory_class"] = session_entity_record.get("profile_memory_class", "")
+                session_index["profile_memory_kind"] = session_entity_record.get("profile_memory_kind", "")
+                session_index["extraction_phase"] = session_entity_record["extraction_phase"]
+                session_index["final_session_boundary"] = session_entity_record["final_session_boundary"]
                 session_index.pop("index_hash", None)
                 records_to_append.append(session_index)
                 entity_index_write_count += 1
@@ -8980,6 +9017,17 @@ class MatrixArkLocalAdapter:
                         updated_at_ms=envelope["ingestion_time_ms"],
                     )
                     profile_index["access_scope"] = profile_scope
+                    profile_index["memory_scope"] = profile_entity_record["memory_scope"]
+                    profile_index["session_continuity"] = profile_entity_record["session_continuity"]
+                    profile_index["profile_memory_class"] = profile_entity_record.get("profile_memory_class", "")
+                    profile_index["profile_memory_kind"] = profile_entity_record.get("profile_memory_kind", "")
+                    profile_index["profile_entity_current"] = profile_entity_record.get("profile_entity_current", False)
+                    profile_index["profile_revision"] = profile_entity_record.get("profile_revision", 0)
+                    profile_index["promoted_from_memory_scope"] = profile_entity_record.get("promoted_from_memory_scope", "")
+                    profile_index["source_session_ids"] = profile_entity_record.get("source_session_ids", [])
+                    profile_index["source_entity_hashes"] = profile_entity_record.get("source_entity_hashes", [])
+                    profile_index["extraction_phase"] = profile_entity_record["extraction_phase"]
+                    profile_index["final_session_boundary"] = profile_entity_record["final_session_boundary"]
                     profile_index.pop("index_hash", None)
                     records_to_append.append(profile_index)
                     entity_index_write_count += 1
@@ -9067,51 +9115,52 @@ class MatrixArkLocalAdapter:
                 segment_profile_memory_class,
                 segment_profile_memory_kind,
             ) = segment_source_roles_and_type(segment)
-            records_to_append.append(
-                {
-                    "record_type": "context_segment",
-                    "segment_hash": segment_hash,
-                    "batch_id_hash": batch_id_hash,
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "scope": envelope["scope"],
-                    "topic": segment["topic"],
-                    "coordinate_tuples": segment["coordinate_tuples"],
-                    "message_indexes": segment["message_indexes"],
-                    "source_event_ids": [event_hashes[index] for index in segment["message_indexes"] if index < len(event_hashes)],
-                    "source_record_type": "context_event",
-                    "segment_origin": segment.get("segment_origin") or segment.get("detected_by") or "derived_from_events",
-                    "derived_from_context_events": bool(segment.get("derived_from_context_events", True)),
-                    "source_roles": segment_source_roles,
-                    "source_role_counts": segment_source_role_counts,
-                    "event_type": segment_event_type,
-                    "source_hook_types": source_hook_types,
-                    "source_hook_type_counts": source_hook_type_counts,
-                    "source_codex_events": source_codex_events,
-                    "source_codex_event_counts": source_codex_event_counts,
-                    "source_memory_selection_policies": source_memory_selection_policies,
-                    "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
-                    **source_memory_selection_retention,
-                    "source_memory_scopes": ["session"],
-                    "source_session_continuities": ["same_session"],
-                    "source_extraction_phases": [extraction_phase],
-                    "source_profile_memory_classes": segment_profile_memory_classes,
-                    "source_profile_memory_kinds": segment_profile_memory_kinds,
-                    "profile_memory_class": segment_profile_memory_class,
-                    "profile_memory_kind": segment_profile_memory_kind,
-                    "saliency_score": segment["saliency_score"],
-                    "summary_text": segment["summary_text"],
-                    "text": segment["text"],
-                    "non_contiguous": segment["non_contiguous"],
-                    "memory_scope": "session",
-                    "session_continuity": "same_session",
-                    "extraction_phase": extraction_phase,
-                    "final_session_boundary": final_session_boundary,
-                    "extraction_context_event_ids": extraction_context_event_ids,
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
-            )
-            for index_name in candidate_index_terms(records_to_append[-1], {}, {}):
+            segment_record = {
+                "record_type": "context_segment",
+                "segment_hash": segment_hash,
+                "batch_id_hash": batch_id_hash,
+                "node_hash": node_hash,
+                "node_path": node_path,
+                "scope": envelope["scope"],
+                "topic": segment["topic"],
+                "coordinate_tuples": segment["coordinate_tuples"],
+                "message_indexes": segment["message_indexes"],
+                "source_event_ids": [event_hashes[index] for index in segment["message_indexes"] if index < len(event_hashes)],
+                "source_record_type": "context_event",
+                "segment_origin": segment.get("segment_origin") or segment.get("detected_by") or "derived_from_events",
+                "derived_from_context_events": bool(segment.get("derived_from_context_events", True)),
+                "source_roles": source_roles,
+                "source_role_counts": source_role_counts,
+                "segment_source_roles": segment_source_roles,
+                "segment_source_role_counts": segment_source_role_counts,
+                "event_type": segment_event_type,
+                "source_hook_types": source_hook_types,
+                "source_hook_type_counts": source_hook_type_counts,
+                "source_codex_events": source_codex_events,
+                "source_codex_event_counts": source_codex_event_counts,
+                "source_memory_selection_policies": source_memory_selection_policies,
+                "source_memory_selection_policy_counts": source_memory_selection_policy_counts,
+                **source_memory_selection_retention,
+                "source_memory_scopes": ["session"],
+                "source_session_continuities": ["same_session"],
+                "source_extraction_phases": [extraction_phase],
+                "source_profile_memory_classes": segment_profile_memory_classes,
+                "source_profile_memory_kinds": segment_profile_memory_kinds,
+                "profile_memory_class": segment_profile_memory_class,
+                "profile_memory_kind": segment_profile_memory_kind,
+                "saliency_score": segment["saliency_score"],
+                "summary_text": segment["summary_text"],
+                "text": segment["text"],
+                "non_contiguous": segment["non_contiguous"],
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+                "extraction_phase": extraction_phase,
+                "final_session_boundary": final_session_boundary,
+                "extraction_context_event_ids": extraction_context_event_ids,
+                "updated_at_ms": envelope["ingestion_time_ms"],
+            }
+            records_to_append.append(segment_record)
+            for index_name in candidate_index_terms(segment_record, {}, {}):
                 segment_index = context_index_posting_record(
                     index_name=index_name,
                     data_model="context_segment",
@@ -9123,6 +9172,12 @@ class MatrixArkLocalAdapter:
                     updated_at_ms=envelope["ingestion_time_ms"],
                 )
                 segment_index["access_scope"] = envelope["scope"]
+                segment_index["memory_scope"] = segment_record["memory_scope"]
+                segment_index["session_continuity"] = segment_record["session_continuity"]
+                segment_index["profile_memory_class"] = segment_record.get("profile_memory_class", "")
+                segment_index["profile_memory_kind"] = segment_record.get("profile_memory_kind", "")
+                segment_index["extraction_phase"] = segment_record["extraction_phase"]
+                segment_index["final_session_boundary"] = segment_record["final_session_boundary"]
                 segment_index.pop("index_hash", None)
                 records_to_append.append(segment_index)
                 entity_index_write_count += 1
@@ -10666,6 +10721,25 @@ class MatrixArkLocalAdapter:
         def recovered_scope_matches(record: Json, query_scope: Json) -> bool:
             return scope_matches(recovered_scope_for_query(record, query_scope), query_scope)
 
+        def session_scope_allows_retrieval_record(record: Json, query_scope: Json) -> bool:
+            if session_scope_mode(query_scope) != "only":
+                return True
+            query_session = str(query_scope.get("session_id") or "").strip()
+            if not query_session:
+                return True
+            record_type = str(record.get("record_type") or "")
+            if not record_type.startswith("context_") and record_type != "matrixark_async_pipeline_task":
+                return True
+            memory_scope = str(record.get("memory_scope") or "").strip().lower()
+            session_continuity = str(record.get("session_continuity") or "").strip().lower()
+            if memory_scope in {"user_profile", "profile", "cross_session_profile"} or session_continuity == "cross_session":
+                return False
+            record_scope = recovered_scope_for_query(record, query_scope)
+            record_session = str(record_scope.get("session_id") or "").strip()
+            if record_session and record_session != query_session:
+                return False
+            return True
+
         def profile_summary_scope_matches(record: Json, query_scope: Json) -> bool:
             if record.get("record_type") != "context_summary":
                 return False
@@ -10676,6 +10750,13 @@ class MatrixArkLocalAdapter:
             if query_scope.get("account_id") and not path_scope.get("account_id"):
                 path_scope = {**path_scope, "account_id": query_scope.get("account_id")}
             return scope_matches(path_scope, query_scope)
+
+        if session_scope_mode(retrieval_scope) == "only":
+            records = [
+                record
+                for record in records
+                if session_scope_allows_retrieval_record(record, retrieval_scope)
+            ]
 
         def deadline_fallback(reason: str, fallback_records: list[Json] | None = None) -> Json:
             return self.deadline_fallback_pack(
@@ -12023,6 +12104,15 @@ class MatrixArkLocalAdapter:
             memory_selection_policy_budget_tokens=memory_selection_policy_budget_tokens,
             extraction_phase_budget_tokens=extraction_phase_budget_tokens,
         )
+        if retrieval_session_scope == "only":
+            selected = [
+                item
+                for item in selected
+                if str(item.get("memory_scope") or "").strip().lower()
+                not in {"user_profile", "profile", "cross_session_profile"}
+                and str(item.get("session_continuity") or "").strip().lower() != "cross_session"
+            ]
+            used_context_tokens = sum(max(1, token_count(str(item.get("text", "")))) for item in selected)
         if (
             (
                 bool(cross_session_policy.get("enabled"))
