@@ -206,6 +206,32 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertEqual(["assistant"], by_name["assistant_decision:blocker"]["source_roles"])
         self.assertEqual(["tool"], by_name["tool_evidence:validation"]["source_roles"])
 
+    def test_extraction_normalizes_codex_tool_output_role_aliases(self) -> None:
+        entities = matrixark_mcp_core.extract_batch_entities(
+            [
+                {
+                    "role": "function_call_output",
+                    "content": "Exit code: 0\nValidation: 17 tests passed\npushed commit cafe123 to origin/main",
+                },
+                {
+                    "role": "custom_tool_call_output",
+                    "content": "Exit code: 0\nValidation: 19 tests passed",
+                },
+            ],
+            {"source_event_ids": ["function_event", "custom_tool_event"]},
+        )
+
+        by_name = {entity["entity_name"]: entity for entity in entities}
+        by_type = {}
+        for entity in entities:
+            by_type.setdefault(entity["entity_type"], []).append(entity)
+        self.assertIn("tool_evidence", by_name)
+        self.assertIn("codex_validation", by_type)
+        self.assertIn("codex_publish_outcome", by_type)
+        self.assertTrue(all(entity["source_roles"] == ["tool"] for entity in by_type["codex_validation"]))
+        self.assertTrue(any(entity["source_refs"] == ["function_event"] for entity in by_type["codex_publish_outcome"]))
+        self.assertNotIn("session_memory", by_name)
+
     def test_assistant_outcome_does_not_create_tool_evidence_without_tool_message(self) -> None:
         selected = matrixark_codex_hook.selected_assistant_memory_text(
             "Implemented profile memory retrieval for validation-result queries and pushed commit abc1234 to origin/main. "
