@@ -7136,6 +7136,13 @@ class MatrixArkLocalAdapter:
             if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
                 raise MatrixArkError("session_buffer_threshold must be a positive integer")
             threshold_ready = pending_event_count >= session_buffer_threshold or pending_message_count >= session_buffer_threshold
+            immediate_idle_ready = bool(
+                auto_batch_extract
+                and not session_boundary_commit
+                and not threshold_ready
+                and idle_commit_timeout_ms == 0
+                and pending_event_count > 0
+            )
             idle_ready = bool(
                 isinstance(idle_commit_result, dict)
                 and idle_commit_result.get("status") in {"accepted", "committed"}
@@ -7150,6 +7157,28 @@ class MatrixArkLocalAdapter:
                         "force": session_boundary_commit,
                         "max_messages": None if session_boundary_commit else session_buffer_threshold,
                         "commit_reason": "hook_boundary" if session_boundary_commit else "threshold",
+                        "understanding_provider": args.get("understanding_provider"),
+                        "extraction_provider": args.get("extraction_provider"),
+                        "segment_provider": args.get("segment_provider"),
+                        "segment_model": args.get("segment_model"),
+                        "segment_model_path": args.get("segment_model_path"),
+                        "segment_max_new_tokens": args.get("segment_max_new_tokens"),
+                        "segment_provider_fallback": args.get("segment_provider_fallback"),
+                        "skip_prior_context": bool(args.get("skip_prior_context", False)),
+                        "storage_options": envelope.get("storage_options", {}),
+                    },
+                    hook=hook,
+                )
+            elif immediate_idle_ready:
+                auto_batch_result = self.session_commit(
+                    {
+                        "scope": envelope["scope"],
+                        "metadata": envelope["metadata"],
+                        "threshold_messages": session_buffer_threshold,
+                        "force": False,
+                        "commit_before_ms": int(envelope["ingestion_time_ms"]),
+                        "idle_timeout_ms": 0,
+                        "commit_reason": "idle_timeout",
                         "understanding_provider": args.get("understanding_provider"),
                         "extraction_provider": args.get("extraction_provider"),
                         "segment_provider": args.get("segment_provider"),
@@ -7216,7 +7245,7 @@ class MatrixArkLocalAdapter:
                     "threshold_messages": session_buffer_threshold,
                     "threshold_ready": threshold_ready,
                     "session_boundary_commit": session_boundary_commit,
-                    "idle_ready": idle_ready,
+                    "idle_ready": bool(idle_ready or immediate_idle_ready),
                     "idle_commit_scheduled": idle_commit_scheduled,
                     "auto_batch_extract": auto_batch_extract,
                 },
@@ -8254,6 +8283,13 @@ class MatrixArkLocalAdapter:
         if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
             raise MatrixArkError("session_buffer_threshold must be a positive integer")
         threshold_ready = pending_event_count >= session_buffer_threshold or pending_message_count >= session_buffer_threshold
+        immediate_idle_ready = bool(
+            auto_batch_extract
+            and not session_boundary_commit
+            and not threshold_ready
+            and idle_commit_timeout_ms == 0
+            and pending_event_count > 0
+        )
         idle_ready = bool(
             isinstance(idle_commit_result, dict)
             and idle_commit_result.get("status") in {"accepted", "committed"}
@@ -8268,6 +8304,28 @@ class MatrixArkLocalAdapter:
                     "force": session_boundary_commit,
                     "max_messages": None if session_boundary_commit else session_buffer_threshold,
                     "commit_reason": "hook_boundary" if session_boundary_commit else "threshold",
+                    "understanding_provider": args.get("understanding_provider"),
+                    "extraction_provider": args.get("extraction_provider"),
+                    "segment_provider": args.get("segment_provider"),
+                    "segment_model": args.get("segment_model"),
+                    "segment_model_path": args.get("segment_model_path"),
+                    "segment_max_new_tokens": args.get("segment_max_new_tokens"),
+                    "segment_provider_fallback": args.get("segment_provider_fallback"),
+                    "skip_prior_context": bool(args.get("skip_prior_context", False)),
+                    "storage_options": envelope.get("storage_options", {}),
+                },
+                hook=hook,
+            )
+        elif immediate_idle_ready:
+            auto_batch_result = self.session_commit(
+                {
+                    "scope": hot_record_scope,
+                    "metadata": envelope["metadata"],
+                    "threshold_messages": session_buffer_threshold,
+                    "force": False,
+                    "commit_before_ms": int(envelope["ingestion_time_ms"]),
+                    "idle_timeout_ms": 0,
+                    "commit_reason": "idle_timeout",
                     "understanding_provider": args.get("understanding_provider"),
                     "extraction_provider": args.get("extraction_provider"),
                     "segment_provider": args.get("segment_provider"),
@@ -8384,7 +8442,7 @@ class MatrixArkLocalAdapter:
                 "threshold_messages": session_buffer_threshold,
                 "threshold_ready": threshold_ready,
                 "session_boundary_commit": session_boundary_commit,
-                "idle_ready": idle_ready,
+                "idle_ready": bool(idle_ready or immediate_idle_ready),
                 "idle_commit_scheduled": idle_commit_scheduled,
                 "auto_batch_extract": auto_batch_extract,
             },
