@@ -9,9 +9,25 @@ import time
 from typing import Any
 
 try:
-    from tools.matrixark_mcp_core import CODEX_OUTCOME_QUERY_RE, Json, access_scope_matches_before_scoring, now_ms, optional_object
+    from tools.matrixark_mcp_core import (
+        CODEX_OUTCOME_QUERY_RE,
+        FEATURE_SCOPE_EXCLUSION_RE,
+        PROFILE_MEMORY_QUERY_RE,
+        Json,
+        access_scope_matches_before_scoring,
+        now_ms,
+        optional_object,
+    )
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import CODEX_OUTCOME_QUERY_RE, Json, access_scope_matches_before_scoring, now_ms, optional_object
+    from matrixark_mcp_core import (
+        CODEX_OUTCOME_QUERY_RE,
+        FEATURE_SCOPE_EXCLUSION_RE,
+        PROFILE_MEMORY_QUERY_RE,
+        Json,
+        access_scope_matches_before_scoring,
+        now_ms,
+        optional_object,
+    )
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -39,6 +55,10 @@ AUTO_BUDGET_QUERY_TYPES = {
     "benchmark_quality",
 }
 
+FEATURE_MEMORY_BUDGET_QUERY_RE = re.compile(
+    r"\b(?:openviking|vikingmem|mem0|feature parity|feature[- ]focused|features? only|features? referring to|focuns on features?|focus(?:ed)? on features?|functionalit(?:y|ies)|algorithms?|memory feature|session memory|profile memory|cross[- ]session memory|long[- ]term memory|threshold|idle batch|batch extraction)\b"
+)
+
 
 def _explicit_cross_session_requested(args: Json, ranking: Json) -> bool:
     raw = args.get("cross_session", ranking.get("cross_session"))
@@ -54,9 +74,28 @@ def _default_memory_budget_mode(args: Json, ranking: Json, *, field: str, questi
     if mode:
         return mode
     normalized_question_type = str(question_type or "fact").strip().lower()
-    if normalized_question_type in AUTO_BUDGET_QUERY_TYPES or _explicit_cross_session_requested(args, ranking):
+    if (
+        normalized_question_type in AUTO_BUDGET_QUERY_TYPES
+        or feature_profile_memory_budget_query(args, ranking, question_type=question_type)
+        or _explicit_cross_session_requested(args, ranking)
+    ):
         return "auto"
     return ""
+
+
+def feature_profile_memory_budget_query(args: Json, ranking: Json, *, question_type: str = "fact") -> bool:
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    if normalized_question_type == "profile_memory":
+        return True
+    query = str(args.get("query") or ranking.get("query") or "").strip()
+    if not query:
+        return False
+    lower = query.lower()
+    return bool(
+        PROFILE_MEMORY_QUERY_RE.search(lower)
+        or FEATURE_MEMORY_BUDGET_QUERY_RE.search(lower)
+        or (FEATURE_SCOPE_EXCLUSION_RE.search(lower) and "feature" in lower)
+    )
 
 
 def codex_user_goal_budget_query(args: Json, ranking: Json, *, question_type: str = "fact") -> bool:
@@ -121,8 +160,11 @@ def auto_source_role_budget_tokens(
     fractions = optional_object(args, "source_role_budget_fractions") or optional_object(ranking, "source_role_budget_fractions")
     defaults = {"assistant": 0.45, "tool": 0.35, "user": 0.60}
     normalized_question_type = str(question_type or "fact").strip().lower()
+    feature_profile_query = feature_profile_memory_budget_query(args, ranking, question_type=question_type)
     if codex_outcome_budget_query(args, ranking, question_type=question_type):
         defaults.update({"assistant": 0.55, "tool": 0.55, "user": 0.40})
+    elif feature_profile_query:
+        defaults.update({"assistant": 0.50, "tool": 0.20, "user": 0.70})
     elif codex_user_goal_budget_query(args, ranking, question_type=question_type):
         defaults.update({"assistant": 0.35, "tool": 0.25, "user": 0.70})
     elif normalized_question_type in {"current_state", "latest"}:
@@ -188,6 +230,7 @@ def auto_memory_selection_policy_budget_tokens(
         "selected_tool_evidence_only": 0.30,
     }
     normalized_question_type = str(question_type or "fact").strip().lower()
+    feature_profile_query = feature_profile_memory_budget_query(args, ranking, question_type=question_type)
     if codex_outcome_budget_query(args, ranking, question_type=question_type):
         defaults.update(
             {
@@ -196,6 +239,16 @@ def auto_memory_selection_policy_budget_tokens(
                 "selected_assistant_decision_outcome_only": 0.58,
                 "selected_tool_evidence_only": 0.55,
                 "selected_profile_current_state": 0.55,
+            }
+        )
+    elif feature_profile_query:
+        defaults.update(
+            {
+                "selected_user_prompt": 0.70,
+                "selected_assistant_profile_fact": 0.70,
+                "selected_assistant_decision_outcome_only": 0.20,
+                "selected_tool_evidence_only": 0.20,
+                "selected_profile_current_state": 0.70,
             }
         )
     elif codex_user_goal_budget_query(args, ranking, question_type=question_type):
@@ -361,6 +414,7 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
     }
     normalized_question_type = str(question_type or "fact").strip().lower()
     outcome_query = codex_outcome_budget_query(args, ranking, question_type=question_type)
+    feature_profile_query = feature_profile_memory_budget_query(args, ranking, question_type=question_type)
     if outcome_query:
         defaults.update(
             {
@@ -382,6 +436,29 @@ def auto_memory_layer_budget_tokens(args: Json, ranking: Json, *, remote_budget_
                 "cross_session_memory_feature_entity": 0.35,
                 "cross_session_codex_outcome_summary": 0.45,
                 "cross_session_codex_outcome_compression": 0.45,
+            }
+        )
+    elif feature_profile_query:
+        defaults.update(
+            {
+                "summary": 0.15,
+                "profile_summary": 0.50,
+                "same_session_summary": 0.15,
+                "cross_session_summary": 0.45,
+                "compression": 0.20,
+                "profile_compression": 0.45,
+                "same_session_compression": 0.15,
+                "cross_session_compression": 0.40,
+                "pending_async_event": 0.12,
+                "same_session_event": 0.25,
+                "cross_session_event": 0.35,
+                "same_session_segment": 0.25,
+                "cross_session_segment": 0.35,
+                "profile_entity": 0.65,
+                "cross_session_codex_outcome_entity": 0.20,
+                "cross_session_memory_feature_entity": 0.75,
+                "cross_session_codex_outcome_summary": 0.20,
+                "cross_session_codex_outcome_compression": 0.20,
             }
         )
     elif normalized_question_type in {"current_state", "latest"}:
