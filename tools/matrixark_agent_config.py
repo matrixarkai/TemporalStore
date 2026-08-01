@@ -15,11 +15,9 @@ import json
 
 DEFAULT_REPO_ROOT = "."
 DEFAULT_LAUNCHER = "tools/matrixark_mcp_rust_server.sh"
-SUPPORTED_AGENT_CLIENTS = ["codex"]
-SUPPORTED_HOOK_CLIENTS = ["codex"]
+SUPPORTED_AGENT_CLIENTS = ["codex", "claude"]
+SUPPORTED_HOOK_CLIENTS = ["codex", "claude"]
 TODO_AGENT_CLIENTS = [
-    "claude",
-    "claude-code",
     "cursor",
     "openclaw",
     "opencode",
@@ -187,8 +185,10 @@ def claude_code_json(repo_root: str, launcher: str) -> str:
     return json.dumps(
         {
             "matrixark": stdio_server(repo_root, launcher),
-            "status": "todo_planned",
-            "usage": "TODO: validate Claude Code MCP and hook registration before advertising as supported.",
+            "status": "supported",
+            "hook_status": "supported",
+            "recommended_hook_command": f"{repo_root}/tools/matrixark_claude_hook.sh --event UserPromptSubmit",
+            "usage": "Register the full Claude Code lifecycle via integrations/agent-hooks/install/install.sh --agent claude (WSL) or install.ps1 -Agent claude (native Windows). See docs/matrixark_claude_hook_integration.md.",
         },
         indent=2,
         sort_keys=True,
@@ -332,15 +332,22 @@ def hook_examples_text(repo_root: str) -> str:
     hook = f"{repo_root}/tools/matrixark_agent_hook.py"
     return f"""# MatrixArk Agent Hook Examples
 
-# Supported today: Codex hook only.
+# Supported today: Codex and Claude Code hooks.
 python3 {hook} --agent codex --event UserPromptSubmit
 python3 {hook} --agent codex --event PostToolUse
 python3 {hook} --agent codex --event Stop
 python3 {hook} --agent codex --event ResourceAdded
 python3 {hook} --agent codex --event Feedback
 
+# Claude Code (supported): drive the same ingest/extract/retrieve pipeline as codex.
+python3 {hook} --agent claude --event UserPromptSubmit
+python3 {hook} --agent claude --event PostToolUse
+python3 {hook} --agent claude --event Stop
+# Or install the full Claude Code lifecycle wrapper:
+#   integrations/agent-hooks/install/install.sh --agent claude   (WSL)
+#   integrations/agent-hooks/install/install.ps1 -Agent claude   (native Windows)
+
 # TODO/planned, not production-supported yet:
-# - Claude Code / Claude Desktop hook registration
 # - Cursor / Windsurf / Cline / Roo / Continue hook registration
 # - OpenCode / OpenClaw hook registration
 # - Aider, Gemini/Qwen Code, AutoGen, LangGraph, CrewAI, LlamaIndex,
