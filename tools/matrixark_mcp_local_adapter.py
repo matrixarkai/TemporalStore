@@ -11545,15 +11545,16 @@ class MatrixArkLocalAdapter:
                 if len(selected) >= max_selected_refs or used_context_tokens + ref_tokens > remote_context_budget_tokens:
                     continue
                 candidate_entity_type = str(candidate.get("entity_type") or "").strip().lower()
-                candidate_budget_role = (
-                    "assistant"
-                    if candidate_entity_type in {"assistant_decision", "assistant_response"}
-                    else "tool"
-                    if candidate_entity_type == "tool_evidence"
-                    else "user"
-                    if candidate_entity_type in {"user_requirement", "user_preference"}
-                    else ""
-                )
+                candidate_role_names = {
+                    normalize_message_role(role_name)
+                    for role_name in candidate.get("source_roles", []) or []
+                    if normalize_message_role(role_name)
+                }
+                for role_name in (candidate.get("source_role_counts", {}) or {}).keys():
+                    normalized_role_name = normalize_message_role(role_name)
+                    if normalized_role_name:
+                        candidate_role_names.add(normalized_role_name)
+                candidate_budget_role = semantic_source_role_for_entity_type(candidate_entity_type, candidate_role_names)
                 selected.append(
                     {
                         **candidate,
