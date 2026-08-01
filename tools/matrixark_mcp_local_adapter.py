@@ -7040,6 +7040,7 @@ class MatrixArkLocalAdapter:
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
                 self.append(pending_event_record)
+                pending_memory_layer = candidate_memory_layer_name(pending_event_record)
                 pending_embedding_record = compact_context_embedding_record(
                     {
                         "record_type": "context_embedding",
@@ -7054,7 +7055,7 @@ class MatrixArkLocalAdapter:
                         "scope": envelope["scope"],
                         "memory_scope": "session",
                         "session_continuity": "same_session",
-                        "memory_layer": "pending_async_event",
+                        "memory_layer": pending_memory_layer,
                         "event_type": pending_event_type,
                         "batch_event_type": "pending_async",
                         "classification": "PENDING_ASYNC_EXTRACTION",
@@ -11889,6 +11890,11 @@ class MatrixArkLocalAdapter:
             node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
             origin_score = hybrid_origin_score(query_terms, text, embedding_score, node_score)
             event_type = raw_event_type or ("pending_async" if is_pending_async_event else "")
+            event_memory_layer = (
+                candidate_memory_layer_name({**record, "ref_type": "event"})
+                if is_pending_async_event
+                else ""
+            )
             candidate_metadata: Json = {}
             record_metadata = record.get("metadata")
             envelope_metadata = envelope.get("metadata")
@@ -11915,7 +11921,7 @@ class MatrixArkLocalAdapter:
                 ),
                 "event_type": event_type,
                 "batch_event_type": record.get("batch_event_type", "") if is_pending_async_event else "",
-                "memory_layer": "pending_async_event" if is_pending_async_event else "",
+                "memory_layer": event_memory_layer,
                 "classification": record.get("classification", ""),
                 "extraction_status": record.get("status", ""),
                 "extraction_mode": internal_extraction.get("mode", ""),

@@ -11681,6 +11681,87 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("same_session", event_refs[0]["session_continuity"])
             self.assertEqual("pending_async_event", candidate_memory_layer_name(event_refs[0]))
 
+    def test_lightweight_async_feature_memory_pending_event_uses_feature_budget_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-lightweight-pending-feature-memory.jsonl")
+            scope = {
+                "account_id": "acct_lightweight_pending_feature",
+                "tenant_id": "tenant_lightweight_pending_feature",
+                "user_id": "user_lightweight_pending_feature",
+                "session_id": "session_lightweight_pending_feature",
+            }
+            result = adapter.ingest(
+                {
+                    "scope": scope,
+                    "async_processing": True,
+                    "auto_batch_extract": True,
+                    "session_buffer_threshold": 20,
+                    "idle_commit_timeout_ms": 60000,
+                    "skip_prior_context": True,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Focus on OpenViking feature parity for session memory; "
+                                "no testing, monitoring, debugging, or evidence at this point."
+                            ),
+                        }
+                    ],
+                    "metadata": {"hook_type": "before_llm", "codex_event": "UserPromptSubmit"},
+                }
+            )
+
+            self.assertEqual("accepted", result["status"])
+            records = adapter.read_all()
+            pending_event = next(
+                record
+                for record in records
+                if record.get("record_type") == "context_event"
+                and record.get("extraction_phase") == "pending_async"
+            )
+            self.assertEqual("memory_feature", pending_event["event_type"])
+            self.assertEqual("pending_async_memory_feature_event", candidate_memory_layer_name(pending_event))
+            pending_embedding = next(
+                record
+                for record in records
+                if record.get("record_type") == "context_embedding"
+                and record.get("embedding_type") == "event_text"
+                and record.get("ref_hash") == pending_event["event_id_hash"]
+            )
+            self.assertEqual("pending_async_memory_feature_event", pending_embedding["memory_layer"])
+
+            pack = adapter.retrieve(
+                {
+                    "scope": scope,
+                    "session_scope": "prefer",
+                    "query": "What OpenViking feature parity memory instruction is pending?",
+                    "max_context_tokens": 220,
+                    "audit_mode": "off",
+                    "debug_context_pack": True,
+                    "include_retrieval_metrics": True,
+                    "ranking": {
+                        "max_selected_refs": 4,
+                        "min_similarity_score": 0.0,
+                        "budget_fill_policy": "force_fill",
+                    },
+                }
+            )
+
+            pending_refs = [
+                ref
+                for ref in pack["selected_refs"]
+                if ref.get("ref_type") == "event"
+                and "OpenViking feature parity" in str(ref.get("text") or "")
+            ]
+            self.assertTrue(pending_refs, pack["selected_refs"])
+            self.assertEqual("memory_feature", pending_refs[0]["event_type"])
+            self.assertEqual("pending_async_memory_feature_event", pending_refs[0]["memory_layer"])
+            layer_budget = pack["retrieval_metrics"]["memory_layer_budget"]
+            self.assertGreaterEqual(
+                layer_budget["by_memory_layer"]["pending_async_memory_feature_event"]["refs"],
+                1,
+            )
+
     def test_lightweight_async_assistant_and_tool_pending_events_keep_semantic_types(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-lightweight-pending-role-types.jsonl")
