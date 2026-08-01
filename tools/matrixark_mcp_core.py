@@ -5221,10 +5221,21 @@ def candidate_index_terms(
             ("memory_scope", "memory_scope"),
             ("session_continuity", "session_continuity"),
             ("extraction_phase", "extraction_phase"),
+            ("version_state", "version_state"),
+            ("current_state_policy", "current_state_policy"),
+            ("profile_shadowed_reason", "profile_shadowed_reason"),
         ]:
             value = record.get(field)
             if value not in (None, "", [], {}):
                 terms.add(context_index_name(prefix, value))
+        if bool(record.get("stale_or_superseded") or record.get("stale")):
+            terms.add(context_index_name("stale_or_superseded", "true"))
+        if record.get("superseded_by_ref_hash") not in (None, "", [], {}):
+            terms.add(context_index_name("superseded", "true"))
+        if record.get("superseded_by_entity_hash") not in (None, "", [], {}):
+            terms.add(context_index_name("superseded", "true"))
+        if record.get("profile_shadowed_by_ref_hash") not in (None, "", [], {}):
+            terms.add(context_index_name("profile_shadowed", "true"))
         memory_layer = candidate_memory_layer_name(record)
         if memory_layer:
             terms.add(context_index_name("memory_layer", memory_layer))
@@ -5343,7 +5354,7 @@ def candidate_index_terms(
             terms.add(context_index_name("profile_memory_kind", record.get("profile_memory_kind")))
         for profile_class in record.get("source_profile_memory_classes", [])[:8] if isinstance(record.get("source_profile_memory_classes"), list) else []:
             terms.add(context_index_name("profile_memory_class", profile_class))
-        for profile_kind in record.get("source_profile_memory_kinds", [])[:8]:
+        for profile_kind in record.get("source_profile_memory_kinds", [])[:8] if isinstance(record.get("source_profile_memory_kinds"), list) else []:
             terms.add(context_index_name("profile_memory_kind", profile_kind))
         if bool(record.get("profile_summary_current")):
             terms.add(context_index_name("profile_summary_current", "true"))
