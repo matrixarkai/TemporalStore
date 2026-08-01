@@ -329,6 +329,22 @@ def profile_promotion_decision(profile_node_hash: int) -> Json:
     }
 
 
+def should_promote_session_entity_to_profile(entity: Json) -> bool:
+    entity_type = str(entity.get("entity_type") or "").strip()
+    profile_kind = profile_memory_kind_for_entity_type(entity_type)
+    profile_class = profile_memory_class_for_entity_type(entity_type)
+    if profile_kind in {"durable_profile", "memory_feature", "codex_outcome"}:
+        return True
+    return profile_class in {
+        "identity",
+        "communication",
+        "workspace",
+        "memory_feature",
+        "preference",
+        "personal_context",
+    }
+
+
 def compact_context_embedding_record(record: Json) -> Json:
     compacted = dict(record)
     for field in EMBEDDING_LINEAGE_DEBUG_FIELDS:
@@ -8484,7 +8500,7 @@ class MatrixArkLocalAdapter:
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 })
             )
-            if profile_node_hash:
+            if profile_node_hash and should_promote_session_entity_to_profile(updated_entity):
                 profile_entity_hash = stable_hash(
                     f"{profile_node_hash}:{updated_entity['entity_type']}:{updated_entity['entity_name']}"
                 )
