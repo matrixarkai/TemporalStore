@@ -7821,6 +7821,10 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
         "operator",
         "memory_scope",
         "session_continuity",
+        "profile_memory_kind",
+        "profile_memory_class",
+        "profile_entity_current",
+        "profile_summary_current",
         "profile_current_state_representative",
     ]:
         value = ref.get(field)
@@ -7837,6 +7841,9 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
                     item[field] = role_counts
             else:
                 item[field] = value
+    memory_layer = memory_layer_for_serving_ref(ref)
+    if memory_layer:
+        item["memory_layer"] = memory_layer
     if CONTEXT_PACK_DEBUG_LINEAGE or include_debug:
         _attach_compact_profile_source_counts(item, ref)
         for field in ["extraction_phase", "final_session_boundary"]:
