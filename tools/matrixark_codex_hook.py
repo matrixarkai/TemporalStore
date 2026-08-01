@@ -5538,6 +5538,11 @@ def main() -> int:
                 tool_warning = timeout_warning(backfill_result)
                 if tool_warning:
                     backfill_warnings.append(tool_warning)
+                spawn_idle_commit_worker_child(
+                    args,
+                    ingest=backfill_result,
+                    session_id_source=session_id_source,
+                )
             previous_assistant_raw = latest_codex_assistant_message_from_rollout_raw(payload)
             previous_assistant = selected_assistant_memory_text(previous_assistant_raw)
             if previous_assistant and previous_assistant != text:
@@ -5590,6 +5595,11 @@ def main() -> int:
                 assistant_warning = timeout_warning(backfill_result)
                 if assistant_warning:
                     backfill_warnings.append(assistant_warning)
+                spawn_idle_commit_worker_child(
+                    args,
+                    ingest=backfill_result,
+                    session_id_source=session_id_source,
+                )
             if backfill_warnings:
                 trace["backfill_warnings"] = backfill_warnings
                 hook_warning = backfill_warnings[0]
