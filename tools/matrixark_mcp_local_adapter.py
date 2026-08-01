@@ -11503,7 +11503,7 @@ class MatrixArkLocalAdapter:
                         "token_estimate": ref_tokens,
                         "packing_score": round(packing_sort_key(candidate, question_type)[0], 6),
                         "packing_policy": question_type,
-                        "budget_memory_layer": "profile_entity",
+                        "budget_memory_layer": candidate_memory_layer_name(candidate),
                         "budget_source_roles": [candidate_budget_role] if candidate_budget_role else [],
                         "budget_source_role_counts": {candidate_budget_role: 1} if candidate_budget_role else {},
                     }
