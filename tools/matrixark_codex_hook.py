@@ -4228,6 +4228,7 @@ def pending_session_buffer_lineage(records: list[Json], *, fallback_role: str, f
     source_hook_types: list[str] = []
     source_codex_events: list[str] = []
     source_memory_selection_policies: list[str] = []
+    assistant_text_parts: list[str] = []
     source_role_counts: Json = {}
     source_hook_type_counts: Json = {}
     source_codex_event_counts: Json = {}
@@ -4247,6 +4248,21 @@ def pending_session_buffer_lineage(records: list[Json], *, fallback_role: str, f
                     target.append(label)
                     add_count(counts, label, normalize_role=False)
 
+    def add_explicit_counts(values: Any, target: list[str], counts: Json, *, normalize_role: bool = False) -> None:
+        if not isinstance(values, dict):
+            return
+        for value, count in values.items():
+            label = normalize_message_role(value) if normalize_role else str(value or "").strip()
+            if not label:
+                continue
+            try:
+                amount = max(0, int(count or 0))
+            except (TypeError, ValueError):
+                amount = 0
+            if amount:
+                target.append(label)
+                counts[label] = max(int(counts.get(label, 0) or 0), amount)
+
     for record in records:
         envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else {}
         metadata = envelope.get("metadata", {}) if isinstance(envelope.get("metadata"), dict) else {}
@@ -4256,8 +4272,12 @@ def pending_session_buffer_lineage(records: list[Json], *, fallback_role: str, f
             if role:
                 source_roles.append(role)
                 add_count(source_role_counts, role)
+            if role == "assistant":
+                assistant_text_parts.append(str(message.get("content") or ""))
         add_values(metadata.get("source_roles"), source_roles, source_role_counts, normalize_role=True)
         add_values(record.get("source_roles"), source_roles, source_role_counts, normalize_role=True)
+        add_explicit_counts(metadata.get("source_role_counts"), source_roles, source_role_counts, normalize_role=True)
+        add_explicit_counts(record.get("source_role_counts"), source_roles, source_role_counts, normalize_role=True)
         for value in [record.get("source_role"), envelope.get("source_role"), metadata.get("source_role")]:
             role = normalize_message_role(value)
             if role:
@@ -4265,6 +4285,8 @@ def pending_session_buffer_lineage(records: list[Json], *, fallback_role: str, f
                 add_count(source_role_counts, role)
         add_values(metadata.get("source_hook_types"), source_hook_types, source_hook_type_counts)
         add_values(record.get("source_hook_types"), source_hook_types, source_hook_type_counts)
+        add_explicit_counts(metadata.get("source_hook_type_counts"), source_hook_types, source_hook_type_counts)
+        add_explicit_counts(record.get("source_hook_type_counts"), source_hook_types, source_hook_type_counts)
         for value in [record.get("hook_type"), envelope.get("hook_type"), metadata.get("hook_type"), hook.get("hook_type")]:
             hook_type = str(value or "").strip()
             if hook_type:
@@ -4272,6 +4294,8 @@ def pending_session_buffer_lineage(records: list[Json], *, fallback_role: str, f
                 add_count(source_hook_type_counts, hook_type)
         add_values(metadata.get("source_codex_events"), source_codex_events, source_codex_event_counts)
         add_values(record.get("source_codex_events"), source_codex_events, source_codex_event_counts)
+        add_explicit_counts(metadata.get("source_codex_event_counts"), source_codex_events, source_codex_event_counts)
+        add_explicit_counts(record.get("source_codex_event_counts"), source_codex_events, source_codex_event_counts)
         for value in [record.get("codex_event"), envelope.get("codex_event"), metadata.get("codex_event"), hook.get("codex_event"), hook.get("trigger")]:
             codex_event = str(value or "").strip()
             if codex_event:
@@ -4284,6 +4308,16 @@ def pending_session_buffer_lineage(records: list[Json], *, fallback_role: str, f
         )
         add_values(
             record.get("source_memory_selection_policies"),
+            source_memory_selection_policies,
+            source_memory_selection_policy_counts,
+        )
+        add_explicit_counts(
+            metadata.get("source_memory_selection_policy_counts"),
+            source_memory_selection_policies,
+            source_memory_selection_policy_counts,
+        )
+        add_explicit_counts(
+            record.get("source_memory_selection_policy_counts"),
             source_memory_selection_policies,
             source_memory_selection_policy_counts,
         )
@@ -4311,6 +4345,24 @@ def pending_session_buffer_lineage(records: list[Json], *, fallback_role: str, f
     if not source_codex_events and fallback_codex_event:
         source_codex_events.append(fallback_codex_event)
         add_count(source_codex_event_counts, fallback_codex_event)
+
+    assistant_lineage_text = "\n".join(assistant_text_parts)
+    assistant_policies: list[str] = []
+    if assistant_lineage_text and selected_assistant_profile_fact_policy(assistant_lineage_text):
+        assistant_policies.append("selected_assistant_profile_fact")
+    if assistant_lineage_text or source_role_counts.get("assistant"):
+        assistant_policies.append("selected_assistant_decision_outcome_only")
+    inferred_policy_by_role = {
+        "assistant": assistant_policies,
+        "tool": ["selected_tool_evidence_only"],
+        "user": ["selected_user_prompt"],
+    }
+    for role, count in source_role_counts.items():
+        for policy_name in inferred_policy_by_role.get(role, []):
+            if not policy_name or policy_name in source_memory_selection_policy_counts:
+                continue
+            source_memory_selection_policies.append(policy_name)
+            add_count(source_memory_selection_policy_counts, policy_name, count=max(1, int(count or 0)))
 
     def ordered(values: list[str]) -> list[str]:
         result: list[str] = []
