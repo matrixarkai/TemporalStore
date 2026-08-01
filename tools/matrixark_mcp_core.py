@@ -4839,6 +4839,13 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("memory_selection_policy", "selected_tool_evidence_only"),
             context_index_name("source_type", "message"),
             context_index_name("profile_memory_kind", "codex_outcome"),
+            context_index_name("memory_layer", "same_session_codex_outcome_event"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_event"),
+            context_index_name("memory_layer", "same_session_codex_outcome_segment"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_segment"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_entity"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_summary"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_compression"),
         )
         outcome_terms = codex_outcome_fact_index_terms(query)
         if outcome_terms:
@@ -4858,6 +4865,10 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("memory_selection_policy", "selected_tool_evidence_only"),
             context_index_name("memory_selection_policy", "selected_assistant_decision_outcome_only"),
             context_index_name("profile_memory_kind", "codex_outcome"),
+            context_index_name("memory_layer", "same_session_codex_outcome_event"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_event"),
+            context_index_name("memory_layer", "same_session_codex_outcome_segment"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_segment"),
         )
         metric_terms = benchmark_quality_index_terms(query)
         if metric_terms:
@@ -4874,6 +4885,10 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
             context_index_name("event_type", "tool_evidence"),
             context_index_name("source_role", "tool"),
             context_index_name("profile_memory_kind", "codex_outcome"),
+            context_index_name("memory_layer", "same_session_codex_outcome_event"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_event"),
+            context_index_name("memory_layer", "same_session_codex_outcome_segment"),
+            context_index_name("memory_layer", "cross_session_codex_outcome_segment"),
         )
         outcome_terms = codex_outcome_fact_index_terms(query)
         if outcome_terms:
@@ -5046,6 +5061,9 @@ def candidate_index_terms(
             value = record.get(field)
             if value not in (None, "", [], {}):
                 terms.add(context_index_name(prefix, value))
+        memory_layer = candidate_memory_layer_name(record)
+        if memory_layer:
+            terms.add(context_index_name("memory_layer", memory_layer))
 
     def add_source_lineage_terms() -> None:
         role_values: set[str] = set()
@@ -5166,6 +5184,13 @@ def candidate_index_terms(
         add_direct_layer_terms()
     elif record_type == "context_segment":
         terms.add(context_index_name("segment_topic", record.get("topic")))
+        if record.get("event_type") not in (None, "", [], {}):
+            terms.add(context_index_name("event_type", record.get("event_type")))
+        if record.get("profile_memory_class") not in (None, "", [], {}):
+            terms.add(context_index_name("profile_memory_class", record.get("profile_memory_class")))
+        if record.get("profile_memory_kind") not in (None, "", [], {}):
+            terms.add(context_index_name("profile_memory_kind", record.get("profile_memory_kind")))
+        terms.update(codex_outcome_fact_index_terms(record.get("topic"), record.get("text"), record.get("summary_text"), record.get("event_type")))
         terms.update(benchmark_quality_index_terms(record.get("topic"), record.get("text"), record.get("summary_text")))
         add_direct_layer_terms()
         add_source_lineage_terms()
