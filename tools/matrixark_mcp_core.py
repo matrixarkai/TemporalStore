@@ -3100,6 +3100,22 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         re.IGNORECASE,
     ):
         assistant_refs = source_refs_for_role("assistant")
+        assistant_profile_entity_type = profile_entity_type_for_memory_text(assistant_text)
+        if assistant_profile_entity_type == "memory_feature_profile":
+            state = summarize_text(f"assistant memory feature policy: {assistant_text}", limit=220)
+            entities.append(
+                {
+                    "entity_type": assistant_profile_entity_type,
+                    "entity_name": assistant_profile_entity_type,
+                    "state": state,
+                    "confidence": 0.84,
+                    "source_refs": assistant_refs,
+                    "source_roles": ["assistant"],
+                    "source_role_counts": {"assistant": len(assistant_messages)},
+                    "operator": normalize_entity_operator(None, assistant_profile_entity_type),
+                    "field_patches": [entity_patch("", summarize_text(state, limit=180))],
+                }
+            )
         if not feature_scope_memory_only:
             decision_state = summarize_text(assistant_decision_memory_text(assistant_text), limit=220)
             entities.append(
@@ -3327,6 +3343,7 @@ def entity_retention_priority(entity: Json) -> int:
         "identity_profile",
         "communication_profile",
         "workspace_profile",
+        "memory_feature_profile",
         "preference",
         "approval_state",
         "correction",
