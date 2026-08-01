@@ -5794,7 +5794,11 @@ def is_shared_skill_candidate(candidate: Json) -> bool:
 
 def is_pending_async_candidate(candidate: Json) -> bool:
     metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
-    if str(candidate.get("ref_type") or metadata.get("ref_type") or "") != "event":
+    record_type = str(candidate.get("record_type") or metadata.get("record_type") or "")
+    ref_type = str(candidate.get("ref_type") or metadata.get("ref_type") or "")
+    if not ref_type and record_type == "context_event":
+        ref_type = "event"
+    if ref_type != "event":
         return False
     event_type = str(candidate.get("event_type") or metadata.get("event_type") or "").strip().lower()
     classification = str(candidate.get("classification") or metadata.get("classification") or "").strip().upper()
@@ -9535,6 +9539,19 @@ def candidate_access_scope(record: Json) -> Json:
     serving_scope = scope_from_serving_record(record)
     if serving_scope:
         return serving_scope
+    node_path = record.get("node_path")
+    if isinstance(node_path, list):
+        recovered_scope: Json = {}
+        for part in node_path:
+            value = str(part or "")
+            if value.startswith("tenant:"):
+                recovered_scope["tenant_id"] = value.split(":", 1)[1]
+            elif value.startswith("user:"):
+                recovered_scope["user_id"] = value.split(":", 1)[1]
+            elif value.startswith("session:"):
+                recovered_scope["session_id"] = value.split(":", 1)[1]
+        if recovered_scope:
+            return recovered_scope
     envelope = record.get("envelope", {})
     if isinstance(envelope, dict):
         return envelope.get("scope", {})
