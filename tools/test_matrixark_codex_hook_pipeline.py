@@ -6432,14 +6432,19 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("auto", request["memory_layer_budget_mode"])
             self.assertEqual("profile_memory", request["memory_layer_budget_question_type"])
             self.assertIn("profile_memory_queries_prioritize", request["memory_layer_budget_question_reason"])
-            self.assertEqual(57, request["memory_layer_budget_tokens"]["profile_entity"])
-            self.assertEqual(42, request["memory_layer_budget_tokens"]["profile_summary"])
-            self.assertEqual(38, request["memory_layer_budget_tokens"]["cross_session_summary"])
-            self.assertEqual(38, request["memory_layer_budget_tokens"]["profile_compression"])
-            self.assertEqual(33, request["memory_layer_budget_tokens"]["cross_session_compression"])
-            self.assertEqual(19, request["memory_layer_budget_tokens"]["same_session_compression"])
-            self.assertEqual(38, request["memory_layer_budget_tokens"]["cross_session_event"])
-            self.assertEqual(38, request["memory_layer_budget_tokens"]["cross_session_segment"])
+            self.assertEqual(61, request["memory_layer_budget_tokens"]["profile_entity"])
+            self.assertEqual(47, request["memory_layer_budget_tokens"]["profile_summary"])
+            self.assertEqual(42, request["memory_layer_budget_tokens"]["cross_session_summary"])
+            self.assertEqual(42, request["memory_layer_budget_tokens"]["profile_compression"])
+            self.assertEqual(38, request["memory_layer_budget_tokens"]["cross_session_compression"])
+            self.assertEqual(14, request["memory_layer_budget_tokens"]["same_session_compression"])
+            self.assertEqual(33, request["memory_layer_budget_tokens"]["cross_session_event"])
+            self.assertEqual(33, request["memory_layer_budget_tokens"]["cross_session_segment"])
+            self.assertEqual(52, request["memory_layer_budget_tokens"]["pending_async_memory_feature_event"])
+            self.assertEqual(52, request["memory_layer_budget_tokens"]["same_session_memory_feature_event"])
+            self.assertEqual(66, request["memory_layer_budget_tokens"]["cross_session_memory_feature_event"])
+            self.assertEqual(47, request["memory_layer_budget_tokens"]["same_session_memory_feature_segment"])
+            self.assertEqual(64, request["memory_layer_budget_tokens"]["cross_session_memory_feature_segment"])
             self.assertGreater(
                 request["memory_layer_budget_tokens"]["profile_entity"],
                 request["memory_layer_budget_tokens"]["same_session_event"],
@@ -6451,6 +6456,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(
                 {
                     "selected_user_prompt": 33,
+                    "selected_assistant_profile_fact": 61,
                     "selected_assistant_decision_outcome_only": 38,
                     "selected_tool_evidence_only": 28,
                     "selected_profile_current_state": 61,
@@ -6934,9 +6940,14 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                 "pre_retrieval_summary_refresh_profile_memory",
                 profile_request["memory_layer_budget_mode"],
             )
-            self.assertEqual(42, profile_request["memory_layer_budget_tokens"]["profile_summary"])
-            self.assertEqual(57, profile_request["memory_layer_budget_tokens"]["profile_entity"])
-            self.assertEqual(38, profile_request["memory_layer_budget_tokens"]["cross_session_event"])
+            self.assertEqual(47, profile_request["memory_layer_budget_tokens"]["profile_summary"])
+            self.assertEqual(61, profile_request["memory_layer_budget_tokens"]["profile_entity"])
+            self.assertEqual(33, profile_request["memory_layer_budget_tokens"]["cross_session_event"])
+            self.assertEqual(52, profile_request["memory_layer_budget_tokens"]["pending_async_memory_feature_event"])
+            self.assertEqual(52, profile_request["memory_layer_budget_tokens"]["same_session_memory_feature_event"])
+            self.assertEqual(66, profile_request["memory_layer_budget_tokens"]["cross_session_memory_feature_event"])
+            self.assertEqual(47, profile_request["memory_layer_budget_tokens"]["same_session_memory_feature_segment"])
+            self.assertEqual(64, profile_request["memory_layer_budget_tokens"]["cross_session_memory_feature_segment"])
             self.assertGreater(
                 profile_request["memory_layer_budget_tokens"]["profile_entity"],
                 profile_request["memory_layer_budget_tokens"]["same_session_event"],
