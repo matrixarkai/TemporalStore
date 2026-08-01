@@ -251,21 +251,35 @@ def prune_feature_scope_evidence_budgets(
 ) -> tuple[Json, Json, Json]:
     if not feature_scope_excludes_evidence(query):
         return source_role_budget_tokens, memory_layer_budget_tokens, memory_selection_policy_budget_tokens
-    pruned_source_roles = {
-        role: tokens
-        for role, tokens in (source_role_budget_tokens or {}).items()
-        if normalize_message_role(role) not in FEATURE_SCOPE_EXCLUDED_SOURCE_ROLES
-    }
-    pruned_memory_layers = {
-        layer: tokens
-        for layer, tokens in (memory_layer_budget_tokens or {}).items()
-        if str(layer or "").strip().lower() not in FEATURE_SCOPE_EXCLUDED_MEMORY_LAYERS
-    }
-    pruned_selection_policies = {
-        policy: tokens
-        for policy, tokens in (memory_selection_policy_budget_tokens or {}).items()
-        if str(policy or "").strip() not in FEATURE_SCOPE_EXCLUDED_MEMORY_SELECTION_POLICIES
-    }
+    pruned_source_roles: Json = {}
+    for role, tokens in (source_role_budget_tokens or {}).items():
+        role_name = normalize_message_role(role)
+        if role_name in FEATURE_SCOPE_EXCLUDED_SOURCE_ROLES:
+            pruned_source_roles[role_name] = 0
+        else:
+            pruned_source_roles[role] = tokens
+    for role in FEATURE_SCOPE_EXCLUDED_SOURCE_ROLES:
+        pruned_source_roles.setdefault(role, 0)
+
+    pruned_memory_layers: Json = {}
+    for layer, tokens in (memory_layer_budget_tokens or {}).items():
+        layer_name = str(layer or "").strip().lower()
+        if layer_name in FEATURE_SCOPE_EXCLUDED_MEMORY_LAYERS:
+            pruned_memory_layers[layer_name] = 0
+        else:
+            pruned_memory_layers[layer] = tokens
+    for layer in FEATURE_SCOPE_EXCLUDED_MEMORY_LAYERS:
+        pruned_memory_layers.setdefault(layer, 0)
+
+    pruned_selection_policies: Json = {}
+    for policy, tokens in (memory_selection_policy_budget_tokens or {}).items():
+        policy_name = str(policy or "").strip()
+        if policy_name in FEATURE_SCOPE_EXCLUDED_MEMORY_SELECTION_POLICIES:
+            pruned_selection_policies[policy_name] = 0
+        else:
+            pruned_selection_policies[policy] = tokens
+    for policy in FEATURE_SCOPE_EXCLUDED_MEMORY_SELECTION_POLICIES:
+        pruned_selection_policies.setdefault(policy, 0)
     return pruned_source_roles, pruned_memory_layers, pruned_selection_policies
 
 

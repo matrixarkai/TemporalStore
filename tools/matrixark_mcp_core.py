@@ -7075,9 +7075,8 @@ def select_token_budgeted_refs(
         try:
             budget_tokens = max(0, int(budget or 0))
         except (TypeError, ValueError):
-            budget_tokens = 0
-        if budget_tokens:
-            normalized_source_role_budget_tokens[role_name] = budget_tokens
+            continue
+        normalized_source_role_budget_tokens[role_name] = budget_tokens
     source_role_used_tokens: Json = {role: 0 for role in normalized_source_role_budget_tokens}
     source_role_selected_ref_counts: Json = {role: 0 for role in normalized_source_role_budget_tokens}
     memory_layer_budget_tokens = memory_layer_budget_tokens if isinstance(memory_layer_budget_tokens, dict) else {}
@@ -7089,9 +7088,8 @@ def select_token_budgeted_refs(
         try:
             budget_tokens = max(0, int(budget or 0))
         except (TypeError, ValueError):
-            budget_tokens = 0
-        if budget_tokens:
-            normalized_memory_layer_budget_tokens[layer_name] = budget_tokens
+            continue
+        normalized_memory_layer_budget_tokens[layer_name] = budget_tokens
     memory_layer_used_tokens: Json = {layer: 0 for layer in normalized_memory_layer_budget_tokens}
     memory_layer_selected_ref_counts: Json = {layer: 0 for layer in normalized_memory_layer_budget_tokens}
     memory_selection_policy_budget_tokens = (
@@ -7105,9 +7103,8 @@ def select_token_budgeted_refs(
         try:
             budget_tokens = max(0, int(budget or 0))
         except (TypeError, ValueError):
-            budget_tokens = 0
-        if budget_tokens:
-            normalized_memory_selection_policy_budget_tokens[policy_name] = budget_tokens
+            continue
+        normalized_memory_selection_policy_budget_tokens[policy_name] = budget_tokens
     memory_selection_policy_used_tokens: Json = {
         policy: 0 for policy in normalized_memory_selection_policy_budget_tokens
     }
@@ -7123,9 +7120,8 @@ def select_token_budgeted_refs(
         try:
             budget_tokens = max(0, int(budget or 0))
         except (TypeError, ValueError):
-            budget_tokens = 0
-        if budget_tokens:
-            normalized_extraction_phase_budget_tokens[phase_name] = budget_tokens
+            continue
+        normalized_extraction_phase_budget_tokens[phase_name] = budget_tokens
     extraction_phase_used_tokens: Json = {phase: 0 for phase in normalized_extraction_phase_budget_tokens}
     extraction_phase_selected_ref_counts: Json = {phase: 0 for phase in normalized_extraction_phase_budget_tokens}
     profile_entity_bridge_layers = {

@@ -5524,9 +5524,47 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             },
         )
 
-        self.assertEqual({"assistant": 64}, source_roles)
-        self.assertEqual({"profile_entity": 64}, memory_layers)
-        self.assertEqual({"selected_profile_current_state": 64}, selection_policies)
+        self.assertEqual({"assistant": 64, "tool": 0}, source_roles)
+        self.assertEqual(64, memory_layers["profile_entity"])
+        self.assertEqual(0, memory_layers["cross_session_codex_outcome_event"])
+        self.assertEqual(0, memory_layers["cross_session_codex_outcome_entity"])
+        self.assertEqual(64, selection_policies["selected_profile_current_state"])
+        self.assertEqual(0, selection_policies["selected_tool_evidence_only"])
+        self.assertEqual(0, selection_policies["selected_assistant_decision_outcome_only"])
+
+    def test_budget_packer_treats_zero_role_budget_as_exclusion(self) -> None:
+        selected, used_tokens, dropped = mcp_budget_pack.select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 8211,
+                    "text": "tool evidence should be excluded",
+                    "score": 0.99,
+                    "entity_type": "tool_evidence",
+                    "source_roles": ["function_call_output"],
+                    "source_role_counts": {"function_call_output": 1},
+                },
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 8212,
+                    "text": "profile current state should stay",
+                    "score": 0.80,
+                    "entity_type": "memory_feature_profile",
+                    "source_roles": ["assistant"],
+                    "source_role_counts": {"assistant": 1},
+                },
+            ],
+            [],
+            max_context_tokens=80,
+            auxiliary_quota=0,
+            min_score=0.0,
+            source_role_budget_tokens={"tool": 0, "assistant": 80},
+        )
+
+        self.assertEqual([8212], [ref["ref_hash"] for ref in selected])
+        self.assertGreater(used_tokens, 0)
+        self.assertEqual(1, dropped["source_role_budget"])
+        self.assertEqual({"assistant": 80, "tool": 0}, dropped["source_role_budget_policy"]["budget_tokens"])
 
     def test_retrieval_plan_uses_question_type_source_role_budget_defaults(self) -> None:
         plan = retrieve_planning.retrieval_query_budget_plan(
