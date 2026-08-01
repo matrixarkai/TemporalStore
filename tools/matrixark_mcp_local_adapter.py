@@ -8729,6 +8729,27 @@ class MatrixArkLocalAdapter:
                 event_profile_memory_kinds = list(
                     event_source_lineage.get("source_profile_memory_kinds") or source_profile_memory_kinds
                 )
+                event_profile_memory_class = (
+                    "codex_outcome"
+                    if (
+                        event_type in {"assistant_response", "assistant_decision", "tool_evidence", *CODEX_OUTCOME_ENTITY_TYPES}
+                        or "codex_outcome" in {str(value or "").strip() for value in event_profile_memory_kinds}
+                    )
+                    else "memory_feature"
+                    if (
+                        event_type == "memory_feature"
+                        or "memory_feature" in {str(value or "").strip() for value in event_profile_memory_classes}
+                        or "memory_feature" in {str(value or "").strip() for value in event_profile_memory_kinds}
+                    )
+                    else ""
+                )
+                event_profile_memory_kind = (
+                    "codex_outcome"
+                    if event_profile_memory_class == "codex_outcome"
+                    else "memory_feature"
+                    if event_profile_memory_class == "memory_feature"
+                    else ""
+                )
                 event_default_policy_counts = (
                     event_source_lineage.get("source_memory_selection_policy_counts")
                     if isinstance(event_source_lineage.get("source_memory_selection_policy_counts"), dict)
@@ -8788,6 +8809,8 @@ class MatrixArkLocalAdapter:
                         "source_codex_event_counts": event_codex_event_counts,
                         "source_memory_selection_policies": event_memory_selection_policies,
                         "source_memory_selection_policy_counts": event_memory_selection_policy_counts,
+                        "profile_memory_class": event_profile_memory_class,
+                        "profile_memory_kind": event_profile_memory_kind,
                         "source_profile_memory_classes": event_profile_memory_classes,
                         "source_profile_memory_kinds": event_profile_memory_kinds,
                         **event_memory_selection_retention,
@@ -8825,6 +8848,8 @@ class MatrixArkLocalAdapter:
                         "source_codex_event_counts": event_codex_event_counts,
                         "source_memory_selection_policies": event_memory_selection_policies,
                         "source_memory_selection_policy_counts": event_memory_selection_policy_counts,
+                        "profile_memory_class": event_profile_memory_class,
+                        "profile_memory_kind": event_profile_memory_kind,
                         "source_profile_memory_classes": event_profile_memory_classes,
                         "source_profile_memory_kinds": event_profile_memory_kinds,
                         **event_memory_selection_retention,
