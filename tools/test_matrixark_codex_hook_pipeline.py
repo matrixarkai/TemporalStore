@@ -805,6 +805,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             "Do I prefer Ubuntu folders?",
             "What is my local repo policy?",
             "What are my always-push instructions?",
+            "Which repo should you use for TemporalStore builds?",
+            "Which folder should Codex use for TemporalStore?",
+            "Where should you build TemporalStore?",
+            "Should you use Ubuntu or Windows folders for TemporalStore?",
+            "Which remote main branch should you push to?",
         ]:
             self.assertEqual("profile_memory", infer_query_type(query), query)
             self.assertEqual("profile_memory", matrixark_mcp_query.infer_query_type(query), query)
@@ -818,6 +823,16 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         self.assertIn("profile_summary_current:true", flattened)
         self.assertIn("memory_selection_policy:selected_user_profile_fact", flattened)
         self.assertIn("memory_selection_policy:selected_assistant_profile_fact", flattened)
+
+        standing_rule_groups = infer_secondary_index_filter_groups(
+            "Which repo should you use for TemporalStore builds?",
+            "fact",
+        )
+        standing_rule_flattened = {term for group in standing_rule_groups for term in group}
+        self.assertIn("memory_scope:user_profile", standing_rule_flattened)
+        self.assertIn("session_continuity:cross_session", standing_rule_flattened)
+        self.assertIn("profile_memory_class:workspace", standing_rule_flattened)
+        self.assertIn("memory_selection_policy:selected_user_profile_fact", standing_rule_flattened)
 
         session_groups = infer_secondary_index_filter_groups(
             "Show session-specific same-session context entities",
