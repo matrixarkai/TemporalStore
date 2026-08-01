@@ -570,6 +570,44 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         )
         self.assertNotIn("codex_memory_selection", metadata)
 
+    def test_generic_agent_hook_normalizes_assistant_and_tool_role_aliases(self) -> None:
+        payload = {
+            "messages": [
+                {
+                    "role": "assistant_response",
+                    "content": "Implemented profile memory extraction and pushed commit abc1234 to origin/main.",
+                },
+                {
+                    "role": "tool_result",
+                    "content": "verbose output\nExit code: 0\nRan 5 tests\nOK",
+                },
+            ]
+        }
+
+        messages = matrixark_agent_hook.hook_messages_from_payload(
+            payload,
+            event="response",
+            text="",
+        )
+        metadata = matrixark_agent_hook.agent_memory_selection_metadata(
+            payload,
+            event="response",
+            text="",
+            messages=messages,
+        )
+
+        self.assertEqual(["assistant", "tool"], [message["role"] for message in messages])
+        self.assertIn("Outcome: pushed commit abc1234 to origin/main", messages[0]["content"])
+        self.assertIn("Exit code: 0", messages[1]["content"])
+        self.assertNotIn("verbose output", messages[1]["content"])
+        self.assertEqual(
+            {
+                "selected_assistant_decision_outcome_only": 1,
+                "selected_tool_evidence_only": 1,
+            },
+            metadata["source_memory_selection_policy_counts"],
+        )
+
     def test_generic_hook_threshold_extracts_user_and_assistant_turns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             rust_root = Path(tmp_dir) / "rust-store"

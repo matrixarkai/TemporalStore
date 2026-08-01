@@ -547,27 +547,34 @@ def retrieval_quality_warnings_from_retrieve(pack: Json | None) -> list[Any]:
     return warnings if isinstance(warnings, list) else []
 
 
+HOOK_MESSAGE_ROLE_ALIASES = {
+    "assistant_response": "assistant",
+    "agent": "assistant",
+    "ai": "assistant",
+    "bot": "assistant",
+    "llm": "assistant",
+    "model": "assistant",
+    "tool_result": "tool",
+    "tool-output": "tool",
+    "tooloutput": "tool",
+    "tool_output": "tool",
+    "function": "tool",
+    "function_call_output": "tool",
+    "custom_tool_call_output": "tool",
+    "tool_call_output": "tool",
+    "human": "user",
+    "prompt": "user",
+}
+
+
+def normalized_hook_message_role(role: str, *, event: str) -> str:
+    role_name = role_for_agent_event(event) if not str(role or "").strip() else str(role or "").strip()
+    return HOOK_MESSAGE_ROLE_ALIASES.get(role_name.lower(), role_name.lower())
+
+
 def hook_messages_from_payload(payload: Json, *, event: str, text: str) -> list[Json]:
     def compact_for_role(role: str, content: str) -> str:
-        role_name = role_for_agent_event(event) if not str(role or "").strip() else str(role or "").strip()
-        normalized_role = {
-            "assistant_response": "assistant",
-            "agent": "assistant",
-            "ai": "assistant",
-            "bot": "assistant",
-            "llm": "assistant",
-            "model": "assistant",
-            "tool_result": "tool",
-            "tool-output": "tool",
-            "tooloutput": "tool",
-            "tool_output": "tool",
-            "function": "tool",
-            "function_call_output": "tool",
-            "custom_tool_call_output": "tool",
-            "tool_call_output": "tool",
-            "human": "user",
-            "prompt": "user",
-        }.get(role_name.lower(), role_name.lower())
+        normalized_role = normalized_hook_message_role(role, event=event)
         if normalized_role == "assistant":
             return selected_assistant_memory_text(content)
         if normalized_role == "tool":
@@ -583,10 +590,10 @@ def hook_messages_from_payload(payload: Json, *, event: str, text: str) -> list[
             if isinstance(item, dict):
                 content = str(item.get("content") or item.get("text") or item.get("message") or "").strip()
                 if content:
-                    role = str(item.get("role") or role_for_agent_event(event)).strip() or role_for_agent_event(event)
+                    role = normalized_hook_message_role(str(item.get("role") or role_for_agent_event(event)).strip(), event=event)
                     messages.append({"role": role, "content": compact_for_role(role, content)})
             elif isinstance(item, str) and item.strip():
-                role = role_for_agent_event(event)
+                role = normalized_hook_message_role(role_for_agent_event(event), event=event)
                 messages.append({"role": role, "content": compact_for_role(role, item.strip())})
     if messages:
         return messages
@@ -624,9 +631,10 @@ def agent_memory_selection_metadata(payload: Json, *, event: str, text: str, mes
         for item in raw_messages:
             if isinstance(item, dict):
                 role = str(item.get("role") or role_for_agent_event(event)).strip() or role_for_agent_event(event)
+                role = normalized_hook_message_role(role, event=event)
                 content = str(item.get("content") or item.get("text") or item.get("message") or "").strip()
             elif isinstance(item, str):
-                role = role_for_agent_event(event)
+                role = normalized_hook_message_role(role_for_agent_event(event), event=event)
                 content = item.strip()
             else:
                 continue
@@ -638,6 +646,7 @@ def agent_memory_selection_metadata(payload: Json, *, event: str, text: str, mes
     selected_by_role: dict[str, list[str]] = {}
     for message in messages:
         role = str(message.get("role") or role_for_agent_event(event)).strip() or role_for_agent_event(event)
+        role = normalized_hook_message_role(role, event=event)
         content = str(message.get("content") or "").strip()
         if content:
             selected_by_role.setdefault(role, []).append(content)
