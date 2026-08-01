@@ -5290,34 +5290,53 @@ def run_rollout_backfill_only(args: argparse.Namespace, payload: Json, session_i
         common: Json = {"scope": scope_from_args(args)}
         if args.api_key:
             common["api_key"] = args.api_key
-        call_tool(
-            server,
-            "matrixark_ingest",
-            hook_async_message_ingest_args(
-                common,
-                args,
-                event=codex_event,
-                role=role,
-                text=text,
-                original_text=original_text,
-                metadata=codex_hook_metadata(
-                    source="codex_hook_rollout_async_backfill",
-                    event=codex_event,
-                    agent_context=agent_context,
-                    session_id_source=session_id_source,
-                    backfill_reason="codex_rollout_is_readable_after_synchronous_hook_boundary",
-                ),
-                agent_hook={
-                    **codex_agent_hook(
-                        hook_type="tool_result" if role == "tool" else "after_llm",
-                        hook_id=f"Async{codex_event}:{stable_short_hash(text)}",
-                        idempotency_key=f"{idempotency_prefix}:{stable_short_hash(text)}",
-                        trigger=f"{args.event}:async_rollout_backfill",
-                        session_id_source=session_id_source,
-                        identity=codex_identity,
-                    ),
-                },
+        backfill_hook = {
+            **codex_agent_hook(
+                hook_type="tool_result" if role == "tool" else "after_llm",
+                hook_id=f"Async{codex_event}:{stable_short_hash(text)}",
+                idempotency_key=f"{idempotency_prefix}:{stable_short_hash(text)}",
+                trigger=f"{args.event}:async_rollout_backfill",
+                session_id_source=session_id_source,
+                identity=codex_identity,
             ),
+        }
+        ingest_result: Json = {}
+        if HOOK_FAST_ASYNC_INGEST:
+            ingest_result = fast_async_hook_ingest(
+                server,
+                args=args,
+                text=text,
+                role=role,
+                agent_context=agent_context,
+                hook=backfill_hook,
+                original_text=original_text,
+                codex_event=codex_event,
+            )
+        if not ingest_result:
+            ingest_result = call_tool(
+                server,
+                "matrixark_ingest",
+                hook_async_message_ingest_args(
+                    common,
+                    args,
+                    event=codex_event,
+                    role=role,
+                    text=text,
+                    original_text=original_text,
+                    metadata=codex_hook_metadata(
+                        source="codex_hook_rollout_async_backfill",
+                        event=codex_event,
+                        agent_context=agent_context,
+                        session_id_source=session_id_source,
+                        backfill_reason="codex_rollout_is_readable_after_synchronous_hook_boundary",
+                    ),
+                    agent_hook=backfill_hook,
+                ),
+            )
+        spawn_idle_commit_worker_child(
+            args,
+            ingest=ingest_result,
+            session_id_source=session_id_source,
         )
         if should_commit_session(args.event):
             call_tool(
