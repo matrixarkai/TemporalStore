@@ -570,6 +570,44 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         )
         self.assertNotIn("codex_memory_selection", metadata)
 
+    def test_generic_agent_user_prompt_preserves_profile_fact_policy(self) -> None:
+        raw_prompt = "Always use the Ubuntu repo for TemporalStore work; never use Windows folders."
+        payload = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": raw_prompt,
+                }
+            ]
+        }
+
+        messages = matrixark_agent_hook.hook_messages_from_payload(
+            payload,
+            event="UserPromptSubmit",
+            text=raw_prompt,
+        )
+        metadata = matrixark_agent_hook.agent_memory_selection_metadata(
+            payload,
+            event="UserPromptSubmit",
+            text=raw_prompt,
+            messages=messages,
+        )
+
+        self.assertEqual(1, len(messages))
+        self.assertEqual("user", messages[0]["role"])
+        self.assertEqual(
+            ["selected_user_profile_fact", "selected_user_prompt"],
+            metadata["source_memory_selection_policies"],
+        )
+        self.assertEqual(
+            {"selected_user_prompt": 1, "selected_user_profile_fact": 1},
+            metadata["source_memory_selection_policy_counts"],
+        )
+        self.assertEqual(
+            ["selected_user_prompt", "selected_user_profile_fact"],
+            metadata["codex_memory_selection"]["policies"],
+        )
+
     def test_generic_agent_hook_normalizes_assistant_and_tool_role_aliases(self) -> None:
         payload = {
             "messages": [

@@ -667,10 +667,15 @@ def agent_memory_selection_metadata(payload: Json, *, event: str, text: str, mes
         )
         if not selection:
             continue
-        policy = str(selection.get("policy") or "")
-        if policy:
-            policies.append(policy)
-            policy_counts[policy] = int(policy_counts.get(policy, 0)) + len(selected_by_role.get(role, []))
+        selection_policies = selection.get("policies")
+        if not isinstance(selection_policies, list):
+            selection_policies = [selection.get("policy")]
+        role_message_count = len(selected_by_role.get(role, []))
+        for raw_policy in selection_policies:
+            policy = str(raw_policy or "").strip()
+            if policy:
+                policies.append(policy)
+                policy_counts[policy] = int(policy_counts.get(policy, 0)) + role_message_count
         for field, target in [
             ("source_profile_memory_classes", source_profile_memory_classes),
             ("profile_memory_class", source_profile_memory_classes),
