@@ -237,8 +237,20 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
                     proc.stdin.flush()
                 except BrokenPipeError as exc:
                     lane["proc"] = None
+                    returncode = proc.poll()
+                    stderr = ""
+                    try:
+                        if proc.stderr is not None:
+                            stderr = proc.stderr.read() or ""
+                    except Exception:
+                        stderr = ""
                     self._close_proc(proc)
-                    raise MatrixArkError(f"Rust TemporalStore {op} pipe closed") from exc
+                    detail = f"Rust TemporalStore {op} pipe closed"
+                    if returncode is not None:
+                        detail += f" after process exit ({returncode})"
+                    if stderr:
+                        detail += f": {stderr[-1000:]}"
+                    raise MatrixArkError(detail) from exc
                 response = self._read_json_line(proc, op)
         except Exception:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
