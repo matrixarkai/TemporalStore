@@ -66,6 +66,25 @@ struct OffsetIndexValidation {
 }
 
 #[derive(Debug, Serialize)]
+struct OffsetMetadataMapping {
+    shard_id: u64,
+    oplog_index: u64,
+    blob_key: String,
+    start_offset: u64,
+    end_offset: u64,
+    bytes_written: u64,
+    command_sha256: String,
+    command_encoding: u32,
+    object_length: u64,
+    physical_extent_count: u64,
+    first_physical_offset: Option<u64>,
+    expected_start_offset: Option<u64>,
+    expected_end_offset: Option<u64>,
+    expected_bytes_written: Option<u64>,
+    matches_expected_offsets: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct AuthoritativeOffsetLookupReport {
     checked_entries: u64,
     metadata_hits: u64,
@@ -86,6 +105,7 @@ struct PublishPhaseReport {
     blob_key: String,
     publish_latencies_us: Vec<u128>,
     append_receipts: Vec<AppendBlobReceipt>,
+    offset_metadata_mappings: Vec<OffsetMetadataMapping>,
     blob_object_length: u64,
     blob_physical_extent_count: usize,
     offset_frame_validation: OffsetFrameValidation,
@@ -99,6 +119,7 @@ struct WriterPhaseReport {
     shard_id: u64,
     write_latencies_us: Vec<u128>,
     write_reports: Vec<SharedStoreWriteReport>,
+    offset_metadata_mappings: Vec<OffsetMetadataMapping>,
     blob_object_length: u64,
     blob_physical_extent_count: usize,
     authoritative_offset_lookup: AuthoritativeOffsetLookupReport,
@@ -112,6 +133,7 @@ struct AsyncWriterPhaseReport {
     write_reports: Vec<SharedStoreWriteReport>,
     flush_latency_us: u128,
     flush_report: SharedStoreFlushReport,
+    offset_metadata_mappings: Vec<OffsetMetadataMapping>,
     blob_object_length: u64,
     blob_physical_extent_count: usize,
     authoritative_offset_lookup: AuthoritativeOffsetLookupReport,
@@ -421,6 +443,10 @@ async fn run_direct_publish(
         .expect("offset metadata");
     let offset_index_validation =
         validate_offset_index(&blob_key, &append_receipts, &offset_metadata);
+    let offset_metadata_mappings = build_offset_metadata_mappings(
+        &offset_metadata,
+        Some(&expected_offsets_from_receipts(&append_receipts)),
+    );
     let authoritative_offset_lookup = validate_authoritative_offset_lookup(
         replicator,
         shard_id,
@@ -434,6 +460,7 @@ async fn run_direct_publish(
         blob_key,
         publish_latencies_us,
         append_receipts,
+        offset_metadata_mappings,
         blob_object_length: metadata.length,
         blob_physical_extent_count: metadata.extents.len(),
         offset_frame_validation,
@@ -465,6 +492,14 @@ async fn run_sync_writer(
     }
     let blob_key = blob_key(shard_id);
     let metadata = matrixobject_metadata(&store, &blob_key);
+    let offset_metadata = replicator
+        .load_wal_offset_metadata(shard_id)
+        .await
+        .expect("sync writer offset metadata");
+    let offset_metadata_mappings = build_offset_metadata_mappings(
+        &offset_metadata,
+        Some(&expected_offsets_from_write_reports(&write_reports)),
+    );
     let authoritative_offset_lookup = validate_authoritative_offset_lookup(
         replicator,
         shard_id,
@@ -477,6 +512,7 @@ async fn run_sync_writer(
         shard_id,
         write_latencies_us,
         write_reports,
+        offset_metadata_mappings,
         blob_object_length: metadata.length,
         blob_physical_extent_count: metadata.extents.len(),
         authoritative_offset_lookup,
@@ -512,6 +548,11 @@ async fn run_async_writer(
     let flush_latency_us = flush_start.elapsed().as_micros();
     let blob_key = blob_key(shard_id);
     let metadata = matrixobject_metadata(&store, &blob_key);
+    let offset_metadata = replicator
+        .load_wal_offset_metadata(shard_id)
+        .await
+        .expect("async writer offset metadata");
+    let offset_metadata_mappings = build_offset_metadata_mappings(&offset_metadata, None);
     let authoritative_offset_lookup = validate_authoritative_offset_lookup(
         replicator,
         shard_id,
@@ -526,6 +567,7 @@ async fn run_async_writer(
         write_reports,
         flush_latency_us,
         flush_report,
+        offset_metadata_mappings,
         blob_object_length: metadata.length,
         blob_physical_extent_count: metadata.extents.len(),
         authoritative_offset_lookup,
@@ -737,6 +779,88 @@ fn validate_offset_index(
         all_oplog_indexes_have_offset_metadata: offset_metadata.len() >= receipts.len(),
         all_metadata_ranges_match_append_receipts: matched_entries == receipts.len(),
     }
+}
+
+fn expected_offsets_from_receipts(
+    receipts: &[AppendBlobReceipt],
+) -> std::collections::BTreeMap<u64, (u64, u64, u64)> {
+    receipts
+        .iter()
+        .enumerate()
+        .map(|(index, receipt)| {
+            (
+                index as u64 + 1,
+                (
+                    receipt.start_offset,
+                    receipt.end_offset,
+                    receipt.bytes_written,
+                ),
+            )
+        })
+        .collect()
+}
+
+fn expected_offsets_from_write_reports(
+    reports: &[SharedStoreWriteReport],
+) -> std::collections::BTreeMap<u64, (u64, u64, u64)> {
+    reports
+        .iter()
+        .filter_map(|report| {
+            Some((
+                report.oplog_index,
+                (
+                    report.wal_blob_start_offset?,
+                    report.wal_blob_end_offset?,
+                    report.wal_blob_bytes_written?,
+                ),
+            ))
+        })
+        .collect()
+}
+
+fn build_offset_metadata_mappings(
+    offset_metadata: &std::collections::BTreeMap<u64, SharedStoreWalOffsetMetadata>,
+    expected_offsets: Option<&std::collections::BTreeMap<u64, (u64, u64, u64)>>,
+) -> Vec<OffsetMetadataMapping> {
+    offset_metadata
+        .iter()
+        .map(|(oplog_index, metadata)| {
+            let expected = expected_offsets.and_then(|offsets| offsets.get(oplog_index));
+            let (
+                expected_start_offset,
+                expected_end_offset,
+                expected_bytes_written,
+                matches_expected_offsets,
+            ) = match expected {
+                Some((start, end, bytes)) => (
+                    Some(*start),
+                    Some(*end),
+                    Some(*bytes),
+                    metadata.wal_blob_start_offset == *start
+                        && metadata.wal_blob_end_offset == *end
+                        && metadata.wal_blob_bytes_written == *bytes,
+                ),
+                None => (None, None, None, true),
+            };
+            OffsetMetadataMapping {
+                shard_id: metadata.shard_id,
+                oplog_index: *oplog_index,
+                blob_key: metadata.wal_blob_key.clone(),
+                start_offset: metadata.wal_blob_start_offset,
+                end_offset: metadata.wal_blob_end_offset,
+                bytes_written: metadata.wal_blob_bytes_written,
+                command_sha256: metadata.command_sha256.clone(),
+                command_encoding: metadata.command_encoding,
+                object_length: metadata.wal_blob_object_length,
+                physical_extent_count: metadata.wal_blob_physical_extent_count,
+                first_physical_offset: metadata.wal_blob_first_physical_offset,
+                expected_start_offset,
+                expected_end_offset,
+                expected_bytes_written,
+                matches_expected_offsets,
+            }
+        })
+        .collect()
 }
 
 async fn validate_authoritative_offset_lookup(

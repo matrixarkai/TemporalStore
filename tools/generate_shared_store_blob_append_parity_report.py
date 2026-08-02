@@ -342,6 +342,9 @@ def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
         "direct_authoritative_offset_lookup": direct_publish.get("authoritative_offset_lookup"),
         "sync_authoritative_offset_lookup": sync_writer.get("authoritative_offset_lookup"),
         "async_authoritative_offset_lookup": async_writer.get("authoritative_offset_lookup"),
+        "direct_offset_metadata_mappings": direct_publish.get("offset_metadata_mappings"),
+        "sync_offset_metadata_mappings": sync_writer.get("offset_metadata_mappings"),
+        "async_offset_metadata_mappings": async_writer.get("offset_metadata_mappings"),
         "secondary_replay_recovered_all_records": bool(
             summary.get("secondary_replay_recovered_all_records")
         ),
@@ -513,6 +516,9 @@ def _render_html(report: dict[str, Any]) -> str:
         ("Rust authoritative offset lookup reads all records", rust_summary.get("authoritative_offset_lookup_reads_all_records")),
         ("Rust authoritative offset lookup matches all records", rust_summary.get("authoritative_offset_lookup_matches_all_records")),
         ("Rust authoritative offset lookup has extent metadata", rust_summary.get("authoritative_offset_lookup_has_extent_metadata")),
+        ("Rust direct offset metadata mappings", rust_summary.get("direct_offset_metadata_mappings")),
+        ("Rust sync offset metadata mappings", rust_summary.get("sync_offset_metadata_mappings")),
+        ("Rust async offset metadata mappings", rust_summary.get("async_offset_metadata_mappings")),
         ("Rust snapshot bytes", rust_summary.get("snapshot_bytes")),
         ("Rust snapshot export latency us", rust_summary.get("snapshot_export_latency_us")),
         ("Rust snapshot import latency us", rust_summary.get("snapshot_import_latency_us")),
