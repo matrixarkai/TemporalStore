@@ -4572,6 +4572,9 @@ class MatrixArkRustCdylibClient:
             "latency_ms_max": round(max(self._latency_samples_ms) if self._latency_samples_ms else 0.0, 3),
             "p95_latency_ms": round(self._percentile(self._latency_samples_ms, 0.95), 3),
             "p99_latency_ms": round(self._percentile(self._latency_samples_ms, 0.99), 3),
+            "matrixark_append_blob_parity_total": 0,
+            "matrixark_append_hset_count_lowering_total": 0,
+            "matrixark_append_hot_path": "cpp_c_api_bridge_diagnostic",
             "matrixark_append_write_path": "rust_direct_cdylib_matrixark_batch_append_records",
             "matrixark_native_batch_append_available": True,
             "matrixark_batch_append_uses_existing_batch_execute": True,
@@ -4712,6 +4715,8 @@ class MatrixArkRustProxyClient:
         self._cache_misses_total = 0
         self._selected_refs_total = 0
         self._dropped_refs_total = 0
+        self._matrixark_append_blob_parity_total = 0
+        self._matrixark_append_hset_count_lowering_total = 0
         self._memory_layer_budget_totals: dict[str, Any] = {
             "by_memory_scope": {},
             "by_session_continuity": {},
@@ -5067,6 +5072,11 @@ class MatrixArkRustProxyClient:
                         if isinstance(reasons, dict):
                             dropped_count = sum(int(value or 0) for value in reasons.values())
                 self._dropped_refs_total += dropped_count
+                if op in {"matrixark_append_records", "matrixark_batch_append_records"}:
+                    if bool(response.get("append_blob_parity")):
+                        self._matrixark_append_blob_parity_total += 1
+                    if str(response.get("batch_lowering") or "") == "rust_proxy_hset_count_lowering":
+                        self._matrixark_append_hset_count_lowering_total += 1
             self._last_latency_ms = elapsed_ms
             self._max_observed_latency_ms = max(self._max_observed_latency_ms, elapsed_ms)
             self._latency_samples_ms.append(elapsed_ms)
@@ -5335,6 +5345,16 @@ class MatrixArkRustProxyClient:
                 "cache_misses_total": self._cache_misses_total,
                 "selected_refs_total": self._selected_refs_total,
                 "dropped_refs_total": self._dropped_refs_total,
+                "matrixark_append_blob_parity_total": self._matrixark_append_blob_parity_total,
+                "matrixark_append_hset_count_lowering_total": self._matrixark_append_hset_count_lowering_total,
+                "matrixark_append_hot_path": (
+                    "append_blob"
+                    if self._matrixark_append_blob_parity_total > 0
+                    and self._matrixark_append_hset_count_lowering_total == 0
+                    else "hset_count_lowering"
+                    if self._matrixark_append_hset_count_lowering_total > 0
+                    else "unknown"
+                ),
                 "memory_layer_budget_totals": memory_layer_budget_totals,
                 "publish_visibility": {
                     "calls_total": self._publish_visibility_calls_total,
@@ -6069,6 +6089,12 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
                 "# HELP matrixark_context_pack_dropped_refs_total Total refs dropped by native ContextPack assembly.",
                 "# TYPE matrixark_context_pack_dropped_refs_total counter",
                 f'matrixark_context_pack_dropped_refs_total{{backend="{backend}"}} {int(snapshot.get("dropped_refs_total") or 0)}',
+                "# HELP matrixark_append_blob_parity_total MatrixArk append commands using append-blob parity semantics.",
+                "# TYPE matrixark_append_blob_parity_total counter",
+                f'matrixark_append_blob_parity_total{{backend="{backend}"}} {int(snapshot.get("matrixark_append_blob_parity_total") or 0)}',
+                "# HELP matrixark_append_hset_count_lowering_total MatrixArk append commands lowered to hset plus count updates.",
+                "# TYPE matrixark_append_hset_count_lowering_total counter",
+                f'matrixark_append_hset_count_lowering_total{{backend="{backend}"}} {int(snapshot.get("matrixark_append_hset_count_lowering_total") or 0)}',
             ]
         )
         return "\n".join(lines) + "\n"

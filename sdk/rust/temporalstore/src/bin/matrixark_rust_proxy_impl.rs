@@ -82,6 +82,8 @@ struct MetricsSnapshot {
     cache_hit_total: u64,
     selected_refs_total: u64,
     dropped_refs_total: u64,
+    matrixark_append_blob_parity_total: u64,
+    matrixark_append_hset_count_lowering_total: u64,
     op: HashMap<String, OpMetrics>,
 }
 
@@ -106,6 +108,8 @@ impl Default for MetricsSnapshot {
             cache_hit_total: 0,
             selected_refs_total: 0,
             dropped_refs_total: 0,
+            matrixark_append_blob_parity_total: 0,
+            matrixark_append_hset_count_lowering_total: 0,
             op: HashMap::new(),
         }
     }
@@ -149,6 +153,26 @@ impl MetricsSnapshot {
                 .get("dropped_ref_count")
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
+            if matches!(
+                op,
+                "matrixark_append_records" | "matrixark_batch_append_records"
+            ) {
+                if result
+                    .get("append_blob_parity")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    self.matrixark_append_blob_parity_total += 1;
+                }
+                if result
+                    .get("batch_lowering")
+                    .and_then(Value::as_str)
+                    .map(|value| value == "rust_proxy_hset_count_lowering")
+                    .unwrap_or(false)
+                {
+                    self.matrixark_append_hset_count_lowering_total += 1;
+                }
+            }
         }
         self.records_written += stats.records_written;
         self.records_read += stats.records_read;
@@ -394,6 +418,30 @@ impl MetricsSnapshot {
             "matrixark_rust_proxy_commands_failed_total",
             "",
             self.commands_failed,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_append_blob_parity_total",
+            "counter",
+            "MatrixArk Rust proxy append commands that used append-blob parity semantics.",
+        );
+        line(
+            &mut out,
+            "matrixark_append_blob_parity_total",
+            "{backend=\"rust\"}",
+            self.matrixark_append_blob_parity_total,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_append_hset_count_lowering_total",
+            "counter",
+            "MatrixArk Rust proxy append commands lowered to hset plus count updates.",
+        );
+        line(
+            &mut out,
+            "matrixark_append_hset_count_lowering_total",
+            "{backend=\"rust\"}",
+            self.matrixark_append_hset_count_lowering_total,
         );
         metric_header(
             &mut out,
@@ -3333,6 +3381,38 @@ mod tests {
         assert!(text.contains("matrixark_rust_proxy_records_written_total 1"));
         assert!(text.contains("matrixark_rust_proxy_bytes_written_total 128"));
         assert!(text.contains("matrixark_rust_proxy_commands_failed_total 1"));
+    }
+
+    #[test]
+    fn metrics_render_prometheus_records_matrixark_append_hot_path() {
+        let mut metrics = MetricsSnapshot::default();
+        metrics.observe(
+            "matrixark_batch_append_records",
+            true,
+            10,
+            1,
+            Some(&json!({
+                "ok": true,
+                "batch_lowering": "rust_proxy_hset_count_lowering",
+                "append_blob_parity": false
+            })),
+            CommandStats::default(),
+        );
+        metrics.observe(
+            "matrixark_batch_append_records",
+            true,
+            8,
+            1,
+            Some(&json!({
+                "ok": true,
+                "batch_lowering": "none",
+                "append_blob_parity": true
+            })),
+            CommandStats::default(),
+        );
+        let text = metrics.render_prometheus();
+        assert!(text.contains("matrixark_append_hset_count_lowering_total{backend=\"rust\"} 1"));
+        assert!(text.contains("matrixark_append_blob_parity_total{backend=\"rust\"} 1"));
     }
 
     #[test]

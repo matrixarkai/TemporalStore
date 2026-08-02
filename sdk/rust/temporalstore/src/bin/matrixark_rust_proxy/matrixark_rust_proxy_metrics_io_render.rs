@@ -98,4 +98,28 @@ pub(crate) fn append_proxy_io_metrics(out: &mut String, snapshot: &MetricsSnapsh
         "",
         snapshot.commands_failed,
     );
+    metric_header(
+        out,
+        "matrixark_append_blob_parity_total",
+        "counter",
+        "MatrixArk Rust proxy append commands that used append-blob parity semantics.",
+    );
+    line(
+        out,
+        "matrixark_append_blob_parity_total",
+        "{backend=\"rust\"}",
+        snapshot.matrixark_append_blob_parity_total,
+    );
+    metric_header(
+        out,
+        "matrixark_append_hset_count_lowering_total",
+        "counter",
+        "MatrixArk Rust proxy append commands lowered to hset plus count updates.",
+    );
+    line(
+        out,
+        "matrixark_append_hset_count_lowering_total",
+        "{backend=\"rust\"}",
+        snapshot.matrixark_append_hset_count_lowering_total,
+    );
 }
