@@ -49,7 +49,7 @@ sequenceDiagram
 |134|UserPromptSubmit|codex:019efad7-2f87-77e1-b082-c294fcb5e731|019f921a-3b06-7c71-9aa9-80af9df533b4|UserPromptSubmit:90a4bdd914cc36e5|UPDATE THE SKILLS AS WELL|
 |133|UserPromptSubmit|codex:019efad7-2f87-77e1-b082-c294fcb5e731|019f9213-e9e4-7f73-82d9-edf64bdcaecd|UserPromptSubmit:e12fbf33b8981a54|wsl: A localhost proxy configuration was detected but not mirrored into WSL. WSL in NAT mode does not support localhost proxies. VIM - Vi IMproved 8.2 (2019 Dec 12, compiled May 20 2026 21:28:11) Too many &quot;+command&quot;, ...|
 |132|UserPromptSubmit|codex:019efad7-2f87-77e1-b082-c294fcb5e731|019f9210-da61-7aa0-b711-b39eae2c2061|UserPromptSubmit:edb50c3288272811|OPEN THE VIM CONSOLE FOR ME, MAKE SURE THE RUST MAIN FILE IS OPENED|
-|130|UserPromptSubmit|codex:019efad7-2f87-77e1-b082-c294fcb5e731|019f920c-9b6d-7243-9c2d-77d1608024e6|UserPromptSubmit:e433d7996312d9fe|UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /root/src/github-services/TemporalStore &amp;&amp; vim -N ... + ~~ The token &#x27;&amp;&amp;&#x27; is n...|
+|130|UserPromptSubmit|codex:019efad7-2f87-77e1-b082-c294fcb5e731|019f920c-9b6d-7243-9c2d-77d1608024e6|UserPromptSubmit:e433d7996312d9fe|UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /opt/github-services/TemporalStore &amp;&amp; vim -N ... + ~~ The token &#x27;&amp;&amp;&#x27; is n...|
 
 ## Rust TemporalStore Context Events
 
@@ -62,7 +62,7 @@ sequenceDiagram
 |134|UserPromptSubmit|codex:019efad7-2f87-77e1-b082-c294fcb5e731|user: UPDATE THE SKILLS AS WELL|
 |133|UserPromptSubmit|codex:019efad7-2f87-77e1-b082-c294fcb5e731|user: wsl: A localhost proxy configuration was detected but not mirrored into WSL. WSL in NAT mode does not support localhost proxies. VIM - Vi IMproved 8.2 (2019 Dec 12, compiled May 20 2026 21:28:11) Too many &quot;+comm...|
 |132|UserPromptSubmit|codex:019efad7-2f87-77e1-b082-c294fcb5e731|user: OPEN THE VIM CONSOLE FOR ME, MAKE SURE THE RUST MAIN FILE IS OPENED|
-|131|Stop|codex:019efad7-2f87-77e1-b082-c294fcb5e731|user: UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: \nAt line:1 char:83\r\n+ ... ute -- bash -lc cd /root/src/github-services/TemporalStore &amp;&amp; vim -N ...\r\n+ ~~\r\nTh...|
+|131|Stop|codex:019efad7-2f87-77e1-b082-c294fcb5e731|user: UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: \nAt line:1 char:83\r\n+ ... ute -- bash -lc cd /opt/github-services/TemporalStore &amp;&amp; vim -N ...\r\n+ ~~\r\nTh...|
 
 ## Rust TemporalStore Entities And Summaries
 
@@ -90,14 +90,14 @@ sequenceDiagram
 
 |Seq|Event|Session|Text|
 |---|---|---|---|
-|2305|PostToolUse|codex:019ea4c9-a88c-71e1-baca-df7ff879e020|tool: {&quot;cwd&quot;: &quot;C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-07\\use-cases-of-temporolstore-for-llm&quot;, &quot;hook_event_name&quot;: &quot;PostToolUse&quot;, &quot;model&quot;: &quot;gpt-5.5&quot;, &quot;permission_mode&quot;: &quot;default&quot;, &quot;session_id&quot;: &quot;019ea4c9-a88c-...|
-|2293|Stop|codex:019efad7-2f87-77e1-b082-c294fcb5e731|assistant: {&quot;cwd&quot;: &quot;C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-24\\ll&quot;, &quot;hook_event_name&quot;: &quot;Stop&quot;, &quot;last_assistant_message&quot;: &quot;**Short version:** OpenViking is a broader **context database / memory filesystem**; H...|
-|2292|PostToolUse|codex:019ea4c9-a88c-71e1-baca-df7ff879e020|tool: {&quot;cwd&quot;: &quot;C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-07\\use-cases-of-temporolstore-for-llm&quot;, &quot;hook_event_name&quot;: &quot;PostToolUse&quot;, &quot;model&quot;: &quot;gpt-5.5&quot;, &quot;permission_mode&quot;: &quot;default&quot;, &quot;session_id&quot;: &quot;019ea4c9-a88c-...|
-|2291|PostToolUse|codex:019ea4c9-a88c-71e1-baca-df7ff879e020|tool: {&quot;cwd&quot;: &quot;C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-07\\use-cases-of-temporolstore-for-llm&quot;, &quot;hook_event_name&quot;: &quot;PostToolUse&quot;, &quot;model&quot;: &quot;gpt-5.5&quot;, &quot;permission_mode&quot;: &quot;default&quot;, &quot;session_id&quot;: &quot;019ea4c9-a88c-...|
+|2305|PostToolUse|codex:019ea4c9-a88c-71e1-baca-df7ff879e020|tool: {&quot;cwd&quot;: &quot;C:\\Users\\example\\Documents\\Codex\\2026-06-07\\use-cases-of-temporolstore-for-llm&quot;, &quot;hook_event_name&quot;: &quot;PostToolUse&quot;, &quot;model&quot;: &quot;gpt-5.5&quot;, &quot;permission_mode&quot;: &quot;default&quot;, &quot;session_id&quot;: &quot;019ea4c9-a88c-...|
+|2293|Stop|codex:019efad7-2f87-77e1-b082-c294fcb5e731|assistant: {&quot;cwd&quot;: &quot;C:\\Users\\example\\Documents\\Codex\\2026-06-24\\ll&quot;, &quot;hook_event_name&quot;: &quot;Stop&quot;, &quot;last_assistant_message&quot;: &quot;**Short version:** OpenViking is a broader **context database / memory filesystem**; H...|
+|2292|PostToolUse|codex:019ea4c9-a88c-71e1-baca-df7ff879e020|tool: {&quot;cwd&quot;: &quot;C:\\Users\\example\\Documents\\Codex\\2026-06-07\\use-cases-of-temporolstore-for-llm&quot;, &quot;hook_event_name&quot;: &quot;PostToolUse&quot;, &quot;model&quot;: &quot;gpt-5.5&quot;, &quot;permission_mode&quot;: &quot;default&quot;, &quot;session_id&quot;: &quot;019ea4c9-a88c-...|
+|2291|PostToolUse|codex:019ea4c9-a88c-71e1-baca-df7ff879e020|tool: {&quot;cwd&quot;: &quot;C:\\Users\\example\\Documents\\Codex\\2026-06-07\\use-cases-of-temporolstore-for-llm&quot;, &quot;hook_event_name&quot;: &quot;PostToolUse&quot;, &quot;model&quot;: &quot;gpt-5.5&quot;, &quot;permission_mode&quot;: &quot;default&quot;, &quot;session_id&quot;: &quot;019ea4c9-a88c-...|
 |2288|UserPromptSubmit|codex:019efad7-2f87-77e1-b082-c294fcb5e731|user: OPENVIKING VS hy-memory|
-|2286|PostToolUse|codex:019efb19-68bf-7d83-903e-10e8b8060256|tool: {&quot;cwd&quot;: &quot;C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-24\\wr&quot;, &quot;hook_event_name&quot;: &quot;PostToolUse&quot;, &quot;model&quot;: &quot;gpt-5.5&quot;, &quot;permission_mode&quot;: &quot;default&quot;, &quot;session_id&quot;: &quot;019efb19-68bf-7d83-903e-10e8b8060256&quot;, &quot;tool_i...|
-|2285|PostToolUse|codex:019efb19-68bf-7d83-903e-10e8b8060256|tool: {&quot;cwd&quot;: &quot;C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-24\\wr&quot;, &quot;hook_event_name&quot;: &quot;PostToolUse&quot;, &quot;model&quot;: &quot;gpt-5.5&quot;, &quot;permission_mode&quot;: &quot;default&quot;, &quot;session_id&quot;: &quot;019efb19-68bf-7d83-903e-10e8b8060256&quot;, &quot;tool_i...|
-|2284|PostToolUse|codex:019efb19-68bf-7d83-903e-10e8b8060256|tool: {&quot;cwd&quot;: &quot;C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-24\\wr&quot;, &quot;hook_event_name&quot;: &quot;PostToolUse&quot;, &quot;model&quot;: &quot;gpt-5.5&quot;, &quot;permission_mode&quot;: &quot;default&quot;, &quot;session_id&quot;: &quot;019efb19-68bf-7d83-903e-10e8b8060256&quot;, &quot;tool_i...|
+|2286|PostToolUse|codex:019efb19-68bf-7d83-903e-10e8b8060256|tool: {&quot;cwd&quot;: &quot;C:\\Users\\example\\Documents\\Codex\\2026-06-24\\wr&quot;, &quot;hook_event_name&quot;: &quot;PostToolUse&quot;, &quot;model&quot;: &quot;gpt-5.5&quot;, &quot;permission_mode&quot;: &quot;default&quot;, &quot;session_id&quot;: &quot;019efb19-68bf-7d83-903e-10e8b8060256&quot;, &quot;tool_i...|
+|2285|PostToolUse|codex:019efb19-68bf-7d83-903e-10e8b8060256|tool: {&quot;cwd&quot;: &quot;C:\\Users\\example\\Documents\\Codex\\2026-06-24\\wr&quot;, &quot;hook_event_name&quot;: &quot;PostToolUse&quot;, &quot;model&quot;: &quot;gpt-5.5&quot;, &quot;permission_mode&quot;: &quot;default&quot;, &quot;session_id&quot;: &quot;019efb19-68bf-7d83-903e-10e8b8060256&quot;, &quot;tool_i...|
+|2284|PostToolUse|codex:019efb19-68bf-7d83-903e-10e8b8060256|tool: {&quot;cwd&quot;: &quot;C:\\Users\\example\\Documents\\Codex\\2026-06-24\\wr&quot;, &quot;hook_event_name&quot;: &quot;PostToolUse&quot;, &quot;model&quot;: &quot;gpt-5.5&quot;, &quot;permission_mode&quot;: &quot;default&quot;, &quot;session_id&quot;: &quot;019efb19-68bf-7d83-903e-10e8b8060256&quot;, &quot;tool_i...|
 
 ## C++ TemporalStore Entities And Summaries
 
@@ -115,10 +115,10 @@ sequenceDiagram
 |8696|context_summary||tenant:tenant_codex / user:deeproute / session:codex:019efb19-68bf-7d83-903e-10e8b8060256 :: location location: objects\&quot;) job_status job_status: short --branch&quot;}, &quot;tool_name&quot;: &quot;Bash&quot;, &quot;tool_response&quot;: &quot;## main curren...|
 |8695|context_summary_dirty|||
 |8693|context_summary||Context node tenant:tenant_codex / user:deeproute. Rich overview: assistant: -- {&quot;type:agent-turn-complete,thread-id:019efad7-2f87-77e1-b082-c294fcb5e731,turn-id:019f9210-da61-7aa0-b711-b39eae2c2061,cwd:C:\\Users\\Dee...|
-|8691|context_summary||tenant:tenant_codex / user:deeproute :: assistant: -- {&quot;type:agent-turn-complete,thread-id:019efad7-2f87-77e1-b082-c294fcb5e731,turn-id:019f9210-da61-7aa0-b711-b39eae2c2061,cwd:C:\\Users\\Deeproute\\Documents\\Codex\\...|
+|8691|context_summary||tenant:tenant_codex / user:deeproute :: assistant: -- {&quot;type:agent-turn-complete,thread-id:019efad7-2f87-77e1-b082-c294fcb5e731,turn-id:019f9210-da61-7aa0-b711-b39eae2c2061,cwd:C:\\Users\\example\\Documents\\Codex\\...|
 |8690|context_summary_dirty|||
-|8688|context_summary||Context node tenant:tenant_codex. Rich overview: tenant:tenant_codex / user:deeproute :: user: TODAY WE ONLY SUPPORT CODEX HOOK, LEAVE TODOS FOR CLAUDE CODE AND OTHER AGENT tool: {&quot;cwd&quot;: &quot;C:\\Users\\Deeproute\\Documen...|
-|8686|context_summary||tenant:tenant_codex :: tenant:tenant_codex / user:deeproute :: user: TODAY WE ONLY SUPPORT CODEX HOOK, LEAVE TODOS FOR CLAUDE CODE AND OTHER AGENT tool: {&quot;cwd&quot;: &quot;C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-07\\use...|
+|8688|context_summary||Context node tenant:tenant_codex. Rich overview: tenant:tenant_codex / user:deeproute :: user: TODAY WE ONLY SUPPORT CODEX HOOK, LEAVE TODOS FOR CLAUDE CODE AND OTHER AGENT tool: {&quot;cwd&quot;: &quot;C:\\Users\\example\\Documen...|
+|8686|context_summary||tenant:tenant_codex :: tenant:tenant_codex / user:deeproute :: user: TODAY WE ONLY SUPPORT CODEX HOOK, LEAVE TODOS FOR CLAUDE CODE AND OTHER AGENT tool: {&quot;cwd&quot;: &quot;C:\\Users\\example\\Documents\\Codex\\2026-06-07\\use...|
 
 ## Timeline Interpretation
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TS_ROOT="/root/src/github-services/TemporalStore"
+TS_ROOT="/opt/github-services/TemporalStore"
 TARGET="${1:-cpp}"
 
 if [ "$TARGET" = "cpp" ] || [ "$TARGET" = "c++" ] || [ "$TARGET" = "cppsrc" ]; then

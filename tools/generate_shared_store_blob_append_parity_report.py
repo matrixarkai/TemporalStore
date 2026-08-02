@@ -21,7 +21,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MATRIXOBJECT_REPO = Path("/root/src/github-services/MatrixObjectStore")
+DEFAULT_MATRIXOBJECT_REPO = Path("/opt/github-services/MatrixObjectStore")
 SCHEMA = "temporalstore_shared_store_blob_append_cpp_rust_parity_v2"
 
 
@@ -729,7 +729,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", default="docs/benchmarks/shared_store_blob_append_parity")
     parser.add_argument("--matrixobject-repo", default=str(DEFAULT_MATRIXOBJECT_REPO))
-    parser.add_argument("--cargo-target-dir", default="/root/src/github-services/TemporalStore/target")
+    parser.add_argument("--cargo-target-dir", default="/opt/github-services/TemporalStore/target")
     parser.add_argument("--entries", type=int, default=8)
     parser.add_argument("--value-bytes", type=int, default=64)
     parser.add_argument("--timeout-seconds", type=int, default=180)

@@ -12,13 +12,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-ROOT = Path("/root/src/github-services/TemporalStore-ingestion-workflow-report")
+ROOT = Path("/opt/github-services/TemporalStore-ingestion-workflow-report")
 OUT_DIR = ROOT / "docs" / "debug" / "codex_recent_ingestion_workflow_20260724"
 OUT_JSON = OUT_DIR / "codex_recent_ingestion_workflow.json"
 OUT_MD = OUT_DIR / "codex_recent_ingestion_workflow.md"
 OUT_HTML = OUT_DIR / "codex_recent_ingestion_workflow.html"
 
-CPP_LIB = "/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so"
+CPP_LIB = "/opt/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so"
 CPP_PREFIX = "matrixark:codex-hook:cpp-live-v2"
 RUST_PREFIX = "matrixark:codex-hook:rust-live-v2"
 

@@ -2858,7 +2858,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "messages": [
                         {
                             "role": "user",
-                            "content": "Remember: use Ubuntu /root/src/github-services for all TemporalStore repos.",
+                            "content": "Remember: use Ubuntu /opt/github-services for all TemporalStore repos.",
                         }
                     ],
                     "scope": scope,
@@ -2888,7 +2888,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             self.assertEqual("tenant_codex", profile_entity["access_scope"]["tenant_id"])
             self.assertEqual("codex_user", profile_entity["access_scope"]["user_id"])
             self.assertNotIn("session_id", profile_entity["access_scope"])
-            self.assertIn("/root/src/github-services", profile_entity["state"])
+            self.assertIn("/opt/github-services", profile_entity["state"])
             self.assertTrue(
                 any(
                     record.get("record_type") == "context_embedding"
@@ -5327,7 +5327,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             {
                 "ref_type": "entity",
                 "ref_hash": 7002,
-                "text": "User profile says TemporalStore work must use /root/src/github-services/TemporalStore.",
+                "text": "User profile says TemporalStore work must use /opt/github-services/TemporalStore.",
                 "score": 0.72,
                 "session_continuity": "cross_session",
                 "entity_type": "repo_workspace",
@@ -6329,7 +6329,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "source_entity_hashes": [11, 12],
                     "source_roles": ["user", "assistant"],
                     "source_codex_events": ["UserPromptSubmit", "Stop"],
-                    "text": "preference: storage location = use /root/src/github-services in Ubuntu.",
+                    "text": "preference: storage location = use /opt/github-services in Ubuntu.",
                 },
             ],
             [],
@@ -6402,7 +6402,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "score": 0.45,
                     "updated_at_ms": 300,
                     "source_entity_hashes": [99],
-                    "text": "preference: repo location = use /root/src/github-services in Ubuntu.",
+                    "text": "preference: repo location = use /opt/github-services in Ubuntu.",
                 },
             ],
             [],

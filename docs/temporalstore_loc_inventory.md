@@ -27,10 +27,10 @@ Excluded:
 
 | Component | Path | Files | Total lines | Nonblank LOC |
 |---|---:|---:|---:|---:|
-| TemporalStore C++ first-party | `/root/src/github-services/TemporalStore/src` | 525 | 126,663 | 112,139 |
-| TemporalStore Rust first-party | `/root/src/github-services/TemporalStore/crates` | 96 | 144,510 | 137,949 |
-| TemporalStore Python first-party | `/root/src/github-services/TemporalStore/tools`, `scripts`, `src`, `crates` | 149 | 88,787 | 81,348 |
-| TemporalStore Proto | `/root/src/github-services/TemporalStore/src`, `crates`, `tools` | 24 | 3,481 | 2,933 |
+| TemporalStore C++ first-party | `/opt/github-services/TemporalStore/src` | 525 | 126,663 | 112,139 |
+| TemporalStore Rust first-party | `/opt/github-services/TemporalStore/crates` | 96 | 144,510 | 137,949 |
+| TemporalStore Python first-party | `/opt/github-services/TemporalStore/tools`, `scripts`, `src`, `crates` | 149 | 88,787 | 81,348 |
+| TemporalStore Proto | `/opt/github-services/TemporalStore/src`, `crates`, `tools` | 24 | 3,481 | 2,933 |
 
 First-party total, C++ + Rust + Python + Proto: **334,369 nonblank LOC**.
 
@@ -38,10 +38,10 @@ First-party total, C++ + Rust + Python + Proto: **334,369 nonblank LOC**.
 
 | Dependency | Path | Files | Total lines | Nonblank LOC |
 |---|---:|---:|---:|---:|
-| byteraft C++ dependency | `/root/src/github-services/TemporalStore/.local/deps-src/byteraft-master` | 210 | 50,287 | 41,996 |
-| byte C++ dependency | `/root/src/github-services/TemporalStore/.local/deps-src/byte-master` | 377 | 85,916 | 74,964 |
-| RustRaft external lib | `/root/src/github-services/RustRaft` | 63 | 36,819 | 34,530 |
-| MatrixCache external lib | `/root/src/github-services/MatrixCache` | 2 | 24,790 | 22,003 |
+| byteraft C++ dependency | `/opt/github-services/TemporalStore/.local/deps-src/byteraft-master` | 210 | 50,287 | 41,996 |
+| byte C++ dependency | `/opt/github-services/TemporalStore/.local/deps-src/byte-master` | 377 | 85,916 | 74,964 |
+| RustRaft external lib | `/opt/github-services/RustRaft` | 63 | 36,819 | 34,530 |
+| MatrixCache external lib | `/opt/github-services/MatrixCache` | 2 | 24,790 | 22,003 |
 | mtcache C++ dependency | `/root/TemporalStore-main-slice5/dependencies/mtcache` | 145 | 31,099 | 26,615 |
 
 Listed dependency total: **200,108 nonblank LOC**.

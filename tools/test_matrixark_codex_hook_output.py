@@ -289,7 +289,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         raw = (
             '-- {"type:agent-turn-complete,thread-id:019f8cb5-b4d5-77f2-8c82-0499440da36f,'
             'turn-id:019f8cd9-7669-7891-ab92-7353efe82e4d,'
-            'cwd:C:\\Users\\Deeproute\\Documents\\Codex,client:Codex Desktop,'
+            'cwd:C:\\Users\\example\\Documents\\Codex,client:Codex Desktop,'
             'input-messages:[older prompt,'
             '<codex_delegation>\\n <input>fresh old task prompt should win</input>\\n</codex_delegation>]}"'
         )

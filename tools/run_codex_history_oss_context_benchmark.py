@@ -486,7 +486,7 @@ def render_html(markdown: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Backfill Codex history and compare OSS-reader answers with/without MatrixArk context.")
-    parser.add_argument("--log-root", default="/mnt/c/Users/Deeproute/.codex/sessions")
+    parser.add_argument("--log-root", default=str(Path.home() / ".codex" / "sessions"))
     parser.add_argument("--out-dir", default="docs/debug/codex_history_oss_context_benchmark_20260724")
     parser.add_argument("--max-sessions", type=int, default=10)
     parser.add_argument("--max-messages-per-session", type=int, default=80)

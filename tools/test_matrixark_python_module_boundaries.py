@@ -55,7 +55,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             [
                 {
                     "role": "user",
-                    "content": "Remember: use Ubuntu /root/src/github-services for all TemporalStore repos.",
+                    "content": "Remember: use Ubuntu /opt/github-services for all TemporalStore repos.",
                 }
             ],
             {"source_event_ids": [123]},
@@ -64,7 +64,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         preferences = [entity for entity in entities if entity.get("entity_type") == "preference"]
         self.assertTrue(preferences)
         self.assertEqual("preference", preferences[0]["entity_name"])
-        self.assertIn("/root/src/github-services", preferences[0]["state"])
+        self.assertIn("/opt/github-services", preferences[0]["state"])
         self.assertEqual(["123"], preferences[0]["source_refs"])
 
     def test_serving_record_materializer_strips_embedding_dirty_lineage_by_default(self) -> None:
@@ -3150,7 +3150,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "messages": [
                 {
                     "role": "user",
-                    "content": "Remember: use Ubuntu /root/src/github-services for all TemporalStore repos.",
+                    "content": "Remember: use Ubuntu /opt/github-services for all TemporalStore repos.",
                 }
             ],
             "ingestion_time_ms": 456,
@@ -3580,7 +3580,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         selected = [
             {
                 "ref_type": "entity",
-                "text": "preference: repo path = /root/src/github-services/TemporalStore",
+                "text": "preference: repo path = /opt/github-services/TemporalStore",
                 "memory_scope": "user_profile",
                 "session_continuity": "cross_session",
                 "entity_type": "preference",
@@ -3662,7 +3662,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             {
                 "ref_type": "entity",
                 "context_class": "profile_entity",
-                "text": "repo preference: use /root/src/github-services for TemporalStore work",
+                "text": "repo preference: use /opt/github-services for TemporalStore work",
                 "memory_scope": "user_profile",
                 "session_continuity": "cross_session",
                 "extraction_phase": "final",
@@ -4182,7 +4182,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             {
                 "ref_type": "entity",
                 "ref_hash": 22,
-                "text": "decision: shared repo path = /root/src/github-services/TemporalStore-memory-next",
+                "text": "decision: shared repo path = /opt/github-services/TemporalStore-memory-next",
                 "token_estimate": 9,
                 "memory_scope": "user_profile",
                 "session_continuity": "cross_session",

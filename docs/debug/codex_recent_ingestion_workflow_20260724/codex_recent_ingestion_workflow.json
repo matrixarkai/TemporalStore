@@ -139,7 +139,7 @@
           "hook_type": "before_llm",
           "hook_observed_at_ms": 1784861730032,
           "synthetic": false,
-          "text": "UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /root/src/github-services/TemporalStore && vim -N ... + ~~ The token '&&' is n...",
+          "text": "UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /opt/github-services/TemporalStore && vim -N ... + ~~ The token '&&' is n...",
           "write_path": ""
         }
       ],
@@ -261,7 +261,7 @@
           "hook_type": "before_llm",
           "hook_observed_at_ms": 1784861892518,
           "synthetic": false,
-          "text": "user: UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: \\nAt line:1 char:83\\r\\n+ ... ute -- bash -lc cd /root/src/github-services/TemporalStore && vim -N ...\\r\\n+ ~~\\r\\nTh...",
+          "text": "user: UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: \\nAt line:1 char:83\\r\\n+ ... ute -- bash -lc cd /opt/github-services/TemporalStore && vim -N ...\\r\\n+ ~~\\r\\nTh...",
           "write_path": ""
         }
       ],
@@ -719,7 +719,7 @@
           "hook_type": "before_llm",
           "hook_observed_at_ms": 1784861892518,
           "synthetic": false,
-          "text": "user: UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: \\nAt line:1 char:83\\r\\n+ ... ute -- bash -lc cd /root/src/github-services/TemporalStore && vim -N ...\\r\\n+ ~~\\r\\nTh...",
+          "text": "user: UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: \\nAt line:1 char:83\\r\\n+ ... ute -- bash -lc cd /opt/github-services/TemporalStore && vim -N ...\\r\\n+ ~~\\r\\nTh...",
           "write_path": ""
         },
         {
@@ -734,7 +734,7 @@
           "hook_type": "before_llm",
           "hook_observed_at_ms": 1784861730032,
           "synthetic": false,
-          "text": "user: UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /root/src/github-services/TemporalStore && vim -N ... + ~~ The token '&&...",
+          "text": "user: UPDATE SKILL FILES SO THAT IN THE FUTURE, WE CAN OPEN VIM CONSOLE CORRECTLY WITHOUT ITERATIONS: At line:1 char:83 + ... ute -- bash -lc cd /opt/github-services/TemporalStore && vim -N ... + ~~ The token '&&...",
           "write_path": ""
         },
         {
@@ -864,7 +864,7 @@
           "hook_type": "tool_result",
           "hook_observed_at_ms": 1784865669331,
           "synthetic": false,
-          "text": "tool: {\"cwd\": \"C:\\\\Users\\\\Deeproute\\\\Documents\\\\Codex\\\\2026-06-07\\\\use-cases-of-temporolstore-for-llm\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019ea4c9-a88c-...",
+          "text": "tool: {\"cwd\": \"C:\\\\Users\\\\example\\\\Documents\\\\Codex\\\\2026-06-07\\\\use-cases-of-temporolstore-for-llm\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019ea4c9-a88c-...",
           "write_path": ""
         },
         {
@@ -879,7 +879,7 @@
           "hook_type": "after_llm",
           "hook_observed_at_ms": 1784865652534,
           "synthetic": false,
-          "text": "assistant: {\"cwd\": \"C:\\\\Users\\\\Deeproute\\\\Documents\\\\Codex\\\\2026-06-24\\\\ll\", \"hook_event_name\": \"Stop\", \"last_assistant_message\": \"**Short version:** OpenViking is a broader **context database / memory filesystem**; H...",
+          "text": "assistant: {\"cwd\": \"C:\\\\Users\\\\example\\\\Documents\\\\Codex\\\\2026-06-24\\\\ll\", \"hook_event_name\": \"Stop\", \"last_assistant_message\": \"**Short version:** OpenViking is a broader **context database / memory filesystem**; H...",
           "write_path": ""
         },
         {
@@ -894,7 +894,7 @@
           "hook_type": "tool_result",
           "hook_observed_at_ms": 1784865638210,
           "synthetic": false,
-          "text": "tool: {\"cwd\": \"C:\\\\Users\\\\Deeproute\\\\Documents\\\\Codex\\\\2026-06-07\\\\use-cases-of-temporolstore-for-llm\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019ea4c9-a88c-...",
+          "text": "tool: {\"cwd\": \"C:\\\\Users\\\\example\\\\Documents\\\\Codex\\\\2026-06-07\\\\use-cases-of-temporolstore-for-llm\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019ea4c9-a88c-...",
           "write_path": ""
         },
         {
@@ -909,7 +909,7 @@
           "hook_type": "tool_result",
           "hook_observed_at_ms": 1784865617362,
           "synthetic": false,
-          "text": "tool: {\"cwd\": \"C:\\\\Users\\\\Deeproute\\\\Documents\\\\Codex\\\\2026-06-07\\\\use-cases-of-temporolstore-for-llm\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019ea4c9-a88c-...",
+          "text": "tool: {\"cwd\": \"C:\\\\Users\\\\example\\\\Documents\\\\Codex\\\\2026-06-07\\\\use-cases-of-temporolstore-for-llm\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019ea4c9-a88c-...",
           "write_path": ""
         },
         {
@@ -939,7 +939,7 @@
           "hook_type": "tool_result",
           "hook_observed_at_ms": 1784865525914,
           "synthetic": false,
-          "text": "tool: {\"cwd\": \"C:\\\\Users\\\\Deeproute\\\\Documents\\\\Codex\\\\2026-06-24\\\\wr\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019efb19-68bf-7d83-903e-10e8b8060256\", \"tool_i...",
+          "text": "tool: {\"cwd\": \"C:\\\\Users\\\\example\\\\Documents\\\\Codex\\\\2026-06-24\\\\wr\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019efb19-68bf-7d83-903e-10e8b8060256\", \"tool_i...",
           "write_path": ""
         },
         {
@@ -954,7 +954,7 @@
           "hook_type": "tool_result",
           "hook_observed_at_ms": 1784865499085,
           "synthetic": false,
-          "text": "tool: {\"cwd\": \"C:\\\\Users\\\\Deeproute\\\\Documents\\\\Codex\\\\2026-06-24\\\\wr\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019efb19-68bf-7d83-903e-10e8b8060256\", \"tool_i...",
+          "text": "tool: {\"cwd\": \"C:\\\\Users\\\\example\\\\Documents\\\\Codex\\\\2026-06-24\\\\wr\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019efb19-68bf-7d83-903e-10e8b8060256\", \"tool_i...",
           "write_path": ""
         },
         {
@@ -969,7 +969,7 @@
           "hook_type": "tool_result",
           "hook_observed_at_ms": 1784865498800,
           "synthetic": true,
-          "text": "tool: {\"cwd\": \"C:\\\\Users\\\\Deeproute\\\\Documents\\\\Codex\\\\2026-06-24\\\\wr\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019efb19-68bf-7d83-903e-10e8b8060256\", \"tool_i...",
+          "text": "tool: {\"cwd\": \"C:\\\\Users\\\\example\\\\Documents\\\\Codex\\\\2026-06-24\\\\wr\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019efb19-68bf-7d83-903e-10e8b8060256\", \"tool_i...",
           "write_path": ""
         }
       ],
@@ -1168,7 +1168,7 @@
           "hook_type": "",
           "hook_observed_at_ms": 0,
           "synthetic": false,
-          "text": "tenant:tenant_codex / user:deeproute :: assistant: -- {\"type:agent-turn-complete,thread-id:019efad7-2f87-77e1-b082-c294fcb5e731,turn-id:019f9210-da61-7aa0-b711-b39eae2c2061,cwd:C:\\\\Users\\\\Deeproute\\\\Documents\\\\Codex\\\\...",
+          "text": "tenant:tenant_codex / user:deeproute :: assistant: -- {\"type:agent-turn-complete,thread-id:019efad7-2f87-77e1-b082-c294fcb5e731,turn-id:019f9210-da61-7aa0-b711-b39eae2c2061,cwd:C:\\\\Users\\\\example\\\\Documents\\\\Codex\\\\...",
           "write_path": "direct_append"
         },
         {
@@ -1198,7 +1198,7 @@
           "hook_type": "",
           "hook_observed_at_ms": 0,
           "synthetic": false,
-          "text": "Context node tenant:tenant_codex. Rich overview: tenant:tenant_codex / user:deeproute :: user: TODAY WE ONLY SUPPORT CODEX HOOK, LEAVE TODOS FOR CLAUDE CODE AND OTHER AGENT tool: {\"cwd\": \"C:\\\\Users\\\\Deeproute\\\\Documen...",
+          "text": "Context node tenant:tenant_codex. Rich overview: tenant:tenant_codex / user:deeproute :: user: TODAY WE ONLY SUPPORT CODEX HOOK, LEAVE TODOS FOR CLAUDE CODE AND OTHER AGENT tool: {\"cwd\": \"C:\\\\Users\\\\example\\\\Documen...",
           "write_path": "direct_append"
         },
         {
@@ -1213,7 +1213,7 @@
           "hook_type": "",
           "hook_observed_at_ms": 0,
           "synthetic": false,
-          "text": "tenant:tenant_codex :: tenant:tenant_codex / user:deeproute :: user: TODAY WE ONLY SUPPORT CODEX HOOK, LEAVE TODOS FOR CLAUDE CODE AND OTHER AGENT tool: {\"cwd\": \"C:\\\\Users\\\\Deeproute\\\\Documents\\\\Codex\\\\2026-06-07\\\\use...",
+          "text": "tenant:tenant_codex :: tenant:tenant_codex / user:deeproute :: user: TODAY WE ONLY SUPPORT CODEX HOOK, LEAVE TODOS FOR CLAUDE CODE AND OTHER AGENT tool: {\"cwd\": \"C:\\\\Users\\\\example\\\\Documents\\\\Codex\\\\2026-06-07\\\\use...",
           "write_path": "direct_append"
         }
       ],
@@ -1245,7 +1245,7 @@
           "hook_type": "tool_result",
           "hook_observed_at_ms": 1784865688291,
           "synthetic": false,
-          "text": "{\"cwd\": \"C:\\\\Users\\\\Deeproute\\\\Documents\\\\Codex\\\\2026-06-07\\\\use-cases-of-temporolstore-for-llm\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019ea4c9-a88c-71e1-b...",
+          "text": "{\"cwd\": \"C:\\\\Users\\\\example\\\\Documents\\\\Codex\\\\2026-06-07\\\\use-cases-of-temporolstore-for-llm\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019ea4c9-a88c-71e1-b...",
           "write_path": "async_queue_flush"
         },
         {
@@ -1275,7 +1275,7 @@
           "hook_type": "tool_result",
           "hook_observed_at_ms": 1784865669331,
           "synthetic": false,
-          "text": "{\"cwd\": \"C:\\\\Users\\\\Deeproute\\\\Documents\\\\Codex\\\\2026-06-07\\\\use-cases-of-temporolstore-for-llm\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019ea4c9-a88c-71e1-b...",
+          "text": "{\"cwd\": \"C:\\\\Users\\\\example\\\\Documents\\\\Codex\\\\2026-06-07\\\\use-cases-of-temporolstore-for-llm\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019ea4c9-a88c-71e1-b...",
           "write_path": "async_queue_flush"
         },
         {
@@ -1412,7 +1412,7 @@
           "hook_type": "tool_result",
           "hook_observed_at_ms": 1784865669331,
           "synthetic": false,
-          "text": "tool: {\"cwd\": \"C:\\\\Users\\\\Deeproute\\\\Documents\\\\Codex\\\\2026-06-07\\\\use-cases-of-temporolstore-for-llm\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019ea4c9-a88c-...",
+          "text": "tool: {\"cwd\": \"C:\\\\Users\\\\example\\\\Documents\\\\Codex\\\\2026-06-07\\\\use-cases-of-temporolstore-for-llm\", \"hook_event_name\": \"PostToolUse\", \"model\": \"gpt-5.5\", \"permission_mode\": \"default\", \"session_id\": \"019ea4c9-a88c-...",
           "write_path": ""
         },
         {

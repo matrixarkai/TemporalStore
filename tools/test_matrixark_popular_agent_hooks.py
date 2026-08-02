@@ -38,7 +38,7 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
             "--rust-proxy",
             os.environ.get(
                 "MATRIXARK_TEST_RUST_PROXY",
-                "/root/src/github-services/TemporalStore/target/release/matrixark_rust_proxy",
+                "/opt/github-services/TemporalStore/target/release/matrixark_rust_proxy",
             ),
             "--storage-prefix",
             f"matrixark:test-agent-hook:{agent}",
@@ -315,7 +315,7 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
                 "--rust-proxy",
                 os.environ.get(
                     "MATRIXARK_TEST_RUST_PROXY",
-                    "/root/src/github-services/TemporalStore/target/release/matrixark_rust_proxy",
+                    "/opt/github-services/TemporalStore/target/release/matrixark_rust_proxy",
                 ),
                 "--storage-prefix",
                 "matrixark:test-retrieval-coverage-gap",

@@ -55,7 +55,7 @@ class MatrixArkMcpRecoveryTest(unittest.TestCase):
                 "access_scope": {"account_id": "a", "tenant_id": "t", "user_id": "u"},
                 "entity_type": "preference",
                 "entity_name": "repo location",
-                "state": "Use /root/src/github-services in Ubuntu.",
+                "state": "Use /opt/github-services in Ubuntu.",
                 "memory_scope": "user_profile",
                 "session_continuity": "cross_session",
                 "extraction_phase": "final",

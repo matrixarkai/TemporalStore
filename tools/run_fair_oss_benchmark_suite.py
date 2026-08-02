@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_OUTPUT_ROOT = "/root/src/github-services/TemporalStore/benchmark-runs/fair-oss"
+DEFAULT_OUTPUT_ROOT = "/opt/github-services/TemporalStore/benchmark-runs/fair-oss"
 
 
 def main() -> int:

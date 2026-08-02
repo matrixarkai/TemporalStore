@@ -180,8 +180,8 @@ if(TEMPORALSTORE_USE_ROOT_CMAKE_GLUE)
 endif()
 
 add_subdirectory(thirdparty)
-if(TEMPORALSTORE_USE_ROOT_CMAKE_GLUE AND EXISTS "/root/src/cmake-glue/compat-targets.cmake")
-    include(/root/src/cmake-glue/compat-targets.cmake)
+if(TEMPORALSTORE_USE_ROOT_CMAKE_GLUE AND EXISTS "/opt/src/cmake-glue/compat-targets.cmake")
+    include(/opt/src/cmake-glue/compat-targets.cmake)
 endif()
 if(TEMPORALSTORE_USE_ROOT_CMAKE_GLUE AND EXISTS "${PROJECT_SOURCE_DIR}/.local/link-shims")
     link_directories("${PROJECT_SOURCE_DIR}/.local/link-shims")
@@ -190,8 +190,8 @@ if(BRPC_STATIC_LIBRARY AND NOT TARGET brpc-static)
     add_library(brpc-static UNKNOWN IMPORTED GLOBAL)
     set(_TEMPORALSTORE_BRPC_INCLUDE_DIRS "")
     foreach(_TEMPORALSTORE_BRPC_INCLUDE_CANDIDATE
-            "/root/src/open-source/brpc/build-config-only/output/include"
-            "/root/src/open-source/brpc/src")
+            "/opt/src/open-source/brpc/build-config-only/output/include"
+            "/opt/src/open-source/brpc/src")
         if(EXISTS "${_TEMPORALSTORE_BRPC_INCLUDE_CANDIDATE}/brpc/channel.h")
             list(APPEND _TEMPORALSTORE_BRPC_INCLUDE_DIRS "${_TEMPORALSTORE_BRPC_INCLUDE_CANDIDATE}")
         endif()
@@ -208,8 +208,8 @@ if(BRPC_STATIC_LIBRARY AND NOT TARGET brpc-static)
     endif()
 endif()
 foreach(_TEMPORALSTORE_BRPC_INCLUDE_CANDIDATE
-        "/root/src/open-source/brpc/build-config-only/output/include"
-        "/root/src/open-source/brpc/src")
+        "/opt/src/open-source/brpc/build-config-only/output/include"
+        "/opt/src/open-source/brpc/src")
     if(EXISTS "${_TEMPORALSTORE_BRPC_INCLUDE_CANDIDATE}/brpc/channel.h")
         include_directories("${_TEMPORALSTORE_BRPC_INCLUDE_CANDIDATE}")
     endif()
