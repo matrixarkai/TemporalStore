@@ -33,7 +33,7 @@ The launcher converts Codex, Claude, and custom payloads into this common shape:
   "conversation_id": "019f66b3-...",
   "session_id": "019f66b3-...",
   "session_id_source": "payload.session_id",
-  "workspace_root": "/root/src/github-services/TemporalStore",
+  "workspace_root": "/opt/github-services/TemporalStore",
   "repo_remote": "https://github.com/bjmeetsfo/TemporalStore.git",
   "project": "TemporalStore",
   "role": "user",

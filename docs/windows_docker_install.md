@@ -147,7 +147,7 @@ Maintainer-only options that require WSL:
 -BuildReleaseBinaries             Build Rust release binaries in WSL first
 -BuildImageFromLocalBinaries      Build Docker image from local release binaries
 -WslDistro <name>                 Default: auto-detect first WSL distro
--RepoPath <path>                  Default: /root/src/github-services/TemporalStore
+-RepoPath <path>                  Default: /opt/github-services/TemporalStore
 -SkipImageBuild                   With build options, validate binaries but skip build
 ```
 
@@ -375,14 +375,14 @@ model setup from the Linux manual.
 Recommended path:
 
 ```powershell
-wsl -- bash -lc "cd /root/src/github-services/TemporalStore && ./tools/install_context_oss_models.sh"
+wsl -- bash -lc "cd /opt/github-services/TemporalStore && ./tools/install_context_oss_models.sh"
 ```
 
 Then source the generated env file before running Linux-side benchmark or hook
 commands:
 
 ```bash
-source /root/src/github-services/TemporalStore/.local/context-oss-models/context_oss_models.env
+source /opt/github-services/TemporalStore/.local/context-oss-models/context_oss_models.env
 ```
 
 For a pure Windows hook, install Windows Python dependencies equivalent to
@@ -420,7 +420,7 @@ powershell -ExecutionPolicy Bypass `
 That mode uses WSL to run:
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd /opt/github-services/TemporalStore
 git fetch origin main
 cargo build --release -p temporalstore-rust --bins
 ```

@@ -1,6 +1,6 @@
 param(
     [string]$WslDistro = "",
-    [string]$RepoPath = "/root/src/github-services/TemporalStore",
+    [string]$RepoPath = "/opt/github-services/TemporalStore",
     [string]$WindowsRepoPath = "",
     [string]$ImageName = "matrixark-temporalstore-rust:win-local",
     [string]$ContainerName = "temporalstore-rust-win",

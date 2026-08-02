@@ -8,8 +8,8 @@ param(
   [string]$CodexBin = "codex",
   [string]$ClaudeSettings = "$env:USERPROFILE\.claude\settings.json",
   [string]$Endpoint = "http://127.0.0.1:18080",
-  [string]$Repo = "/root/src/github-services/TemporalStore",
-  [string]$WslRepo = "/root/src/github-services/TemporalStore",
+  [string]$Repo = "/opt/github-services/TemporalStore",
+  [string]$WslRepo = "/opt/github-services/TemporalStore",
   [string]$WslDistro = $env:TEMPORALSTORE_WSL_DISTRO,
   [switch]$SkipCodexAdd
 )
