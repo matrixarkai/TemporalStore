@@ -219,6 +219,7 @@ def stage_budget_snapshot(
 
 
 FEATURE_SCOPE_EXCLUDED_MEMORY_LAYERS = {
+    "pending_async_codex_outcome_event",
     "same_session_codex_outcome_event",
     "cross_session_codex_outcome_event",
     "same_session_codex_outcome_segment",
