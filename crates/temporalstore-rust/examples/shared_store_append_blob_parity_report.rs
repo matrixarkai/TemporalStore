@@ -91,11 +91,16 @@ struct AuthoritativeOffsetLookupReport {
     decoded_entries: u64,
     matched_entries: u64,
     range_bytes_read: u64,
+    exact_offset_slice_reads: u64,
+    range_reads_smaller_than_blob: u64,
     extent_metadata_entries: u64,
     first_physical_offset_entries: u64,
     all_oplog_indexes_directly_read_from_offset_metadata: bool,
     all_direct_reads_match_expected_entries: bool,
     all_direct_reads_have_extent_metadata: bool,
+    lower_layer_range_reads_exact_offset_slices: bool,
+    lower_layer_range_reads_avoid_full_blob_scans: bool,
+    lower_layer_blob_offset_reads_proven: bool,
     errors: Vec<String>,
 }
 
@@ -201,6 +206,8 @@ struct Summary {
     authoritative_offset_lookup_reads_all_records: bool,
     authoritative_offset_lookup_matches_all_records: bool,
     authoritative_offset_lookup_has_extent_metadata: bool,
+    lower_layer_blob_offset_reads_proven: bool,
+    lower_layer_range_reads_avoid_full_blob_scans: bool,
     snapshot_reopen_restores_offset_metadata: bool,
     snapshot_reopen_recovered_all_records: bool,
     snapshot_reopen_cache_metrics_available: bool,
@@ -344,6 +351,24 @@ async fn main() {
             && async_writer
                 .authoritative_offset_lookup
                 .all_direct_reads_have_extent_metadata,
+        lower_layer_blob_offset_reads_proven: direct_publish
+            .authoritative_offset_lookup
+            .lower_layer_blob_offset_reads_proven
+            && sync_writer
+                .authoritative_offset_lookup
+                .lower_layer_blob_offset_reads_proven
+            && async_writer
+                .authoritative_offset_lookup
+                .lower_layer_blob_offset_reads_proven,
+        lower_layer_range_reads_avoid_full_blob_scans: direct_publish
+            .authoritative_offset_lookup
+            .lower_layer_range_reads_avoid_full_blob_scans
+            && sync_writer
+                .authoritative_offset_lookup
+                .lower_layer_range_reads_avoid_full_blob_scans
+            && async_writer
+                .authoritative_offset_lookup
+                .lower_layer_range_reads_avoid_full_blob_scans,
         snapshot_reopen_restores_offset_metadata: journal_reopen.reopened_offset_metadata_ok,
         snapshot_reopen_recovered_all_records: journal_reopen.reopened_replay_recovered_all_records
             && journal_reopen.reopened_retrieval_recovered_all_records,
@@ -913,6 +938,8 @@ async fn validate_authoritative_offset_lookup(
     let mut decoded_entries = 0u64;
     let mut matched_entries = 0u64;
     let mut range_bytes_read = 0u64;
+    let mut exact_offset_slice_reads = 0u64;
+    let mut range_reads_smaller_than_blob = 0u64;
     let mut extent_metadata_entries = 0u64;
     let mut first_physical_offset_entries = 0u64;
     let mut errors = Vec::new();
@@ -925,6 +952,22 @@ async fn validate_authoritative_offset_lookup(
                 metadata_hits += 1;
                 decoded_entries += 1;
                 range_bytes_read += read.range_bytes_read;
+                if read.range_bytes_read == read.metadata.wal_blob_bytes_written
+                    && read.range_bytes_read
+                        == read
+                            .metadata
+                            .wal_blob_end_offset
+                            .saturating_sub(read.metadata.wal_blob_start_offset)
+                {
+                    exact_offset_slice_reads += 1;
+                } else {
+                    errors.push(format!(
+                        "lower-layer range read did not match offset slice at oplog index {index}"
+                    ));
+                }
+                if read.metadata.wal_blob_object_length > read.range_bytes_read {
+                    range_reads_smaller_than_blob += 1;
+                }
                 if read.metadata.wal_blob_physical_extent_count > 0 {
                     extent_metadata_entries += 1;
                 }
@@ -949,6 +992,8 @@ async fn validate_authoritative_offset_lookup(
         decoded_entries,
         matched_entries,
         range_bytes_read,
+        exact_offset_slice_reads,
+        range_reads_smaller_than_blob,
         extent_metadata_entries,
         first_physical_offset_entries,
         all_oplog_indexes_directly_read_from_offset_metadata: metadata_hits == entry_count
@@ -956,6 +1001,13 @@ async fn validate_authoritative_offset_lookup(
         all_direct_reads_match_expected_entries: matched_entries == entry_count,
         all_direct_reads_have_extent_metadata: extent_metadata_entries == entry_count
             && first_physical_offset_entries == entry_count,
+        lower_layer_range_reads_exact_offset_slices: exact_offset_slice_reads == entry_count,
+        lower_layer_range_reads_avoid_full_blob_scans: range_reads_smaller_than_blob
+            >= entry_count.saturating_sub(1),
+        lower_layer_blob_offset_reads_proven: metadata_hits == entry_count
+            && decoded_entries == entry_count
+            && exact_offset_slice_reads == entry_count
+            && range_reads_smaller_than_blob >= entry_count.saturating_sub(1),
         errors,
     }
 }

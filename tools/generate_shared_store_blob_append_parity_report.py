@@ -358,6 +358,12 @@ def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
         "authoritative_offset_lookup_has_extent_metadata": bool(
             summary.get("authoritative_offset_lookup_has_extent_metadata")
         ),
+        "lower_layer_blob_offset_reads_proven": bool(
+            summary.get("lower_layer_blob_offset_reads_proven")
+        ),
+        "lower_layer_range_reads_avoid_full_blob_scans": bool(
+            summary.get("lower_layer_range_reads_avoid_full_blob_scans")
+        ),
         "direct_authoritative_offset_lookup": direct_publish.get("authoritative_offset_lookup"),
         "sync_authoritative_offset_lookup": sync_writer.get("authoritative_offset_lookup"),
         "async_authoritative_offset_lookup": async_writer.get("authoritative_offset_lookup"),
@@ -478,6 +484,12 @@ def _parity_status(
         ),
         "rust_authoritative_offset_lookup_has_extent_metadata": bool(
             rust_summary.get("authoritative_offset_lookup_has_extent_metadata")
+        ),
+        "rust_lower_layer_blob_offset_reads_proven": bool(
+            rust_summary.get("lower_layer_blob_offset_reads_proven")
+        ),
+        "rust_lower_layer_range_reads_avoid_full_blob_scans": bool(
+            rust_summary.get("lower_layer_range_reads_avoid_full_blob_scans")
         ),
         "rust_snapshot_reopen_restores_offset_metadata": bool(
             rust_summary.get("snapshot_reopen_restores_offset_metadata")
@@ -624,6 +636,11 @@ def _render_html(report: dict[str, Any]) -> str:
         ("Rust authoritative offset lookup reads all records", rust_summary.get("authoritative_offset_lookup_reads_all_records")),
         ("Rust authoritative offset lookup matches all records", rust_summary.get("authoritative_offset_lookup_matches_all_records")),
         ("Rust authoritative offset lookup has extent metadata", rust_summary.get("authoritative_offset_lookup_has_extent_metadata")),
+        ("Rust lower-layer blob offset reads proven", rust_summary.get("lower_layer_blob_offset_reads_proven")),
+        ("Rust lower-layer range reads avoid full blob scans", rust_summary.get("lower_layer_range_reads_avoid_full_blob_scans")),
+        ("Rust direct authoritative offset lookup", rust_summary.get("direct_authoritative_offset_lookup")),
+        ("Rust sync authoritative offset lookup", rust_summary.get("sync_authoritative_offset_lookup")),
+        ("Rust async authoritative offset lookup", rust_summary.get("async_authoritative_offset_lookup")),
         ("Rust replay uses offset-index metadata", rust_summary.get("replay_uses_offset_index_metadata")),
         ("Rust secondary replay uses offset-index metadata", rust_summary.get("secondary_replay_uses_offset_index_metadata")),
         ("Rust single-node reload uses offset-index metadata", rust_summary.get("single_node_reload_uses_offset_index_metadata")),
