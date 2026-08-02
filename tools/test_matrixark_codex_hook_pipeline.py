@@ -7297,7 +7297,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         ],
                         "entity_type": "workspace_profile",
                         "entity_name": "temporalstore_repo_location",
-                        "state": "TemporalStore work should use /root/src/github-services/TemporalStore in Ubuntu.",
+                        "state": "TemporalStore work should use /opt/github-services/TemporalStore in Ubuntu.",
                         "memory_scope": "user_profile",
                         "session_continuity": "cross_session",
                         "profile_entity_current": True,
@@ -7394,7 +7394,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertEqual("user_profile", profile_ref["memory_scope"])
             self.assertEqual("cross_session", profile_ref["session_continuity"])
-            self.assertIn("/root/src/github-services/TemporalStore", profile_ref["text"])
+            self.assertIn("/opt/github-services/TemporalStore", profile_ref["text"])
             self.assertFalse(
                 any("Prior raw session event" in str(ref.get("text", "")) for ref in pack["selected_refs"])
             )
@@ -7446,7 +7446,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         ],
                         "entity_type": "user_preference",
                         "entity_name": "workspace_location",
-                        "state": "User profile says TemporalStore work should stay under /root/src/github-services.",
+                        "state": "User profile says TemporalStore work should stay under /opt/github-services.",
                         "memory_scope": "user_profile",
                         "session_continuity": "cross_session",
                         "profile_current_state_representative": True,
@@ -12320,7 +12320,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "messages": [
                         {
                             "role": "user",
-                            "content": "Remember: use Ubuntu /root/src/github-services for TemporalStore work.",
+                            "content": "Remember: use Ubuntu /opt/github-services for TemporalStore work.",
                         }
                     ],
                 }
@@ -12383,7 +12383,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(
                 any(
                     record.get("entity_type") == "workspace_profile"
-                    and "/root/src/github-services" in str(record.get("state") or "")
+                    and "/opt/github-services" in str(record.get("state") or "")
                     for record in profile_entities
                 )
             )

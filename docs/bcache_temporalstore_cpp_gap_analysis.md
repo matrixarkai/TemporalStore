@@ -2,9 +2,9 @@
 
 Date: 2026-07-07
 
-Source PDF: `C:\Users\Deeproute\Downloads\BCACHE.pdf`
+Source PDF: `%USERPROFILE%\Downloads\BCACHE.pdf`
 
-Code reviewed: `/root/src/github-services/TemporalStore`, C++ server/client/proxy/metaserver/storage tree.
+Code reviewed: `/opt/github-services/TemporalStore`, C++ server/client/proxy/metaserver/storage tree.
 
 Note: the PDF is image-based, so this analysis is based on rendered page inspection. It should be treated as an engineering comparison against the visible architecture, storage, checkpoint, consistency, and client/proxy diagrams in the PDF.
 

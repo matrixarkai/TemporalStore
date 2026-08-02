@@ -2,7 +2,7 @@
 
 ## Source
 
-- Source PDF: `C:/Users/Deeproute/Downloads/MATRIXOBJECTSTORE.pdf`
+- Source PDF: `%USERPROFILE%/Downloads/MATRIXOBJECTSTORE.pdf`
 - PDF metadata: 26 pages, image-based, produced by jsPDF 2.3.1, no embedded text layer.
 - Extraction method: rendered pages with Poppler and OCR with `tesseract -l chi_sim+eng`.
 - Product naming: this repository uses `MatrixObject` as the public product/API name for the Rust-native object-store path. Historical names such as `MatrixObjectStore` and external source names in the PDF are treated as design ancestry or compatibility aliases, not the preferred public name for new code, docs, or APIs.

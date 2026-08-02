@@ -29,7 +29,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 CANONICAL_UBUNTU_REPO = Path(
-    os.environ.get("TEMPORALSTORE_CANONICAL_REPO", "/root/src/github-services/TemporalStore")
+    os.environ.get("TEMPORALSTORE_CANONICAL_REPO", "/opt/github-services/TemporalStore")
 )
 
 # Keep the scale path storage-focused and avoid replay/audit write amplification.

@@ -24,14 +24,14 @@
     },
     "evidence_type": "source_contract",
     "matrixobject_commit": "64a2206151b6467797748b829a6f3fe920ed45e9",
-    "matrixobject_repo": "/root/src/github-services/MatrixObjectStore",
+    "matrixobject_repo": "/opt/github-services/MatrixObjectStore",
     "rpc_exposes_offset_and_extents": true,
     "rust_matrixobject_api_exposes_metadata": true,
     "source_files": {
-      "object_cc": "/root/src/github-services/MatrixObjectStore/matrixobjectstore/objectstore/objectstore.cc",
-      "objectstore_h": "/root/src/github-services/MatrixObjectStore/matrixobjectstore/objectstore/objectstore.h",
-      "objectstore_rpc_cc": "/root/src/github-services/MatrixObjectStore/matrixobjectstore/objectstore/objectstore_rpc.cc",
-      "rust_lib": "/root/src/github-services/MatrixObjectStore/rust/matrixobjectstore-rs/src/lib.rs"
+      "object_cc": "/opt/github-services/MatrixObjectStore/matrixobjectstore/objectstore/objectstore.cc",
+      "objectstore_h": "/opt/github-services/MatrixObjectStore/matrixobjectstore/objectstore/objectstore.h",
+      "objectstore_rpc_cc": "/opt/github-services/MatrixObjectStore/matrixobjectstore/objectstore/objectstore_rpc.cc",
+      "rust_lib": "/opt/github-services/MatrixObjectStore/rust/matrixobjectstore-rs/src/lib.rs"
     }
   },
   "cpp_runtime": {
@@ -152,7 +152,7 @@
     "reopened_extent_count": 8,
     "reopened_object_size": 512,
     "reopened_recovered_all_bytes": true,
-    "root": "/root/src/github-services/TemporalStore/docs/benchmarks/shared_store_blob_append_parity_incremental_journal_64a_current_release/cpp_matrixobjectstore_runtime_root",
+    "root": "/opt/github-services/TemporalStore/docs/benchmarks/shared_store_blob_append_parity_incremental_journal_64a_current_release/cpp_matrixobjectstore_runtime_root",
     "status": "passed",
     "tail_read_matches": true,
     "total_bytes": 512,
@@ -160,8 +160,8 @@
   },
   "cpp_runtime_command": {
     "argv": [
-      "/root/src/github-services/MatrixObjectStore/build-mvp/matrixobjectstore/objectstore/objectstore_append_blob_parity_report",
-      "/root/src/github-services/TemporalStore/docs/benchmarks/shared_store_blob_append_parity_incremental_journal_64a_current_release/cpp_matrixobjectstore_runtime_root",
+      "/opt/github-services/MatrixObjectStore/build-mvp/matrixobjectstore/objectstore/objectstore_append_blob_parity_report",
+      "/opt/github-services/TemporalStore/docs/benchmarks/shared_store_blob_append_parity_incremental_journal_64a_current_release/cpp_matrixobjectstore_runtime_root",
       "8",
       "64"
     ],
@@ -767,5 +767,5 @@
   },
   "schema": "temporalstore_shared_store_blob_append_cpp_rust_parity_v1",
   "temporalstore_commit": "3105e71b4b48922c0e01d4bd57b7624b90733afa",
-  "temporalstore_repo": "/root/src/github-services/TemporalStore"
+  "temporalstore_repo": "/opt/github-services/TemporalStore"
 }

@@ -66,7 +66,7 @@ LongMemEval_s tiny:
 
 ## Comparison To OpenViking / VikingMem
 
-Local OpenViking is present under `/root/src/github-services/OpenViking`, and the LoCoMo / LongMemEval benchmark scripts are available there. A true local OpenViking baseline still requires running its server path and importing the same corpora.
+Local OpenViking is present under `/opt/github-services/OpenViking`, and the LoCoMo / LongMemEval benchmark scripts are available there. A true local OpenViking baseline still requires running its server path and importing the same corpora.
 
 Do not compare the tiny MatrixArk subset above directly against OpenViking paper numbers. Public OpenViking/VikingMem figures should only be treated as references until the local server baseline is run under the same model and budget.
 

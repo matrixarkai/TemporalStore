@@ -24,14 +24,14 @@
     },
     "evidence_type": "source_contract",
     "matrixobject_commit": "8f03227fab58406fe254662acb730d1c9ed81825",
-    "matrixobject_repo": "/root/src/github-services/MatrixObjectStore",
+    "matrixobject_repo": "/opt/github-services/MatrixObjectStore",
     "rpc_exposes_offset_and_extents": true,
     "rust_matrixobject_api_exposes_metadata": true,
     "source_files": {
-      "object_cc": "/root/src/github-services/MatrixObjectStore/matrixobjectstore/objectstore/objectstore.cc",
-      "objectstore_h": "/root/src/github-services/MatrixObjectStore/matrixobjectstore/objectstore/objectstore.h",
-      "objectstore_rpc_cc": "/root/src/github-services/MatrixObjectStore/matrixobjectstore/objectstore/objectstore_rpc.cc",
-      "rust_lib": "/root/src/github-services/MatrixObjectStore/rust/matrixobjectstore-rs/src/lib.rs"
+      "object_cc": "/opt/github-services/MatrixObjectStore/matrixobjectstore/objectstore/objectstore.cc",
+      "objectstore_h": "/opt/github-services/MatrixObjectStore/matrixobjectstore/objectstore/objectstore.h",
+      "objectstore_rpc_cc": "/opt/github-services/MatrixObjectStore/matrixobjectstore/objectstore/objectstore_rpc.cc",
+      "rust_lib": "/opt/github-services/MatrixObjectStore/rust/matrixobjectstore-rs/src/lib.rs"
     }
   },
   "cpp_runtime": {
@@ -152,7 +152,7 @@
     "reopened_extent_count": 8,
     "reopened_object_size": 512,
     "reopened_recovered_all_bytes": true,
-    "root": "/root/src/github-services/TemporalStore-goal-audit-blob/docs/benchmarks/shared_store_blob_append_parity_authoritative_offset_index_current_release/cpp_matrixobjectstore_runtime_root",
+    "root": "/opt/github-services/TemporalStore-goal-audit-blob/docs/benchmarks/shared_store_blob_append_parity_authoritative_offset_index_current_release/cpp_matrixobjectstore_runtime_root",
     "status": "passed",
     "tail_read_matches": true,
     "total_bytes": 512,
@@ -160,8 +160,8 @@
   },
   "cpp_runtime_command": {
     "argv": [
-      "/root/src/github-services/MatrixObjectStore/build-mvp/matrixobjectstore/objectstore/objectstore_append_blob_parity_report",
-      "/root/src/github-services/TemporalStore-goal-audit-blob/docs/benchmarks/shared_store_blob_append_parity_authoritative_offset_index_current_release/cpp_matrixobjectstore_runtime_root",
+      "/opt/github-services/MatrixObjectStore/build-mvp/matrixobjectstore/objectstore/objectstore_append_blob_parity_report",
+      "/opt/github-services/TemporalStore-goal-audit-blob/docs/benchmarks/shared_store_blob_append_parity_authoritative_offset_index_current_release/cpp_matrixobjectstore_runtime_root",
       "8",
       "64"
     ],
@@ -254,7 +254,7 @@
     "elapsed_ms": 266332.443,
     "mode": "executed",
     "returncode": 0,
-    "stderr_tail": "   Compiling temporalstore-rust v0.1.0 (/root/src/github-services/TemporalStore-goal-audit-blob/crates/temporalstore-rust)\n   Compiling matrixobjectstore-rs v0.1.0 (https://github.com/bjmeetsfo/MatrixObjectStore.git?rev=8f03227fab58406fe254662acb730d1c9ed81825#8f03227f)\n   Compiling temporalstore-snapshot v0.1.0 (/root/src/github-services/TemporalStore-goal-audit-blob/crates/temporalstore-snapshot)\nwarning: function `model_id_for_kind` is never used\n     --> crates/temporalstore-rust/src/engine.rs:10775:4\n      |\n10775 | fn model_id_for_kind(kind: &str) -> u16 {\n      |    ^^^^^^^^^^^^^^^^^\n      |\n      = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: function `context_event_timeline_key_for_write` is never used\n  --> crates/temporalstore-rust/src/engine/context.rs:97:15\n   |\n97 | pub(super) fn context_event_timeline_key_for_write(\n   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: `temporalstore-rust` (lib) generated 2 warnings\n    Finished `release` profile [optimized] target(s) in 4m 21s\n     Running `/root/src/github-services/TemporalStore/target/release/examples/shared_store_append_blob_parity_report`\n"
+    "stderr_tail": "   Compiling temporalstore-rust v0.1.0 (/opt/github-services/TemporalStore-goal-audit-blob/crates/temporalstore-rust)\n   Compiling matrixobjectstore-rs v0.1.0 (https://github.com/bjmeetsfo/MatrixObjectStore.git?rev=8f03227fab58406fe254662acb730d1c9ed81825#8f03227f)\n   Compiling temporalstore-snapshot v0.1.0 (/opt/github-services/TemporalStore-goal-audit-blob/crates/temporalstore-snapshot)\nwarning: function `model_id_for_kind` is never used\n     --> crates/temporalstore-rust/src/engine.rs:10775:4\n      |\n10775 | fn model_id_for_kind(kind: &str) -> u16 {\n      |    ^^^^^^^^^^^^^^^^^\n      |\n      = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: function `context_event_timeline_key_for_write` is never used\n  --> crates/temporalstore-rust/src/engine/context.rs:97:15\n   |\n97 | pub(super) fn context_event_timeline_key_for_write(\n   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: `temporalstore-rust` (lib) generated 2 warnings\n    Finished `release` profile [optimized] target(s) in 4m 21s\n     Running `/opt/github-services/TemporalStore/target/release/examples/shared_store_append_blob_parity_report`\n"
   },
   "rust_runtime": {
     "async_writer": {
@@ -865,5 +865,5 @@
   },
   "schema": "temporalstore_shared_store_blob_append_cpp_rust_parity_v1",
   "temporalstore_commit": "9316217fee1c08ce484b8dfcd779f3815490113c",
-  "temporalstore_repo": "/root/src/github-services/TemporalStore-goal-audit-blob"
+  "temporalstore_repo": "/opt/github-services/TemporalStore-goal-audit-blob"
 }

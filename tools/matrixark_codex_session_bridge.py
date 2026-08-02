@@ -33,7 +33,7 @@ def _default_sessions_root() -> Path:
         candidate = Path(home) / ".codex" / "sessions"
         if candidate.exists():
             return candidate
-    return Path("/mnt/c/Users/Deeproute/.codex/sessions")
+    return Path.home() / ".codex" / "sessions"
 
 
 def _load_state(path: Path) -> Json:

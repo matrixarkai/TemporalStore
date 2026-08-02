@@ -21,7 +21,7 @@ Interpretation:
 
 ## OpenViking / VikingMem Baseline Status
 
-OpenViking is now available locally at `/root/src/github-services/OpenViking` from the GitHub archive.
+OpenViking is now available locally at `/opt/github-services/OpenViking` from the GitHub archive.
 
 Relevant baseline paths:
 

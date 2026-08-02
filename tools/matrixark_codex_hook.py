@@ -2787,7 +2787,7 @@ def _windows_codex_sessions_root_from_payload(payload: Json) -> Path | None:
             parts = normalized[3:].split("/")
             if parts and parts[0].lower() == "users" and len(parts) >= 2:
                 candidates.append(Path(f"/mnt/{drive}/Users/{parts[1]}/.codex/sessions"))
-    candidates.append(Path("/mnt/c/Users/Deeproute/.codex/sessions"))
+    candidates.append(Path.home() / ".codex" / "sessions")
     for candidate in candidates:
         try:
             if candidate.exists():

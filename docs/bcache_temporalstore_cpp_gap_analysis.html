@@ -17,8 +17,8 @@ li { margin: 4px 0; }
 <body>
 <h1>BCache Design PDF vs TemporalStore C++ Gap Analysis</h1>
 <p>Date: 2026-07-07</p>
-<p>Source PDF: `C:\Users\Deeproute\Downloads\BCACHE.pdf`</p>
-<p>Code reviewed: `/root/src/github-services/TemporalStore`, C++ server/client/proxy/metaserver/storage tree.</p>
+<p>Source PDF: `%USERPROFILE%\Downloads\BCACHE.pdf`</p>
+<p>Code reviewed: `/opt/github-services/TemporalStore`, C++ server/client/proxy/metaserver/storage tree.</p>
 <p>Note: the PDF is image-based, so this analysis is based on rendered page inspection. It should be treated as an engineering comparison against the visible architecture, storage, checkpoint, consistency, and client/proxy diagrams in the PDF.</p>
 <h2>Executive Summary</h2>
 <p>TemporalStore C++ is directionally aligned with the BCache design. It already has a real distributed skeleton: metaserver metadata, namespace/table/partition state, partition placement, proxy/client routing, object/index/oplog/page storage, log-based streams, block cache, local raft/snapshot support, and several business modules.</p>

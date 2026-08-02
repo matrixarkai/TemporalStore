@@ -2403,7 +2403,7 @@
     "batch_replay_used": false,
     "batch_reports": [],
     "build_report": {
-      "binary": "/mnt/c/Users/Deeproute/Documents/Codex/temporalstore-main-storage-next5/target/temporalstore-context-benchmark/release/context_workflow_harness",
+      "binary": "/home/example/Documents/Codex/temporalstore-main-storage-next5/target/temporalstore-context-benchmark/release/context_workflow_harness",
       "command": [
         "cargo",
         "build",
@@ -2420,7 +2420,7 @@
       "stdout_tail": ""
     },
     "command": [
-      "/mnt/c/Users/Deeproute/Documents/Codex/temporalstore-main-storage-next5/target/temporalstore-context-benchmark/release/context_workflow_harness"
+      "/home/example/Documents/Codex/temporalstore-main-storage-next5/target/temporalstore-context-benchmark/release/context_workflow_harness"
     ],
     "converted_jsonl": "/tmp/temporalstore-rust-context-locomo_slice-365041.jsonl",
     "converted_stdout": "wrote 4 cases to /tmp/temporalstore-rust-context-locomo_slice-365041.jsonl",

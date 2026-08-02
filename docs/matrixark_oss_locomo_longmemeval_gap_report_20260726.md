@@ -103,7 +103,7 @@ Notes:
 
 ## OpenViking / VikingMem Status
 
-OpenViking source is present at `/root/src/github-services/OpenViking`. The previous native binding blocker is no longer the current blocker:
+OpenViking source is present at `/opt/github-services/OpenViking`. The previous native binding blocker is no longer the current blocker:
 
 - Installed a local Rust toolchain through `rustup` and built `ragfs_python` from `crates/ragfs-python`.
 - Built the OpenViking vector engine in place.
