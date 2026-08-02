@@ -9379,6 +9379,9 @@ class MatrixArkLocalAdapter:
                 "final_session_boundary": final_session_boundary,
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
+            session_entity_memory_layer = candidate_memory_layer_name(session_entity_record)
+            if session_entity_memory_layer:
+                session_entity_record["memory_layer"] = session_entity_memory_layer
             records_to_append.append(session_entity_record)
             for index_name in candidate_index_terms(session_entity_record, {}, {}):
                 session_index = context_index_posting_record(
@@ -9449,6 +9452,7 @@ class MatrixArkLocalAdapter:
                     "source_memory_layer_counts": entity_source_memory_layer_counts,
                     "source_profile_memory_classes": entity_source_profile_memory_classes,
                     "source_profile_memory_kinds": entity_source_profile_memory_kinds,
+                    "memory_layer": session_entity_memory_layer,
                     **source_memory_selection_retention,
                     "memory_scope": "session",
                     "session_continuity": "same_session",
@@ -9746,6 +9750,9 @@ class MatrixArkLocalAdapter:
                     "final_session_boundary": final_session_boundary,
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
+                profile_entity_memory_layer = candidate_memory_layer_name(profile_entity_record)
+                if profile_entity_memory_layer:
+                    profile_entity_record["memory_layer"] = profile_entity_memory_layer
                 records_to_append.append(profile_entity_record)
                 profile_entity_embedding_text = promoted_entity["entity_type"] + " " + promoted_entity["state"]
                 profile_entity_vector = embedding_for_text(profile_entity_embedding_text)
@@ -9775,8 +9782,11 @@ class MatrixArkLocalAdapter:
                         "source_codex_event_counts": profile_source_codex_event_counts,
                         "source_memory_selection_policies": profile_source_memory_selection_policies,
                         "source_memory_selection_policy_counts": profile_source_memory_selection_policy_counts,
+                        "source_memory_layers": profile_source_memory_layers,
+                        "source_memory_layer_counts": profile_source_memory_layer_counts,
                         "source_profile_memory_classes": profile_source_profile_memory_classes,
                         "source_profile_memory_kinds": profile_source_profile_memory_kinds,
+                        "memory_layer": profile_entity_memory_layer,
                         **profile_source_memory_selection_retention,
                         "source_profile_promotion_policies": profile_source_promotion_policies,
                         "source_profile_promotion_blockers": profile_source_promotion_blockers,
@@ -9999,6 +10009,9 @@ class MatrixArkLocalAdapter:
                 "extraction_context_event_ids": extraction_context_event_ids,
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
+            segment_memory_layer = candidate_memory_layer_name(segment_record)
+            if segment_memory_layer:
+                segment_record["memory_layer"] = segment_memory_layer
             records_to_append.append(segment_record)
             for index_name in candidate_index_terms(segment_record, {}, {}):
                 segment_index = context_index_posting_record(
@@ -10054,6 +10067,7 @@ class MatrixArkLocalAdapter:
                     "source_profile_memory_kinds": segment_profile_memory_kinds,
                     "profile_memory_class": segment_profile_memory_class,
                     "profile_memory_kind": segment_profile_memory_kind,
+                    "memory_layer": segment_memory_layer,
                     "memory_scope": "session",
                     "session_continuity": "same_session",
                     "extraction_phase": extraction_phase,
@@ -10163,6 +10177,9 @@ class MatrixArkLocalAdapter:
             "extraction_context_event_ids": extraction_context_event_ids,
             "updated_at_ms": envelope["ingestion_time_ms"],
         }
+        batch_summary_memory_layer = candidate_memory_layer_name(batch_summary_record)
+        if batch_summary_memory_layer:
+            batch_summary_record["memory_layer"] = batch_summary_memory_layer
         records_to_append.append(batch_summary_record)
         for index_name in candidate_index_terms(batch_summary_record, {}, {}):
             summary_index = context_index_posting_record(
@@ -10219,6 +10236,7 @@ class MatrixArkLocalAdapter:
                 "source_profile_memory_kinds": batch_source_profile_memory_kinds,
                 "profile_memory_class": batch_profile_memory_class,
                 "profile_memory_kind": batch_profile_memory_kind,
+                "memory_layer": batch_summary_memory_layer,
                 **source_memory_selection_retention,
                 "source_memory_scopes": ["session"],
                 "source_session_continuities": ["same_session"],
