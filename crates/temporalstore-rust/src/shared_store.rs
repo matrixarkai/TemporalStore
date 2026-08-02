@@ -298,6 +298,10 @@ pub struct SharedStoreStorageWriter<O> {
 pub struct ReplayReport {
     pub applied: usize,
     pub last_oplog_index: u64,
+    #[serde(default)]
+    pub offset_index_reads: usize,
+    #[serde(default)]
+    pub range_bytes_read: u64,
 }
 
 impl<O> SharedStoreReplicator<O>
@@ -665,11 +669,24 @@ where
         after_wal_index: u64,
         engine: &TemporalEngine,
     ) -> Result<ReplayReport, SharedStoreReplicationError> {
+        if matches!(
+            self.wal_append_mode,
+            SharedStoreWalAppendMode::ProtobufAppendBlob
+        ) {
+            if let Some(report) = self
+                .replay_wal_from_offset_metadata(shard_id, after_wal_index, engine, false)
+                .await?
+            {
+                return Ok(report);
+            }
+        }
         let wal_entries = self.load_wal_entries(shard_id).await?;
 
         let mut report = ReplayReport {
             applied: 0,
             last_oplog_index: after_wal_index,
+            offset_index_reads: 0,
+            range_bytes_read: 0,
         };
         for (oplog_index, entry) in wal_entries {
             if oplog_index <= after_wal_index {
@@ -707,12 +724,25 @@ where
         after_wal_index: u64,
         engine: &TemporalEngine,
     ) -> Result<ReplayReport, SharedStoreReplicationError> {
+        if matches!(
+            self.wal_append_mode,
+            SharedStoreWalAppendMode::ProtobufAppendBlob
+        ) {
+            if let Some(report) = self
+                .replay_wal_from_offset_metadata(shard_id, after_wal_index, engine, true)
+                .await?
+            {
+                return Ok(report);
+            }
+        }
         let wal_entries = self.load_wal_entries(shard_id).await?;
 
         let mut expected = after_wal_index + 1;
         let mut report = ReplayReport {
             applied: 0,
             last_oplog_index: after_wal_index,
+            offset_index_reads: 0,
+            range_bytes_read: 0,
         };
         for (oplog_index, entry) in wal_entries {
             if oplog_index <= after_wal_index {
@@ -739,6 +769,62 @@ where
             expected += 1;
         }
         Ok(report)
+    }
+
+    async fn replay_wal_from_offset_metadata(
+        &self,
+        shard_id: ShardId,
+        after_wal_index: u64,
+        engine: &TemporalEngine,
+        strict: bool,
+    ) -> Result<Option<ReplayReport>, SharedStoreReplicationError> {
+        let offset_metadata = self.load_wal_offset_metadata(shard_id).await?;
+        if offset_metadata.is_empty() {
+            return Ok(None);
+        }
+
+        let mut expected = after_wal_index + 1;
+        let mut report = ReplayReport {
+            applied: 0,
+            last_oplog_index: after_wal_index,
+            offset_index_reads: 0,
+            range_bytes_read: 0,
+        };
+        for (oplog_index, _) in offset_metadata.range((after_wal_index + 1)..) {
+            if strict && *oplog_index != expected {
+                return Err(SharedStoreReplicationError::ReplayGap {
+                    expected,
+                    actual: *oplog_index,
+                });
+            }
+            let read = self
+                .read_wal_entry_by_offset_metadata(shard_id, *oplog_index)
+                .await?
+                .ok_or_else(|| {
+                    SharedStoreReplicationError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!(
+                            "missing WAL offset metadata for shard {shard_id} index {oplog_index}"
+                        ),
+                    ))
+                })?;
+            let response = engine.execute(ExecuteRequest {
+                shard_id,
+                command: read.entry.command,
+            });
+            if !response.status.ok {
+                return Err(SharedStoreReplicationError::ApplyFailed {
+                    oplog_index: *oplog_index,
+                    status: response.status,
+                });
+            }
+            report.applied += 1;
+            report.last_oplog_index = *oplog_index;
+            report.offset_index_reads += 1;
+            report.range_bytes_read += read.range_bytes_read;
+            expected += 1;
+        }
+        Ok(Some(report))
     }
 
     pub async fn load_replay_cursor(
@@ -1742,6 +1828,8 @@ mod tests {
             ReplayReport {
                 applied: 1,
                 last_oplog_index: 2,
+                offset_index_reads: 0,
+                range_bytes_read: 0,
             }
         );
         assert_eq!(
@@ -1865,6 +1953,8 @@ mod tests {
             ReplayReport {
                 applied: 1,
                 last_oplog_index: 1,
+                offset_index_reads: 0,
+                range_bytes_read: 0,
             }
         );
         assert_eq!(
@@ -1883,6 +1973,8 @@ mod tests {
             ReplayReport {
                 applied: 0,
                 last_oplog_index: 1,
+                offset_index_reads: 0,
+                range_bytes_read: 0,
             }
         );
         assert_eq!(
@@ -1932,6 +2024,8 @@ mod tests {
             ReplayReport {
                 applied: 0,
                 last_oplog_index: 0,
+                offset_index_reads: 0,
+                range_bytes_read: 0,
             }
         );
 
@@ -1954,6 +2048,8 @@ mod tests {
             ReplayReport {
                 applied: 1,
                 last_oplog_index: 1,
+                offset_index_reads: 0,
+                range_bytes_read: 0,
             }
         );
 
@@ -1976,6 +2072,8 @@ mod tests {
             ReplayReport {
                 applied: 1,
                 last_oplog_index: 2,
+                offset_index_reads: 0,
+                range_bytes_read: 0,
             }
         );
         assert_eq!(
@@ -2125,6 +2223,8 @@ mod tests {
             ReplayReport {
                 applied: 2,
                 last_oplog_index: 3,
+                offset_index_reads: 0,
+                range_bytes_read: 0,
             }
         );
         for (key, value) in [
@@ -2408,6 +2508,11 @@ mod tests {
             ReplayReport {
                 applied: 2,
                 last_oplog_index: 2,
+                offset_index_reads: 2,
+                range_bytes_read: append_receipts
+                    .iter()
+                    .map(|receipt| receipt.bytes_written)
+                    .sum(),
             }
         );
         for (key, value) in [("proto-a", b"one".to_vec()), ("proto-b", b"two".to_vec())] {
