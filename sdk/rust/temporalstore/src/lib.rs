@@ -30,7 +30,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(feature = "direct")]
 fn cpp_matrixark_c_api_bridge_allowed(op: &str) -> Result<()> {
     let allowed = std::env::var("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API")
-        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false);
     if allowed {
         return Ok(());
@@ -822,13 +827,32 @@ impl Client {
         count_value: Option<&str>,
         append_options_json: &str,
     ) -> Result<()> {
+        let routed_entries: Vec<(&str, &str, &str, &str)> = entries
+            .iter()
+            .map(|(key, field, value)| (*key, *field, *value, "{}"))
+            .collect();
+        self.matrixark_batch_append_records_with_routes_and_options(
+            &routed_entries,
+            count_key,
+            count_value,
+            append_options_json,
+        )
+    }
+
+    pub fn matrixark_batch_append_records_with_routes_and_options(
+        &self,
+        entries: &[(&str, &str, &str, &str)],
+        count_key: Option<&str>,
+        count_value: Option<&str>,
+        append_options_json: &str,
+    ) -> Result<()> {
         if entries.is_empty() && count_key.unwrap_or("").is_empty() {
             return Ok(());
         }
         cpp_matrixark_c_api_bridge_allowed("matrixark_batch_append_records")?;
         let mut strings: Vec<CString> = Vec::with_capacity(entries.len() * 4 + 3);
         let mut c_entries: Vec<CHashEntry> = Vec::with_capacity(entries.len());
-        for (key, field, value) in entries {
+        for (key, field, value, route_json) in entries {
             let key_index = strings.len();
             strings.push(cstring(key)?);
             let field_index = strings.len();
@@ -836,7 +860,7 @@ impl Client {
             let value_index = strings.len();
             strings.push(cstring(value)?);
             let route_index = strings.len();
-            strings.push(cstring("{}")?);
+            strings.push(cstring(route_json)?);
             c_entries.push(CHashEntry {
                 key: strings[key_index].as_ptr(),
                 field: strings[field_index].as_ptr(),
@@ -1441,9 +1465,10 @@ impl ProxyClient {
             "pin_primary": pin_primary,
         });
         if let Some(replica_read_policy) = replica_read_policy {
-            body.as_object_mut()
-                .expect("object body")
-                .insert("replica_read_policy".to_string(), serde_json::json!(replica_read_policy));
+            body.as_object_mut().expect("object body").insert(
+                "replica_read_policy".to_string(),
+                serde_json::json!(replica_read_policy),
+            );
         }
         self.post_raw("/ProxyService/OpenTable", body)
     }
@@ -1647,7 +1672,10 @@ impl ProxyClient {
                 ("start_ms", serde_json::json!(start_ms)),
                 ("end_ms", serde_json::json!(end_ms)),
                 ("count", serde_json::json!(count)),
-                ("filters", serde_json::to_value(filters).map_err(json_error)?),
+                (
+                    "filters",
+                    serde_json::to_value(filters).map_err(json_error)?,
+                ),
             ],
         );
         let response = self.proxy_service_execute("/ProxyService/FeatureQuery", body)?;
@@ -2237,7 +2265,10 @@ fn options_from_json(raw: &str) -> Result<Options> {
             .unwrap_or(default)
     };
     let get_bool = |name: &str, default: bool| -> bool {
-        value.get(name).and_then(|item| item.as_bool()).unwrap_or(default)
+        value
+            .get(name)
+            .and_then(|item| item.as_bool())
+            .unwrap_or(default)
     };
     let mut options = Options::new(
         get_str("metaserver_addr", "127.0.0.1:18000"),
@@ -2415,11 +2446,31 @@ pub unsafe extern "C" fn temporalstore_rust_matrixark_batch_append_records_json(
             .iter()
             .map(|(key, field, value)| (key.as_str(), field.as_str(), value.as_str()))
             .collect();
-        let count_key = if count_key.is_null() { String::new() } else { cstr_arg(count_key, "count_key")? };
-        let count_value = if count_value.is_null() { String::new() } else { cstr_arg(count_value, "count_value")? };
-        let count_key_opt = if count_key.is_empty() { None } else { Some(count_key.as_str()) };
-        let count_value_opt = if count_value.is_empty() { None } else { Some(count_value.as_str()) };
-        client_from_handle(handle)?.matrixark_batch_append_records(&entries, count_key_opt, count_value_opt)
+        let count_key = if count_key.is_null() {
+            String::new()
+        } else {
+            cstr_arg(count_key, "count_key")?
+        };
+        let count_value = if count_value.is_null() {
+            String::new()
+        } else {
+            cstr_arg(count_value, "count_value")?
+        };
+        let count_key_opt = if count_key.is_empty() {
+            None
+        } else {
+            Some(count_key.as_str())
+        };
+        let count_value_opt = if count_value.is_empty() {
+            None
+        } else {
+            Some(count_value.as_str())
+        };
+        client_from_handle(handle)?.matrixark_batch_append_records(
+            &entries,
+            count_key_opt,
+            count_value_opt,
+        )
     })
 }
 
@@ -2462,11 +2513,15 @@ pub unsafe extern "C" fn temporalstore_rust_matrixark_retrieve_context_pack_json
             shard_size,
             &cstr_arg(request_json, "request_json")?,
         )?;
-        let mut pack: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}));
+        let mut pack: serde_json::Value =
+            serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}));
         if pack.get("context_pack").is_some() {
             if let Some(obj) = pack.as_object_mut() {
                 obj.insert("ok".to_string(), serde_json::Value::Bool(true));
-                obj.insert("native_pack_assembly".to_string(), serde_json::Value::Bool(true));
+                obj.insert(
+                    "native_pack_assembly".to_string(),
+                    serde_json::Value::Bool(true),
+                );
             }
             return Ok(pack.to_string());
         }
@@ -2474,7 +2529,8 @@ pub unsafe extern "C" fn temporalstore_rust_matrixark_retrieve_context_pack_json
             "ok": true,
             "native_pack_assembly": true,
             "context_pack": pack
-        }).to_string())
+        })
+        .to_string())
     })
 }
 
@@ -2516,15 +2572,8 @@ mod tests {
         let _: fn(&Client, &super::IpsInstance) -> super::Result<()> = Client::add_ips_instance;
         let _: fn(&Client, &super::IpsLastQuery) -> super::Result<Vec<super::IpsFeatureStat>> =
             Client::query_ips_last_instances;
-        let _: fn(
-            &Client,
-            &str,
-            i64,
-            u64,
-            super::RiskPrecision,
-            &str,
-            u64,
-        ) -> super::Result<()> = Client::risk_increment;
+        let _: fn(&Client, &str, i64, u64, super::RiskPrecision, &str, u64) -> super::Result<()> =
+            Client::risk_increment;
         let _: fn(&Client, &str, super::RiskPrecision, super::RiskWindow) -> super::Result<i64> =
             Client::risk_count;
         let _: fn(&Client, &[(&str, &str, &str)], Option<&str>, Option<&str>) -> super::Result<()> =
@@ -2536,8 +2585,13 @@ mod tests {
     fn proxy_client_exposes_cpp_proxy_parity_methods() {
         let _: fn(&ProxyClient, &str, &[super::FeaturePoint]) -> super::Result<()> =
             ProxyClient::feature_add;
-        let _: fn(&ProxyClient, &str, u64, u64, Option<usize>) -> super::Result<Vec<super::FeaturePoint>> =
-            ProxyClient::feature_query;
+        let _: fn(
+            &ProxyClient,
+            &str,
+            u64,
+            u64,
+            Option<usize>,
+        ) -> super::Result<Vec<super::FeaturePoint>> = ProxyClient::feature_query;
         let _: fn(
             &ProxyClient,
             &str,

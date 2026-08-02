@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use serde_json::Value;
+use std::borrow::Cow;
 
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct Command {
@@ -35,6 +36,8 @@ pub(crate) struct HashEntry {
     pub key: String,
     pub field: String,
     pub value: Option<String>,
+    pub route_json: Option<String>,
+    pub storage_route: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -42,4 +45,5 @@ pub(crate) struct HashEntryRef<'a> {
     pub key: &'a str,
     pub field: &'a str,
     pub value: &'a str,
+    pub route_json: Cow<'a, str>,
 }

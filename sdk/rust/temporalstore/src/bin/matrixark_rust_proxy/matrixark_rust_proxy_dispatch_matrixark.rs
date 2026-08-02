@@ -19,12 +19,29 @@ pub(crate) fn append_records(client: &Client, command: &Command) -> Result<Value
     }
     let count_key = command.key.as_deref().filter(|value| !value.is_empty());
     let count_value = command.value.as_deref().filter(|value| !value.is_empty());
-    let batch: Vec<(&str, &str, &str)> = entries
+    let batch: Vec<(&str, &str, &str, &str)> = entries
         .iter()
-        .map(|entry| (entry.key, entry.field, entry.value))
+        .map(|entry| {
+            (
+                entry.key,
+                entry.field,
+                entry.value,
+                entry.route_json.as_ref(),
+            )
+        })
         .collect();
+    let append_options_json = command
+        .append_options
+        .as_ref()
+        .map(|value| serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string()))
+        .unwrap_or_else(|| "{}".to_string());
     client
-        .matrixark_batch_append_records(&batch, count_key, count_value)
+        .matrixark_batch_append_records_with_routes_and_options(
+            &batch,
+            count_key,
+            count_value,
+            &append_options_json,
+        )
         .map_err(|err| err.to_string())?;
     let mut written = entries.len();
     if count_key.is_some() && count_value.is_some() {

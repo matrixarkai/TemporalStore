@@ -14,13 +14,13 @@ use crate::matrixark_rust_proxy_candidates::record_node_hash;
 use crate::matrixark_rust_proxy_protocol::Command;
 use crate::matrixark_rust_proxy_scan_node_paths::node_paths_by_hash;
 use crate::matrixark_rust_proxy_scan_records::{
-    load_scan_records, required, serving_count_key,
+    load_scan_records, matrixark_serving_count, required,
 };
 use crate::matrixark_rust_proxy_scan_response::{
     build_filtered_cache_hit_response, build_scan_response, ScanResponseInput,
 };
-use crate::matrixark_rust_proxy_scope::scope_matches_record;
 use crate::matrixark_rust_proxy_scan_secondary::apply_secondary_prefilter;
+use crate::matrixark_rust_proxy_scope::scope_matches_record;
 
 pub(crate) fn scan_matrixark_candidates(
     client: &Client,
@@ -33,10 +33,7 @@ pub(crate) fn scan_matrixark_candidates(
         .get_string(&count_key)
         .map_err(|err| err.to_string())?;
     let count = count_text.parse::<u64>().unwrap_or(0);
-    let serving_count_text = client
-        .get_string(&serving_count_key(&count_key))
-        .unwrap_or_default();
-    let serving_count = serving_count_text.parse::<u64>().unwrap_or(count);
+    let serving_count = matrixark_serving_count(client, &count_key, count);
     let allowed_types: HashSet<String> = command
         .record_types
         .clone()

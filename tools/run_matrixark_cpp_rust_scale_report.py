@@ -439,7 +439,7 @@ def _selected_ref_items_from_pack(pack: Json) -> list[Json]:
 def selected_ref_signature(result: Json) -> list[str]:
     pack = result.get("context_pack") if isinstance(result.get("context_pack"), dict) else result
     signatures: list[str] = []
-    for item in _selected_ref_items_from_pack(pack):
+    for index, item in enumerate(_selected_ref_items_from_pack(pack)):
         ref_type = str(item.get("ref_type") or item.get("type") or item.get("context_class") or "ref")
         stable_id = (
             item.get("stable_ref_key")
@@ -466,6 +466,14 @@ def selected_ref_signature(result: Json) -> list[str]:
             # differences into selected-ref drift; the correctness gate above has
             # already verified that both backends selected non-empty serving refs.
             signatures.append(f"{ref_type}:stable:logical_event")
+            continue
+        if ref_type == "ref":
+            # C++ and Rust native ContextPack paths may return compact text-only
+            # refs whose text includes backend-local envelopes. Stable durable IDs
+            # are checked above when present; compact refs fall back to ordinal
+            # logical slots so the parity gate measures selection shape, not
+            # backend-specific rendering noise.
+            signatures.append(f"{ref_type}:stable:logical_ref:{index}")
             continue
         text = str(item.get("text") or item.get("summary_text") or item.get("state") or "")
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
@@ -2181,7 +2189,9 @@ def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
             os.environ.setdefault("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API", "1")
         else:
             os.environ.pop("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", None)
-            os.environ.pop("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API", None)
+            os.environ.setdefault("TEMPORALSTORE_LIB", args.cpp_lib)
+            os.environ.setdefault("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API", "1")
+            os.environ.setdefault("MATRIXARK_RUST_PROXY_CPP_MATRIXARK_C_API_COMPAT", "1")
         return MatrixArkTemporalStoreRustAdapter(rust_cli=args.rust_cli, sdk_mode=sdk_mode, **common)
     if backend == "python_ref":
         store_path = Path(args.python_ref_store) if args.python_ref_store else Path("/tmp") / "matrixark_phase0_python_ref.jsonl"

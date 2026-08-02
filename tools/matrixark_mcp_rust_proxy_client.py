@@ -449,15 +449,35 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
     ) -> None:
         if not entries and not count_key:
             return
-        compact_entries = [
-            [str(entry.get("key") or ""), str(entry.get("field") or ""), str(entry.get("value") or "")]
-            for entry in entries
-            if isinstance(entry, dict)
-        ]
+        compact_entries: list[list[str]] = []
+        routed_entries: list[Json] = []
+        has_routes = False
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            key = str(entry.get("key") or "")
+            field = str(entry.get("field") or "")
+            value = str(entry.get("value") or "")
+            route = entry.get("storage_route")
+            route_json = str(entry.get("route_json") or "")
+            if not route_json and isinstance(route, dict):
+                route_json = json.dumps(route, separators=(",", ":"), sort_keys=True)
+            if route_json and route_json != "{}":
+                has_routes = True
+            compact_entries.append([key, field, value])
+            routed_entries.append(
+                {
+                    "key": key,
+                    "field": field,
+                    "value": value,
+                    "route_json": route_json or "{}",
+                }
+            )
         append_options = append_options or {}
         if (
             self._append_coalesce_enabled
             and self._shared_process_mode
+            and not has_routes
             and len(compact_entries) >= self._append_coalesce_min_records
         ):
             self._coalesced_matrixark_batch_append_records(
@@ -469,7 +489,8 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
             return
         self._call_json(
             "matrixark_batch_append_records",
-            entries_compact=compact_entries,
+            entries=None if not has_routes else routed_entries,
+            entries_compact=compact_entries if not has_routes else None,
             key=count_key or "",
             value=count_value or "",
             append_options=append_options,
