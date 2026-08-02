@@ -351,6 +351,15 @@ def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
         "single_node_reload_recovered_all_records": bool(
             summary.get("single_node_reload_recovered_all_records")
         ),
+        "replay_uses_offset_index_metadata": bool(
+            summary.get("replay_uses_offset_index_metadata")
+        ),
+        "secondary_replay_uses_offset_index_metadata": bool(
+            summary.get("secondary_replay_uses_offset_index_metadata")
+        ),
+        "single_node_reload_uses_offset_index_metadata": bool(
+            summary.get("single_node_reload_uses_offset_index_metadata")
+        ),
         "sync_reports_include_offsets": bool(summary.get("sync_reports_include_offsets")),
         "async_flush_reports_include_offsets": bool(summary.get("async_flush_reports_include_offsets")),
         "replay_recovered_all_records": bool(summary.get("replay_recovered_all_records")),
@@ -396,6 +405,14 @@ def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runti
         feature_mismatches.append(
             "Rust MatrixObject binding did not prove incremental journal/disk reopen with offset metadata and records restored"
         )
+    if not (
+        rust_summary.get("replay_uses_offset_index_metadata")
+        and rust_summary.get("secondary_replay_uses_offset_index_metadata")
+        and rust_summary.get("single_node_reload_uses_offset_index_metadata")
+    ):
+        feature_mismatches.append(
+            "Rust replay/reload did not prove offset-index range reads for primary replay, secondary replay, and single-node reload"
+        )
     checks = {
         "rust_runtime_valid": bool(rust_summary.get("runtime_valid")),
         "rust_offsets_monotonic": bool(rust_summary.get("offsets_monotonic")),
@@ -432,6 +449,15 @@ def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runti
         ),
         "rust_single_node_reload_recovered_all_records": bool(
             rust_summary.get("single_node_reload_recovered_all_records")
+        ),
+        "rust_replay_uses_offset_index_metadata": bool(
+            rust_summary.get("replay_uses_offset_index_metadata")
+        ),
+        "rust_secondary_replay_uses_offset_index_metadata": bool(
+            rust_summary.get("secondary_replay_uses_offset_index_metadata")
+        ),
+        "rust_single_node_reload_uses_offset_index_metadata": bool(
+            rust_summary.get("single_node_reload_uses_offset_index_metadata")
         ),
         "rust_sync_reports_include_offsets": bool(rust_summary.get("sync_reports_include_offsets")),
         "rust_async_flush_reports_include_offsets": bool(
@@ -516,6 +542,9 @@ def _render_html(report: dict[str, Any]) -> str:
         ("Rust authoritative offset lookup reads all records", rust_summary.get("authoritative_offset_lookup_reads_all_records")),
         ("Rust authoritative offset lookup matches all records", rust_summary.get("authoritative_offset_lookup_matches_all_records")),
         ("Rust authoritative offset lookup has extent metadata", rust_summary.get("authoritative_offset_lookup_has_extent_metadata")),
+        ("Rust replay uses offset-index metadata", rust_summary.get("replay_uses_offset_index_metadata")),
+        ("Rust secondary replay uses offset-index metadata", rust_summary.get("secondary_replay_uses_offset_index_metadata")),
+        ("Rust single-node reload uses offset-index metadata", rust_summary.get("single_node_reload_uses_offset_index_metadata")),
         ("Rust direct offset metadata mappings", rust_summary.get("direct_offset_metadata_mappings")),
         ("Rust sync offset metadata mappings", rust_summary.get("sync_offset_metadata_mappings")),
         ("Rust async offset metadata mappings", rust_summary.get("async_offset_metadata_mappings")),

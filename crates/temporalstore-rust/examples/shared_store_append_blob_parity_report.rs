@@ -206,6 +206,9 @@ struct Summary {
     snapshot_reopen_cache_metrics_available: bool,
     secondary_replay_recovered_all_records: bool,
     single_node_reload_recovered_all_records: bool,
+    replay_uses_offset_index_metadata: bool,
+    secondary_replay_uses_offset_index_metadata: bool,
+    single_node_reload_uses_offset_index_metadata: bool,
     sync_reports_include_offsets: bool,
     async_flush_reports_include_offsets: bool,
     replay_recovered_all_records: bool,
@@ -355,6 +358,36 @@ async fn main() {
             == entry_count
             && sync_writer.replay.single_node_reload_retrieved_records == entry_count
             && async_writer.replay.single_node_reload_retrieved_records == entry_count,
+        replay_uses_offset_index_metadata: replay_report_uses_offset_index(
+            &direct_publish.replay.replay_report,
+            entry_count,
+        ) && replay_report_uses_offset_index(
+            &sync_writer.replay.replay_report,
+            entry_count,
+        ) && replay_report_uses_offset_index(
+            &async_writer.replay.replay_report,
+            entry_count,
+        ),
+        secondary_replay_uses_offset_index_metadata: replay_report_uses_offset_index(
+            &direct_publish.replay.secondary_replay_report,
+            entry_count,
+        ) && replay_report_uses_offset_index(
+            &sync_writer.replay.secondary_replay_report,
+            entry_count,
+        ) && replay_report_uses_offset_index(
+            &async_writer.replay.secondary_replay_report,
+            entry_count,
+        ),
+        single_node_reload_uses_offset_index_metadata: replay_report_uses_offset_index(
+            &direct_publish.replay.single_node_reload_report,
+            entry_count,
+        ) && replay_report_uses_offset_index(
+            &sync_writer.replay.single_node_reload_report,
+            entry_count,
+        ) && replay_report_uses_offset_index(
+            &async_writer.replay.single_node_reload_report,
+            entry_count,
+        ),
         sync_reports_include_offsets: sync_writer.write_reports.iter().all(|report| {
             report.wal_blob_start_offset.is_some()
                 && report.wal_blob_end_offset.is_some()
@@ -400,6 +433,12 @@ async fn main() {
         "{}",
         serde_json::to_string_pretty(&report).expect("json report")
     );
+}
+
+fn replay_report_uses_offset_index(report: &ReplayReport, entry_count: u64) -> bool {
+    report.applied == entry_count as usize
+        && report.offset_index_reads == entry_count as usize
+        && report.range_bytes_read > 0
 }
 
 fn matrixobject_options(persistent_journal_path: Option<&std::path::Path>) -> StoreOptions {
