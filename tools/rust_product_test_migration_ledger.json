@@ -4390,18 +4390,18 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs::rust_executes_shared_cpp_rust_temporalstore_corpus",
+      "test_id": "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs::rust_executes_temporalstore_corpus",
       "file": "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-      "test_name": "rust_executes_shared_cpp_rust_temporalstore_corpus",
+      "test_name": "rust_executes_temporalstore_corpus",
       "family": "rust internals",
       "classification": "rust_internal",
       "next_migration_target": "remain Rust-local with rust-internal markers when touched",
       "notes": "Rust helper/corpus-loader mechanics; keep local and add rust-internal marker when touched."
     },
     {
-      "test_id": "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs::rust_client_executes_shared_cpp_rust_temporalstore_corpus",
+      "test_id": "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs::rust_client_executes_temporalstore_corpus",
       "file": "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
-      "test_name": "rust_client_executes_shared_cpp_rust_temporalstore_corpus",
+      "test_name": "rust_client_executes_temporalstore_corpus",
       "family": "rust internals",
       "classification": "rust_internal",
       "next_migration_target": "remain Rust-local with rust-internal markers when touched",

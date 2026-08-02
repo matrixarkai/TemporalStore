@@ -483,7 +483,7 @@
     "crates/temporalstore-rust/tests/storage_crash_harness.rs::storage_crash_harness_recovers_after_abrupt_process_abort",
     "crates/temporalstore-rust/tests/storage_crash_harness.rs::storage_crash_harness_reports_corrupt_page_after_process_abort",
     "crates/temporalstore-rust/tests/storage_migration_corpus.rs::rust_storage_replays_cpp_migration_corpus_across_lifecycle_paths",
-    "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs::rust_executes_shared_cpp_rust_temporalstore_corpus",
-    "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs::rust_client_executes_shared_cpp_rust_temporalstore_corpus"
+    "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs::rust_executes_temporalstore_corpus",
+    "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs::rust_client_executes_temporalstore_corpus"
   ]
 }

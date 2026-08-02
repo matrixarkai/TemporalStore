@@ -195,7 +195,7 @@ struct SharedHarnessCommand {
 }
 
 #[test]
-fn rust_executes_shared_cpp_rust_temporalstore_corpus() {
+fn rust_executes_temporalstore_corpus() {
     let corpus = load_corpus();
 
     for case in corpus.cases {
@@ -204,7 +204,7 @@ fn rust_executes_shared_cpp_rust_temporalstore_corpus() {
 }
 
 #[test]
-fn rust_client_executes_shared_cpp_rust_temporalstore_corpus() {
+fn rust_client_executes_temporalstore_corpus() {
     let corpus = load_corpus();
 
     for case in corpus.cases {
@@ -214,7 +214,7 @@ fn rust_client_executes_shared_cpp_rust_temporalstore_corpus() {
 
 // shared-corpus: storage_wal_index_gc_generation_retention storage_gc_dependency_retention_matrix
 #[test]
-fn rust_executes_storage_raft_gc_parity_shared_cases() {
+fn rust_executes_storage_raft_gc_cases() {
     verify_storage_wal_index_gc_generation_retention(92);
     verify_storage_gc_dependency_retention_matrix(92);
 }
@@ -224,7 +224,7 @@ fn rust_executes_storage_raft_gc_parity_shared_cases() {
 // shared-corpus: storage_stale_page_density_compaction storage_merged_dump_load_restart_interruption storage_gc_eviction_cold_reads storage_manager_real_pressure_signals storage_manager_wal_reclaim_slot_generation_retention storage_manager_expire_cursor_scan_limits
 // shared-corpus: storage_manager_active_eviction_runtime storage_manager_page_gc_dependency_refusal storage_manager_index_gc_thresholds_recovery storage_risk_context_page_backed_parity
 #[test]
-fn rust_executes_storage_eviction_parity_shared_cases() {
+fn rust_executes_storage_eviction_cases() {
     verify_storage_cache_replacement_policy_soak(79);
     verify_storage_cache_refill_pressure(88);
     verify_storage_cold_read_after_eviction(1);

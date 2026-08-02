@@ -10198,7 +10198,7 @@
       ]
     },
     {
-      "description": "Shared C++/Rust cache case: long-running replacement-policy soak validates memory/disk pressure, writeback/backpressure, latency metrics, and restart recovery.",
+      "description": "Rust cache case: long-running replacement-policy soak validates memory/disk pressure, writeback/backpressure, latency metrics, and restart recovery.",
       "family": "storage/cache",
       "name": "storage_cache_replacement_soak_shared",
       "shard_id": 92,
@@ -10213,8 +10213,7 @@
             "description": "Runs memory and disk cache pressure with pinned handles, placement semantics, async writeback/backpressure, latency histograms, eviction/refill, and restart recovery.",
             "rust_test": "cache_replacement_policy_soak_under_memory_disk_pressure_and_restart",
             "required_paths": [
-              "src/partition/storage/cache*",
-              "src/partition/storage/mtcache*"
+              "src/partition/storage/cache*"
             ],
             "expect_cache_features": [
               "pinned_handles",
@@ -10222,8 +10221,7 @@
               "async_writeback_backpressure",
               "read_refill_writeback_eviction_latency_histograms"
             ],
-            "expect_restart_recovery": true,
-            "expect_remaining_optional_blocker": "direct mtcache/cachelib-equivalent integration remains optional unless exact C++ cache implementation parity is required"
+            "expect_restart_recovery": true
           },
           "expect": {
             "kind": "status",
