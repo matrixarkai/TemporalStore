@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package bcache2.str;
+
+import "base.proto";
+
+option java_package = "com.bytedance.bcache2.proto";
+
+message StringModuleRequest {
+    oneof cmd {
+        SetRequest set_request = 1;
+        GetRequest get_request = 2;
+        SetexRequest setex_request = 3;
+    }
+}
+
+message StringModuleResponse {
+    oneof cmd {
+        SetResponse set_response = 1;
+        GetResponse get_response = 2;
+        SetexResponse setex_response = 3;
+    }
+}
+
+message SetRequest {
+    bytes key   = 1;
+    bytes value = 2;
+}
+
+message SetResponse {
+}
+
+message SetexRequest {
+    bytes key   = 1;
+    bytes value = 2;
+    uint64 ttl_ms   = 3;
+}
+
+message SetexResponse {
+}
+
+message GetRequest {
+    bytes key = 1;
+}
+
+message GetResponse {
+    bytes value = 1;
+}

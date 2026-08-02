@@ -1,0 +1,157 @@
+syntax = "proto3";
+
+package bcache2.storage;
+
+message BlobInfo {
+    uint64 blob_id                  = 1;
+    uint64 start_offset             = 2;
+    uint64 blob_start_offset        = 3;
+    uint64 blob_end_offset          = 4;
+    uint64 end_record_sequence      = 5;
+    uint64 freeze_ms                = 6;
+    uint64 end_offset               = 7;
+    uint64 truncated_offset         = 8;
+}
+
+message BlobHeader {
+    fixed64 magic                = 1;
+    uint64 blob_id               = 2;
+    bytes blob_name             = 3;
+    uint64 timestamp_ms          = 4;
+    uint32 version               = 5;
+    uint64 start_record_sequence = 6;
+    bytes client_token          = 7;
+    repeated BlobInfo data_blobs = 8;
+    uint64 start_offset          = 9;
+    uint32 prev_block_crc32c     = 10;
+    uint64 truncated_offset      = 11;
+    fixed32 header_size          = 12;
+    repeated BlobInfo obsolete_blobs = 13;
+}
+
+message BlockFooter {
+    fixed64 magic                = 1;
+    uint32 version               = 2;
+    uint64 timestamp_ms          = 3;
+    fixed32 block_crc            = 4;
+    uint64 block_number          = 5;
+    uint32 block_end             = 6;
+    uint64 last_record_offset    = 7;
+    uint32 last_record_left_size = 8;
+    uint64 last_record_sequence  = 9;
+    bytes client_token          = 10;
+    uint64 truncated_offset      = 12;
+}
+
+message RecordHeader {
+    uint32 record_size = 1;
+}
+
+message OpLog {
+    message LogItem {
+        uint64 slot_id      = 1;
+        bytes object_key   = 2;
+        uint32 model_id     = 3;
+        bytes key           = 4;
+        bytes value         = 5;
+        uint64 timestamp_ms = 6;
+        uint64 cluster_id   = 7;
+        bool deleted        = 8;
+        bool object_deleted = 9;
+        bool page_log       = 10; // TODO: Need to be optimized
+        uint32 object_id    = 11;
+        uint32 page_id      = 12;
+        bytes  page         = 13;
+        uint64 ttl          = 14;
+        bool meta_log       = 15;
+    }
+    uint32 version        = 1;
+    repeated LogItem item = 2;
+    uint64 sequence       = 3;
+}
+
+message IndexLog {
+    enum ItemType {
+        PAGE=0;
+        META=1;
+        OBJECT=2;
+    }
+
+    message IndexItem {
+        uint32 object_id   = 1;
+        uint32 page_id     = 2;
+        uint64 address     = 3;
+        uint32 size        = 4;
+        bool   in_log      = 5;
+        bool deleted       = 6;
+        uint32 model_id    = 7;
+    }
+
+    enum ZoneState {
+        INIT     = 0;
+        CREATED  = 1;
+        FROZEN   = 2;
+        RECYCLED = 4;
+    }
+
+    message ZoneInfo {
+        uint32 zone_id          = 1;
+        uint64 total_bytes      = 2;
+        ZoneState state         = 3;
+        uint64 init_time_ms     = 4;
+        uint64 created_time_ms  = 5;
+        uint64 frozen_time_ms   = 6;
+        uint64 recycled_time_ms = 7;
+        // used for uniqueID, life spam of a zone,
+        // used for identify out-dated pages
+        uint64 version          = 8;
+    }
+
+    message MetaItem {
+        uint64 version = 1; // version of MetaItem
+        uint64 start_oplog_id = 2; // the mininum oplog id that is not truncated
+        map<uint32, ZoneInfo> zones = 3;
+        uint64 timestamp_ms = 4;
+        uint64 zone_version = 5; // version of zones
+    }
+
+    message ObjectItem {
+        uint64 version     = 1;
+        uint32 object_id   = 2;
+        uint64 ttl         = 3; // only this field matters
+    }
+
+    uint32 version = 1; // On-disk version
+    // Below fields are valid in PAGE type.
+    fixed64 slot_id = 3;
+    repeated IndexItem item = 4;
+    // Below fields are valid in META type.
+    MetaItem meta_item = 5;
+    repeated ObjectItem object_item = 6; // all objects in this slot will be included
+    uint64 sequence = 7;
+    uint64 oplog_sequence = 8;
+    uint64 timestamp_ms = 9;
+
+    // deprecated
+    ItemType deprecated_type =  2;
+}
+
+message PageHeader {
+    enum CompressType {
+        UNCOMPRESS=0;
+        LZ4=1;
+    }
+
+    fixed64 slot_id         = 1;
+    uint32 object_id        = 2;
+    uint32 page_id          = 3;
+    uint64 raw_data_size    = 4; // data size before compress
+    uint64 data_size        = 5; // data size after compress
+    uint64 timestamp_ms     = 6;
+    bytes  key              = 7;
+    uint32 model_id         = 8;
+    CompressType compress   = 9;
+    bool   page_in_log      = 10;
+    uint64 version          = 11; // pages order by version
+    uint64 oplog_sequence   = 12; // position in oplog when page is dumped
+}

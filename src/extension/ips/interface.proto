@@ -1,0 +1,262 @@
+syntax = "proto3";
+
+package bcache2.ips;
+
+option java_package = "com.bytedance.bcache2.proto";
+
+enum Function {
+    ADD = 0;
+    BATCH_QUERY = 1;
+    REMOVE = 2;
+    LOAD = 3;
+    DEL = 4;
+}
+
+enum ErrorCode {
+  SUCCESS = 0 ;
+  ERROR = 1 ;
+  STORAGE_ERROR = 2;
+  OUT_OF_MEMORY = 3;
+  USER_NO_DATA = 4;
+  UPSTREAM_OVERRUN = 5;
+  UPSTREAM_ILLEGAL = 6;
+  NO_TABLE = 7;
+  INVALID_ARG = 8;
+  REDUCE_CLOSED = 9;
+}
+
+message FeatureStatIntPair {
+  int32 v1 = 1;
+  int32 v2 = 2;
+  int64 timestamp =3;
+}
+
+message FeatureStatIntList {
+    int64 timestamp = 1;
+    repeated int64 v_list = 2;
+}
+
+message FeatureStat32 {
+  int64 id=1;
+  int32 v1=2;
+  int32 v2=3;
+  int32 type=4;
+  FeatureStatIntPair int_pair=5;
+  FeatureStatIntList int_list=6;
+  int32 slot = 7;
+  bool has_slot = 8;
+}
+
+message ActionFeatureStat32 {
+  int32 action_type = 1;
+  repeated FeatureStat32 feature_stat32_list = 2;
+}
+
+// deprecated 
+message FeatureStat {
+  int64 id = 1;
+  int64 v1 = 2;
+  int64 v2 = 3;
+}
+
+message Instance {
+    int64 uid = 1;
+    int64 ts = 2;
+    int32 action_type = 3;
+    int32 table = 4;
+    repeated FeatureStat32 feature_stat32_list = 5; 
+    repeated FeatureStat feature_stat_list = 6;
+}
+
+message LoadInstance {
+    int64 uid = 1;
+    int64 max_ts = 2;
+    int64 min_ts = 3;
+    int32 action_type = 4;
+    int32 table = 5;
+    repeated FeatureStat32 feature_stat32_list = 6; 
+    repeated FeatureStat feature_stat_list = 7;
+}
+
+message FidData {
+  int32 table =1 ;
+  int32 action_type = 2;
+  repeated FeatureStat feature_stat_list=3;
+  repeated FeatureStat32 feature_stat32_list=4; 
+}
+
+message SlotData {
+  int32 slot =1;
+  repeated FidData fid_data_list=2; 
+}
+
+message SnapData {
+  int64 start_timesnap = 1;
+  int64 end_timesnap = 2;
+  repeated SlotData slot_data_list = 3;
+}
+
+message AddRequest {
+  bytes table = 1;
+  repeated Instance instance_list = 2;
+  bool enable_server_aggregator = 3;
+  bool enable_idempotent = 4;
+}
+
+message AddResponse {
+  ErrorCode err_code = 1;
+  string error_desc =2;
+}
+
+message LoadRequest {
+  bytes table = 1;
+  repeated LoadInstance instance_list = 2;
+  bool enable_server_aggregator = 3;
+  bool enable_idempotent = 4;
+}
+
+message LoadResponse {
+  ErrorCode err_code = 1;
+  string error_desc =2;
+}
+
+message DelRequest {
+  int64 uid = 1;
+  Filter filter = 2;
+  bytes table = 3;
+}
+
+message DelResponse {
+  ErrorCode err_code = 1;
+  string error_desc = 2;
+}
+
+enum FeatureStatOperator {
+  SORT_BY_V1 = 0;
+  SORT_BY_V2 = 1;
+  SORT_BY_RATIO = 2;
+  SORT_BY_ID = 3;
+  SORT_BY_TS = 4;
+  SORT_BY_VX = 5;  // Sort by the X-th element of feature list; X can be specified by Filter.sort_by_vx
+  FILTER_BY_VX = 6;  // Filter by the x-th element of feature list;
+  // Customize query sort weight which is depend on feature_index and feature_weights in Filter
+  SORT_BY_CUSTOMIZE_WEIGHT = 7;
+  FILTER_BY_FID = 8; // Filter by given fid list and ignore top_k
+  SORT_BY_WILSON_SCORE = 9; // only for pair type 
+}
+
+enum DecayOperator {
+  FLOOR = 0;
+  CEIL = 1;
+  ROUND = 2;
+}
+
+message Filter {
+  int32 table = 1;
+  int32 action_type =2;
+  int32 slot=3;
+  FeatureStatOperator optor=4;
+  int32 top_k =5;
+  bool has_top_k = 6;
+  int32 sort_by_vx = 7;
+  bool has_sort_by_vx = 21;
+  int64 filter_by_vx = 8;
+  bool has_filter_by_vx = 25;
+  int64 filter_by_vx_value =9;
+  bool has_filter_by_vx_value= 26;
+  double decay = 10;
+  DecayOperator decay_operator = 11;
+  int32 top_k_fid = 12;
+  bool has_top_k_fid = 13;
+  repeated int32 index =14;
+  bool has_index = 23;
+  repeated int32 min_index_count =15;
+  bool has_min_index_count=22;
+  repeated int32 feature_indexes = 16;
+  bool has_feature_indexes = 28;
+  bool has_feature_weights = 29;
+  repeated int32 feature_weights= 17;
+  repeated int64 fid_list =18;
+  bool has_fid_list = 24;
+  bool need_snaps_info =19;
+  double wilson_z = 20;
+  bool has_wilson_z =27;
+  bool has_need_snaps_info = 30;
+}
+
+
+enum DataRangeType {
+    ABSOLUTE_TIME_MICROS = 0;
+    RELATIVE_TIME_MICROS = 1;
+    LAST_INSTANCES = 2;
+    START_TIME_MICROS = 3;
+    // parameters introduction can be found in the IDL section of IPS document
+    RELATIVE_TIME_MICROS_ACTION_TYPE = 4;
+}
+
+message DataRange{
+  DataRangeType type =1;
+  int64 range_val=2;
+  int64 start_time_micros=3;
+}
+
+message QueryRequest {
+  int64 uid = 1;
+  DataRange data_range = 2;
+  Filter filter = 3;
+  bool decoupled = 4;
+  bool has_decoupled = 6;
+  bytes table = 5;
+}
+
+message BatchQueryRequest {
+  repeated QueryRequest reqs = 1; 
+}
+
+message BatchQueryResponse {
+  repeated QueryResponse rsps =1;
+  ErrorCode err_code=2;
+  string error_desc=3;
+}
+
+message SnapsInfo {
+  repeated int64 snaps_start_ts = 1;
+  repeated int64 snaps_end_ts = 2; 
+  repeated int64 snaps_fid_cnt = 3;
+}
+
+message QueryResponse {
+  int64 uid = 1;
+  int64 start_ts = 3;
+  int64 end_ts = 4;
+  repeated FeatureStat feature_stat_list = 5;
+  repeated FeatureStat32 feature_stat32_list = 6;
+  SnapsInfo snaps_info = 7;
+  Filter query_filter = 8;
+  DataRange query_range = 9; 
+}
+
+message TimeRange {
+  int64 start_micros = 1;
+  int64 end_micros = 2;
+}
+
+message InstanceFilter {
+  int32 slot = 1;
+  int32 action_type = 2;
+  int32 instance_table = 3;
+}
+
+message RemoveRequest {
+  int64 uid = 1;
+  TimeRange time_range = 2;
+  bytes table = 3;
+  InstanceFilter filter = 4;
+}
+
+message RemoveResponse {
+  ErrorCode err_code = 1;
+  TimeRange time_range = 2;
+  string error_desc = 3;
+  bool has_error_desc = 4;
+}

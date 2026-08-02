@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package bcache2;
+
+import "base.proto";
+
+option java_package = "com.bytedance.bcache2.proto";
+
+message CommonModuleRequest {
+    oneof cmd {
+        DelObjectRequest del_object_request = 1;
+        ExpireRequest expire_request = 2;
+        TtlRequest ttl_request = 3;
+    }
+}
+
+message CommonModuleResponse {
+    oneof cmd {
+        DelObjectResponse del_object_response = 1;
+        ExpireResponse expire_response = 2;
+        TtlResponse ttl_response = 3;
+    }
+}
+
+message DelObjectRequest {
+    string key = 1;
+}
+
+message DelObjectResponse {
+}
+
+message ExpireRequest {
+    string key = 1;
+    uint64 ttl_ms = 2;
+}
+
+message ExpireResponse {
+}
+
+message TtlRequest {
+    string key = 1;
+}
+
+message TtlResponse {
+    uint64 ttl_ms = 1;
+}

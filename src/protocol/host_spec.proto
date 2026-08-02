@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package bcache2.server;
+
+import "base.proto";
+
+message HostSpec {
+    Endpoint endpoint = 1;
+    Location location = 2;
+    repeated NUMANode numa_nodes = 3;
+    bool set_cpu_affinity = 4;
+    int64 updated_at = 5;
+}
