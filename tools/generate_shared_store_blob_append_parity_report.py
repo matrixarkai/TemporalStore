@@ -330,6 +330,18 @@ def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
         "direct_offset_index_maps_oplog_to_blob_offsets": bool(
             summary.get("direct_offset_index_maps_oplog_to_blob_offsets")
         ),
+        "authoritative_offset_lookup_reads_all_records": bool(
+            summary.get("authoritative_offset_lookup_reads_all_records")
+        ),
+        "authoritative_offset_lookup_matches_all_records": bool(
+            summary.get("authoritative_offset_lookup_matches_all_records")
+        ),
+        "authoritative_offset_lookup_has_extent_metadata": bool(
+            summary.get("authoritative_offset_lookup_has_extent_metadata")
+        ),
+        "direct_authoritative_offset_lookup": direct_publish.get("authoritative_offset_lookup"),
+        "sync_authoritative_offset_lookup": sync_writer.get("authoritative_offset_lookup"),
+        "async_authoritative_offset_lookup": async_writer.get("authoritative_offset_lookup"),
         "secondary_replay_recovered_all_records": bool(
             summary.get("secondary_replay_recovered_all_records")
         ),
@@ -390,6 +402,15 @@ def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runti
         ),
         "rust_offset_index_maps_oplog_to_blob_offsets": bool(
             rust_summary.get("direct_offset_index_maps_oplog_to_blob_offsets")
+        ),
+        "rust_authoritative_offset_lookup_reads_all_records": bool(
+            rust_summary.get("authoritative_offset_lookup_reads_all_records")
+        ),
+        "rust_authoritative_offset_lookup_matches_all_records": bool(
+            rust_summary.get("authoritative_offset_lookup_matches_all_records")
+        ),
+        "rust_authoritative_offset_lookup_has_extent_metadata": bool(
+            rust_summary.get("authoritative_offset_lookup_has_extent_metadata")
         ),
         "rust_snapshot_reopen_restores_offset_metadata": bool(
             rust_summary.get("snapshot_reopen_restores_offset_metadata")
@@ -464,8 +485,8 @@ def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runti
         ),
         "note": (
             "Rust TemporalStore MatrixObject append-blob runtime evidence now validates WAL frame "
-            "offsets, a protobuf oplog-index offset metadata sidecar, and incremental journal "
-            "reopen/readback. C++ MatrixObjectStore runtime evidence covers incremental disk-root "
+            "offsets, a protobuf oplog-index offset metadata sidecar, authoritative oplog-index "
+            "metadata lookup/range reads, and incremental journal reopen/readback. C++ MatrixObjectStore runtime evidence covers incremental disk-root "
             "reopen/readback."
         ),
     }
@@ -489,6 +510,9 @@ def _render_html(report: dict[str, Any]) -> str:
         ("Rust MatrixObject mode", rust_summary.get("matrixobject_mode")),
         ("Rust durable reopen equivalent", rust_summary.get("durable_reopen_equivalent")),
         ("Rust durable reopen caveat", rust_summary.get("durable_reopen_caveat")),
+        ("Rust authoritative offset lookup reads all records", rust_summary.get("authoritative_offset_lookup_reads_all_records")),
+        ("Rust authoritative offset lookup matches all records", rust_summary.get("authoritative_offset_lookup_matches_all_records")),
+        ("Rust authoritative offset lookup has extent metadata", rust_summary.get("authoritative_offset_lookup_has_extent_metadata")),
         ("Rust snapshot bytes", rust_summary.get("snapshot_bytes")),
         ("Rust snapshot export latency us", rust_summary.get("snapshot_export_latency_us")),
         ("Rust snapshot import latency us", rust_summary.get("snapshot_import_latency_us")),

@@ -106,6 +106,19 @@ impl ObjectStore for MatrixObjectObjectStore {
         Ok(Bytes::from(object.data))
     }
 
+    async fn get_range(
+        &self,
+        key: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<Bytes, ObjectStoreError> {
+        let inner = self.inner.lock().expect("matrixobject lock poisoned");
+        let object = inner
+            .get_object_range(&self.bucket, key, offset, length)
+            .map_err(map_matrixobject_error)?;
+        Ok(Bytes::from(object.data))
+    }
+
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
         let inner = self.inner.lock().expect("matrixobject lock poisoned");
         let mut marker = None;

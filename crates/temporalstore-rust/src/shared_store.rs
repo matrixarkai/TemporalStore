@@ -82,9 +82,19 @@ pub struct SharedStoreWalOffsetMetadata {
     pub wal_blob_end_offset: u64,
     pub wal_blob_bytes_written: u64,
     pub wal_blob_object_length: u64,
+    #[serde(default)]
+    pub wal_blob_physical_extent_count: u64,
+    pub wal_blob_first_physical_offset: Option<u64>,
     pub command_byte_size: u64,
     pub command_sha256: String,
     pub command_encoding: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SharedStoreWalIndexedRead {
+    pub metadata: SharedStoreWalOffsetMetadata,
+    pub entry: SharedStoreWalEntry,
+    pub range_bytes_read: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -270,6 +280,10 @@ struct SharedStoreWalOffsetMetadataProto {
     command_sha256: String,
     #[prost(uint32, tag = "10")]
     command_encoding: u32,
+    #[prost(uint64, tag = "11")]
+    wal_blob_physical_extent_count: u64,
+    #[prost(uint64, optional, tag = "12")]
+    wal_blob_first_physical_offset: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -380,6 +394,8 @@ where
             wal_blob_end_offset: receipt.end_offset,
             wal_blob_bytes_written: receipt.bytes_written,
             wal_blob_object_length: receipt.object_length,
+            wal_blob_physical_extent_count: receipt.physical_extent_count as u64,
+            wal_blob_first_physical_offset: receipt.first_physical_offset,
             command_byte_size: command_metadata.byte_size,
             command_sha256: command_metadata.sha256,
             command_encoding: command_metadata.encoding,
@@ -391,6 +407,65 @@ where
         )
         .await?;
         Ok(())
+    }
+
+    pub async fn lookup_wal_offset_metadata(
+        &self,
+        shard_id: ShardId,
+        oplog_index: u64,
+    ) -> Result<Option<SharedStoreWalOffsetMetadata>, SharedStoreReplicationError> {
+        Ok(self
+            .load_wal_offset_metadata(shard_id)
+            .await?
+            .remove(&oplog_index))
+    }
+
+    pub async fn read_wal_entry_by_offset_metadata(
+        &self,
+        shard_id: ShardId,
+        oplog_index: u64,
+    ) -> Result<Option<SharedStoreWalIndexedRead>, SharedStoreReplicationError> {
+        let Some(metadata) = self
+            .lookup_wal_offset_metadata(shard_id, oplog_index)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let length = metadata
+            .wal_blob_end_offset
+            .checked_sub(metadata.wal_blob_start_offset)
+            .ok_or_else(|| SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid WAL offset metadata range for shard {shard_id} index {oplog_index}"),
+            )))?;
+        if length != metadata.wal_blob_bytes_written {
+            return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "WAL offset metadata bytes mismatch for shard {shard_id} index {oplog_index}"
+                ),
+            )));
+        }
+        let bytes = self
+            .object_store
+            .get_range(
+                &metadata.wal_blob_key,
+                metadata.wal_blob_start_offset,
+                length,
+            )
+            .await?;
+        let entry = decode_wal_proto_frame_exact(&bytes, &metadata.wal_blob_key)?;
+        if entry.shard_id != shard_id || entry.oplog_index != oplog_index {
+            return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("WAL offset metadata points to shard {} index {}, expected shard {shard_id} index {oplog_index}", entry.shard_id, entry.oplog_index),
+            )));
+        }
+        Ok(Some(SharedStoreWalIndexedRead {
+            metadata,
+            entry,
+            range_bytes_read: length,
+        }))
     }
 
     pub fn storage_writer(
@@ -1258,12 +1333,67 @@ fn encode_wal_offset_metadata_frame(metadata: &SharedStoreWalOffsetMetadata) -> 
         command_byte_size: metadata.command_byte_size,
         command_sha256: metadata.command_sha256.clone(),
         command_encoding: metadata.command_encoding,
+        wal_blob_physical_extent_count: metadata.wal_blob_physical_extent_count,
+        wal_blob_first_physical_offset: metadata.wal_blob_first_physical_offset,
     };
     let mut encoded = proto.encode_to_vec();
     let mut out = Vec::with_capacity(4 + encoded.len());
     out.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
     out.append(&mut encoded);
     out
+}
+
+fn decode_wal_proto_frame_exact(
+    bytes: &[u8],
+    checksum_source: &str,
+) -> Result<SharedStoreWalEntry, SharedStoreReplicationError> {
+    if bytes.len() < 4 {
+        return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "truncated protobuf WAL frame length",
+        )));
+    }
+    let len = u32::from_be_bytes(
+        bytes[0..4]
+            .try_into()
+            .expect("length slice is exactly 4 bytes"),
+    ) as usize;
+    if bytes.len() != len + 4 {
+        return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "protobuf WAL frame range does not match frame length",
+        )));
+    }
+    let frame = SharedStoreWalFrameProto::decode(&bytes[4..])?;
+    verify_checksum(
+        checksum_source,
+        &frame.command_payload,
+        frame.command_byte_size,
+        &frame.command_sha256,
+    )?;
+    let command = match frame.command_encoding {
+        WAL_COMMAND_ENCODING_SDK_PROTO => {
+            let command = v1::Command::decode(frame.command_payload.as_slice())?;
+            sdk::sdk_command_to_types(command).map_err(|status| {
+                SharedStoreReplicationError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    status.to_string(),
+                ))
+            })?
+        }
+        WAL_COMMAND_ENCODING_JSON_SERDE => serde_json::from_slice(&frame.command_payload)?,
+        other => {
+            return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unsupported protobuf WAL command encoding {other}"),
+            )));
+        }
+    };
+    Ok(SharedStoreWalEntry {
+        shard_id: frame.shard_id,
+        oplog_index: frame.oplog_index,
+        command,
+    })
 }
 
 fn decode_wal_proto_blob(
@@ -1290,37 +1420,10 @@ fn decode_wal_proto_blob(
                 "truncated protobuf WAL frame payload",
             )));
         }
-        let frame = SharedStoreWalFrameProto::decode(&bytes[cursor..cursor + len])?;
+        let entry =
+            decode_wal_proto_frame_exact(&bytes[cursor - 4..cursor + len], "protobuf-wal-blob")?;
         cursor += len;
-        verify_checksum(
-            "protobuf-wal-blob",
-            &frame.command_payload,
-            frame.command_byte_size,
-            &frame.command_sha256,
-        )?;
-        let command = match frame.command_encoding {
-            WAL_COMMAND_ENCODING_SDK_PROTO => {
-                let command = v1::Command::decode(frame.command_payload.as_slice())?;
-                sdk::sdk_command_to_types(command).map_err(|status| {
-                    SharedStoreReplicationError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        status.to_string(),
-                    ))
-                })?
-            }
-            WAL_COMMAND_ENCODING_JSON_SERDE => serde_json::from_slice(&frame.command_payload)?,
-            other => {
-                return Err(SharedStoreReplicationError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("unsupported protobuf WAL command encoding {other}"),
-                )));
-            }
-        };
-        entries.push(SharedStoreWalEntry {
-            shard_id: frame.shard_id,
-            oplog_index: frame.oplog_index,
-            command,
-        });
+        entries.push(entry);
     }
     Ok(entries)
 }
@@ -1361,6 +1464,8 @@ fn decode_wal_offset_metadata_blob(
                 wal_blob_end_offset: frame.wal_blob_end_offset,
                 wal_blob_bytes_written: frame.wal_blob_bytes_written,
                 wal_blob_object_length: frame.wal_blob_object_length,
+                wal_blob_physical_extent_count: frame.wal_blob_physical_extent_count,
+                wal_blob_first_physical_offset: frame.wal_blob_first_physical_offset,
                 command_byte_size: frame.command_byte_size,
                 command_sha256: frame.command_sha256,
                 command_encoding: frame.command_encoding,
