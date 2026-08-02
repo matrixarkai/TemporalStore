@@ -24,6 +24,32 @@ namespace bcache2 {
 namespace context {
 namespace {
 
+// In-memory, coalesced summary-dirty tracking (C++/Rust parity).
+//
+// The persisted per-event ctx:dirty timeline is replaced by a process-local
+// coalescing map keyed by the dirty object key ("ctx:dirty:{tenant}:{node}").
+// Repeated marks for the same node update one entry (latest event time, max
+// propagate depth) instead of appending a page per event, so dirty records are
+// bounded by distinct dirty nodes rather than event volume. The map is ephemeral
+// and may be lost on restart; async summary refresh re-marks on the next event.
+struct InMemoryDirtyEntry {
+    SummaryDirtyMarker marker;
+    uint64_t first_event_time_ms = 0;
+    uint64_t last_event_time_ms = 0;
+    uint32_t max_propagate_depth = 0;
+    uint64_t mark_count = 0;
+};
+
+std::mutex& DirtyIndexMutex() {
+    static std::mutex mu;
+    return mu;
+}
+
+std::unordered_map<std::string, InMemoryDirtyEntry>& DirtyIndex() {
+    static auto* index = new std::unordered_map<std::string, InMemoryDirtyEntry>();
+    return *index;
+}
+
 constexpr char kNodeField[] = "meta";
 constexpr char kEmbeddingField[] = "embedding";
 constexpr char kEntityField[] = "entity";
@@ -2035,22 +2061,29 @@ Status MarkSummaryDirty(ExecuteEnv* env, const MarkSummaryDirtyRequest& request,
         return status;
     }
 
+    // In-memory coalesced tracking: repeated marks for the same node update a single
+    // entry instead of appending a persisted page per event. Ephemeral and may be lost
+    // on restart; the async summary worker re-marks on the next event.
+    (void)env;
     const std::string key = DirtyKey(request.tenant_hash(), request.marker().node_hash());
-    ObjectHandle<model::ContextDirtyModel> object;
-    status = env->GetOrNewObject(key, &object);
-    if (!status.ok()) {
-        return status;
-    }
-
-    std::string value;
-    if (!request.marker().SerializeToString(&value)) {
-        return Status::InvalidArgument("failed to serialize SummaryDirtyMarker");
-    }
-    status = object->OrSet().Add(
-        nullptr, TimelineKey(request.marker().event_time_ms(), request.marker().node_hash()),
-        std::move(value));
-    if (!status.ok()) {
-        return status;
+    {
+        std::lock_guard<std::mutex> lock(DirtyIndexMutex());
+        InMemoryDirtyEntry& entry = DirtyIndex()[key];
+        if (entry.mark_count == 0) {
+            entry.first_event_time_ms = request.marker().event_time_ms();
+            entry.last_event_time_ms = request.marker().event_time_ms();
+        } else {
+            entry.first_event_time_ms =
+                std::min(entry.first_event_time_ms, request.marker().event_time_ms());
+            entry.last_event_time_ms =
+                std::max(entry.last_event_time_ms, request.marker().event_time_ms());
+        }
+        entry.max_propagate_depth =
+            std::max(entry.max_propagate_depth, request.marker().propagate_depth());
+        entry.marker = request.marker();
+        entry.marker.set_event_time_ms(entry.last_event_time_ms);
+        entry.marker.set_propagate_depth(entry.max_propagate_depth);
+        entry.mark_count += 1;
     }
     response->set_object_key(key);
     return Status::OK();
@@ -2068,25 +2101,22 @@ Status QuerySummaryDirty(ExecuteEnv* env, const QuerySummaryDirtyRequest& reques
         return status;
     }
 
+    // Read the single coalesced in-memory dirty entry for this node and surface it as
+    // one marker when it overlaps the requested time window. `limit` is retained for API
+    // compatibility; there is at most one coalesced marker per node.
+    (void)env;
     const std::string key = DirtyKey(request.tenant_hash(), request.node_hash());
     response->set_object_key(key);
-    ObjectHandle<model::ContextDirtyModel> object;
-    status = env->GetObject(key, &object);
-    if (status.IsNotFound()) {
+    std::lock_guard<std::mutex> lock(DirtyIndexMutex());
+    auto it = DirtyIndex().find(key);
+    if (it == DirtyIndex().end()) {
         return Status::OK();
     }
-    if (!status.ok()) {
-        return status;
+    const InMemoryDirtyEntry& entry = it->second;
+    if (entry.mark_count > 0 && entry.last_event_time_ms >= request.start_time_ms() &&
+        entry.first_event_time_ms <= request.end_time_ms()) {
+        *response->add_markers() = entry.marker;
     }
-
-    object->OrSet().Query(TimelineStart(request.start_time_ms()),
-                          TimelineEnd(request.end_time_ms()), LimitOrDefault(request.limit()),
-                          [response](const uint64_t, const std::string& value) {
-                              SummaryDirtyMarker marker;
-                              if (marker.ParseFromString(value)) {
-                                  *response->add_markers() = std::move(marker);
-                              }
-                          });
     return Status::OK();
 }
 REGISTER_FUNCTION(CONTEXT, QUERY_SUMMARY_DIRTY, QuerySummaryDirty, Read);

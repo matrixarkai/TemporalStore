@@ -76,7 +76,6 @@ pub(super) fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.context_events.contains_key(key)
         || shard.context_indexes.contains_key(key)
         || shard.context_audits.contains_key(key)
-        || shard.context_dirty.contains_key(key)
         || shard.context_entities.contains_key(key)
         || shard.context_children.contains_key(key)
         || shard.context_embeddings.contains_key(key)
@@ -127,7 +126,6 @@ pub(super) fn storage_model_kinds() -> &'static [&'static str] {
         "context_event",
         "context_index",
         "context_audit",
-        "context_dirty",
         "context_entity",
         "context_child",
         "context_embedding",

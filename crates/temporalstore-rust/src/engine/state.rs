@@ -5,6 +5,24 @@ use serde::{Deserialize, Serialize};
 use crate::page_store::PageAddress;
 use crate::types::{CommandResponse, FeaturePoint, RiskFolType, ShardId};
 
+/// In-memory, coalesced summary-dirty entry.
+///
+/// One entry per dirty object key (`ctx:dirty:{tenant}:{node}`). Repeated
+/// `ContextMarkSummaryDirty` commands for the same node update this single entry
+/// in place instead of appending a new persisted marker, so the number of dirty
+/// records is bounded by the number of distinct dirty nodes rather than the number
+/// of events. `propagate_depth` keeps the deepest parent-propagation requested and
+/// `event_time_ms` bounds track the earliest/latest events that made the node dirty.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct ContextDirtyEntry {
+    pub(super) node_hash: u64,
+    pub(super) first_event_time_ms: u64,
+    pub(super) last_event_time_ms: u64,
+    pub(super) reason: u32,
+    pub(super) propagate_depth: u32,
+    pub(super) mark_count: u64,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(super) struct ShardState {
     pub(super) expires_at_ms: HashMap<String, u64>,
@@ -34,8 +52,21 @@ pub(super) struct ShardState {
     pub(super) context_indexes: HashMap<String, BTreeMap<u64, PageAddress>>,
     #[serde(default)]
     pub(super) context_audits: HashMap<String, BTreeMap<u64, PageAddress>>,
+    // Vestigial persisted dirty map. No longer written on the event path (summary-dirty
+    // tracking moved to the in-memory `context_dirty_index` below). Retained as an
+    // always-empty field so legacy snapshot load/save and page-rebuild paths compile and
+    // no-op; it is never populated by new writes. Candidate for removal in a follow-up.
     #[serde(default)]
     pub(super) context_dirty: HashMap<String, BTreeMap<u64, PageAddress>>,
+    // Summary-dirty tracking is intentionally in-memory only. Instead of appending a
+    // persisted `ctx:dirty` page per event (which produced one dirty node per write and
+    // unbounded dirty-page growth: a real e2e capture stored 47 dirty records for only 6
+    // events), we keep a coalescing hashmap keyed by dirty object key so repeated edits to
+    // the same node collapse into a single entry. This map is `#[serde(skip)]`: it is
+    // ephemeral and may be lost on restart, which is acceptable because the async summary
+    // worker re-marks nodes on the next event and stale summaries are self-healing.
+    #[serde(skip)]
+    pub(super) context_dirty_index: HashMap<String, ContextDirtyEntry>,
     #[serde(default)]
     pub(super) context_entities: HashMap<String, PageAddress>,
     #[serde(default)]
