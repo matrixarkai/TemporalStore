@@ -2190,8 +2190,12 @@ def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
         else:
             os.environ.pop("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", None)
             os.environ.setdefault("TEMPORALSTORE_LIB", args.cpp_lib)
-            os.environ.setdefault("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API", "1")
-            os.environ.setdefault("MATRIXARK_RUST_PROXY_CPP_MATRIXARK_C_API_COMPAT", "1")
+            if allow_c_api_bridge:
+                os.environ.setdefault("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API", "1")
+                os.environ.setdefault("MATRIXARK_RUST_PROXY_CPP_MATRIXARK_C_API_COMPAT", "1")
+            else:
+                os.environ.pop("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API", None)
+                os.environ["MATRIXARK_RUST_PROXY_CPP_MATRIXARK_C_API_COMPAT"] = "0"
         return MatrixArkTemporalStoreRustAdapter(rust_cli=args.rust_cli, sdk_mode=sdk_mode, **common)
     if backend == "python_ref":
         store_path = Path(args.python_ref_store) if args.python_ref_store else Path("/tmp") / "matrixark_phase0_python_ref.jsonl"
@@ -4018,6 +4022,9 @@ def main() -> int:
                 "record_log_compat_allowed": parsed.allow_rust_record_log_compat,
                 "debug_cli_allowed": parsed.allow_rust_debug_cli,
                 "cpp_c_api_bridge_allowed": parsed.allow_rust_cpp_c_api_bridge,
+                "cpp_c_api_bridge_default": "explicit_opt_in_only",
+                "cpp_c_api_bridge_requested": bool(parsed.allow_rust_cpp_c_api_bridge),
+                "cpp_c_api_bridge_parent_env": os.environ.get("MATRIXARK_RUST_PROXY_CPP_MATRIXARK_C_API_COMPAT", "0"),
                 "rust_hot_path_default": "rust_native_proxy_or_workspace_direct_sdk",
             },
             "storage_options": parsed.storage_options,

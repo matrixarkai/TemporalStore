@@ -4811,11 +4811,11 @@ class MatrixArkRustProxyClient:
             self._close_proc(proc)
         env = os.environ.copy()
         env["LD_LIBRARY_PATH"] = self._rust_proxy_library_search_path(env)
-        if env.get("MATRIXARK_RUST_PROXY_CPP_MATRIXARK_C_API_COMPAT", "1").strip().lower() not in {
-            "0",
-            "false",
-            "no",
-            "off",
+        if env.get("MATRIXARK_RUST_PROXY_CPP_MATRIXARK_C_API_COMPAT", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
         }:
             env.setdefault("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API", "1")
         lane["proc"] = subprocess.Popen(
