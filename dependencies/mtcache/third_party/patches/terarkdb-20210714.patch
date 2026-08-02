@@ -1,0 +1,24 @@
+diff -uNr terarkdb_github/CMakeLists.txt terarkdb_github2/CMakeLists.txt
+--- terarkdb_github/CMakeLists.txt	2021-07-15 17:24:14.000000000 +0800
++++ terarkdb_github2/CMakeLists.txt	2022-05-27 18:21:19.759026927 +0800
+@@ -58,7 +58,7 @@
+ Find_Package(Threads REQUIRED)
+ 
+ #----------------------- Global Options
+-if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin" OR CMAKE_BUILD_TYPE STREQUAL "Release" OR WITH_JEMALLOC)
++if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin" OR WITH_JEMALLOC)
+   set(WITH_ASAN OFF)
+ endif()
+ 
+diff -uNr terarkdb_github/util/channel.h terarkdb_github2/util/channel.h
+--- terarkdb_github/util/channel.h	2021-05-08 14:11:33.000000000 +0800
++++ terarkdb_github2/util/channel.h	2022-05-27 18:25:12.059994311 +0800
+@@ -62,7 +62,7 @@
+ 
+  private:
+   std::condition_variable cv_;
+-  std::mutex lock_;
++  mutable std::mutex lock_;
+   std::queue<T> buffer_;
+   bool eof_;
+ };

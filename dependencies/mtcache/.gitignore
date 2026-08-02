@@ -1,0 +1,29 @@
+build*/
+third_party/build
+third_party/downloads
+third_party/install
+third_party/install_asan
+*.pyc
+
+#ignore vscode/clion project file
+.vscode
+.metals
+.idea
+cmake-build-debug
+cmake-build-debug-remote
+cmake-build-debug-remote-host
+.clion.source.upload.marker
+
+# ignore clangd index cache files
+.cache
+
+# ignore vim temp files
+*.swp
+
+# ignore ctags files
+tags
+
+/clang-format
+git_version.h
+project_configs.h
+output

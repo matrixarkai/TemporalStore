@@ -1,0 +1,16 @@
+diff -ruN glog-0.3.5/CMakeLists.txt glog-0.3.5.new/CMakeLists.txt
+--- glog-0.3.5/CMakeLists.txt	2022-12-21 08:39:47.726052715 +0800
++++ glog-0.3.5.new/CMakeLists.txt	2022-12-21 08:41:42.170383945 +0800
+@@ -28,6 +28,13 @@
+
+ option (WITH_GFLAGS "Use gflags" ON)
+ option (WITH_THREADS "Enable multithreading support" ON)
++option (WITH_ASAN "Build libraries with address sanitizer" OFF)
++
++if (WITH_ASAN)
++  set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address")
++  set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
++  set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fsanitize=address")
++endif ()
+
+ list (APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
