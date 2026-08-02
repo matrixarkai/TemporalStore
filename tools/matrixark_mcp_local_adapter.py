@@ -8313,6 +8313,33 @@ class MatrixArkLocalAdapter:
             if len(hot_messages) == 1
             else str(extraction.get("event_type") or infer_event_type(text))
         )
+        hot_profile_memory_fields: Json = {}
+        if hot_event_type == "memory_feature" or profile_entity_type_for_memory_text(text) == "memory_feature_profile":
+            hot_profile_memory_fields = {
+                "profile_memory_class": "memory_feature",
+                "profile_memory_kind": "memory_feature",
+                "source_profile_memory_classes": ["memory_feature"],
+                "source_profile_memory_kinds": ["memory_feature"],
+            }
+        elif hot_event_type in {"assistant_response", "assistant_decision", "tool_evidence"}:
+            hot_profile_memory_fields = {
+                "profile_memory_class": "codex_outcome",
+                "profile_memory_kind": "codex_outcome",
+                "source_profile_memory_classes": ["codex_outcome"],
+                "source_profile_memory_kinds": ["codex_outcome"],
+            }
+        hot_event_memory_layer = candidate_memory_layer_name(
+            {
+                "record_type": "context_event",
+                "ref_type": "event",
+                "event_type": hot_event_type,
+                **source_lineage,
+                **hot_profile_memory_fields,
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+                "extraction_phase": "hot_path",
+            }
+        )
         with self.write_batch("message_ingest_hot_path"):
             session_key_parts = [str(part) for part in context_node_key(envelope)]
             if any(session_key_parts):
@@ -8330,10 +8357,12 @@ class MatrixArkLocalAdapter:
                     "summary_identity": "stable_per_session_node",
                     "node_hash": node_hash,
                     "node_path": node_path,
+                    "ref_type": "summary",
                     "context_node_key": session_key_parts,
                     "summary_text": session_summary_text,
                     "source_event_hash": event_id_hash,
                     **source_lineage,
+                    **hot_profile_memory_fields,
                     "source_memory_scopes": source_lineage.get("source_memory_scopes", ["session"]),
                     "source_session_continuities": source_lineage.get("source_session_continuities", ["same_session"]),
                     "source_extraction_phases": source_lineage.get("source_extraction_phases", ["hot_path"]),
@@ -8343,6 +8372,9 @@ class MatrixArkLocalAdapter:
                     "scope": hot_record_scope,
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
+                session_summary_memory_layer = candidate_memory_layer_name(session_summary_record)
+                if session_summary_memory_layer:
+                    session_summary_record["memory_layer"] = session_summary_memory_layer
                 self.append(session_summary_record)
                 for index_name in candidate_index_terms(session_summary_record, {}, {}):
                     session_summary_index = context_index_posting_record(
@@ -8370,9 +8402,11 @@ class MatrixArkLocalAdapter:
                         "vector": session_summary_vector,
                         "scope": hot_record_scope,
                         **source_lineage,
+                        **hot_profile_memory_fields,
                         "source_memory_scopes": source_lineage.get("source_memory_scopes", ["session"]),
                         "source_session_continuities": source_lineage.get("source_session_continuities", ["same_session"]),
                         "source_extraction_phases": source_lineage.get("source_extraction_phases", ["hot_path"]),
+                        "memory_layer": session_summary_memory_layer,
                         "memory_scope": "session",
                         "session_continuity": "same_session",
                         "extraction_phase": "hot_path",
@@ -8396,9 +8430,11 @@ class MatrixArkLocalAdapter:
                     "status": extraction.get("status", "observed"),
                     "source_kind": envelope.get("kind", "message"),
                     **source_lineage,
+                    **hot_profile_memory_fields,
                     "source_memory_scopes": source_lineage.get("source_memory_scopes", ["session"]),
                     "source_session_continuities": source_lineage.get("source_session_continuities", ["same_session"]),
                     "source_extraction_phases": source_lineage.get("source_extraction_phases", ["hot_path"]),
+                    "memory_layer": hot_event_memory_layer,
                     "memory_scope": "session",
                     "session_continuity": "same_session",
                     "extraction_phase": "hot_path",
@@ -8421,17 +8457,26 @@ class MatrixArkLocalAdapter:
                 "prior_context": prior_context,
                 "agent_hook": hook,
                 **source_lineage,
+                **hot_profile_memory_fields,
                 "storage_options": envelope.get("storage_options", {}),
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+                "extraction_phase": "hot_path",
+                "updated_at_ms": envelope["ingestion_time_ms"],
             }
+            hot_event_memory_layer = candidate_memory_layer_name(record)
+            if hot_event_memory_layer:
+                record["memory_layer"] = hot_event_memory_layer
             self.append(record)
             event_index_terms = ordered_unique(
-                extraction.get("indexes")
-                or [
+                list(extraction.get("indexes") or [])
+                + [
                     context_index_name("event_type", hot_event_type),
                     context_index_name("classification", non_default_classification(extraction.get("classification"))),
                     context_index_name("status", extraction.get("status") or "observed"),
                     context_index_name("source_type", envelope["kind"]),
                 ]
+                + sorted(candidate_index_terms(record, {}, {}))
             )
             event_index_records: list[Json] = []
             for index_name in event_index_terms:
