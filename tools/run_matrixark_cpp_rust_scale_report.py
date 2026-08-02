@@ -3429,6 +3429,58 @@ def production_policy_gate(report: Json) -> Json:
             f"{backend} audit_p95_ms={audit_p95}; rich audit/debug must be async/sampled by default.",
         )
 
+    rust_backend = report.get("backends", {}).get("rust", {})
+    rust_backend_metrics = (
+        rust_backend.get("backend_metrics", {})
+        if isinstance(rust_backend, dict) and isinstance(rust_backend.get("backend_metrics"), dict)
+        else {}
+    )
+    rust_metrics_result = (
+        rust_backend_metrics.get("result", {})
+        if isinstance(rust_backend_metrics.get("result"), dict)
+        else {}
+    )
+    rust_nested_metrics = (
+        rust_metrics_result.get("metrics", {})
+        if isinstance(rust_metrics_result.get("metrics"), dict)
+        else {}
+    )
+    rust_client_metrics = (
+        rust_nested_metrics.get("rust_client", {})
+        if isinstance(rust_nested_metrics.get("rust_client"), dict)
+        else {}
+    )
+    rust_append_blob_total = int(rust_client_metrics.get("matrixark_append_blob_parity_total") or 0)
+    rust_append_lowering_total = int(
+        rust_client_metrics.get("matrixark_append_hset_count_lowering_total") or 0
+    )
+    rust_append_hot_path = str(rust_client_metrics.get("matrixark_append_hot_path") or "unknown")
+    rust_append_commands = int(
+        (
+            rust_client_metrics.get("op_metrics", {})
+            if isinstance(rust_client_metrics.get("op_metrics"), dict)
+            else {}
+        )
+        .get("matrixark_batch_append_records", {})
+        .get("commands_total")
+        or 0
+    )
+    rust_append_blob_parity_ok = (
+        rust_backend.get("status") != "passed"
+        or rust_append_commands == 0
+        or (rust_append_blob_total > 0 and rust_append_lowering_total == 0)
+    )
+    add_check(
+        "rust_matrixark_serving_append_blob_hot_path",
+        rust_append_blob_parity_ok,
+        (
+            "Rust MatrixArk serving append must use append-blob/oplog-offset metadata, not "
+            f"hset/count lowering. hot_path={rust_append_hot_path}; "
+            f"append_commands={rust_append_commands}; append_blob_total={rust_append_blob_total}; "
+            f"hset_count_lowering_total={rust_append_lowering_total}."
+        ),
+    )
+
     same_config_fields = [
         "dataset",
         "storage_options",

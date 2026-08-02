@@ -32,6 +32,8 @@ pub(crate) struct MetricsSnapshot {
     pub cache_hit_total: u64,
     pub selected_refs_total: u64,
     pub dropped_refs_total: u64,
+    pub matrixark_append_blob_parity_total: u64,
+    pub matrixark_append_hset_count_lowering_total: u64,
     pub op: HashMap<String, OpMetrics>,
 }
 
@@ -56,6 +58,8 @@ impl Default for MetricsSnapshot {
             cache_hit_total: 0,
             selected_refs_total: 0,
             dropped_refs_total: 0,
+            matrixark_append_blob_parity_total: 0,
+            matrixark_append_hset_count_lowering_total: 0,
             op: HashMap::new(),
         }
     }
@@ -99,6 +103,26 @@ impl MetricsSnapshot {
                 .get("dropped_ref_count")
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
+            if matches!(
+                op,
+                "matrixark_append_records" | "matrixark_batch_append_records"
+            ) {
+                if result
+                    .get("append_blob_parity")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    self.matrixark_append_blob_parity_total += 1;
+                }
+                if result
+                    .get("batch_lowering")
+                    .and_then(Value::as_str)
+                    .map(|value| value == "rust_proxy_hset_count_lowering")
+                    .unwrap_or(false)
+                {
+                    self.matrixark_append_hset_count_lowering_total += 1;
+                }
+            }
         }
         self.records_written += stats.records_written;
         self.records_read += stats.records_read;
