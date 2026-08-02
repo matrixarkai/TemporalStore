@@ -6,6 +6,17 @@ use crate::matrixark_rust_proxy_protocol::Command;
 use crate::matrixark_rust_proxy_records::{read_matrixark_record, write_matrixark_record};
 use crate::matrixark_rust_proxy_runtime::required;
 
+fn cpp_matrixark_c_api_bridge_enabled() -> bool {
+    std::env::var("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 pub(crate) fn append_records(client: &Client, command: &Command) -> Result<Value, String> {
     let entries = command_entries(command)?;
     if entries.is_empty()
@@ -35,14 +46,6 @@ pub(crate) fn append_records(client: &Client, command: &Command) -> Result<Value
         .as_ref()
         .map(|value| serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string()))
         .unwrap_or_else(|| "{}".to_string());
-    client
-        .matrixark_batch_append_records_with_routes_and_options(
-            &batch,
-            count_key,
-            count_value,
-            &append_options_json,
-        )
-        .map_err(|err| err.to_string())?;
     let mut written = entries.len();
     if count_key.is_some() && count_value.is_some() {
         written += 1;
@@ -56,6 +59,36 @@ pub(crate) fn append_records(client: &Client, command: &Command) -> Result<Value
         .and_then(|options| options.get("append_path"))
         .and_then(Value::as_str)
         .unwrap_or("native_batch_append_records");
+    if !cpp_matrixark_c_api_bridge_enabled() {
+        for entry in &entries {
+            client
+                .hset(entry.key, entry.field, entry.value)
+                .map_err(|err| err.to_string())?;
+        }
+        if let (Some(key), Some(value)) = (count_key, count_value) {
+            client.put_string(key, value).map_err(|err| err.to_string())?;
+        }
+        return Ok(json!({
+            "ok": true,
+            "written": written,
+            "append_api": command.op,
+            "native_append": true,
+            "append_path": append_path,
+            "raw_storage_backend": raw_backend,
+            "batch_lowering": "rust_proxy_hset_count_lowering",
+            "append_blob_parity": false,
+            "route_metadata_ignored": true,
+            "next_native_gap": "rust_sdk_append_blob_oplog_index_metadata_hot_path"
+        }));
+    }
+    client
+        .matrixark_batch_append_records_with_routes_and_options(
+            &batch,
+            count_key,
+            count_value,
+            &append_options_json,
+        )
+        .map_err(|err| err.to_string())?;
     Ok(json!({
         "ok": true,
         "written": written,
