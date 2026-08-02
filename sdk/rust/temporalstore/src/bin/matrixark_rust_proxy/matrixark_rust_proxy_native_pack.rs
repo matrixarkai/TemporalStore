@@ -52,10 +52,16 @@ pub(crate) fn retrieve_context_pack_via_sdk_native(
             .and_then(Value::as_u64)
             .or_else(|| {
                 pack.get("selected_refs")
+                    .or_else(|| pack.get("remote_context_refs"))
                     .and_then(Value::as_array)
                     .map(|refs| refs.len() as u64)
             })
             .unwrap_or(0);
+        if pack.get("selected_refs").is_none() {
+            if let Some(remote_refs) = pack.get("remote_context_refs").cloned() {
+                pack.insert("selected_refs".to_string(), remote_refs);
+            }
+        }
         pack.insert("selected_ref_count".to_string(), json!(selected_count));
         let recall_policy = pack
             .entry("recall_policy".to_string())

@@ -1447,6 +1447,19 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             ),
             3,
         )
+        self.assertEqual(
+            selected_ref_count(
+                {
+                    "context_pack": {
+                        "remote_context_refs": [
+                            {"ref_type": "event", "ref_hash": "a"},
+                            {"ref_type": "summary", "ref_hash": "b"},
+                        ]
+                    }
+                }
+            ),
+            2,
+        )
 
     def test_scale_report_blocks_selected_ref_drift(self) -> None:
         base = {
