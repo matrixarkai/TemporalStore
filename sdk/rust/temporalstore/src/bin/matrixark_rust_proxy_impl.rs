@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Read, Write};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -41,13 +42,16 @@ struct HashEntry {
     key: String,
     field: String,
     value: Option<String>,
+    route_json: Option<String>,
+    storage_route: Option<Value>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct HashEntryRef<'a> {
     key: &'a str,
     field: &'a str,
     value: &'a str,
+    route_json: Cow<'a, str>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -832,16 +836,19 @@ fn command_entry_count(command: &Command) -> u64 {
 
 fn command_entry_stats(command: &Command) -> (u64, u64) {
     if let Some(entries) = &command.entries_compact {
-        let bytes = entries
-            .iter()
-            .map(|entry| entry[2].len() as u64)
-            .sum();
+        let bytes = entries.iter().map(|entry| entry[2].len() as u64).sum();
         return (entries.len() as u64, bytes);
     }
     if let Some(entries) = &command.entries {
         let bytes = entries
             .iter()
-            .map(|entry| entry.value.as_ref().map(|value| value.len() as u64).unwrap_or(0))
+            .map(|entry| {
+                entry
+                    .value
+                    .as_ref()
+                    .map(|value| value.len() as u64)
+                    .unwrap_or(0)
+            })
             .sum();
         return (entries.len() as u64, bytes);
     }
@@ -856,6 +863,7 @@ fn command_entries(command: &Command) -> Result<Vec<HashEntryRef<'_>>, String> {
                 key: entry[0].as_str(),
                 field: entry[1].as_str(),
                 value: entry[2].as_str(),
+                route_json: Cow::Borrowed("{}"),
             })
             .collect());
     }
@@ -863,6 +871,18 @@ fn command_entries(command: &Command) -> Result<Vec<HashEntryRef<'_>>, String> {
         return entries
             .iter()
             .map(|entry| {
+                let route_json = entry
+                    .route_json
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                    .map(Cow::Borrowed)
+                    .or_else(|| {
+                        entry
+                            .storage_route
+                            .as_ref()
+                            .map(|value| Cow::Owned(value.to_string()))
+                    })
+                    .unwrap_or_else(|| Cow::Borrowed("{}"));
                 Ok(HashEntryRef {
                     key: entry.key.as_str(),
                     field: entry.field.as_str(),
@@ -870,6 +890,7 @@ fn command_entries(command: &Command) -> Result<Vec<HashEntryRef<'_>>, String> {
                         .value
                         .as_deref()
                         .ok_or_else(|| "matrixark batch append entry missing value".to_string())?,
+                    route_json,
                 })
             })
             .collect();
@@ -914,9 +935,11 @@ fn expanded_hash_entries(command: &Command) -> Vec<(String, String, String)> {
         }));
     }
     if let Some(entries) = &command.entries_compact {
-        expanded.extend(entries.iter().map(|entry| {
-            (entry[0].clone(), entry[1].clone(), entry[2].clone())
-        }));
+        expanded.extend(
+            entries
+                .iter()
+                .map(|entry| (entry[0].clone(), entry[1].clone(), entry[2].clone())),
+        );
     }
     expanded
 }
@@ -1363,31 +1386,78 @@ fn infer_native_question_type(query: &str) -> String {
     }
     if native_question_contains_any(
         &lower,
-        &["why", "reason", "because", "feel", "felt", "emotion", "happy", "sad", "angry", "worried", "excited"],
+        &[
+            "why", "reason", "because", "feel", "felt", "emotion", "happy", "sad", "angry",
+            "worried", "excited",
+        ],
     ) {
         return "why_emotion".to_string();
     }
     if native_question_contains_any(
         &lower,
-        &["overview", "summarize", "summary", "explore", "broad", "what is in", "what do we know", "topics", "map", "inventory"],
+        &[
+            "overview",
+            "summarize",
+            "summary",
+            "explore",
+            "broad",
+            "what is in",
+            "what do we know",
+            "topics",
+            "map",
+            "inventory",
+        ],
     ) {
         return "broad_exploration".to_string();
     }
     if native_question_contains_any(
         &lower,
-        &["evidence", "quote", "exactly", "what did ", "conversation", "dialogue", "message"],
+        &[
+            "evidence",
+            "quote",
+            "exactly",
+            "what did ",
+            "conversation",
+            "dialogue",
+            "message",
+        ],
     ) {
         return "evidence".to_string();
     }
     if native_question_contains_any(
         &lower,
-        &["procedure", "step", "steps", "how to", "troubleshoot", "debug", "rollback", "runbook", "playbook", "checklist", "fix", "remediate", "mitigate"],
+        &[
+            "procedure",
+            "step",
+            "steps",
+            "how to",
+            "troubleshoot",
+            "debug",
+            "rollback",
+            "runbook",
+            "playbook",
+            "checklist",
+            "fix",
+            "remediate",
+            "mitigate",
+        ],
     ) {
         return "procedure".to_string();
     }
     if native_question_contains_any(
         &lower,
-        &["both", "together", "across", "between", "compare", "combine", "sessions", "multi-hop", "multi session", "multi-session"],
+        &[
+            "both",
+            "together",
+            "across",
+            "between",
+            "compare",
+            "combine",
+            "sessions",
+            "multi-hop",
+            "multi session",
+            "multi-session",
+        ],
     ) {
         return "multi_hop".to_string();
     }
@@ -1519,11 +1589,14 @@ fn eligible_entity_bridge_tuple_remains(
     if !cross_policy.enabled {
         return false;
     }
-    scored.iter().skip(start_index).any(|(score, record, continuity, _, _)| {
-        *continuity == "cross_session"
-            && context_class_name(record) == "entity"
-            && *score >= cross_policy.min_score
-    })
+    scored
+        .iter()
+        .skip(start_index)
+        .any(|(score, record, continuity, _, _)| {
+            *continuity == "cross_session"
+                && context_class_name(record) == "entity"
+                && *score >= cross_policy.min_score
+        })
 }
 
 fn should_reserve_entity_bridge_slot(
@@ -1715,6 +1788,18 @@ fn serving_count_key(count_key: &str) -> String {
     format!("{count_key}:serving")
 }
 
+fn matrixark_serving_count(client: &Client, count_key: &str, count: u64) -> u64 {
+    let serving_count_text = client
+        .get_string(&serving_count_key(count_key))
+        .unwrap_or_default();
+    let serving_count = serving_count_text.parse::<u64>().unwrap_or(0);
+    if serving_count == 0 || serving_count > count {
+        count
+    } else {
+        serving_count
+    }
+}
+
 fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value, String> {
     let count_key = required(command.count_key.clone(), "count_key")?;
     let record_hash_key = required(command.record_hash_key.clone(), "record_hash_key")?;
@@ -1723,10 +1808,7 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
         .get_string(&count_key)
         .map_err(|err| err.to_string())?;
     let count = count_text.parse::<u64>().unwrap_or(0);
-    let serving_count_text = client
-        .get_string(&serving_count_key(&count_key))
-        .unwrap_or_default();
-    let serving_count = serving_count_text.parse::<u64>().unwrap_or(count);
+    let serving_count = matrixark_serving_count(client, &count_key, count);
     let allowed_types: HashSet<String> = command
         .record_types
         .clone()
@@ -1946,8 +2028,11 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
             .collect::<Vec<_>>()
     };
 
-    let dropped_ref_count =
-        dropped_by_type + dropped_by_scope + dropped_by_retention + selected_node_dropped + secondary_dropped;
+    let dropped_ref_count = dropped_by_type
+        + dropped_by_scope
+        + dropped_by_retention
+        + selected_node_dropped
+        + secondary_dropped;
     put_filtered_scan_cache(
         filtered_cache_key,
         FilteredScanCacheEntry {
@@ -2125,7 +2210,10 @@ fn pack_ref_from_record(
     })
 }
 
-fn retrieve_context_pack_via_sdk_native(client: &Client, command: &Command) -> Result<Value, String> {
+fn retrieve_context_pack_via_sdk_native(
+    client: &Client,
+    command: &Command,
+) -> Result<Value, String> {
     let count_key = required(command.count_key.clone(), "count_key")?;
     let record_hash_key = required(command.record_hash_key.clone(), "record_hash_key")?;
     let shard_size = command.shard_size.unwrap_or(1024).max(1) as usize;
@@ -2154,7 +2242,10 @@ fn retrieve_context_pack_via_sdk_native(client: &Client, command: &Command) -> R
         );
         obj.insert("cache_hit".to_string(), Value::Bool(true));
     }
-    if let Some(pack) = response.get_mut("context_pack").and_then(Value::as_object_mut) {
+    if let Some(pack) = response
+        .get_mut("context_pack")
+        .and_then(Value::as_object_mut)
+    {
         pack.entry("context_pack_assembly".to_string())
             .or_insert_with(|| Value::String("native_cpp_direct_via_rust_proxy".to_string()));
         let selected_count = pack
@@ -2183,14 +2274,24 @@ fn retrieve_context_pack_via_sdk_native(client: &Client, command: &Command) -> R
 
 fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Value, String> {
     let use_sdk_native = std::env::var("MATRIXARK_RUST_PROXY_DISABLE_SDK_NATIVE_PACK")
-        .map(|value| !matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
         .unwrap_or(true);
     if use_sdk_native {
         match retrieve_context_pack_via_sdk_native(client, command) {
             Ok(response) => return Ok(response),
             Err(err) => {
                 if std::env::var("MATRIXARK_RUST_PROXY_DISABLE_LEGACY_PACK_FALLBACK")
-                    .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+                    .map(|value| {
+                        matches!(
+                            value.trim().to_ascii_lowercase().as_str(),
+                            "1" | "true" | "yes"
+                        )
+                    })
                     .unwrap_or(false)
                 {
                     return Err(err);
@@ -2381,11 +2482,11 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
     for (
         index,
         (
-        score,
-        record,
-        session_continuity,
-        continuity_boost_value,
-        cross_session_rerank_boost_value,
+            score,
+            record,
+            session_continuity,
+            continuity_boost_value,
+            cross_session_rerank_boost_value,
         ),
     ) in scored.iter().enumerate()
     {
@@ -2457,11 +2558,7 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
             selected.len() as u64,
             max_refs,
             entity_bridge_selected_refs,
-            eligible_entity_bridge_tuple_remains(
-                &scored,
-                index + 1,
-                &cross_policy,
-            ),
+            eligible_entity_bridge_tuple_remains(&scored, index + 1, &cross_policy),
         ) {
             dropped_entity_bridge_slot_reserved += 1;
             continue;
@@ -2714,18 +2811,39 @@ fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
         "matrixark_append_records" | "matrixark_batch_append_records" => {
             let entries = command_entries(&command)?;
             if entries.is_empty()
-                && command.key.as_ref().filter(|value| !value.is_empty()).is_none()
+                && command
+                    .key
+                    .as_ref()
+                    .filter(|value| !value.is_empty())
+                    .is_none()
             {
                 return Err("missing entries".to_string());
             }
             let count_key = command.key.as_deref().filter(|value| !value.is_empty());
             let count_value = command.value.as_deref().filter(|value| !value.is_empty());
-            let batch: Vec<(&str, &str, &str)> = entries
+            let batch: Vec<(&str, &str, &str, &str)> = entries
                 .iter()
-                .map(|entry| (entry.key, entry.field, entry.value))
+                .map(|entry| {
+                    (
+                        entry.key,
+                        entry.field,
+                        entry.value,
+                        entry.route_json.as_ref(),
+                    )
+                })
                 .collect();
+            let append_options_json = command
+                .append_options
+                .as_ref()
+                .map(|value| serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string()))
+                .unwrap_or_else(|| "{}".to_string());
             client
-                .matrixark_batch_append_records(&batch, count_key, count_value)
+                .matrixark_batch_append_records_with_routes_and_options(
+                    &batch,
+                    count_key,
+                    count_value,
+                    &append_options_json,
+                )
                 .map_err(|err| err.to_string())?;
             let mut written = entries.len();
             if count_key.is_some() && count_value.is_some() {
@@ -2771,7 +2889,9 @@ fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
                 .iter()
                 .map(|(field, value)| json!({"key": key, "field": field, "value": value}))
                 .collect();
-            Ok(json!({"ok": true, "count": records.len(), "read": records.len(), "records": records}))
+            Ok(
+                json!({"ok": true, "count": records.len(), "read": records.len(), "records": records}),
+            )
         }
         "matrixark_scan_candidates" => scan_matrixark_candidates(client, &command),
         "matrixark_retrieve_context_pack" => retrieve_context_pack_native(client, &command),
@@ -3163,8 +3283,12 @@ mod tests {
             CommandStats::default(),
         );
         let text = metrics.render_prometheus();
-        assert!(text.contains("matrixark_rust_proxy_commands_total{op=\"write_matrixark_record\",status=\"ok\"} 1"));
-        assert!(text.contains("matrixark_rust_proxy_commands_total{op=\"write_matrixark_record\",status=\"error\"} 1"));
+        assert!(text.contains(
+            "matrixark_rust_proxy_commands_total{op=\"write_matrixark_record\",status=\"ok\"} 1"
+        ));
+        assert!(text.contains(
+            "matrixark_rust_proxy_commands_total{op=\"write_matrixark_record\",status=\"error\"} 1"
+        ));
         assert!(text.contains(
             "matrixark_rust_proxy_command_latency_ms_sum{op=\"write_matrixark_record\"} 42"
         ));
@@ -3175,7 +3299,6 @@ mod tests {
         assert!(text.contains("matrixark_rust_proxy_bytes_written_total 128"));
         assert!(text.contains("matrixark_rust_proxy_commands_failed_total 1"));
     }
-
 
     #[test]
     fn command_stats_counts_scan_hash_records() {
@@ -3246,20 +3369,8 @@ mod tests {
             "state": "User profile says Alice approved the GPU request after finance review."
         });
         let scored = vec![
-            (
-                0.99,
-                &same_session,
-                "same_session".to_string(),
-                0.0,
-                0.0,
-            ),
-            (
-                0.21,
-                &profile_entity,
-                "cross_session".to_string(),
-                0.0,
-                0.0,
-            ),
+            (0.99, &same_session, "same_session".to_string(), 0.0, 0.0),
+            (0.21, &profile_entity, "cross_session".to_string(), 0.0, 0.0),
         ];
 
         assert!(should_reserve_entity_bridge_slot(

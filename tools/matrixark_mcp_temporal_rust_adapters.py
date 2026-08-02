@@ -268,7 +268,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             return
         visibility_keys = self._consume_pending_visibility_keys()
         if not visibility_keys:
-            return
+            visibility_keys = []
         if not getattr(self, "_publish_visibility_after_flush", False):
             self._start_async_visibility_publish(visibility_keys)
             return

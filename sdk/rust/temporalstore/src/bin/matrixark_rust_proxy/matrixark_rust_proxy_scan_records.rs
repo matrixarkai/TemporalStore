@@ -17,6 +17,18 @@ pub(crate) fn serving_count_key(count_key: &str) -> String {
     format!("{count_key}:serving")
 }
 
+pub(crate) fn matrixark_serving_count(client: &Client, count_key: &str, count: u64) -> u64 {
+    let serving_count_text = client
+        .get_string(&serving_count_key(count_key))
+        .unwrap_or_default();
+    let serving_count = serving_count_text.parse::<u64>().unwrap_or(0);
+    if serving_count == 0 || serving_count > count {
+        count
+    } else {
+        serving_count
+    }
+}
+
 fn decode_matrixark_payload(value: &str) -> Vec<Value> {
     let Ok(decoded) = serde_json::from_str::<Value>(value) else {
         return Vec::new();

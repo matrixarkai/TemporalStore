@@ -4811,6 +4811,13 @@ class MatrixArkRustProxyClient:
             self._close_proc(proc)
         env = os.environ.copy()
         env["LD_LIBRARY_PATH"] = self._rust_proxy_library_search_path(env)
+        if env.get("MATRIXARK_RUST_PROXY_CPP_MATRIXARK_C_API_COMPAT", "1").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }:
+            env.setdefault("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API", "1")
         lane["proc"] = subprocess.Popen(
             [self.cli_path, "--serve"],
             stdin=subprocess.PIPE,
@@ -5415,14 +5422,34 @@ class MatrixArkRustProxyClient:
     ) -> None:
         if not entries and not count_key:
             return
-        compact_entries = [
-            [str(entry.get("key") or ""), str(entry.get("field") or ""), str(entry.get("value") or "")]
-            for entry in entries
-            if isinstance(entry, dict)
-        ]
+        compact_entries: list[list[str]] = []
+        routed_entries: list[Json] = []
+        has_routes = False
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            key = str(entry.get("key") or "")
+            field = str(entry.get("field") or "")
+            value = str(entry.get("value") or "")
+            route = entry.get("storage_route")
+            route_json = str(entry.get("route_json") or "")
+            if not route_json and isinstance(route, dict):
+                route_json = json.dumps(route, separators=(",", ":"), sort_keys=True)
+            if route_json and route_json != "{}":
+                has_routes = True
+            compact_entries.append([key, field, value])
+            routed_entries.append(
+                {
+                    "key": key,
+                    "field": field,
+                    "value": value,
+                    "route_json": route_json or "{}",
+                }
+            )
         self._call_json(
             "matrixark_batch_append_records",
-            entries_compact=compact_entries,
+            entries=None if not has_routes else routed_entries,
+            entries_compact=compact_entries if not has_routes else None,
             key=count_key or "",
             value=count_value or "",
             append_options=append_options or {},
@@ -5738,12 +5765,14 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         if not getattr(self, "_publish_visibility_after_flush", False):
             return
         visibility_keys = self._consume_pending_visibility_keys()
-        if not visibility_keys:
-            return
         publisher = getattr(self._client, "matrixark_publish_visibility", None)
-        if callable(publisher):
-            for keys in self._visibility_key_groups_by_partition(visibility_keys):
-                publisher(visibility_keys=keys)
+        if not callable(publisher):
+            return
+        if not visibility_keys:
+            publisher(visibility_keys=[])
+            return
+        for keys in self._visibility_key_groups_by_partition(visibility_keys):
+            publisher(visibility_keys=keys)
 
     def _visibility_key_groups_by_partition(self, visibility_keys: list[str]) -> list[list[str]]:
         groups: dict[str, list[str]] = {}
