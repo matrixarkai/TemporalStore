@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -46,6 +46,27 @@ def close_proxy_lanes(target: Any) -> None:
         close_proxy_process(proc)
 
 
+def _library_parent(path: str) -> str:
+    if path.startswith("/"):
+        return str(PurePosixPath(path).parent)
+    return str(Path(path).resolve().parent)
+
+
+def rust_proxy_library_search_path(cli_path: str, env: Json | None = None) -> str:
+    source_env = os.environ if env is None else env
+    paths: list[str] = [_library_parent(cli_path)]
+    temporalstore_lib = str(source_env.get("TEMPORALSTORE_LIB") or "").strip()
+    if temporalstore_lib:
+        lib_dir = _library_parent(temporalstore_lib)
+        if lib_dir not in paths:
+            paths.append(lib_dir)
+    existing_ld_path = str(source_env.get("LD_LIBRARY_PATH") or "").strip()
+    for item in existing_ld_path.split(":"):
+        if item and item not in paths:
+            paths.append(item)
+    return ":".join(paths)
+
+
 def ensure_lane_process(target: Any, lane: Json) -> subprocess.Popen[str]:
     proc = lane.get("proc")
     if proc is not None and proc.poll() is None:
@@ -53,9 +74,7 @@ def ensure_lane_process(target: Any, lane: Json) -> subprocess.Popen[str]:
     if proc is not None:
         close_proxy_process(proc)
     env = os.environ.copy()
-    proxy_dir = str(Path(target.cli_path).resolve().parent)
-    existing_ld_path = env.get("LD_LIBRARY_PATH", "")
-    env["LD_LIBRARY_PATH"] = proxy_dir if not existing_ld_path else f"{proxy_dir}:{existing_ld_path}"
+    env["LD_LIBRARY_PATH"] = rust_proxy_library_search_path(target.cli_path, env)
     lane["proc"] = subprocess.Popen(
         [target.cli_path, "--serve"],
         stdin=subprocess.PIPE,

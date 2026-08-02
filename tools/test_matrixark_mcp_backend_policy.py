@@ -23,6 +23,7 @@ try:
     from tools import matrixark_mcp_retrieve_index_terms as retrieve_index_terms
     from tools import matrixark_mcp_retrieve_planning as retrieve_planning
     from tools import matrixark_mcp_summary_runtime as mcp_summary_runtime
+    from tools.matrixark_mcp_rust_proxy_process import rust_proxy_library_search_path
     from tools.run_matrixark_cpp_rust_scale_report import (
         comparison,
         default_cpp_lib_path,
@@ -48,6 +49,7 @@ except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_retrieve_index_terms as retrieve_index_terms
     import matrixark_mcp_retrieve_planning as retrieve_planning
     import matrixark_mcp_summary_runtime as mcp_summary_runtime
+    from matrixark_mcp_rust_proxy_process import rust_proxy_library_search_path
     from run_matrixark_cpp_rust_scale_report import (
         comparison,
         default_cpp_lib_path,
@@ -1420,6 +1422,19 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         audit_budget = adapter.audit_appended[1]["memory_layer_budget"]
         self.assertEqual(audit_budget["by_extraction_phase"]["final"], {"refs": 1, "tokens": 12})
         self.assertEqual(audit_budget["final_session_boundary_ref_count"], 1)
+
+    def test_rust_proxy_library_search_path_includes_temporalstore_lib_dir(self) -> None:
+        search_path = rust_proxy_library_search_path(
+            "/opt/temporalstore/bin/matrixark_rust_proxy",
+            {
+                "TEMPORALSTORE_LIB": "/opt/temporalstore/sdk/lib/libbcache2.so",
+                "LD_LIBRARY_PATH": "/usr/local/lib:/opt/temporalstore/bin",
+            },
+        )
+        self.assertEqual(
+            search_path.split(":"),
+            ["/opt/temporalstore/bin", "/opt/temporalstore/sdk/lib", "/usr/local/lib"],
+        )
 
     def test_scale_report_counts_compact_context_pack_groups(self) -> None:
         self.assertEqual(

@@ -6,6 +6,7 @@ from __future__ import annotations
 import queue
 import socket
 import time
+from pathlib import PurePosixPath
 
 try:
     from tools.matrixark_mcp_core import *
@@ -4783,6 +4784,25 @@ class MatrixArkRustProxyClient:
             except Exception:
                 pass
 
+    @staticmethod
+    def _library_parent(path: str) -> str:
+        if path.startswith("/"):
+            return str(PurePosixPath(path).parent)
+        return str(Path(path).resolve().parent)
+
+    def _rust_proxy_library_search_path(self, env: Json) -> str:
+        paths: list[str] = [self._library_parent(self.cli_path)]
+        temporalstore_lib = str(env.get("TEMPORALSTORE_LIB") or "").strip()
+        if temporalstore_lib:
+            lib_dir = self._library_parent(temporalstore_lib)
+            if lib_dir not in paths:
+                paths.append(lib_dir)
+        existing_ld_path = str(env.get("LD_LIBRARY_PATH") or "").strip()
+        for item in existing_ld_path.split(":"):
+            if item and item not in paths:
+                paths.append(item)
+        return ":".join(paths)
+
     def _ensure_lane_proc(self, lane: Json) -> subprocess.Popen[str]:
         proc = lane.get("proc")
         if proc is not None and proc.poll() is None:
@@ -4790,9 +4810,7 @@ class MatrixArkRustProxyClient:
         if proc is not None:
             self._close_proc(proc)
         env = os.environ.copy()
-        proxy_dir = str(Path(self.cli_path).resolve().parent)
-        existing_ld_path = env.get("LD_LIBRARY_PATH", "")
-        env["LD_LIBRARY_PATH"] = proxy_dir if not existing_ld_path else f"{proxy_dir}:{existing_ld_path}"
+        env["LD_LIBRARY_PATH"] = self._rust_proxy_library_search_path(env)
         lane["proc"] = subprocess.Popen(
             [self.cli_path, "--serve"],
             stdin=subprocess.PIPE,
@@ -4906,8 +4924,20 @@ class MatrixArkRustProxyClient:
                     proc.stdin.flush()
                 except BrokenPipeError as exc:
                     lane["proc"] = None
+                    returncode = proc.poll()
+                    stderr = ""
+                    try:
+                        if proc.stderr is not None:
+                            stderr = proc.stderr.read() or ""
+                    except Exception:
+                        stderr = ""
                     self._close_proc(proc)
-                    raise MatrixArkError(f"Rust TemporalStore {op} pipe closed") from exc
+                    detail = f"Rust TemporalStore {op} pipe closed"
+                    if returncode is not None:
+                        detail += f" after process exit ({returncode})"
+                    if stderr:
+                        detail += f": {stderr[-1000:]}"
+                    raise MatrixArkError(detail) from exc
                 response = self._read_json_line(proc, op)
         except Exception:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
