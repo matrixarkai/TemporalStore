@@ -18,6 +18,7 @@ try:
         feature_scope_excludes_outcome_evidence,
         now_ms,
         optional_object,
+        profile_entity_type_for_memory_text,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
@@ -29,6 +30,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         feature_scope_excludes_outcome_evidence,
         now_ms,
         optional_object,
+        profile_entity_type_for_memory_text,
     )
 
 
@@ -96,6 +98,7 @@ def feature_profile_memory_budget_query(args: Json, ranking: Json, *, question_t
     return bool(
         PROFILE_MEMORY_QUERY_RE.search(lower)
         or FEATURE_MEMORY_BUDGET_QUERY_RE.search(lower)
+        or profile_entity_type_for_memory_text(query) == "memory_feature_profile"
         or (FEATURE_SCOPE_EXCLUSION_RE.search(lower) and "feature" in lower)
     )
 
