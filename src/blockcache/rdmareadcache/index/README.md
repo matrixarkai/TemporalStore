@@ -1,1 +1,0 @@
-This is a RDMA-friendly hash table. It supports API-based operations (Get, Put, Del), as well as accessing via raw pointers (e.g., using starting address of the hash table and the bucket position, you can access the target bucket and its entries).
