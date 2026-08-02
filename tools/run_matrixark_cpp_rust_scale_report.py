@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import signal
 import statistics
 import subprocess
 import sys
@@ -93,6 +94,17 @@ def default_cpp_lib_path() -> str:
     return str(candidates[0])
 
 
+def default_rust_cli_path() -> str:
+    candidates = [
+        ROOT / "target/release/matrixark_rust_proxy",
+        CANONICAL_UBUNTU_REPO / "target/release/matrixark_rust_proxy",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return str(candidates[0])
+
+
 def _metaserver_host(metaserver: str) -> str:
     if metaserver.startswith("["):
         return metaserver.split("]", 1)[0].lstrip("[")
@@ -107,15 +119,20 @@ def default_canonical_release_out_dir() -> Path:
     return CANONICAL_UBUNTU_REPO / "output-ubuntu22" / "release"
 
 
-def ensure_local_topology(args: argparse.Namespace) -> Json:
-    """Start local C++ topology for loopback scale runs when it is absent."""
+def ensure_local_topology(
+    args: argparse.Namespace,
+    *,
+    force_restart: bool = False,
+    reason: str = "metaserver_unreachable",
+) -> Json:
+    """Start local C++ topology for loopback scale runs when it is absent or unhealthy."""
 
     if getattr(args, "no_auto_start_local_topology", False):
         return {"status": "skipped", "reason": "disabled_by_flag", "metaserver": args.metaserver}
     if not _is_loopback_metaserver(str(args.metaserver)):
         return {"status": "skipped", "reason": "non_loopback_metaserver", "metaserver": args.metaserver}
     before = metaserver_reachable(args.metaserver)
-    if before.get("ok"):
+    if before.get("ok") and not force_restart:
         return {"status": "already_ready", "metaserver": args.metaserver, "precheck": before}
 
     deploy_root = CANONICAL_UBUNTU_REPO if CANONICAL_UBUNTU_REPO.exists() else ROOT
@@ -174,7 +191,8 @@ def ensure_local_topology(args: argparse.Namespace) -> Json:
     status = "started" if completed.returncode == 0 and after.get("ok") else "failed"
     return {
         "status": status,
-        "reason": "" if status == "started" else "deploy_failed_or_metaserver_unreachable",
+        "reason": reason if status == "started" and force_restart else ("" if status == "started" else "deploy_failed_or_metaserver_unreachable"),
+        "force_restart": force_restart,
         "metaserver": args.metaserver,
         "deploy_script": str(deploy_script),
         "out_dir": str(out_dir),
@@ -2554,20 +2572,24 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
         for key, value in rust_proxy_lane_defaults.items():
             previous_queue_env[key] = os.environ.get(key)
             os.environ[key] = value
-    adapter = make_adapter(backend, args, prefix)
-    if backend in {"cpp", "rust"}:
-        pin_scale_adapter_write_policy(adapter, queue_capacity=scale_queue_capacity)
+    def make_server() -> MatrixArkMcpServer:
+        current_adapter = make_adapter(backend, args, prefix)
+        if backend in {"cpp", "rust"}:
+            pin_scale_adapter_write_policy(current_adapter, queue_capacity=scale_queue_capacity)
+        current_server = MatrixArkMcpServer(current_adapter, access_mode="dev")
+        # This runner measures ingestion/retrieval/storage latency. Admin/context
+        # audit durability is covered by separate parity tests; keeping it enabled
+        # here can make backend readiness itself become an audit write benchmark.
+        current_server.access.append_audit = lambda *unused_args, **unused_kwargs: None  # type: ignore[method-assign]
+        current_server.access.append_denied_audit = lambda *unused_args, **unused_kwargs: None  # type: ignore[method-assign]
+        return current_server
+
+    server = make_server()
     for key, old_value in previous_queue_env.items():
         if old_value is None:
             os.environ.pop(key, None)
         else:
             os.environ[key] = old_value
-    server = MatrixArkMcpServer(adapter, access_mode="dev")
-    # This runner measures ingestion/retrieval/storage latency. Admin/context
-    # audit durability is covered by separate parity tests; keeping it enabled
-    # here can make backend readiness itself become an audit write benchmark.
-    server.access.append_audit = lambda *unused_args, **unused_kwargs: None  # type: ignore[method-assign]
-    server.access.append_denied_audit = lambda *unused_args, **unused_kwargs: None  # type: ignore[method-assign]
     scope = {
         "account_id": "acct_scale",
         "tenant_id": "tenant_scale",
@@ -2577,6 +2599,26 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
     node_path = ["tenant:tenant_scale", "user:user_scale", f"session:scale-{run_id}", "conversation:scale"]
     try:
         readiness = server.call_tool("matrixark_backend_ready", {"probe": True, "timeout_ms": args.readiness_timeout_ms})
+        if (
+            readiness.get("status") != "ready"
+            and getattr(args, "restart_local_topology_on_readiness_failure", True)
+            and not getattr(args, "no_auto_start_local_topology", False)
+            and _is_loopback_metaserver(str(args.metaserver))
+        ):
+            first_readiness = readiness
+            server.close()
+            restart = ensure_local_topology(
+                args,
+                force_restart=True,
+                reason=f"{backend}_readiness_failed",
+            )
+            server = make_server()
+            readiness = server.call_tool("matrixark_backend_ready", {"probe": True, "timeout_ms": args.readiness_timeout_ms})
+            readiness = {
+                **readiness,
+                "first_readiness": first_readiness,
+                "local_topology_restart": restart,
+            }
         if readiness.get("status") != "ready":
             result = {
                 "backend": backend,
@@ -2607,7 +2649,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
             }
         else:
             raw_resource_start = process_resource_snapshot()
-            raw_storage = run_raw_storage(backend, args, run_id, client=getattr(adapter, "_client", None))
+            raw_storage = run_raw_storage(backend, args, run_id, client=getattr(server.adapter, "_client", None))
             raw_resource_end = process_resource_snapshot()
             raw_storage["resource_usage"] = process_resource_delta(
                 raw_resource_start,
@@ -2680,7 +2722,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 if error:
                     ingest_errors.append(error)
         ingest_elapsed = time.perf_counter() - ingest_started
-        flush_direct_writes = getattr(adapter, "flush_direct_writes", None)
+        flush_direct_writes = getattr(server.adapter, "flush_direct_writes", None)
         flush_result: Json = {"skipped": True}
         if callable(flush_direct_writes):
             flush_started = time.perf_counter()
@@ -2842,6 +2884,30 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
         server.close()
 
 
+def backend_worker_timeout_snapshot(pid: int) -> Json:
+    snapshot: Json = {"pid": pid}
+    try:
+        process = subprocess.run(
+            ["ps", "-eo", "pid,ppid,pgid,stat,etime,cmd"],
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        lines = process.stdout.splitlines()
+        related: list[str] = []
+        for line in lines:
+            parts = line.split(None, 5)
+            if len(parts) < 6 or not parts[0].isdigit():
+                continue
+            if int(parts[0]) == pid or (parts[2].isdigit() and int(parts[2]) == pid):
+                related.append(line)
+        snapshot["processes"] = related[:80]
+    except Exception as exc:
+        snapshot["process_error"] = str(exc)
+    return snapshot
+
+
 def run_backend_isolated(backend: str, args: argparse.Namespace, run_id: str, artifact_dir: Path) -> Json:
     output_path = artifact_dir / f"{backend}.json"
     log_path = artifact_dir / f"{backend}.worker.log"
@@ -2904,38 +2970,63 @@ def run_backend_isolated(backend: str, args: argparse.Namespace, run_id: str, ar
         str(args.phase0_min_selected_refs),
         "--phase0-max-selected-ref-drift-ratio",
         str(args.phase0_max_selected_ref_drift_ratio),
+        "--local-topology-start-timeout-sec",
+        str(args.local_topology_start_timeout_sec),
     ]
     if args.allow_rust_record_log_compat:
         cmd.append("--allow-rust-record-log-compat")
     if args.allow_rust_debug_cli:
         cmd.append("--allow-rust-debug-cli")
+    if not args.restart_local_topology_on_readiness_failure:
+        cmd.append("--no-restart-local-topology-on-readiness-failure")
+    if args.no_auto_start_local_topology:
+        cmd.append("--no-auto-start-local-topology")
     if args.skip_context_pipeline:
         cmd.append("--skip-context-pipeline")
     started = time.perf_counter()
+    timeout_sec = max(1, args.backend_worker_timeout_sec)
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(ROOT),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
     try:
-        completed = subprocess.run(
-            cmd,
-            cwd=str(ROOT),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=max(1, args.backend_worker_timeout_sec),
-        )
+        stdout, stderr = proc.communicate(timeout=timeout_sec)
         worker_log = {
             "command": cmd,
-            "returncode": completed.returncode,
+            "pid": proc.pid,
+            "returncode": proc.returncode,
             "elapsed_s": round(time.perf_counter() - started, 3),
-            "stdout_tail": completed.stdout[-8000:],
-            "stderr_tail": completed.stderr[-8000:],
+            "stdout_tail": stdout[-8000:],
+            "stderr_tail": stderr[-8000:],
         }
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
+        timeout_snapshot = backend_worker_timeout_snapshot(proc.pid)
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = proc.communicate()
         worker_log = {
             "command": cmd,
-            "returncode": None,
+            "pid": proc.pid,
+            "returncode": proc.returncode,
             "elapsed_s": round(time.perf_counter() - started, 3),
             "timed_out": True,
-            "stdout_tail": (exc.stdout or "")[-8000:] if isinstance(exc.stdout, str) else "",
-            "stderr_tail": (exc.stderr or "")[-8000:] if isinstance(exc.stderr, str) else "",
+            "timeout_sec": timeout_sec,
+            "timeout_snapshot": timeout_snapshot,
+            "stdout_tail": (stdout or "")[-8000:],
+            "stderr_tail": (stderr or "")[-8000:],
         }
     log_path.write_text(json.dumps(worker_log, indent=2, sort_keys=True), encoding="utf-8")
     if output_path.exists():
@@ -3774,8 +3865,10 @@ def main() -> int:
     parser.add_argument("--replication-mode", default=os.environ.get("MATRIXARK_REPLICATION_MODE", "shared_store"))
     parser.add_argument("--storage-prefix", default="matrixark:scale")
     parser.add_argument("--cpp-lib", default=default_cpp_lib_path())
-    parser.add_argument("--rust-cli", default=str(ROOT / "target/release/matrixark_rust_proxy"))
+    parser.add_argument("--rust-cli", default=default_rust_cli_path())
     parser.add_argument("--no-auto-start-local-topology", action="store_true")
+    parser.add_argument("--no-restart-local-topology-on-readiness-failure", dest="restart_local_topology_on_readiness_failure", action="store_false")
+    parser.set_defaults(restart_local_topology_on_readiness_failure=True)
     parser.add_argument("--local-topology-start-timeout-sec", type=int, default=120)
     parser.add_argument("--allow-rust-record-log-compat", action="store_true")
     parser.add_argument("--allow-rust-debug-cli", action="store_true")
