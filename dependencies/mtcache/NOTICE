@@ -1,0 +1,31 @@
+MtCache: Multi-Tiered Cache
+Copyright 2026 MatrixArkAI contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+MtCache is a multi-tiered (DRAM / PMEM / SSD) cache engine. It is vendored into
+the TemporalStore repository as a dependency and originated from an internal
+multi-tiered cache codebase; the version published here has been prepared for
+open-source distribution.
+
+------------------------------------------------------------------------------
+Third-party components
+------------------------------------------------------------------------------
+
+The build fetches and links a number of third-party libraries. Each remains
+under its own license; this NOTICE does not relicense them. Declarations live
+under `third_party/externals/`.
+
+Apache-2.0 or permissive (MIT/BSD/ISC/zlib) licensed dependencies include:
+  Abseil, Boost, Folly, fmt, gflags, glog, GoogleTest, jemalloc, libaio,
+  libevent, libmemcached, libsodium, libunwind, lz4, xz/lzma, snappy,
+  double-conversion, xxHash, zlib, zstd, OpenSSL.
+
+Internal / not-yet-open dependencies (see docs/mtcache_open_source_readiness.md):
+  - bytedisk  — distributed only as an internal prebuilt binary; no public
+                source. Required only for certain SSD/PMEM storage paths.
+  - noodle    — internal metrics/concurrency library; the metrics reporting
+                headers are used by the SSD and zoned-store engines.
+
+These internal dependencies are the primary blockers to a fully self-contained
+open-source build and are tracked in the readiness document above.
