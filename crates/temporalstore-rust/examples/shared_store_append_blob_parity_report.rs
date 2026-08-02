@@ -66,6 +66,21 @@ struct OffsetIndexValidation {
 }
 
 #[derive(Debug, Serialize)]
+struct AuthoritativeOffsetLookupReport {
+    checked_entries: u64,
+    metadata_hits: u64,
+    decoded_entries: u64,
+    matched_entries: u64,
+    range_bytes_read: u64,
+    extent_metadata_entries: u64,
+    first_physical_offset_entries: u64,
+    all_oplog_indexes_directly_read_from_offset_metadata: bool,
+    all_direct_reads_match_expected_entries: bool,
+    all_direct_reads_have_extent_metadata: bool,
+    errors: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 struct PublishPhaseReport {
     shard_id: u64,
     blob_key: String,
@@ -75,6 +90,7 @@ struct PublishPhaseReport {
     blob_physical_extent_count: usize,
     offset_frame_validation: OffsetFrameValidation,
     offset_index_validation: OffsetIndexValidation,
+    authoritative_offset_lookup: AuthoritativeOffsetLookupReport,
     replay: ReplayPhaseReport,
 }
 
@@ -85,6 +101,7 @@ struct WriterPhaseReport {
     write_reports: Vec<SharedStoreWriteReport>,
     blob_object_length: u64,
     blob_physical_extent_count: usize,
+    authoritative_offset_lookup: AuthoritativeOffsetLookupReport,
     replay: ReplayPhaseReport,
 }
 
@@ -97,6 +114,7 @@ struct AsyncWriterPhaseReport {
     flush_report: SharedStoreFlushReport,
     blob_object_length: u64,
     blob_physical_extent_count: usize,
+    authoritative_offset_lookup: AuthoritativeOffsetLookupReport,
     replay: ReplayPhaseReport,
 }
 
@@ -158,6 +176,9 @@ struct Summary {
     direct_offsets_contiguous: bool,
     direct_offset_slices_decode_expected_frames: bool,
     direct_offset_index_maps_oplog_to_blob_offsets: bool,
+    authoritative_offset_lookup_reads_all_records: bool,
+    authoritative_offset_lookup_matches_all_records: bool,
+    authoritative_offset_lookup_has_extent_metadata: bool,
     snapshot_reopen_restores_offset_metadata: bool,
     snapshot_reopen_recovered_all_records: bool,
     snapshot_reopen_cache_metrics_available: bool,
@@ -271,6 +292,33 @@ async fn main() {
             && direct_publish
                 .offset_index_validation
                 .all_metadata_ranges_match_append_receipts,
+        authoritative_offset_lookup_reads_all_records: direct_publish
+            .authoritative_offset_lookup
+            .all_oplog_indexes_directly_read_from_offset_metadata
+            && sync_writer
+                .authoritative_offset_lookup
+                .all_oplog_indexes_directly_read_from_offset_metadata
+            && async_writer
+                .authoritative_offset_lookup
+                .all_oplog_indexes_directly_read_from_offset_metadata,
+        authoritative_offset_lookup_matches_all_records: direct_publish
+            .authoritative_offset_lookup
+            .all_direct_reads_match_expected_entries
+            && sync_writer
+                .authoritative_offset_lookup
+                .all_direct_reads_match_expected_entries
+            && async_writer
+                .authoritative_offset_lookup
+                .all_direct_reads_match_expected_entries,
+        authoritative_offset_lookup_has_extent_metadata: direct_publish
+            .authoritative_offset_lookup
+            .all_direct_reads_have_extent_metadata
+            && sync_writer
+                .authoritative_offset_lookup
+                .all_direct_reads_have_extent_metadata
+            && async_writer
+                .authoritative_offset_lookup
+                .all_direct_reads_have_extent_metadata,
         snapshot_reopen_restores_offset_metadata: journal_reopen.reopened_offset_metadata_ok,
         snapshot_reopen_recovered_all_records: journal_reopen.reopened_replay_recovered_all_records
             && journal_reopen.reopened_retrieval_recovered_all_records,
@@ -373,6 +421,14 @@ async fn run_direct_publish(
         .expect("offset metadata");
     let offset_index_validation =
         validate_offset_index(&blob_key, &append_receipts, &offset_metadata);
+    let authoritative_offset_lookup = validate_authoritative_offset_lookup(
+        replicator,
+        shard_id,
+        entry_count,
+        "direct",
+        value_bytes,
+    )
+    .await;
     PublishPhaseReport {
         shard_id,
         blob_key,
@@ -382,6 +438,7 @@ async fn run_direct_publish(
         blob_physical_extent_count: metadata.extents.len(),
         offset_frame_validation,
         offset_index_validation,
+        authoritative_offset_lookup,
         replay: replay_and_retrieve(root, replicator, shard_id, entry_count, "direct").await,
     }
 }
@@ -408,12 +465,21 @@ async fn run_sync_writer(
     }
     let blob_key = blob_key(shard_id);
     let metadata = matrixobject_metadata(&store, &blob_key);
+    let authoritative_offset_lookup = validate_authoritative_offset_lookup(
+        replicator,
+        shard_id,
+        entry_count,
+        "sync",
+        value_bytes,
+    )
+    .await;
     WriterPhaseReport {
         shard_id,
         write_latencies_us,
         write_reports,
         blob_object_length: metadata.length,
         blob_physical_extent_count: metadata.extents.len(),
+        authoritative_offset_lookup,
         replay: replay_and_retrieve(root, replicator, shard_id, entry_count, "sync").await,
     }
 }
@@ -446,6 +512,14 @@ async fn run_async_writer(
     let flush_latency_us = flush_start.elapsed().as_micros();
     let blob_key = blob_key(shard_id);
     let metadata = matrixobject_metadata(&store, &blob_key);
+    let authoritative_offset_lookup = validate_authoritative_offset_lookup(
+        replicator,
+        shard_id,
+        entry_count,
+        "async",
+        value_bytes,
+    )
+    .await;
     AsyncWriterPhaseReport {
         shard_id,
         enqueue_latencies_us,
@@ -454,6 +528,7 @@ async fn run_async_writer(
         flush_report,
         blob_object_length: metadata.length,
         blob_physical_extent_count: metadata.extents.len(),
+        authoritative_offset_lookup,
         replay: replay_and_retrieve(root, replicator, shard_id, entry_count, "async").await,
     }
 }
@@ -661,6 +736,64 @@ fn validate_offset_index(
         matched_entries,
         all_oplog_indexes_have_offset_metadata: offset_metadata.len() >= receipts.len(),
         all_metadata_ranges_match_append_receipts: matched_entries == receipts.len(),
+    }
+}
+
+async fn validate_authoritative_offset_lookup(
+    replicator: &SharedStoreReplicator<MatrixObjectObjectStore>,
+    shard_id: u64,
+    entry_count: u64,
+    phase: &str,
+    value_bytes: usize,
+) -> AuthoritativeOffsetLookupReport {
+    let mut metadata_hits = 0u64;
+    let mut decoded_entries = 0u64;
+    let mut matched_entries = 0u64;
+    let mut range_bytes_read = 0u64;
+    let mut extent_metadata_entries = 0u64;
+    let mut first_physical_offset_entries = 0u64;
+    let mut errors = Vec::new();
+    for index in 1..=entry_count {
+        match replicator
+            .read_wal_entry_by_offset_metadata(shard_id, index)
+            .await
+        {
+            Ok(Some(read)) => {
+                metadata_hits += 1;
+                decoded_entries += 1;
+                range_bytes_read += read.range_bytes_read;
+                if read.metadata.wal_blob_physical_extent_count > 0 {
+                    extent_metadata_entries += 1;
+                }
+                if read.metadata.wal_blob_first_physical_offset.is_some() {
+                    first_physical_offset_entries += 1;
+                }
+                if read.entry == entry(shard_id, index, phase, value_bytes) {
+                    matched_entries += 1;
+                } else {
+                    errors.push(format!("decoded entry mismatch at oplog index {index}"));
+                }
+            }
+            Ok(None) => errors.push(format!("missing offset metadata at oplog index {index}")),
+            Err(err) => errors.push(format!(
+                "offset metadata lookup failed at oplog index {index}: {err}"
+            )),
+        }
+    }
+    AuthoritativeOffsetLookupReport {
+        checked_entries: entry_count,
+        metadata_hits,
+        decoded_entries,
+        matched_entries,
+        range_bytes_read,
+        extent_metadata_entries,
+        first_physical_offset_entries,
+        all_oplog_indexes_directly_read_from_offset_metadata: metadata_hits == entry_count
+            && decoded_entries == entry_count,
+        all_direct_reads_match_expected_entries: matched_entries == entry_count,
+        all_direct_reads_have_extent_metadata: extent_metadata_entries == entry_count
+            && first_physical_offset_entries == entry_count,
+        errors,
     }
 }
 

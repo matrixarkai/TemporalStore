@@ -49,6 +49,29 @@ pub trait ObjectStore: Send + Sync {
         })
     }
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError>;
+    async fn get_range(
+        &self,
+        key: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<Bytes, ObjectStoreError> {
+        let bytes = self.get(key).await?;
+        let start = usize::try_from(offset)
+            .map_err(|_| ObjectStoreError::InvalidKey(format!("{key}: range offset too large")))?;
+        let len = usize::try_from(length)
+            .map_err(|_| ObjectStoreError::InvalidKey(format!("{key}: range length too large")))?;
+        let end = start
+            .checked_add(len)
+            .ok_or_else(|| ObjectStoreError::InvalidKey(format!("{key}: range overflow")))?;
+        if end > bytes.len() {
+            return Err(ObjectStoreError::InvalidKey(format!(
+                "{key}: range {offset}..{} exceeds object length {}",
+                offset.saturating_add(length),
+                bytes.len()
+            )));
+        }
+        Ok(bytes.slice(start..end))
+    }
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError>;
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError>;
     fn uri(&self, key: &str) -> String;
