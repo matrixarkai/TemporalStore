@@ -22,7 +22,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MATRIXOBJECT_REPO = Path("/root/src/github-services/MatrixObjectStore")
-SCHEMA = "temporalstore_shared_store_blob_append_cpp_rust_parity_v1"
+SCHEMA = "temporalstore_shared_store_blob_append_cpp_rust_parity_v2"
 
 
 def _run(
@@ -251,6 +251,10 @@ def _rust_replay_latency_total_us(rust_report: dict[str, Any], field: str) -> in
 def _cpp_runtime_summary(cpp_report: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(cpp_report, dict):
         return {"runtime_valid": False, "reason": "missing runtime report"}
+    append_latency_avg_us = _avg_latency_us(cpp_report.get("appends"))
+    indexed_append_latency_avg_us = _avg_latency_us(cpp_report.get("appends"), "indexed_latency_us")
+    read_full_latency_us = cpp_report.get("read_full_latency_us")
+    read_tail_latency_us = cpp_report.get("read_tail_latency_us")
     return {
         "runtime_valid": cpp_report.get("status") == "passed"
         and cpp_report.get("engine") == "cpp_matrixobjectstore",
@@ -262,11 +266,15 @@ def _cpp_runtime_summary(cpp_report: dict[str, Any]) -> dict[str, Any]:
         "offset_index_matches": bool(cpp_report.get("offset_index_matches")),
         "offset_index_object_size": cpp_report.get("offset_index_object_size"),
         "offset_index_extent_count": cpp_report.get("offset_index_extent_count"),
-        "append_latency_avg_us": _avg_latency_us(cpp_report.get("appends")),
-        "indexed_append_latency_avg_us": _avg_latency_us(cpp_report.get("appends"), "indexed_latency_us"),
+        "append_latency_avg_us": append_latency_avg_us,
+        "indexed_append_latency_avg_us": indexed_append_latency_avg_us,
+        "append_throughput_ops_per_sec": _throughput_ops_per_sec(append_latency_avg_us),
+        "indexed_append_throughput_ops_per_sec": _throughput_ops_per_sec(indexed_append_latency_avg_us),
         "reopen_latency_us": cpp_report.get("reopen_latency_us"),
-        "read_full_latency_us": cpp_report.get("read_full_latency_us"),
-        "read_tail_latency_us": cpp_report.get("read_tail_latency_us"),
+        "read_full_latency_us": read_full_latency_us,
+        "read_tail_latency_us": read_tail_latency_us,
+        "read_full_throughput_ops_per_sec": _throughput_ops_per_sec(read_full_latency_us),
+        "read_tail_throughput_ops_per_sec": _throughput_ops_per_sec(read_tail_latency_us),
         "reopened_extent_count": cpp_report.get("reopened_extent_count"),
         "read_cache_bytes": cpp_report.get("read_cache_bytes"),
         "read_cache_pages": cpp_report.get("read_cache_pages"),
@@ -291,6 +299,12 @@ def _avg_number_list(values: Any) -> float | None:
         return None
     return round(sum(numeric) / len(numeric), 3)
 
+
+def _throughput_ops_per_sec(latency_us: Any) -> float | None:
+    if not isinstance(latency_us, (int, float)) or latency_us <= 0:
+        return None
+    return round(1_000_000.0 / float(latency_us), 3)
+
 def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
     summary = rust_report.get("summary") if isinstance(rust_report, dict) else None
     if not isinstance(summary, dict):
@@ -306,6 +320,11 @@ def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
     direct_publish = rust_report.get("direct_publish", {})
     sync_writer = rust_report.get("sync_writer", {})
     async_writer = rust_report.get("async_writer", {})
+    append_latency_avg_us = summary.get("append_latency_avg_us")
+    direct_publish_latency_avg_us = _avg_number_list(direct_publish.get("publish_latencies_us"))
+    sync_writer_latency_avg_us = _avg_number_list(sync_writer.get("write_latencies_us"))
+    async_enqueue_latency_avg_us = _avg_number_list(async_writer.get("enqueue_latencies_us"))
+    retrieval_latency_avg_us = summary.get("retrieval_latency_avg_us")
     return {
         "runtime_valid": rust_report.get("schema") == "temporalstore_shared_store_append_blob_parity_report_v1",
         "matrixobject_mode": rust_report.get("matrixobject_mode"),
@@ -364,14 +383,19 @@ def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
         "async_flush_reports_include_offsets": bool(summary.get("async_flush_reports_include_offsets")),
         "replay_recovered_all_records": bool(summary.get("replay_recovered_all_records")),
         "retrieval_recovered_all_records": bool(summary.get("retrieval_recovered_all_records")),
-        "append_latency_avg_us": summary.get("append_latency_avg_us"),
+        "append_latency_avg_us": append_latency_avg_us,
         "append_latency_p95_us": summary.get("append_latency_p95_us"),
-        "direct_publish_latency_avg_us": _avg_number_list(direct_publish.get("publish_latencies_us")),
-        "sync_writer_latency_avg_us": _avg_number_list(sync_writer.get("write_latencies_us")),
-        "async_enqueue_latency_avg_us": _avg_number_list(async_writer.get("enqueue_latencies_us")),
+        "direct_publish_latency_avg_us": direct_publish_latency_avg_us,
+        "sync_writer_latency_avg_us": sync_writer_latency_avg_us,
+        "async_enqueue_latency_avg_us": async_enqueue_latency_avg_us,
+        "append_throughput_ops_per_sec": _throughput_ops_per_sec(append_latency_avg_us),
+        "direct_publish_throughput_ops_per_sec": _throughput_ops_per_sec(direct_publish_latency_avg_us),
+        "sync_writer_throughput_ops_per_sec": _throughput_ops_per_sec(sync_writer_latency_avg_us),
+        "async_enqueue_throughput_ops_per_sec": _throughput_ops_per_sec(async_enqueue_latency_avg_us),
         "async_flush_latency_us": async_writer.get("flush_latency_us"),
         "replay_latency_total_us": summary.get("replay_latency_total_us"),
-        "retrieval_latency_avg_us": summary.get("retrieval_latency_avg_us"),
+        "retrieval_latency_avg_us": retrieval_latency_avg_us,
+        "retrieval_throughput_ops_per_sec": _throughput_ops_per_sec(retrieval_latency_avg_us),
         "secondary_replay_latency_total_us": _rust_replay_latency_total_us(
             rust_report, "secondary_replay_latency_us"
         ),
@@ -383,6 +407,14 @@ def _rust_summary(rust_report: dict[str, Any]) -> dict[str, Any]:
 
 
 def _latency_ratio(numerator: Any, denominator: Any) -> float | None:
+    if not isinstance(numerator, (int, float)) or not isinstance(denominator, (int, float)):
+        return None
+    if denominator <= 0:
+        return None
+    return round(float(numerator) / float(denominator), 3)
+
+
+def _throughput_ratio(numerator: Any, denominator: Any) -> float | None:
     if not isinstance(numerator, (int, float)) or not isinstance(denominator, (int, float)):
         return None
     if denominator <= 0:
@@ -406,6 +438,14 @@ def _parity_status(
     full_read_latency_ratio = _latency_ratio(
         rust_summary.get("retrieval_latency_avg_us"),
         cpp_summary.get("read_full_latency_us"),
+    )
+    append_throughput_ratio = _throughput_ratio(
+        rust_summary.get("direct_publish_throughput_ops_per_sec"),
+        cpp_summary.get("indexed_append_throughput_ops_per_sec"),
+    )
+    retrieval_throughput_ratio = _throughput_ratio(
+        rust_summary.get("retrieval_throughput_ops_per_sec"),
+        cpp_summary.get("read_full_throughput_ops_per_sec"),
     )
     feature_mismatches = []
     if not rust_summary.get("durable_reopen_equivalent"):
@@ -503,20 +543,41 @@ def _parity_status(
                 and full_read_latency_ratio <= 2.0
             )
         ),
+        "append_throughput_ratio_at_least_0_5x_when_comparable": (
+            not release_latency_gate
+            or (
+                bool(rust_summary.get("durable_reopen_equivalent"))
+                and append_throughput_ratio is not None
+                and append_throughput_ratio >= 0.5
+            )
+        ),
+        "retrieval_vs_cpp_full_read_throughput_ratio_at_least_0_5x_when_comparable": (
+            not release_latency_gate
+            or (
+                bool(rust_summary.get("durable_reopen_equivalent"))
+                and retrieval_throughput_ratio is not None
+                and retrieval_throughput_ratio >= 0.5
+            )
+        ),
     }
     blockers = [name for name, passed in checks.items() if not passed]
+    performance_ratios = {
+        "rust_direct_publish_avg_us_to_cpp_indexed_append_avg_us": append_latency_ratio,
+        "rust_retrieval_avg_us_to_cpp_full_read_us": full_read_latency_ratio,
+        "rust_direct_publish_ops_per_sec_to_cpp_indexed_append_ops_per_sec": append_throughput_ratio,
+        "rust_retrieval_ops_per_sec_to_cpp_full_read_ops_per_sec": retrieval_throughput_ratio,
+        "threshold": "<=2.0x for Rust direct publish vs C++ indexed append when durable offset semantics are comparable",
+        "throughput_threshold": ">=0.5x for Rust direct publish vs C++ indexed append when durable offset semantics are comparable",
+        "comparable": bool(rust_summary.get("durable_reopen_equivalent")),
+        "gate_profile": rust_profile,
+        "release_profile_required_for_latency_gate": release_latency_gate,
+    }
     return {
         "status": "passed" if not blockers else "failed",
         "checks": checks,
         "blockers": blockers,
-        "latency_ratios": {
-            "rust_direct_publish_avg_us_to_cpp_indexed_append_avg_us": append_latency_ratio,
-            "rust_retrieval_avg_us_to_cpp_full_read_us": full_read_latency_ratio,
-            "threshold": "<=2.0x for Rust direct publish vs C++ indexed append when durable offset semantics are comparable",
-            "comparable": bool(rust_summary.get("durable_reopen_equivalent")),
-            "gate_profile": rust_profile,
-            "release_profile_required_for_latency_gate": release_latency_gate,
-        },
+        "performance_ratios": performance_ratios,
+        "latency_ratios": performance_ratios,
         "feature_mismatches": feature_mismatches,
         "root_cause": (
             "Rust originally appeared much faster because the MatrixObject binding benchmark used "
@@ -525,7 +586,8 @@ def _parity_status(
             "Rust now persists protobuf oplog-offset metadata and validates MatrixObjectStore reload "
             "from an incremental checksummed journal path. The latency gate compares Rust direct publish "
             "with C++ indexed append, because both include durable offset metadata; sync writer and "
-            "async flush are reported separately."
+            "async flush are reported separately. Throughput is reported from the same average latency "
+            "samples so release parity covers both latency and ops/sec views of the comparable paths."
         ),
         "note": (
             "Rust TemporalStore MatrixObject append-blob runtime evidence now validates WAL frame "
@@ -541,6 +603,7 @@ def _render_html(report: dict[str, Any]) -> str:
     rust_summary = report["rust_summary"]
     cpp = report["cpp_contract"]
     cpp_runtime_summary = report["cpp_runtime_summary"]
+    performance_ratios = report["parity"].get("performance_ratios") or report["parity"].get("latency_ratios", {})
     rows = [
         ("Status", status),
         ("TemporalStore commit", report["temporalstore_commit"]),
@@ -551,6 +614,10 @@ def _render_html(report: dict[str, Any]) -> str:
         ("Rust async enqueue avg latency us", rust_summary.get("async_enqueue_latency_avg_us")),
         ("Rust async flush latency us", rust_summary.get("async_flush_latency_us")),
         ("Rust p95 append latency us", rust_summary.get("append_latency_p95_us")),
+        ("Rust mixed append throughput ops/sec", rust_summary.get("append_throughput_ops_per_sec")),
+        ("Rust direct publish throughput ops/sec", rust_summary.get("direct_publish_throughput_ops_per_sec")),
+        ("Rust sync writer throughput ops/sec", rust_summary.get("sync_writer_throughput_ops_per_sec")),
+        ("Rust async enqueue throughput ops/sec", rust_summary.get("async_enqueue_throughput_ops_per_sec")),
         ("Rust MatrixObject mode", rust_summary.get("matrixobject_mode")),
         ("Rust durable reopen equivalent", rust_summary.get("durable_reopen_equivalent")),
         ("Rust durable reopen caveat", rust_summary.get("durable_reopen_caveat")),
@@ -568,21 +635,34 @@ def _render_html(report: dict[str, Any]) -> str:
         ("Rust snapshot import latency us", rust_summary.get("snapshot_import_latency_us")),
         ("Rust total replay latency us", rust_summary.get("replay_latency_total_us")),
         ("Rust avg retrieval latency us", rust_summary.get("retrieval_latency_avg_us")),
+        ("Rust retrieval throughput ops/sec", rust_summary.get("retrieval_throughput_ops_per_sec")),
         ("C++ raw append avg latency us", cpp_runtime_summary.get("append_latency_avg_us")),
         ("C++ indexed append avg latency us", cpp_runtime_summary.get("indexed_append_latency_avg_us")),
+        ("C++ raw append throughput ops/sec", cpp_runtime_summary.get("append_throughput_ops_per_sec")),
+        ("C++ indexed append throughput ops/sec", cpp_runtime_summary.get("indexed_append_throughput_ops_per_sec")),
         ("C++ offset index matches", cpp_runtime_summary.get("offset_index_matches")),
         ("C++ offset index object size", cpp_runtime_summary.get("offset_index_object_size")),
         (
             "Rust direct/C++ indexed append latency ratio",
-            report["parity"].get("latency_ratios", {}).get("rust_direct_publish_avg_us_to_cpp_indexed_append_avg_us"),
+            performance_ratios.get("rust_direct_publish_avg_us_to_cpp_indexed_append_avg_us"),
         ),
         (
             "Rust retrieval/C++ full read latency ratio",
-            report["parity"].get("latency_ratios", {}).get("rust_retrieval_avg_us_to_cpp_full_read_us"),
+            performance_ratios.get("rust_retrieval_avg_us_to_cpp_full_read_us"),
+        ),
+        (
+            "Rust direct/C++ indexed append throughput ratio",
+            performance_ratios.get("rust_direct_publish_ops_per_sec_to_cpp_indexed_append_ops_per_sec"),
+        ),
+        (
+            "Rust retrieval/C++ full read throughput ratio",
+            performance_ratios.get("rust_retrieval_ops_per_sec_to_cpp_full_read_ops_per_sec"),
         ),
         ("C++ reopen latency us", cpp_runtime_summary.get("reopen_latency_us")),
         ("C++ full read latency us", cpp_runtime_summary.get("read_full_latency_us")),
         ("C++ tail read latency us", cpp_runtime_summary.get("read_tail_latency_us")),
+        ("C++ full read throughput ops/sec", cpp_runtime_summary.get("read_full_throughput_ops_per_sec")),
+        ("C++ tail read throughput ops/sec", cpp_runtime_summary.get("read_tail_throughput_ops_per_sec")),
         ("C++ reopened extent count", cpp_runtime_summary.get("reopened_extent_count")),
         ("Rust cache after retrieval", rust_summary.get("cache_after_retrieval")),
         ("C++ read cache bytes", cpp_runtime_summary.get("read_cache_bytes")),
