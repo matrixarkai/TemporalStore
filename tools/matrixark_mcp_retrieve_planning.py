@@ -15,7 +15,6 @@ try:
         DEFAULT_MAX_SELECTED_REFS,
         DEFAULT_RETRIEVAL_MIN_SCORE,
         DEFAULT_TOP_K_PER_LAYER,
-        FEATURE_SCOPE_EXCLUSION_RE,
         PROFILE_MEMORY_QUERY_RE,
         HARD_MAX_CHILDREN_SCORED_PER_PARENT,
         TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
@@ -26,6 +25,7 @@ try:
         build_shared_context_policy,
         build_structured_query_plan,
         clamp01,
+        feature_scope_excludes_outcome_evidence,
         float_arg,
         infer_query_type,
         infer_secondary_index_filter_groups,
@@ -45,7 +45,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         DEFAULT_MAX_SELECTED_REFS,
         DEFAULT_RETRIEVAL_MIN_SCORE,
         DEFAULT_TOP_K_PER_LAYER,
-        FEATURE_SCOPE_EXCLUSION_RE,
         PROFILE_MEMORY_QUERY_RE,
         HARD_MAX_CHILDREN_SCORED_PER_PARENT,
         TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
@@ -56,6 +55,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         build_shared_context_policy,
         build_structured_query_plan,
         clamp01,
+        feature_scope_excludes_outcome_evidence,
         float_arg,
         infer_query_type,
         infer_secondary_index_filter_groups,
@@ -239,7 +239,7 @@ FEATURE_SCOPE_EXCLUDED_SOURCE_ROLES = {
 
 
 def feature_scope_excludes_evidence(query: str) -> bool:
-    return bool(FEATURE_SCOPE_EXCLUSION_RE.search(str(query or "").lower()))
+    return feature_scope_excludes_outcome_evidence(query)
 
 
 def prune_feature_scope_evidence_budgets(
