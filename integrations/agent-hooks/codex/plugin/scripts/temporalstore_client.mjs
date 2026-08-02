@@ -81,7 +81,7 @@ export function callLocalPythonHook({ event, payload, env, mode }) {
     }
     args.push(
       "--cd",
-      env.TEMPORALSTORE_WSL_REPO || env.TEMPORALSTORE_REPO || "/root/src/github-services/TemporalStore",
+      env.TEMPORALSTORE_WSL_REPO || env.TEMPORALSTORE_REPO || "/opt/github-services/TemporalStore",
       "-e",
       env.TEMPORALSTORE_PYTHON || "python3",
       ...hookArgs(event, env)

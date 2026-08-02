@@ -53,7 +53,7 @@ Automatic (writes `~/.claude/settings.json`):
 
 ```bash
 bash integrations/agent-hooks/install/install.sh --agent claude \
-  --repo /root/src/github-services/TemporalStore
+  --repo /opt/github-services/TemporalStore
 ```
 
 This registers the full Claude Code lifecycle (`SessionStart`, `UserPromptSubmit`,

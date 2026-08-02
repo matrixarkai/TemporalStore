@@ -16,8 +16,10 @@ matrixark_rust_direct_sdk   direct SDK binary for native clients
 ```
 
 For a local laptop install, the metaserver and datanode run on localhost and
-store data under a persistent local directory. Codex hook support is optional
-and can be enabled after the storage service passes a smoke test.
+store data under a persistent local directory. Agent hook support — for both
+**Codex** and **Claude Code** — is optional and can be enabled after the storage
+service passes a smoke test. Both hooks run the same context engine (ingestion,
+extraction, retrieval); they differ only in agent identity.
 
 ## Simplest Path: Single Node In Docker
 
@@ -145,6 +147,21 @@ Register this command as the Codex `UserPromptSubmit` hook:
 ~/.matrixark/hooks/matrixark-codex-hook-rust-linux.sh
 ```
 
+### Enable the Claude Code hook (optional)
+
+Claude Code gets the same context engine under its own agent identity. From the
+repo root, after the storage smoke test passes:
+
+```bash
+bash integrations/agent-hooks/install/install.sh --agent claude --mode native --repo "$(pwd)"
+```
+
+This writes `~/.claude/settings.json`, registering the full Claude Code lifecycle
+(`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStop`,
+`PreCompact`, `SessionEnd`) against `tools/matrixark_claude_hook.sh`. See
+[Claude Code hook integration](matrixark_claude_hook_integration.md) for backends,
+warm-up, and a quick check.
+
 ## macOS Quick Start
 
 Install prerequisites first:
@@ -177,6 +194,20 @@ Register this command as the Codex `UserPromptSubmit` hook:
 ```text
 ~/.matrixark/hooks/matrixark-codex-hook-rust-macos.sh
 ```
+
+### Enable the Claude Code hook (optional)
+
+Claude Code gets the same context engine under its own agent identity. From the
+repo root, after the storage smoke test passes:
+
+```bash
+bash integrations/agent-hooks/install/install.sh --agent claude --mode native --repo "$(pwd)"
+```
+
+This writes `~/.claude/settings.json`, registering the full Claude Code lifecycle
+against `tools/matrixark_claude_hook.sh`. See
+[Claude Code hook integration](matrixark_claude_hook_integration.md) for backends,
+warm-up, and a quick check.
 
 ## Windows Docker Quick Start
 
@@ -223,6 +254,22 @@ Register this command as the Codex `UserPromptSubmit` hook:
 ```text
 %USERPROFILE%\.matrixark\hooks\matrixark-codex-hook-rust-docker.cmd
 ```
+
+### Enable the Claude Code hook (optional)
+
+Claude Code on Windows uses the same cross-agent installer. It reads
+`%USERPROFILE%\.claude\settings.json`, and the hook script runs through WSL, so
+point `-WslRepo` at your clone inside the WSL distro:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File .\integrations\agent-hooks\install\install.ps1 `
+  -Agent claude -Mode wsl `
+  -WslRepo /opt/github-services/TemporalStore
+```
+
+See [Claude Code hook integration](matrixark_claude_hook_integration.md) for
+backends, warm-up, and a quick check.
 
 ## Prebuilt Images (Optional)
 
@@ -278,6 +325,7 @@ Deleting these paths removes local TemporalStore data.
 | Health endpoint does not respond | Check metaserver/datanode logs under the platform data directory. |
 | Port already in use | Re-run with `--meta-port` / `--data-port`, or stop the old service. |
 | Codex manual hook smoke works, but real prompts do not appear | Reload/restart Codex and verify the global `UserPromptSubmit` hook registration. |
+| Claude Code hook smoke works, but real prompts do not appear | Restart Claude Code and confirm `~/.claude/settings.json` registers `tools/matrixark_claude_hook.sh` for the lifecycle events. |
 | Windows says Docker is unavailable | Start Docker Desktop and wait until `docker info` succeeds. |
 | Docker image not found | Use `-PullImage`, provide a registry image name, or build the image as a maintainer. |
 

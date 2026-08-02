@@ -77,7 +77,7 @@ Run the prerequisite check:
 ```
 
 The script defaults to the repo that contains the script. Maintainers can still
-override it with `--repo /root/src/github-services/TemporalStore`.
+override it with `--repo /opt/github-services/TemporalStore`.
 
 ## One-Command Build And Deploy
 
