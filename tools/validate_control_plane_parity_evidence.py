@@ -53,8 +53,8 @@ AREAS: tuple[ParityArea, ...] = (
             RustEvidence(
                 "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
                 (
-                    "rust_executes_shared_cpp_rust_temporalstore_corpus",
-                    "rust_client_executes_shared_cpp_rust_temporalstore_corpus",
+                    "rust_executes_temporalstore_corpus",
+                    "rust_client_executes_temporalstore_corpus",
                 ),
             ),
             RustEvidence(
