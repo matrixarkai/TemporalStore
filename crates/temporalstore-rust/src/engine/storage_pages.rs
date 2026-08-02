@@ -50,9 +50,6 @@ pub(super) fn timestamped_kv_series<'a>(
     for (key, timeline) in &shard.context_audits {
         series.push(("context_audit", key.as_str(), timeline));
     }
-    for (key, timeline) in &shard.context_dirty {
-        series.push(("context_dirty", key.as_str(), timeline));
-    }
     for (key, timeline) in &shard.context_children {
         series.push(("context_child", key.as_str(), timeline));
     }

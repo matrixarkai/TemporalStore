@@ -154,7 +154,6 @@ pub(super) fn storage_feature_page_layout_report(
                     | "context_event"
                     | "context_index"
                     | "context_audit"
-                    | "context_dirty"
                     | "context_child"
                     | "context_summary"
                     | "context_compression"

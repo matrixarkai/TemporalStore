@@ -158,7 +158,7 @@ pub(super) fn delete_record_exact(
     removed |= shard.context_events.remove(key).is_some();
     removed |= shard.context_indexes.remove(key).is_some();
     removed |= shard.context_audits.remove(key).is_some();
-    removed |= shard.context_dirty.remove(key).is_some();
+    removed |= shard.context_dirty_index.remove(key).is_some();
     removed |= shard.context_entities.remove(key).is_some();
     removed |= shard.context_children.remove(key).is_some();
     removed |= shard.context_embeddings.remove(key).is_some();

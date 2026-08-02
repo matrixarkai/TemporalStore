@@ -9259,30 +9259,24 @@ fn execute_on_shard(
             tenant_hash,
             marker,
         } => {
+            // In-memory, coalesced summary-dirty tracking. Repeated marks for the same
+            // node update a single hashmap entry instead of appending a new persisted
+            // page, so dirty records are bounded by distinct dirty nodes, not by events.
+            // The map is ephemeral (never written to the page store) and may be lost on
+            // restart; the async summary worker re-marks on the next event.
             let object_key = context_dirty_key(tenant_hash, marker.node_hash);
-            let timeline_key = context_timeline_key(marker.event_time_ms, marker.node_hash);
-            let value = context_bytes(&marker);
-            let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
-            if let Ok(addresses) = append_timestamped_kv_pages(
-                cache,
-                page_store,
-                shard_id,
-                "context_dirty",
-                &object_key,
-                vec![FeaturePoint {
-                    timestamp_ms: timeline_key,
-                    value,
-                }],
-                routing_slot,
-                async_storage,
-            ) {
-                let series = shard.context_dirty.entry(object_key.clone()).or_default();
-                for (timestamp_ms, address) in addresses {
-                    series.insert(timestamp_ms, address);
-                    mutated = true;
-                }
+            let entry = shard.context_dirty_index.entry(object_key.clone()).or_default();
+            if entry.mark_count == 0 {
+                entry.node_hash = marker.node_hash;
+                entry.first_event_time_ms = marker.event_time_ms;
+                entry.last_event_time_ms = marker.event_time_ms;
+            } else {
+                entry.first_event_time_ms = entry.first_event_time_ms.min(marker.event_time_ms);
+                entry.last_event_time_ms = entry.last_event_time_ms.max(marker.event_time_ms);
             }
-            invalidate_record_all(cache, shard_id, &object_key);
+            entry.reason = marker.reason;
+            entry.propagate_depth = entry.propagate_depth.max(marker.propagate_depth);
+            entry.mark_count = entry.mark_count.saturating_add(1);
             CommandResponse::ContextObjectKey { object_key }
         }
         Command::ContextQuerySummaryDirty {
@@ -9292,27 +9286,26 @@ fn execute_on_shard(
             end_time_ms,
             limit,
         } => {
+            // Read the single coalesced in-memory dirty entry for this node and surface it
+            // as one marker when it overlaps the requested time window. `limit` is retained
+            // for API compatibility but there is at most one coalesced marker per node.
+            let _ = limit;
             let object_key = context_dirty_key(tenant_hash, node_hash);
             let markers = shard
-                .context_dirty
+                .context_dirty_index
                 .get(&object_key)
-                .map(|series| {
-                    series
-                        .range(
-                            context_timeline_start(start_time_ms)
-                                ..context_timeline_end(end_time_ms),
-                        )
-                        .take(context_limit(limit))
-                        .filter_map(|(timeline_key, address)| {
-                            read_context_value::<ContextSummaryDirtyMarker>(
-                                cache,
-                                page_store,
-                                shard_id,
-                                *timeline_key,
-                                address,
-                            )
-                        })
-                        .collect()
+                .filter(|entry| {
+                    entry.mark_count > 0
+                        && entry.last_event_time_ms >= start_time_ms
+                        && entry.first_event_time_ms <= end_time_ms
+                })
+                .map(|entry| {
+                    vec![ContextSummaryDirtyMarker {
+                        node_hash: entry.node_hash,
+                        event_time_ms: entry.last_event_time_ms,
+                        reason: entry.reason,
+                        propagate_depth: entry.propagate_depth,
+                    }]
                 })
                 .unwrap_or_default();
             CommandResponse::ContextSummaryDirtyMarkers {

@@ -308,11 +308,6 @@ pub(super) fn compaction_model_layout_reports(
         &shard.context_audits,
         &segment_page_counts,
     ));
-    reports.push(compaction_timestamped_layout(
-        "context_dirty",
-        &shard.context_dirty,
-        &segment_page_counts,
-    ));
     reports.push(compaction_layout_from_addresses(
         "context_entity",
         shard.context_entities.len(),
