@@ -1,0 +1,42 @@
+diff -ruN folly-2021.03.08.00/CMake/folly-deps.cmake folly-2021.03.08.00.new/CMake/folly-deps.cmake
+--- folly-2021.03.08.00/CMake/folly-deps.cmake	2021-03-08 14:31:37.000000000 +0800
++++ folly-2021.03.08.00.new/CMake/folly-deps.cmake	2022-05-25 21:15:15.234118412 +0800
+@@ -282,10 +282,14 @@
+     set(
+       FOLLY_ASAN_FLAGS
+       -fno-common
+-      -fsanitize=address,undefined,integer,nullability
++      -fsanitize=address,undefined
+       -fno-sanitize=unsigned-integer-overflow
+     )
+     list(APPEND FOLLY_CXX_FLAGS ${FOLLY_ASAN_FLAGS})
++    set_source_files_properties(
++      "${PROJECT_SOURCE_DIR}/folly/experimental/io/SimpleAsyncIO.cpp"
++      PROPERTIES COMPILE_FLAGS -fno-sanitize=undefined
++    )
+   endif()
+ endif()
+ 
+diff -ruN folly-2021.03.08.00/CMakeLists.txt folly-2021.03.08.00.new/CMakeLists.txt
+--- folly-2021.03.08.00/CMakeLists.txt	2021-03-08 14:31:37.000000000 +0800
++++ folly-2021.03.08.00.new/CMakeLists.txt	2021-11-26 16:47:24.283403486 +0800
+@@ -73,7 +73,7 @@
+ include(FBBuildOptions)
+ fb_activate_static_library_option()
+ 
+-set(CMAKE_CXX_STANDARD 17)
++set(CMAKE_CXX_STANDARD 20)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+ 
+ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+diff -ruN folly-2021.03.08.00/folly/CMakeLists.txt folly-2021.03.08.00.new/folly/CMakeLists.txt
+--- folly-2021.03.08.00/folly/CMakeLists.txt	2021-03-08 14:31:37.000000000 +0800
++++ folly-2021.03.08.00.new/folly/CMakeLists.txt	2026-06-01 21:30:00.000000000 +0000
+@@ -28,7 +28,6 @@
+ )
+ 
+ add_subdirectory(experimental/exception_tracer)
+-add_subdirectory(logging/example)
+ 
+ if (PYTHON_EXTENSIONS)
+   # Create tree of symbolic links in structure required for successful

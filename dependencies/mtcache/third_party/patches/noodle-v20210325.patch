@@ -1,0 +1,406 @@
+diff -ruN noodle-v20210325/CMakeLists.txt noodle-v20210325.new/CMakeLists.txt
+--- noodle-v20210325/CMakeLists.txt	1970-01-01 08:00:00.000000000 +0800
++++ noodle-v20210325.new/CMakeLists.txt	2021-11-26 17:09:08.291962505 +0800
+@@ -0,0 +1,99 @@
++cmake_minimum_required(VERSION 3.10.0)
++
++project("noodle" C CXX)
++
++set(CXX_STANDARD 17)
++set(CXX_STANDARD_REQUIRED ON)
++
++# includes
++set(CMAKE_MODULE_PATH
++  "${HSAP_THIRDPARTY_HOME}/cmake"
++  ${CMAKE_MODULE_PATH})
++
++# package information
++set(PACKAGE_NAME      "noodle")
++set(PACKAGE_VERSION   "v20210325")
++set(PACKAGE_STRING    "${PACKAGE_NAME} ${PACKAGE_VERSION}")
++set(PACKAGE_TARNAME   "${PACKAGE_NAME}-${PACKAGE_VERSION}")
++
++set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "_build")
++set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "_build")
++set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "_build")
++
++message(STATUS "CMAKE_CURRENT_SOURCE_DIR: " ${CMAKE_CURRENT_SOURCE_DIR})
++message(STATUS "CMAKE_INCLUDE_PATH: " ${CMAKE_INCLUDE_PATH})
++message(STATUS "CMAKE_LIBRARY_PATH: " ${CMAKE_LIBRARY_PATH})
++message(STATUS "CMAKE_PROGRAM_PATH: " ${CMAKE_PROGRAM_PATH})
++message(STATUS "CMAKE_MODULE_PATH: ${CMAKE_MODULE_PATH}")
++message(STATUS "CMAKE_INSTALL_PREFIX: ${CMAKE_INSTALL_PREFIX}")
++
++set(NOODLE_HOME ${CMAKE_CURRENT_SOURCE_DIR})
++
++set(CMAKE_EXE_LINKER_FLAGS "-static-libstdc++ -static-libgcc -no-pie")
++
++add_compile_options(-Wall)
++add_compile_options(-Werror)
++add_compile_options(-Wno-unused-parameter)
++add_compile_options(-Wno-error=parentheses)
++add_compile_options(-Wno-error=unused-variable)
++add_compile_options(-Wno-error=unused-function)
++add_compile_options(-Wno-error=sign-compare)
++add_compile_options(-Wno-constant-conversion)
++add_compile_options(-Wno-unused-command-line-argument)
++add_compile_options("-Wno-shadow")
++add_compile_options("-fPIC")
++
++include(HSAPFunctions)
++
++include_directories(SYSTEM ${CMAKE_INSTALL_PREFIX}/include)
++include_directories(AFTER ${NOODLE_HOME}/include)
++include_directories(AFTER ${NOODLE_HOME}/src)
++
++add_compile_definitions(NOODLE_BUILD_YEAR=2021)
++
++auto_sources(files "*.cc" "RECURSE" "${NOODLE_HOME}/src")
++
++REMOVE_MATCHES_FROM_LISTS(files
++  MATCHES
++   "/test/"
++   "console_application.cc"
++   "systemd_service.cc"
++)
++
++find_package(Threads REQUIRED)
++find_package(Gflags REQUIRED)
++find_package(Glog 0.3.3 REQUIRED)
++find_package(LZ4 1.9.2 REQUIRED)
++find_package(Zstd 1.4.5 REQUIRED)
++find_package(Snappy 1.1.6 REQUIRED)
++find_package(OpenSSL 1.0.1 REQUIRED)
++find_package(ZLIB 1.2.8 REQUIRED)
++
++find_package(XxHash 0.6.5 REQUIRED)
++
++add_library(noodle_base OBJECT
++  ${files}
++)
++
++add_library(noodle
++  $<TARGET_OBJECTS:noodle_base>
++)
++
++target_link_libraries(noodle
++  glog::glog
++  gflags
++  ${LZ4_LIBRARY}
++  ${SNAPPY_LIBRARY}
++  ${ZSTD_LIBRARY}
++  ${XXHASH_LIBRARY}
++)
++
++add_custom_target(
++    clean-all
++    DEPENDS ${CLEAN_TARGETS}
++)
++
++include(GNUInstallDirs)
++
++install(DIRECTORY include/noodle COMPONENT devel DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
++install(FILES _build/libnoodle.a COMPONENT devel DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+diff -ruN noodle-v20210325/include/noodle/base/buffer_mixin.h noodle-v20210325.new/include/noodle/base/buffer_mixin.h
+--- noodle-v20210325/include/noodle/base/buffer_mixin.h	2021-03-23 18:07:23.000000000 +0800
++++ noodle-v20210325.new/include/noodle/base/buffer_mixin.h	2021-11-26 17:09:57.456435315 +0800
+@@ -1,6 +1,6 @@
+ #pragma once
+ 
+-#include <xxhash/xxhash.h>
++#include <xxhash.h>
+ 
+ #include <algorithm>
+ #include <cstring>
+diff -ruN noodle-v20210325/src/noodle/base/digest.cc noodle-v20210325.new/src/noodle/base/digest.cc
+--- noodle-v20210325/src/noodle/base/digest.cc	2021-03-23 18:07:23.000000000 +0800
++++ noodle-v20210325.new/src/noodle/base/digest.cc	2021-11-26 17:10:18.700639618 +0800
+@@ -8,7 +8,7 @@
+ 
+ #include <openssl/evp.h>
+ 
+-#include <xxhash/xxhash.h>
++#include <xxhash.h>
+ 
+ #include <zlib.h>
+ 
+From acdafb88a97890a1c67e1935dabe070821b5ae94 Mon Sep 17 00:00:00 2001
+From: Hao Wang <hao.wang@bytedance.com>
+Date: Fri, 17 Sep 2021 03:20:06 +0000
+Subject: [PATCH 378/379] Sync point api comments
+
+---
+ include/noodle/concurrent/monitor.h   |  4 +++
+ include/noodle/test_util/sync_point.h | 51 +++++++++++++++++++++++++++
+ 2 files changed, 55 insertions(+)
+
+diff --git a/include/noodle/concurrent/monitor.h b/include/noodle/concurrent/monitor.h
+index e35209f..313cd35 100644
+--- a/include/noodle/concurrent/monitor.h
++++ b/include/noodle/concurrent/monitor.h
+@@ -1,3 +1,7 @@
++// A Monitor packages a mutex and a condition variable to enforce proper
++// usage of the condition variable, e.g., the mutex is held when waiting on
++// the condition variable.
++
+ #pragma once
+ 
+ #include "noodle/concurrent/condition_variable.h"
+diff --git a/include/noodle/test_util/sync_point.h b/include/noodle/test_util/sync_point.h
+index efa46c6..2ebe1a3 100644
+--- a/include/noodle/test_util/sync_point.h
++++ b/include/noodle/test_util/sync_point.h
+@@ -2,6 +2,10 @@
+ //  This source code is licensed under both the GPLv2 (found in the
+ //  COPYING file in the root directory) and Apache 2.0 License
+ //  (found in the LICENSE.Apache file in the root directory).
++//
++// A facility to reproduce race conditions deterministically in unit tests,
++// adapted from the SyncPoint implementation in Facebook RocksDB codebase:
++//   https://github.com/facebook/rocksdb/blob/master/test_util/sync_point.h
+ 
+ #pragma once
+ 
+@@ -25,6 +29,13 @@
+ 
+ namespace noodle {
+ 
++// This class provides facility to reproduce race conditions deterministically
++// in unit tests. Developer could specify sync points in the codebase via
++// macros such as NOODLE_TEST_SYNC_POINT, etc. Each sync point represents a
++// position in the execution stream of a thread. In the unit test, 'Happens
++// After' relationship among sync points could be setup via
++// SyncPoint::LoadDependency, to reproduce a desired interleave of threads
++// execution. See the accompanying unit tests for example use cases.
+ class SyncPoint {
+  public:
+   static SyncPoint* GetInstance();
+@@ -32,35 +43,61 @@ class SyncPoint {
+   SyncPoint() = default;
+   NOODLE_NO_COPYING(SyncPoint);
+ 
++  // A SyncPointPair defines the dependency relationship between two sync
++  // points, where the 'successor' happens after the 'predecessor'.
+   struct SyncPointPair {
+     std::string predecessor;
+     std::string successor;
+   };
+ 
++  // Call once at the beginning of a test to setup the dependency between
++  // sync points.
+   void LoadDependency(const std::vector<SyncPointPair>& dependencies);
+ 
++  // Call once at the beginning of a test to setup the dependency between
++  // sync points and setup markers indicating the successor is only enabled
++  // when it is processed on the same thread as the predecessor. When adding a
++  // marker, it implicitly adds a dependency for the marker pair.
++  //
++  // NOTE: the current implementation can only support no more than one marker
++  // for each sync point.
+   void LoadDependencyAndMarkers(const std::vector<SyncPointPair>& dependencies,
+                                 const std::vector<SyncPointPair>& markers);
+ 
++  // Set the callback function for the given sync point. The argument to the
++  // callback is passed through from NOODLE_TEST_SYNC_POINT_CALLBACK(); nullptr
++  // if NOODLE_TEST_SYNC_POINT or NOODLE_TEST_IDX_SYNC_POINT was used.
+   void SetCallback(const std::string& point,
+                    const std::function<void(void*)>& callback);
+ 
++  // Clear the callback function for the given sync point.
+   void ClearCallback(const std::string& point);
+ 
++  // Clear all call back functions for all sync points.
+   void ClearAllCallbacks();
+ 
++  // Enable sync point processing (disabled on startup).
+   void EnableProcessing();
+ 
++  // Disable sync point processing.
+   void DisableProcessing();
+ 
++  // Remove the execution trace of all sync points. After this call, all sync
++  // points are considered not hit.
+   void ClearTrace();
+ 
++  // Whether the give sync point has been hit.
+   bool IsCleared(const std::string& point);
+ 
++  // Wait until the given sync point has been hit.
+   void WaitCleared(const std::string& point);
+ 
++  // Clears all dependencies among sync points as well as the.
+   void Reset();
+ 
++  // Trigger a sync point (usually define by one of the NOODLE_TEST_SYNC_POINT
++  // macros): blocking execution until all predecessors are executed, then
++  // call registered callback function with argument `cb_arg`.
+   void Process(const std::string& point, void* cb_arg = nullptr);
+ 
+  private:
+@@ -71,17 +108,31 @@ class SyncPoint {
+   Monitor monitor_;
+   std::atomic<bool> enabled_{false};
+ 
++  // The dependency graph expressed as 'happen-after' relationships.
+   std::unordered_map<std::string, std::vector<std::string> > successors_;
++  // The dependency graph expressed as 'happen-before' relationships.
+   std::unordered_map<std::string, std::vector<std::string> > predecessors_;
++  // The marker dependency graph expressed as 'happen-after' relationships.
+   std::unordered_map<std::string, std::vector<std::string> > markers_;
++  // The callback to invoke for each sync point.
+   std::unordered_map<std::string, std::function<void(void*)> > callbacks_;
++  // Mapping from each sync point to the thread task ID that hits its one and
++  // only one marker.
+   std::unordered_map<std::string, pid_t> marked_tids_;
++  // The set of sync points that have been hit.
+   std::unordered_set<std::string> cleared_points_;
++  // The number of all running callbacks over all sync points.
+   int num_callbacks_running_ = 0;
+ };
+ 
+ }  // namespace noodle
+ 
++// Use NOODLE_TEST_SYNC_POINT to specify sync points inside code base.
++// Sync points can have happens-after dependency on other sync points,
++// configured at runtime via SyncPoint::LoadDependency. This could be
++// utilized to re-produce race conditions between threads.
++// See TransactionLogIteratorRace in db_test.cc for an example use case.
++// TEST_SYNC_POINT is no op in release build.
+ #define NOODLE_TEST_SYNC_POINT(x) noodle::SyncPoint::GetInstance()->Process(x)
+ #define NOODLE_TEST_IDX_SYNC_POINT(x, index) \
+   noodle::SyncPoint::GetInstance()->Process(x + std::to_string(index))
+-- 
+2.21.1 (Apple Git-122.3)
+
+From f9f80360c73fcd40ae13545dcfaf0705fabc8ef9 Mon Sep 17 00:00:00 2001
+From: Hao Wang <hao.wang@bytedance.com>
+Date: Tue, 26 Oct 2021 02:41:46 +0000
+Subject: [PATCH 379/379] Enable sync point in release build
+
+---
+ include/noodle/test_util/sync_point.h        | 35 ++++++++++++++------
+ src/noodle/test_util/sync_point.cc           |  4 ---
+ src/noodle/test_util/test/BUILD              | 14 ++++++++
+ src/noodle/test_util/test/sync_point_test.cc |  4 ---
+ 4 files changed, 38 insertions(+), 19 deletions(-)
+ create mode 100644 src/noodle/test_util/test/BUILD
+
+diff --git a/include/noodle/test_util/sync_point.h b/include/noodle/test_util/sync_point.h
+index 2ebe1a3..cf87b0c 100644
+--- a/include/noodle/test_util/sync_point.h
++++ b/include/noodle/test_util/sync_point.h
+@@ -18,15 +18,6 @@
+ 
+ #include "noodle/concurrent/monitor.h"
+ 
+-#ifdef NDEBUG
+-
+-#define NOODLE_TEST_SYNC_POINT(x)
+-#define NOODLE_TEST_IDX_SYNC_POINT(x, index)
+-#define NOODLE_TEST_SYNC_POINT_CALLBACK(x, y)
+-#define NOODLE_INIT_SYNC_POINT_SINGLETONS()
+-
+-#else
+-
+ namespace noodle {
+ 
+ // This class provides facility to reproduce race conditions deterministically
+@@ -133,6 +124,30 @@ class SyncPoint {
+ // utilized to re-produce race conditions between threads.
+ // See TransactionLogIteratorRace in db_test.cc for an example use case.
+ // TEST_SYNC_POINT is no op in release build.
++//
++// Sync points incur minimal overhead when disabled, so it is general acceptable
++// to place them strategically in production code. In places where performance
++// is extremely critical, a DTEST version of the macros are also provided:
++// these macros expand to no-op in non-debug build.
++#ifdef NDEBUG
++
++#define NOODLE_DTEST_SYNC_POINT(x)
++#define NOODLE_DTEST_IDX_SYNC_POINT(x, index)
++#define NOODLE_DTEST_SYNC_POINT_CALLBACK(x, y)
++#define NOODLE_DINIT_SYNC_POINT_SINGLETONS()
++
++#else
++
++#define NOODLE_DTEST_SYNC_POINT(x) noodle::SyncPoint::GetInstance()->Process(x)
++#define NOODLE_DTEST_IDX_SYNC_POINT(x, index) \
++  noodle::SyncPoint::GetInstance()->Process(x + std::to_string(index))
++#define NOODLE_DTEST_SYNC_POINT_CALLBACK(x, y) \
++  noodle::SyncPoint::GetInstance()->Process(x, y)
++#define NOODLE_DINIT_SYNC_POINT_SINGLETONS() \
++  (void)noodle::SyncPoint::GetInstance()
++
++#endif  // NDEBUG
++
+ #define NOODLE_TEST_SYNC_POINT(x) noodle::SyncPoint::GetInstance()->Process(x)
+ #define NOODLE_TEST_IDX_SYNC_POINT(x, index) \
+   noodle::SyncPoint::GetInstance()->Process(x + std::to_string(index))
+@@ -140,5 +155,3 @@ class SyncPoint {
+   noodle::SyncPoint::GetInstance()->Process(x, y)
+ #define NOODLE_INIT_SYNC_POINT_SINGLETONS() \
+   (void)noodle::SyncPoint::GetInstance()
+-
+-#endif  // NDEBUG
+diff --git a/src/noodle/test_util/sync_point.cc b/src/noodle/test_util/sync_point.cc
+index 1f3da89..7025c8f 100644
+--- a/src/noodle/test_util/sync_point.cc
++++ b/src/noodle/test_util/sync_point.cc
+@@ -5,8 +5,6 @@
+ 
+ #include "noodle/test_util/sync_point.h"
+ 
+-#ifndef NDEBUG
+-
+ namespace noodle {
+ 
+ SyncPoint* SyncPoint::GetInstance() {
+@@ -148,5 +146,3 @@ void SyncPoint::Process(const std::string& point, void* cb_arg) {
+ }
+ 
+ }  // namespace noodle
+-
+-#endif  // NDEBUG
+diff --git a/src/noodle/test_util/test/BUILD b/src/noodle/test_util/test/BUILD
+new file mode 100644
+index 0000000..784ea79
+--- /dev/null
++++ b/src/noodle/test_util/test/BUILD
+@@ -0,0 +1,14 @@
++cc_test(
++    name = "sync_point_test",
++    srcs = [
++        "sync_point_test.cc",
++    ],
++    incs = [
++        "src",
++        "include",
++    ],
++    deps = [
++        "cpp3rdlib/gtest:1.10.0@//cpp3rdlib/gtest:gtest,gtest_main",
++        "//:noodle",
++    ],
++)
+diff --git a/src/noodle/test_util/test/sync_point_test.cc b/src/noodle/test_util/test/sync_point_test.cc
+index 195306b..8025f69 100644
+--- a/src/noodle/test_util/test/sync_point_test.cc
++++ b/src/noodle/test_util/test/sync_point_test.cc
+@@ -11,8 +11,6 @@
+ 
+ namespace noodle {
+ 
+-#ifndef NDEBUG
+-
+ TEST(SyncPointTest, TestSimple) {
+   std::atomic<int> sync_point_called(0);
+   noodle::SyncPoint::GetInstance()->SetCallback(
+@@ -63,6 +61,4 @@ TEST(SyncPointTest, TestSimple) {
+   noodle::SyncPoint::GetInstance()->DisableProcessing();
+ }
+ 
+-#endif
+-
+ }  // namespace noodle
+-- 
+2.21.1 (Apple Git-122.3)
+

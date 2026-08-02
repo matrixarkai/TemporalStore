@@ -1,0 +1,22 @@
+
+# This will define
+# XXHASH_FOUND
+# XXHASH_INCLUDE_DIR
+# XXHASH_LIBRARY
+#
+
+find_path(XXHASH_INCLUDE_DIR NAMES xxhash.h)
+
+find_library(XXHASH_LIBRARY NAMES libxxhash.a)
+
+include(FindPackageHandleStandardArgs)
+FIND_PACKAGE_HANDLE_STANDARD_ARGS(
+    XXHASH DEFAULT_MSG
+    XXHASH_LIBRARY XXHASH_INCLUDE_DIR
+)
+
+if (XXHASH_FOUND)
+    message(STATUS "Found XXHASH: ${XXHASH_LIBRARY}")
+endif()
+
+mark_as_advanced(XXHASH_INCLUDE_DIR XXHASH_LIBRARY)
