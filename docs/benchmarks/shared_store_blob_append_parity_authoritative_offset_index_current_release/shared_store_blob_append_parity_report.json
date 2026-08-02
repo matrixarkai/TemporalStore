@@ -23,7 +23,7 @@
       "rust_api:pub\\s+struct\\s+ObjectMetadata": true
     },
     "evidence_type": "source_contract",
-    "matrixobject_commit": "3bb66c4ca78a338bee997ef69b73a07d6728ca1f",
+    "matrixobject_commit": "8f03227fab58406fe254662acb730d1c9ed81825",
     "matrixobject_repo": "/root/src/github-services/MatrixObjectStore",
     "rpc_exposes_offset_and_extents": true,
     "rust_matrixobject_api_exposes_metadata": true,
@@ -42,8 +42,8 @@
         "extent_count": 1,
         "first_physical_offset": 0,
         "index": 0,
-        "indexed_latency_us": 17361.656,
-        "latency_us": 7137.912,
+        "indexed_latency_us": 21710.407,
+        "latency_us": 10453.45,
         "object_size": 64,
         "start_offset": 0,
         "version": 1
@@ -54,8 +54,8 @@
         "extent_count": 2,
         "first_physical_offset": 0,
         "index": 1,
-        "indexed_latency_us": 22045.771,
-        "latency_us": 9699.728,
+        "indexed_latency_us": 22728.898,
+        "latency_us": 11840.269,
         "object_size": 128,
         "start_offset": 64,
         "version": 2
@@ -66,8 +66,8 @@
         "extent_count": 3,
         "first_physical_offset": 0,
         "index": 2,
-        "indexed_latency_us": 25663.63,
-        "latency_us": 15415.558,
+        "indexed_latency_us": 23051.559,
+        "latency_us": 12123.562,
         "object_size": 192,
         "start_offset": 128,
         "version": 3
@@ -78,8 +78,8 @@
         "extent_count": 4,
         "first_physical_offset": 0,
         "index": 3,
-        "indexed_latency_us": 18351.937,
-        "latency_us": 8763.538,
+        "indexed_latency_us": 21789.511,
+        "latency_us": 10912.255,
         "object_size": 256,
         "start_offset": 192,
         "version": 4
@@ -90,8 +90,8 @@
         "extent_count": 5,
         "first_physical_offset": 0,
         "index": 4,
-        "indexed_latency_us": 20665.693,
-        "latency_us": 10618.935,
+        "indexed_latency_us": 23227.784,
+        "latency_us": 12001.222,
         "object_size": 320,
         "start_offset": 256,
         "version": 5
@@ -102,8 +102,8 @@
         "extent_count": 6,
         "first_physical_offset": 0,
         "index": 5,
-        "indexed_latency_us": 23905.246,
-        "latency_us": 13268.783,
+        "indexed_latency_us": 24512.046,
+        "latency_us": 14507.459,
         "object_size": 384,
         "start_offset": 320,
         "version": 6
@@ -114,8 +114,8 @@
         "extent_count": 7,
         "first_physical_offset": 0,
         "index": 6,
-        "indexed_latency_us": 28277.582,
-        "latency_us": 15786.924,
+        "indexed_latency_us": 21140.595,
+        "latency_us": 11381.875,
         "object_size": 448,
         "start_offset": 384,
         "version": 7
@@ -126,8 +126,8 @@
         "extent_count": 8,
         "first_physical_offset": 0,
         "index": 7,
-        "indexed_latency_us": 25004.718,
-        "latency_us": 12634.102,
+        "indexed_latency_us": 23868.435,
+        "latency_us": 11236.195,
         "object_size": 512,
         "start_offset": 448,
         "version": 8
@@ -146,13 +146,13 @@
     "read_cache_max_bytes": 67108864,
     "read_cache_misses": 3,
     "read_cache_pages": 0,
-    "read_full_latency_us": 4518.181,
-    "read_tail_latency_us": 3619.937,
-    "reopen_latency_us": 3205.649,
+    "read_full_latency_us": 4929.395,
+    "read_tail_latency_us": 4696.798,
+    "reopen_latency_us": 5463.692,
     "reopened_extent_count": 8,
     "reopened_object_size": 512,
     "reopened_recovered_all_bytes": true,
-    "root": "/root/src/github-services/TemporalStore-audit-blob-parity/docs/benchmarks/shared_store_blob_append_parity_authoritative_offset_index_current_release/cpp_matrixobjectstore_runtime_root",
+    "root": "/root/src/github-services/TemporalStore-goal-audit-blob/docs/benchmarks/shared_store_blob_append_parity_authoritative_offset_index_current_release/cpp_matrixobjectstore_runtime_root",
     "status": "passed",
     "tail_read_matches": true,
     "total_bytes": 512,
@@ -161,19 +161,19 @@
   "cpp_runtime_command": {
     "argv": [
       "/root/src/github-services/MatrixObjectStore/build-mvp/matrixobjectstore/objectstore/objectstore_append_blob_parity_report",
-      "/root/src/github-services/TemporalStore-audit-blob-parity/docs/benchmarks/shared_store_blob_append_parity_authoritative_offset_index_current_release/cpp_matrixobjectstore_runtime_root",
+      "/root/src/github-services/TemporalStore-goal-audit-blob/docs/benchmarks/shared_store_blob_append_parity_authoritative_offset_index_current_release/cpp_matrixobjectstore_runtime_root",
       "8",
       "64"
     ],
-    "elapsed_ms": 221.484,
+    "elapsed_ms": 235.479,
     "mode": "executed",
     "returncode": 0,
     "stderr_tail": ""
   },
   "cpp_runtime_summary": {
-    "append_latency_avg_us": 11665.685,
+    "append_latency_avg_us": 11807.036,
     "full_read_matches": true,
-    "indexed_append_latency_avg_us": 22659.529,
+    "indexed_append_latency_avg_us": 22753.654,
     "offset_index_extent_count": 8,
     "offset_index_matches": true,
     "offset_index_object_size": 356,
@@ -184,15 +184,15 @@
     "read_cache_max_bytes": 67108864,
     "read_cache_misses": 3,
     "read_cache_pages": 0,
-    "read_full_latency_us": 4518.181,
-    "read_tail_latency_us": 3619.937,
-    "reopen_latency_us": 3205.649,
+    "read_full_latency_us": 4929.395,
+    "read_tail_latency_us": 4696.798,
+    "reopen_latency_us": 5463.692,
     "reopened_extent_count": 8,
     "reopened_recovered_all_bytes": true,
     "runtime_valid": true,
     "tail_read_matches": true
   },
-  "generated_at_unix": 1785631814,
+  "generated_at_unix": 1785632389,
   "parity": {
     "blockers": [],
     "checks": {
@@ -231,8 +231,8 @@
     "feature_mismatches": [],
     "latency_ratios": {
       "comparable": true,
-      "rust_direct_publish_avg_us_to_cpp_indexed_append_avg_us": 0.653,
-      "rust_retrieval_avg_us_to_cpp_full_read_us": 0.05,
+      "rust_direct_publish_avg_us_to_cpp_indexed_append_avg_us": 0.621,
+      "rust_retrieval_avg_us_to_cpp_full_read_us": 0.045,
       "threshold": "<=2.0x for Rust direct publish vs C++ indexed append when durable offset semantics are comparable"
     },
     "note": "Rust TemporalStore MatrixObject append-blob runtime evidence now validates WAL frame offsets, a protobuf oplog-index offset metadata sidecar, authoritative oplog-index metadata lookup/range reads, and incremental journal reopen/readback. C++ MatrixObjectStore runtime evidence covers incremental disk-root reopen/readback.",
@@ -251,10 +251,10 @@
       "--example",
       "shared_store_append_blob_parity_report"
     ],
-    "elapsed_ms": 287751.623,
+    "elapsed_ms": 266332.443,
     "mode": "executed",
     "returncode": 0,
-    "stderr_tail": "   Compiling temporalstore-rust v0.1.0 (/root/src/github-services/TemporalStore-audit-blob-parity/crates/temporalstore-rust)\n   Compiling temporalstore-snapshot v0.1.0 (/root/src/github-services/TemporalStore-audit-blob-parity/crates/temporalstore-snapshot)\n   Compiling matrixobjectstore-rs v0.1.0 (https://github.com/bjmeetsfo/MatrixObjectStore.git?rev=3bb66c4ca78a338bee997ef69b73a07d6728ca1f#3bb66c4c)\nwarning: function `model_id_for_kind` is never used\n     --> crates/temporalstore-rust/src/engine.rs:10775:4\n      |\n10775 | fn model_id_for_kind(kind: &str) -> u16 {\n      |    ^^^^^^^^^^^^^^^^^\n      |\n      = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: function `context_event_timeline_key_for_write` is never used\n  --> crates/temporalstore-rust/src/engine/context.rs:97:15\n   |\n97 | pub(super) fn context_event_timeline_key_for_write(\n   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: `temporalstore-rust` (lib) generated 2 warnings\n    Finished `release` profile [optimized] target(s) in 4m 43s\n     Running `/root/src/github-services/TemporalStore/target/release/examples/shared_store_append_blob_parity_report`\n"
+    "stderr_tail": "   Compiling temporalstore-rust v0.1.0 (/root/src/github-services/TemporalStore-goal-audit-blob/crates/temporalstore-rust)\n   Compiling matrixobjectstore-rs v0.1.0 (https://github.com/bjmeetsfo/MatrixObjectStore.git?rev=8f03227fab58406fe254662acb730d1c9ed81825#8f03227f)\n   Compiling temporalstore-snapshot v0.1.0 (/root/src/github-services/TemporalStore-goal-audit-blob/crates/temporalstore-snapshot)\nwarning: function `model_id_for_kind` is never used\n     --> crates/temporalstore-rust/src/engine.rs:10775:4\n      |\n10775 | fn model_id_for_kind(kind: &str) -> u16 {\n      |    ^^^^^^^^^^^^^^^^^\n      |\n      = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: function `context_event_timeline_key_for_write` is never used\n  --> crates/temporalstore-rust/src/engine/context.rs:97:15\n   |\n97 | pub(super) fn context_event_timeline_key_for_write(\n   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: `temporalstore-rust` (lib) generated 2 warnings\n    Finished `release` profile [optimized] target(s) in 4m 21s\n     Running `/root/src/github-services/TemporalStore/target/release/examples/shared_store_append_blob_parity_report`\n"
   },
   "rust_runtime": {
     "async_writer": {
@@ -274,16 +274,16 @@
       "blob_object_length": 1272,
       "blob_physical_extent_count": 160,
       "enqueue_latencies_us": [
-        35,
-        1,
+        26,
         0,
         0,
-        1,
+        0,
+        0,
         0,
         0,
         0
       ],
-      "flush_latency_us": 352693,
+      "flush_latency_us": 398128,
       "flush_report": {
         "flushed": 8,
         "last_oplog_index": 8,
@@ -293,31 +293,31 @@
         "remaining": 0
       },
       "replay": {
-        "replay_latency_us": 152395,
+        "replay_latency_us": 273042,
         "replay_report": {
           "applied": 8,
           "last_oplog_index": 8
         },
         "retrieval_latencies_us": [
-          583,
-          122,
-          87,
-          180,
-          365,
-          416,
-          248,
-          172
+          440,
+          106,
+          93,
+          108,
+          332,
+          328,
+          231,
+          169
         ],
         "retrieval_ok": true,
         "retrieved_records": 8,
-        "secondary_replay_latency_us": 154578,
+        "secondary_replay_latency_us": 194808,
         "secondary_replay_report": {
           "applied": 8,
           "last_oplog_index": 8
         },
         "secondary_retrieval_ok": true,
         "secondary_retrieved_records": 8,
-        "single_node_reload_latency_us": 146979,
+        "single_node_reload_latency_us": 202041,
         "single_node_reload_ok": true,
         "single_node_reload_report": {
           "applied": 8,
@@ -506,41 +506,41 @@
         "matched_entries": 8
       },
       "publish_latencies_us": [
-        13152,
-        8449,
-        10895,
-        11824,
-        14680,
-        19383,
-        18729,
-        21186
+        8194,
+        9563,
+        10162,
+        14497,
+        14801,
+        15692,
+        18476,
+        21674
       ],
       "replay": {
-        "replay_latency_us": 175849,
+        "replay_latency_us": 183782,
         "replay_report": {
           "applied": 8,
           "last_oplog_index": 8
         },
         "retrieval_latencies_us": [
-          362,
+          302,
+          228,
+          110,
           98,
-          76,
-          78,
-          398,
-          253,
-          174,
-          123
+          447,
+          335,
+          215,
+          224
         ],
         "retrieval_ok": true,
         "retrieved_records": 8,
-        "secondary_replay_latency_us": 169609,
+        "secondary_replay_latency_us": 178737,
         "secondary_replay_report": {
           "applied": 8,
           "last_oplog_index": 8
         },
         "secondary_retrieval_ok": true,
         "secondary_retrieved_records": 8,
-        "single_node_reload_latency_us": 171890,
+        "single_node_reload_latency_us": 201284,
         "single_node_reload_ok": true,
         "single_node_reload_report": {
           "applied": 8,
@@ -586,20 +586,20 @@
       "reopened_offset_metadata_ok": true,
       "reopened_replay_recovered_all_records": true,
       "reopened_retrieval_recovered_all_records": true,
-      "replay_latency_total_us": 457662,
-      "retrieval_latency_avg_us": 252,
+      "replay_latency_total_us": 557510,
+      "retrieval_latency_avg_us": 265,
       "snapshot_bytes": 16530,
-      "snapshot_disk_read_latency_us": 87,
+      "snapshot_disk_read_latency_us": 108,
       "snapshot_disk_write_latency_us": 0,
       "snapshot_export_latency_us": 0,
-      "snapshot_import_latency_us": 433073,
-      "snapshot_sha256": "5bb86a7d3299d39f1fdfbc6d3dca75edb1a8147a5a4bc384dc47c690d1ec0d1f"
+      "snapshot_import_latency_us": 548563,
+      "snapshot_sha256": "721043d7d2204b8d98a2d6a03e6014fadc06633aa2517e77b171afc9b0a16b4b"
     },
     "matrixobject_mode": "rust_matrixobject_incremental_journal_protobuf_append_blob",
     "schema": "temporalstore_shared_store_append_blob_parity_report_v1",
     "summary": {
-      "append_latency_avg_us": 15208,
-      "append_latency_p95_us": 35226,
+      "append_latency_avg_us": 17410,
+      "append_latency_p95_us": 42052,
       "async_flush_reports_include_offsets": true,
       "authoritative_offset_lookup_has_extent_metadata": true,
       "authoritative_offset_lookup_matches_all_records": true,
@@ -608,9 +608,9 @@
       "direct_offset_slices_decode_expected_frames": true,
       "direct_offsets_contiguous": true,
       "direct_offsets_monotonic": true,
-      "replay_latency_total_us": 522904,
+      "replay_latency_total_us": 648689,
       "replay_recovered_all_records": true,
-      "retrieval_latency_avg_us": 228,
+      "retrieval_latency_avg_us": 221,
       "retrieval_recovered_all_records": true,
       "secondary_replay_recovered_all_records": true,
       "single_node_reload_recovered_all_records": true,
@@ -636,31 +636,31 @@
       "blob_object_length": 1264,
       "blob_physical_extent_count": 160,
       "replay": {
-        "replay_latency_us": 194660,
+        "replay_latency_us": 191865,
         "replay_report": {
           "applied": 8,
           "last_oplog_index": 8
         },
         "retrieval_latencies_us": [
-          349,
-          96,
-          122,
-          110,
-          349,
-          316,
-          232,
-          171
+          294,
+          107,
+          88,
+          84,
+          406,
+          274,
+          166,
+          125
         ],
         "retrieval_ok": true,
         "retrieved_records": 8,
-        "secondary_replay_latency_us": 152103,
+        "secondary_replay_latency_us": 183198,
         "secondary_replay_report": {
           "applied": 8,
           "last_oplog_index": 8
         },
         "secondary_retrieval_ok": true,
         "secondary_retrieved_records": 8,
-        "single_node_reload_latency_us": 142496,
+        "single_node_reload_latency_us": 206192,
         "single_node_reload_ok": true,
         "single_node_reload_report": {
           "applied": 8,
@@ -670,14 +670,14 @@
       },
       "shard_id": 2,
       "write_latencies_us": [
-        18559,
-        32610,
-        27866,
-        30139,
-        35288,
-        33024,
-        35226,
-        33965
+        53657,
+        42052,
+        36485,
+        27081,
+        30559,
+        34380,
+        41684,
+        38870
       ],
       "write_reports": [
         {
@@ -757,8 +757,8 @@
     "value_bytes": 64
   },
   "rust_summary": {
-    "append_latency_avg_us": 15208,
-    "append_latency_p95_us": 35226,
+    "append_latency_avg_us": 17410,
+    "append_latency_p95_us": 42052,
     "async_authoritative_offset_lookup": {
       "all_direct_reads_have_extent_metadata": true,
       "all_direct_reads_match_expected_entries": true,
@@ -772,8 +772,8 @@
       "metadata_hits": 8,
       "range_bytes_read": 1272
     },
-    "async_enqueue_latency_avg_us": 4.625,
-    "async_flush_latency_us": 352693,
+    "async_enqueue_latency_avg_us": 3.25,
+    "async_flush_latency_us": 398128,
     "async_flush_reports_include_offsets": true,
     "authoritative_offset_lookup_has_extent_metadata": true,
     "authoritative_offset_lookup_matches_all_records": true,
@@ -823,26 +823,26 @@
     },
     "direct_offset_index_maps_oplog_to_blob_offsets": true,
     "direct_offset_slices_decode_expected_frames": true,
-    "direct_publish_latency_avg_us": 14787.25,
+    "direct_publish_latency_avg_us": 14132.375,
     "durable_reopen_caveat": "Rust MatrixObjectStore now reloads from an incremental checksummed journal path; C++ uses incremental disk-root ObjectStore reopen.",
     "durable_reopen_equivalent": true,
     "matrixobject_mode": "rust_matrixobject_incremental_journal_protobuf_append_blob",
     "offsets_contiguous": true,
     "offsets_monotonic": true,
-    "replay_latency_total_us": 522904,
+    "replay_latency_total_us": 648689,
     "replay_recovered_all_records": true,
-    "retrieval_latency_avg_us": 228,
+    "retrieval_latency_avg_us": 221,
     "retrieval_recovered_all_records": true,
     "runtime_valid": true,
-    "secondary_replay_latency_total_us": 476290,
+    "secondary_replay_latency_total_us": 556743,
     "secondary_replay_recovered_all_records": true,
-    "single_node_reload_latency_total_us": 461365,
+    "single_node_reload_latency_total_us": 609517,
     "single_node_reload_recovered_all_records": true,
     "snapshot_bytes": 16530,
-    "snapshot_disk_read_latency_us": 87,
+    "snapshot_disk_read_latency_us": 108,
     "snapshot_disk_write_latency_us": 0,
     "snapshot_export_latency_us": 0,
-    "snapshot_import_latency_us": 433073,
+    "snapshot_import_latency_us": 548563,
     "snapshot_reopen_cache_metrics_available": true,
     "snapshot_reopen_recovered_all_records": true,
     "snapshot_reopen_restores_offset_metadata": true,
@@ -861,9 +861,9 @@
       "range_bytes_read": 1264
     },
     "sync_reports_include_offsets": true,
-    "sync_writer_latency_avg_us": 30834.625
+    "sync_writer_latency_avg_us": 38096.0
   },
   "schema": "temporalstore_shared_store_blob_append_cpp_rust_parity_v1",
-  "temporalstore_commit": "c58ac45baa92853d99608760d1e8d55f4de0b769",
-  "temporalstore_repo": "/root/src/github-services/TemporalStore-audit-blob-parity"
+  "temporalstore_commit": "9316217fee1c08ce484b8dfcd779f3815490113c",
+  "temporalstore_repo": "/root/src/github-services/TemporalStore-goal-audit-blob"
 }
