@@ -389,9 +389,16 @@ def _latency_ratio(numerator: Any, denominator: Any) -> float | None:
         return None
     return round(float(numerator) / float(denominator), 3)
 
-def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runtime: dict[str, Any]) -> dict[str, Any]:
+def _parity_status(
+    rust: dict[str, Any],
+    cpp_contract: dict[str, Any],
+    cpp_runtime: dict[str, Any],
+    *,
+    rust_profile: str = "release",
+) -> dict[str, Any]:
     rust_summary = _rust_summary(rust)
     cpp_summary = _cpp_runtime_summary(cpp_runtime)
+    release_latency_gate = rust_profile == "release"
     append_latency_ratio = _latency_ratio(
         rust_summary.get("direct_publish_latency_avg_us"),
         cpp_summary.get("indexed_append_latency_avg_us") or cpp_summary.get("append_latency_avg_us"),
@@ -480,16 +487,22 @@ def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runti
         "matrixobject_rust_api_exposes_metadata": bool(
             cpp_contract.get("rust_matrixobject_api_exposes_metadata")
         ),
-        "append_latency_ratio_within_2x_when_comparable": bool(
-            rust_summary.get("durable_reopen_equivalent")
-        )
-        and append_latency_ratio is not None
-        and append_latency_ratio <= 2.0,
-        "retrieval_vs_cpp_full_read_latency_ratio_within_2x_when_comparable": bool(
-            rust_summary.get("durable_reopen_equivalent")
-        )
-        and full_read_latency_ratio is not None
-        and full_read_latency_ratio <= 2.0,
+        "append_latency_ratio_within_2x_when_comparable": (
+            not release_latency_gate
+            or (
+                bool(rust_summary.get("durable_reopen_equivalent"))
+                and append_latency_ratio is not None
+                and append_latency_ratio <= 2.0
+            )
+        ),
+        "retrieval_vs_cpp_full_read_latency_ratio_within_2x_when_comparable": (
+            not release_latency_gate
+            or (
+                bool(rust_summary.get("durable_reopen_equivalent"))
+                and full_read_latency_ratio is not None
+                and full_read_latency_ratio <= 2.0
+            )
+        ),
     }
     blockers = [name for name, passed in checks.items() if not passed]
     return {
@@ -501,6 +514,8 @@ def _parity_status(rust: dict[str, Any], cpp_contract: dict[str, Any], cpp_runti
             "rust_retrieval_avg_us_to_cpp_full_read_us": full_read_latency_ratio,
             "threshold": "<=2.0x for Rust direct publish vs C++ indexed append when durable offset semantics are comparable",
             "comparable": bool(rust_summary.get("durable_reopen_equivalent")),
+            "gate_profile": rust_profile,
+            "release_profile_required_for_latency_gate": release_latency_gate,
         },
         "feature_mismatches": feature_mismatches,
         "root_cause": (
@@ -648,7 +663,12 @@ def main() -> int:
         "cpp_runtime": cpp_runtime,
         "cpp_contract": cpp_contract,
     }
-    report["parity"] = _parity_status(rust_runtime, cpp_contract, cpp_runtime)
+    report["parity"] = _parity_status(
+        rust_runtime,
+        cpp_contract,
+        cpp_runtime,
+        rust_profile=args.rust_profile,
+    )
 
     json_path = output_dir / "shared_store_blob_append_parity_report.json"
     html_path = output_dir / "shared_store_blob_append_parity_report.html"
