@@ -1,0 +1,155 @@
+syntax = "proto3";
+
+package bcache2;
+
+option cc_generic_services = true;
+
+import "base.proto";
+
+service MasterService {
+    rpc CreateTable(CreateTableRequest) returns (CreateTableResponse);
+    rpc DeleteTable(DeleteTableRequest) returns (DeleteTableResponse);
+    rpc UpdateTable(UpdateTableRequest) returns (UpdateTableResponse);
+
+    rpc OpenTable(OpenTableRequest) returns (OpenTableResponse);
+    rpc CloseTable(CloseTableRequest) returns (CloseTableResponse);
+    rpc GetTableTopo(GetTableTopoRequest) returns (GetTableTopoResponse);
+
+    rpc RegisterServer(RegisterServerRequest) returns (RegisterServerResponse);
+    rpc UnRegisterServer(UnRegisterServerRequest) returns (UnRegisterServerResponse);
+}
+
+message CreateTableRequest {
+    RequestOption opt = 1;
+    bytes namespace  = 2;
+    bytes table_name = 3;
+    TableOptions table_options = 4;
+}
+
+message CreateTableResponse {
+    RpcStatus status = 1;
+}
+
+message DeleteTableRequest {
+    RequestOption opt = 1;
+    bytes namespace  = 2;
+    bytes table_name = 3;
+}
+
+message DeleteTableResponse {
+    RpcStatus status = 1;
+}
+
+message UpdateTableRequest {
+    RequestOption opt = 1;
+}
+
+message UpdateTableResponse {
+    RpcStatus status = 1;
+}
+
+message OpenTableRequest {
+    RequestOption opt = 1;
+    bytes namespace  = 2;
+    bytes table_name = 3;
+}
+
+message OpenTableResponse {
+    RpcStatus status = 1;
+    uint64 open_version = 2;
+}
+
+message CloseTableRequest {
+    RequestOption opt = 1;
+    bytes namespace = 2;
+    bytes table_name = 3;
+    uint64 open_version = 4;
+}
+
+message CloseTableResponse {
+    RpcStatus status = 1;
+}
+
+message GetTableTopoRequest {
+    RequestOption opt = 1;
+    bytes namespace = 2;
+    bytes table_name = 3;
+    bytes idc = 4;
+    uint64 old_topo_version = 5;
+    bytes host = 6; // deprecated
+    bool compress = 7;
+}
+
+message GetTableTopoResponse {
+    message LoadInfo {
+        string host = 1; // to be deprecated
+        uint32 port = 2; // to be deprecated
+        bool is_master = 3;
+        uint64 load_version = 4;
+        uint64 partition_id = 5;
+        Endpoint endpoint = 6; // to replace host,port
+        Location location = 7;
+    }
+
+    message LocationWrapper {
+        uint32 id = 1;
+        Location location = 2;
+    }
+
+    message CompressedLoadInfo {
+        bool is_master = 1;
+        uint64 load_version = 2;
+        uint64 partition_id = 3;
+        Endpoint2 endpoint2 = 4;
+        uint32 location_wrapper_id = 5;
+    }
+
+    message PartitionInfo {
+        uint64 partition_id = 1; // partition set id
+        uint32 start_slot = 2;
+        uint32 end_slot = 3;
+
+        // only one of below two would be initialized
+        repeated LoadInfo load_infos = 4;
+        repeated CompressedLoadInfo compressed_load_infos = 5;
+    }
+
+
+    RpcStatus status = 1;
+    uint64 topo_version               = 2;
+    repeated PartitionInfo partitions = 3;
+    string redirect_endpoint = 4;
+    uint64 topo_structure_version = 5;
+
+    repeated LocationWrapper location_map  = 6;
+    bytes serialized_topo = 7; // Serialized GetTableTopoResponse
+}
+
+message RegisterServerRequest {
+    RequestOption opt = 1;
+    bytes host = 2;
+    uint32 port = 3;
+    bytes table_name = 4;
+}
+
+message RegisterServerResponse {
+    RpcStatus status = 1;
+    bytes redirect_endpoint = 2;
+}
+
+message UnRegisterServerRequest {
+    RequestOption opt = 1;
+    bytes host = 2;
+    uint32 port = 3;
+    bytes table_name = 4;
+}
+
+message UnRegisterServerResponse {
+    RpcStatus status = 1;
+    bytes redirect_endpoint = 2;
+}
+
+message TableOptions {
+    uint32 partition_num = 1;
+    PersistentType persistent_type = 2;
+}

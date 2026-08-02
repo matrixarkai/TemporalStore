@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package bcache2.set;
+
+option java_package = "com.bytedance.bcache2.proto";
+
+message SetModuleRequest {
+}
+
+message SetModuleResponse {
+}

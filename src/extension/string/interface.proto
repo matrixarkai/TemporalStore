@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package bcache2.str2;
+
+enum Function {
+    SET = 0;
+    SETEX = 1;
+    GET = 2;
+    APPEND = 3;
+    STRLEN = 4;
+    INCRBY = 5;
+}
+
+message SetRequest {
+    bytes key   = 1;
+    bytes value = 2;
+    bool nx_flag = 3; // Only set the key if it does not already exist.
+    bool xx_flag = 4; // Only set the key if it already exist
+}
+
+message SetResponse {
+}
+
+message SetexRequest {
+    bytes key   = 1;
+    bytes value = 2;
+    uint64 ttl_ms   = 3;
+}
+
+message SetexResponse {
+}
+
+message GetRequest {
+    bytes key = 1;
+}
+
+message GetResponse {
+    bytes value = 1;
+}
+
+message AppendRequest {
+    bytes key = 1;
+    bytes value = 2;
+}
+
+message AppendResponse {
+    uint64 len = 1;
+}
+
+message StrlenRequest {
+    bytes key = 1;
+}
+
+message StrlenResponse {
+    uint64 len = 1;
+}
+
+message IncrByRequest {
+    bytes key = 1;
+    int64 increment = 2;
+}
+
+message IncrByResponse {
+    int64 value = 1;
+}
