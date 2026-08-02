@@ -14,7 +14,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import resource
+try:
+    import resource
+except ModuleNotFoundError:
+    resource = None
 import signal
 import statistics
 import subprocess
@@ -309,11 +312,16 @@ def _descendant_pids(root_pid: int) -> list[int]:
 
 
 def process_resource_snapshot() -> Json:
-    usage = resource.getrusage(resource.RUSAGE_SELF)
-    max_rss_raw = float(getattr(usage, "ru_maxrss", 0.0) or 0.0)
-    max_rss_mb = max_rss_raw / 1024.0 if sys.platform != "darwin" else max_rss_raw / (1024.0 * 1024.0)
-    user_cpu_s = float(getattr(usage, "ru_utime", 0.0) or 0.0)
-    system_cpu_s = float(getattr(usage, "ru_stime", 0.0) or 0.0)
+    if resource is not None:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        max_rss_raw = float(getattr(usage, "ru_maxrss", 0.0) or 0.0)
+        max_rss_mb = max_rss_raw / 1024.0 if sys.platform != "darwin" else max_rss_raw / (1024.0 * 1024.0)
+        user_cpu_s = float(getattr(usage, "ru_utime", 0.0) or 0.0)
+        system_cpu_s = float(getattr(usage, "ru_stime", 0.0) or 0.0)
+    else:
+        max_rss_mb = 0.0
+        user_cpu_s = 0.0
+        system_cpu_s = 0.0
     child_user_cpu_s = 0.0
     child_system_cpu_s = 0.0
     child_rss_mb = 0.0
@@ -383,7 +391,7 @@ def process_resource_delta(start: Json, end: Json, *, work_units: int = 0) -> Js
 
 def selected_ref_count(result: Json) -> int:
     pack = result.get("context_pack") if isinstance(result.get("context_pack"), dict) else result
-    refs = pack.get("refs") or pack.get("selected_refs") or pack.get("context_refs") or []
+    refs = pack.get("refs") or pack.get("selected_refs") or pack.get("remote_context_refs") or pack.get("context_refs") or []
     if isinstance(refs, list) and refs:
         return len(refs)
     grouped = pack.get("groups")
@@ -407,7 +415,7 @@ def selected_ref_count(result: Json) -> int:
 
 
 def _selected_ref_items_from_pack(pack: Json) -> list[Json]:
-    refs = pack.get("refs") or pack.get("selected_refs") or pack.get("context_refs") or []
+    refs = pack.get("refs") or pack.get("selected_refs") or pack.get("remote_context_refs") or pack.get("context_refs") or []
     if isinstance(refs, list) and refs:
         return [item for item in refs if isinstance(item, dict)]
     grouped = pack.get("groups")
@@ -1574,6 +1582,7 @@ def retrieval_phase0_fields(result: Json) -> Json:
         token_count = (
             _sum_token_estimates(pack.get("refs"))
             or _sum_token_estimates(pack.get("selected_refs"))
+            or _sum_token_estimates(pack.get("remote_context_refs"))
             or _sum_token_estimates(pack.get("context_refs"))
             or _sum_token_estimates(pack.get("groups"))
         )
