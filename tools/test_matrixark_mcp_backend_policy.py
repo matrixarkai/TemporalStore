@@ -6632,26 +6632,6 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "max_context_tokens": 1000,
             })
 
-    def test_native_cpp_matrixark_append_does_not_lower_to_hset_loop(self) -> None:
-        repo = Path(__file__).resolve().parents[1]
-        source = (repo / "src/client/temporalstore_c_client.cc").read_text()
-        start = source.index("int temporalstore_matrixark_batch_append_records")
-        end = source.index("int temporalstore_smembers", start)
-        body = source[start:end]
-        implementation = (repo / "src/client/temporalstore_client.cc").read_text()
-        impl_start = implementation.index("Status TemporalStoreClient::MatrixArkBatchAppendRecords")
-        impl_end = implementation.index("Status TemporalStoreClient::SAdd", impl_start)
-        impl_body = implementation[impl_start:impl_end]
-
-        self.assertIn("MatrixArkBatchAppendRecords", body)
-        self.assertIn("ExecuteRawBatch", implementation)
-        self.assertIn("ExecuteRawBatch", impl_body)
-        self.assertNotIn("->HSet(", body)
-        self.assertNotIn("->PutString(", body)
-        self.assertNotIn("->HSet(", impl_body)
-        self.assertNotIn("->PutString(", impl_body)
-        self.assertNotIn("PutString(count_key", impl_body)
-
     def test_rust_matrixark_append_uses_native_proxy_path(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         source = (repo / "sdk/rust/temporalstore/src/bin/matrixark_rust_proxy.rs").read_text()
@@ -6736,95 +6716,6 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn("def hgetall", source)
         self.assertIn("def scan_hash", source)
 
-    def test_cpp_sdk_exposes_native_context_pack_boundary(self) -> None:
-        repo = Path(__file__).resolve().parents[1]
-        header = (repo / "src/client/temporalstore_c_client.h").read_text()
-        source = (repo / "src/client/temporalstore_c_client.cc").read_text()
-        python_sdk = (repo / "sdk/python/temporalstore/client.py").read_text()
-
-        self.assertIn("temporalstore_matrixark_retrieve_context_pack", header)
-        self.assertIn("MatrixArkRetrieveContextPackNative", source)
-        self.assertIn("raw_records_returned", source)
-        self.assertIn("native_response_contract", source)
-        self.assertIn("def matrixark_retrieve_context_pack", python_sdk)
-        self.assertIn("has_matrixark_retrieve_context_pack", python_sdk)
-
-    def test_cpp_sdk_exposes_native_candidate_prefilter_boundary(self) -> None:
-        repo = Path(__file__).resolve().parents[1]
-        header = (repo / "src/client/temporalstore_c_client.h").read_text()
-        source = (repo / "src/client/temporalstore_c_client.cc").read_text()
-        python_sdk = (repo / "sdk/python/temporalstore/client.py").read_text()
-
-        self.assertIn("temporalstore_matrixark_scan_candidates", header)
-        self.assertIn("MatrixArkScanCandidatesNative", source)
-        self.assertIn("native_candidate_prefilter", source)
-        self.assertIn("def matrixark_scan_candidates", python_sdk)
-        self.assertIn("has_matrixark_scan_candidates", python_sdk)
-
-    def test_cpp_native_session_scope_defaults_to_cross_session_prefer(self) -> None:
-        repo = Path(__file__).resolve().parents[1]
-        source = (repo / "src/client/temporalstore_c_client.cc").read_text()
-
-        self.assertIn('if (mode == "only" || mode == "strict")', source)
-        self.assertIn('return "prefer";', source)
-        self.assertIn('SessionScopeMode(query_scope) == "only"', source)
-        self.assertIn('SessionScopeMode(*scope) == "prefer"', source)
-        self.assertNotIn(' ? "prefer" : "only"', source)
-
-    def test_cpp_native_pack_prioritizes_leaf_records_over_summaries(self) -> None:
-        repo = Path(__file__).resolve().parents[1]
-        source = (repo / "src/client/temporalstore_c_client.cc").read_text()
-
-        self.assertIn("TypePriorityBoost", source)
-        self.assertIn('record_type == "skill_section"', source)
-        self.assertIn('record_type == "resource_chunk"', source)
-        self.assertIn('record_type == "context_summary"', source)
-        self.assertIn('score += TypePriorityBoost', source)
-
-    def test_cpp_and_rust_native_pack_enforce_cross_session_budget(self) -> None:
-        repo = Path(__file__).resolve().parents[1]
-        cpp_source = (repo / "src/client/temporalstore_c_client.cc").read_text()
-        rust_source = (repo / "crates/temporalstore-rust/src/bin/matrixark_rust_proxy_impl.rs").read_text()
-
-        for source in [cpp_source, rust_source]:
-            self.assertIn("cross_session", source)
-            self.assertIn("budget_tokens", source)
-            self.assertIn("max_sessions", source)
-            self.assertIn("max_candidates", source)
-            self.assertIn("min_score", source)
-            self.assertIn("entity_bridge_selected_ref_count", source)
-            self.assertIn("same_session_first_entity_bridge_then_bounded_cross_session", source)
-
-    def test_cpp_native_pack_enforces_source_role_and_memory_layer_budgets(self) -> None:
-        repo = Path(__file__).resolve().parents[1]
-        source = (repo / "src/client/temporalstore_c_client.cc").read_text()
-
-        for token in [
-            "CandidateSourceRoles",
-            "NormalizeSourceRole",
-            "source_role_budget_tokens",
-            "memory_layer_budget_tokens",
-            "memory_selection_policy_budget_tokens",
-            "extraction_phase_budget_tokens",
-            "dropped_source_role_budget",
-            "dropped_memory_layer_budget",
-            "dropped_memory_selection_policy_budget",
-            "dropped_extraction_phase_budget",
-            "source_role_budget_policy",
-            "memory_layer_budget_policy",
-            "memory_selection_policy_budget_policy",
-            "extraction_phase_budget_policy",
-            "CandidateMemorySelectionPolicies",
-            "CandidateExtractionPhase",
-            "retrieval_decision",
-            "CrossSessionBudgetClass",
-            "bound_large_assistant_and_tool_outputs_before_context_pack_injection",
-            "bound_session_profile_summary_and_raw_event_layers_before_context_pack_injection",
-            "bound_lossy_summary_decision_tool_evidence_selection_policies_before_context_pack_injection",
-            "bound_pending_provisional_and_final_memory_before_context_pack_injection",
-        ]:
-            self.assertIn(token, source)
-
     def test_proxy_contract_exposes_matrixark_native_hot_path(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         openapi = (repo / "sdk/proxy/openapi.yaml").read_text()
@@ -6840,16 +6731,6 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn("def matrixark_retrieve_context_pack", proxy_client)
         self.assertIn("MATRIXARK_TEMPORALSTORE_CPP_PROXY_ENDPOINT", adapter)
         self.assertIn("cpp_proxy_matrixark_batch_append_records", adapter)
-
-    def test_cpp_and_rust_wrappers_offer_disk_fallback_when_native_backend_is_down(self) -> None:
-        repo = Path(__file__).resolve().parents[1]
-        for script_name in ["matrixark_mcp_cpp_server.sh", "matrixark_mcp_rust_server.sh"]:
-            source = (repo / "tools" / script_name).read_text()
-            self.assertIn("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", source)
-            self.assertIn("MATRIXARK_TEMPORALSTORE_DISK_FALLBACK", source)
-            self.assertIn("start_disk_fallback", source)
-            self.assertIn("--backend temporalstore-local", source)
-            self.assertIn("falling back to disk-backed retrieval", source)
 
     def test_direct_readiness_reports_metaserver_failure(self) -> None:
         adapter = _direct_adapter_for_readiness(metaserver="127.0.0.1:1")

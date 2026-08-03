@@ -811,7 +811,7 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         self.assertEqual("temporalstore-rust", snippet["server"]["env"]["MATRIXARK_MCP_BACKEND"])
 
         for agent in ("opencode", "aider", "continue", "cline", "roo"):
-            planned = json.loads(matrixark_agent_config.named_agent_json(agent, ".", "tools/matrixark_mcp_cpp_server.sh"))
+            planned = json.loads(matrixark_agent_config.named_agent_json(agent, ".", "tools/matrixark_mcp_rust_server.sh"))
             self.assertEqual(snippet["envelope"]["schema"], "matrixark_agent_envelope_v1")
             self.assertEqual("todo_planned", planned["hook_status"])
             self.assertNotIn("recommended_hook_command", planned)

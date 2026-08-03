@@ -63,7 +63,7 @@ run_cpp_hook() {
     export MATRIXARK_DIRECT_WRITE_QUEUE_MODE="${MATRIXARK_DIRECT_WRITE_QUEUE_MODE:-temporalstore}"
     export MATRIXARK_HOOK_STORAGE_ROUTE="${MATRIXARK_HOOK_STORAGE_ROUTE:-shared_store_async}"
     export MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT="${MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT:-40000}"
-    export TEMPORALSTORE_LIB="${TEMPORALSTORE_LIB:-$ROOT/output-ubuntu22/release/sdk/lib/libbcache2.so}"
+    export TEMPORALSTORE_LIB="${TEMPORALSTORE_LIB:-}"
     bash tools/matrixark_codex_cpp_hook.sh \
       "${COMMON_ARGS[@]}" \
       --backend temporalstore-direct \
@@ -808,7 +808,7 @@ publish_cpp_direct_records() {
   MATRIXARK_TEMPORALSTORE_TABLE="${MATRIXARK_TEMPORALSTORE_TABLE:-deploy_table}" \
   MATRIXARK_CPP_TEMPORALSTORE_PREFIX="${MATRIXARK_CPP_TEMPORALSTORE_PREFIX:-matrixark:codex-hook:cpp-live-v2}" \
   MATRIXARK_CPP_TEMPORALSTORE_METASERVER="${MATRIXARK_CPP_TEMPORALSTORE_METASERVER:-127.0.0.1:18000}" \
-  TEMPORALSTORE_LIB="${TEMPORALSTORE_LIB:-$ROOT/output-ubuntu22/release/sdk/lib/libbcache2.so}" \
+  TEMPORALSTORE_LIB="${TEMPORALSTORE_LIB:-}" \
   python3 - "$DIRECT_PAYLOAD" 2>>"$CPP_PUBLISH_STDERR" <<'PY'
 import base64
 import json
@@ -1133,7 +1133,7 @@ try:
             request_timeout_ms=3000,
             io_timeout_ms=3000,
         ),
-        library_path=os.environ.get("TEMPORALSTORE_LIB", str(repo / "output-ubuntu22/release/sdk/lib/libbcache2.so")),
+        library_path=os.environ.get("TEMPORALSTORE_LIB", ""),
     )
 except Exception as exc:
     print(f"connect cpp temporalstore failed: {exc}", file=sys.stderr)

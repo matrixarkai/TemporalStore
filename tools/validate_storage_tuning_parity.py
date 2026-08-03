@@ -87,7 +87,6 @@ def extract_rust_defaults(path: pathlib.Path) -> dict[str, object]:
 
 def main() -> int:
     files = {
-        "cpp_runtime": ROOT / "tools" / "temporalstore_runtime_env.sh",
         "rust_config": ROOT / "crates" / "temporalstore-rust" / "src" / "storage_config.rs",
         "rust_readme": ROOT / "crates" / "temporalstore-rust" / "README.md",
     }

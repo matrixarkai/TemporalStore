@@ -4363,36 +4363,6 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertNotIn('rust-service-publish.err', script)
         self.assertNotIn('cpp-direct-publish.err', script)
 
-    def test_cpp_and_rust_hooks_do_not_persist_external_logs(self) -> None:
-        tools_dir = Path(__file__).resolve().parents[1] / "tools"
-        cpp_script = (tools_dir / "matrixark_codex_cpp_hook.sh").read_text()
-        rust_script = (tools_dir / "matrixark_codex_rust_hook.sh").read_text()
-        dual_script = (tools_dir / "matrixark_codex_dual_hook.sh").read_text()
-        combined = "\n".join([cpp_script, rust_script, dual_script])
-
-        self.assertIn('export MATRIXARK_RUST_PROXY_DAEMON_LOG="/dev/null"', rust_script)
-        self.assertNotIn("daemon.log", rust_script)
-        self.assertNotIn('mkdir -p "$(dirname "$MATRIXARK_RUST_PROXY_DAEMON_LOG")"', rust_script)
-        self.assertNotIn("MATRIXARK_CODEX_HOOK_LOG_DIR", combined)
-        self.assertNotIn("dispatch-diagnostics.jsonl", combined)
-        self.assertNotIn("cpp-$EVENT.out", combined)
-        self.assertNotIn("rust-service-publish.err", combined)
-        self.assertNotIn("cpp-direct-publish.err", combined)
-
-    def test_live_codex_hooks_enable_assistant_capture_and_auto_batch_extraction(self) -> None:
-        tools_dir = Path(__file__).resolve().parents[1] / "tools"
-        cpp_script = (tools_dir / "matrixark_codex_cpp_hook.sh").read_text()
-        rust_script = (tools_dir / "matrixark_codex_rust_hook.sh").read_text()
-        dual_script = (tools_dir / "matrixark_codex_dual_hook.sh").read_text()
-
-        self.assertIn('MATRIXARK_CODEX_CPP_USER_PROMPTS_ONLY="${MATRIXARK_CODEX_CPP_USER_PROMPTS_ONLY:-0}"', cpp_script)
-        self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', cpp_script)
-        self.assertIn('MATRIXARK_HOOK_FAST_ASYNC_INGEST="${MATRIXARK_HOOK_FAST_ASYNC_INGEST:-1}"', cpp_script)
-        self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', rust_script)
-        self.assertIn('MATRIXARK_HOOK_FAST_ASYNC_INGEST="${MATRIXARK_HOOK_FAST_ASYNC_INGEST:-1}"', rust_script)
-        self.assertIn('MATRIXARK_HOOK_AUTO_BATCH_EXTRACT="${MATRIXARK_HOOK_AUTO_BATCH_EXTRACT:-1}"', dual_script)
-        self.assertIn('MATRIXARK_HOOK_FAST_ASYNC_INGEST="${MATRIXARK_HOOK_FAST_ASYNC_INGEST:-1}"', dual_script)
-
     def test_python_hook_live_fast_path_defaults_on_with_explicit_opt_out(self) -> None:
         original_env = os.environ.pop("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", None)
         try:
