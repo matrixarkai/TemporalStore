@@ -109,7 +109,7 @@ For retrieval hooks, the agent should pass local context it already selected. Ma
 ```json
 {
   "query": "What is the current GPU approval and blocker?",
-  "scope": {"user_id": "deeproute", "session_id": "codex:thread-abc"},
+  "scope": {"user_id": "local_user", "session_id": "codex:thread-abc"},
   "max_context_tokens": 1200,
   "local_context": [
     {"ref": "open-buffer:main.py", "text": "current local code context"},

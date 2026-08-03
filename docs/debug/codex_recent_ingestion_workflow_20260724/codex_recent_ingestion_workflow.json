@@ -1123,7 +1123,7 @@
           "hook_type": "",
           "hook_observed_at_ms": 0,
           "synthetic": false,
-          "text": "tenant:tenant_codex / user:deeproute / session:codex:019efb19-68bf-7d83-903e-10e8b8060256 :: location location: objects\\\") job_status job_status: short --branch\"}, \"tool_name\": \"Bash\", \"tool_response\": \"## main curren...",
+          "text": "tenant:tenant_codex / user:local_user / session:codex:019efb19-68bf-7d83-903e-10e8b8060256 :: location location: objects\\\") job_status job_status: short --branch\"}, \"tool_name\": \"Bash\", \"tool_response\": \"## main curren...",
           "write_path": "direct_append"
         },
         {
@@ -1153,7 +1153,7 @@
           "hook_type": "",
           "hook_observed_at_ms": 0,
           "synthetic": false,
-          "text": "Context node tenant:tenant_codex / user:deeproute. Rich overview: assistant: -- {\"type:agent-turn-complete,thread-id:019efad7-2f87-77e1-b082-c294fcb5e731,turn-id:019f9210-da61-7aa0-b711-b39eae2c2061,cwd:C:\\\\Users\\\\Dee...",
+          "text": "Context node tenant:tenant_codex / user:local_user. Rich overview: assistant: -- {\"type:agent-turn-complete,thread-id:019efad7-2f87-77e1-b082-c294fcb5e731,turn-id:019f9210-da61-7aa0-b711-b39eae2c2061,cwd:C:\\\\Users\\\\Dee...",
           "write_path": "direct_append"
         },
         {
@@ -1168,7 +1168,7 @@
           "hook_type": "",
           "hook_observed_at_ms": 0,
           "synthetic": false,
-          "text": "tenant:tenant_codex / user:deeproute :: assistant: -- {\"type:agent-turn-complete,thread-id:019efad7-2f87-77e1-b082-c294fcb5e731,turn-id:019f9210-da61-7aa0-b711-b39eae2c2061,cwd:C:\\\\Users\\\\example\\\\Documents\\\\Codex\\\\...",
+          "text": "tenant:tenant_codex / user:local_user :: assistant: -- {\"type:agent-turn-complete,thread-id:019efad7-2f87-77e1-b082-c294fcb5e731,turn-id:019f9210-da61-7aa0-b711-b39eae2c2061,cwd:C:\\\\Users\\\\example\\\\Documents\\\\Codex\\\\...",
           "write_path": "direct_append"
         },
         {
@@ -1198,7 +1198,7 @@
           "hook_type": "",
           "hook_observed_at_ms": 0,
           "synthetic": false,
-          "text": "Context node tenant:tenant_codex. Rich overview: tenant:tenant_codex / user:deeproute :: user: TODAY WE ONLY SUPPORT CODEX HOOK, LEAVE TODOS FOR CLAUDE CODE AND OTHER AGENT tool: {\"cwd\": \"C:\\\\Users\\\\example\\\\Documen...",
+          "text": "Context node tenant:tenant_codex. Rich overview: tenant:tenant_codex / user:local_user :: user: TODAY WE ONLY SUPPORT CODEX HOOK, LEAVE TODOS FOR CLAUDE CODE AND OTHER AGENT tool: {\"cwd\": \"C:\\\\Users\\\\example\\\\Documen...",
           "write_path": "direct_append"
         },
         {
@@ -1213,7 +1213,7 @@
           "hook_type": "",
           "hook_observed_at_ms": 0,
           "synthetic": false,
-          "text": "tenant:tenant_codex :: tenant:tenant_codex / user:deeproute :: user: TODAY WE ONLY SUPPORT CODEX HOOK, LEAVE TODOS FOR CLAUDE CODE AND OTHER AGENT tool: {\"cwd\": \"C:\\\\Users\\\\example\\\\Documents\\\\Codex\\\\2026-06-07\\\\use...",
+          "text": "tenant:tenant_codex :: tenant:tenant_codex / user:local_user :: user: TODAY WE ONLY SUPPORT CODEX HOOK, LEAVE TODOS FOR CLAUDE CODE AND OTHER AGENT tool: {\"cwd\": \"C:\\\\Users\\\\example\\\\Documents\\\\Codex\\\\2026-06-07\\\\use...",
           "write_path": "direct_append"
         }
       ],
@@ -1335,7 +1335,7 @@
           "hook_type": "",
           "hook_observed_at_ms": 0,
           "synthetic": false,
-          "text": "tenant:tenant_codex / user:deeproute / session:codex:019efb19-68bf-7d83-903e-10e8b8060256 :: location location: objects\\\") job_status job_status: short --branch\"}, \"tool_name\": \"Bash\", \"tool_response\": \"## main curren...",
+          "text": "tenant:tenant_codex / user:local_user / session:codex:019efb19-68bf-7d83-903e-10e8b8060256 :: location location: objects\\\") job_status job_status: short --branch\"}, \"tool_name\": \"Bash\", \"tool_response\": \"## main curren...",
           "write_path": "direct_append"
         },
         {
@@ -1380,7 +1380,7 @@
           "hook_type": "",
           "hook_observed_at_ms": 0,
           "synthetic": false,
-          "text": "Context node tenant:tenant_codex / user:deeproute. Rich overview: assistant: -- {\"type:agent-turn-complete,thread-id:019efad7-2f87-77e1-b082-c294fcb5e731,turn-id:019f9210-da61-7aa0-b711-b39eae2c2061,cwd:C:\\\\Users\\\\Dee...",
+          "text": "Context node tenant:tenant_codex / user:local_user. Rich overview: assistant: -- {\"type:agent-turn-complete,thread-id:019efad7-2f87-77e1-b082-c294fcb5e731,turn-id:019f9210-da61-7aa0-b711-b39eae2c2061,cwd:C:\\\\Users\\\\Dee...",
           "write_path": "direct_append"
         },
         {

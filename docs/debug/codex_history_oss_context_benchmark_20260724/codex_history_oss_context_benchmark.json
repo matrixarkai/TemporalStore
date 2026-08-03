@@ -864,7 +864,7 @@
       {
         "summary_id": "86e5bac1b0c49349",
         "summary_type": "user_l1",
-        "scope": "tenant:tenant_codex/user:deeproute",
+        "scope": "tenant:tenant_codex/user:local_user",
         "source_ids": [
           "841a5ed5c5641b71",
           "ba63271c83beee3c",

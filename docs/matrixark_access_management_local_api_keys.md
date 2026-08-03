@@ -63,13 +63,13 @@ The response returns the raw key once, plus the derived `local_scope` and `defau
   "local_scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute",
+    "user_id": "local_user",
     "session_id": "thread-123",
     "agent_name": "codex"
   },
   "default_node_path": [
     "tenant:tenant_codex",
-    "user:deeproute",
+    "user:local_user",
     "session:thread-123"
   ],
   "api_key": "mk_local_..."

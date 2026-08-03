@@ -309,7 +309,7 @@ If an agent cannot estimate token budget, MatrixArk defaults to 32000 tokens. Th
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute",
+    "user_id": "local_user",
     "session_id": "codex:thread:123"
   }
 }
@@ -332,7 +332,7 @@ For the post-answer ingest call, include the user message, assistant answer, and
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute",
+    "user_id": "local_user",
     "session_id": "codex:thread:123"
   }
 }
@@ -422,7 +422,7 @@ Scoped message with hook metadata:
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute",
+    "user_id": "local_user",
     "session_id": "codex:local:demo"
   },
   "metadata": {
@@ -430,7 +430,7 @@ Scoped message with hook metadata:
     "node_path": [
       "account:acct_local",
       "tenant:tenant_codex",
-      "principal:user:deeproute",
+      "principal:user:local_user",
       "collection:sessions",
       "session:codex:local:demo"
     ]
@@ -460,7 +460,7 @@ Use this for VikingMem-style logical session extraction after enough messages ac
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute",
+    "user_id": "local_user",
     "session_id": "codex:local:demo"
   },
   "threshold_messages": 20,
@@ -476,7 +476,7 @@ Use this for VikingMem-style logical session extraction after enough messages ac
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute",
+    "user_id": "local_user",
     "session_id": "codex:local:demo"
   },
   "commit_reason": "hook_boundary",
@@ -503,7 +503,7 @@ rolling window          -> commit next 20 pending messages, not the whole sessio
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute",
+    "user_id": "local_user",
     "session_id": "codex:local:demo"
   },
   "max_context_tokens": 10000,
@@ -539,7 +539,7 @@ raw query
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute",
+    "user_id": "local_user",
     "session_id": "codex:local:demo"
   }
 }
@@ -555,7 +555,7 @@ Short feedback such as `yes`, `correct`, or `approved` is only treated as confir
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute"
+    "user_id": "local_user"
   }
 }
 ```
@@ -569,7 +569,7 @@ Replay explains what was selected, dropped, blocked, repaired, or used as prior 
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute"
+    "user_id": "local_user"
   },
   "table": "messages",
   "page_size": 50
@@ -586,20 +586,20 @@ Supported dashboard tables include messages, resources, skills, events, entities
 {
   "kind": "resource",
   "messages": [
-    {"role": "user", "content": "Import resource file:///home/deeproute/docs/runbook.pdf"}
+    {"role": "user", "content": "Import resource file:///home/local_user/docs/runbook.pdf"}
   ],
-  "raw_uri": "file:///home/deeproute/docs/runbook.pdf",
+  "raw_uri": "file:///home/local_user/docs/runbook.pdf",
   "resource_type": "pdf",
   "raw_storage_mode": "local",
   "wait": true,
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute"
+    "user_id": "local_user"
   },
   "metadata": {
     "source": "codex_resource_import",
-    "node_path": ["account:acct_local", "tenant:tenant_codex", "principal:user:deeproute", "collection:resources"]
+    "node_path": ["account:acct_local", "tenant:tenant_codex", "principal:user:local_user", "collection:resources"]
   }
 }
 ```
@@ -623,7 +623,7 @@ For MatrixArk cloud, the agent can either send an existing S3/object-store URI o
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute"
+    "user_id": "local_user"
   }
 }
 ```
@@ -636,20 +636,20 @@ Raw bytes are not stored in TemporalStore. TemporalStore stores `raw_uri`, chunk
 {
   "kind": "skill",
   "messages": [
-    {"role": "user", "content": "Import skill file:///home/deeproute/.codex/skills/build-debug/SKILL.md"}
+    {"role": "user", "content": "Import skill file:///home/local_user/.codex/skills/build-debug/SKILL.md"}
   ],
-  "raw_uri": "file:///home/deeproute/.codex/skills/build-debug/SKILL.md",
+  "raw_uri": "file:///home/local_user/.codex/skills/build-debug/SKILL.md",
   "resource_type": "skill",
   "raw_storage_mode": "local",
   "wait": true,
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute"
+    "user_id": "local_user"
   },
   "metadata": {
     "source": "codex_skill_import",
-    "node_path": ["account:acct_local", "tenant:tenant_codex", "principal:user:deeproute", "collection:skills"]
+    "node_path": ["account:acct_local", "tenant:tenant_codex", "principal:user:local_user", "collection:skills"]
   }
 }
 ```
@@ -700,7 +700,7 @@ cd <repo>
 printf '%s\n' '{"prompt":"Alice approved the GPU request.","thread_id":"manual-hook-cpp","cwd":"<repo>"}' \
   | MATRIXARK_ACCOUNT_ID=acct_local \
     MATRIXARK_TENANT_ID=tenant_codex \
-    MATRIXARK_USER_ID="${USER:-deeproute}" \
+    MATRIXARK_USER_ID="${USER:-local_user}" \
     tools/matrixark_codex_cpp_hook.sh --event UserPromptSubmit
 ```
 
@@ -711,7 +711,7 @@ cd <repo>
 printf '%s\n' '{"prompt":"Alice approved the GPU request.","thread_id":"manual-hook-rust","cwd":"<repo>"}' \
   | MATRIXARK_ACCOUNT_ID=acct_local \
     MATRIXARK_TENANT_ID=tenant_codex \
-    MATRIXARK_USER_ID="${USER:-deeproute}" \
+    MATRIXARK_USER_ID="${USER:-local_user}" \
     tools/matrixark_codex_rust_hook.sh --event UserPromptSubmit
 ```
 
@@ -730,7 +730,7 @@ Call a tool directly over line JSON:
 ```bash
 cd <repo>
 cat > /tmp/matrixark-ingest-call.jsonl <<'JSON'
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"matrixark_ingest","arguments":{"messages":[{"role":"user","content":"Alice approved the GPU request."}],"scope":{"account_id":"acct_local","tenant_id":"tenant_codex","user_id":"deeproute","session_id":"manual-mcp-demo"}}}}
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"matrixark_ingest","arguments":{"messages":[{"role":"user","content":"Alice approved the GPU request."}],"scope":{"account_id":"acct_local","tenant_id":"tenant_codex","user_id":"local_user","session_id":"manual-mcp-demo"}}}}
 JSON
 MATRIXARK_MCP_PROFILE=production tools/matrixark_mcp_cpp_server.sh --line-json < /tmp/matrixark-ingest-call.jsonl
 ```
@@ -823,7 +823,7 @@ For reliable multi-user isolation, send at least:
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute",
+    "user_id": "local_user",
     "session_id": "codex:thread:123"
   }
 }

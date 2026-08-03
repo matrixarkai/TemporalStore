@@ -799,7 +799,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             session_id="codex-session-1",
             account_id="acct_local",
             tenant_id="tenant_codex",
-            user_id="deeproute",
+            user_id="local_user",
             team="codex",
             project="temporalstore",
         )
@@ -2600,7 +2600,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             event="UserPromptSubmit",
             account_id="acct_local",
             tenant_id="tenant_codex",
-            user_id="deeproute",
+            user_id="local_user",
             session_id="codex-cpp-session-1",
             team="codex",
             project="temporalstore",
@@ -2795,7 +2795,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 event=event,
                 account_id="acct_local",
                 tenant_id="tenant_codex",
-                user_id="deeproute",
+                user_id="local_user",
                 session_id="codex-cpp-session-1",
                 team="codex",
                 project="temporalstore",
@@ -2858,7 +2858,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             event="UserPromptSubmit",
             account_id="acct_local",
             tenant_id="tenant_codex",
-            user_id="deeproute",
+            user_id="local_user",
             session_id="codex-raw-fallback-session",
             team="codex",
             project="temporalstore",
@@ -2933,7 +2933,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 event="UserPromptSubmit",
                 account_id="acct_local",
                 tenant_id="tenant_codex",
-                user_id="deeproute",
+                user_id="local_user",
                 session_id="codex-session-threshold",
                 team="codex",
                 project="temporalstore",
@@ -3065,7 +3065,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 event="UserPromptSubmit",
                 account_id="acct_local",
                 tenant_id="tenant_codex",
-                user_id="deeproute",
+                user_id="local_user",
                 session_id="codex-session-idle-next-prompt",
                 team="codex",
                 project="temporalstore",
@@ -3172,7 +3172,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             event="Stop",
             account_id="acct_local",
             tenant_id="tenant_codex",
-            user_id="deeproute",
+            user_id="local_user",
             session_id="codex-session-stop",
             team="codex",
             project="temporalstore",
@@ -3262,7 +3262,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             event="UserPromptSubmit",
             account_id="acct_hook_local",
             tenant_id="",
-            user_id="deeproute",
+            user_id="local_user",
             session_id="codex-session-local",
             team="codex",
             project="temporalstore",
@@ -3287,10 +3287,10 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         buffered = server.adapter.session_buffer_records[0]
         for record in [raw_record, serving_event, buffered["envelope"]]:
             self.assertEqual("tenant_local_agent", record["scope"]["tenant_id"])
-            self.assertEqual("deeproute", record["scope"]["user_id"])
+            self.assertEqual("local_user", record["scope"]["user_id"])
             self.assertEqual("codex-session-local", record["scope"]["session_id"])
         self.assertEqual(
-            ["tenant:tenant_local_agent", "user:deeproute", "session:codex-session-local", "conversation:codex_hook"],
+            ["tenant:tenant_local_agent", "user:local_user", "session:codex-session-local", "conversation:codex_hook"],
             serving_event["node_path"],
         )
         self.assertEqual(serving_event["node_path"], buffered["node_path"])
@@ -3423,7 +3423,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         source = (Path(__file__).resolve().parents[1] / "tools" / "matrixark_codex_dual_hook.sh").read_text()
         self.assertIn("HOOK_USER_ID=", source)
         self.assertIn("--user-id \"$HOOK_USER_ID\"", source)
-        self.assertNotIn("--user-id \"${MATRIXARK_HOOK_USER_ID:-deeproute}\"", source)
+        self.assertNotIn("--user-id \"${MATRIXARK_HOOK_USER_ID:-local_user}\"", source)
 
 
     def test_fast_async_hook_ingest_marks_tool_evidence_lifecycle(self) -> None:
@@ -3453,7 +3453,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             event="PostToolUse",
             account_id="acct_local",
             tenant_id="tenant_codex",
-            user_id="deeproute",
+            user_id="local_user",
             session_id="codex-session-tool",
             team="codex",
             project="temporalstore",
@@ -3522,7 +3522,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             event="Stop",
             account_id="acct_local",
             tenant_id="tenant_codex",
-            user_id="deeproute",
+            user_id="local_user",
             session_id="codex-session-sync-serving",
             team="codex",
             project="temporalstore",
@@ -3597,7 +3597,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 event="PostToolUse",
                 account_id="acct_local",
                 tenant_id="tenant_codex",
-                user_id="deeproute",
+                user_id="local_user",
                 session_id="codex-session-tool-threshold",
                 team="codex",
                 project="temporalstore",
@@ -3683,7 +3683,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 event="UserPromptSubmit",
                 account_id="acct_local",
                 tenant_id="tenant_codex",
-                user_id="deeproute",
+                user_id="local_user",
                 session_id="codex-session-threshold-task",
                 team="codex",
                 project="temporalstore",
@@ -3774,7 +3774,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
                 event="PostToolUse",
                 account_id="acct_local",
                 tenant_id="tenant_codex",
-                user_id="deeproute",
+                user_id="local_user",
                 session_id="codex-session-tool-idle",
                 team="codex",
                 project="temporalstore",
@@ -3862,7 +3862,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             event="IdleTimeout",
             account_id="acct_local",
             tenant_id="tenant_codex",
-            user_id="deeproute",
+            user_id="local_user",
             session_id="codex-session-idle",
             team="codex",
             project="temporalstore",
@@ -3938,7 +3938,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             event="Stop",
             account_id="acct_local",
             tenant_id="tenant_codex",
-            user_id="deeproute",
+            user_id="local_user",
             session_id="codex-session-stop",
             team="codex",
             project="temporalstore",
@@ -4030,7 +4030,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             event="Stop",
             account_id="acct_local",
             tenant_id="tenant_codex",
-            user_id="deeproute",
+            user_id="local_user",
             session_id="codex-session-stop-finalized",
             team="codex",
             project="temporalstore",
@@ -4083,7 +4083,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             event="PostToolUse",
             account_id="acct_local",
             tenant_id="tenant_codex",
-            user_id="deeproute",
+            user_id="local_user",
             session_id="codex-cpp-session-1",
             team="codex",
             project="temporalstore",
@@ -4139,7 +4139,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             event="PostToolUse",
             account_id="acct_local",
             tenant_id="tenant_codex",
-            user_id="deeproute",
+            user_id="local_user",
             session_id="codex-cpp-session-1",
             team="codex",
             project="temporalstore",
@@ -4198,7 +4198,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             event="PostToolUse",
             account_id="acct_local",
             tenant_id="tenant_codex",
-            user_id="deeproute",
+            user_id="local_user",
             session_id="codex-cpp-session-1",
             team="codex",
             project="temporalstore",

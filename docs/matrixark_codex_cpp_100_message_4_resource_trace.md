@@ -198,53 +198,53 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 
 |summary_type|summary_hash|node_path|summary_generation_policy.reason|summary_text|source_chunk_hashes|
 |---|---|---|---|---|---|
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget.||
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|batch_l0|847349191541746959|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistan...||
-|resource_l0|5253826341840929662|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: <workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[4819398059654939441]|
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|resource_l0|2387919895054058779|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: <workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[456790337710764122]|
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|resource_l0|8362868875371206370|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: <workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[2418201568328997923]|
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|resource_l0|3162514970771483214|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: <workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[6051725708133528022]|
-|node_l0|1886266633781634111|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session :: user: Alice from finance approved the GPU...||
-|node_l1|1616491761191208179|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session. Rich overview: user: Alice fro...||
-|node_l0|7072998724969009401|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice...||
-|node_l1|3186282447509310879|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora. ...||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget.||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|batch_l0|847349191541746959|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistan...||
+|resource_l0|5253826341840929662|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]||resource: <workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[4819398059654939441]|
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|resource_l0|2387919895054058779|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]||resource: <workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[456790337710764122]|
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|resource_l0|8362868875371206370|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]||resource: <workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[2418201568328997923]|
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|resource_l0|3162514970771483214|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]||resource: <workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[6051725708133528022]|
+|node_l0|1886266633781634111|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session"]|has_child_summaries|tenant:tenant_codex / user:local_user / session:debug-message-pdf-session :: user: Alice from finance approved the GPU...||
+|node_l1|1616491761191208179|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session"]|has_child_summaries|Context node tenant:tenant_codex / user:local_user / session:debug-message-pdf-session. Rich overview: user: Alice fro...||
+|node_l0|7072998724969009401|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|tenant:tenant_codex / user:local_user / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice...||
+|node_l1|3186282447509310879|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|Context node tenant:tenant_codex / user:local_user / session:debug-message-pdf-session / conversation:project_aurora. ...||
 |node_l0|4626625830169563149|["tenant:tenant_codex"]|has_child_summaries|tenant:tenant_codex :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing ...||
 |node_l1|1916101716449258884|["tenant:tenant_codex"]|has_child_summaries|Context node tenant:tenant_codex. Rich overview: user: Alice from finance approved the GPU purchase request for Proje...||
-|node_l0|5451123137701072075|["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|tenant:tenant_codex / user:deeproute :: user: Alice from finance approved the GPU purchase request for Project Aurora...||
-|node_l1|7794448877417626891|["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute. Rich overview: user: Alice from finance approved the GPU purchase ...||
-|node_l0|2423087115552912795|["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources :: user: Alice from finance approved the GPU purchase request for Pr...||
-|node_l1|8165358132187641623|["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources. Rich overview: user: Alice from finance approved the G...||
-|node_l0|4443347079005396521|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources / project_aurora :: user: Alice from finance approved the GPU purcha...||
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|node_l1|7129763152424808338|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora. Rich overview: user: Alice from finan...||
-|node_l0|9161093819732845678|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement :: Project Aurora GPU Approval Pa...||
-|node_l1|1076018507551928025|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement. Rich overview: Proj...||
-|resource_l0|6524626718067131693|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: <workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[3088140979938095262]|
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|node_l0|1886266633781634111|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session :: user: Alice from finance approved the GPU...||
-|node_l1|1616491761191208179|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session. Rich overview: user: Alice fro...||
-|node_l0|7072998724969009401|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice...||
-|node_l1|3186282447509310879|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora. ...||
-|node_l0|4626625830169563149|["tenant:tenant_codex"]|has_child_summaries|tenant:tenant_codex :: Context node tenant:tenant_codex / user:deeproute. Rich overview: user: Alice from finance app...||
-|node_l1|1916101716449258884|["tenant:tenant_codex"]|has_child_summaries|Context node tenant:tenant_codex. Rich overview: Context node tenant:tenant_codex / user:deeproute. Rich overview: us...||
-|node_l0|5451123137701072075|["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|tenant:tenant_codex / user:deeproute :: Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf...||
-|node_l1|7794448877417626891|["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute. Rich overview: Context node tenant:tenant_codex / user:deeproute /...||
-|node_l0|2423087115552912795|["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources :: user: Alice from finance approved the GPU purchase request for Pr...||
-|node_l1|8165358132187641623|["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources. Rich overview: user: Alice from finance approved the G...||
-|node_l0|4443347079005396521|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources / project_aurora :: user: Alice from finance approved the GPU purcha...||
-|node_l1|7129763152424808338|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora. Rich overview: user: Alice from finan...||
-|node_l0|9161093819732845678|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement :: Budget Update Memo Update: The...||
-|node_l1|1076018507551928025|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement. Rich overview: Budg...||
+|node_l0|5451123137701072075|["tenant:tenant_codex", "user:local_user"]|has_child_summaries|tenant:tenant_codex / user:local_user :: user: Alice from finance approved the GPU purchase request for Project Aurora...||
+|node_l1|7794448877417626891|["tenant:tenant_codex", "user:local_user"]|has_child_summaries|Context node tenant:tenant_codex / user:local_user. Rich overview: user: Alice from finance approved the GPU purchase ...||
+|node_l0|2423087115552912795|["tenant:tenant_codex", "user:local_user", "resources"]|has_child_summaries|tenant:tenant_codex / user:local_user / resources :: user: Alice from finance approved the GPU purchase request for Pr...||
+|node_l1|8165358132187641623|["tenant:tenant_codex", "user:local_user", "resources"]|has_child_summaries|Context node tenant:tenant_codex / user:local_user / resources. Rich overview: user: Alice from finance approved the G...||
+|node_l0|4443347079005396521|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora"]|has_child_summaries|tenant:tenant_codex / user:local_user / resources / project_aurora :: user: Alice from finance approved the GPU purcha...||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|node_l1|7129763152424808338|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora"]|has_child_summaries|Context node tenant:tenant_codex / user:local_user / resources / project_aurora. Rich overview: user: Alice from finan...||
+|node_l0|9161093819732845678|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|tenant:tenant_codex / user:local_user / resources / project_aurora / gpu_procurement :: Project Aurora GPU Approval Pa...||
+|node_l1|1076018507551928025|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|Context node tenant:tenant_codex / user:local_user / resources / project_aurora / gpu_procurement. Rich overview: Proj...||
+|resource_l0|6524626718067131693|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]||resource: <workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[3088140979938095262]|
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|node_l0|1886266633781634111|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session"]|has_child_summaries|tenant:tenant_codex / user:local_user / session:debug-message-pdf-session :: user: Alice from finance approved the GPU...||
+|node_l1|1616491761191208179|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session"]|has_child_summaries|Context node tenant:tenant_codex / user:local_user / session:debug-message-pdf-session. Rich overview: user: Alice fro...||
+|node_l0|7072998724969009401|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|tenant:tenant_codex / user:local_user / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice...||
+|node_l1|3186282447509310879|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|Context node tenant:tenant_codex / user:local_user / session:debug-message-pdf-session / conversation:project_aurora. ...||
+|node_l0|4626625830169563149|["tenant:tenant_codex"]|has_child_summaries|tenant:tenant_codex :: Context node tenant:tenant_codex / user:local_user. Rich overview: user: Alice from finance app...||
+|node_l1|1916101716449258884|["tenant:tenant_codex"]|has_child_summaries|Context node tenant:tenant_codex. Rich overview: Context node tenant:tenant_codex / user:local_user. Rich overview: us...||
+|node_l0|5451123137701072075|["tenant:tenant_codex", "user:local_user"]|has_child_summaries|tenant:tenant_codex / user:local_user :: Context node tenant:tenant_codex / user:local_user / session:debug-message-pdf...||
+|node_l1|7794448877417626891|["tenant:tenant_codex", "user:local_user"]|has_child_summaries|Context node tenant:tenant_codex / user:local_user. Rich overview: Context node tenant:tenant_codex / user:local_user /...||
+|node_l0|2423087115552912795|["tenant:tenant_codex", "user:local_user", "resources"]|has_child_summaries|tenant:tenant_codex / user:local_user / resources :: user: Alice from finance approved the GPU purchase request for Pr...||
+|node_l1|8165358132187641623|["tenant:tenant_codex", "user:local_user", "resources"]|has_child_summaries|Context node tenant:tenant_codex / user:local_user / resources. Rich overview: user: Alice from finance approved the G...||
+|node_l0|4443347079005396521|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora"]|has_child_summaries|tenant:tenant_codex / user:local_user / resources / project_aurora :: user: Alice from finance approved the GPU purcha...||
+|node_l1|7129763152424808338|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora"]|has_child_summaries|Context node tenant:tenant_codex / user:local_user / resources / project_aurora. Rich overview: user: Alice from finan...||
+|node_l0|9161093819732845678|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|tenant:tenant_codex / user:local_user / resources / project_aurora / gpu_procurement :: Budget Update Memo Update: The...||
+|node_l1|1076018507551928025|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|Context node tenant:tenant_codex / user:local_user / resources / project_aurora / gpu_procurement. Rich overview: Budg...||
 
 ## Node L0/L1 Generation Policy
 
@@ -1249,7 +1249,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "business_score": 0.5,
       "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_codex_cpp_100_message_trace\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
@@ -1319,7 +1319,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "business_score": 0.5,
       "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_codex_cpp_100_message_trace\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
@@ -1714,7 +1714,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "business_score": 0.5,
       "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_codex_cpp_100_message_trace\\fixtures\\aurora_budget_update.pdf#page=1",
@@ -1784,7 +1784,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "business_score": 0.5,
       "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_codex_cpp_100_message_trace\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
@@ -1859,7 +1859,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "business_score": 0.5,
       "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_codex_cpp_100_message_trace\\fixtures\\aurora_gpu_runbook.pdf#page=1",
@@ -2888,7 +2888,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
     "tenant_hash": 2466697514329931826,
     "tenant_id": "tenant_codex",
     "user_hash": 7836037686236352053,
-    "user_id": "deeproute"
+    "user_id": "local_user"
   },
   "auxiliary_candidate_count": 26,
   "budget_source": "agent_provided_max_context_tokens",
@@ -3272,7 +3272,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "node_hash": 623184698193930698,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute"
+        "user:local_user"
       ],
       "score": 0.841698,
       "selected": true,
@@ -3286,7 +3286,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "node_hash": 3084181658660614334,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session"
       ],
       "score": 0.798035,
@@ -3301,7 +3301,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "node_hash": 1257764480205296887,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "resources"
       ],
       "score": 0.659617,
@@ -3316,7 +3316,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -3332,7 +3332,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "node_hash": 5984959491336829337,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "resources",
         "project_aurora"
       ],
@@ -3348,7 +3348,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "node_hash": 1737304210274426578,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "resources",
         "project_aurora",
         "gpu_procurement"
@@ -3534,7 +3534,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
     "tenant_hash": 2466697514329931826,
     "tenant_id": "tenant_codex",
     "user_hash": 7836037686236352053,
-    "user_id": "deeproute"
+    "user_id": "local_user"
   },
   "context_pack_id": "4564508273686334856",
   "events": [
@@ -3557,7 +3557,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "tenant_hash": 2466697514329931826,
       "tenant_id": "tenant_codex",
       "user_hash": 7836037686236352053,
-      "user_id": "deeproute"
+      "user_id": "local_user"
     },
     {
       "created_at_ms": 1782693463667,
@@ -3585,7 +3585,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "updated_at_ms": 1782693463667
     },
@@ -3593,10 +3593,10 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "created_at_ms": 1782693463667,
       "depth": 2,
       "node_hash": 623184698193930698,
-      "node_name": "user:deeproute",
+      "node_name": "user:local_user",
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute"
+        "user:local_user"
       ],
       "parent_hash": 3263141514618168867,
       "record_type": "context_node",
@@ -3616,16 +3616,16 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "updated_at_ms": 1782693463667
     },
     {
       "child_hash": 623184698193930698,
-      "child_name": "user:deeproute",
+      "child_name": "user:local_user",
       "child_path": [
         "tenant:tenant_codex",
-        "user:deeproute"
+        "user:local_user"
       ],
       "child_ref_hash": 30283733866140312,
       "created_at_ms": 1782693463667,
@@ -3651,7 +3651,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "updated_at_ms": 1782693463667
     },
@@ -3662,7 +3662,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "node_name": "session:debug-message-pdf-session",
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session"
       ],
       "parent_hash": 623184698193930698,
@@ -3683,7 +3683,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "updated_at_ms": 1782693463667
     },
@@ -3692,7 +3692,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "child_name": "session:debug-message-pdf-session",
       "child_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session"
       ],
       "child_ref_hash": 3331542308452180010,
@@ -3701,7 +3701,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "parent_hash": 623184698193930698,
       "parent_path": [
         "tenant:tenant_codex",
-        "user:deeproute"
+        "user:local_user"
       ],
       "record_type": "context_child_ref",
       "scope": {
@@ -3720,7 +3720,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "updated_at_ms": 1782693463667
     },
@@ -3731,7 +3731,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "node_name": "conversation:project_aurora",
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -3753,7 +3753,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "updated_at_ms": 1782693463667
     },
@@ -3762,7 +3762,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "child_name": "conversation:project_aurora",
       "child_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -3772,7 +3772,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "parent_hash": 3084181658660614334,
       "parent_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session"
       ],
       "record_type": "context_child_ref",
@@ -3792,13 +3792,13 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "updated_at_ms": 1782693463667
     },
     {
       "context_node_key": [
-        "deeproute",
+        "local_user",
         "debug-message-pdf-session",
         "",
         ""
@@ -3806,7 +3806,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "node_hash": 1737304210274426578,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "resources",
         "project_aurora",
         "gpu_procurement"
@@ -3828,7 +3828,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "source_event_hash": 2786904618296876723,
       "summary_hash": 8695652974415713980,
@@ -3844,7 +3844,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "node_id": 1737304210274426578,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "resources",
         "project_aurora",
         "gpu_procurement"
@@ -3897,7 +3897,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "node_id": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],

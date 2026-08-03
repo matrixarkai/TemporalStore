@@ -62,7 +62,7 @@ class MatrixArkDebugTraceCompactionTest(unittest.TestCase):
             "scope": {
                 "account_id": "acct_local",
                 "tenant_id": "tenant_codex",
-                "user_id": "deeproute",
+                "user_id": "local_user",
                 "session_id": "s1",
                 "scope_key": "t=1|u=2|s=3|",
                 "session_hash": 3,

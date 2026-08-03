@@ -46,7 +46,7 @@ target/debug/client set hello world
 target/debug/client setex session alive 10000
 target/debug/client get hello
 target/debug/client get session
-target/debug/client hset user:1 name vincent
+target/debug/client hset user:1 name local_user
 target/debug/client hget user:1 name
 target/debug/client sadd group:1 alice
 target/debug/client sadd group:1 bob

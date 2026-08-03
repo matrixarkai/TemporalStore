@@ -39,7 +39,7 @@ For `Stop` and `PostCompact`, the useful field is usually a message or compacted
 ```text
 --account-id acct_codex
 --tenant-id tenant_codex
---user-id deeproute
+--user-id local_user
 ```
 
 `session_id` is different. The hook now derives it dynamically:
@@ -63,7 +63,7 @@ The hook converts raw Codex input into:
   "scope": {
     "account_id": "acct_codex",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute",
+    "user_id": "local_user",
     "session_id": "codex:thread-abc",
     "team": "codex",
     "project": "local"

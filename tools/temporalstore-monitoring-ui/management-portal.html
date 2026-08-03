@@ -32,11 +32,11 @@
         <div class="portal-scope-grid" aria-label="Portal scope">
           <label>Account ID<input id="portal-account" value="acct_local" /></label>
           <label>Tenant ID<input id="portal-tenant" value="tenant_codex" /></label>
-          <label>User ID<input id="portal-user" value="deeproute" /></label>
+          <label>User ID<input id="portal-user" value="local_user" /></label>
           <label>Session ID<input id="portal-session" placeholder="optional" /></label>
           <label>Agent<select id="portal-agent"><option value="codex">Codex</option><option value="claude">Claude Code</option><option value="cursor">Cursor</option><option value="kiro">Kiro</option><option value="windsurf">Windsurf</option><option value="generic">Generic MCP</option></select></label>
           <label>Login Provider<select id="portal-provider"><option value="google">Google / Gmail</option><option value="github">GitHub</option><option value="okta">Okta</option><option value="azure_ad">Azure AD</option></select></label>
-          <label>Email<input id="portal-email" value="deeproute@gmail.com" /></label>
+          <label>Email<input id="portal-email" value="local_user@gmail.com" /></label>
           <label>Mode<select id="portal-mode"><option value="local">Local free deployment</option><option value="cloud">MatrixArk Cloud</option><option value="hybrid">Hybrid</option></select></label>
           <label>Page Size<input id="portal-page-size" type="number" min="1" max="50" value="10" /></label>
         </div>
@@ -457,17 +457,17 @@
             {mode:'estimated token saved vs full history', tokens:11354, score:'95.9% fewer prompt tokens'}
           ]
         },
-        users: [{user_id: 'deeproute', display_name: 'deeproute', external_subject: 'google:deeproute@gmail.com', status: 'active', role: 'owner', linked_providers: ['google','github'] }],
-        api_keys: [{api_key_id: 'key_123', status: 'active', role: 'owner', display_name: 'MatrixArk owner key', scopes: ['admin:api_key','portal:read','context:ingest','context:retrieve','context:replay'], allowed_user_ids: ['deeproute'], allowed_session_ids: ['codex_thread_456'], expires_at_ms: 1790000000000, created_at_ms: 1782420000000, last_used_at_ms: 1782421500000, last_used_action: 'matrixark_retrieve', usage_count: 42, redacted: true}, {api_key_id: 'key_old', status: 'revoked', role: 'agent_hook', display_name: 'Old hook key', scopes: ['context:ingest'], allowed_user_ids: ['deeproute'], allowed_session_ids: [], expires_at_ms: 0, created_at_ms: 1781900000000, last_used_at_ms: 1781980000000, last_used_action: 'matrixark_ingest', usage_count: 7, redacted: true}],
-        audit_logs: [{action: 'admin.apply_api_key', status: 'ok', api_key_id: 'key_123', actor: 'deeproute'}, {action: 'context.ingest', status: 'ok', api_key_id: 'key_123', actor: 'codex'}, {action: 'context.retrieve', status: 'ok', api_key_id: 'key_123', actor: 'codex'}],
+        users: [{user_id: 'local_user', display_name: 'local_user', external_subject: 'google:local_user@gmail.com', status: 'active', role: 'owner', linked_providers: ['google','github'] }],
+        api_keys: [{api_key_id: 'key_123', status: 'active', role: 'owner', display_name: 'MatrixArk owner key', scopes: ['admin:api_key','portal:read','context:ingest','context:retrieve','context:replay'], allowed_user_ids: ['local_user'], allowed_session_ids: ['codex_thread_456'], expires_at_ms: 1790000000000, created_at_ms: 1782420000000, last_used_at_ms: 1782421500000, last_used_action: 'matrixark_retrieve', usage_count: 42, redacted: true}, {api_key_id: 'key_old', status: 'revoked', role: 'agent_hook', display_name: 'Old hook key', scopes: ['context:ingest'], allowed_user_ids: ['local_user'], allowed_session_ids: [], expires_at_ms: 0, created_at_ms: 1781900000000, last_used_at_ms: 1781980000000, last_used_action: 'matrixark_ingest', usage_count: 7, redacted: true}],
+        audit_logs: [{action: 'admin.apply_api_key', status: 'ok', api_key_id: 'key_123', actor: 'local_user'}, {action: 'context.ingest', status: 'ok', api_key_id: 'key_123', actor: 'codex'}, {action: 'context.retrieve', status: 'ok', api_key_id: 'key_123', actor: 'codex'}],
         topology: {nodes: [
           {node_name: 'account:acct_local', depth: 1, node_path: ['account:acct_local'], status: 'active', summary_count:2, embedding_count:2, dirty_summary_count:0, resource_record_count:0, skill_record_count:0},
           {node_name: 'tenant:tenant_codex', depth: 2, node_path: ['account:acct_local','tenant:tenant_codex'], status: 'active', summary_count:2, embedding_count:2, dirty_summary_count:1, resource_record_count:0, skill_record_count:0},
-          {node_name: 'user:deeproute', depth: 3, node_path: ['account:acct_local','tenant:tenant_codex','user:deeproute'], status: 'active'},
-          {node_name: 'session:thread-1', depth: 4, node_path: ['account:acct_local','tenant:tenant_codex','user:deeproute','session:thread-1'], status: 'active'},
-          {node_name: 'resources', depth: 4, node_path: ['account:acct_local','tenant:tenant_codex','user:deeproute','resources'], status: 'active', summary_count:3, embedding_count:9, dirty_summary_count:0, resource_record_count:12, skill_record_count:0},
-          {node_name: 'skills', depth: 4, node_path: ['account:acct_local','tenant:tenant_codex','user:deeproute','skills'], status: 'active', summary_count:1, embedding_count:4, dirty_summary_count:0, resource_record_count:0, skill_record_count:6},
-          {node_name: 'gpu_policy', depth: 5, node_path: ['account:acct_local','tenant:tenant_codex','user:deeproute','resources','gpu_policy'], status: 'active'}
+          {node_name: 'user:local_user', depth: 3, node_path: ['account:acct_local','tenant:tenant_codex','user:local_user'], status: 'active'},
+          {node_name: 'session:thread-1', depth: 4, node_path: ['account:acct_local','tenant:tenant_codex','user:local_user','session:thread-1'], status: 'active'},
+          {node_name: 'resources', depth: 4, node_path: ['account:acct_local','tenant:tenant_codex','user:local_user','resources'], status: 'active', summary_count:3, embedding_count:9, dirty_summary_count:0, resource_record_count:12, skill_record_count:0},
+          {node_name: 'skills', depth: 4, node_path: ['account:acct_local','tenant:tenant_codex','user:local_user','skills'], status: 'active', summary_count:1, embedding_count:4, dirty_summary_count:0, resource_record_count:0, skill_record_count:6},
+          {node_name: 'gpu_policy', depth: 5, node_path: ['account:acct_local','tenant:tenant_codex','user:local_user','resources','gpu_policy'], status: 'active'}
         ], records: {context_nodes:{total:7}, context_summaries:{total:9}, context_embeddings:{total:18}, dirty_summaries:{total:1}, resources:{total:12}, skills:{total:6}}},
         dashboard: {
           messages: {total: 3, rows: [{role:'user', kind:'message', content:'Alice approved the GPU purchase.', event_type:'approval_confirmation'}, {role:'assistant', kind:'message', content:'Approval recorded with finance evidence.', event_type:'status_update'}]},
