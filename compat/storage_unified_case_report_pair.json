@@ -985,12 +985,12 @@
         ]
       },
       {
-        "name": "storage_byteraft_dump_load_atomicity",
+        "name": "storage_matrixraft_dump_load_atomicity",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "storage_byteraft_dump_load_atomicity_coverage",
+            "name": "storage_matrixraft_dump_load_atomicity_coverage",
             "output": {
               "append_log_replay_records": 4,
               "dump_load_generation": 2,
@@ -1003,12 +1003,12 @@
         ]
       },
       {
-        "name": "storage_byteraft_cache_refill_pressure",
+        "name": "storage_matrixraft_cache_refill_pressure",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "storage_byteraft_cache_refill_pressure_coverage",
+            "name": "storage_matrixraft_cache_refill_pressure_coverage",
             "output": {
               "cache_admissions": 8,
               "cache_evictions": 3,
@@ -2150,12 +2150,12 @@
         ]
       },
       {
-        "name": "storage_byteraft_dump_load_atomicity",
+        "name": "storage_matrixraft_dump_load_atomicity",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "storage_byteraft_dump_load_atomicity_coverage",
+            "name": "storage_matrixraft_dump_load_atomicity_coverage",
             "output": {
               "append_log_replay_records": 4,
               "dump_load_generation": 2,
@@ -2168,12 +2168,12 @@
         ]
       },
       {
-        "name": "storage_byteraft_cache_refill_pressure",
+        "name": "storage_matrixraft_cache_refill_pressure",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "storage_byteraft_cache_refill_pressure_coverage",
+            "name": "storage_matrixraft_cache_refill_pressure_coverage",
             "output": {
               "cache_admissions": 8,
               "cache_evictions": 3,

@@ -184,8 +184,8 @@ fn handle(
         ("GET", "/health") => json_response(200, &Status::ok()),
         ("GET", "/metrics") => (200, runtime.cluster().prometheus_metrics().into_bytes()),
         ("GET", "/raft/status") => json_response(200, &runtime.status()),
-        ("GET", "/raft/control/byteraft_runtime_admin")
-        | ("POST", "/raft/control/byteraft_runtime_admin") => {
+        ("GET", "/raft/control/matrixraft_runtime_admin")
+        | ("POST", "/raft/control/matrixraft_runtime_admin") => {
             json_response(200, &runtime.cluster().matrixraft_runtime_admin_report())
         }
         ("GET", "/raft/control/matrixraft_local_status")
@@ -907,9 +907,9 @@ mod tests {
         assert_eq!(runtime.cluster().leader_id(), 2);
     }
 
-    // shared-corpus: raft_byteraft_metrics_admin_pipeline_status server_raft_byteraft_runtime_admin_route
+    // shared-corpus: raft_matrixraft_metrics_admin_pipeline_status server_raft_matrixraft_runtime_admin_route
     #[test]
-    fn raft_control_exposes_byteraft_runtime_admin_report() {
+    fn raft_control_exposes_matrixraft_runtime_admin_report() {
         let runtime = test_runtime();
         runtime
             .cluster()
@@ -939,7 +939,7 @@ mod tests {
             serde_json::from_slice(&route(
                 &runtime,
                 "GET",
-                "/raft/control/byteraft_runtime_admin",
+                "/raft/control/matrixraft_runtime_admin",
                 Vec::new(),
             ))
             .unwrap();

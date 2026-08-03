@@ -2002,7 +2002,7 @@ fn matrixraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk() {
 
 // shared-corpus: raft_matrixraft_snapshot_chunk_retry_rollback_matrix raft_matrixraft_snapshot_lifecycle_depth
 #[test]
-fn byteraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_and_rejoin() {
+fn matrixraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_and_rejoin() {
     let cluster = RaftCluster::new_single_shard_with_config(
         214,
         [1, 2, 3],
@@ -3081,7 +3081,7 @@ fn raft_temporal_raft_rollout_readiness_accepts_only_multi_process_reports() {
         .any(|item| item.contains("meta mutation/WAL persistence/snapshot install/apply fence")));
 }
 
-// shared-corpus: raft_byteraft_process_rollout_multiplane_report_contract
+// shared-corpus: raft_matrixraft_process_rollout_multiplane_report_contract
 #[test]
 fn raft_process_path_readiness_report_maps_remaining_blockers_to_fields() {
     let data_report = ready_data_node_temporal_raft_rollout_report();
@@ -4037,7 +4037,7 @@ fn raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat
 // shared-corpus: raft_matrixraft_read_lease_fault_matrix
 // shared-corpus: raft_matrixraft_packet_loss_fault_harness
 #[test]
-fn byteraft_read_safety_fault_matrix_records_partition_and_catchup_evidence() {
+fn matrixraft_read_safety_fault_matrix_records_partition_and_catchup_evidence() {
     let cluster = RaftCluster::new_single_shard_with_config(
         1,
         [1, 2, 3],
@@ -4788,7 +4788,7 @@ fn replica_roles_survive_wal_restore() {
 
 // shared-corpus: raft_matrixraft_membership_roles_joint_consensus_matrix
 #[test]
-fn byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
+fn matrixraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
     let dir = tempfile::tempdir().unwrap();
     let cluster = RaftCluster::new_single_shard_with_wal(
         dir.path(),
@@ -4909,9 +4909,9 @@ fn byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
     }
 }
 
-// shared-corpus: raft_byteraft_leader_election_learner_promotion_parity
+// shared-corpus: raft_matrixraft_leader_election_learner_promotion_parity
 #[test]
-fn byteraft_leader_election_and_learner_promotion_parity_report_is_ready() {
+fn matrixraft_leader_election_and_learner_promotion_parity_report_is_ready() {
     let cluster = RaftCluster::new_single_shard_with_config(
         1,
         [1, 2, 3],
@@ -5881,9 +5881,9 @@ fn matrixraft_leader_transfer_under_high_write_load_commits_once() {
         .any(|item| item.capability == "admin_status_surface" && item.ready));
 }
 
-// shared-corpus: raft_byteraft_admin_status_surface
+// shared-corpus: raft_matrixraft_admin_status_surface
 #[test]
-fn byteraft_admin_status_surface_requires_wal_and_peer_pipeline_fields() {
+fn matrixraft_admin_status_surface_requires_wal_and_peer_pipeline_fields() {
     let local_fixture = RaftCluster::new_single_shard(1, [1, 2, 3]);
     local_fixture
         .propose(Command::StringSet {
