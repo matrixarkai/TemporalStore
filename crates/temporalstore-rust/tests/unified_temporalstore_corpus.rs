@@ -1249,7 +1249,7 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
                 });
             assert_eq!(
                 command.scenario.as_deref(),
-                Some("production_openraft_byteraft_process_path_semantics"),
+                Some("production_openraft_matrixraft_process_path_semantics"),
                 "case={} step={} unsupported Raft process-path scenario",
                 case.name,
                 step.name
@@ -1262,7 +1262,7 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
             true
         }
         "raft_membership_op" => {
-            if case.name == "raft_byteraft_membership_roles"
+            if case.name == "raft_matrixraft_membership_roles"
                 && step.name == "setup_three_voter_cluster"
             {
                 execute_raft_membership_shared_case(case);
@@ -2938,7 +2938,7 @@ fn execute_raft_membership_shared_case(case: &UnifiedCase) {
                 let node_id = json_u64(&step.command, "node_id");
                 let local = cluster.local_status(node_id).unwrap();
                 assert_eq!(local.replica_role, json_raft_role(&step.command));
-                let report = cluster.byteraft_local_status_report();
+                let report = cluster.matrixraft_local_status_report();
                 let peer = report
                     .peers
                     .iter()
@@ -2965,7 +2965,7 @@ fn execute_raft_membership_shared_case(case: &UnifiedCase) {
             }
             "assert_local_status_report" => {
                 let cluster = cluster.as_ref().unwrap();
-                let report = cluster.byteraft_local_status_report();
+                let report = cluster.matrixraft_local_status_report();
                 if step.command.get("expect_witness").is_some() {
                     assert_eq!(
                         report.witness_membership_present,
@@ -2996,7 +2996,7 @@ fn execute_raft_membership_shared_case(case: &UnifiedCase) {
             }
             "assert_runtime_admin_report" => {
                 let cluster = cluster.as_ref().unwrap();
-                let report = cluster.byteraft_runtime_admin_report();
+                let report = cluster.matrixraft_runtime_admin_report();
                 if step.command.get("expect_witness").is_some() {
                     assert_eq!(
                         report.witness_membership_present,
@@ -3106,11 +3106,11 @@ fn verify_raft_openraft_process_path_default_gate() {
     .unwrap();
     cluster
         .propose(Command::StringSet {
-            key: "shared-byteraft-admin".to_string(),
+            key: "shared-matrixraft-admin".to_string(),
             value: b"value".to_vec(),
         })
         .unwrap();
-    let report = cluster.byteraft_runtime_admin_report();
+    let report = cluster.matrixraft_runtime_admin_report();
     assert!(report.read_index_validated);
     assert!(report.lease_read_validated);
     assert!(report.reorder_queue_enabled);
