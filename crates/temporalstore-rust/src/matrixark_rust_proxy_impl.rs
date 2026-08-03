@@ -1,4 +1,9 @@
-#![recursion_limit = "256"]
+// Shared implementation body for the thin proxy entrypoints
+// (matrixark_rust_proxy, matrixark_rust_direct_sdk), which `include!` this file.
+// It deliberately lives under src/ (not src/bin/) so it is NOT compiled as a
+// standalone bin, and it carries no crate-level inner attributes: each includer
+// sets its own `#![recursion_limit = "256"]` (required for a large `json!`
+// literal below). An inner attribute here would be illegal once `include!`d.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};

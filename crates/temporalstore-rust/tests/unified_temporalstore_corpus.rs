@@ -368,6 +368,7 @@ fn response_kind(response: &CommandResponse) -> &'static str {
         CommandResponse::ContextSummaries { .. } => "context_summaries",
         CommandResponse::ContextCompressionEvents { .. } => "context_compression_events",
         CommandResponse::ContextNodeContext { .. } => "context_node_context",
+        CommandResponse::ContextNodes { .. } => "context_nodes",
     }
 }
 
