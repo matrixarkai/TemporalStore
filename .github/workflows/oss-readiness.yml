@@ -1,0 +1,41 @@
+name: OSS readiness
+
+# Repository-level open-source readiness gate. This job is intentionally
+# dependency-free (no Rust toolchain, no private git dependencies, no secrets)
+# so it stays green on any runner and enforces the hygiene contract described
+# in docs/open_source_readiness.md on every push and pull request.
+
+on:
+  push:
+    branches:
+      - main
+      - rust-main
+      - oss-prod-readiness
+  pull_request:
+    branches:
+      - main
+      - rust-main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  oss-readiness:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Byte-compile maintainer tooling
+        run: python -m py_compile tools/*.py
+
+      - name: Validate open-source readiness contract
+        run: python tools/validate_open_source_readiness.py
