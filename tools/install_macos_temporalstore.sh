@@ -17,6 +17,7 @@ skip_build=0
 skip_run=0
 skip_smoke=0
 install_hook=0
+install_claude_hook=0
 write_launchd=0
 check_prereqs=0
 
@@ -38,6 +39,7 @@ Options:
   --check-prereqs             Check dependencies and paths, then exit
   --skip-smoke                Skip health/write/read validation
   --install-codex-hook        Generate macOS Codex hook wrappers
+  --install-claude-hook       Generate macOS Claude Code hook wrappers
   --hook-dir PATH             Hook wrapper dir. Default: ~/.matrixark/hooks
   --hook-prefix PREFIX        Hook prefix. Default: matrixark:codex-hook:rust
   --write-launchd             Write launchd user plist files
@@ -63,6 +65,7 @@ while [[ $# -gt 0 ]]; do
     --skip-smoke) skip_smoke=1; shift ;;
     --check-prereqs) check_prereqs=1; shift ;;
     --install-codex-hook) install_hook=1; shift ;;
+    --install-claude-hook) install_claude_hook=1; shift ;;
     --hook-dir) hook_dir="$2"; shift 2 ;;
     --hook-prefix) hook_prefix="$2"; shift 2 ;;
     --write-launchd) write_launchd=1; shift ;;
@@ -298,11 +301,10 @@ if [[ "$skip_smoke" -eq 0 ]]; then
   fi
 fi
 
-if [[ "$install_hook" -eq 1 ]]; then
-  step "Install Codex hook wrappers"
+if [[ "$install_hook" -eq 1 || "$install_claude_hook" -eq 1 ]]; then
+  step "Install agent hook wrappers"
   mkdir -p "$hook_dir"
   proxy_wrapper="$hook_dir/matrixark-rust-proxy-macos.sh"
-  hook_wrapper="$hook_dir/matrixark-codex-hook-rust-macos.sh"
   cat > "$proxy_wrapper" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -311,6 +313,12 @@ export TS_PAGE_STORE_DIR="$page_dir"
 export TS_INDEX_DIR="$index_dir"
 exec "$bin_dir/matrixark_rust_proxy" --serve
 EOF
+  chmod +x "$proxy_wrapper"
+  echo "Rust proxy wrapper: $proxy_wrapper"
+fi
+
+if [[ "$install_hook" -eq 1 ]]; then
+  hook_wrapper="$hook_dir/matrixark-codex-hook-rust-macos.sh"
   cat > "$hook_wrapper" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -327,9 +335,32 @@ if [[ "\${1:-}" != "" && "\${1:-}" != --* ]]; then
 fi
 exec python3 "$repo/tools/matrixark_agent_hook.py" --agent codex --event "\$event" --backend temporalstore-rust "\$@"
 EOF
-  chmod +x "$proxy_wrapper" "$hook_wrapper"
-  echo "Rust proxy wrapper: $proxy_wrapper"
+  chmod +x "$hook_wrapper"
   echo "Codex hook wrapper: $hook_wrapper"
+fi
+
+if [[ "$install_claude_hook" -eq 1 ]]; then
+  claude_hook_prefix="${hook_prefix//codex/claude}"
+  claude_hook_wrapper="$hook_dir/matrixark-claude-hook-rust-macos.sh"
+  cat > "$claude_hook_wrapper" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export MATRIXARK_MCP_BACKEND=temporalstore-rust
+export MATRIXARK_TEMPORALSTORE_RUST_PROXY="$proxy_wrapper"
+export MATRIXARK_TEMPORALSTORE_PREFIX="$claude_hook_prefix"
+export MATRIXARK_TEMPORALSTORE_METASERVER="127.0.0.1:$meta_port"
+export MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS=60000
+export MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS=60000
+event="\${MATRIXARK_AGENT_EVENT:-\${CLAUDE_HOOK_EVENT:-UserPromptSubmit}}"
+if [[ "\${1:-}" != "" && "\${1:-}" != --* ]]; then
+  event="\$1"
+  shift
+fi
+exec python3 "$repo/tools/matrixark_agent_hook.py" --agent claude --event "\$event" --backend temporalstore-rust "\$@"
+EOF
+  chmod +x "$claude_hook_wrapper"
+  echo "Claude hook wrapper: $claude_hook_wrapper"
+  echo "Register it for the Claude Code lifecycle in ~/.claude/settings.json (see docs/matrixark_claude_hook_integration.md)."
 fi
 
 step "macOS TemporalStore deploy complete"

@@ -149,18 +149,24 @@ Register this command as the Codex `UserPromptSubmit` hook:
 
 ### Enable the Claude Code hook (optional)
 
-Claude Code gets the same context engine under its own agent identity. From the
-repo root, after the storage smoke test passes:
+Claude Code gets the same context engine under its own agent identity. Generate
+its wrapper the same way as the Codex hook:
 
 ```bash
-bash integrations/agent-hooks/install/install.sh --agent claude --mode native --repo "$(pwd)"
+./tools/install_linux_temporalstore.sh --skip-build --install-claude-hook
 ```
 
-This writes `~/.claude/settings.json`, registering the full Claude Code lifecycle
-(`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStop`,
-`PreCompact`, `SessionEnd`) against `tools/matrixark_claude_hook.sh`. See
-[Claude Code hook integration](matrixark_claude_hook_integration.md) for backends,
-warm-up, and a quick check.
+Then register this wrapper for the Claude Code lifecycle in `~/.claude/settings.json`:
+
+```text
+~/.matrixark/hooks/matrixark-claude-hook-rust-linux.sh
+```
+
+To register the full lifecycle (`SessionStart`, `UserPromptSubmit`, `PostToolUse`,
+`Stop`, `SubagentStop`, `PreCompact`, `SessionEnd`) automatically instead, run
+`bash integrations/agent-hooks/install/install.sh --agent claude --mode native --repo "$(pwd)"`.
+See [Claude Code hook integration](matrixark_claude_hook_integration.md) for
+backends, warm-up, and a quick check.
 
 ## macOS Quick Start
 
@@ -197,17 +203,23 @@ Register this command as the Codex `UserPromptSubmit` hook:
 
 ### Enable the Claude Code hook (optional)
 
-Claude Code gets the same context engine under its own agent identity. From the
-repo root, after the storage smoke test passes:
+Claude Code gets the same context engine under its own agent identity. Generate
+its wrapper the same way as the Codex hook:
 
 ```bash
-bash integrations/agent-hooks/install/install.sh --agent claude --mode native --repo "$(pwd)"
+./tools/install_macos_temporalstore.sh --skip-build --install-claude-hook
 ```
 
-This writes `~/.claude/settings.json`, registering the full Claude Code lifecycle
-against `tools/matrixark_claude_hook.sh`. See
-[Claude Code hook integration](matrixark_claude_hook_integration.md) for backends,
-warm-up, and a quick check.
+Then register this wrapper for the Claude Code lifecycle in `~/.claude/settings.json`:
+
+```text
+~/.matrixark/hooks/matrixark-claude-hook-rust-macos.sh
+```
+
+To register the full lifecycle automatically instead, run
+`bash integrations/agent-hooks/install/install.sh --agent claude --mode native --repo "$(pwd)"`.
+See [Claude Code hook integration](matrixark_claude_hook_integration.md) for
+backends, warm-up, and a quick check.
 
 ## Windows Docker Quick Start
 
