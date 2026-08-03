@@ -101,9 +101,9 @@ matrixobjectstore-rs  https://github.com/bjmeetsfo/MatrixObjectStore.git  (optio
 
 Each dependency is pinned to an exact revision, so builds are reproducible. You
 do not clone these repos by hand — you only need `git` and network access to
-`github.com` on the build host. The ByteDance `code.byted.org` submodules in
-`.gitmodules` are for the legacy C++ build only and are **not** needed for the
-Rust install.
+`github.com` on the build host. The legacy C++ implementation now lives in a
+separate repository; this repository is Rust + Python only and needs no C++
+build.
 
 Offline or air-gapped builds: run `cargo vendor` on a connected host and commit
 the generated `.cargo/config.toml`, or clone MatrixCache/MatrixRaft locally and

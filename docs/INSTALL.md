@@ -151,8 +151,8 @@ from source (`librocksdb-sys`), which needs a **C/C++ toolchain, `clang`/
 - macOS: `xcode-select --install` (clang/libclang) and `brew install cmake`
 
 The platform guides ([Linux](linux_deploy.md), [macOS](macos_deploy.md)) list the
-full package sets. The ByteDance `code.byted.org` submodules in `.gitmodules` are
-for the legacy C++ build only and are **not** needed for the Rust install. For
+full package sets. The legacy C++ implementation now lives in a separate
+repository, so this repository is Rust + Python only and needs no C++ build. For
 offline/air-gapped builds, run `cargo vendor` on a connected host, or add
 `[patch]` path overrides pointing at local MatrixCache/MatrixRaft clones.
 
