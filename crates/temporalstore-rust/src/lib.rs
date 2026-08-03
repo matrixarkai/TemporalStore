@@ -187,7 +187,7 @@ pub use raft::{
     matrixraft_parity_contract, matrixraft_parity_report,
     matrixraft_parity_report_from_current_readiness, matrixraft_production_readiness_report,
     validate_raft_deployment_mode, AppendEntriesRequest, AppendEntriesResponse,
-    ByteRaftLeaderElectionParityReport, DataRaftConsensusBackend, DataRaftConsensusOptions,
+    MatrixRaftLeaderElectionParityReport, DataRaftConsensusBackend, DataRaftConsensusOptions,
     DataRaftPeer, DataRaftStatus, DataRaftTopologyApplyReport, DataRaftTopologyMembershipPlan,
     DistributedRaftCommandResponse, DistributedRaftProposeRequest, DistributedRaftReadRequest,
     HttpRaftTransport, InstallSnapshotRequest, InstallSnapshotResponse, LocalRaftWal, MetaCommand,

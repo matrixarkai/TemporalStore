@@ -782,7 +782,7 @@ pub struct MatrixRaftRuntimeAdminReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ByteRaftLeaderElectionParityReport {
+pub struct MatrixRaftLeaderElectionParityReport {
     pub shard_id: ShardId,
     pub leader_id: RaftNodeId,
     pub current_term: u64,
@@ -7858,7 +7858,7 @@ impl RaftCluster {
         inner.matrixraft_runtime_admin_report()
     }
 
-    pub fn matrixraft_leader_election_parity_report(&self) -> ByteRaftLeaderElectionParityReport {
+    pub fn matrixraft_leader_election_parity_report(&self) -> MatrixRaftLeaderElectionParityReport {
         let status = self.status();
         let admin = self.matrixraft_runtime_admin_report();
         let leader_election_ready =
@@ -7903,7 +7903,7 @@ impl RaftCluster {
             blockers.push("leader_transfer_exact_once_evidence_missing".to_string());
         }
 
-        ByteRaftLeaderElectionParityReport {
+        MatrixRaftLeaderElectionParityReport {
             shard_id: self.shard_id(),
             leader_id: status.leader_id,
             current_term: status.current_term,
@@ -9147,7 +9147,7 @@ impl RaftClusterInner {
             MatrixRaftCapabilityEvidence {
                 capability: "admin_status_surface".to_string(),
                 ready: admin_status_surface_complete,
-                evidence_field: "admin_status_surface_complete; quorum_peer_progress_observed; peer_pipeline_runtime_activity_observed; peer_pipeline_limits_observed; /raft/control/byteraft_runtime_admin; prometheus matrixraft metrics".to_string(),
+                evidence_field: "admin_status_surface_complete; quorum_peer_progress_observed; peer_pipeline_runtime_activity_observed; peer_pipeline_limits_observed; /raft/control/matrixraft_runtime_admin; prometheus matrixraft metrics".to_string(),
                 detail: format!(
                     "majority={}; commit_index={}; peer_rows={}; quorum_progress={quorum_peer_progress_observed}; runtime_activity={peer_pipeline_runtime_activity_observed}; limits={peer_pipeline_limits_observed}",
                     status.majority,

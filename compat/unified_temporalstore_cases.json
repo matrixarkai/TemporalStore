@@ -5188,7 +5188,7 @@
       ]
     },
     {
-      "name": "raft_byteraft_leader_election_learner_promotion_parity",
+      "name": "raft_matrixraft_leader_election_learner_promotion_parity",
       "shard_id": 99,
       "steps": [
         {
@@ -5196,7 +5196,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "suite": "cpp_data_raft_parity",
-            "description": "ByteRaft-style leader election and learner promotion parity: observe no-quorum pre-vote rejection, healed-quorum leader election, learner add/catch-up/promote, auto-promote, and exact-once transfer evidence in one report.",
+            "description": "MatrixRaft-style leader election and learner promotion parity: observe no-quorum pre-vote rejection, healed-quorum leader election, learner add/catch-up/promote, auto-promote, and exact-once transfer evidence in one report.",
             "acceptance": {
               "pre_vote_rejected": true,
               "pre_vote_accepted": true,
@@ -5208,13 +5208,13 @@
               "leader_transfer_exact_once": true
             },
             "required_paths": [
-              "docs/raft_byteraft_leader_election_parity.md",
+              "docs/raft_matrixraft_leader_election_parity.md",
               "crates/temporalstore-rust/src/raft.rs",
               "crates/temporalstore-rust/src/raft/tests.rs",
               "src/partition/storage/data_raft_consensus.cc",
-              "byteraft"
+              "matrixraft"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust byteraft_leader_election_and_learner_promotion_parity_report_is_ready --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust matrixraft_leader_election_and_learner_promotion_parity_report_is_ready --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-leader-election-parity-validation --log <raft-leader-election-parity.json>",
             "report_contract": {
               "schema": "temporalstore_unified_case_report_v1",
@@ -5236,8 +5236,8 @@
                 "latency_ms"
               ]
             },
-            "rust_report_contract": "Rust emits ByteRaftLeaderElectionParityReport with leader_election_ready, pre_vote_ready, learner_*_ready, learner_auto_promote_ready, leader_transfer_exact_once_ready, evidence fields, and blockers.",
-            "cpp_runner_contract": "C++ ByteRaft adapter emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, latency_ms, and the same leader/pre-vote/failover/learner-promotion/election evidence fields from data-raft tests or marks the missing field as a static blocker.",
+            "rust_report_contract": "Rust emits MatrixRaftLeaderElectionParityReport with leader_election_ready, pre_vote_ready, learner_*_ready, learner_auto_promote_ready, leader_transfer_exact_once_ready, evidence fields, and blockers.",
+            "cpp_runner_contract": "C++ MatrixRaft adapter emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, latency_ms, and the same leader/pre-vote/failover/learner-promotion/election evidence fields from data-raft tests or marks the missing field as a static blocker.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
             "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
@@ -8711,7 +8711,7 @@
               "wal_magic_version_checked": true
             },
             "cpp_runner_contract": "C++ runner emits temporalstore_unified_case_report_v1 for WAL magic/version, partition id, raft index, log id, op/WAL sequence, first/last retained index, segment release floor, and corrupt payload rejection, including latency_ms.",
-            "description": "Shared Raft library case for C++ ByteRaft WAL/log record compatibility: C++-style data-Raft log headers, command batch payloads, corrupt header rejection, WAL segment first/last index evidence, and snapshot/retention floor accounting.",
+            "description": "Shared Raft library case for C++ MatrixRaft WAL/log record compatibility: C++-style data-Raft log headers, command batch payloads, corrupt header rejection, WAL segment first/last index evidence, and snapshot/retention floor accounting.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
@@ -8766,7 +8766,7 @@
               "stale_leader_lease_rejected": true
             },
             "cpp_runner_contract": "C++ runner emits read-index and lease evidence with stale leader/follower rejections, minority partition failures, healed follower catch-up, and secondary-read eligibility; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
-            "description": "Shared Raft library case for ByteRaft-style read safety: read-index, leader lease expiry, lagging follower read/write rejection, minority partition rejection, bounded-stale policy, and healed follower catch-up.",
+            "description": "Shared Raft library case for MatrixRaft-style read safety: read-index, leader lease expiry, lagging follower read/write rejection, minority partition rejection, bounded-stale policy, and healed follower catch-up.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
@@ -8822,7 +8822,7 @@
               "stale_term_rejection_reported": true
             },
             "cpp_runner_contract": "C++ runner emits per-peer inflight counts/bytes, append queue depth, reorder queue depth, timeout/drop counters, stale-term append rejection counters, oversized-log rejection, and apply backpressure counters; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
-            "description": "Shared Raft library case for ByteRaft replication pipeline controls: in-flight append limits, retry release, oversized-log rejection, memory replicate bytes, reorder queue gap recovery, stale-term rejection, timeouts, and dropped package metrics.",
+            "description": "Shared Raft library case for MatrixRaft replication pipeline controls: in-flight append limits, retry release, oversized-log rejection, memory replicate bytes, reorder queue gap recovery, stale-term rejection, timeouts, and dropped package metrics.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
@@ -8882,7 +8882,7 @@
               "install_progress_reported": true
             },
             "cpp_runner_contract": "C++ runner emits snapshot send attempts, chunk retry/backpressure, send timeout, rate limit, install progress, stale snapshot rejection, rollback count, membership-change snapshot evidence, compacted-log rejoin evidence, external snapshot refs, and restart recovery evidence; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms; includes snapshot evidence fields for send timeout, rate limiting, install progress, install rollback, snapshot during membership change, and follower rejoin after compacted logs.",
-            "description": "Shared Raft library case for ByteRaft snapshot sender/downloader lifecycle: chunked install progress, retry/backpressure, stale-term rejection before buffering, external snapshot reference handoff, and restart recovery.",
+            "description": "Shared Raft library case for MatrixRaft snapshot sender/downloader lifecycle: chunked install progress, retry/backpressure, stale-term rejection before buffering, external snapshot reference handoff, and restart recovery.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
@@ -8948,7 +8948,7 @@
               "witness_role_behavior_present": true
             },
             "cpp_runner_contract": "C++ runner emits matrixark/TemporalStore report fields for learner add/catch-up/promote/remove, auto-promote, witness role behavior or scoped-blocker status, pending config index, joint consensus restart, leader-transfer exact-once commit IDs, data-node/metaserver process rollout, failover on both planes, secondary lag/catch-up, snapshot restart after compaction, and latency deltas; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms; includes evidence.leader_transfer_exact_once_commit_ids with unique committed Raft indexes for active leader-transfer writes.",
-            "description": "Shared Raft library case for ByteRaft membership roles: learner bootstrap, auto-promote, voter add/remove, leader transfer, witness/pending joint-consensus evidence, and rolling restart persistence of pending joint state.",
+            "description": "Shared Raft library case for MatrixRaft membership roles: learner bootstrap, auto-promote, voter add/remove, leader transfer, witness/pending joint-consensus evidence, and rolling restart persistence of pending joint state.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
@@ -9045,7 +9045,7 @@
       ]
     },
     {
-      "name": "raft_byteraft_process_rollout_multiplane_report_contract",
+      "name": "raft_matrixraft_process_rollout_multiplane_report_contract",
       "shard_id": 96,
       "steps": [
         {
@@ -9090,7 +9090,7 @@
             },
             "rust_runner": "cargo test -p temporalstore-rust raft_process_path_readiness_report_maps_remaining_blockers_to_fields --lib -- --test-threads=1",
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
-            "cpp_runner_contract": "C++ ByteRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
+            "cpp_runner_contract": "C++ MatrixRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
             "required_paths": [
               "src/partition/storage/data_raft_consensus.cc",
@@ -9105,7 +9105,7 @@
       ]
     },
     {
-      "name": "raft_byteraft_failover_both_planes_report_contract",
+      "name": "raft_matrixraft_failover_both_planes_report_contract",
       "shard_id": 97,
       "steps": [
         {
@@ -9144,7 +9144,7 @@
             },
             "rust_runner": "cargo test -p temporalstore-rust rustraft_leader_transfer_under_high_write_load_commits_once metaserver_raft_health_catchup_safe_scale_and_failover_work --lib -- --test-threads=1",
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
-            "cpp_runner_contract": "C++ ByteRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
+            "cpp_runner_contract": "C++ MatrixRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
             "required_paths": [
               "src/partition/storage/data_raft_consensus.cc",
@@ -9159,7 +9159,7 @@
       ]
     },
     {
-      "name": "raft_byteraft_membership_add_remove_under_load_report_contract",
+      "name": "raft_matrixraft_membership_add_remove_under_load_report_contract",
       "shard_id": 98,
       "steps": [
         {
@@ -9200,9 +9200,9 @@
                 "latency_ms"
               ]
             },
-            "rust_runner": "cargo test -p temporalstore-rust byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus rustraft_leader_transfer_under_high_write_load_commits_once --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust matrixraft_admin_reports_witness_auto_promote_and_pending_joint_consensus rustraft_leader_transfer_under_high_write_load_commits_once --lib -- --test-threads=1",
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
-            "cpp_runner_contract": "C++ ByteRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms; includes evidence.leader_transfer_exact_once_commit_ids with unique committed Raft indexes for active leader-transfer writes.",
+            "cpp_runner_contract": "C++ MatrixRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms; includes evidence.leader_transfer_exact_once_commit_ids with unique committed Raft indexes for active leader-transfer writes.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
             "required_paths": [
               "src/partition/storage/data_raft_consensus.cc",
@@ -9217,7 +9217,7 @@
       ]
     },
     {
-      "name": "raft_byteraft_secondary_lag_catchup_report_contract",
+      "name": "raft_matrixraft_secondary_lag_catchup_report_contract",
       "shard_id": 99,
       "steps": [
         {
@@ -9255,9 +9255,9 @@
                 "latency_ms"
               ]
             },
-            "rust_runner": "cargo test -p temporalstore-rust byteraft_read_safety_fault_matrix_records_partition_and_catchup_evidence raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust matrixraft_read_safety_fault_matrix_records_partition_and_catchup_evidence raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup --lib -- --test-threads=1",
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
-            "cpp_runner_contract": "C++ ByteRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
+            "cpp_runner_contract": "C++ MatrixRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
             "required_paths": [
               "src/partition/storage/data_raft_consensus.cc",
@@ -9272,7 +9272,7 @@
       ]
     },
     {
-      "name": "raft_byteraft_snapshot_restart_after_compaction_report_contract",
+      "name": "raft_matrixraft_snapshot_restart_after_compaction_report_contract",
       "shard_id": 100,
       "steps": [
         {
@@ -9321,9 +9321,9 @@
                 "latency_ms"
               ]
             },
-            "rust_runner": "cargo test -p temporalstore-rust byteraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_and_rejoin wal_backed_apply_snapshot_fence_survives_snapshot_restart --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust matrixraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_and_rejoin wal_backed_apply_snapshot_fence_survives_snapshot_restart --lib -- --test-threads=1",
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
-            "cpp_runner_contract": "C++ ByteRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms; includes snapshot evidence fields for send timeout, rate limiting, install progress, install rollback, snapshot during membership change, and follower rejoin after compacted logs.",
+            "cpp_runner_contract": "C++ MatrixRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms; includes snapshot evidence fields for send timeout, rate limiting, install progress, install rollback, snapshot during membership change, and follower rejoin after compacted logs.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
             "required_paths": [
               "src/partition/storage/data_raft_consensus.cc",
@@ -9338,7 +9338,7 @@
       ]
     },
     {
-      "name": "raft_byteraft_metrics_admin_pipeline_status",
+      "name": "raft_matrixraft_metrics_admin_pipeline_status",
       "shard_id": 64,
       "steps": [
         {
@@ -9348,11 +9348,11 @@
               "peer_pipeline_limits_observed": true,
               "peer_pipeline_runtime_activity_observed": true,
               "peer_pipeline_state_present": true,
-              "prometheus_byteraft_metrics_present": true,
+              "prometheus_matrixraft_metrics_present": true,
               "quorum_peer_progress_observed": true
             },
-            "cpp_runner_contract": "C++ runner emits ByteRaft admin/local-status and Prometheus metric-family evidence in temporalstore_unified_case_report_v1, including latency_ms.",
-            "description": "Shared Raft admin/status case for ByteRaft-style runtime report fields: capability matrix, read-index/lease counters, per-peer match/next indexes, inflight bytes/count, append/reorder queue depths, snapshot lifecycle counters, transfer-leader state, offline timeout state, and Prometheus metric families.",
+            "cpp_runner_contract": "C++ runner emits MatrixRaft admin/local-status and Prometheus metric-family evidence in temporalstore_unified_case_report_v1, including latency_ms.",
+            "description": "Shared Raft admin/status case for MatrixRaft-style runtime report fields: capability matrix, read-index/lease counters, per-peer match/next indexes, inflight bytes/count, append/reorder queue depths, snapshot lifecycle counters, transfer-leader state, offline timeout state, and Prometheus metric families.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
@@ -9361,8 +9361,8 @@
               "src/partition/storage/data_raft_replication.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_live_raft_metrics_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust raft_control_exposes_byteraft_runtime_admin_report --bin raft_node -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <raft-node-byteraft-admin.json>",
+            "rust_runner": "cargo test -p temporalstore-rust raft_control_exposes_matrixraft_runtime_admin_report --bin raft_node -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <raft-node-matrixraft-admin.json>",
             "suite": "cpp_data_raft_parity",
             "report_contract": {
               "schema": "temporalstore_unified_case_report_v1",
@@ -9388,13 +9388,13 @@
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
             "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
-          "name": "byteraft_metrics_admin_pipeline_status_shared",
+          "name": "matrixraft_metrics_admin_pipeline_status_shared",
           "skip_client": true
         }
       ]
     },
     {
-      "name": "raft_byteraft_admin_status_surface",
+      "name": "raft_matrixraft_admin_status_surface",
       "shard_id": 64,
       "steps": [
         {
@@ -9406,16 +9406,16 @@
               "quorum_peer_progress_observed": true,
               "wal_first_last_log_index_present": true
             },
-            "cpp_runner_contract": "C++ ByteRaft local-status/admin runner emits non-vacuous WAL first/last index, quorum peer progress, per-peer runtime pipeline activity, per-peer queue/limit fields, snapshot progress fields, and transfer/election counters before the admin surface is marked complete; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
-            "description": "Shared ByteRaft admin-surface case: Rust and C++ must not mark the status/admin surface complete from API presence alone; durable WAL segment evidence, quorum peer progress, and non-vacuous per-peer pipeline activity are required.",
+            "cpp_runner_contract": "C++ MatrixRaft local-status/admin runner emits non-vacuous WAL first/last index, quorum peer progress, per-peer runtime pipeline activity, per-peer queue/limit fields, snapshot progress fields, and transfer/election counters before the admin surface is marked complete; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "description": "Shared MatrixRaft admin-surface case: Rust and C++ must not mark the status/admin surface complete from API presence alone; durable WAL segment evidence, quorum peer progress, and non-vacuous per-peer pipeline activity are required.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
               "src/metaserver_v2/service/raft_control_service.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_live_raft_metrics_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust byteraft_admin_status_surface_requires_wal_and_peer_pipeline_fields --lib -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <raft-byteraft-admin-surface.json>",
+            "rust_runner": "cargo test -p temporalstore-rust matrixraft_admin_status_surface_requires_wal_and_peer_pipeline_fields --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <raft-matrixraft-admin-surface.json>",
             "suite": "cpp_data_raft_parity",
             "report_contract": {
               "schema": "temporalstore_unified_case_report_v1",
@@ -9441,13 +9441,13 @@
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
             "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
-          "name": "byteraft_admin_surface_requires_wal_and_peer_pipeline_shared",
+          "name": "matrixraft_admin_surface_requires_wal_and_peer_pipeline_shared",
           "skip_client": true
         }
       ]
     },
     {
-      "name": "server_raft_byteraft_runtime_admin_route",
+      "name": "server_raft_matrixraft_runtime_admin_route",
       "shard_id": 77,
       "steps": [
         {
@@ -9457,8 +9457,8 @@
               "report_ready_field_present": true,
               "route_exists": true
             },
-            "cpp_runner_contract": "C++ server/admin runner emits the corresponding ByteRaft local-status/admin report for comparison; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
-            "description": "Shared data-node API case for the Rust-native /raft/control/byteraft_runtime_admin route and equivalent C++ admin/status surface.",
+            "cpp_runner_contract": "C++ server/admin runner emits the corresponding MatrixRaft local-status/admin report for comparison; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "description": "Shared data-node API case for the Rust-native /raft/control/matrixraft_runtime_admin route and equivalent C++ admin/status surface.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
@@ -9467,8 +9467,8 @@
               "src/partition/storage/data_raft_consensus.cc"
             ],
             "runner": "cmake --build build-ubuntu22/release --target server_test -j2",
-            "rust_runner": "cargo test -p temporalstore-rust raft_control_exposes_byteraft_runtime_admin_report --bin raft_node -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <raft-node-byteraft-admin.json>",
+            "rust_runner": "cargo test -p temporalstore-rust raft_control_exposes_matrixraft_runtime_admin_report --bin raft_node -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <raft-node-matrixraft-admin.json>",
             "suite": "cpp_data_raft_parity",
             "report_contract": {
               "schema": "temporalstore_unified_case_report_v1",
@@ -9494,7 +9494,7 @@
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
             "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
-          "name": "server_byteraft_runtime_admin_route_shared",
+          "name": "server_matrixraft_runtime_admin_route_shared",
           "skip_client": true
         }
       ]
@@ -9680,7 +9680,7 @@
       ]
     },
     {
-      "name": "storage_byteraft_dump_load_atomicity",
+      "name": "storage_matrixraft_dump_load_atomicity",
       "shard_id": 87,
       "steps": [
         {
@@ -9690,31 +9690,31 @@
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [],
-            "rust_runner": "cargo test -p temporalstore-rust storage_byteraft_dump_load_atomicity --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust storage_matrixraft_dump_load_atomicity --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
             "suite": "cpp_storage_parity"
           },
-          "name": "storage_byteraft_dump_load_atomicity_shared",
+          "name": "storage_matrixraft_dump_load_atomicity_shared",
           "skip_client": true
         }
       ]
     },
     {
-      "name": "storage_byteraft_cache_refill_pressure",
+      "name": "storage_matrixraft_cache_refill_pressure",
       "shard_id": 88,
       "steps": [
         {
           "command": {
             "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
             "description": "Shared data-node cache pressure case for GC plus eviction under cold reads: memory miss, disk/page/shared-store fallback, refill, eviction counters, latency samples, and restart recovery.",
-            "kind": "storage_byteraft_cache_refill_pressure",
+            "kind": "storage_matrixraft_cache_refill_pressure",
             "mode": "rust_executable_cxx_static",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memory --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
             "suite": "cpp_storage_parity"
           },
-          "name": "storage_byteraft_cache_refill_pressure_shared",
+          "name": "storage_matrixraft_cache_refill_pressure_shared",
           "skip_client": true
         }
       ]
@@ -9829,7 +9829,7 @@
               "observed read-index response",
               "restart recovery validates per-node log stores"
             ],
-            "cpp_contract": "ByteRaft process harness proves per-node WAL status, read-index, restart recovery, and log-store inspection",
+            "cpp_contract": "MatrixRaft process harness proves per-node WAL status, read-index, restart recovery, and log-store inspection",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
@@ -12609,7 +12609,7 @@
       "raft_rustraft_snapshot_lifecycle_depth",
       "raft_rustraft_replication_backpressure",
       "raft_rustraft_election_controls",
-      "raft_byteraft_leader_election_learner_promotion_parity",
+      "raft_matrixraft_leader_election_learner_promotion_parity",
       "raft_rustraft_packet_loss_fault_harness",
       "raft_rustraft_slow_wal_fsync_fault_harness",
       "raft_rustraft_snapshot_during_membership_fault_harness",
@@ -12688,8 +12688,8 @@
       "raft_rustraft_snapshot_chunk_retry_rollback_matrix",
       "raft_rustraft_membership_roles_joint_consensus_matrix",
       "raft_rustraft_rpc_auth_deadline_transport_matrix",
-      "raft_byteraft_metrics_admin_pipeline_status",
-      "server_raft_byteraft_runtime_admin_route",
+      "raft_matrixraft_metrics_admin_pipeline_status",
+      "server_raft_matrixraft_runtime_admin_route",
       "storage_manager_metrics_admin_phase_reports",
       "storage_cache_replacement_policy_soak",
       "control_client_cpp_partition_set_route_cache",
@@ -12699,8 +12699,8 @@
       "control_multi_proxy_topology_churn_scale",
       "control_proxy_operational_surface_aliases",
       "control_proxy_tonic_streaming_maturity",
-      "storage_byteraft_dump_load_atomicity",
-      "storage_byteraft_cache_refill_pressure",
+      "storage_matrixraft_dump_load_atomicity",
+      "storage_matrixraft_cache_refill_pressure",
       "storage_manager_continuous_background_runtime",
       "storage_cache_cold_read_after_eviction_shared",
       "storage_disk_shared_store_persistence_parity",
@@ -12832,15 +12832,15 @@
       "raft_rustraft_snapshot_chunk_retry_rollback_matrix",
       "raft_rustraft_membership_roles_joint_consensus_matrix",
       "raft_rustraft_rpc_auth_deadline_transport_matrix",
-      "raft_byteraft_metrics_admin_pipeline_status",
-      "server_raft_byteraft_runtime_admin_route",
+      "raft_matrixraft_metrics_admin_pipeline_status",
+      "server_raft_matrixraft_runtime_admin_route",
       "raft_process_path_log_inspection_shared",
-      "raft_byteraft_process_rollout_multiplane_report_contract",
-      "raft_byteraft_failover_both_planes_report_contract",
-      "raft_byteraft_membership_add_remove_under_load_report_contract",
-      "raft_byteraft_leader_election_learner_promotion_parity",
-      "raft_byteraft_secondary_lag_catchup_report_contract",
-      "raft_byteraft_snapshot_restart_after_compaction_report_contract"
+      "raft_matrixraft_process_rollout_multiplane_report_contract",
+      "raft_matrixraft_failover_both_planes_report_contract",
+      "raft_matrixraft_membership_add_remove_under_load_report_contract",
+      "raft_matrixraft_leader_election_learner_promotion_parity",
+      "raft_matrixraft_secondary_lag_catchup_report_contract",
+      "raft_matrixraft_snapshot_restart_after_compaction_report_contract"
     ],
     "required_response_kinds": [
       "empty",
