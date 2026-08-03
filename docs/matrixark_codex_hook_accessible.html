@@ -153,7 +153,7 @@ The hook converts it into a MatrixArk ingest call:
   &quot;scope&quot;: {
     &quot;account_id&quot;:&quot;acct_codex&quot;,
     &quot;tenant_id&quot;:&quot;tenant_codex&quot;,
-    &quot;user_id&quot;:&quot;deeproute&quot;,
+    &quot;user_id&quot;:&quot;local_user&quot;,
     &quot;session_id&quot;:&quot;codex-thread-1&quot;,
     &quot;team&quot;:&quot;codex&quot;,
     &quot;project&quot;:&quot;local&quot;
@@ -164,7 +164,7 @@ The hook converts it into a MatrixArk ingest call:
     &quot;node_path&quot;:[
       &quot;account:acct_codex&quot;,
       &quot;tenant:tenant_codex&quot;,
-      &quot;principal:user:deeproute&quot;,
+      &quot;principal:user:local_user&quot;,
       &quot;collection:sessions&quot;,
       &quot;session:codex-thread-1&quot;,
       &quot;event:UserPromptSubmit&quot;
@@ -296,7 +296,7 @@ Project-local `.codex/hooks.json` can call the hook script. Use the real path fo
         &quot;hooks&quot;: [
           {
             &quot;type&quot;: &quot;command&quot;,
-            &quot;command&quot;: &quot;python3 <repo>/tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute&quot;,
+            &quot;command&quot;: &quot;python3 <repo>/tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id local_user&quot;,
             &quot;timeout&quot;: 30,
             &quot;statusMessage&quot;: &quot;Ingesting prompt into MatrixArk&quot;
           }
@@ -309,7 +309,7 @@ Project-local `.codex/hooks.json` can call the hook script. Use the real path fo
         &quot;hooks&quot;: [
           {
             &quot;type&quot;: &quot;command&quot;,
-            &quot;command&quot;: &quot;python3 <repo>/tools/matrixark_codex_hook.py --event PostToolUse --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute&quot;,
+            &quot;command&quot;: &quot;python3 <repo>/tools/matrixark_codex_hook.py --event PostToolUse --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id local_user&quot;,
             &quot;timeout&quot;: 30,
             &quot;statusMessage&quot;: &quot;Ingesting tool result into MatrixArk&quot;
           }
@@ -321,7 +321,7 @@ Project-local `.codex/hooks.json` can call the hook script. Use the real path fo
         &quot;hooks&quot;: [
           {
             &quot;type&quot;: &quot;command&quot;,
-            &quot;command&quot;: &quot;python3 <repo>/tools/matrixark_codex_hook.py --event Stop --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute&quot;,
+            &quot;command&quot;: &quot;python3 <repo>/tools/matrixark_codex_hook.py --event Stop --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id local_user&quot;,
             &quot;timeout&quot;: 30,
             &quot;statusMessage&quot;: &quot;Ingesting final Codex turn signal into MatrixArk&quot;
           }
@@ -342,7 +342,7 @@ If Codex runs on Windows but MatrixArk runs in WSL, use `commandWindows`:
 {
   &quot;type&quot;: &quot;command&quot;,
   &quot;command&quot;: &quot;python3 <repo>/tools/matrixark_codex_hook.py --event UserPromptSubmit&quot;,
-  &quot;commandWindows&quot;: &quot;wsl -d Ubuntu -- bash -lc &#x27;cd <repo> &amp;&amp; python3 tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute&#x27;&quot;,
+  &quot;commandWindows&quot;: &quot;wsl -d Ubuntu -- bash -lc &#x27;cd <repo> &amp;&amp; python3 tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id local_user&#x27;&quot;,
   &quot;timeout&quot;: 30
 }
 ```
@@ -364,7 +364,7 @@ python3 tools/matrixark_codex_hook.py \
   --event-log /tmp/matrixark-codex-hook.jsonl \
   --account-id acct_codex \
   --tenant-id tenant_codex \
-  --user-id deeproute \
+  --user-id local_user \
   --session-id codex-thread-1 &lt;&lt;&#x27;JSON&#x27;
 {&quot;prompt&quot;:&quot;Remember that Alice approved the GPU purchase for Project Orion.&quot;}
 JSON
@@ -378,7 +378,7 @@ python3 tools/matrixark_codex_hook.py \
   --event-log /tmp/matrixark-codex-hook.jsonl \
   --account-id acct_codex \
   --tenant-id tenant_codex \
-  --user-id deeproute \
+  --user-id local_user \
   --session-id codex-thread-1 &lt;&lt;&#x27;JSON&#x27;
 {&quot;prompt&quot;:&quot;What was approved for Project Orion?&quot;}
 JSON

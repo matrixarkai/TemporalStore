@@ -300,7 +300,7 @@ def build_summaries(events: list[ContextEvent], segments: list[ContextSegment], 
         ContextSummary(
             summary_id=stable_id("summary", "user_l1", len(events), len(segments)),
             summary_type="user_l1",
-            scope="tenant:tenant_codex/user:deeproute",
+            scope="tenant:tenant_codex/user:local_user",
             source_ids=[entity.entity_id for entity in entities[:8]],
             text=f"Cross-session user memory synthesized from child session summaries and selected topic state: {user_entity_text[:900]}",
         )

@@ -1707,7 +1707,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "_matrixark_auth": {
                     "account_id": "acct_local",
                     "tenant_id": "tenant_codex",
-                    "user_id": "deeproute",
+                    "user_id": "local_user",
                     "session_id": "debug-message-pdf-session",
                     "agent_name": "codex",
                     "api_key_id": "dev",
@@ -1722,7 +1722,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         )
         self.assertEqual("acct_local", access.get("account_id"))
         self.assertEqual("tenant_codex", access.get("tenant_id"))
-        self.assertEqual("deeproute", access.get("user_id"))
+        self.assertEqual("local_user", access.get("user_id"))
         self.assertEqual("debug-message-pdf-session", access.get("session_id"))
         self.assertNotIn("scope_key", access)
         self.assertNotIn("tenant_hash", access)

@@ -37,7 +37,7 @@ access_mode = dev
 [identity.local]
 account_id = acct_local
 agent_name = codex
-user_id = deeproute
+user_id = local_user
 
 [temporalstore]
 backend = cpp        # cpp | rust
@@ -224,7 +224,7 @@ matrixark-server doctor
 matrixark-server doctor --backend cpp
 matrixark-server doctor --backend rust
 matrixark-server list-keys
-matrixark-server inspect-node tenant:tenant_codex/user:deeproute/session:thread-1
+matrixark-server inspect-node tenant:tenant_codex/user:local_user/session:thread-1
 matrixark-server replay <context_pack_id>
 matrixark-server refresh-summaries --limit 64
 ```

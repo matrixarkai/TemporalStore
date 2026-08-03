@@ -31,7 +31,7 @@ emit several records like this:
   "ref_type": "event",
   "ref_hash": 1121810234980183195,
   "node_hash": 2100209595829882121,
-  "node_path": ["tenant:tenant_codex", "user:deeproute", "session:s1"],
+  "node_path": ["tenant:tenant_codex", "user:local_user", "session:s1"],
   "scope_key": "t=2466|u=7836|s=7498|",
   "created_at_ms": 1782681920550
 }

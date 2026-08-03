@@ -1183,19 +1183,19 @@ def main() -> int:
     scope = {
         "account_id": "acct_local",
         "tenant_id": "tenant_codex",
-        "user_id": "deeproute",
+        "user_id": "local_user",
         "session_id": "debug-message-pdf-session",
         "agent_name": "codex",
     }
     message_node_path = [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora",
     ]
     resource_node_path = [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "resources",
         "project_aurora",
         "gpu_procurement",

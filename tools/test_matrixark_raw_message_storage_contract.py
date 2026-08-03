@@ -36,10 +36,10 @@ class RawMessageStorageContractTest(unittest.TestCase):
         self.assertTrue(report["uses_timestamp_and_event_key"])
 
     def test_matrixkv_target_resolves_storage_object_key(self) -> None:
-        target = RawMessageStorageTarget.matrixkv("user:deeproute", "raw_agent_messages", "codex/raw-1")
+        target = RawMessageStorageTarget.matrixkv("user:local_user", "raw_agent_messages", "codex/raw-1")
         resolved = target.resolve(tenant_hash=99, node_hash=9903, event_time_ms=1781777200000, event_id_hash=7)
         self.assertEqual(resolved.backend, "matrixkv")
-        self.assertEqual(resolved.object_key(), "matrixkv:user:deeproute:raw_agent_messages:codex/raw-1")
+        self.assertEqual(resolved.object_key(), "matrixkv:user:local_user:raw_agent_messages:codex/raw-1")
 
     def test_message_body_beats_json_envelope(self) -> None:
         message = {

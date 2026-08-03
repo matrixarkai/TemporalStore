@@ -543,7 +543,7 @@ Stored in TemporalStore.
 ```json
 {
   "record_type": "context_archive_marker",
-  "scope_key": "acct_local|tenant_codex|user_deeproute",
+  "scope_key": "acct_local|tenant_codex|user_local_user",
   "source_ref": "event:01HX...",
   "source_type": "context_event",
   "archive_state": "cold_archived",
@@ -563,7 +563,7 @@ Stored in MatrixKV and optionally mirrored as a compact TemporalStore marker.
 ```json
 {
   "cold_ref_id": "coldref_01HX...",
-  "scope_key": "acct_local|tenant_codex|user_deeproute",
+  "scope_key": "acct_local|tenant_codex|user_local_user",
   "record_type": "context_event",
   "record_id": "event_01HX...",
   "record_version": 3,

@@ -90,103 +90,103 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
 
 |event_id_hash|node_path|internal_extraction.event_type|internal_extraction.entity_type|summary_text|source_ref|
 |---|---|---|---|---|---|
-|524936940655528425|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget.||
-|3110922328373977738|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|||assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment.||
-|5587845906929271104|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|||user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch.||
-|4010347062634094153|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|||assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch.||
-|420109978585177584|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|||user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection.||
-|6460926268341786696|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|||assistant: The active deadline is July 15, 2026. Vendor selection requires the finance approval attachment.||
-|3050751851654260645|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|||user: Correction: Alice raised the cap to 45000 dollars after the backup GPU quote came in.||
-|6665319736342895071|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|||assistant: Updated: the current Project Aurora GPU budget cap is 45000 dollars.||
-|571365746382456544|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_decision|resource_decision|resource_decision: Alice approved the Project Aurora GPU purchase after finance review|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|2900456491093257987|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_owner|resource_owner|resource_owner: Bob owns procurement and vendor coordination|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|1596920217437410578|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_cost|resource_cost|resource_cost: Current approved cap is 45000 dollars|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|9047961491740927299|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_deadline|resource_deadline|resource_deadline: Purchase order must be ready by July 15, 2026|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|929939956861191542|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_policy|resource_policy|resource_policy: be ready by July 15, 2026|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|274150047248606686|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|resource_approval|resource_approval: Packet|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|4265994536714805107|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_risk|resource_risk|resource_risk: Vendor selection is blocked if finance approval is not attached|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|8513196518652600321|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|||tool: Import PDF resource for MatrixArk parsing: Project Aurora GPU Approval Packet||
-|2159848791115076643|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_troubleshooting_step|resource_troubleshooting|resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
-|4657147395257529645|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|resource_approval|resource_approval: before vendor selection|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
-|5464066946068943028|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_procedure|resource_procedure|resource_procedure: Attach finance approval before vendor selection|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
-|443443440602181842|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|||tool: Import PDF resource for MatrixArk parsing: GPU Procurement Runbook||
-|6698509590300807928|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_cost|resource_cost|resource_cost: Update Memo|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|5430002385288940542|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_policy|resource_policy|resource_policy: not be used for current-state answers|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|6999014925757708944|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|resource_approval|resource_approval: r: Alice confirmed the updated cap|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|2824274976164423253|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_risk|resource_risk|resource_risk: 42000 dollars is historical and should not be used for current-state answers|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|4155085225937358975|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_procedure|resource_procedure|resource_procedure: ed the updated cap|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|1585344323533811142|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|||tool: Import PDF resource for MatrixArk parsing: Budget Update Memo||
+|524936940655528425|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget.||
+|3110922328373977738|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|||assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment.||
+|5587845906929271104|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|||user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch.||
+|4010347062634094153|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|||assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch.||
+|420109978585177584|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|||user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection.||
+|6460926268341786696|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|||assistant: The active deadline is July 15, 2026. Vendor selection requires the finance approval attachment.||
+|3050751851654260645|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|||user: Correction: Alice raised the cap to 45000 dollars after the backup GPU quote came in.||
+|6665319736342895071|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|||assistant: Updated: the current Project Aurora GPU budget cap is 45000 dollars.||
+|571365746382456544|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_decision|resource_decision|resource_decision: Alice approved the Project Aurora GPU purchase after finance review|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|2900456491093257987|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_owner|resource_owner|resource_owner: Bob owns procurement and vendor coordination|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|1596920217437410578|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_cost|resource_cost|resource_cost: Current approved cap is 45000 dollars|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|9047961491740927299|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_deadline|resource_deadline|resource_deadline: Purchase order must be ready by July 15, 2026|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|929939956861191542|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_policy|resource_policy|resource_policy: be ready by July 15, 2026|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|274150047248606686|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_approval|resource_approval|resource_approval: Packet|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|4265994536714805107|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_risk|resource_risk|resource_risk: Vendor selection is blocked if finance approval is not attached|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|8513196518652600321|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|||tool: Import PDF resource for MatrixArk parsing: Project Aurora GPU Approval Packet||
+|2159848791115076643|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_troubleshooting_step|resource_troubleshooting|resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
+|4657147395257529645|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_approval|resource_approval|resource_approval: before vendor selection|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
+|5464066946068943028|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_procedure|resource_procedure|resource_procedure: Attach finance approval before vendor selection|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
+|443443440602181842|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|||tool: Import PDF resource for MatrixArk parsing: GPU Procurement Runbook||
+|6698509590300807928|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_cost|resource_cost|resource_cost: Update Memo|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|5430002385288940542|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_policy|resource_policy|resource_policy: not be used for current-state answers|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|6999014925757708944|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_approval|resource_approval|resource_approval: r: Alice confirmed the updated cap|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|2824274976164423253|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_risk|resource_risk|resource_risk: 42000 dollars is historical and should not be used for current-state answers|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|4155085225937358975|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_procedure|resource_procedure|resource_procedure: ed the updated cap|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|1585344323533811142|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|||tool: Import PDF resource for MatrixArk parsing: Budget Update Memo||
 
 ## Extracted Entities
 
 |entity_hash|node_path|entity_type|entity_name|operator|state|source_ref|
 |---|---|---|---|---|---|---|
-|1488030737650625042|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|current_plan|current_plan|LLM_MERGE|track Bob as procurement owner and the 42000 dollar cap for the initial batch||
-|5205088207995267081|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|approval_state|the GPU purchase request for Project Aurora after reviewing the Q3 budget|LLM_MERGE|the GPU purchase request for Project Aurora after reviewing the Q3 budget||
-|5708414255151575681|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|approval_state|by Alice in finance, pending procurement owner assignment|LLM_MERGE|by Alice in finance, pending procurement owner assignment||
-|8967060400784335657|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|approval_state|must be attached before vendor selection|LLM_MERGE|must be attached before vendor selection||
-|1722827731307680407|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|approval_state|attachment|LLM_MERGE|attachment||
-|6763603293199773729|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_decision|decision:<repo>/docs/debug/matrixark_message_pdf_trace/f:Alice approved the Project ...|LATEST|resource_decision: Alice approved the Project Aurora GPU purchase after finance review. Source: Project Aurora GPU Ap...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|8832111546635263332|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_owner|owner:<repo>/docs/debug/matrixark_message_pdf_trace/f:Bob owns procurement and vendo...|LATEST|resource_owner: Bob owns procurement and vendor coordination. Source: Project Aurora GPU Approval Packet Decision: Al...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|203192128854999035|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_cost|cost:<repo>/docs/debug/matrixark_message_pdf_trace/f:Current approved cap is 45000 d...|LATEST|resource_cost: Current approved cap is 45000 dollars. Source: Project Aurora GPU Approval Packet Decision: Alice appr...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|1846258924606901354|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_deadline|deadline:<repo>/docs/debug/matrixark_message_pdf_trace/f:Purchase order must be read...|LATEST|resource_deadline: Purchase order must be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|957438680062716470|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_policy|policy:<repo>/docs/debug/matrixark_message_pdf_trace/f:be ready by July 15, 2026|LATEST|resource_policy: be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the P...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|3959598143726660477|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|approval:<repo>/docs/debug/matrixark_message_pdf_trace/f:Packet|LATEST|resource_approval: Packet. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|7448309444804846956|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_risk|risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:Vendor selection is blocked if ...|LATEST|resource_risk: Vendor selection is blocked if finance approval is not attached. Source: Project Aurora GPU Approval P...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|482208152304334466|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_troubleshooting|troubleshooting:<repo>/docs/debug/matrixark_message_pdf_trace/f:Procedure: Attach fi...|LATEST|resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection. Source: GPU Procurement Ru...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
-|1138079515152565102|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|approval:<repo>/docs/debug/matrixark_message_pdf_trace/f:before vendor selection|LATEST|resource_approval: before vendor selection. Source: GPU Procurement Runbook Procedure: Attach finance approval before...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
-|2904433185475945916|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_procedure|procedure:<repo>/docs/debug/matrixark_message_pdf_trace/f:Attach finance approval be...|LATEST|resource_procedure: Attach finance approval before vendor selection. Source: GPU Procurement Runbook Procedure: Attac...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
-|8287587184611689973|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_cost|cost:<repo>/docs/debug/matrixark_message_pdf_trace/f:Update Memo|LATEST|resource_cost: Update Memo. Source: Budget Update Memo Update: The backup GPU quote increased the cap from 42000 doll...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|6918872119779279271|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_policy|policy:<repo>/docs/debug/matrixark_message_pdf_trace/f:not be used for current-state...|LATEST|resource_policy: not be used for current-state answers. Source: Budget Update Memo Update: The backup GPU quote incre...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|62418527498755741|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|approval:<repo>/docs/debug/matrixark_message_pdf_trace/f:r: Alice confirmed the upda...|LATEST|resource_approval: r: Alice confirmed the updated cap. Source: Budget Update Memo Update: The backup GPU quote increa...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|9128041085176869255|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_risk|risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:42000 dollars is historical and...|LATEST|resource_risk: 42000 dollars is historical and should not be used for current-state answers. Source: Budget Update Me...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|2222864349714042728|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_procedure|procedure:<repo>/docs/debug/matrixark_message_pdf_trace/f:ed the updated cap|LATEST|resource_procedure: ed the updated cap. Source: Budget Update Memo Update: The backup GPU quote increased the cap fro...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|1488030737650625042|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|current_plan|current_plan|LLM_MERGE|track Bob as procurement owner and the 42000 dollar cap for the initial batch||
+|5205088207995267081|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|approval_state|the GPU purchase request for Project Aurora after reviewing the Q3 budget|LLM_MERGE|the GPU purchase request for Project Aurora after reviewing the Q3 budget||
+|5708414255151575681|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|approval_state|by Alice in finance, pending procurement owner assignment|LLM_MERGE|by Alice in finance, pending procurement owner assignment||
+|8967060400784335657|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|approval_state|must be attached before vendor selection|LLM_MERGE|must be attached before vendor selection||
+|1722827731307680407|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|approval_state|attachment|LLM_MERGE|attachment||
+|6763603293199773729|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_decision|decision:<repo>/docs/debug/matrixark_message_pdf_trace/f:Alice approved the Project ...|LATEST|resource_decision: Alice approved the Project Aurora GPU purchase after finance review. Source: Project Aurora GPU Ap...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|8832111546635263332|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_owner|owner:<repo>/docs/debug/matrixark_message_pdf_trace/f:Bob owns procurement and vendo...|LATEST|resource_owner: Bob owns procurement and vendor coordination. Source: Project Aurora GPU Approval Packet Decision: Al...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|203192128854999035|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_cost|cost:<repo>/docs/debug/matrixark_message_pdf_trace/f:Current approved cap is 45000 d...|LATEST|resource_cost: Current approved cap is 45000 dollars. Source: Project Aurora GPU Approval Packet Decision: Alice appr...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|1846258924606901354|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_deadline|deadline:<repo>/docs/debug/matrixark_message_pdf_trace/f:Purchase order must be read...|LATEST|resource_deadline: Purchase order must be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|957438680062716470|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_policy|policy:<repo>/docs/debug/matrixark_message_pdf_trace/f:be ready by July 15, 2026|LATEST|resource_policy: be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the P...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|3959598143726660477|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_approval|approval:<repo>/docs/debug/matrixark_message_pdf_trace/f:Packet|LATEST|resource_approval: Packet. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|7448309444804846956|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_risk|risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:Vendor selection is blocked if ...|LATEST|resource_risk: Vendor selection is blocked if finance approval is not attached. Source: Project Aurora GPU Approval P...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|482208152304334466|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_troubleshooting|troubleshooting:<repo>/docs/debug/matrixark_message_pdf_trace/f:Procedure: Attach fi...|LATEST|resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection. Source: GPU Procurement Ru...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
+|1138079515152565102|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_approval|approval:<repo>/docs/debug/matrixark_message_pdf_trace/f:before vendor selection|LATEST|resource_approval: before vendor selection. Source: GPU Procurement Runbook Procedure: Attach finance approval before...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
+|2904433185475945916|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_procedure|procedure:<repo>/docs/debug/matrixark_message_pdf_trace/f:Attach finance approval be...|LATEST|resource_procedure: Attach finance approval before vendor selection. Source: GPU Procurement Runbook Procedure: Attac...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
+|8287587184611689973|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_cost|cost:<repo>/docs/debug/matrixark_message_pdf_trace/f:Update Memo|LATEST|resource_cost: Update Memo. Source: Budget Update Memo Update: The backup GPU quote increased the cap from 42000 doll...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|6918872119779279271|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_policy|policy:<repo>/docs/debug/matrixark_message_pdf_trace/f:not be used for current-state...|LATEST|resource_policy: not be used for current-state answers. Source: Budget Update Memo Update: The backup GPU quote incre...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|62418527498755741|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_approval|approval:<repo>/docs/debug/matrixark_message_pdf_trace/f:r: Alice confirmed the upda...|LATEST|resource_approval: r: Alice confirmed the updated cap. Source: Budget Update Memo Update: The backup GPU quote increa...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|9128041085176869255|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_risk|risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:42000 dollars is historical and...|LATEST|resource_risk: 42000 dollars is historical and should not be used for current-state answers. Source: Budget Update Me...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|2222864349714042728|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|resource_procedure|procedure:<repo>/docs/debug/matrixark_message_pdf_trace/f:ed the updated cap|LATEST|resource_procedure: ed the updated cap. Source: Budget Update Memo Update: The backup GPU quote increased the cap fro...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
 
 ## Summaries
 
 |summary_type|summary_hash|node_path|summary_generation_policy.reason|summary_text|source_chunk_hashes|
 |---|---|---|---|---|---|
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget.||
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|batch_l0|3690166991097399202|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistan...||
-|resource_l0|1065960116080248254|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval...|[8736436273504687932]|
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|resource_l0|3105537185769273475|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook....|[6034139221235933872]|
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|resource_l0|5896945476345582083|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_updat...|[4893379877725482254]|
-|session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|node_l0||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session :: user: Alice from finance approved the GPU...||
-|node_l1||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session. Rich overview: user: Alice fro...||
-|node_l0||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice...||
-|node_l1||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora. ...||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget.||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|batch_l0|3690166991097399202|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistan...||
+|resource_l0|1065960116080248254|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]||resource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval...|[8736436273504687932]|
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|resource_l0|3105537185769273475|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]||resource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook....|[6034139221235933872]|
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|resource_l0|5896945476345582083|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]||resource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_updat...|[4893379877725482254]|
+|session_l0|8695652974415713980|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|node_l0||["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session"]|has_child_summaries|tenant:tenant_codex / user:local_user / session:debug-message-pdf-session :: user: Alice from finance approved the GPU...||
+|node_l1||["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session"]|has_child_summaries|Context node tenant:tenant_codex / user:local_user / session:debug-message-pdf-session. Rich overview: user: Alice fro...||
+|node_l0||["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|tenant:tenant_codex / user:local_user / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice...||
+|node_l1||["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|Context node tenant:tenant_codex / user:local_user / session:debug-message-pdf-session / conversation:project_aurora. ...||
 |node_l0||["tenant:tenant_codex"]|has_child_summaries|tenant:tenant_codex :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing ...||
 |node_l1||["tenant:tenant_codex"]|has_child_summaries|Context node tenant:tenant_codex. Rich overview: user: Alice from finance approved the GPU purchase request for Proje...||
-|node_l0||["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|tenant:tenant_codex / user:deeproute :: user: Alice from finance approved the GPU purchase request for Project Aurora...||
-|node_l1||["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute. Rich overview: user: Alice from finance approved the GPU purchase ...||
-|node_l0||["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources :: resource: <repo>/docs/debug/matr...||
-|node_l1||["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources. Rich overview: resource: <repo>/github-services/Tem...||
-|node_l0||["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources / project_aurora :: resource: <repo>/github-services/TemporalStor...||
-|node_l1||["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora. Rich overview: resource: <repo>/gi...||
-|node_l0||["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement :: GPU Procurement Runbook Proced...||
-|node_l1||["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement. Rich overview: GPU ...||
+|node_l0||["tenant:tenant_codex", "user:local_user"]|has_child_summaries|tenant:tenant_codex / user:local_user :: user: Alice from finance approved the GPU purchase request for Project Aurora...||
+|node_l1||["tenant:tenant_codex", "user:local_user"]|has_child_summaries|Context node tenant:tenant_codex / user:local_user. Rich overview: user: Alice from finance approved the GPU purchase ...||
+|node_l0||["tenant:tenant_codex", "user:local_user", "resources"]|has_child_summaries|tenant:tenant_codex / user:local_user / resources :: resource: <repo>/docs/debug/matr...||
+|node_l1||["tenant:tenant_codex", "user:local_user", "resources"]|has_child_summaries|Context node tenant:tenant_codex / user:local_user / resources. Rich overview: resource: <repo>/github-services/Tem...||
+|node_l0||["tenant:tenant_codex", "user:local_user", "resources", "project_aurora"]|has_child_summaries|tenant:tenant_codex / user:local_user / resources / project_aurora :: resource: <repo>/github-services/TemporalStor...||
+|node_l1||["tenant:tenant_codex", "user:local_user", "resources", "project_aurora"]|has_child_summaries|Context node tenant:tenant_codex / user:local_user / resources / project_aurora. Rich overview: resource: <repo>/gi...||
+|node_l0||["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|tenant:tenant_codex / user:local_user / resources / project_aurora / gpu_procurement :: GPU Procurement Runbook Proced...||
+|node_l1||["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|Context node tenant:tenant_codex / user:local_user / resources / project_aurora / gpu_procurement. Rich overview: GPU ...||
 
 ## Node L0/L1 Generation Policy
 
 |node_path|generated_summary_types|l1_policy.generate_l1|l1_policy.reason|l1_policy.token_estimate|source_event_count|source_summary_count|
 |---|---|---|---|---|---|---|
-|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|["node_l0", "node_l1"]|True|has_child_summaries|508|8|2|
-|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|["node_l0", "node_l1"]|True|event_count_threshold|205|8|0|
+|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session"]|["node_l0", "node_l1"]|True|has_child_summaries|508|8|2|
+|["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|["node_l0", "node_l1"]|True|event_count_threshold|205|8|0|
 |["tenant:tenant_codex"]|["node_l0", "node_l1"]|True|has_child_summaries|1034|8|4|
-|["tenant:tenant_codex", "user:deeproute"]|["node_l0", "node_l1"]|True|has_child_summaries|1034|8|4|
-|["tenant:tenant_codex", "user:deeproute", "resources"]|["node_l0", "node_l1"]|True|has_child_summaries|731|8|2|
-|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|["node_l0", "node_l1"]|True|has_child_summaries|731|8|2|
-|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|["node_l0", "node_l1"]|True|event_count_threshold|492|8|0|
+|["tenant:tenant_codex", "user:local_user"]|["node_l0", "node_l1"]|True|has_child_summaries|1034|8|4|
+|["tenant:tenant_codex", "user:local_user", "resources"]|["node_l0", "node_l1"]|True|has_child_summaries|731|8|2|
+|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora"]|["node_l0", "node_l1"]|True|has_child_summaries|731|8|2|
+|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|["node_l0", "node_l1"]|True|event_count_threshold|492|8|0|
 
 ## Embeddings
 
@@ -278,126 +278,126 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
 
 |index_name|ref_type|ref_hash|chunk_hash|node_path|
 |---|---|---|---|---|
-|event_type:correction||||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|
-|classification:batch_memory||||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|
-|status:observed||||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|
-|source_type:message||||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|
-|entity_type:current_plan||||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|
-|entity_type:approval_state||||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|
-|segment_topic:approval_budget||||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|
-|segment_topic:correction||||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|
-|source_type:resource||||["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|resource_type:pdf||||["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|source_type:resource|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|resource_type:pdf|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|unit_kind:pdf_page|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:project|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:aurora|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:gpu|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:approval|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:packet|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:decision|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:alice|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:approved|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:purchase|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:finance|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:review|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:owner|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|source_type:resource_fact|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|event_type:resource_decision|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|entity_type:resource_decision|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|entity_type:resource_fact|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|resource_type:pdf|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|unit_kind:pdf_page|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:project|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:aurora|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:gpu|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:approval|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:packet|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:decision|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:alice|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:approved|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:purchase|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:finance|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:review|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:owner|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|source_type:resource_fact|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|event_type:resource_owner|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|entity_type:resource_owner|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|entity_type:resource_fact|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|resource_type:pdf|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|unit_kind:pdf_page|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:project|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:aurora|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:gpu|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:approval|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:packet|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:decision|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:alice|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:approved|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:purchase|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:finance|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:review|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:owner|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|source_type:resource_fact|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|event_type:resource_cost|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|entity_type:resource_cost|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|entity_type:resource_fact|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|resource_type:pdf|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|unit_kind:pdf_page|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:project|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:aurora|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:gpu|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:approval|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:packet|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:decision|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:alice|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:approved|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:purchase|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:finance|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:review|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:owner|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|source_type:resource_fact|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|event_type:resource_deadline|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|entity_type:resource_deadline|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|entity_type:resource_fact|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|resource_type:pdf|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|unit_kind:pdf_page|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:project|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:aurora|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:gpu|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:approval|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:packet|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:decision|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:alice|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:approved|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:purchase|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:finance|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:review|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:owner|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|source_type:resource_fact|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|event_type:resource_policy|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|entity_type:resource_policy|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|entity_type:resource_fact|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|resource_type:pdf|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|unit_kind:pdf_page|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:project|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:aurora|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:gpu|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:approval|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:packet|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:decision|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:alice|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:approved|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:purchase|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:finance|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:review|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|keyword:owner|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|source_type:resource_fact|resource_fact|274150047248606686|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|event_type:resource_approval|resource_fact|274150047248606686|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|entity_type:resource_approval|resource_fact|274150047248606686|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|entity_type:resource_fact|resource_fact|274150047248606686|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
-|resource_type:pdf|resource_fact|274150047248606686|8736436273504687932|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|
+|event_type:correction||||["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|
+|classification:batch_memory||||["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|
+|status:observed||||["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|
+|source_type:message||||["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|
+|entity_type:current_plan||||["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|
+|entity_type:approval_state||||["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|
+|segment_topic:approval_budget||||["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|
+|segment_topic:correction||||["tenant:tenant_codex", "user:local_user", "session:debug-message-pdf-session", "conversation:project_aurora"]|
+|source_type:resource||||["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|resource_type:pdf||||["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|source_type:resource|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|resource_type:pdf|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|unit_kind:pdf_page|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:project|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:aurora|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:gpu|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:approval|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:packet|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:decision|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:alice|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:approved|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:purchase|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:finance|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:review|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:owner|resource_chunk|8736436273504687932|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|source_type:resource_fact|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|event_type:resource_decision|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|entity_type:resource_decision|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|entity_type:resource_fact|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|resource_type:pdf|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|unit_kind:pdf_page|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:project|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:aurora|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:gpu|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:approval|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:packet|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:decision|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:alice|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:approved|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:purchase|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:finance|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:review|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:owner|resource_fact|571365746382456544|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|source_type:resource_fact|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|event_type:resource_owner|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|entity_type:resource_owner|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|entity_type:resource_fact|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|resource_type:pdf|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|unit_kind:pdf_page|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:project|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:aurora|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:gpu|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:approval|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:packet|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:decision|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:alice|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:approved|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:purchase|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:finance|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:review|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:owner|resource_fact|2900456491093257987|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|source_type:resource_fact|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|event_type:resource_cost|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|entity_type:resource_cost|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|entity_type:resource_fact|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|resource_type:pdf|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|unit_kind:pdf_page|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:project|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:aurora|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:gpu|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:approval|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:packet|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:decision|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:alice|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:approved|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:purchase|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:finance|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:review|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:owner|resource_fact|1596920217437410578|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|source_type:resource_fact|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|event_type:resource_deadline|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|entity_type:resource_deadline|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|entity_type:resource_fact|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|resource_type:pdf|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|unit_kind:pdf_page|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:project|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:aurora|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:gpu|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:approval|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:packet|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:decision|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:alice|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:approved|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:purchase|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:finance|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:review|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:owner|resource_fact|9047961491740927299|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|source_type:resource_fact|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|event_type:resource_policy|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|entity_type:resource_policy|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|entity_type:resource_fact|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|resource_type:pdf|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|unit_kind:pdf_page|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:project|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:aurora|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:gpu|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:approval|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:packet|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:decision|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:alice|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:approved|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:purchase|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:finance|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:review|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|keyword:owner|resource_fact|929939956861191542|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|source_type:resource_fact|resource_fact|274150047248606686|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|event_type:resource_approval|resource_fact|274150047248606686|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|entity_type:resource_approval|resource_fact|274150047248606686|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|entity_type:resource_fact|resource_fact|274150047248606686|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
+|resource_type:pdf|resource_fact|274150047248606686|8736436273504687932|["tenant:tenant_codex", "user:local_user", "resources", "project_aurora", "gpu_procurement"]|
 
 ## Retrieval Scan
 
@@ -475,7 +475,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -545,7 +545,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -615,7 +615,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -685,7 +685,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -755,7 +755,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -825,7 +825,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -895,7 +895,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -965,7 +965,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -1035,7 +1035,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -1105,7 +1105,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -1175,7 +1175,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -1245,7 +1245,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -1337,7 +1337,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -1364,7 +1364,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.801195,
       "selection_reason": "selected by tree path, secondary indexes, and entity state score",
@@ -1427,7 +1427,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "metadata": {
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -1438,7 +1438,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 1737304210274426578,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "resources",
         "project_aurora",
         "gpu_procurement"
@@ -1466,7 +1466,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.849325,
       "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
@@ -1493,7 +1493,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -1520,7 +1520,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.661492,
       "selection_reason": "selected by tree path, secondary indexes, and entity state score",
@@ -1547,7 +1547,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -1574,7 +1574,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.629078,
       "selection_reason": "selected by tree path, secondary indexes, and entity state score",
@@ -1601,7 +1601,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -1628,7 +1628,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.610328,
       "selection_reason": "selected by tree path, secondary indexes, and entity state score",
@@ -1691,7 +1691,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "metadata": {
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -1702,7 +1702,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 1737304210274426578,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "resources",
         "project_aurora",
         "gpu_procurement"
@@ -1730,7 +1730,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.728759,
       "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
@@ -1793,7 +1793,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "metadata": {
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -1804,7 +1804,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 1737304210274426578,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "resources",
         "project_aurora",
         "gpu_procurement"
@@ -1832,7 +1832,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.698979,
       "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
@@ -1869,7 +1869,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -1898,7 +1898,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.864313,
       "selection_reason": "selected by tree path, secondary indexes, segment saliency, and segment hybrid score",
@@ -1965,7 +1965,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "message_index": 8,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "session:debug-message-pdf-session",
           "conversation:project_aurora"
         ],
@@ -1974,7 +1974,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -2001,7 +2001,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.733204,
       "selection_reason": "selected by tree path, secondary indexes, and event hybrid score",
@@ -2070,7 +2070,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "message_index": 5,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "session:debug-message-pdf-session",
           "conversation:project_aurora"
         ],
@@ -2079,7 +2079,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -2106,7 +2106,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.687188,
       "selection_reason": "selected by tree path, secondary indexes, and event hybrid score",
@@ -2175,7 +2175,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "message_index": 3,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "session:debug-message-pdf-session",
           "conversation:project_aurora"
         ],
@@ -2184,7 +2184,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -2211,7 +2211,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.672467,
       "selection_reason": "selected by tree path, secondary indexes, and event hybrid score",
@@ -2280,7 +2280,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "message_index": 1,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "session:debug-message-pdf-session",
           "conversation:project_aurora"
         ],
@@ -2289,7 +2289,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -2316,7 +2316,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.672044,
       "selection_reason": "selected by tree path, secondary indexes, and event hybrid score",
@@ -2384,7 +2384,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "message_index": 7,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "session:debug-message-pdf-session",
           "conversation:project_aurora"
         ],
@@ -2393,7 +2393,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -2420,7 +2420,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.633907,
       "selection_reason": "selected by tree path, secondary indexes, and event hybrid score",
@@ -2481,7 +2481,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "metadata": {
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -2492,7 +2492,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 1737304210274426578,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "resources",
         "project_aurora",
         "gpu_procurement"
@@ -2520,7 +2520,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.632023,
       "selection_reason": "selected by tree path, secondary indexes, and event hybrid score",
@@ -2589,7 +2589,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "message_index": 6,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "session:debug-message-pdf-session",
           "conversation:project_aurora"
         ],
@@ -2598,7 +2598,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -2625,7 +2625,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.614821,
       "selection_reason": "selected by tree path, secondary indexes, and event hybrid score",
@@ -2694,7 +2694,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "message_index": 2,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "session:debug-message-pdf-session",
           "conversation:project_aurora"
         ],
@@ -2703,7 +2703,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -2730,7 +2730,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.565616,
       "selection_reason": "selected by tree path, secondary indexes, and event hybrid score",
@@ -2799,7 +2799,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "message_index": 4,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "session:debug-message-pdf-session",
           "conversation:project_aurora"
         ],
@@ -2808,7 +2808,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -2835,7 +2835,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.563451,
       "selection_reason": "selected by tree path, secondary indexes, and event hybrid score",
@@ -2896,7 +2896,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "metadata": {
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -2907,7 +2907,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 1737304210274426578,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "resources",
         "project_aurora",
         "gpu_procurement"
@@ -2935,7 +2935,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.541744,
       "selection_reason": "selected by tree path, secondary indexes, and event hybrid score",
@@ -2996,7 +2996,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "metadata": {
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -3007,7 +3007,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 1737304210274426578,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "resources",
         "project_aurora",
         "gpu_procurement"
@@ -3035,7 +3035,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "score": 0.510193,
       "selection_reason": "selected by tree path, secondary indexes, and event hybrid score",
@@ -3064,7 +3064,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
     "role": "dev_admin",
     "session_id": "debug-message-pdf-session",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute"
+    "user_id": "local_user"
   },
   "auxiliary_candidate_count": 29,
   "context_assembly_policy": {
@@ -3144,7 +3144,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -3214,7 +3214,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -3284,7 +3284,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -3354,7 +3354,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -3424,7 +3424,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -3494,7 +3494,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -3564,7 +3564,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -3634,7 +3634,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
-          "user:deeproute",
+          "user:local_user",
           "resources",
           "project_aurora",
           "gpu_procurement"
@@ -3662,7 +3662,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
     "role": "dev_admin",
     "session_id": "debug-message-pdf-session",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute"
+    "user_id": "local_user"
   },
   "context_pack_id": "3047053284104680203",
   "events": [
@@ -3706,7 +3706,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "status": "active",
       "updated_at_ms": 1782415058897
@@ -3715,10 +3715,10 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "created_at_ms": 1782415058897,
       "depth": 2,
       "node_hash": 623184698193930698,
-      "node_name": "user:deeproute",
+      "node_name": "user:local_user",
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute"
+        "user:local_user"
       ],
       "parent_hash": 3263141514618168867,
       "record_type": "context_node",
@@ -3737,17 +3737,17 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "status": "active",
       "updated_at_ms": 1782415058897
     },
     {
       "child_hash": 623184698193930698,
-      "child_name": "user:deeproute",
+      "child_name": "user:local_user",
       "child_path": [
         "tenant:tenant_codex",
-        "user:deeproute"
+        "user:local_user"
       ],
       "child_ref_hash": 30283733866140312,
       "created_at_ms": 1782415058897,
@@ -3772,7 +3772,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "status": "active",
       "updated_at_ms": 1782415058897
@@ -3784,7 +3784,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_name": "session:debug-message-pdf-session",
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session"
       ],
       "parent_hash": 623184698193930698,
@@ -3804,7 +3804,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "status": "active",
       "updated_at_ms": 1782415058897
@@ -3814,7 +3814,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "child_name": "session:debug-message-pdf-session",
       "child_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session"
       ],
       "child_ref_hash": 3331542308452180010,
@@ -3823,7 +3823,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "parent_hash": 623184698193930698,
       "parent_path": [
         "tenant:tenant_codex",
-        "user:deeproute"
+        "user:local_user"
       ],
       "record_type": "context_child_ref",
       "scope": {
@@ -3841,7 +3841,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "status": "active",
       "updated_at_ms": 1782415058897
@@ -3853,7 +3853,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_name": "conversation:project_aurora",
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -3874,7 +3874,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "status": "active",
       "updated_at_ms": 1782415058897
@@ -3884,7 +3884,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "child_name": "conversation:project_aurora",
       "child_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -3894,7 +3894,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "parent_hash": 3084181658660614334,
       "parent_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session"
       ],
       "record_type": "context_child_ref",
@@ -3913,14 +3913,14 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "status": "active",
       "updated_at_ms": 1782415058897
     },
     {
       "context_node_key": [
-        "deeproute",
+        "local_user",
         "debug-message-pdf-session",
         "",
         ""
@@ -3928,7 +3928,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -3948,7 +3948,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "source_event_hash": 524936940655528425,
       "summary_hash": 8695652974415713980,
@@ -3963,7 +3963,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -3985,7 +3985,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "updated_at_ms": 1782415058897,
       "vector": [
@@ -4030,7 +4030,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "node_hash": 2100209595829882121,
       "node_path": [
         "tenant:tenant_codex",
-        "user:deeproute",
+        "user:local_user",
         "session:debug-message-pdf-session",
         "conversation:project_aurora"
       ],
@@ -4052,7 +4052,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "tenant_hash": 2466697514329931826,
         "tenant_id": "tenant_codex",
         "user_hash": 7836037686236352053,
-        "user_id": "deeproute"
+        "user_id": "local_user"
       },
       "updated_at_ms": 1782415058897,
       "vector": [

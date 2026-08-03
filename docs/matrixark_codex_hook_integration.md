@@ -60,7 +60,7 @@ For this repo, Codex hooks should use the C++ TemporalStore path by default:
   --event UserPromptSubmit \
   --account-id acct_codex \
   --tenant-id tenant_codex \
-  --user-id deeproute
+  --user-id local_user
 ```
 
 The launcher sets:
@@ -140,7 +140,7 @@ python3 tools/matrixark_codex_hook.py \
   --event-log /tmp/matrixark-codex-hook.jsonl \
   --account-id acct_codex \
   --tenant-id tenant_codex \
-  --user-id deeproute <<'JSON'
+  --user-id local_user <<'JSON'
 {"prompt":"Remember that Alice approved the GPU purchase for Project Orion."}
 JSON
 
@@ -149,7 +149,7 @@ python3 tools/matrixark_codex_hook.py \
   --event-log /tmp/matrixark-codex-hook.jsonl \
   --account-id acct_codex \
   --tenant-id tenant_codex \
-  --user-id deeproute <<'JSON'
+  --user-id local_user <<'JSON'
 {"prompt":"What was approved for Project Orion?","thread_id":"codex-thread-1"}
 JSON
 ```
@@ -178,7 +178,7 @@ For a trusted project-local setup, create `.codex/hooks.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 <repo>/tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute",
+            "command": "python3 <repo>/tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id local_user",
             "timeout": 30,
             "statusMessage": "Ingesting prompt into MatrixArk"
           }
@@ -190,7 +190,7 @@ For a trusted project-local setup, create `.codex/hooks.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 <repo>/tools/matrixark_codex_hook.py --event Stop --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute",
+            "command": "python3 <repo>/tools/matrixark_codex_hook.py --event Stop --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id local_user",
             "timeout": 30,
             "statusMessage": "Ingesting final Codex turn signal into MatrixArk"
           }
@@ -207,7 +207,7 @@ On Windows, use `commandWindows` if Codex runs hooks through PowerShell/CMD:
 {
   "type": "command",
   "command": "python3 <repo>/tools/matrixark_codex_hook.py --event UserPromptSubmit",
-  "commandWindows": "wsl -d Ubuntu2204LocalUser -- bash -lc 'cd <repo> && python3 tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute'",
+  "commandWindows": "wsl -d Ubuntu2204LocalUser -- bash -lc 'cd <repo> && python3 tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id local_user'",
   "timeout": 30
 }
 ```

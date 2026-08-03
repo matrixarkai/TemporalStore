@@ -153,7 +153,7 @@ The hook converts it into a MatrixArk ingest call:
   "scope": {
     "account_id":"acct_codex",
     "tenant_id":"tenant_codex",
-    "user_id":"deeproute",
+    "user_id":"local_user",
     "session_id":"codex-thread-1",
     "team":"codex",
     "project":"local"
@@ -164,7 +164,7 @@ The hook converts it into a MatrixArk ingest call:
     "node_path":[
       "account:acct_codex",
       "tenant:tenant_codex",
-      "principal:user:deeproute",
+      "principal:user:local_user",
       "collection:sessions",
       "session:codex-thread-1",
       "event:UserPromptSubmit"
@@ -296,7 +296,7 @@ Project-local `.codex/hooks.json` can call the hook script. Use the real path fo
         "hooks": [
           {
             "type": "command",
-            "command": "python3 <repo>/tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute",
+            "command": "python3 <repo>/tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id local_user",
             "timeout": 30,
             "statusMessage": "Ingesting prompt into MatrixArk"
           }
@@ -309,7 +309,7 @@ Project-local `.codex/hooks.json` can call the hook script. Use the real path fo
         "hooks": [
           {
             "type": "command",
-            "command": "python3 <repo>/tools/matrixark_codex_hook.py --event PostToolUse --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute",
+            "command": "python3 <repo>/tools/matrixark_codex_hook.py --event PostToolUse --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id local_user",
             "timeout": 30,
             "statusMessage": "Ingesting tool result into MatrixArk"
           }
@@ -321,7 +321,7 @@ Project-local `.codex/hooks.json` can call the hook script. Use the real path fo
         "hooks": [
           {
             "type": "command",
-            "command": "python3 <repo>/tools/matrixark_codex_hook.py --event Stop --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute",
+            "command": "python3 <repo>/tools/matrixark_codex_hook.py --event Stop --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id local_user",
             "timeout": 30,
             "statusMessage": "Ingesting final Codex turn signal into MatrixArk"
           }
@@ -342,7 +342,7 @@ If Codex runs on Windows but MatrixArk runs in WSL, use `commandWindows`:
 {
   "type": "command",
   "command": "python3 <repo>/tools/matrixark_codex_hook.py --event UserPromptSubmit",
-  "commandWindows": "wsl -d Ubuntu -- bash -lc 'cd <repo> && python3 tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute'",
+  "commandWindows": "wsl -d Ubuntu -- bash -lc 'cd <repo> && python3 tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id local_user'",
   "timeout": 30
 }
 ```
@@ -364,7 +364,7 @@ python3 tools/matrixark_codex_hook.py \
   --event-log /tmp/matrixark-codex-hook.jsonl \
   --account-id acct_codex \
   --tenant-id tenant_codex \
-  --user-id deeproute \
+  --user-id local_user \
   --session-id codex-thread-1 <<'JSON'
 {"prompt":"Remember that Alice approved the GPU purchase for Project Orion."}
 JSON
@@ -378,7 +378,7 @@ python3 tools/matrixark_codex_hook.py \
   --event-log /tmp/matrixark-codex-hook.jsonl \
   --account-id acct_codex \
   --tenant-id tenant_codex \
-  --user-id deeproute \
+  --user-id local_user \
   --session-id codex-thread-1 <<'JSON'
 {"prompt":"What was approved for Project Orion?"}
 JSON

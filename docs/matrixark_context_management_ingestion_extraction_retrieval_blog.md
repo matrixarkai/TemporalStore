@@ -40,7 +40,7 @@ Every request is resolved at the boundary into a canonical access scope:
 {
   "account_id": "acct_local",
   "tenant_id": "tenant_codex",
-  "user_id": "deeproute",
+  "user_id": "local_user",
   "session_id": "debug-message-pdf-session",
   "agent_name": "codex"
 }
@@ -63,10 +63,10 @@ Typical paths:
 
 ```text
 tenant:tenant_codex
-tenant:tenant_codex/user:deeproute
-tenant:tenant_codex/user:deeproute/session:debug-message-pdf-session
-tenant:tenant_codex/user:deeproute/session:debug-message-pdf-session/conversation:project_aurora
-tenant:tenant_codex/user:deeproute/resources/project_aurora/gpu_procurement
+tenant:tenant_codex/user:local_user
+tenant:tenant_codex/user:local_user/session:debug-message-pdf-session
+tenant:tenant_codex/user:local_user/session:debug-message-pdf-session/conversation:project_aurora
+tenant:tenant_codex/user:local_user/resources/project_aurora/gpu_procurement
 tenant:tenant_codex/shared/resources/policies
 global/resources/public_docs
 ```
@@ -76,7 +76,7 @@ Shared resources and shared skills should not live under a session. They should 
 ```mermaid
 flowchart TD
   T["tenant:tenant_codex"]
-  U["user:deeproute"]
+  U["user:local_user"]
   S["session:debug-message-pdf-session"]
   C["conversation:project_aurora"]
   R["resources/project_aurora"]
@@ -111,13 +111,13 @@ For a normal agent message, the MCP tool accepts:
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
-    "user_id": "deeproute",
+    "user_id": "local_user",
     "session_id": "debug-message-pdf-session"
   },
   "metadata": {
     "node_path": [
       "tenant:tenant_codex",
-      "user:deeproute",
+      "user:local_user",
       "session:debug-message-pdf-session",
       "conversation:project_aurora"
     ]
