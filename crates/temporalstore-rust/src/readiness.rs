@@ -104,22 +104,22 @@ pub struct StorageSsdCachePressureReadinessReport {
     pub rust_native_weighted_eviction_evidence: Vec<String>,
     pub local_pressure_ready: bool,
     pub rust_native_production_ready: bool,
-    pub mtcache_class_replacement_policy_ready: bool,
+    pub matrixcache_class_replacement_policy_ready: bool,
     #[serde(default)]
-    pub mtcache_class_replacement_policy_blockers: Vec<String>,
-    pub mtcache_zero_copy_pinned_handle_ready: bool,
+    pub matrixcache_class_replacement_policy_blockers: Vec<String>,
+    pub matrixcache_zero_copy_pinned_handle_ready: bool,
     #[serde(default)]
-    pub mtcache_zero_copy_pinned_handle_evidence: Vec<String>,
-    pub mtcache_dram_pmem_ssd_placement_ready: bool,
+    pub matrixcache_zero_copy_pinned_handle_evidence: Vec<String>,
+    pub matrixcache_dram_pmem_ssd_placement_ready: bool,
     #[serde(default)]
-    pub mtcache_dram_pmem_ssd_placement_evidence: Vec<String>,
-    pub mtcache_async_writeback_backpressure_ready: bool,
+    pub matrixcache_dram_pmem_ssd_placement_evidence: Vec<String>,
+    pub matrixcache_async_writeback_backpressure_ready: bool,
     #[serde(default)]
-    pub mtcache_async_writeback_backpressure_evidence: Vec<String>,
-    pub mtcache_latency_metrics_ready: bool,
+    pub matrixcache_async_writeback_backpressure_evidence: Vec<String>,
+    pub matrixcache_latency_metrics_ready: bool,
     #[serde(default)]
-    pub mtcache_latency_metrics_evidence: Vec<String>,
-    pub mtcache_class_production_ready: bool,
+    pub matrixcache_latency_metrics_evidence: Vec<String>,
+    pub matrixcache_class_production_ready: bool,
     pub production_ready: bool,
     pub missing: Vec<String>,
 }
@@ -822,24 +822,24 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         && admission_tuning_ready
         && long_running_pressure_validation_ready
         && rust_native_weighted_eviction_ready;
-    let mtcache_class_replacement_policy_ready = true;
-    let mtcache_class_replacement_policy_blockers = Vec::new();
-    let mtcache_zero_copy_pinned_handle_ready = true;
-    let mtcache_zero_copy_pinned_handle_evidence = vec![
+    let matrixcache_class_replacement_policy_ready = true;
+    let matrixcache_class_replacement_policy_blockers = Vec::new();
+    let matrixcache_zero_copy_pinned_handle_ready = true;
+    let matrixcache_zero_copy_pinned_handle_evidence = vec![
         "cache entries expose pinned state and pinned byte accounting through CacheEntryInfo and CacheStats".to_string(),
         "capacity eviction skips pinned memory and SSD entries and increments pinned-skip counters".to_string(),
         "pin and unpin APIs preserve active page/block handles while invalidation clears stale pinned state".to_string(),
     ];
-    let mtcache_dram_pmem_ssd_placement_ready = true;
-    let mtcache_dram_pmem_ssd_placement_evidence = vec![
+    let matrixcache_dram_pmem_ssd_placement_ready = true;
+    let matrixcache_dram_pmem_ssd_placement_evidence = vec![
         "CacheTieringPolicy models DRAM, PMEM, and SSD capacity, hotness thresholds, max block sizes, and SSD write-through admission".to_string(),
         "admission decisions place hot or pinned blocks in DRAM plus PMEM/SSD, warm blocks in PMEM plus SSD, and large cold blocks in SSD".to_string(),
         "MultiLayerCache has distinct resident DRAM and PMEM maps plus an SSD/file tier; PMEM hits promote into DRAM before falling through to SSD".to_string(),
         "entry inspection and Prometheus metrics report PMEM bytes, hits, fills, admission, and eviction counters alongside memory and SSD".to_string(),
         "cache_dram_pmem_ssd_tiers_admit_refill_and_evict proves PMEM admission, PMEM hit/refill, PMEM capacity eviction, and SSD retention".to_string(),
     ];
-    let mtcache_async_writeback_backpressure_ready = true;
-    let mtcache_async_writeback_backpressure_evidence = vec![
+    let matrixcache_async_writeback_backpressure_ready = true;
+    let matrixcache_async_writeback_backpressure_evidence = vec![
         "cache write-through SSD admissions are tracked separately from foreground memory admission"
             .to_string(),
         "bounded SSD capacity, oversize rejection, eviction, and admission rejection counters exist for the Rust-native deployment contract"
@@ -847,8 +847,8 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         "bounded async writeback queue depth and byte counters, drain accounting, and backpressure rejection counters are exercised by shared case storage_cache_replacement_policy_soak"
             .to_string(),
     ];
-    let mtcache_latency_metrics_ready = true;
-    let mtcache_latency_metrics_evidence = vec![
+    let matrixcache_latency_metrics_ready = true;
+    let matrixcache_latency_metrics_evidence = vec![
         "cache get and put paths record operation counts, total microseconds, and max microseconds"
             .to_string(),
         "Rust-native cache reports bucketed read-through, refill, writeback, eviction, and compaction latency samples"
@@ -856,30 +856,30 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         "shared case storage_cache_replacement_policy_soak proves latency buckets are populated during memory/disk pressure, cold refill, async writeback, eviction, and compaction"
             .to_string(),
     ];
-    let mtcache_class_production_ready = mtcache_class_replacement_policy_ready
-        && mtcache_zero_copy_pinned_handle_ready
-        && mtcache_dram_pmem_ssd_placement_ready
-        && mtcache_async_writeback_backpressure_ready
-        && mtcache_latency_metrics_ready;
-    let production_ready = rust_native_production_ready && mtcache_class_production_ready;
+    let matrixcache_class_production_ready = matrixcache_class_replacement_policy_ready
+        && matrixcache_zero_copy_pinned_handle_ready
+        && matrixcache_dram_pmem_ssd_placement_ready
+        && matrixcache_async_writeback_backpressure_ready
+        && matrixcache_latency_metrics_ready;
+    let production_ready = rust_native_production_ready && matrixcache_class_production_ready;
     let mut missing = Vec::new();
     if !rust_native_production_ready {
         missing.push("Rust-native cache pressure/refill production evidence".to_string());
     }
-    if !mtcache_class_replacement_policy_ready {
-        missing.push("mtcache-class multi-tier replacement policy".to_string());
+    if !matrixcache_class_replacement_policy_ready {
+        missing.push("matrixcache-class multi-tier replacement policy".to_string());
     }
-    if !mtcache_zero_copy_pinned_handle_ready {
-        missing.push("mtcache-class zero-copy pinned handle model".to_string());
+    if !matrixcache_zero_copy_pinned_handle_ready {
+        missing.push("matrixcache-class zero-copy pinned handle model".to_string());
     }
-    if !mtcache_dram_pmem_ssd_placement_ready {
-        missing.push("mtcache-class DRAM/PMEM/SSD placement semantics".to_string());
+    if !matrixcache_dram_pmem_ssd_placement_ready {
+        missing.push("matrixcache-class DRAM/PMEM/SSD placement semantics".to_string());
     }
-    if !mtcache_async_writeback_backpressure_ready {
-        missing.push("mtcache-class async writeback and backpressure".to_string());
+    if !matrixcache_async_writeback_backpressure_ready {
+        missing.push("matrixcache-class async writeback and backpressure".to_string());
     }
-    if !mtcache_latency_metrics_ready {
-        missing.push("mtcache-class mature latency metrics".to_string());
+    if !matrixcache_latency_metrics_ready {
+        missing.push("matrixcache-class mature latency metrics".to_string());
     }
 
     StorageSsdCachePressureReadinessReport {
@@ -896,17 +896,17 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         rust_native_weighted_eviction_evidence,
         local_pressure_ready,
         rust_native_production_ready,
-        mtcache_class_replacement_policy_ready,
-        mtcache_class_replacement_policy_blockers,
-        mtcache_zero_copy_pinned_handle_ready,
-        mtcache_zero_copy_pinned_handle_evidence,
-        mtcache_dram_pmem_ssd_placement_ready,
-        mtcache_dram_pmem_ssd_placement_evidence,
-        mtcache_async_writeback_backpressure_ready,
-        mtcache_async_writeback_backpressure_evidence,
-        mtcache_latency_metrics_ready,
-        mtcache_latency_metrics_evidence,
-        mtcache_class_production_ready,
+        matrixcache_class_replacement_policy_ready,
+        matrixcache_class_replacement_policy_blockers,
+        matrixcache_zero_copy_pinned_handle_ready,
+        matrixcache_zero_copy_pinned_handle_evidence,
+        matrixcache_dram_pmem_ssd_placement_ready,
+        matrixcache_dram_pmem_ssd_placement_evidence,
+        matrixcache_async_writeback_backpressure_ready,
+        matrixcache_async_writeback_backpressure_evidence,
+        matrixcache_latency_metrics_ready,
+        matrixcache_latency_metrics_evidence,
+        matrixcache_class_production_ready,
         production_ready,
         missing,
     }
@@ -1306,7 +1306,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "TemporalRaft process rollout reports must include MatrixRaft-derived operational semantics evidence for read-index, lease-read, lagging follower rejection, stale follower writes, snapshot install/restart, membership add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply convergence, and WAL persistence"
                     .to_string(),
-                "OpenRaft process rollout reports must include ByteRaft-derived operational semantics evidence for read-index, lease-read, lagging follower rejection, stale follower writes, snapshot install/restart, membership add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply convergence, and WAL persistence"
+                "OpenRaft process rollout reports must include MatrixRaft-derived operational semantics evidence for read-index, lease-read, lagging follower rejection, stale follower writes, snapshot install/restart, membership add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply convergence, and WAL persistence"
                     .to_string(),
                 "RaftStorageApplyFence is persisted in WAL records and rejects missing, corrupt, stale, or ahead-of-storage recovery state"
                     .to_string(),
@@ -1456,7 +1456,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "TemporalRaft process rollout reports must include MatrixRaft-derived operational semantics evidence for read-index, lease-read, lagging follower rejection, stale follower writes, snapshot install/restart, membership add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply convergence, and WAL persistence"
                     .to_string(),
-                "OpenRaft process rollout reports must include ByteRaft-derived operational semantics evidence for read-index, lease-read, lagging follower rejection, stale follower writes, snapshot install/restart, membership add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply convergence, and WAL persistence"
+                "OpenRaft process rollout reports must include MatrixRaft-derived operational semantics evidence for read-index, lease-read, lagging follower rejection, stale follower writes, snapshot install/restart, membership add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply convergence, and WAL persistence"
                     .to_string(),
                 "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum with WAL recovery validation"
                     .to_string(),
@@ -1594,7 +1594,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage cache readiness is strong for Rust-native local/shared-store paths; broad Docker/AWS deployment evidence and live external object-store evidence are scoped as separate readiness gates"
                     .to_string(),
-                "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, Rust-native weighted hotness/LRU eviction evidence, slot warmup, cache invalidation, tiering policy, admission tuning, long-running pressure validation evidence, the Rust-native multi-tier replacement policy, pinned handle accounting/eviction guards, DRAM/PMEM/SSD placement semantics, bounded async writeback/backpressure, and bucketed cache latency metrics; direct CacheLib/mtcache binary/API compatibility remains out of scope unless re-scoped"
+                "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, Rust-native weighted hotness/LRU eviction evidence, slot warmup, cache invalidation, tiering policy, admission tuning, long-running pressure validation evidence, the Rust-native multi-tier replacement policy, pinned handle accounting/eviction guards, DRAM/PMEM/SSD placement semantics, bounded async writeback/backpressure, and bucketed cache latency metrics; direct CacheLib/matrixcache binary/API compatibility remains out of scope unless re-scoped"
                     .to_string(),
                 "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, weighted hotness/LRU eviction, slot warmup, cache invalidation, tiering policy, admission tuning, and long-running pressure validation evidence"
                     .to_string(),
@@ -1888,19 +1888,19 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
             "storage_object_store_dependency_matrix.live_backend_dependency_matrix_ready"
         }
         "storage_cache" if capability.contains("multi-tier replacement policy") => {
-            "storage_cache_mtcache.replacement_policy_ready"
+            "storage_cache_matrixcache.replacement_policy_ready"
         }
         "storage_cache" if capability.contains("zero-copy pinned handle") => {
-            "storage_cache_mtcache.zero_copy_pinned_handle_ready"
+            "storage_cache_matrixcache.zero_copy_pinned_handle_ready"
         }
         "storage_cache" if capability.contains("DRAM/PMEM/SSD placement") => {
-            "storage_cache_mtcache.dram_pmem_ssd_placement_ready"
+            "storage_cache_matrixcache.dram_pmem_ssd_placement_ready"
         }
         "storage_cache" if capability.contains("async writeback") => {
-            "storage_cache_mtcache.async_writeback_backpressure_ready"
+            "storage_cache_matrixcache.async_writeback_backpressure_ready"
         }
         "storage_cache" if capability.contains("latency metrics") => {
-            "storage_cache_mtcache.latency_metrics_ready"
+            "storage_cache_matrixcache.latency_metrics_ready"
         }
         "storage_cache" if capability.contains("ObjectManager") => {
             "storage_runtime_object_manager.native_runtime_ready"
@@ -1988,7 +1988,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "finish networked metaserver Raft, scheduler loop, and safe topology membership mutations"
         }
         ("storage_cache", "storage_cache_durability") => {
-            "finish mtcache-class async writeback/backpressure and mature latency metrics"
+            "finish matrixcache-class async writeback/backpressure and mature latency metrics"
         }
         ("feature_modules", "feature_module_cpp_parity") => {
             "finish exact C++ feature/risk corpus coverage and deployment-specific module edge cases"
@@ -2081,7 +2081,7 @@ mod tests {
             .missing_by_area("storage_cache")
             .expect("storage cache area must exist");
         assert!(
-            !storage_missing.contains(&"mtcache-class multi-tier replacement policy".to_string()),
+            !storage_missing.contains(&"matrixcache-class multi-tier replacement policy".to_string()),
             "Rust-native multi-tier replacement policy should be covered"
         );
         assert!(storage_missing.is_empty());
@@ -2127,15 +2127,15 @@ mod tests {
         assert!(!storage_cache
             .missing
             .iter()
-            .any(|item| item.contains("mtcache-class multi-tier replacement policy")));
+            .any(|item| item.contains("matrixcache-class multi-tier replacement policy")));
         assert!(!storage_cache
             .missing
             .iter()
-            .any(|item| item.contains("mtcache-class zero-copy pinned handle model")));
+            .any(|item| item.contains("matrixcache-class zero-copy pinned handle model")));
         assert!(!storage_cache
             .missing
             .iter()
-            .any(|item| item.contains("mtcache-class DRAM/PMEM/SSD placement semantics")));
+            .any(|item| item.contains("matrixcache-class DRAM/PMEM/SSD placement semantics")));
         assert!(storage_cache.missing.is_empty());
     }
 
@@ -2428,9 +2428,9 @@ mod tests {
         assert_eq!(metaserver.missing, report.missing);
     }
 
-    // rust-internal: readiness posture guard for Rust-native SSD cache evidence and mtcache blockers.
+    // rust-internal: readiness posture guard for Rust-native SSD cache evidence and matrixcache blockers.
     #[test]
-    fn storage_ssd_cache_pressure_report_splits_rust_native_and_mtcache_class_readiness() {
+    fn storage_ssd_cache_pressure_report_splits_rust_native_and_matrixcache_class_readiness() {
         let report = storage_ssd_cache_pressure_readiness_report();
         assert!(report.memory_read_through_ready);
         assert!(report.disk_block_cache_ready);
@@ -2452,44 +2452,44 @@ mod tests {
             .iter()
             .any(|item| item.contains("pin-aware eviction skip counters")));
         assert!(report.rust_native_production_ready);
-        assert!(report.mtcache_class_replacement_policy_ready);
+        assert!(report.matrixcache_class_replacement_policy_ready);
         assert!(report
-            .mtcache_class_replacement_policy_blockers
+            .matrixcache_class_replacement_policy_blockers
             .iter()
             .all(|item| !item.contains("multi-tier replacement policy")));
-        assert!(report.mtcache_zero_copy_pinned_handle_ready);
+        assert!(report.matrixcache_zero_copy_pinned_handle_ready);
         assert!(report
-            .mtcache_zero_copy_pinned_handle_evidence
+            .matrixcache_zero_copy_pinned_handle_evidence
             .iter()
             .any(|item| item.contains("pinned byte accounting")));
         assert!(report
-            .mtcache_zero_copy_pinned_handle_evidence
+            .matrixcache_zero_copy_pinned_handle_evidence
             .iter()
             .any(|item| item.contains("pinned-skip counters")));
-        assert!(report.mtcache_dram_pmem_ssd_placement_ready);
+        assert!(report.matrixcache_dram_pmem_ssd_placement_ready);
         assert!(report
-            .mtcache_dram_pmem_ssd_placement_evidence
+            .matrixcache_dram_pmem_ssd_placement_evidence
             .iter()
             .any(|item| item.contains("CacheTieringPolicy")));
         assert!(report
-            .mtcache_dram_pmem_ssd_placement_evidence
+            .matrixcache_dram_pmem_ssd_placement_evidence
             .iter()
             .any(|item| item.contains("distinct resident DRAM and PMEM maps")));
         assert!(report
-            .mtcache_dram_pmem_ssd_placement_evidence
+            .matrixcache_dram_pmem_ssd_placement_evidence
             .iter()
             .any(|item| item.contains("PMEM admission, PMEM hit/refill")));
-        assert!(report.mtcache_async_writeback_backpressure_ready);
+        assert!(report.matrixcache_async_writeback_backpressure_ready);
         assert!(report
-            .mtcache_async_writeback_backpressure_evidence
+            .matrixcache_async_writeback_backpressure_evidence
             .iter()
             .any(|item| item.contains("bounded async writeback queue")));
-        assert!(report.mtcache_latency_metrics_ready);
+        assert!(report.matrixcache_latency_metrics_ready);
         assert!(report
-            .mtcache_latency_metrics_evidence
+            .matrixcache_latency_metrics_evidence
             .iter()
             .any(|item| item.contains("bucketed read-through")));
-        assert!(report.mtcache_class_production_ready);
+        assert!(report.matrixcache_class_production_ready);
         assert!(report.production_ready);
         assert!(report.missing.is_empty());
 
@@ -2705,11 +2705,11 @@ mod tests {
         assert!(!storage_cache
             .missing
             .iter()
-            .any(|item| item.contains("mtcache-class zero-copy pinned handle model")));
+            .any(|item| item.contains("matrixcache-class zero-copy pinned handle model")));
         assert!(!storage_cache
             .missing
             .iter()
-            .any(|item| item.contains("mtcache-class DRAM/PMEM/SSD placement semantics")));
+            .any(|item| item.contains("matrixcache-class DRAM/PMEM/SSD placement semantics")));
         assert!(storage_cache.missing.is_empty());
     }
 
