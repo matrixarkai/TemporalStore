@@ -159,6 +159,11 @@ need_cmd git
 if [[ "$do_build" -eq 1 || "$skip_build" -eq 0 || "$check_prereqs" -eq 1 ]]; then
   command -v cargo >/dev/null 2>&1 || echo "warning: cargo not found; required when release binaries are missing or --build is used" >&2
   command -v rustc >/dev/null 2>&1 || echo "warning: rustc not found; required when release binaries are missing or --build is used" >&2
+  # The engine depends on the matrixcache crate (rocksdb-ssd), which builds
+  # RocksDB from source via librocksdb-sys/bindgen. That needs clang/libclang
+  # and cmake in addition to a C/C++ toolchain.
+  command -v clang >/dev/null 2>&1 || echo "warning: clang not found; required to build RocksDB via the matrixcache crate (apt-get install clang libclang-dev)" >&2
+  command -v cmake >/dev/null 2>&1 || echo "warning: cmake not found; required to build RocksDB via the matrixcache crate (apt-get install cmake)" >&2
 fi
 
 if [[ ! -f "$repo/Cargo.toml" ]]; then

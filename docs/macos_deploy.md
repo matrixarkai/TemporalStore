@@ -39,11 +39,13 @@ Required:
 
 ```text
 macOS 13 or newer recommended
-Xcode Command Line Tools
+Xcode Command Line Tools   (provides clang/libclang for the RocksDB build)
 Homebrew
 python3
 git
 rustup/rustc/cargo
+cmake                      (to compile RocksDB via MatrixCache)
+network access to github.com  (to fetch the MatrixCache/MatrixRaft crates)
 ```
 
 Install the common prerequisites:
@@ -51,14 +53,35 @@ Install the common prerequisites:
 ```bash
 xcode-select --install
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-brew install git python rustup-init
+brew install git python rustup-init cmake
 rustup-init -y
 source "$HOME/.cargo/env"
 ```
 
+`cmake` and the Xcode Command Line Tools are required because the storage engine
+depends on the `matrixcache` crate with the `rocksdb-ssd` feature, which builds
+RocksDB from source (`librocksdb-sys` uses `bindgen`/libclang).
+
 Then clone this repository and run commands from the repo root.
 
 If you already have Rust through Homebrew or rustup, keep the existing toolchain.
+
+## Rust Crate Dependencies (MatrixCache / MatrixRaft)
+
+The Rust engine pulls its storage and consensus layers as pinned Git
+dependencies from public GitHub (see `crates/temporalstore-rust/Cargo.toml`), so
+`cargo build` fetches them automatically on the first build:
+
+```text
+matrixraft            https://github.com/bjmeetsfo/MatrixRaft.git         (Raft consensus)
+matrixcache           https://github.com/bjmeetsfo/MatrixCache.git        (tiered cache + RocksDB SSD store)
+matrixobjectstore-rs  https://github.com/bjmeetsfo/MatrixObjectStore.git  (optional; enable with --features matrixobject)
+```
+
+Each is pinned to an exact revision, so you never clone them by hand — you only
+need `git` and network access to `github.com`. For offline builds, run
+`cargo vendor` on a connected host, or add `[patch]` path overrides pointing at
+local MatrixCache/MatrixRaft clones.
 
 ## One-Command Build And Deploy
 
