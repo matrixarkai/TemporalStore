@@ -49,6 +49,8 @@ bash
 python3
 git
 rustup/rustc/cargo
+C/C++ toolchain + clang/libclang + cmake   (to compile RocksDB via MatrixCache)
+network access to github.com               (to fetch the MatrixCache/MatrixRaft crates)
 ```
 
 For service management, user-mode `systemd` is optional. By default, the
@@ -58,10 +60,15 @@ On a fresh Ubuntu host:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y bash git curl ca-certificates python3 build-essential pkg-config libssl-dev
+sudo apt-get install -y bash git curl ca-certificates python3 \
+  build-essential pkg-config libssl-dev clang libclang-dev cmake
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 ```
+
+`clang`, `libclang-dev`, and `cmake` are required because the storage engine
+depends on the `matrixcache` crate with the `rocksdb-ssd` feature, which builds
+RocksDB from source (via `librocksdb-sys`, which uses `bindgen`/libclang).
 
 Then clone and enter the repo:
 
@@ -78,6 +85,30 @@ Run the prerequisite check:
 
 The script defaults to the repo that contains the script. Maintainers can still
 override it with `--repo /opt/github-services/TemporalStore`.
+
+## Rust Crate Dependencies (MatrixCache / MatrixRaft)
+
+The Rust TemporalStore engine does **not** vendor its storage and consensus
+layers. `crates/temporalstore-rust/Cargo.toml` pulls them as pinned Git
+dependencies from public GitHub, so `cargo build` fetches them automatically on
+the first build:
+
+```text
+matrixraft            https://github.com/bjmeetsfo/MatrixRaft.git         (Raft consensus)
+matrixcache           https://github.com/bjmeetsfo/MatrixCache.git        (tiered cache + RocksDB SSD store)
+matrixobjectstore-rs  https://github.com/bjmeetsfo/MatrixObjectStore.git  (optional; enable with --features matrixobject)
+```
+
+Each dependency is pinned to an exact revision, so builds are reproducible. You
+do not clone these repos by hand — you only need `git` and network access to
+`github.com` on the build host. The ByteDance `code.byted.org` submodules in
+`.gitmodules` are for the legacy C++ build only and are **not** needed for the
+Rust install.
+
+Offline or air-gapped builds: run `cargo vendor` on a connected host and commit
+the generated `.cargo/config.toml`, or clone MatrixCache/MatrixRaft locally and
+add `[patch."https://github.com/bjmeetsfo/MatrixCache.git"]` / MatrixRaft path
+overrides to a workspace `Cargo.toml`.
 
 ## One-Command Build And Deploy
 

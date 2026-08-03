@@ -159,6 +159,11 @@ need_cmd git
 if [[ "$do_build" -eq 1 || "$skip_build" -eq 0 || "$check_prereqs" -eq 1 ]]; then
   command -v cargo >/dev/null 2>&1 || echo "warning: cargo not found; required when release binaries are missing or --build is used" >&2
   command -v rustc >/dev/null 2>&1 || echo "warning: rustc not found; required when release binaries are missing or --build is used" >&2
+  # The engine depends on the matrixcache crate (rocksdb-ssd), which builds
+  # RocksDB from source. clang/libclang ship with the Xcode Command Line Tools;
+  # cmake is required too.
+  command -v clang >/dev/null 2>&1 || echo "warning: clang not found; install the Xcode Command Line Tools (xcode-select --install) to build RocksDB via the matrixcache crate" >&2
+  command -v cmake >/dev/null 2>&1 || echo "warning: cmake not found; required to build RocksDB via the matrixcache crate (brew install cmake)" >&2
 fi
 
 if [[ ! -f "$repo/Cargo.toml" ]]; then

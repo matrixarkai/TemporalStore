@@ -105,8 +105,16 @@ You need these basics:
 git
 python3
 Rust toolchain for native Linux/macOS builds
+C/C++ toolchain + clang/libclang + cmake   for native builds (RocksDB via MatrixCache)
+network access to github.com               to fetch the MatrixCache/MatrixRaft crates
 Docker Desktop for Windows Docker installs
 ```
+
+The native (non-Docker) build compiles the Rust engine, which depends on the
+`matrixcache` and `matrixraft` crates. Cargo fetches these automatically from
+public GitHub — see [Build dependencies](#build-dependencies-matrixcache--matrixraft)
+below. The Docker path needs none of the build tools; the toolchain lives inside
+the image build stage.
 
 You also need a local clone of this repository:
 
@@ -120,6 +128,33 @@ If you already have a clone, update it first:
 ```bash
 git pull --ff-only
 ```
+
+## Build Dependencies (MatrixCache / MatrixRaft)
+
+The Rust TemporalStore engine does not vendor its storage and consensus layers.
+`crates/temporalstore-rust/Cargo.toml` pulls them as **pinned Git dependencies**
+from public GitHub, so `cargo build` fetches them automatically on the first
+build — you never clone them by hand:
+
+```text
+matrixraft            https://github.com/bjmeetsfo/MatrixRaft.git         Raft consensus
+matrixcache           https://github.com/bjmeetsfo/MatrixCache.git        tiered cache + RocksDB SSD store
+matrixobjectstore-rs  https://github.com/bjmeetsfo/MatrixObjectStore.git  optional (--features matrixobject)
+```
+
+Each is pinned to an exact revision, so builds are reproducible. Because
+`matrixcache` enables the `rocksdb-ssd` feature, the first build compiles RocksDB
+from source (`librocksdb-sys`), which needs a **C/C++ toolchain, `clang`/
+`libclang`, and `cmake`** in addition to Rust and `git`:
+
+- Linux (Ubuntu): `sudo apt-get install -y build-essential pkg-config libssl-dev clang libclang-dev cmake`
+- macOS: `xcode-select --install` (clang/libclang) and `brew install cmake`
+
+The platform guides ([Linux](linux_deploy.md), [macOS](macos_deploy.md)) list the
+full package sets. The ByteDance `code.byted.org` submodules in `.gitmodules` are
+for the legacy C++ build only and are **not** needed for the Rust install. For
+offline/air-gapped builds, run `cargo vendor` on a connected host, or add
+`[patch]` path overrides pointing at local MatrixCache/MatrixRaft clones.
 
 ## Linux Quick Start
 
@@ -328,6 +363,38 @@ manual. The installer already runs the same check unless `--skip-smoke` or
 | Windows Docker | Docker volume `temporalstore-rust-win-data` mounted at `/var/lib/temporalstore` |
 
 Deleting these paths removes local TemporalStore data.
+
+## Memory Model And Local Context Backfill
+
+By default, the Codex and Claude Code hooks treat **TemporalStore as the single
+system of record for all agent memory**. Every turn flows through the same
+pipeline — ingestion of prompts and tool events, extraction of segments,
+entities, summaries, and embeddings, and retrieval of relevant context before the
+next LLM call — and all of it is persisted in TemporalStore under an agent-scoped
+prefix (`matrixark:codex-hook:rust`, `matrixark:claude-hook:rust`).
+
+**Local memory is backfilled into TemporalStore** rather than kept as a separate
+store:
+
+- When the local proxy/service is not yet running, the offline Rust backend keeps
+  session memory in local on-disk directories and fails open, so a turn is never
+  blocked. Once TemporalStore is healthy, that local memory is backfilled in and
+  the store stays authoritative.
+- Existing local agent history that predates the hook — for example prior Codex
+  desktop/CLI sessions under `~/.codex/sessions` — is imported into TemporalStore
+  through the same canonicalization path as live ingestion, so past context
+  becomes searchable.
+
+Entry points (run after the storage service is healthy — see
+[Verify The Service](#verify-the-service)):
+
+```text
+tools/matrixark_codex_session_bridge.py   import local Codex session transcripts into the hook (-> TemporalStore)
+tools/matrixark_context_backfill.py       replay/repair the raw ingestion log into context-serving prefixes
+```
+
+See the [Context Backfill Manual](matrixark_context_backfill.md) for the
+shadow-first workflow, validation, and activation/repair modes.
 
 ## Troubleshooting
 
