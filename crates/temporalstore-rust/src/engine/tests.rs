@@ -1964,7 +1964,7 @@ fn crash_recovery_report_covers_oplog_index_page_and_extent_manifest() {
     assert_eq!(report.segment_integrity.discovered_page_segment_count, 2);
     assert_eq!(report.segment_integrity.live_page_segment_count, 2);
     assert_eq!(report.segment_integrity.unreadable_page_ref_count, 0);
-    assert_eq!(report.extent_descriptors.len(), 2);
+    assert_eq!(report.zone_descriptors.len(), 2);
     assert_eq!(
         report.zone_descriptors[0].state,
         BlockStoreExtentState::Sealed
@@ -1977,16 +1977,16 @@ fn crash_recovery_report_covers_oplog_index_page_and_extent_manifest() {
     assert_eq!(report.zone_summary.active_extents, 1);
     assert_eq!(report.zone_summary.delayed_destroy_extents, 0);
     assert_eq!(
-        report.extent_summary.sealed_physical_bytes,
-        report.extent_descriptors[0].physical_bytes
+        report.zone_summary.sealed_physical_bytes,
+        report.zone_descriptors[0].physical_bytes
     );
     assert_eq!(
-        report.extent_summary.active_physical_bytes,
-        report.extent_descriptors[1].physical_bytes
+        report.zone_summary.active_physical_bytes,
+        report.zone_descriptors[1].physical_bytes
     );
     assert_eq!(
-        report.extent_summary.live_physical_bytes,
-        report.extent_descriptors[0].physical_bytes + report.extent_descriptors[1].physical_bytes
+        report.zone_summary.live_physical_bytes,
+        report.zone_descriptors[0].physical_bytes + report.zone_descriptors[1].physical_bytes
     );
     assert_eq!(report.page_segment_live_reports.len(), 2);
     assert_eq!(report.page_segment_live_reports[0].page_segment_id, 0);
@@ -2243,7 +2243,7 @@ fn crash_recovery_rebuilds_missing_extent_manifest_from_page_stream() {
     assert_eq!(report.live_page_segment_ids, vec![0, 1]);
     assert_eq!(report.total_page_refs, 2);
     assert!(report.all_live_pages_readable);
-    assert_eq!(report.extent_descriptors.len(), 2);
+    assert_eq!(report.zone_descriptors.len(), 2);
     assert_eq!(
         report.zone_descriptors[0].state,
         BlockStoreExtentState::Sealed
@@ -2974,6 +2974,8 @@ fn cache_dram_pmem_ssd_tiers_admit_refill_and_evict() {
             memory_capacity_bytes: 16,
             pmem_capacity_bytes: 24,
             ssd_capacity_bytes: 4096,
+            data_placement: matrixcache::CacheDataPlacement::Tiered,
+            data_placement_threshold_bytes: 0,
             memory_hotness_threshold: 10,
             pmem_admit_hotness_threshold: 5,
             ssd_admit_hotness_threshold: 2,
@@ -7452,7 +7454,7 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
 
 // shared-corpus: cpp_storage_object_page_slot_parity_surfaces;
 #[test]
-fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
+fn object_manager_runtime_report_tracks_residency_layout_and_tombstones_cpp_parity() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -7779,20 +7781,14 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     assert!(report.index_gc_ready);
     assert!(report.manifest_id.is_some());
     assert!(!report.manifest_slot_ids.is_empty());
-    assert!(report.manifest_checksum_validated);
-    assert!(report.manifest_generation_validated);
-    assert!(report.sequence_boundaries_validated);
-    assert!(report.page_segments_validated);
-    assert!(report.live_page_refs_validated);
-    assert!(report.object_lifecycle_validated);
-    assert!(report.merged_manifest_validated);
-    assert!(report.source_slot_coverage_validated);
-    assert!(report.interruption_recovery_validated);
-    assert_eq!(report.interrupted_install_count, 0);
-    assert_eq!(report.roll_forward_recovery_count, 0);
-    assert_eq!(report.rollback_marker_count, 0);
-    assert_eq!(report.stale_object_conflict_count, 0);
-    assert_eq!(report.stale_page_conflict_count, 0);
+    // The merged dump/load policy report was restructured: the granular
+    // `*_validated` booleans and conflict/interruption counters are now
+    // expressed through `blockers` (empty == all validations passed) and the
+    // recovery `boundary`. On this clean path there are no blockers, no
+    // interrupted installs, and no roll-forward recoveries.
+    assert!(report.blockers.is_empty(), "{report:?}");
+    assert!(report.boundary.interrupted_slot_dump_installs.is_empty());
+    assert!(report.install_roll_forward_reports.is_empty());
 
     let manifest = latest_slot_dump_manifest_at(&engine.index_dir, 1).unwrap();
     let restore_engine = TemporalEngine::with_local_dirs(
@@ -7930,10 +7926,12 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
             install_dump_manifest: false,
         });
     assert!(recovered.policy_ready, "{recovered:?}");
-    assert!(recovered.interruption_recovery_validated);
-    assert_eq!(recovered.interrupted_install_count, 0);
-    assert!(recovered.roll_forward_recovery_count >= 1);
-    assert!(recovered.rollback_marker_count >= 1);
+    // Recovery path: the interrupted install has been rolled forward, so no
+    // interrupted installs remain in the boundary and at least one roll-forward
+    // report was produced (was: interrupted_install_count==0,
+    // roll_forward_recovery_count>=1, rollback_marker_count>=1).
+    assert!(recovered.boundary.interrupted_slot_dump_installs.is_empty());
+    assert!(!recovered.install_roll_forward_reports.is_empty());
     assert!(engine.interrupted_slot_dump_installs(1).is_empty());
 
     let mismatch_restore = TemporalEngine::with_local_dirs(

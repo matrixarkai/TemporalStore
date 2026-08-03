@@ -3788,6 +3788,7 @@ mod tests {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
                     key: "cpp-proxy-feature".to_string(),
+                    policy: None,
                     points: vec![crate::types::FeaturePoint {
                         timestamp_ms: 10,
                         value: b"7".to_vec(),

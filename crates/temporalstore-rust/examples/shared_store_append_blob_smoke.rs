@@ -78,6 +78,8 @@ async fn main() {
         ReplayReport {
             applied: 2,
             last_oplog_index: 2,
+            offset_index_reads: 0,
+            range_bytes_read: 0,
         }
     );
     for (key, value) in [("proto-a", b"one".to_vec()), ("proto-b", b"two".to_vec())] {

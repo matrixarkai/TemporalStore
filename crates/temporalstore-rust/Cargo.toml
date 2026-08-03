@@ -35,6 +35,17 @@ temporal-raft-engine = []
 open-source-surface = []
 matrixobject = ["dep:matrixobjectstore-rs"]
 
+# This example links the optional MatrixObjectStore crate; gate it behind the
+# `matrixobject` feature so the default `cargo build --all-targets` does not try
+# to compile it without the dependency enabled.
+[[example]]
+name = "shared_store_append_blob_parity_report"
+required-features = ["matrixobject"]
+
+[[example]]
+name = "shared_store_append_blob_smoke"
+required-features = ["matrixobject"]
+
 [[bin]]
 name = "matrixark_rust_proxy"
 path = "src/bin/matrixark_rust_proxy.rs"

@@ -2021,6 +2021,7 @@ fn context_skill_registry_supports_updates_and_retrieval_selection() {
         owner_scope: "team:context".to_string(),
         tool_name: "context_workflow_harness".to_string(),
         include_disabled: false,
+        allowed_scope_layers: Vec::new(),
         limit: 4,
         registry: updated.entries,
     });
