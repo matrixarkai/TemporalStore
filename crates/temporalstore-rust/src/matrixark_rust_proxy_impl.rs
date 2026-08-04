@@ -26,6 +26,19 @@ const DEFAULT_SHARD_ID: u64 = 1;
 const LATENCY_BUCKETS_MS: [u128; 9] = [1, 2, 5, 10, 25, 50, 100, 250, 1000];
 const DIRECT_RECORD_LOG_SHARD_SIZE: usize = 256;
 
+/// Treat an explicit JSON `null` as the type's default. `#[serde(default)]` only
+/// covers *absent* fields, so agent clients that serialize an empty list as `null`
+/// (common from Python) would otherwise fail request parsing with
+/// "invalid type: null, expected a sequence". Applied to the plain `Vec` request
+/// fields so the proxy tolerates null lists uniformly across agents.
+fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Clone, Debug, Deserialize)]
 struct RecordLogRequest {
     op: String,
@@ -47,9 +60,9 @@ struct RecordLogRequest {
     query: String,
     #[serde(default)]
     max_selected_refs: usize,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     entries: Vec<HashEntry>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     entries_compact: Vec<CompactHashEntry>,
     #[serde(default)]
     append_options: Value,
@@ -71,7 +84,7 @@ struct RecordLogRequest {
     return_index_records: bool,
     #[serde(default)]
     record: Option<Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_default")]
     visibility_keys: Vec<String>,
     #[serde(default)]
     top_level_response: bool,
