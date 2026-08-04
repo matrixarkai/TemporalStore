@@ -17,6 +17,7 @@ mod zset_storage;
 pub use protocol::{read_command, RespValue};
 pub use server::serve_redis_proxy;
 pub use state::RedisCommandState;
+pub use dispatch::execute_redis_command_with_state;
 
 use crate::client::{slot_id_for_key, stable_key_hash};
 use crate::types::{

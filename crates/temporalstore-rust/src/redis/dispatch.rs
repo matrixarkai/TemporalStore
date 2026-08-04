@@ -3,7 +3,7 @@
 use super::*;
 use crate::types::{Command, CommandResponse, FeatureFilterOp, FeatureWritePolicy, RiskFamily, StringSetCondition};
 
-pub(crate) fn execute_redis_command_with_state(
+pub fn execute_redis_command_with_state(
     args: Vec<Vec<u8>>,
     shard_id: ShardId,
     state: &mut RedisCommandState,
