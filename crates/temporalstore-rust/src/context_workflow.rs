@@ -3494,12 +3494,38 @@ struct OpenAiEmbeddingRequest<'a> {
     input: Vec<&'a str>,
 }
 
+/// When set (`MATRIXARK_REQUIRE_MODEL_SUMMARIES=1`), context summaries must come from a
+/// real model: mock/deterministic providers are rejected loudly and, if the model omits
+/// l0/l1, the model's own output is used rather than the title/body string heuristic.
+/// Off by default so CI/dev without credentials still runs deterministically.
+fn context_require_model_summaries() -> bool {
+    std::env::var("MATRIXARK_REQUIRE_MODEL_SUMMARIES")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// When set (`MATRIXARK_REQUIRE_MODEL_EMBEDDINGS=1`), embeddings must come from a real
+/// model: a mock/deterministic provider is rejected loudly instead of emitting hash vectors.
+fn context_require_model_embeddings() -> bool {
+    std::env::var("MATRIXARK_REQUIRE_MODEL_EMBEDDINGS")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 fn context_summaries_for_extract(
     provider: &ContextModelProviderConfig,
     request: &ContextExtractRequest,
 ) -> Result<ContextExtractSummaries, Status> {
     let provider = normalize_provider(provider.clone());
     if provider.mock_mode || provider.provider_kind == ContextProviderKind::Mock {
+        if context_require_model_summaries() {
+            return Err(Status::error(
+                "model_required_but_provider_is_mock",
+                "MATRIXARK_REQUIRE_MODEL_SUMMARIES is set but the context provider is mock/deterministic; configure a real OpenAI-compatible (OSS) provider with mock_mode=false",
+            ));
+        }
         return Ok(mock_context_summaries(provider, request));
     }
     match provider.provider_kind {
@@ -3528,6 +3554,12 @@ fn context_embeddings_for_extract(
 ) -> Result<(Vec<Vec<f32>>, ContextEmbeddingGenerationReport), Status> {
     let provider = normalize_provider(provider.clone());
     if provider.mock_mode || provider.provider_kind == ContextProviderKind::Mock {
+        if context_require_model_embeddings() {
+            return Err(Status::error(
+                "model_required_but_provider_is_mock",
+                "MATRIXARK_REQUIRE_MODEL_EMBEDDINGS is set but the context provider is mock/deterministic; configure a real OpenAI-compatible (OSS) embedding provider with mock_mode=false",
+            ));
+        }
         let vectors = inputs
             .iter()
             .map(|(_, _, _, text)| deterministic_context_embedding(&provider.embedding_model, text))
@@ -3810,17 +3842,32 @@ fn parse_provider_summary_content(
     content: &str,
     request: &ContextExtractRequest,
 ) -> (String, String) {
+    // When models are required, a missing l0/l1 falls back to the model's own raw
+    // content (still model-derived) rather than the title/body string heuristic.
+    let require_model = context_require_model_summaries();
     if let Ok(value) = serde_json::from_str::<Value>(content) {
         let l0 = value["l0"]
             .as_str()
             .filter(|value| !value.trim().is_empty())
             .map(|value| truncate_words(value, 32))
-            .unwrap_or_else(|| summarize_l0(&request.title, &request.body));
+            .unwrap_or_else(|| {
+                if require_model {
+                    truncate_words(content, 32)
+                } else {
+                    summarize_l0(&request.title, &request.body)
+                }
+            });
         let l1 = value["l1"]
             .as_str()
             .filter(|value| !value.trim().is_empty())
             .map(|value| truncate_words(value, 96))
-            .unwrap_or_else(|| summarize_l1(request.source_kind, &request.title, &request.body));
+            .unwrap_or_else(|| {
+                if require_model {
+                    truncate_words(content, 96)
+                } else {
+                    summarize_l1(request.source_kind, &request.title, &request.body)
+                }
+            });
         return (l0, l1);
     }
     (
