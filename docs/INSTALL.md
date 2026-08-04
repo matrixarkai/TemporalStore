@@ -427,6 +427,21 @@ python3 tools/matrixark_local_backfill_ingester.py --agents claude,codex --dry-r
 python3 tools/matrixark_local_backfill_ingester.py --agents claude,codex
 ```
 
+**Zero-effort auto-warm (recommended for fresh users):** instead of running the
+command by hand, opt in and let the Claude Code hook do it for you. Set the
+environment variable before starting Claude Code:
+
+```bash
+export MATRIXARK_BACKFILL_ON_START=1
+```
+
+On the next `SessionStart` the hook launches `tools/matrixark_backfill_daemon.sh`
+detached, so it **never blocks a turn**. The daemon is resumable (a lockfile and
+per-agent offset markers let it pick up after a restart) and dedup-safe (records
+are keyed by content hash), and durable memory (`CLAUDE.md`/`AGENTS.md`/`MEMORY.md`,
+resources, OpenViking) lands in the cross-session `_global` scope first. Progress
+is logged to `/tmp/matrixark-backfill/daemon.log`.
+
 Related tools for other backfill needs:
 
 ```text
