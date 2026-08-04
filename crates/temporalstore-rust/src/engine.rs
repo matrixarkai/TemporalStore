@@ -6473,11 +6473,17 @@ impl TemporalEngine {
                 None => return,
             }
         };
-        let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
-        let _ = self.persist_index_bytes(shard_id, &index_bytes);
+        // Write the served shard index directly, bypassing the bulk-mode gate.
+        let _ = fs::create_dir_all(&self.index_dir);
+        let _ = atomic_write_bytes(&self.index_path(shard_id), &index_bytes);
     }
 
     fn persist_index_bytes(&self, shard_id: ShardId, bytes: &[u8]) -> Result<(), std::io::Error> {
+        // Bulk backfill defers the served-index rewrite to flush_shard_index()
+        // (turns O(n^2) per-record persistence into one write per batch).
+        if bulk_ingest_mode() {
+            return Ok(());
+        }
         fs::create_dir_all(&self.index_dir)?;
         atomic_write_bytes(&self.index_path(shard_id), bytes)
     }
@@ -11945,7 +11951,7 @@ fn slot_storage_summaries(
     end_routing_slot: u32,
 ) -> Vec<SlotStorageSummary> {
     let mut slots = BTreeMap::<u32, SlotStorageSummary>::new();
-    let mut page_segments_by_slot = BTreeMap::<u32, BTreeSet<u64>>::new();
+    let page_segments_by_slot = BTreeMap::<u32, BTreeSet<u64>>::new();
     for entry in collect_live_page_entries(shard) {
         let routing_slot = entry
             .address
@@ -11958,10 +11964,6 @@ fn slot_storage_summaries(
         summary.page_ref_count = summary.page_ref_count.saturating_add(1);
         summary.physical_bytes = summary.physical_bytes.saturating_add(entry.address.length);
         summary.logical_bytes = summary.logical_bytes.saturating_add(entry.address.length);
-        page_segments_by_slot
-            .entry(routing_slot)
-            .or_default()
-            .insert(entry.address.page_segment_id);
         if let Some(zone_id) = entry.address.extent_id {
             summary.last_compacted_zone = Some(
                 summary
