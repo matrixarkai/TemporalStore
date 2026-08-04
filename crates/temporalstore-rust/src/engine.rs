@@ -6187,16 +6187,6 @@ impl TemporalEngine {
                 &mut rewrite_stats,
             )?;
         }
-        for series in shard.context_dirty.values_mut() {
-            compact_feature_page_addresses(
-                &self.page_store,
-                &self.cache,
-                shard_id,
-                "context_dirty",
-                series,
-                &mut rewrite_stats,
-            )?;
-        }
         for series in shard.context_children.values_mut() {
             compact_feature_page_addresses(
                 &self.page_store,
@@ -9986,7 +9976,6 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.context_events.remove(key).is_some();
     removed |= shard.context_indexes.remove(key).is_some();
     removed |= shard.context_audits.remove(key).is_some();
-    removed |= shard.context_dirty.remove(key).is_some();
     removed |= shard.context_entities.remove(key).is_some();
     removed |= shard.context_children.remove(key).is_some();
     removed |= shard.context_embeddings.remove(key).is_some();
@@ -10157,9 +10146,6 @@ fn collect_live_page_segment_ids(shard: &ShardState) -> BTreeSet<u64> {
         ids.extend(series.values().map(|address| address.page_segment_id));
     }
     for series in shard.context_audits.values() {
-        ids.extend(series.values().map(|address| address.page_segment_id));
-    }
-    for series in shard.context_dirty.values() {
         ids.extend(series.values().map(|address| address.page_segment_id));
     }
     ids.extend(
@@ -10917,7 +10903,6 @@ fn model_id_for_kind(kind: &str) -> u16 {
         "context_event" => 21,
         "context_index" => 22,
         "context_audit" => 23,
-        "context_dirty" => 24,
         "context_entity" => 25,
         "context_child" => 26,
         "context_embedding" => 27,
@@ -11132,13 +11117,6 @@ fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
             unique_timestamped_kv_page_addresses(series)
                 .into_iter()
                 .map(|address| live_page_entry(key.clone(), "context_audit", None, address)),
-        );
-    }
-    for (key, series) in &shard.context_dirty {
-        entries.extend(
-            unique_timestamped_kv_page_addresses(series)
-                .into_iter()
-                .map(|address| live_page_entry(key.clone(), "context_dirty", None, address)),
         );
     }
     entries.extend(shard.context_entities.iter().map(|(key, address)| {
@@ -11627,7 +11605,6 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
     let mut saw_context_events = false;
     let mut saw_context_indexes = false;
     let mut saw_context_audits = false;
-    let mut saw_context_dirty = false;
     let mut saw_context_entities = false;
     let mut saw_context_children = false;
     let mut saw_context_embeddings = false;
@@ -11645,7 +11622,6 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
     let mut context_events = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
     let mut context_indexes = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
     let mut context_audits = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
-    let mut context_dirty = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
     let mut context_entities = HashMap::new();
     let mut context_children = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
     let mut context_embeddings = HashMap::new();
@@ -11739,15 +11715,6 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
                     entry.address,
                 );
             }
-            "context_dirty" => {
-                saw_context_dirty = true;
-                insert_timestamped_secondary_view(
-                    page_store,
-                    &mut context_dirty,
-                    entry.object_key,
-                    entry.address,
-                );
-            }
             "context_entity" => {
                 saw_context_entities = true;
                 context_entities.insert(entry.object_key, entry.address);
@@ -11817,9 +11784,6 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
     }
     if saw_context_audits {
         shard.context_audits = context_audits;
-    }
-    if saw_context_dirty {
-        shard.context_dirty = context_dirty;
     }
     if saw_context_entities {
         shard.context_entities = context_entities;
@@ -12121,7 +12085,6 @@ fn storage_model_code(kind: &str) -> u8 {
         "context_event" => 9,
         "context_index" => 10,
         "context_audit" => 11,
-        "context_dirty" => 12,
         "context_entity" => 13,
         "context_child" => 14,
         "context_embedding" => 15,
@@ -12662,9 +12625,6 @@ fn timestamped_kv_series<'a>(
     for (key, timeline) in &shard.context_audits {
         series.push(("context_audit", key.as_str(), timeline));
     }
-    for (key, timeline) in &shard.context_dirty {
-        series.push(("context_dirty", key.as_str(), timeline));
-    }
     for (key, timeline) in &shard.context_children {
         series.push(("context_child", key.as_str(), timeline));
     }
@@ -12823,7 +12783,6 @@ fn storage_feature_page_layout_report(
                 | "context_event"
                 | "context_index"
                 | "context_audit"
-                | "context_dirty"
                 | "context_child"
                 | "context_summary"
                 | "context_compression"
@@ -13268,11 +13227,6 @@ fn compaction_model_layout_reports(
         &shard.context_audits,
         &segment_page_counts,
     ));
-    reports.push(compaction_timestamped_layout(
-        "context_dirty",
-        &shard.context_dirty,
-        &segment_page_counts,
-    ));
     reports.push(compaction_layout_from_addresses(
         "context_entity",
         shard.context_entities.len(),
@@ -13598,7 +13552,6 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.context_events.contains_key(key)
         || shard.context_indexes.contains_key(key)
         || shard.context_audits.contains_key(key)
-        || shard.context_dirty.contains_key(key)
         || shard.context_entities.contains_key(key)
         || shard.context_children.contains_key(key)
         || shard.context_embeddings.contains_key(key)
@@ -13619,7 +13572,6 @@ fn storage_model_kinds() -> &'static [&'static str] {
         "context_event",
         "context_index",
         "context_audit",
-        "context_dirty",
         "context_entity",
         "context_child",
         "context_embedding",
@@ -13750,7 +13702,6 @@ fn object_manager_stats(
             + shard.context_events.len()
             + shard.context_indexes.len()
             + shard.context_audits.len()
-            + shard.context_dirty.len()
             + shard.context_entities.len()
             + shard.context_children.len()
             + shard.context_embeddings.len()
@@ -13777,11 +13728,6 @@ fn object_manager_stats(
                 .sum::<usize>()
             + shard
                 .context_audits
-                .values()
-                .map(BTreeMap::len)
-                .sum::<usize>()
-            + shard
-                .context_dirty
                 .values()
                 .map(BTreeMap::len)
                 .sum::<usize>()
@@ -13846,7 +13792,6 @@ fn object_manager_stats(
         + shard.context_events.len()
         + shard.context_indexes.len()
         + shard.context_audits.len()
-        + shard.context_dirty.len()
         + shard.context_entities.len()
         + shard.context_children.len()
         + shard.context_embeddings.len()
@@ -13871,11 +13816,6 @@ fn object_manager_stats(
             .sum::<usize>()
         + shard
             .context_audits
-            .values()
-            .map(BTreeMap::len)
-            .sum::<usize>()
-        + shard
-            .context_dirty
             .values()
             .map(BTreeMap::len)
             .sum::<usize>()

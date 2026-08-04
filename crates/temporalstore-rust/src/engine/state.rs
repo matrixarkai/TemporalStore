@@ -52,12 +52,6 @@ pub(super) struct ShardState {
     pub(super) context_indexes: HashMap<String, BTreeMap<u64, PageAddress>>,
     #[serde(default)]
     pub(super) context_audits: HashMap<String, BTreeMap<u64, PageAddress>>,
-    // Vestigial persisted dirty map. No longer written on the event path (summary-dirty
-    // tracking moved to the in-memory `context_dirty_index` below). Retained as an
-    // always-empty field so legacy snapshot load/save and page-rebuild paths compile and
-    // no-op; it is never populated by new writes. Candidate for removal in a follow-up.
-    #[serde(default)]
-    pub(super) context_dirty: HashMap<String, BTreeMap<u64, PageAddress>>,
     // Summary-dirty tracking is intentionally in-memory only. Instead of appending a
     // persisted `ctx:dirty` page per event (which produced one dirty node per write and
     // unbounded dirty-page growth: a real e2e capture stored 47 dirty records for only 6

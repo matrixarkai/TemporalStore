@@ -471,7 +471,6 @@ pub type ContextEventModel = ContextEvent;
 pub type ContextSegment = ContextEvent;
 pub type ContextIndexModel = ContextIndexRef;
 pub type ContextAuditModel = ContextPackAudit;
-pub type ContextDirtyModel = ContextSummaryDirtyMarker;
 pub type ContextChildModel = ContextChildRef;
 pub type ContextEmbeddingModel = ContextEmbedding;
 pub type ContextSummaryModel = ContextSummary;
@@ -491,7 +490,6 @@ pub const CONTEXT_NODE_MODEL_ID: u8 = 9;
 pub const CONTEXT_EVENT_MODEL_ID: u8 = 10;
 pub const CONTEXT_INDEX_MODEL_ID: u8 = 11;
 pub const CONTEXT_AUDIT_MODEL_ID: u8 = 12;
-pub const CONTEXT_DIRTY_MODEL_ID: u8 = 13;
 pub const CONTEXT_CHILD_MODEL_ID: u8 = 14;
 pub const CONTEXT_EMBEDDING_MODEL_ID: u8 = 15;
 pub const CONTEXT_SUMMARY_MODEL_ID: u8 = 16;
@@ -543,13 +541,6 @@ pub fn context_model_descriptors() -> Vec<ContextModelDescriptor> {
             "ctx:audit",
             "FeatureOrSet",
             &["ContextAudit", "ContextPackAudit"],
-        ),
-        context_model_descriptor_entry(
-            CONTEXT_DIRTY_MODEL_ID,
-            "ContextDirtyModel",
-            "ctx:dirty",
-            "FeatureOrSet",
-            &["ContextDirty", "ContextSummaryDirtyMarker"],
         ),
         context_model_descriptor_entry(
             CONTEXT_CHILD_MODEL_ID,
@@ -2020,7 +2011,6 @@ mod tests {
                 ("ContextEventModel", 10, "ctx:event"),
                 ("ContextIndexModel", 11, "ctxidx"),
                 ("ContextAuditModel", 12, "ctx:audit"),
-                ("ContextDirtyModel", 13, "ctx:dirty"),
                 ("ContextChildModel", 14, "ctx:child"),
                 ("ContextEmbeddingModel", 15, "ctx:embedding"),
                 ("ContextSummaryModel", 16, "ctx:summary"),

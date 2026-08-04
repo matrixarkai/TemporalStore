@@ -235,7 +235,7 @@ pub use shared_store::{
 pub use types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditModel,
     ContextAuditRef, ContextChildModel, ContextChildRef, ContextCompressionEvent,
-    ContextCompressionModel, ContextDirtyModel, ContextEmbedding, ContextEmbeddingModel,
+    ContextCompressionModel, ContextEmbedding, ContextEmbeddingModel,
     ContextEntity, ContextEvent, ContextEventModel, ContextExtractedEventIndexes,
     ContextIndexModel, ContextIndexRef, ContextNode, ContextNodeModel, ContextPackAudit,
     ContextSegment, ContextSummary, ContextSummaryDirtyMarker, ContextSummaryModel,

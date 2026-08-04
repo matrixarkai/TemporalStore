@@ -11,7 +11,6 @@ pub(super) fn storage_model_code(kind: &str) -> u8 {
         "context_event" => 9,
         "context_index" => 10,
         "context_audit" => 11,
-        "context_dirty" => 12,
         "context_entity" => 13,
         "context_child" => 14,
         "context_embedding" => 15,
