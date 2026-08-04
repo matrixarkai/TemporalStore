@@ -23,25 +23,27 @@ extraction, retrieval); they differ only in agent identity.
 
 ## Simplest Path: Single Node In Docker
 
-If you just want a working TemporalStore on any OS and do not need a native
-build, use the single-node Docker image. You need only Docker (see
-[Step 0](#step-0-install-docker-if-you-dont-have-it)) and a clone of this repo:
+The Docker path is the **recommended way to start** for most fresh users: the
+host needs **only Docker** — no Rust toolchain, no `clang`/`cmake`, and no RocksDB
+build, because the whole toolchain lives inside the image's build stage. (Don't
+have Docker yet? See [Step 0](#step-0-install-docker-if-you-dont-have-it).)
 
 ```bash
 git clone https://github.com/bjmeetsfo/TemporalStore.git
 cd TemporalStore
-docker compose -f docker-compose.single-node.yml up --build
+docker compose -f docker-compose.single-node.yml up --build -d   # -d runs it in the background
 ```
 
-This builds a lean image (the Rust toolchain lives inside the build stage, so
-nothing but Docker is installed on the host) and starts one node:
+The first run compiles the two service binaries inside the image (a few minutes,
+once); later starts are instant. One health-checked container comes up and
+**restarts automatically if it exits**:
 
 ```text
 http://127.0.0.1:17101   metaserver (metadata, health)
 http://127.0.0.1:17102   datanode   (health + writes/reads via POST /execute)
 ```
 
-Verify it from another terminal:
+Verify it from any terminal on the host:
 
 ```bash
 curl http://127.0.0.1:17102/health
@@ -51,10 +53,40 @@ curl -sS http://127.0.0.1:17102/execute -H 'content-type: application/json' \
   -d '{"shard_id":1,"command":{"kind":"string_get","key":"hello"}}'
 ```
 
-Data persists in the `temporalstore-data` volume. Remove the node and its data
-with `docker compose -f docker-compose.single-node.yml down -v`.
+Everyday operations:
 
-Want a native install, or Codex hook integration? Pick a path below.
+```bash
+docker compose -f docker-compose.single-node.yml logs -f    # follow logs
+docker compose -f docker-compose.single-node.yml ps         # status + health
+docker compose -f docker-compose.single-node.yml stop       # stop, keep data
+docker compose -f docker-compose.single-node.yml up -d      # start again
+git pull && docker compose -f docker-compose.single-node.yml up --build -d   # upgrade
+```
+
+Data persists across restarts in the named volume `temporalstore-data` (mounted
+at `/var/lib/temporalstore`); it grows as agent memory is ingested. Reset the
+node and wipe **all** stored memory with:
+
+```bash
+docker compose -f docker-compose.single-node.yml down -v
+```
+
+### Point an agent hook at the Dockerized store
+
+The container exposes the **same ports as the native service**, so Codex/Claude
+hooks connect to it by pointing their metaserver at the container:
+
+```bash
+export MATRIXARK_TEMPORALSTORE_METASERVER=127.0.0.1:17101   # datanode /execute is on 17102
+```
+
+Then register the hook per
+[Claude Code hook integration](matrixark_claude_hook_integration.md) (or the
+Codex hook manual) — set that backend/metaserver env in the hook command. Every
+agent pointed at the same container shares one always-on store.
+
+Want a native install (bundled hook wrappers, local store) instead? Pick a path
+below.
 
 ## Step 0: Install Docker (If You Don't Have It)
 
@@ -93,6 +125,11 @@ docker run --rm hello-world
 | Windows | Docker Desktop with Linux container | [Windows Docker](windows_docker_install.md) |
 | Ubuntu Linux | Native Rust service | [Linux](linux_deploy.md) |
 | macOS | Native Rust service | [macOS](macos_deploy.md) |
+
+New to TemporalStore? The **single-node Docker image is the least-setup option** —
+it needs no language toolchain on the host and runs the same engine. Choose a
+native path when you want the bundled agent-hook wrappers or prefer not to run
+Docker.
 
 Windows users do not need WSL for the normal runtime path. WSL is only useful
 for maintainers who rebuild Linux binaries or Docker images from source.
