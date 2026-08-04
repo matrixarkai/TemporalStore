@@ -203,6 +203,19 @@ To register the full lifecycle (`SessionStart`, `UserPromptSubmit`, `PostToolUse
 See [Claude Code hook integration](matrixark_claude_hook_integration.md) for
 backends, warm-up, and a quick check.
 
+### Warm the store with your existing local context (optional)
+
+So retrieval is not cold on your first turn, backfill TemporalStore from the
+memory your agents already have on disk (Claude transcripts, Codex sessions,
+`CLAUDE.md`/`AGENTS.md`/`MEMORY.md`, OpenViking local memory):
+
+```bash
+python3 tools/matrixark_local_backfill_ingester.py --agents claude,codex --dry-run   # preview, no writes
+python3 tools/matrixark_local_backfill_ingester.py --agents claude,codex             # ingest
+```
+
+See [Memory Model And Local Context Backfill](#memory-model-and-local-context-backfill).
+
 ## macOS Quick Start
 
 Install prerequisites first:
@@ -255,6 +268,19 @@ To register the full lifecycle automatically instead, run
 `bash integrations/agent-hooks/install/install.sh --agent claude --mode native --repo "$(pwd)"`.
 See [Claude Code hook integration](matrixark_claude_hook_integration.md) for
 backends, warm-up, and a quick check.
+
+### Warm the store with your existing local context (optional)
+
+So retrieval is not cold on your first turn, backfill TemporalStore from the
+memory your agents already have on disk (Claude transcripts, Codex sessions,
+`CLAUDE.md`/`AGENTS.md`/`MEMORY.md`, OpenViking local memory):
+
+```bash
+python3 tools/matrixark_local_backfill_ingester.py --agents claude,codex --dry-run   # preview, no writes
+python3 tools/matrixark_local_backfill_ingester.py --agents claude,codex             # ingest
+```
+
+See [Memory Model And Local Context Backfill](#memory-model-and-local-context-backfill).
 
 ## Windows Docker Quick Start
 
