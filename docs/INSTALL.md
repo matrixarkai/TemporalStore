@@ -380,20 +380,35 @@ store:
   session memory in local on-disk directories and fails open, so a turn is never
   blocked. Once TemporalStore is healthy, that local memory is backfilled in and
   the store stays authoritative.
-- Existing local agent history that predates the hook — for example prior Codex
-  desktop/CLI sessions under `~/.codex/sessions` — is imported into TemporalStore
-  through the same canonicalization path as live ingestion, so past context
-  becomes searchable.
+- Existing local agent context that predates the hook is imported into
+  TemporalStore through the **same engine** as live ingestion, so retrieval is
+  warm on the next turn. `tools/matrixark_local_backfill_ingester.py` reads the
+  real on-disk surfaces both agents leave behind — Claude Code transcripts
+  (`~/.claude/projects/...`), Codex session rollouts (`~/.codex/sessions/...`),
+  Codex dual-hook captures, local Markdown/resource files (`CLAUDE.md`,
+  `AGENTS.md`, `MEMORY.md`, `docs/*.md`), and OpenViking/VikingMem local memory
+  state — normalizes each into a hook payload, and ingests it idempotently
+  (nodes are keyed by content hash, so re-runs converge).
 
-Entry points (run after the storage service is healthy — see
+Preview first, then ingest (run after the storage service is healthy — see
 [Verify The Service](#verify-the-service)):
 
+```bash
+# Preview what would be ingested — enumerate and normalize only, no writes:
+python3 tools/matrixark_local_backfill_ingester.py --agents claude,codex --dry-run --report /tmp/backfill.json
+
+# Backfill local Claude + Codex context into TemporalStore:
+python3 tools/matrixark_local_backfill_ingester.py --agents claude,codex
+```
+
+Related tools for other backfill needs:
+
 ```text
-tools/matrixark_codex_session_bridge.py   import local Codex session transcripts into the hook (-> TemporalStore)
+tools/matrixark_codex_session_bridge.py   stream live Codex desktop/CLI sessions into the hook (-> TemporalStore)
 tools/matrixark_context_backfill.py       replay/repair the raw ingestion log into context-serving prefixes
 ```
 
-See the [Context Backfill Manual](matrixark_context_backfill.md) for the
+See the [Context Backfill Manual](matrixark_context_backfill.md) for the raw-log
 shadow-first workflow, validation, and activation/repair modes.
 
 ## Troubleshooting
