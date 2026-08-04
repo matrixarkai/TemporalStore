@@ -50,7 +50,7 @@ if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK:-}" ]]; then
 fi
 export MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK="${MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK:-$ROOT/sdk/rust/temporalstore/target/release/matrixark_rust_direct_sdk}"
 export MATRIXARK_TEMPORALSTORE_RUST_CLI="${MATRIXARK_TEMPORALSTORE_RUST_CLI:-$MATRIXARK_TEMPORALSTORE_RUST_PROXY}"
-export LD_LIBRARY_PATH="$ROOT/output-ubuntu22/release/sdk/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 
 export MATRIXARK_EMBEDDING_PROVIDER="${MATRIXARK_EMBEDDING_PROVIDER:-oss}"
 export MATRIXARK_REQUIRE_OSS_EMBEDDINGS="${MATRIXARK_REQUIRE_OSS_EMBEDDINGS:-1}"
@@ -77,7 +77,7 @@ if [[ ( "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust" || "$MATRIXARK_MCP_BACK
   port="${MATRIXARK_TEMPORALSTORE_METASERVER##*:}"
   if ! timeout 2 bash -c "</dev/tcp/$host/$port" >/dev/null 2>&1; then
     echo "MatrixArk MCP Rust: TemporalStore metaserver $MATRIXARK_TEMPORALSTORE_METASERVER is not listening; starting local deployment..." >&2
-    BUILD_TYPE="${BUILD_TYPE:-Release}" SERVER_EXTRA_FLAGS="${SERVER_EXTRA_FLAGS:---storage_async=true --server_stopping_wait_s=1}" timeout 90 bash "$ROOT/tools/deploy_local_ubuntu22.sh" start >&2
+    BUILD_TYPE="${BUILD_TYPE:-Release}" SERVER_EXTRA_FLAGS="${SERVER_EXTRA_FLAGS:---storage_async=true --server_stopping_wait_s=1}" timeout 90 : >&2
   fi
 fi
 
