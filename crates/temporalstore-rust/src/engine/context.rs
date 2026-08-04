@@ -88,6 +88,127 @@ pub(super) fn context_compression_key(tenant_hash: u64, node_hash: u64) -> Strin
     format!("ctx:compress:{tenant_hash}:{node_hash}")
 }
 
+/// Configurable temporal-compression policy for a context node.
+///
+/// Modeled on OpenViking (volcengine/OpenViking) session archival: keep a recent
+/// window of raw memory and progressively compress/fade older windows into summary
+/// records once a threshold is crossed. Here the trigger is per-node and evidence-
+/// oriented (count- or age-based) rather than per-session token budget, but the shape
+/// is the same. Disabled by default; every field is overridable via environment.
+#[derive(Debug, Clone)]
+pub(super) struct ContextCompressionPolicy {
+    pub(super) enabled: bool,
+    pub(super) max_raw_events_per_node: usize,
+    pub(super) keep_recent_events: usize,
+    pub(super) window_size: usize,
+    pub(super) max_event_age_ms: u64,
+}
+
+impl Default for ContextCompressionPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_raw_events_per_node: 64,
+            keep_recent_events: 32,
+            window_size: 32,
+            max_event_age_ms: 30 * 24 * 60 * 60 * 1000, // 30 days
+        }
+    }
+}
+
+pub(super) fn context_compression_policy_from_env() -> ContextCompressionPolicy {
+    fn env_usize(name: &str, default: usize) -> usize {
+        std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    }
+    fn env_u64(name: &str, default: u64) -> u64 {
+        std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    }
+    fn env_bool(name: &str, default: bool) -> bool {
+        std::env::var(name)
+            .ok()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(default)
+    }
+    let d = ContextCompressionPolicy::default();
+    ContextCompressionPolicy {
+        enabled: env_bool("MATRIXARK_CONTEXT_COMPRESSION_ENABLED", d.enabled),
+        max_raw_events_per_node: env_usize(
+            "MATRIXARK_CONTEXT_COMPRESSION_MAX_RAW_EVENTS",
+            d.max_raw_events_per_node,
+        )
+        .max(1),
+        keep_recent_events: env_usize(
+            "MATRIXARK_CONTEXT_COMPRESSION_KEEP_RECENT",
+            d.keep_recent_events,
+        ),
+        window_size: env_usize("MATRIXARK_CONTEXT_COMPRESSION_WINDOW", d.window_size).max(1),
+        max_event_age_ms: env_u64("MATRIXARK_CONTEXT_COMPRESSION_MAX_AGE_MS", d.max_event_age_ms),
+    }
+}
+
+/// One planned compression window: a contiguous run of old event times to fold
+/// into a single `ContextCompressionEvent`.
+pub(super) struct ContextCompressionWindow {
+    pub(super) start_ms: u64,
+    pub(super) end_ms: u64,
+    pub(super) count: usize,
+}
+
+/// Decide the next window (if any) to compress for a node, given its event times
+/// sorted ascending, the per-node high-water mark (latest already-compressed event
+/// time), and the current time. Keeps the newest `keep_recent_events` raw; only
+/// compresses events past the watermark; bounds a pass to `window_size` events.
+/// Pure and deterministic so it can be unit/example tested.
+pub(super) fn plan_next_compression_window(
+    policy: &ContextCompressionPolicy,
+    event_times_sorted: &[u64],
+    watermark: u64,
+    now_ms: u64,
+) -> Option<ContextCompressionWindow> {
+    if !policy.enabled {
+        return None;
+    }
+    let len = event_times_sorted.len();
+    if len == 0 {
+        return None;
+    }
+    let keep = policy.keep_recent_events.min(len);
+    let compressible = &event_times_sorted[..len - keep];
+    let oldest = match compressible.first() {
+        Some(t) => *t,
+        None => return None,
+    };
+    let count_trigger = len > policy.max_raw_events_per_node;
+    let age_cutoff = now_ms.saturating_sub(policy.max_event_age_ms);
+    let age_trigger = oldest < age_cutoff;
+    if !count_trigger && !age_trigger {
+        return None;
+    }
+    // Only events strictly newer than the watermark are still pending.
+    let start_idx = compressible.partition_point(|&t| t <= watermark);
+    let pending = &compressible[start_idx..];
+    if pending.is_empty() {
+        return None;
+    }
+    // Under a count trigger take the oldest pending window; under an age-only
+    // trigger restrict to events older than the cutoff.
+    let eligible: &[u64] = if count_trigger {
+        pending
+    } else {
+        let end = pending.partition_point(|&t| t < age_cutoff);
+        &pending[..end]
+    };
+    if eligible.is_empty() {
+        return None;
+    }
+    let window = &eligible[..eligible.len().min(policy.window_size)];
+    Some(ContextCompressionWindow {
+        start_ms: *window.first().unwrap(),
+        end_ms: *window.last().unwrap(),
+        count: window.len(),
+    })
+}
+
 pub(super) fn context_timeline_key(timestamp_ms: u64, disambiguator: u64) -> u64 {
     timestamp_ms
         .saturating_mul(CONTEXT_TIMELINE_FANOUT)

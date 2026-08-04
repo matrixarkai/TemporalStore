@@ -67,6 +67,12 @@ pub(super) struct ShardState {
     // worker re-marks nodes on the next event and stale summaries are self-healing.
     #[serde(skip)]
     pub(super) context_dirty_index: HashMap<String, ContextDirtyEntry>,
+    // Per-node temporal-compression high-water mark: the latest event time already
+    // folded into a ContextCompressionEvent for this event object key. In-memory and
+    // ephemeral (serde-skipped); on loss the auto-compression trigger re-compresses
+    // the oldest pending window idempotently (stable compression id per window).
+    #[serde(skip)]
+    pub(super) context_compression_watermark: HashMap<String, u64>,
     #[serde(default)]
     pub(super) context_entities: HashMap<String, PageAddress>,
     #[serde(default)]
