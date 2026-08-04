@@ -195,6 +195,26 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
                 f"{stage} result-shape parity",
             )
 
+        # Decision parity: query/config-derived retrieval decisions are identical
+        # across agents (only identity/scope differ). This is substantive
+        # ingestion/extraction/retrieval parity beyond result-shape parity.
+        codex_ret = results["codex"]["retrieve"]["retrieved"]
+        claude_ret = results["claude"]["retrieve"]["retrieved"]
+        self.assertEqual(
+            codex_ret["memory_hierarchy_contract"]["retrieval_strategy"],
+            claude_ret["memory_hierarchy_contract"]["retrieval_strategy"],
+            "retrieval strategy parity",
+        )
+        self.assertEqual(
+            codex_ret["session_identity"]["strong_session_identity"],
+            claude_ret["session_identity"]["strong_session_identity"],
+            "session identity strength parity",
+        )
+        self.assertTrue(
+            codex_ret["session_identity"]["strong_session_identity"],
+            "both agents resolve a strong session identity from the payload",
+        )
+
     def test_generic_agent_retrieval_summary_exposes_memory_layer_pressure(self) -> None:
         retrieve = {
             "context_pack_id": "pack-pressure",
