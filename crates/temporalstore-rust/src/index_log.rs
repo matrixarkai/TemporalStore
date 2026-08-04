@@ -63,6 +63,17 @@ struct IndexLogInner {
     last_sequence_by_shard: HashMap<ShardId, u64>,
 }
 
+fn skip_indexlog_mode() -> bool {
+    matches!(
+        std::env::var("MATRIXARK_SKIP_INDEXLOG")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 fn bulk_ingest_mode() -> bool {
     matches!(
         std::env::var("MATRIXARK_BULK_INGEST")
@@ -94,7 +105,7 @@ impl LocalIndexLogStore {
     ) -> Result<IndexLogRecord, IndexLogError> {
         // Bulk backfill: skip the replay-log append entirely (deferred to a
         // single flush of the served index). Removes the per-record fsync bomb.
-        if bulk_ingest_mode() {
+        if bulk_ingest_mode() || skip_indexlog_mode() {
             return Ok(IndexLogRecord {
                 shard_id,
                 sequence: 0,
@@ -138,7 +149,7 @@ impl LocalIndexLogStore {
         shard_id: ShardId,
         index_bytes: &[u8],
     ) -> Result<u64, IndexLogError> {
-        if bulk_ingest_mode() {
+        if bulk_ingest_mode() || skip_indexlog_mode() {
             return Ok(0);
         }
         debug_assert!(serde_json::from_slice::<serde_json::Value>(index_bytes).is_ok());
