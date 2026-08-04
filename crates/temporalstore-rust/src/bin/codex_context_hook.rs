@@ -134,52 +134,32 @@ fn main() {
     };
     let should_retrieve = args.event == "UserPromptSubmit" || !args.query.trim().is_empty();
     let mut retrieve_status = json!({});
-    if should_retrieve && !node_hashes.is_empty() {
-        let retrieve = ContextRetrieveRequest {
-            shard_id: 1,
-            tenant_hash,
-            node_hashes: node_hashes.clone(),
-            query: query.clone(),
-            start_time_ms: 0,
-            end_time_ms: now_ms.saturating_add(1),
-            max_events: 32,
-            min_confidence: 0.0,
-            min_importance: 0.0,
-            tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
-            max_summary_nodes: 16,
-            max_event_nodes: 8,
-            prefer_current_agent: false,
-            current_agent_scope_key: format!("agent:{}", agent_profile(&args.agent_name)),
-            provider: ContextModelProviderConfig::default(),
-        };
-        let inject = inject_context(
-            &engine,
-            ContextInjectRequest {
-                retrieve,
-                prompt: query.clone(),
-                session_hash: stable_hash64(&args.session_id),
-                query_id: format!("{}:{:016x}", args.event, stable_hash64(&query)),
-                max_prompt_tokens: args.max_context_tokens,
-                provider: ContextModelProviderConfig::default(),
-            },
-        );
-        retrieve_status = json!({
-            "status": if inject.status.ok { "ok" } else { "failed" },
-            "code": inject.status.code,
-            "message": inject.status.message,
-            "context_pack_id": format!("rust-agent-pack-{:016x}", stable_hash64(&inject.audit.query_id)),
-            "selected_ref_count": inject.audit.selected_refs.len(),
-            "blocked_ref_count": inject.audit.blocked_refs.len(),
-            "selected_block_count": inject.selected_blocks.len(),
-            "blocked_block_count": inject.blocked_blocks.len(),
-            "used_context_tokens": inject.audit.selected_tokens,
-            "injected_prompt_contains_context": inject.injected_prompt.contains("<context>"),
-            "selected_refs": inject.audit.selected_refs,
-            "additional_context": additional_context_from_injected(
-                &inject.injected_prompt,
-                additional_context_char_limit(),
-            ),
-        });
+    if should_retrieve {
+        // Same-session recall (task continuity) plus global / cross-session recall.
+        // Durable memory, resources, skills, and promoted facts are ingested under
+        // the stable `_global` scope; a brand-new session has no own nodes but still
+        // receives global memory -- this is what surfaces cross-session context.
+        let (sess_ctx, sess_blocks, sess_tokens) =
+            retrieve_scope(&engine, tenant_hash, &node_hashes, &query, now_ms, &args, "session");
+        let global_tenant_hash = stable_hash64(&format!(
+            "{}:{}:{}:_global",
+            args.account_id, args.tenant_id, args.user_id
+        ));
+        let global_nodes = session_nodes(&args.root, &args.agent_name, "_global");
+        let (glob_ctx, glob_blocks, glob_tokens) =
+            retrieve_scope(&engine, global_tenant_hash, &global_nodes, &query, now_ms, &args, "global");
+        let merged = merge_context_blocks(&[sess_ctx.as_str(), glob_ctx.as_str()]);
+        if !merged.is_empty() {
+            retrieve_status = json!({
+                "status": "ok",
+                "selected_block_count": sess_blocks + glob_blocks,
+                "session_block_count": sess_blocks,
+                "global_block_count": glob_blocks,
+                "used_context_tokens": sess_tokens + glob_tokens,
+                "injected_prompt_contains_context": true,
+                "additional_context": merged,
+            });
+        }
     }
 
     let report = json!({
@@ -513,6 +493,81 @@ fn stable_hash64(value: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     value.hash(&mut hasher);
     hasher.finish()
+}
+
+/// Retrieve + inject for a single scope. Returns (context_block, blocks, tokens);
+/// empty context when the scope has no nodes.
+fn retrieve_scope(
+    engine: &TemporalEngine,
+    tenant_hash: u64,
+    node_hashes: &[u64],
+    query: &str,
+    now_ms: u64,
+    args: &Args,
+    scope: &str,
+) -> (String, usize, u64) {
+    if node_hashes.is_empty() {
+        return (String::new(), 0, 0);
+    }
+    let retrieve = ContextRetrieveRequest {
+        shard_id: 1,
+        tenant_hash,
+        node_hashes: node_hashes.to_vec(),
+        query: query.to_string(),
+        start_time_ms: 0,
+        end_time_ms: now_ms.saturating_add(1),
+        max_events: 32,
+        min_confidence: 0.0,
+        min_importance: 0.0,
+        tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+        max_summary_nodes: 16,
+        max_event_nodes: 8,
+        prefer_current_agent: false,
+        current_agent_scope_key: format!("agent:{}", agent_profile(&args.agent_name)),
+        provider: ContextModelProviderConfig::default(),
+    };
+    let inject = inject_context(
+        engine,
+        ContextInjectRequest {
+            retrieve,
+            prompt: query.to_string(),
+            session_hash: stable_hash64(&format!("{}:{}", args.session_id, scope)),
+            query_id: format!("{}:{}:{:016x}", args.event, scope, stable_hash64(query)),
+            max_prompt_tokens: args.max_context_tokens,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    let ctx =
+        additional_context_from_injected(&inject.injected_prompt, additional_context_char_limit());
+    (ctx, inject.selected_blocks.len(), inject.audit.selected_tokens as u64)
+}
+
+/// Merge multiple `<context>...</context>` blocks into one, dropping empties.
+fn merge_context_blocks(blocks: &[&str]) -> String {
+    let mut inner = String::new();
+    for block in blocks {
+        let block = block.trim();
+        if block.is_empty() {
+            continue;
+        }
+        let core = block
+            .strip_prefix("<context>")
+            .and_then(|rest| rest.strip_suffix("</context>"))
+            .unwrap_or(block)
+            .trim();
+        if core.is_empty() {
+            continue;
+        }
+        if !inner.is_empty() {
+            inner.push('\n');
+        }
+        inner.push_str(core);
+    }
+    if inner.is_empty() {
+        String::new()
+    } else {
+        format!("<context>\n{}\n</context>", inner)
+    }
 }
 
 #[cfg(test)]

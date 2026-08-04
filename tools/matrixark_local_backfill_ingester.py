@@ -59,6 +59,10 @@ AGENTS = {
 # Map a normalized role to the hook event that yields that role in the engine.
 EVENT_FOR_ROLE = {"user": "UserPromptSubmit", "assistant": "Stop", "tool": "PostToolUse"}
 
+# Stable cross-session scope: durable memory/resources/skills ingested here are
+# retrieved by every session (the hook does a second retrieval over this scope).
+GLOBAL_SESSION = "_global"
+
 # System/wrapper blocks in Codex rollouts that are harness scaffolding, not memory.
 _SYSTEM_PREFIXES = ("<environment_context", "<permissions", "<user_instructions",
                     "<permissions instructions", "<system", "<available_tools")
@@ -257,7 +261,7 @@ def iter_openviking(home: str, limit: int | None) -> Iterator[Item]:
         files += glob.glob(os.path.join(r, "**", "*.conf"), recursive=True)
     n = 0
     for fp in sorted(set(files)):
-        sid = "openviking:" + Path(fp).stem
+        sid = GLOBAL_SESSION  # openviking memory -> cross-session global scope
         if fp.endswith(".conf"):
             body = _read_all(fp).strip()
             if body:
@@ -406,8 +410,9 @@ def build_items(args, home, tmp) -> list[Item]:
             body = f"[resource {rel} #{idx}]\n{chunk}"
             mt = int(os.path.getmtime(relpath) * 1000) if os.path.exists(relpath) else 0
             for ag in res_agents:
-                items.append(Item(ag, "_resources", "PostToolUse",
-                                  {"hook_event_name": "PostToolUse", "session_id": "_resources", "prompt": body},
+                # durable knowledge -> stable "_global" scope so it surfaces cross-session
+                items.append(Item(ag, GLOBAL_SESSION, "PostToolUse",
+                                  {"hook_event_name": "PostToolUse", "session_id": GLOBAL_SESSION, "prompt": body},
                                   "resource_md", text=body, ts_ms=mt))
     return items
 
