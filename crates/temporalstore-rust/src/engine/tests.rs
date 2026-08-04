@@ -5698,7 +5698,6 @@ fn recovery_validates_all_timestamped_kv_page_families() {
         "context_event",
         "context_index",
         "context_audit",
-        "context_dirty",
     ] {
         let family = families.get(kind).expect("timestamped family report");
         assert!(family.indexed_points > 0, "{kind}");

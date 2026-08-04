@@ -2640,23 +2640,6 @@ fn verify_resource_skill_fanout(
             missing.push("ContextSummaryModel".to_string());
         }
 
-        let dirty = engine.execute(ExecuteRequest {
-            shard_id,
-            command: Command::ContextQuerySummaryDirty {
-                tenant_hash,
-                node_hash: extract.node.node_hash,
-                start_time_ms: extract.event.event_time_ms.saturating_sub(1),
-                end_time_ms: extract.event.event_time_ms.saturating_add(1),
-                limit: Some(2),
-            },
-        });
-        if !matches!(
-            dirty.response,
-            CommandResponse::ContextSummaryDirtyMarkers { ref markers, .. } if !markers.is_empty()
-        ) {
-            missing.push("ContextDirtyModel".to_string());
-        }
-
         let compression = engine.execute(ExecuteRequest {
             shard_id,
             command: Command::ContextQueryCompressionEvents {

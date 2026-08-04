@@ -1157,7 +1157,6 @@ fn context_workflow_exposes_openviking_open_source_vlm_profiles() {
             ("ContextEventModel", 10),
             ("ContextIndexModel", 11),
             ("ContextAuditModel", 12),
-            ("ContextDirtyModel", 13),
             ("ContextChildModel", 14),
             ("ContextEmbeddingModel", 15),
             ("ContextSummaryModel", 16),
