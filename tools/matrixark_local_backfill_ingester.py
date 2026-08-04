@@ -69,9 +69,29 @@ _SYSTEM_PREFIXES = ("<environment_context", "<permissions", "<user_instructions"
 
 
 def _homes() -> tuple[str, str]:
-    """Return (windows_user_home_on_wsl, tmp_dir) auto-detecting the mount."""
-    for cand in ("/mnt/c/Users/Deeproute", os.path.expanduser("~")):
-        if os.path.isdir(cand):
+    """Return (windows_user_home_on_wsl, tmp_dir), auto-detecting the WSL mount.
+
+    Discovers the Windows user profile mounted under WSL (e.g. /mnt/<drive>/Users/
+    <name>) without hardcoding any user; override with MATRIXARK_WIN_HOME. Falls
+    back to the POSIX home when not running under WSL.
+    """
+    candidates: list[str] = []
+    env_home = os.environ.get("MATRIXARK_WIN_HOME")
+    if env_home:
+        candidates.append(env_home)
+    mount_root = os.environ.get("MATRIXARK_WSL_MOUNT", "/mnt")
+    for drive in ("c", "d", "e"):
+        users_dir = os.path.join(mount_root, drive, "Users")
+        if os.path.isdir(users_dir):
+            for name in sorted(os.listdir(users_dir)):
+                if name in ("Public", "Default", "Default User", "All Users"):
+                    continue
+                home = os.path.join(users_dir, name)
+                if os.path.isdir(os.path.join(home, ".codex")) or os.path.isdir(os.path.join(home, ".claude")):
+                    candidates.append(home)
+    candidates.append(os.path.expanduser("~"))
+    for cand in candidates:
+        if cand and os.path.isdir(cand):
             return cand, "/tmp"
     return os.path.expanduser("~"), "/tmp"
 
@@ -429,7 +449,7 @@ def main() -> int:
     # Curated allowlist (NO recursive ** over the .claude tree or the 800k-file
     # repo -- that firehose pulls thousands of stray/backup .md files and is slow
     # on the /mnt/c 9p mount). These are the real, durable resource surfaces.
-    repo = os.environ.get("MATRIXARK_REPO", "/root/src/github-services/TemporalStore")
+    repo = os.environ.get("MATRIXARK_REPO", "/opt/github-services/TemporalStore")
     default_resources = [
         os.path.join(home, ".claude", "projects", "*", "memory", "MEMORY.md"),
         os.path.join(home, ".claude", "projects", "*", "memory", "*.md"),
