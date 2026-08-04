@@ -1,6 +1,7 @@
 //! Redis list commands + set-algebra (SINTER/SUNION/SDIFF) + list storage, extracted from redis.rs.
 
 use super::*;
+use std::collections::HashSet;
 use crate::types::{Command, CommandResponse};
 
 pub(crate) fn list_push_response(

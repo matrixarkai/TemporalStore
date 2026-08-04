@@ -1,6 +1,7 @@
 //! Redis sorted-set (ZSET) command handlers, extracted from redis.rs.
 
 use super::*;
+use std::collections::{HashMap, HashSet};
 use crate::types::{Command, CommandResponse};
 
 pub(super) fn zrange_response(
