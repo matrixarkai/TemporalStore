@@ -63,6 +63,17 @@ struct IndexLogInner {
     last_sequence_by_shard: HashMap<ShardId, u64>,
 }
 
+fn bulk_ingest_mode() -> bool {
+    matches!(
+        std::env::var("MATRIXARK_BULK_INGEST")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 impl LocalIndexLogStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
@@ -81,6 +92,15 @@ impl LocalIndexLogStore {
         shard_id: ShardId,
         index_bytes: &[u8],
     ) -> Result<IndexLogRecord, IndexLogError> {
+        // Bulk backfill: skip the replay-log append entirely (deferred to a
+        // single flush of the served index). Removes the per-record fsync bomb.
+        if bulk_ingest_mode() {
+            return Ok(IndexLogRecord {
+                shard_id,
+                sequence: 0,
+                index: serde_json::Value::Null,
+            });
+        }
         let mut inner = self.inner.lock().expect("index log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
@@ -118,6 +138,9 @@ impl LocalIndexLogStore {
         shard_id: ShardId,
         index_bytes: &[u8],
     ) -> Result<u64, IndexLogError> {
+        if bulk_ingest_mode() {
+            return Ok(0);
+        }
         debug_assert!(serde_json::from_slice::<serde_json::Value>(index_bytes).is_ok());
         let mut inner = self.inner.lock().expect("index log lock poisoned");
         fs::create_dir_all(&inner.root)?;
