@@ -5737,11 +5737,15 @@ impl TemporalEngine {
             refresh_slot_runtime_flags(shard);
             serialize_index(shard)
         };
-        self.index_log_store
-            .append_index_bytes(shard_id, &index_bytes)
-            .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
-        self.persist_index_bytes(shard_id, &index_bytes)
-            .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
+        if !bulk_ingest_mode() {
+            // Bulk backfill defers per-record index persistence to an explicit
+            // flush_shard_index() call; skip the O(n^2) rewrite + indexlog append here.
+            self.index_log_store
+                .append_index_bytes(shard_id, &index_bytes)
+                .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
+            self.persist_index_bytes(shard_id, &index_bytes)
+                .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
+        }
         Ok(index_bytes.len())
     }
 
@@ -6458,6 +6462,21 @@ impl TemporalEngine {
         Some(shard)
     }
 
+    /// Persist the in-memory shard index to disk once (used by bulk backfill
+    /// after driving many extract_context calls under MATRIXARK_BULK_INGEST=1,
+    /// which skips per-record persistence). Also refreshes the index-log tail.
+    pub fn flush_shard_index(&self, shard_id: ShardId) {
+        let index_bytes = {
+            let shards = self.shards.read().expect("engine lock poisoned");
+            match shards.get(&shard_id) {
+                Some(shard) => serialize_index(shard),
+                None => return,
+            }
+        };
+        let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
+        let _ = self.persist_index_bytes(shard_id, &index_bytes);
+    }
+
     fn persist_index_bytes(&self, shard_id: ShardId, bytes: &[u8]) -> Result<(), std::io::Error> {
         fs::create_dir_all(&self.index_dir)?;
         atomic_write_bytes(&self.index_path(shard_id), bytes)
@@ -6610,6 +6629,17 @@ impl TemporalEngine {
             }
         })
     }
+}
+
+fn bulk_ingest_mode() -> bool {
+    matches!(
+        std::env::var("MATRIXARK_BULK_INGEST")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn serialize_index(shard: &ShardState) -> Vec<u8> {
