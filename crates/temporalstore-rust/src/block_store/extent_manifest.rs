@@ -1,7 +1,7 @@
 //! Extent manifest load/rebuild/reconcile/persist + extent descriptor maintenance, extracted from block_store.rs.
 
 use super::*;
-use std::fs;
+use std::fs::{self, File};
 use std::path::Path;
 
 pub(super) fn load_extent_manifest_at(
