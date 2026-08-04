@@ -39,21 +39,27 @@ Tests: `engine::tests::cache_replacement_policy_soak`,
 Symptom: after a disk-cache hit, `cache.get_memory(key)` is `None` — the block
 is not promoted back into the memory tier.
 
-Diagnosis: the engine already uses the **promoting** cache calls
-(`page_reads.rs` uses `cache.get` / `cache.get_batch`, never
-`get_batch_no_promotion`), and matrixcache `b351b73` *does* implement promotion
-(it has a dedicated `get_batch_no_promotion` variant and a passing
-`disk_cache_promotes_back_to_memory` test). The engine builds its cache via
-`MultiLayerCache::new(memory_capacity_bytes, cache_dir)` →
-`with_block_options(.., CacheBlockOptions::default())`, i.e. matrixcache's
-**default tiering policy**. The failure is therefore an interaction between that
-default policy (data placement / block-size thresholds) and the tiny memory
-capacities these tests use — not a missing engine call.
+Root cause (established by instrumenting `tiny_memory_cache_eviction`): on an
+SSD/disk hit, matrixcache promotes via `get_with_tier` → `refill_from_ssd` →
+`put_memory`, and `put_memory` **rejects any block whose `value.len()` exceeds
+`memory_capacity_bytes`** (`memory_admission_rejected` / `eviction_oversize`).
+These tests use a deliberately tiny cache (e.g. `with_local_dirs(32, ..)` = 32
+bytes), but the target **page block** (page structure + overhead, not the
+~23-byte string) is larger than 32 bytes, so the refill is rejected and the
+block is never promoted. The `get_memory(..) == None` "already evicted"
+precondition passes *vacuously* — that page block never fit in 32 bytes to
+begin with. Instrumented stats at the failing point:
+`disk_hits: 1, memory_admission_rejected: 4, eviction_oversize: 4,
+refill_failures: 4, memory_bytes: 23, disk_bytes: 155`.
 
-Fix options (need a cache-behavior decision, not a blind patch): construct the
-engine cache with an explicit `CacheTieringPolicy` that guarantees promotion for
-page blocks, or move the matrixcache pin to a rev whose default promotes under
-this configuration.
+Ruled out (empirically): promotion is **not** gated by `memory_hotness_threshold`
+— setting it to 1 in the engine's tiering policy did not fix any of the 5 tests.
+
+Fix requires an owner decision, not a blind patch: either the test capacities are
+too small for a page block (raise them — but that changes the eviction dynamics
+the tests exercise), or the page-block cache representation grew and that size
+growth is the regression to chase. Do **not** simply bump capacities to force
+green.
 
 ### 2. Slot-dump merged-install source-manifest coverage (~1)
 
