@@ -159,6 +159,15 @@ elif [[ ! -x "$BIN" ]]; then
   fail_open "hook binary not built yet; run the SessionStart hook or set MATRIXARK_CLAUDE_HOOK_ALLOW_BUILD=1"
 fi
 
+# Optional async first-start backfill (opt-in via MATRIXARK_BACKFILL_ON_START=1).
+# Detached so it never blocks the turn; the daemon self-locks and resumes from
+# per-agent offsets, warming the store with local Claude/Codex context + durable
+# global memory. Fail-open: any error here must not affect the hook output.
+if [[ "$EVENT" == "SessionStart" && "${MATRIXARK_BACKFILL_ON_START:-0}" == "1" ]]; then
+  setsid bash "$REPO_ROOT/tools/matrixark_backfill_daemon.sh" >/dev/null 2>&1 </dev/null &
+  disown 2>/dev/null || true
+fi
+
 REPORT="$("$BIN" --agent-name claude --event "$EVENT" --session-id "$SESSION" < "$PAYLOAD_FILE" 2>/dev/null)" \
   || fail_open "hook engine failed"
 [[ -z "$REPORT" ]] && fail_open "empty hook engine report"
