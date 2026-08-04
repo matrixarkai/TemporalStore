@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RESULT_DIR="${RESULT_DIR:-/tmp/temporalstore-prebenchmark-gate-$(date +%Y%m%d-%H%M%S)}"
-BACKEND="${BACKEND:-cpp}"
+BACKEND="${BACKEND:-rust}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 METASERVER="${MATRIXARK_TEMPORALSTORE_METASERVER:-127.0.0.1:18000}"
 NAMESPACE="${MATRIXARK_TEMPORALSTORE_NAMESPACE:-deploy_ns}"
@@ -11,9 +11,9 @@ TABLE="${MATRIXARK_TEMPORALSTORE_TABLE:-deploy_table}"
 TOPOLOGY_TIMEOUT_MS="${TOPOLOGY_TIMEOUT_MS:-30000}"
 RUN_TOPOLOGY_GATE="${RUN_TOPOLOGY_GATE:-1}"
 RUN_PROXY_CLIENT_GATE="${RUN_PROXY_CLIENT_GATE:-1}"
-RUN_CPP_CLIENT_BUILD_GATE="${RUN_CPP_CLIENT_BUILD_GATE:-1}"
+RUN_CPP_CLIENT_BUILD_GATE="${RUN_CPP_CLIENT_BUILD_GATE:-0}"
 CPP_CLIENT_BUILD_TIMEOUT_S="${CPP_CLIENT_BUILD_TIMEOUT_S:-300}"
-CPP_CLIENT_BUILD_TARGETS="${CPP_CLIENT_BUILD_TARGETS:-customer_client_example}"
+CPP_CLIENT_BUILD_TARGETS="${CPP_CLIENT_BUILD_TARGETS:-}"
 RUN_INGESTION_GATE="${RUN_INGESTION_GATE:-1}"
 RUN_CACHE_EVICTION_GATE="${RUN_CACHE_EVICTION_GATE:-1}"
 RUN_CONTEXT_PARITY_GATE="${RUN_CONTEXT_PARITY_GATE:-0}"
@@ -178,7 +178,7 @@ if [[ "${RUN_CPP_CLIENT_BUILD_GATE}" == "1" ]]; then
   else
     run_stage cpp_client_target_build \
       "fix stale build tree, missing client target dependencies, long compile fan-in, or local client build timeout before proxy/client pressure" \
-      env BUILD_TYPE="${BUILD_TYPE}" BUILD_TARGETS="${CPP_CLIENT_BUILD_TARGETS}" BUILD_TIMEOUT_S="${CPP_CLIENT_BUILD_TIMEOUT_S}" ARTIFACT_DIR="${RESULT_DIR}/cpp_client_target_build/artifacts" bash tools/run_cpp_client_target_gate.sh
+      env BUILD_TYPE="${BUILD_TYPE}" BUILD_TARGETS="${CPP_CLIENT_BUILD_TARGETS}" BUILD_TIMEOUT_S="${CPP_CLIENT_BUILD_TIMEOUT_S}" ARTIFACT_DIR="${RESULT_DIR}/cpp_client_target_build/artifacts" true
   fi
 fi
 

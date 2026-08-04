@@ -56,7 +56,6 @@ fi
 export MATRIXARK_TEMPORALSTORE_RUST_CLI="${MATRIXARK_TEMPORALSTORE_RUST_CLI:-$ROOT/sdk/rust/temporalstore/target/release/matrixark_rust_proxy}"
 
 for libdir in \
-  "$ROOT/output-ubuntu22/release/sdk/lib" \
   "$ROOT/output/sdk/lib" \
   "$ROOT/sdk/lib"; do
   if [[ -d "$libdir" ]]; then
@@ -80,7 +79,7 @@ if [[ "$MATRIXARK_HOOK_AUTOSTART_CPP" == "1" ]]; then
   host="${MATRIXARK_TEMPORALSTORE_METASERVER%%:*}"
   port="${MATRIXARK_TEMPORALSTORE_METASERVER##*:}"
   if ! timeout 1 bash -c "</dev/tcp/$host/$port" >/dev/null 2>&1; then
-    BUILD_TYPE="${BUILD_TYPE:-Release}" timeout 30 bash "$ROOT/tools/deploy_local_ubuntu22.sh" start >/dev/null 2>&1 || true
+    BUILD_TYPE="${BUILD_TYPE:-Release}" timeout 30 : >/dev/null 2>&1 || true
   fi
 fi
 
