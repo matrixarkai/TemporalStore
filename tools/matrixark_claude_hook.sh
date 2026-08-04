@@ -23,10 +23,6 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
-# Live per-turn hooks skip the replay-only index-log append (retrieval uses the
-# served index, still persisted). Prevents unbounded index-log growth that fills
-# the disk. Override with MATRIXARK_SKIP_INDEXLOG=0.
-export MATRIXARK_SKIP_INDEXLOG="${MATRIXARK_SKIP_INDEXLOG:-1}"
 PYTHON="${TEMPORALSTORE_PYTHON:-python3}"
 # Backend selection:
 #   auto   (default) -> python parity pipeline when its runtime (rust proxy) is
