@@ -135,4 +135,3 @@ pub(crate) fn next_page_id_at(root: &Path) -> Result<u64, BlockStoreError> {
         .unwrap_or_default())
 }
 
-#[cfg(test)]

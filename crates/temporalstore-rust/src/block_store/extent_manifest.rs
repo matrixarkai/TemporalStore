@@ -1,6 +1,7 @@
 //! Extent manifest load/rebuild/reconcile/persist + extent descriptor maintenance, extracted from block_store.rs.
 
 use super::*;
+use super::segment_ids::*;
 use std::fs::{self, File};
 use std::path::Path;
 
