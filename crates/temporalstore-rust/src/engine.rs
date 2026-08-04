@@ -46,7 +46,8 @@ use crate::control::{
 use crate::index_log::LocalIndexLogStore;
 use crate::page_store::{LocalPageStore, PageAddress, PageStoreError, PageStoreOptions};
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextEmbedding,
+    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextCompressionEvent,
+    ContextEmbedding,
     ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
     ContextSummaryDirtyMarker, EventReplicationMode, EventReplicationSelectionReport,
     ExecuteRequest, ExecuteResponse, FeaturePoint, FeatureWritePolicy, InternalContextIndex,
@@ -8924,6 +8925,20 @@ fn execute_on_shard(
                 }
             }
             invalidate_record_all(cache, shard_id, &object_key);
+            if maybe_auto_compress_context_node(
+                cache,
+                page_store,
+                shard_id,
+                shard,
+                tenant_hash,
+                node_hash,
+                &object_key,
+                start_routing_slot,
+                end_routing_slot,
+                async_storage,
+            ) {
+                mutated = true;
+            }
             CommandResponse::ContextObjectKey { object_key }
         }
         Command::ContextWriteExtractedEvent {
@@ -9804,6 +9819,95 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default()
+}
+
+/// Configurable, OpenViking-style temporal-compression trigger for one context node.
+///
+/// Called on the event-write path (guarded by policy, disabled by default). When a
+/// node crosses the configured raw-event count or age threshold, it folds the oldest
+/// pending window of raw events (keeping the newest `keep_recent_events` raw) into a
+/// single `ContextCompressionEvent`. Bounded to one window per call, so writes stay
+/// light; the per-node high-water mark advances in-memory. Non-destructive: raw
+/// events remain queryable/replayable (physical GC stays a separate concern).
+/// Returns true if it wrote a compression record. Entities are never touched.
+fn maybe_auto_compress_context_node(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    tenant_hash: u64,
+    node_hash: u64,
+    event_object_key: &str,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
+    async_storage: bool,
+) -> bool {
+    let policy = context_compression_policy_from_env();
+    if !policy.enabled {
+        return false;
+    }
+    let event_times: Vec<u64> = match shard.context_events.get(event_object_key) {
+        Some(series) => series
+            .keys()
+            .map(|timeline_key| timeline_key / CONTEXT_TIMELINE_FANOUT)
+            .collect(),
+        None => return false,
+    };
+    let watermark = shard
+        .context_compression_watermark
+        .get(event_object_key)
+        .copied()
+        .unwrap_or(0);
+    let window = match plan_next_compression_window(&policy, &event_times, watermark, now_ms()) {
+        Some(window) => window,
+        None => return false,
+    };
+    // Stable compression id per (node, window) makes re-processing idempotent: the
+    // same window maps to the same timeline key and overwrites rather than duplicates.
+    let compression_id_hash =
+        stable_object_hash(&format!("compress:{node_hash}:{}:{}", window.start_ms, window.end_ms));
+    let compression_event = ContextCompressionEvent {
+        compression_id_hash,
+        node_hash,
+        source_start_ms: window.start_ms,
+        source_end_ms: window.end_ms,
+        compressed_time_ms: now_ms(),
+        summary: format!(
+            "Auto temporal compression: {} context events for node {} in window [{}, {}].",
+            window.count, node_hash, window.start_ms, window.end_ms
+        ),
+    };
+    let compression_key = context_compression_key(tenant_hash, node_hash);
+    let timeline_key = context_timeline_key(window.start_ms, compression_id_hash);
+    let routing_slot = page_routing_slot(&compression_key, start_routing_slot, end_routing_slot);
+    let mut mutated = false;
+    if let Ok(addresses) = append_timestamped_kv_pages(
+        cache,
+        page_store,
+        shard_id,
+        "context_compression",
+        &compression_key,
+        vec![FeaturePoint {
+            timestamp_ms: timeline_key,
+            value: context_bytes(&compression_event),
+        }],
+        routing_slot,
+        async_storage,
+    ) {
+        let series = shard
+            .context_compressions
+            .entry(compression_key.clone())
+            .or_default();
+        for (timestamp_ms, address) in addresses {
+            series.insert(timestamp_ms, address);
+            mutated = true;
+        }
+    }
+    shard
+        .context_compression_watermark
+        .insert(event_object_key.to_string(), window.end_ms);
+    invalidate_record_all(cache, shard_id, &compression_key);
+    mutated
 }
 
 fn ttl_ms(shard: &mut ShardState, key: &str) -> i64 {
