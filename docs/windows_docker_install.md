@@ -366,6 +366,44 @@ If manual smoke works but real prompts do not appear, the Docker runtime is
 healthy and the remaining issue is Codex hook registration/reload, not
 TemporalStore storage.
 
+## Claude Code Hook (via WSL)
+
+Claude Code gets the same context engine as Codex under its own agent identity
+(`matrixark:claude-hook:rust` vs `matrixark:codex-hook:rust`). Claude Code reads
+`%USERPROFILE%\.claude\settings.json`, and the hook script runs through WSL, so
+install it with the cross-agent installer and point `-WslRepo` at your clone
+inside the WSL distro:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File .\integrations\agent-hooks\install\install.ps1 `
+  -Agent claude -Mode wsl `
+  -WslRepo /opt/github-services/TemporalStore
+```
+
+This registers the full Claude Code lifecycle against
+`tools/matrixark_claude_hook.sh`. See
+[Claude Code hook integration](matrixark_claude_hook_integration.md) for
+backends, warm-up, and a quick check.
+
+## Local Context Backfill
+
+So retrieval is not cold on the first turn, warm TemporalStore from the local
+Claude/Codex context on disk. The Claude hook and its backfill both run inside
+WSL, and the ingester auto-detects the Windows user profile under
+`/mnt/<drive>/Users`. Run it manually from the WSL distro:
+
+```powershell
+wsl -d <distro> -- bash -lc "cd <repo-in-wsl> && python3 tools/matrixark_local_backfill_ingester.py --agents claude,codex --dry-run"
+wsl -d <distro> -- bash -lc "cd <repo-in-wsl> && python3 tools/matrixark_local_backfill_ingester.py --agents claude,codex"
+```
+
+For zero-effort auto-warm, set `MATRIXARK_BACKFILL_ON_START=1` in the WSL
+environment that runs the Claude hook; the resumable backfill daemon then runs on
+first `SessionStart`. See
+[Memory Model And Local Context Backfill](INSTALL.md#memory-model-and-local-context-backfill)
+for how it is resumable and dedup-safe.
+
 ## OSS Model Setup
 
 The Windows Docker install keeps TemporalStore in Docker, but the Codex hook and
