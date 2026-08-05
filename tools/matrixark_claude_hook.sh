@@ -30,8 +30,21 @@ PYTHON="${TEMPORALSTORE_PYTHON:-python3}"
 #   python           -> tools/matrixark_agent_hook.py --agent claude (full MCP
 #                       pipeline; byte-for-byte the same code as the Codex hook).
 #   rust             -> crate bin codex_context_hook (offline, self-contained).
-BACKEND="${MATRIXARK_CLAUDE_HOOK_BACKEND:-rust}"
-RUST_PROXY="${MATRIXARK_TEST_RUST_PROXY:-$REPO_ROOT/target/release/matrixark_rust_proxy}"
+# Default backend is `auto`: prefer the shared multi-agent pipeline
+# (tools/matrixark_agent_hook.py --agent claude, the SAME ingest/extract/retrieve
+# engine the Codex hook uses) whenever its runtime (the rust proxy) is available,
+# and fall back to the self-contained offline rust engine otherwise so the hook
+# never hard-fails. Override with MATRIXARK_CLAUDE_HOOK_BACKEND=python|rust|auto.
+BACKEND="${MATRIXARK_CLAUDE_HOOK_BACKEND:-auto}"
+# Locate the shared-pipeline runtime: an explicit override, else any prebuilt
+# release/debug proxy, else the conventional release path (SessionStart may build it).
+RUST_PROXY="${MATRIXARK_TEST_RUST_PROXY:-}"
+if [[ -z "$RUST_PROXY" ]]; then
+  for _cand in "$REPO_ROOT/target/release/matrixark_rust_proxy" "$REPO_ROOT/target/debug/matrixark_rust_proxy"; do
+    [[ -x "$_cand" ]] && { RUST_PROXY="$_cand"; break; }
+  done
+  RUST_PROXY="${RUST_PROXY:-$REPO_ROOT/target/release/matrixark_rust_proxy}"
+fi
 FAIL_OPEN="${MATRIXARK_HOOK_FAIL_OPEN:-1}"
 
 EVENT=""
@@ -96,6 +109,20 @@ PAYLOAD_SESSION="${RESOLVED#*$'\t'}"
 EVENT="${EVENT:-$PAYLOAD_EVENT}"
 EVENT="${EVENT:-UserPromptSubmit}"
 SESSION="${PAYLOAD_SESSION:-claude_session}"
+
+# Resolve `auto` to the shared pipeline when its runtime is present. On the
+# long-budget SessionStart, kick a detached build of the shared proxy so it never
+# blocks the turn; once present, later turns auto-upgrade from the offline engine
+# to the same ingest/extract/retrieve pipeline Codex uses. Until then, and whenever
+# the proxy is unavailable, fall back to the self-contained offline rust engine.
+if [[ "$BACKEND" == "auto" ]]; then
+  if [[ ! -x "$RUST_PROXY" && "$EVENT" == "SessionStart" && "${MATRIXARK_CLAUDE_HOOK_ALLOW_BUILD:-1}" == "1" ]]; then
+    setsid bash -c "CARGO_TARGET_DIR='$REPO_ROOT/target' cargo build -q -p temporalstore-rust --bin matrixark_rust_proxy" \
+      >/dev/null 2>&1 </dev/null &
+    disown 2>/dev/null || true
+  fi
+  if [[ -x "$RUST_PROXY" ]]; then BACKEND="python"; else BACKEND="rust"; fi
+fi
 
 if [[ "$BACKEND" == "python" ]]; then
   # Parity pipeline: matrixark_agent_hook.py runs the identical ingest/extract/

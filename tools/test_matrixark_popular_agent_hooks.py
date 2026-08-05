@@ -215,6 +215,46 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
             "both agents resolve a strong session identity from the payload",
         )
 
+    def test_claude_hook_default_auto_routes_through_shared_pipeline(self) -> None:
+        """With the shared proxy present, the Claude hook's default (auto) backend
+        routes through tools/matrixark_agent_hook.py -- the SAME ingest/extract/
+        retrieve pipeline the Codex hook uses -- not the separate offline rust engine.
+        The shared pipeline writes to MATRIXARK_TEMPORALSTORE_RUST_ROOT; the offline
+        engine uses a different root, so that store's creation proves auto->shared."""
+        repo = Path(__file__).resolve().parents[1]
+        proxy = os.environ.get(
+            "MATRIXARK_TEST_RUST_PROXY",
+            str(repo / "target" / "debug" / "matrixark_rust_proxy"),
+        )
+        if not os.access(proxy, os.X_OK):
+            self.skipTest("shared rust proxy not built")
+        hook = repo / "tools" / "matrixark_claude_hook.sh"
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            shared_root = Path(tmp_dir) / "shared-store"
+            env = dict(os.environ)
+            env.pop("MATRIXARK_CLAUDE_HOOK_BACKEND", None)  # exercise the default (auto)
+            env.update(
+                {
+                    "MATRIXARK_TEST_RUST_PROXY": proxy,
+                    "MATRIXARK_TEMPORALSTORE_RUST_ROOT": str(shared_root),
+                }
+            )
+            proc = subprocess.run(
+                ["bash", str(hook), "--event", "UserPromptSubmit"],
+                input=json.dumps({"prompt": "auto routing probe", "session_id": "claude-auto"}),
+                text=True,
+                capture_output=True,
+                cwd=repo,
+                env=env,
+                timeout=60,
+            )
+            self.assertEqual(0, proc.returncode, proc.stderr)
+            json.loads(proc.stdout)  # valid Claude Code hook contract JSON
+            self.assertTrue(
+                shared_root.exists(),
+                "default (auto) backend did not route through the shared matrixark_agent_hook.py pipeline",
+            )
+
     def test_generic_agent_retrieval_summary_exposes_memory_layer_pressure(self) -> None:
         retrieve = {
             "context_pack_id": "pack-pressure",
