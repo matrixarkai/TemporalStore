@@ -310,7 +310,7 @@ impl TemporalEngine {
             if write_command && !config.async_storage {
                 let _ = self.wal_store.append(request.shard_id, command);
             }
-            if !config.async_storage {
+            if !config.async_storage && !bulk_ingest_mode() {
                 let index_bytes = serialize_index(shard);
                 let _ = self
                     .index_log_store
