@@ -26,6 +26,11 @@ except ImportError:  # top-level path (matrixark_mcp_core)
         stable_hash,
     )
 
+try:  # resource-parser helpers (core imports these inside a try/except too)
+    from .matrixark_resource_parser import content_hash, normalize_parse_warnings
+except ImportError:
+    from matrixark_resource_parser import content_hash, normalize_parse_warnings
+
 __all__ = ['deployment_scope_from_args', 'resource_storage_mode_from_args', 'is_s3_uri', 'parse_s3_uri', '_cloud_resource_bucket', '_cloud_resource_prefix', '_s3_client', '_aws_cli_s3_cp', 'upload_file_to_s3', 'download_s3_to_file', '_resource_object_key', '_archive_directory_for_upload', 'resolve_raw_resource_for_ingest', 'infer_resource_suffix', 'rewrite_chunk_uris', 'cleanup_temp_paths', 'aggregate_parse_warnings_from_chunks']
 
 
