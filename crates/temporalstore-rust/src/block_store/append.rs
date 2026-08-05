@@ -1,0 +1,202 @@
+//! LocalBlockStore append/append_batch methods, split from block_store.rs.
+use super::*;
+
+impl LocalBlockStore {
+    pub fn append(&self, bytes: &[u8]) -> Result<BlockAddress, BlockStoreError> {
+        self.append_with_object_id(bytes, None)
+    }
+
+    pub fn append_with_object_id(
+        &self,
+        bytes: &[u8],
+        object_id: Option<u64>,
+    ) -> Result<BlockAddress, BlockStoreError> {
+        self.append_with_page_metadata(bytes, object_id, None)
+    }
+
+    pub fn append_with_page_metadata(
+        &self,
+        bytes: &[u8],
+        object_id: Option<u64>,
+        routing_slot: Option<u32>,
+    ) -> Result<BlockAddress, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        fs::create_dir_all(&inner.root)?;
+        let segment_target_bytes = effective_block_segment_target_bytes();
+        let mut page_id = inner.next_page_id;
+        let mut extent_id = extent_id_for_segment(inner.page_segment_id);
+        let mut record = encode_page_record(
+            bytes,
+            page_id,
+            object_id,
+            routing_slot,
+            extent_id,
+            inner.options,
+        )?;
+        if should_roll_before_append(
+            inner.write_offset,
+            record.bytes.len() as u64,
+            segment_target_bytes,
+        ) {
+            roll_segment_inner(&mut inner)?;
+            page_id = inner.next_page_id;
+            extent_id = extent_id_for_segment(inner.page_segment_id);
+            record = encode_page_record(
+                bytes,
+                page_id,
+                object_id,
+                routing_slot,
+                extent_id,
+                inner.options,
+            )?;
+        }
+        let path = segment_path(&inner.root, inner.page_segment_id);
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        let address = BlockAddress {
+            page_segment_id: inner.page_segment_id,
+            offset: inner.write_offset,
+            length: record.bytes.len() as u64,
+            page_id: Some(page_id),
+            object_id,
+            routing_slot,
+            generation: Some(page_id),
+            extent_id: Some(extent_id),
+            sha256: Some(sha256_hex(bytes)),
+        };
+        file.write_all(&record.bytes)?;
+        file.flush()?;
+        file.sync_data()?;
+        inner.next_page_id = inner.next_page_id.saturating_add(1);
+        inner.write_offset += address.length;
+        let page_segment_id = inner.page_segment_id;
+        let write_offset = inner.write_offset;
+        upsert_extent_after_append(
+            &mut inner.extents,
+            page_segment_id,
+            write_offset,
+            record.logical_len as u64,
+            page_id,
+        );
+        persist_extent_manifest(&inner.root, &inner.extents)?;
+        inner.stats.writes += 1;
+        inner.stats.bytes_written += address.length;
+        inner.stats.logical_bytes_written += record.logical_len as u64;
+        if record.compression == PageRecordCompression::Zstd {
+            inner.stats.compressed_records_written += 1;
+            inner.stats.compression_bytes_saved +=
+                record.logical_len.saturating_sub(record.stored_len) as u64;
+        }
+        Ok(address)
+    }
+
+    pub fn append_batch_with_page_metadata(
+        &self,
+        records: Vec<BlockAppendRecord>,
+    ) -> Result<Vec<BlockAddress>, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+        fs::create_dir_all(&inner.root)?;
+        let segment_target_bytes = effective_block_segment_target_bytes();
+        let mut file = None::<File>;
+        let mut addresses = Vec::with_capacity(records.len());
+        let mut writes = 0u64;
+        let mut bytes_written = 0u64;
+        let mut logical_bytes_written = 0u64;
+        let mut compressed_records_written = 0u64;
+        let mut compression_bytes_saved = 0u64;
+
+        for (bytes, object_id, routing_slot) in records {
+            let mut page_id = inner.next_page_id;
+            let mut extent_id = extent_id_for_segment(inner.page_segment_id);
+            let mut record = encode_page_record(
+                &bytes,
+                page_id,
+                object_id,
+                routing_slot,
+                extent_id,
+                inner.options,
+            )?;
+            if should_roll_before_append(
+                inner.write_offset,
+                record.bytes.len() as u64,
+                segment_target_bytes,
+            ) {
+                if let Some(mut current) = file.take() {
+                    current.flush()?;
+                    current.sync_data()?;
+                }
+                roll_segment_inner(&mut inner)?;
+                page_id = inner.next_page_id;
+                extent_id = extent_id_for_segment(inner.page_segment_id);
+                record = encode_page_record(
+                    &bytes,
+                    page_id,
+                    object_id,
+                    routing_slot,
+                    extent_id,
+                    inner.options,
+                )?;
+            }
+            if file.is_none() {
+                let path = segment_path(&inner.root, inner.page_segment_id);
+                file = Some(OpenOptions::new().create(true).append(true).open(path)?);
+            }
+            let address = BlockAddress {
+                page_segment_id: inner.page_segment_id,
+                offset: inner.write_offset,
+                length: record.bytes.len() as u64,
+                page_id: Some(page_id),
+                object_id,
+                routing_slot,
+                generation: Some(page_id),
+                extent_id: Some(extent_id),
+                sha256: Some(sha256_hex(&bytes)),
+            };
+            if let Some(current) = file.as_mut() {
+                current.write_all(&record.bytes)?;
+            }
+            inner.next_page_id = inner.next_page_id.saturating_add(1);
+            inner.write_offset += address.length;
+            let page_segment_id = inner.page_segment_id;
+            let write_offset = inner.write_offset;
+            upsert_extent_after_append(
+                &mut inner.extents,
+                page_segment_id,
+                write_offset,
+                record.logical_len as u64,
+                page_id,
+            );
+            writes = writes.saturating_add(1);
+            bytes_written = bytes_written.saturating_add(address.length);
+            logical_bytes_written = logical_bytes_written.saturating_add(record.logical_len as u64);
+            if record.compression == PageRecordCompression::Zstd {
+                compressed_records_written = compressed_records_written.saturating_add(1);
+                compression_bytes_saved = compression_bytes_saved
+                    .saturating_add(record.logical_len.saturating_sub(record.stored_len) as u64);
+            }
+            addresses.push(address);
+        }
+        if let Some(mut current) = file {
+            current.flush()?;
+            current.sync_data()?;
+        }
+        persist_extent_manifest(&inner.root, &inner.extents)?;
+        inner.stats.writes = inner.stats.writes.saturating_add(writes);
+        inner.stats.bytes_written = inner.stats.bytes_written.saturating_add(bytes_written);
+        inner.stats.logical_bytes_written = inner
+            .stats
+            .logical_bytes_written
+            .saturating_add(logical_bytes_written);
+        inner.stats.compressed_records_written = inner
+            .stats
+            .compressed_records_written
+            .saturating_add(compressed_records_written);
+        inner.stats.compression_bytes_saved = inner
+            .stats
+            .compression_bytes_saved
+            .saturating_add(compression_bytes_saved);
+        Ok(addresses)
+    }
+}
