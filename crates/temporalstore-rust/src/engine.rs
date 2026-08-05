@@ -203,12 +203,19 @@ impl TemporalEngine {
             .as_ref()
             .map(|info| info.end_routing_slot)
             .unwrap_or(u32::MAX);
-        if promote_model_maps_to_slot_index_authority(
-            request.shard_id,
-            shard,
-            start_routing_slot,
-            end_routing_slot,
-        ) {
+        // Bulk backfill defers this model-map -> slot-index promotion (an O(store)
+        // scan plus secondary-view rebuild) to a single flush_shard_index() call.
+        // Run per command it is the dominant O(n^2) cost of bulk ingest; fresh
+        // writes live in the model maps, so flush reconstructs slot_index and the
+        // secondary views losslessly.
+        if !bulk_ingest_mode()
+            && promote_model_maps_to_slot_index_authority(
+                request.shard_id,
+                shard,
+                start_routing_slot,
+                end_routing_slot,
+            )
+        {
             reconcile_secondary_views_from_slot_index(&self.page_store, shard);
         }
         let write_command = is_write_command(&command);
@@ -296,7 +303,7 @@ impl TemporalEngine {
                     }
                 }
             }
-            if !command_updates_slot_index_directly(&command)
+            if (!command_updates_slot_index_directly(&command) && !bulk_ingest_mode())
                 || shard.slot_index.slot_map.is_empty()
             {
                 rebuild_slot_first_index(
@@ -306,7 +313,9 @@ impl TemporalEngine {
                     end_routing_slot,
                 );
             }
-            refresh_slot_runtime_flags(shard);
+            if !bulk_ingest_mode() {
+                refresh_slot_runtime_flags(shard);
+            }
             if write_command && !config.async_storage {
                 let _ = self.wal_store.append(request.shard_id, command);
             }

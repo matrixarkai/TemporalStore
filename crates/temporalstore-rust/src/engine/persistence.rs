@@ -109,9 +109,20 @@ impl TemporalEngine {
     /// which skips per-record persistence). Also refreshes the index-log tail.
     pub fn flush_shard_index(&self, shard_id: ShardId) {
         let index_bytes = {
-            let shards = self.shards.read().expect("engine lock poisoned");
-            match shards.get(&shard_id) {
-                Some(shard) => serialize_index(shard),
+            // Reconstruct everything the per-command bulk path deferred: promote
+            // model-map pages into slot_index, rebuild the secondary views, refresh
+            // runtime flags, then serialize once. Needs a write lock.
+            let mut shards = self.shards.write().expect("engine lock poisoned");
+            match shards.get_mut(&shard_id) {
+                Some(shard) => {
+                    if promote_model_maps_to_slot_index_authority(shard_id, shard, 0, u32::MAX)
+                    {
+                        reconcile_secondary_views_from_slot_index(&self.page_store, shard);
+                    }
+                    rebuild_slot_first_index(shard_id, shard, 0, u32::MAX);
+                    refresh_slot_runtime_flags(shard);
+                    serialize_index(shard)
+                }
                 None => return,
             }
         };
