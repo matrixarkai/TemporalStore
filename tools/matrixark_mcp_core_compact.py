@@ -20,6 +20,7 @@ try:  # package path
         canonical_storage_route,
         compact_context_index_postings,
         embedding_model_ref_for_name,
+        non_default_classification,
         now_ms,
         stable_hash,
     )
@@ -32,6 +33,7 @@ except ImportError:  # top-level path
         canonical_storage_route,
         compact_context_index_postings,
         embedding_model_ref_for_name,
+        non_default_classification,
         now_ms,
         stable_hash,
     )

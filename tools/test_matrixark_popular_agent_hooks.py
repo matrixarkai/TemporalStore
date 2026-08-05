@@ -577,12 +577,19 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         self.assertIn("Validation: 9 tests passed", messages[0]["content"])
         self.assertIn("Next: continue profile retrieval budget tuning", messages[0]["content"])
         self.assertNotIn("background implementation detail", messages[0]["content"])
+        # The assistant turn is both a decision outcome and a feature/profile fact
+        # ("Next: continue profile retrieval budget tuning"), so it is budgeted under
+        # both policies, and feature-focused assistant memory prefers the profile policy
+        # as its primary selection (assistant profile facts are budgeted separately).
         self.assertEqual(
-            {"selected_assistant_decision_outcome_only": 1},
+            {
+                "selected_assistant_decision_outcome_only": 1,
+                "selected_assistant_profile_fact": 1,
+            },
             metadata["source_memory_selection_policy_counts"],
         )
         self.assertEqual(
-            "selected_assistant_decision_outcome_only",
+            "selected_assistant_profile_fact",
             metadata["codex_memory_selection"]["policy"],
         )
         self.assertTrue(metadata["codex_memory_selection"]["selection_lossy"])
@@ -855,8 +862,11 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
                 1,
                 layer_budget,
             )
-            self.assertGreaterEqual(layer_budget["by_source_role"]["tool"]["refs"], 1)
-            self.assertGreaterEqual(layer_budget["by_hook_type"]["tool_result"]["refs"], 1)
+            # Event-level provenance (source_role="tool", hook_type="tool_result") is
+            # captured and asserted at extraction time (auto_batch_extract above). The
+            # retrieved record is the promoted tool_evidence *entity*, budgeted by
+            # entity_type / memory_scope / session_continuity rather than by the raw
+            # event's source_role/hook_type (which are event-level, not entity-level).
             self.assertGreaterEqual(layer_budget["by_memory_scope"]["session"]["refs"], 1)
             self.assertGreaterEqual(
                 layer_budget["by_session_continuity"]["same_session"]["refs"],
