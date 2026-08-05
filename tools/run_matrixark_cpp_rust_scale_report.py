@@ -59,177 +59,6 @@ from tools.matrixark_mcp_temporal_adapters import (  # noqa: E402
 Json = dict[str, Any]
 
 
-def _is_windows_host() -> bool:
-    return os.name == "nt"
-
-
-def _wsl_path(path: str) -> str:
-    normalized = str(path).replace("\\", "/")
-    if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/":
-        drive = normalized[0].lower()
-        return f"/mnt/{drive}/{normalized[3:]}"
-    return normalized
-
-
-def _linux_so_on_windows_error(path: str) -> str:
-    return (
-        "invalid_host_platform: C++ direct SDK parity requires loading libbcache2.so from "
-        "a Linux process. The current runner is Windows Python, which cannot load a Linux .so. "
-        "Run this command from WSL/Linux or provide a Windows-compatible bcache2.dll. "
-        f"WSL path hint: {_wsl_path(path)}"
-    )
-
-
-def validate_cpp_runtime_host(cpp_lib: str) -> None:
-    suffix = Path(cpp_lib).suffix.lower()
-    if _is_windows_host() and suffix == ".so":
-        raise RuntimeError(_linux_so_on_windows_error(cpp_lib))
-
-
-def default_cpp_lib_path() -> str:
-    candidates = [
-        ROOT / "output-ubuntu22/release/sdk/lib/libbcache2.so",
-        CANONICAL_UBUNTU_REPO / "output-ubuntu22/release/sdk/lib/libbcache2.so",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return str(candidate)
-    return str(candidates[0])
-
-
-def default_rust_cli_path() -> str:
-    candidates = [
-        ROOT / "target/release/matrixark_rust_proxy",
-        CANONICAL_UBUNTU_REPO / "target/release/matrixark_rust_proxy",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return str(candidate)
-    return str(candidates[0])
-
-
-def _metaserver_host(metaserver: str) -> str:
-    if metaserver.startswith("["):
-        return metaserver.split("]", 1)[0].lstrip("[")
-    return metaserver.rsplit(":", 1)[0] if ":" in metaserver else metaserver
-
-
-def _is_loopback_metaserver(metaserver: str) -> bool:
-    return _metaserver_host(metaserver).strip().lower() in {"127.0.0.1", "localhost", "::1"}
-
-
-def default_canonical_release_out_dir() -> Path:
-    return CANONICAL_UBUNTU_REPO / "output-ubuntu22" / "release"
-
-
-def ensure_local_topology(
-    args: argparse.Namespace,
-    *,
-    force_restart: bool = False,
-    reason: str = "metaserver_unreachable",
-) -> Json:
-    """Start local C++ topology for loopback scale runs when it is absent or unhealthy."""
-
-    if getattr(args, "no_auto_start_local_topology", False):
-        return {"status": "skipped", "reason": "disabled_by_flag", "metaserver": args.metaserver}
-    if not _is_loopback_metaserver(str(args.metaserver)):
-        return {"status": "skipped", "reason": "non_loopback_metaserver", "metaserver": args.metaserver}
-    before = metaserver_reachable(args.metaserver)
-    if before.get("ok") and not force_restart:
-        return {"status": "already_ready", "metaserver": args.metaserver, "precheck": before}
-
-    deploy_root = CANONICAL_UBUNTU_REPO if CANONICAL_UBUNTU_REPO.exists() else ROOT
-    deploy_script = deploy_root / "tools" / "deploy_local_ubuntu22.sh"
-    out_dir = Path(os.environ.get("TEMPORALSTORE_CANONICAL_OUT_DIR", str(default_canonical_release_out_dir())))
-    if not deploy_script.exists():
-        return {
-            "status": "failed",
-            "reason": "deploy_script_missing",
-            "metaserver": args.metaserver,
-            "deploy_script": str(deploy_script),
-            "precheck": before,
-        }
-    if not (out_dir / "sdk" / "lib" / "libbcache2.so").exists():
-        return {
-            "status": "failed",
-            "reason": "canonical_release_bundle_missing",
-            "metaserver": args.metaserver,
-            "out_dir": str(out_dir),
-            "precheck": before,
-        }
-
-    env = os.environ.copy()
-    env.setdefault("BUILD_TYPE", "Release")
-    env.setdefault("OUT_DIR", str(out_dir))
-    env.setdefault("DEPLOY_DIR", "/tmp/temporalstore-parity-deploy")
-    env.setdefault("PERSIST_DEPLOY_DIR", "1")
-    env.setdefault("SERVER_EXTRA_FLAGS", "--storage_async=true --server_stopping_wait_s=1")
-    timeout_sec = max(1, int(getattr(args, "local_topology_start_timeout_sec", 120) or 120))
-    command = ["bash", str(deploy_script), "start"]
-    started = time.perf_counter()
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=deploy_root,
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=timeout_sec,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        return {
-            "status": "failed",
-            "reason": "deploy_timeout",
-            "metaserver": args.metaserver,
-            "deploy_script": str(deploy_script),
-            "out_dir": str(out_dir),
-            "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3),
-            "stdout_tail": (exc.stdout or "")[-4000:] if isinstance(exc.stdout, str) else "",
-            "stderr_tail": (exc.stderr or "")[-4000:] if isinstance(exc.stderr, str) else "",
-            "precheck": before,
-        }
-
-    after = metaserver_reachable(args.metaserver)
-    status = "started" if completed.returncode == 0 and after.get("ok") else "failed"
-    return {
-        "status": status,
-        "reason": reason if status == "started" and force_restart else ("" if status == "started" else "deploy_failed_or_metaserver_unreachable"),
-        "force_restart": force_restart,
-        "metaserver": args.metaserver,
-        "deploy_script": str(deploy_script),
-        "out_dir": str(out_dir),
-        "returncode": completed.returncode,
-        "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3),
-        "stdout_tail": completed.stdout[-4000:],
-        "stderr_tail": completed.stderr[-4000:],
-        "precheck": before,
-        "postcheck": after,
-    }
-
-
-def validate_rust_runtime_path(args: argparse.Namespace) -> None:
-    path = Path(str(args.rust_cli))
-    lowered = str(path).replace("\\", "/").lower()
-    if not path.exists():
-        raise RuntimeError(
-            "Rust TemporalStore proxy binary is missing. Build the production proxy first, for example: "
-            "`cargo build --release -p temporalstore-rust --bin matrixark_rust_proxy`. "
-            f"Configured path: {path}"
-        )
-    if "/debug/" in lowered and not getattr(args, "allow_rust_debug_cli", False):
-        raise RuntimeError(
-            "Rust parity runs must not use debug artifacts. Use target/release/matrixark_rust_proxy "
-            "or pass --allow-rust-debug-cli only for diagnostics. "
-            f"Configured path: {path}"
-        )
-    if path.name == "matrixark_record_log" and not getattr(args, "allow_rust_record_log_compat", False):
-        raise RuntimeError(
-            "Rust parity runs must use the production-named matrixark_rust_proxy/direct SDK bridge. "
-            "matrixark_record_log is retained only as a compatibility/debug wrapper. "
-            "Pass --allow-rust-record-log-compat only for diagnostics. "
-            f"Configured path: {path}"
-        )
 
 
 def percentile(values: list[float], pct: float) -> float:
@@ -255,138 +84,6 @@ def summarize_latencies(latencies_ms: list[float], *, total_ops: int, elapsed_s:
     }
 
 
-def _proc_stat(pid: int) -> tuple[float, float, float] | None:
-    try:
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        ticks_per_second = os.sysconf("SC_CLK_TCK")
-        with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as fh:
-            stat = fh.read()
-        after_comm = stat.rsplit(") ", 1)[1].split()
-        utime_ticks = float(after_comm[11])
-        stime_ticks = float(after_comm[12])
-        with open(f"/proc/{pid}/statm", "r", encoding="utf-8") as fh:
-            statm = fh.read().split()
-        rss_mb = (int(statm[1]) * page_size) / (1024.0 * 1024.0) if len(statm) >= 2 else 0.0
-        return (utime_ticks / ticks_per_second, stime_ticks / ticks_per_second, rss_mb)
-    except Exception:
-        return None
-
-
-def _current_rss_mb() -> float:
-    current = _proc_stat(os.getpid())
-    return round(current[2], 3) if current is not None else 0.0
-
-
-def _child_ppid_map() -> dict[int, int]:
-    mapping: dict[int, int] = {}
-    proc_root = Path("/proc")
-    try:
-        entries = list(proc_root.iterdir())
-    except Exception:
-        return mapping
-    for entry in entries:
-        if not entry.name.isdigit():
-            continue
-        try:
-            stat = (entry / "stat").read_text(encoding="utf-8")
-            after_comm = stat.rsplit(") ", 1)[1].split()
-            mapping[int(entry.name)] = int(after_comm[1])
-        except Exception:
-            continue
-    return mapping
-
-
-def _descendant_pids(root_pid: int) -> list[int]:
-    ppid_by_pid = _child_ppid_map()
-    descendants: list[int] = []
-    frontier = [root_pid]
-    seen = {root_pid}
-    while frontier:
-        parent = frontier.pop()
-        children = [pid for pid, ppid in ppid_by_pid.items() if ppid == parent and pid not in seen]
-        for pid in children:
-            seen.add(pid)
-            descendants.append(pid)
-            frontier.append(pid)
-    return descendants
-
-
-def process_resource_snapshot() -> Json:
-    if resource is not None:
-        usage = resource.getrusage(resource.RUSAGE_SELF)
-        max_rss_raw = float(getattr(usage, "ru_maxrss", 0.0) or 0.0)
-        max_rss_mb = max_rss_raw / 1024.0 if sys.platform != "darwin" else max_rss_raw / (1024.0 * 1024.0)
-        user_cpu_s = float(getattr(usage, "ru_utime", 0.0) or 0.0)
-        system_cpu_s = float(getattr(usage, "ru_stime", 0.0) or 0.0)
-    else:
-        max_rss_mb = 0.0
-        user_cpu_s = 0.0
-        system_cpu_s = 0.0
-    child_user_cpu_s = 0.0
-    child_system_cpu_s = 0.0
-    child_rss_mb = 0.0
-    child_pids = _descendant_pids(os.getpid())
-    for pid in child_pids:
-        stat = _proc_stat(pid)
-        if stat is None:
-            continue
-        child_user_cpu_s += stat[0]
-        child_system_cpu_s += stat[1]
-        child_rss_mb += stat[2]
-    current_rss_mb = _current_rss_mb()
-    tree_user_cpu_s = user_cpu_s + child_user_cpu_s
-    tree_system_cpu_s = system_cpu_s + child_system_cpu_s
-    tree_current_rss_mb = current_rss_mb + child_rss_mb
-    return {
-        "wall_time_s": time.perf_counter(),
-        "user_cpu_s": user_cpu_s,
-        "system_cpu_s": system_cpu_s,
-        "total_cpu_s": user_cpu_s + system_cpu_s,
-        "max_rss_mb": round(max_rss_mb, 3),
-        "current_rss_mb": current_rss_mb,
-        "child_process_count": len(child_pids),
-        "child_pids": child_pids[:16],
-        "child_user_cpu_s": child_user_cpu_s,
-        "child_system_cpu_s": child_system_cpu_s,
-        "child_total_cpu_s": child_user_cpu_s + child_system_cpu_s,
-        "child_current_rss_mb": round(child_rss_mb, 3),
-        "tree_user_cpu_s": tree_user_cpu_s,
-        "tree_system_cpu_s": tree_system_cpu_s,
-        "tree_total_cpu_s": tree_user_cpu_s + tree_system_cpu_s,
-        "tree_current_rss_mb": round(tree_current_rss_mb, 3),
-        "tree_max_rss_mb": round(max(max_rss_mb, tree_current_rss_mb), 3),
-    }
-
-
-def process_resource_delta(start: Json, end: Json, *, work_units: int = 0) -> Json:
-    wall_s = max(0.0, float(end.get("wall_time_s", 0.0)) - float(start.get("wall_time_s", 0.0)))
-    self_cpu_s = max(0.0, float(end.get("total_cpu_s", 0.0)) - float(start.get("total_cpu_s", 0.0)))
-    self_user_cpu_s = max(0.0, float(end.get("user_cpu_s", 0.0)) - float(start.get("user_cpu_s", 0.0)))
-    self_system_cpu_s = max(0.0, float(end.get("system_cpu_s", 0.0)) - float(start.get("system_cpu_s", 0.0)))
-    tree_cpu_s = max(0.0, float(end.get("tree_total_cpu_s", end.get("total_cpu_s", 0.0))) - float(start.get("tree_total_cpu_s", start.get("total_cpu_s", 0.0))))
-    tree_user_cpu_s = max(0.0, float(end.get("tree_user_cpu_s", end.get("user_cpu_s", 0.0))) - float(start.get("tree_user_cpu_s", start.get("user_cpu_s", 0.0))))
-    tree_system_cpu_s = max(0.0, float(end.get("tree_system_cpu_s", end.get("system_cpu_s", 0.0))) - float(start.get("tree_system_cpu_s", start.get("system_cpu_s", 0.0))))
-    work_units = max(0, int(work_units or 0))
-    return {
-        "wall_ms": round(wall_s * 1000.0, 3),
-        "cpu_time_ms": round(tree_cpu_s * 1000.0, 3),
-        "user_cpu_ms": round(tree_user_cpu_s * 1000.0, 3),
-        "system_cpu_ms": round(tree_system_cpu_s * 1000.0, 3),
-        "cpu_utilization_pct": round((tree_cpu_s / wall_s) * 100.0, 3) if wall_s > 0 else 0.0,
-        "cpu_ms_per_unit": round((tree_cpu_s * 1000.0) / work_units, 6) if work_units > 0 else 0.0,
-        "max_rss_mb": round(float(end.get("tree_max_rss_mb", end.get("max_rss_mb", 0.0)) or 0.0), 3),
-        "current_rss_mb": round(float(end.get("tree_current_rss_mb", end.get("current_rss_mb", 0.0)) or 0.0), 3),
-        "work_units": work_units,
-        "resource_accounting": "process_tree_including_live_children",
-        "self_cpu_time_ms": round(self_cpu_s * 1000.0, 3),
-        "self_user_cpu_ms": round(self_user_cpu_s * 1000.0, 3),
-        "self_system_cpu_ms": round(self_system_cpu_s * 1000.0, 3),
-        "self_current_rss_mb": round(float(end.get("current_rss_mb", 0.0) or 0.0), 3),
-        "self_max_rss_mb": round(float(end.get("max_rss_mb", 0.0) or 0.0), 3),
-        "child_cpu_time_ms": round(max(0.0, tree_cpu_s - self_cpu_s) * 1000.0, 3),
-        "child_current_rss_mb": round(float(end.get("child_current_rss_mb", 0.0) or 0.0), 3),
-        "child_process_count": int(end.get("child_process_count", 0) or 0),
-    }
 
 
 def selected_ref_count(result: Json) -> int:
@@ -4177,6 +3874,22 @@ def main() -> int:
     if parsed.require_perf_parity and not parity_passed:
         return 2
     return 0 if backends_passed else 1
+
+
+
+# Re-export helpers split into run_matrixark_scale_resource.py
+try:  # package path
+    from .run_matrixark_scale_resource import *  # noqa: E402,F401,F403
+except ImportError:  # top-level path
+    from run_matrixark_scale_resource import *  # noqa: E402,F401,F403
+
+
+
+# Re-export helpers split into run_matrixark_scale_hostpath.py
+try:  # package path
+    from .run_matrixark_scale_hostpath import *  # noqa: E402,F401,F403
+except ImportError:  # top-level path
+    from run_matrixark_scale_hostpath import *  # noqa: E402,F401,F403
 
 
 if __name__ == "__main__":
