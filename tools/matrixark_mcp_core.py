@@ -9736,4 +9736,7 @@ def cross_session_rerank_adjustment(candidate: Json, question_type: str) -> floa
 
 
 # Re-export identity/scope helpers split into matrixark_mcp_core_identity.py
-from matrixark_mcp_core_identity import *  # noqa: E402,F401,F403
+try:  # package import path (tools.matrixark_mcp_core)
+    from .matrixark_mcp_core_identity import *  # noqa: E402,F401,F403
+except ImportError:  # top-level import path (matrixark_mcp_core)
+    from matrixark_mcp_core_identity import *  # noqa: E402,F401,F403
