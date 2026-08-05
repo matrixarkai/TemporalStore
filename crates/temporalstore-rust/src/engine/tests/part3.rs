@@ -1,0 +1,2316 @@
+//! Part 3 of engine tests, split from engine/tests.rs.
+#![allow(clippy::all)]
+use super::*;
+
+#[test]
+fn control_api_reads_page_and_index_streams() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k".to_string(),
+            value: b"stream-value".to_vec(),
+        },
+    });
+
+    let page = engine.read_stream(StreamReadRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Block,
+        page_segment_id: 0,
+        offset: 0,
+        size: 12,
+    });
+    assert_eq!(page.data, b"stream-value".to_vec());
+
+    let index = engine.read_stream(StreamReadRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Index,
+        page_segment_id: 0,
+        offset: 0,
+        size: 32,
+    });
+    assert!(index.status.ok);
+    assert!(!index.data.is_empty());
+
+    let scan = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Block,
+        page_segment_id: 0,
+        start_offset: 0,
+        end_offset: 12,
+        max_bytes: 12,
+    });
+    assert_eq!(scan.records.len(), 1);
+    assert_eq!(scan.records[0].data, b"stream-value".to_vec());
+
+    let invalid = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Block,
+        page_segment_id: 0,
+        start_offset: 12,
+        end_offset: 1,
+        max_bytes: 12,
+    });
+    assert_eq!(invalid.status.code, "invalid_stream_range");
+    assert!(invalid.records.is_empty());
+}
+
+#[test]
+fn control_api_reads_and_scans_wal_stream() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k1".to_string(),
+            value: b"v1".to_vec(),
+        },
+    });
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k2".to_string(),
+            value: b"v2".to_vec(),
+        },
+    });
+
+    let stream = engine.read_stream(StreamReadRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Wal,
+        page_segment_id: 0,
+        offset: 0,
+        size: 4096,
+    });
+    assert!(stream.status.ok);
+    let text = String::from_utf8(stream.data).unwrap();
+    assert!(text.contains("\"sequence\":1"));
+    assert!(text.contains("\"sequence\":2"));
+
+    let scan = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Wal,
+        page_segment_id: 0,
+        start_offset: 0,
+        end_offset: 4096,
+        max_bytes: 4096,
+    });
+    assert_eq!(scan.records.len(), 2);
+    assert_eq!(
+        engine
+            .get_stats(1)
+            .stats
+            .unwrap()
+            .write_ahead_log
+            .last_sequence,
+        2
+    );
+}
+
+#[test]
+fn control_api_reads_and_scans_index_log_stream() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k1".to_string(),
+            value: b"v1".to_vec(),
+        },
+    });
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashSet {
+            key: "h".to_string(),
+            field: "f".to_string(),
+            value: b"hv".to_vec(),
+        },
+    });
+
+    let stream = engine.read_stream(StreamReadRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::IndexLog,
+        page_segment_id: 0,
+        offset: 0,
+        size: 8192,
+    });
+    assert!(stream.status.ok);
+    let text = String::from_utf8(stream.data).unwrap();
+    assert!(text.contains("\"sequence\":1"));
+    assert!(text.contains("\"sequence\":2"));
+    assert!(text.contains("\"strings\""));
+    assert!(text.contains("\"hashes\""));
+
+    let scan = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::IndexLog,
+        page_segment_id: 0,
+        start_offset: 0,
+        end_offset: 8192,
+        max_bytes: 8192,
+    });
+    assert_eq!(scan.records.len(), 2);
+
+    let last_record: crate::index_log::IndexLogRecord =
+        serde_json::from_slice(&scan.records[1].data).unwrap();
+    assert_eq!(last_record.sequence, 2);
+    assert_eq!(
+        last_record.index["hashes"]["h"]["f"]["page_segment_id"],
+        serde_json::json!(0)
+    );
+    assert_eq!(engine.index_log_store().stats(1).last_sequence, 2);
+}
+
+#[test]
+fn readonly_shard_rejects_writes_but_allows_reads() {
+    let engine = TemporalEngine::default();
+    assert!(
+        engine
+            .load_shard_with(LoadShardRequest {
+                shard_id: 1,
+                load_version: 1,
+                local_node_id: None,
+                shard_uri: "file:///tmp/readonly".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 99,
+                readonly: true,
+                table_name: "table".to_string(),
+            })
+            .status
+            .ok
+    );
+
+    let write = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    assert!(!write.status.ok);
+    assert_eq!(write.status.code, "readonly_shard");
+
+    let read = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "k".to_string(),
+        },
+    });
+    assert!(read.status.ok);
+    assert_eq!(read.response, CommandResponse::Bytes { value: None });
+}
+
+#[test]
+fn checked_execute_rejects_stale_load_version() {
+    let engine = TemporalEngine::default();
+    assert!(
+        engine
+            .load_shard_with(LoadShardRequest {
+                shard_id: 1,
+                load_version: 7,
+                local_node_id: None,
+                shard_uri: "file:///tmp/versioned".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 99,
+                readonly: false,
+                table_name: "table".to_string(),
+            })
+            .status
+            .ok
+    );
+
+    let stale = engine.execute_checked(CheckedExecuteRequest {
+        shard_id: 1,
+        load_version: 6,
+        command: Command::StringSet {
+            key: "k".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    assert_eq!(stale.status.code, "load_version_mismatch");
+
+    let current = engine.execute_checked(CheckedExecuteRequest {
+        shard_id: 1,
+        load_version: 7,
+        command: Command::StringSet {
+            key: "k".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    assert!(current.status.ok);
+}
+
+#[test]
+fn loaded_shard_stats_reports_per_shard_load() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    engine.load_shard(2);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "a".to_string(),
+            value: b"1".to_vec(),
+        },
+    });
+    engine.execute(ExecuteRequest {
+        shard_id: 2,
+        command: Command::HashSet {
+            key: "h".to_string(),
+            field: "f".to_string(),
+            value: b"2".to_vec(),
+        },
+    });
+
+    let stats = engine.loaded_shard_stats();
+    assert_eq!(stats.len(), 2);
+    assert!(stats
+        .iter()
+        .any(|stat| stat.shard_id == 1 && stat.string_records == 1));
+    assert!(stats
+        .iter()
+        .any(|stat| stat.shard_id == 2 && stat.hash_records == 1));
+}
+
+#[test]
+fn string_set_conditional_supports_nx_xx_and_get() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    let first = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSetConditional {
+            key: "k".to_string(),
+            value: b"v1".to_vec(),
+            ttl_ms: None,
+            condition: StringSetCondition::IfNotExists,
+            return_old: false,
+        },
+    });
+    assert_eq!(first.response, CommandResponse::Integer { value: 1 });
+
+    let rejected = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSetConditional {
+            key: "k".to_string(),
+            value: b"v2".to_vec(),
+            ttl_ms: None,
+            condition: StringSetCondition::IfNotExists,
+            return_old: false,
+        },
+    });
+    assert_eq!(rejected.response, CommandResponse::Integer { value: 0 });
+
+    let old = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSetConditional {
+            key: "k".to_string(),
+            value: b"v3".to_vec(),
+            ttl_ms: None,
+            condition: StringSetCondition::IfExists,
+            return_old: true,
+        },
+    });
+    assert_eq!(
+        old.response,
+        CommandResponse::Bytes {
+            value: Some(b"v1".to_vec())
+        }
+    );
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "k".to_string()
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(b"v3".to_vec())
+        }
+    );
+}
+
+#[test]
+fn ips_remove_delete_and_count_are_supported() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    for timestamp_ms in [10, 20, 30] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::IpsAdd {
+                key: "ips".to_string(),
+                timestamp_ms,
+                instance: timestamp_ms.to_string().into_bytes(),
+            },
+        });
+    }
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::IpsCount {
+                    key: "ips".to_string(),
+                    start_ms: 0,
+                    end_ms: 25,
+                },
+            })
+            .response,
+        CommandResponse::Integer { value: 2 }
+    );
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::IpsRemove {
+                    key: "ips".to_string(),
+                    timestamp_ms: 20,
+                },
+            })
+            .response,
+        CommandResponse::Integer { value: 1 }
+    );
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::IpsDelete {
+                    key: "ips".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Integer { value: 1 }
+    );
+}
+
+#[test]
+fn ips_pages_store_timestamp_keys_with_values() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::IpsLoad {
+                    key: "packed-ips".to_string(),
+                    points: vec![
+                        FeaturePoint {
+                            timestamp_ms: 10,
+                            value: b"ten".to_vec(),
+                        },
+                        FeaturePoint {
+                            timestamp_ms: 20,
+                            value: b"twenty".to_vec(),
+                        },
+                    ],
+                },
+            })
+            .status
+            .ok
+    );
+
+    let (first_address, second_address, meta_address) = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        let series = shard.ips.get("packed-ips").expect("IPS series");
+        let meta = shard.ips_meta.get("packed-ips").expect("IPS metadata");
+        (
+            series.get(&10).expect("first IPS point").clone(),
+            series.get(&20).expect("second IPS point").clone(),
+            meta.get(&20).expect("second IPS metadata").address.clone(),
+        )
+    };
+    assert_eq!(first_address, second_address);
+    assert_eq!(second_address, meta_address);
+    assert_eq!(
+        first_address.object_id,
+        Some(stable_page_object_id(1, "ips", "packed-ips", None))
+    );
+
+    let bytes = engine.block_store().read(&first_address).unwrap();
+    let packed_points = decode_feature_page(&bytes).expect("packed IPS page");
+    assert_eq!(
+        packed_points,
+        vec![
+            FeaturePoint {
+                timestamp_ms: 10,
+                value: b"ten".to_vec(),
+            },
+            FeaturePoint {
+                timestamp_ms: 20,
+                value: b"twenty".to_vec(),
+            },
+        ]
+    );
+
+    let query = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::IpsQueryRange {
+            key: "packed-ips".to_string(),
+            start_ms: 0,
+            end_ms: 30,
+            count: None,
+        },
+    });
+    assert_eq!(
+        query.response,
+        CommandResponse::FeaturePoints {
+            points: packed_points
+        }
+    );
+}
+
+#[test]
+fn recovery_validates_all_timestamped_kv_page_families() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        8 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let feature_points = (0..8)
+        .map(|idx| FeaturePoint {
+            timestamp_ms: 1_000 + idx,
+            value: vec![b'f'; 10 * 1024],
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureAppend {
+                    key: "all-family-feature".to_string(),
+                    points: feature_points.clone(),
+                },
+            })
+            .status
+            .ok
+    );
+
+    let sequence_rows = (0..8)
+        .map(|idx| SequenceFeatureRow {
+            timestamp_ms: 2_000 + idx,
+            gid: idx,
+            action_type: 7,
+            duration: 11,
+            author_id: 13,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::SequenceAdd {
+                    key: "all-family-sequence".to_string(),
+                    rows: sequence_rows.clone(),
+                },
+            })
+            .status
+            .ok
+    );
+
+    let ips_points = (0..8)
+        .map(|idx| FeaturePoint {
+            timestamp_ms: 3_000 + idx,
+            value: vec![b'i'; 10 * 1024],
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::IpsLoad {
+                    key: "all-family-ips".to_string(),
+                    points: ips_points.clone(),
+                },
+            })
+            .status
+            .ok
+    );
+
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextWriteEvent {
+                    tenant_hash: 44,
+                    node_hash: 55,
+                    event: ContextEvent {
+                        event_id_hash: 66,
+                        event_time_ms: 4_000,
+                        ingestion_time_ms: 4_000,
+                        kind: 1,
+                        event_type: 2,
+                        actor_hash: 77,
+                        status: 1,
+                        valid_until_ms: 0,
+                        confidence: 0.99,
+                        importance: 0.75,
+                        text: "context event".to_string(),
+                        source_ref: "local://test".to_string(),
+                        related_node_hashes: vec![55],
+                        compact_attrs: vec![1, 2, 3],
+                    },
+                    first_write_only: false,
+                    cold_storage: false,
+                },
+            })
+            .status
+            .ok
+    );
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextWriteIndexRef {
+                    tenant_hash: 44,
+                    index_name: "actor".to_string(),
+                    index_value_hash: 77,
+                    scope_hash: 1,
+                    event_time_ms: 4_000,
+                    index_ref: ContextIndexRef {
+                        primary_node_hash: 55,
+                        primary_event_time_ms: 4_000,
+                        event_id_hash: 66,
+                    },
+                },
+            })
+            .status
+            .ok
+    );
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextWritePackAudit {
+                    tenant_hash: 44,
+                    audit: ContextPackAudit {
+                        query_id: "q-all-family".to_string(),
+                        session_hash: 88,
+                        request_time_ms: 4_100,
+                        query_hash: 99,
+                        max_prompt_tokens: 128,
+                        selected_tokens: 32,
+                        selected_refs: vec![ContextAuditRef {
+                            node_hash: 55,
+                            event_time_ms: 4_000,
+                            reason: "selected".to_string(),
+                        }],
+                        blocked_refs: Vec::new(),
+                    },
+                },
+            })
+            .status
+            .ok
+    );
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextMarkSummaryDirty {
+                    tenant_hash: 44,
+                    marker: ContextSummaryDirtyMarker {
+                        node_hash: 55,
+                        event_time_ms: 4_200,
+                        reason: 9,
+                        propagate_depth: 2,
+                    },
+                },
+            })
+            .status
+            .ok
+    );
+
+    let report = engine.storage_recovery_report(1);
+    assert_eq!(report.feature_page_layout.indexed_timestamped_points, 28);
+    assert!(report.feature_page_layout.packed_timestamped_pages >= 10);
+    assert!(
+        report
+            .feature_page_layout
+            .unique_timestamped_page_refs
+            .saturating_sub(report.feature_page_layout.packed_timestamped_pages)
+            <= report.feature_page_layout.legacy_timestamped_value_pages
+    );
+    assert!(report
+        .feature_page_layout
+        .corrupt_packed_feature_pages
+        .is_empty());
+    assert!(report
+        .feature_page_layout
+        .missing_indexed_timestamps
+        .is_empty());
+    assert!(report
+        .feature_page_layout
+        .orphan_packed_timestamps
+        .is_empty());
+    assert!(report
+        .feature_page_layout
+        .duplicate_packed_timestamps
+        .is_empty());
+
+    let families = report
+        .feature_page_layout
+        .families
+        .iter()
+        .map(|family| (family.kind.as_str(), family))
+        .collect::<BTreeMap<_, _>>();
+    for kind in [
+        "feature",
+        "sequence",
+        "ips",
+        "context_event",
+        "context_index",
+        "context_audit",
+    ] {
+        let family = families.get(kind).expect("timestamped family report");
+        assert!(family.indexed_points > 0, "{kind}");
+        assert!(family.packed_pages > 0, "{kind}");
+        assert_eq!(family.corrupt_pages, 0, "{kind}");
+        assert_eq!(family.mismatch_count, 0, "{kind}");
+    }
+    assert!(
+        families
+            .get("feature")
+            .expect("feature family")
+            .unique_page_refs
+            > 1
+    );
+    assert!(families.get("ips").expect("ips family").unique_page_refs > 1);
+
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureQuery {
+                    key: "all-family-feature".to_string(),
+                    start_ms: 1_000,
+                    end_ms: 1_010,
+                    count: None,
+                },
+            })
+            .response,
+        CommandResponse::FeaturePoints {
+            points: feature_points
+        }
+    );
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::SequenceQuery {
+                    key: "all-family-sequence".to_string(),
+                    start_ms: 2_000,
+                    end_ms: 2_010,
+                    count: 16,
+                    filters: Vec::new(),
+                },
+            })
+            .response,
+        CommandResponse::SequenceRows {
+            rows: sequence_rows
+        }
+    );
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::IpsQueryRange {
+                    key: "all-family-ips".to_string(),
+                    start_ms: 3_000,
+                    end_ms: 3_010,
+                    count: None,
+                },
+            })
+            .response,
+        CommandResponse::FeaturePoints { points: ips_points }
+    );
+}
+
+#[test]
+fn ips_compaction_rewrites_shared_timestamped_page_once() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::IpsLoad {
+                    key: "compact-ips".to_string(),
+                    points: vec![
+                        FeaturePoint {
+                            timestamp_ms: 10,
+                            value: b"ten".to_vec(),
+                        },
+                        FeaturePoint {
+                            timestamp_ms: 20,
+                            value: b"twenty".to_vec(),
+                        },
+                    ],
+                },
+            })
+            .response,
+        CommandResponse::Integer { value: 2 }
+    );
+
+    let report = engine.compact_shard_pages(1).unwrap();
+    assert_eq!(report.rewritten_page_refs, 1);
+
+    let (first_address, second_address, meta_address) = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        let series = shard.ips.get("compact-ips").expect("IPS series");
+        let meta = shard.ips_meta.get("compact-ips").expect("IPS metadata");
+        (
+            series.get(&10).expect("first IPS point").clone(),
+            series.get(&20).expect("second IPS point").clone(),
+            meta.get(&20).expect("second IPS metadata").address.clone(),
+        )
+    };
+    assert_eq!(first_address, second_address);
+    assert_eq!(second_address, meta_address);
+    let bytes = engine.block_store().read(&first_address).unwrap();
+    assert_eq!(
+        decode_feature_page(&bytes).expect("packed IPS page"),
+        vec![
+            FeaturePoint {
+                timestamp_ms: 10,
+                value: b"ten".to_vec(),
+            },
+            FeaturePoint {
+                timestamp_ms: 20,
+                value: b"twenty".to_vec(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn risk_change_matches_cpp_distinct_field_semantics() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    for (timestamp_ms, value) in [(10, "device-a"), (20, "device-a"), (30, "device-b")] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::RiskChangeAdd {
+                key: "risk-change".to_string(),
+                timestamp_ms,
+                value: value.as_bytes().to_vec(),
+                precision_ms: Some(10),
+                ttl_ms: None,
+            },
+        });
+        assert!(response.status.ok, "{response:?}");
+    }
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::RiskQuery {
+                    key: "risk-change".to_string(),
+                    start_ms: 0,
+                    end_ms: 40,
+                    aggregator: "change".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Integer { value: 2 }
+    );
+
+    for (timestamp_ms, value) in [(10, "buyer-1"), (20, "buyer-1"), (30, "buyer-2")] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::RiskChangeAdd {
+                key: risk_family_key(RiskFamily::H, "risk-change"),
+                timestamp_ms,
+                value: value.as_bytes().to_vec(),
+                precision_ms: None,
+                ttl_ms: None,
+            },
+        });
+        assert!(response.status.ok, "{response:?}");
+    }
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::RiskFamilyQuery {
+                    family: RiskFamily::H,
+                    key: "risk-change".to_string(),
+                    start_ms: 0,
+                    end_ms: 40,
+                    aggregator: "change".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Integer { value: 2 }
+    );
+}
+
+#[test]
+fn risk_query_supports_first_last_and_detail_list() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    for (timestamp_ms, amount) in [(10, 5), (20, -2), (30, 7)] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::RiskIncrement {
+                key: "risk".to_string(),
+                timestamp_ms,
+                amount,
+            },
+        });
+    }
+    for (aggregator, expected) in [("first", 5), ("last", 7)] {
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskQuery {
+                        key: "risk".to_string(),
+                        start_ms: 0,
+                        end_ms: 40,
+                        aggregator: aggregator.to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: expected }
+        );
+    }
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::RiskDetail {
+                    key: "risk".to_string(),
+                    start_ms: 15,
+                    end_ms: 40,
+                    count: Some(2),
+                },
+            })
+            .response,
+        CommandResponse::FeaturePoints {
+            points: vec![
+                FeaturePoint {
+                    timestamp_ms: 20,
+                    value: b"-2".to_vec(),
+                },
+                FeaturePoint {
+                    timestamp_ms: 30,
+                    value: b"7".to_vec(),
+                },
+            ]
+        }
+    );
+}
+
+#[test]
+fn risk_fol_matches_cpp_first_last_string_semantics() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    for (occur_time_ms, value) in [(20, "middle"), (10, "first"), (30, "last")] {
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskFolSet {
+                        key: "risk-fol-first".to_string(),
+                        value: value.as_bytes().to_vec(),
+                        occur_time_ms,
+                        ttl_ms: 60_000,
+                        fol_type: RiskFolType::First,
+                    },
+                })
+                .status
+                .ok
+        );
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskFolSet {
+                        key: "risk-fol-last".to_string(),
+                        value: value.as_bytes().to_vec(),
+                        occur_time_ms,
+                        ttl_ms: 60_000,
+                        fol_type: RiskFolType::Last,
+                    },
+                })
+                .status
+                .ok
+        );
+    }
+
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::RiskFolQuery {
+                    key: "risk-fol-first".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(b"first".to_vec()),
+        }
+    );
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::RiskFolQuery {
+                    key: "risk-fol-last".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(b"last".to_vec()),
+        }
+    );
+}
+
+#[test]
+fn feature_write_policy_sequence_batch_ips_dimensions_and_risk_precision_work() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppend {
+            key: "feature-policy".to_string(),
+            points: vec![FeaturePoint {
+                timestamp_ms: 10,
+                value: b"old".to_vec(),
+            }],
+        },
+    });
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureAppendWithPolicy {
+                    key: "feature-policy".to_string(),
+                    points: vec![FeaturePoint {
+                        timestamp_ms: 10,
+                        value: b"ignored".to_vec(),
+                    }],
+                    policy: FeatureWritePolicy::InsertIfAbsent,
+                },
+            })
+            .response,
+        CommandResponse::Integer { value: 0 }
+    );
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureAppendWithPolicy {
+                    key: "feature-policy".to_string(),
+                    points: vec![FeaturePoint {
+                        timestamp_ms: 10,
+                        value: b"new".to_vec(),
+                    }],
+                    policy: FeatureWritePolicy::ReplaceExisting,
+                },
+            })
+            .response,
+        CommandResponse::Integer { value: 1 }
+    );
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureQuery {
+                    key: "feature-policy".to_string(),
+                    start_ms: 0,
+                    end_ms: 20,
+                    count: None,
+                },
+            })
+            .response,
+        CommandResponse::FeaturePoints {
+            points: vec![FeaturePoint {
+                timestamp_ms: 10,
+                value: b"new".to_vec(),
+            }]
+        }
+    );
+
+    for (key, gid, action_type) in [("seq-a", 1, 7), ("seq-b", 2, 8)] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SequenceAdd {
+                key: key.to_string(),
+                rows: vec![SequenceFeatureRow {
+                    timestamp_ms: 100,
+                    gid,
+                    action_type,
+                    duration: 5,
+                    author_id: 9,
+                }],
+            },
+        });
+    }
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::SequenceBatchQuery {
+                    queries: vec![
+                        SequenceQuerySpec {
+                            key: "seq-a".to_string(),
+                            start_ms: 0,
+                            end_ms: 200,
+                            count: 10,
+                            filters: vec![FeatureFilter {
+                                field: "action_type".to_string(),
+                                op: FeatureFilterOp::Equal,
+                                value: 7,
+                            }],
+                        },
+                        SequenceQuerySpec {
+                            key: "seq-b".to_string(),
+                            start_ms: 0,
+                            end_ms: 200,
+                            count: 10,
+                            filters: Vec::new(),
+                        },
+                    ],
+                },
+            })
+            .response,
+        CommandResponse::SequenceRowGroups {
+            groups: vec![
+                (
+                    "seq-a".to_string(),
+                    vec![SequenceFeatureRow {
+                        timestamp_ms: 100,
+                        gid: 1,
+                        action_type: 7,
+                        duration: 5,
+                        author_id: 9,
+                    }],
+                ),
+                (
+                    "seq-b".to_string(),
+                    vec![SequenceFeatureRow {
+                        timestamp_ms: 100,
+                        gid: 2,
+                        action_type: 8,
+                        duration: 5,
+                        author_id: 9,
+                    }],
+                ),
+            ],
+        }
+    );
+
+    for (timestamp_ms, value, action_type, request_id) in [
+        (10, b"a10".to_vec(), Some(1), Some("r1".to_string())),
+        (20, b"a20".to_vec(), Some(2), Some("r2".to_string())),
+        (30, b"a30".to_vec(), Some(1), Some("r3".to_string())),
+    ] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::IpsAddWithOptions {
+                key: "ips-dim".to_string(),
+                timestamp_ms,
+                instance: value,
+                action_type,
+                table_id: Some(99),
+                request_id,
+            },
+        });
+    }
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::IpsAddWithOptions {
+                    key: "ips-dim".to_string(),
+                    timestamp_ms: 40,
+                    instance: b"dup".to_vec(),
+                    action_type: Some(1),
+                    table_id: Some(99),
+                    request_id: Some("r1".to_string()),
+                },
+            })
+            .response,
+        CommandResponse::Integer { value: 0 }
+    );
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::IpsQueryRangeWithOptions {
+                    key: "ips-dim".to_string(),
+                    start_ms: 0,
+                    end_ms: 40,
+                    count: None,
+                    action_type: Some(1),
+                    table_id: Some(99),
+                },
+            })
+            .response,
+        CommandResponse::FeaturePoints {
+            points: vec![
+                FeaturePoint {
+                    timestamp_ms: 10,
+                    value: b"a10".to_vec(),
+                },
+                FeaturePoint {
+                    timestamp_ms: 30,
+                    value: b"a30".to_vec(),
+                },
+            ]
+        }
+    );
+
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::RiskIncrementWithOptions {
+            key: "risk-bucket".to_string(),
+            timestamp_ms: 1_234,
+            amount: 3,
+            precision_ms: Some(1_000),
+            ttl_ms: Some(60_000),
+        },
+    });
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::RiskIncrementWithOptions {
+            key: "risk-bucket".to_string(),
+            timestamp_ms: 1_999,
+            amount: 4,
+            precision_ms: Some(1_000),
+            ttl_ms: None,
+        },
+    });
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::RiskDetail {
+                    key: "risk-bucket".to_string(),
+                    start_ms: 0,
+                    end_ms: 2_000,
+                    count: None,
+                },
+            })
+            .response,
+        CommandResponse::FeaturePoints {
+            points: vec![FeaturePoint {
+                timestamp_ms: 1_000,
+                value: b"7".to_vec(),
+            }]
+        }
+    );
+    assert!(matches!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonTtl {
+                    key: "risk-bucket".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Integer { value } if value > 0
+    ));
+}
+
+#[test]
+fn maxmemory_config_rejects_writes_when_storage_budget_is_exhausted() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            maxmemory_bytes: Some(0),
+            ..Config::default()
+        },
+    });
+
+    let rejected = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "first".to_string(),
+            value: b"y".to_vec(),
+        },
+    });
+    assert_eq!(rejected.status.code, "storage_quota_exceeded");
+}
+
+#[test]
+fn write_qps_config_rejects_writes_after_admission_limit() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            write_qps: Some(1),
+            ..Config::default()
+        },
+    });
+    wait_for_fresh_admission_second();
+
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "first".to_string(),
+                    value: b"x".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+    let rejected = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "second".to_string(),
+            value: b"y".to_vec(),
+        },
+    });
+    assert_eq!(rejected.status.code, "admission_rejected");
+    assert_eq!(rejected.status.message, "write_qps limit exceeded");
+}
+
+#[test]
+fn read_qps_config_rejects_reads_after_admission_limit() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "first".to_string(),
+                    value: b"x".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            read_qps: Some(1),
+            ..Config::default()
+        },
+    });
+    wait_for_fresh_admission_second();
+
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "first".to_string(),
+                },
+            })
+            .status
+            .ok
+    );
+    let rejected = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "first".to_string(),
+        },
+    });
+    assert_eq!(rejected.status.code, "admission_rejected");
+    assert_eq!(rejected.status.message, "read_qps limit exceeded");
+}
+
+#[test]
+fn table_write_qps_config_is_shared_across_loaded_table_shards() {
+    let engine = TemporalEngine::default();
+    for shard_id in [1, 2] {
+        assert!(
+            engine
+                .load_shard_with(LoadShardRequest {
+                    shard_id,
+                    load_version: 1,
+                    local_node_id: Some(1),
+                    shard_uri: format!("local://feature_table/{shard_id}"),
+                    start_routing_slot: 0,
+                    end_routing_slot: u32::MAX,
+                    readonly: false,
+                    table_name: "feature_table".to_string(),
+                })
+                .status
+                .ok
+        );
+        engine.set_config(SetConfigRequest {
+            shard_id,
+            config: Config {
+                version: 2,
+                table_write_qps: Some(1),
+                ..Config::default()
+            },
+        });
+    }
+    wait_for_fresh_admission_second();
+
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "first".to_string(),
+                    value: b"x".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+    let rejected = engine.execute(ExecuteRequest {
+        shard_id: 2,
+        command: Command::StringSet {
+            key: "second".to_string(),
+            value: b"y".to_vec(),
+        },
+    });
+    assert_eq!(rejected.status.code, "admission_rejected");
+    assert_eq!(rejected.status.message, "table_write_qps limit exceeded");
+}
+
+#[test]
+fn tenant_read_qps_config_is_shared_across_tables() {
+    let engine = TemporalEngine::default();
+    for (shard_id, table_name, key) in [(1, "feature_table", "k1"), (2, "risk_table", "k2")] {
+        assert!(
+            engine
+                .load_shard_with(LoadShardRequest {
+                    shard_id,
+                    load_version: 1,
+                    local_node_id: Some(1),
+                    shard_uri: format!("local://{table_name}/{shard_id}"),
+                    start_routing_slot: 0,
+                    end_routing_slot: u32::MAX,
+                    readonly: false,
+                    table_name: table_name.to_string(),
+                })
+                .status
+                .ok
+        );
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id,
+                    command: Command::StringSet {
+                        key: key.to_string(),
+                        value: b"value".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        engine.set_config(SetConfigRequest {
+            shard_id,
+            config: Config {
+                version: 2,
+                tenant_name: Some("tenant-a".to_string()),
+                tenant_read_qps: Some(1),
+                ..Config::default()
+            },
+        });
+    }
+    wait_for_fresh_admission_second();
+
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "k1".to_string(),
+                },
+            })
+            .status
+            .ok
+    );
+    let rejected = engine.execute(ExecuteRequest {
+        shard_id: 2,
+        command: Command::StringGet {
+            key: "k2".to_string(),
+        },
+    });
+    assert_eq!(rejected.status.code, "admission_rejected");
+    assert_eq!(rejected.status.message, "tenant_read_qps limit exceeded");
+}
+
+#[test]
+fn stats_include_cpp_style_partition_and_object_manager_accounting() {
+    let engine = TemporalEngine::default();
+    assert!(
+        engine
+            .load_shard_with(LoadShardRequest {
+                shard_id: 9,
+                load_version: 77,
+                local_node_id: Some(3),
+                shard_uri: "local://table/shard-9".to_string(),
+                start_routing_slot: 10,
+                end_routing_slot: 20,
+                readonly: false,
+                table_name: "feature_table".to_string(),
+            })
+            .status
+            .ok
+    );
+    for command in [
+        Command::StringSet {
+            key: "string-key".to_string(),
+            value: b"v".to_vec(),
+        },
+        Command::HashSet {
+            key: "hash-key".to_string(),
+            field: "a".to_string(),
+            value: b"1".to_vec(),
+        },
+        Command::HashSet {
+            key: "hash-key".to_string(),
+            field: "b".to_string(),
+            value: b"2".to_vec(),
+        },
+        Command::SetAdd {
+            key: "set-key".to_string(),
+            member: b"m1".to_vec(),
+        },
+        Command::SetAdd {
+            key: "set-key".to_string(),
+            member: b"m2".to_vec(),
+        },
+        Command::FeatureAppend {
+            key: "feature-key".to_string(),
+            points: vec![
+                FeaturePoint {
+                    timestamp_ms: 1,
+                    value: b"f1".to_vec(),
+                },
+                FeaturePoint {
+                    timestamp_ms: 2,
+                    value: b"f2".to_vec(),
+                },
+            ],
+        },
+        Command::SequenceAdd {
+            key: "sequence-key".to_string(),
+            rows: vec![
+                SequenceFeatureRow {
+                    timestamp_ms: 10,
+                    gid: 1,
+                    action_type: 2,
+                    duration: 3,
+                    author_id: 4,
+                },
+                SequenceFeatureRow {
+                    timestamp_ms: 20,
+                    gid: 5,
+                    action_type: 6,
+                    duration: 7,
+                    author_id: 8,
+                },
+            ],
+        },
+        Command::IpsAdd {
+            key: "ips-key".to_string(),
+            timestamp_ms: 30,
+            instance: b"i".to_vec(),
+        },
+        Command::RiskSet {
+            family: RiskFamily::Cpc,
+            key: "risk-key".to_string(),
+            timestamp_ms: 40,
+            amount: 5,
+        },
+    ] {
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 9,
+                    command,
+                })
+                .status
+                .ok
+        );
+    }
+
+    let stats = engine.get_stats(9).stats.unwrap();
+    assert_eq!(stats.total_records, 7);
+    assert_eq!(stats.object_manager.object_count, 7);
+    assert_eq!(stats.object_manager.page_ref_count, 10);
+    assert_eq!(stats.object_manager.dirty_object_count, 7);
+    assert!(stats.object_manager.dirty_slot_count > 0);
+    assert!(stats.object_manager.dirty_slot_count <= 7);
+    assert_eq!(stats.object_manager.routing_slot_count, 11);
+    assert_eq!(stats.partition_info.table_name, "feature_table");
+    assert_eq!(stats.partition_info.shard_uri, "local://table/shard-9");
+    assert_eq!(stats.partition_info.start_routing_slot, 10);
+    assert_eq!(stats.partition_info.end_routing_slot, 20);
+    assert_eq!(stats.partition_info.object_manager, stats.object_manager);
+    assert!(stats.block_store_extents.active_extents >= 1);
+    assert!(stats.block_store_extents.active_physical_bytes > 0);
+    assert_eq!(
+        stats.block_store_extents.live_physical_bytes,
+        stats.block_store_extents.active_physical_bytes
+            + stats.block_store_extents.sealed_physical_bytes
+    );
+}
+
+#[test]
+fn prometheus_metrics_include_records_cache_page_and_wal() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    let _ = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "k".to_string(),
+        },
+    });
+    engine.block_store().roll_segment().unwrap();
+
+    let metrics = engine.prometheus_metrics();
+    assert!(metrics.contains("temporalstore_shard_records{shard_id=\"1\",kind=\"string\"} 1"));
+    assert!(metrics.contains("temporalstore_cache_operations_total"));
+    assert!(metrics.contains(
+        "temporalstore_cache_operations_total{shard_id=\"1\",kind=\"memory_evictions\"}"
+    ));
+    assert!(metrics.contains("temporalstore_block_store_operations_total"));
+    assert!(metrics
+        .contains("temporalstore_block_store_extent_count{shard_id=\"1\",state=\"sealed\"} 1"));
+    assert!(
+        metrics.contains("temporalstore_block_store_extent_bytes{shard_id=\"1\",kind=\"live\"}")
+    );
+    assert!(metrics
+        .contains("temporalstore_block_store_extent_bytes{shard_id=\"1\",kind=\"total_known\"}"));
+    assert!(metrics.contains(
+        "temporalstore_block_store_extent_oldest_unix_ms{shard_id=\"1\",scope=\"known\"}"
+    ));
+    assert!(metrics.contains(
+        "temporalstore_block_store_extent_oldest_unix_ms{shard_id=\"1\",scope=\"live\"}"
+    ));
+    assert!(metrics.contains(
+        "temporalstore_block_store_extent_oldest_age_ms{shard_id=\"1\",scope=\"known\"}"
+    ));
+    assert!(metrics
+        .contains("temporalstore_block_store_extent_oldest_age_ms{shard_id=\"1\",scope=\"live\"}"));
+    assert!(metrics.contains("temporalstore_wal_records_total{shard_id=\"1\"} 1"));
+    assert!(metrics.contains("temporalstore_oplog_records_total{shard_id=\"1\"} 1"));
+    assert!(metrics.contains("temporalstore_object_manager_objects{shard_id=\"1\"} 1"));
+    assert!(metrics.contains("temporalstore_object_manager_page_refs{shard_id=\"1\"} 1"));
+    assert!(metrics.contains("temporalstore_object_manager_dirty_objects{shard_id=\"1\"} 1"));
+    assert!(metrics.contains("temporalstore_storage_slot_page_refs{shard_id=\"1\""));
+    assert!(metrics.contains("temporalstore_storage_slot_bytes{shard_id=\"1\""));
+    assert!(metrics.contains("temporalstore_storage_slot_dirty_objects{shard_id=\"1\""));
+    assert!(metrics.contains("temporalstore_partition_routing_slots{shard_id=\"1\"} 4294967295"));
+}
+
+#[test]
+fn slot_storage_summaries_track_live_refs_dirty_slots_and_manifest_sequence() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_slot: 10,
+        end_routing_slot: 12,
+        readonly: false,
+        table_name: String::new(),
+    });
+    for key in ["alpha", "beta", "gamma"] {
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: key.to_string(),
+                        value: key.as_bytes().to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+    }
+
+    let summaries = engine.slot_storage_summaries(1);
+    assert!(!summaries.is_empty());
+    assert_eq!(
+        summaries
+            .iter()
+            .map(|summary| summary.page_ref_count)
+            .sum::<u64>(),
+        3
+    );
+    assert_eq!(
+        summaries
+            .iter()
+            .map(|summary| summary.dirty_object_count)
+            .sum::<u64>(),
+        3
+    );
+    let dirty_slot = summaries
+        .iter()
+        .find(|summary| summary.dirty_object_count > 0)
+        .unwrap()
+        .routing_slot;
+    let manifest = engine
+        .create_slot_dump_manifest(1, [dirty_slot])
+        .expect("slot dump manifest should persist");
+    engine.validate_slot_dump_manifest(&manifest).unwrap();
+    let summaries = engine.slot_storage_summaries(1);
+    assert!(summaries
+        .iter()
+        .filter(|summary| summary.routing_slot == dirty_slot)
+        .all(|summary| summary.last_dump_sequence == manifest.index_log_sequence));
+}
+
+// shared-corpus: storage_dump_load_recovery
+#[test]
+fn slot_page_ownership_is_first_class_and_survives_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_slot: 10,
+        end_routing_slot: 12,
+        readonly: false,
+        table_name: String::new(),
+    });
+    for field in ["field-a", "field-b"] {
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashSet {
+                        key: "hash-key".to_string(),
+                        field: field.to_string(),
+                        value: field.as_bytes().to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+    }
+
+    let physical_before_reload = engine.storage_physical_index_report(1);
+    assert!(physical_before_reload.slot_index_authority);
+    assert_eq!(physical_before_reload.page_index_count, 2);
+    assert_eq!(physical_before_reload.dirty_slot_count, 1);
+    assert_eq!(physical_before_reload.missing_object_id_count, 0);
+    assert_eq!(physical_before_reload.missing_routing_slot_count, 0);
+    assert!(physical_before_reload.slot_nodes.iter().any(|slot| {
+        slot.page_ref_count == 2
+            && slot.object_count == 2
+            && slot.dirty_generation >= 2
+            && slot.page_indexes.iter().all(|page| {
+                page.model_id == "hash" && page.dirty && !page.deleted && !page.log_backed
+            })
+    }));
+    assert_eq!(
+        engine
+            .slot_storage_summaries(1)
+            .iter()
+            .map(|summary| summary.object_count)
+            .sum::<u64>(),
+        2
+    );
+    let ownership = engine.slot_object_page_ownership_report(1);
+    assert!(ownership.first_class_index_present);
+    assert!(!ownership.derived_from_model_maps);
+    assert_eq!(ownership.page_ref_count, 2);
+    assert_eq!(ownership.missing_owner_page_ref_count, 0);
+    assert_eq!(ownership.owner_mismatch_page_ref_count, 0);
+    let physical = engine.storage_physical_index_report(1);
+    assert!(physical.slot_index_authority);
+    assert_eq!(physical.page_index_count, 2);
+    assert_eq!(physical.dirty_slot_count, 1);
+
+    engine.unload_shard(1);
+    engine.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 1,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_slot: 10,
+        end_routing_slot: 12,
+        readonly: false,
+        table_name: String::new(),
+    });
+    let physical_after_reload = engine.storage_physical_index_report(1);
+    assert!(physical_after_reload.slot_index_authority);
+    assert_eq!(physical_after_reload.page_index_count, 2);
+    assert_eq!(physical_after_reload.dirty_slot_count, 0);
+    assert!(physical_after_reload
+        .slot_nodes
+        .iter()
+        .any(|slot| slot.page_ref_count == 2 && slot.object_count == 2));
+    let reloaded_ownership = engine.slot_object_page_ownership_report(1);
+    assert!(reloaded_ownership.first_class_index_present);
+    assert!(!reloaded_ownership.derived_from_model_maps);
+    assert_eq!(reloaded_ownership.page_ref_count, 2);
+    assert_eq!(reloaded_ownership.missing_owner_page_ref_count, 0);
+    assert_eq!(reloaded_ownership.owner_mismatch_page_ref_count, 0);
+    let reloaded_physical = engine.storage_physical_index_report(1);
+    assert!(reloaded_physical.slot_index_authority);
+    assert_eq!(reloaded_physical.page_index_count, 2);
+}
+
+// shared-corpus: storage_dump_load_recovery
+#[test]
+fn slot_index_is_authoritative_when_secondary_views_are_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "slot-authority".to_string(),
+                    value: b"slot-value".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard loaded");
+        assert!(!shard.slot_index.slot_map.is_empty());
+        shard.strings.clear();
+        shard.hashes.clear();
+        shard.sets.clear();
+    }
+
+    let exists = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonExists {
+            key: "slot-authority".to_string(),
+        },
+    });
+    assert!(exists.status.ok);
+    assert_eq!(exists.response, CommandResponse::Integer { value: 1 });
+
+    let get = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "slot-authority".to_string(),
+        },
+    });
+    assert!(get.status.ok);
+    assert_eq!(
+        get.response,
+        CommandResponse::Bytes {
+            value: Some(b"slot-value".to_vec())
+        }
+    );
+}
+
+// shared-corpus: storage_recovery_reconciles_slot_index_to_model_views
+#[test]
+fn storage_recovery_uses_slot_index_not_stale_secondary_model_maps() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "slot-authority".to_string(),
+                    value: b"authoritative".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard loaded");
+        assert!(!shard.slot_index.slot_map.is_empty());
+        let stale = shard
+            .strings
+            .get_mut("slot-authority")
+            .expect("secondary string view");
+        stale.object_id = Some(stale.object_id.unwrap_or_default().wrapping_add(99));
+        stale.routing_slot = Some(stale.routing_slot.unwrap_or_default().wrapping_add(99));
+        stale.page_segment_id = stale.page_segment_id.wrapping_add(999);
+    }
+
+    let recovery = engine.storage_recovery_report(1);
+    assert_eq!(recovery.total_page_refs, 1);
+    assert_eq!(recovery.readable_page_refs, 1);
+    assert!(recovery.all_live_pages_readable);
+    assert!(recovery.owner_mismatch_page_refs.is_empty());
+    assert_eq!(recovery.missing_owner_page_refs, 0);
+    assert_eq!(recovery.object_lifecycle.owner_mismatch_page_refs, 0);
+    assert_eq!(recovery.segment_integrity.owner_mismatch_page_ref_count, 0);
+    assert!(recovery.segment_integrity.integrity_ok);
+}
+
+// shared-corpus: storage_dump_load_recovery
+#[test]
+fn legacy_model_maps_are_promoted_to_slot_index_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "legacy-map".to_string(),
+                    value: b"promoted".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard loaded");
+        assert!(!shard.strings.is_empty());
+        shard.slot_index.slot_map.clear();
+    }
+
+    let get = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "legacy-map".to_string(),
+        },
+    });
+    assert!(get.status.ok);
+    assert_eq!(
+        get.response,
+        CommandResponse::Bytes {
+            value: Some(b"promoted".to_vec())
+        }
+    );
+    let physical = engine.storage_physical_index_report(1);
+    assert!(physical.slot_index_authority);
+    assert_eq!(physical.page_index_count, 1);
+    assert_eq!(physical.missing_object_id_count, 0);
+    assert_eq!(physical.missing_routing_slot_count, 0);
+}
+
+// shared-corpus: storage_cold_read_page_address_fallback
+#[test]
+fn cold_read_uses_slot_page_address_after_cache_and_model_maps_are_cleared() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .execute_durable(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "cold-slot-read".to_string(),
+                    value: b"from-disk".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard loaded");
+        assert!(!shard.slot_index.slot_map.is_empty());
+        shard.strings.clear();
+    }
+    let _ = engine
+        .cache()
+        .invalidate(&CacheKey::string(1, "cold-slot-read"));
+    engine.cache().clear_memory_for_test();
+    let block_reads_before = engine.block_store().stats().reads;
+
+    let get = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "cold-slot-read".to_string(),
+        },
+    });
+    assert!(get.status.ok);
+    assert_eq!(
+        get.response,
+        CommandResponse::Bytes {
+            value: Some(b"from-disk".to_vec())
+        }
+    );
+    assert!(engine.block_store().stats().reads > block_reads_before);
+}
+
+// shared-corpus: storage_recovery_reconciles_slot_index_to_model_views
+#[test]
+fn recovery_reconciles_model_views_from_slot_index_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache_dir = dir.path().join("cache");
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(1024, &cache_dir, &page_dir, &index_dir);
+    engine.load_shard(1);
+    assert!(
+        engine
+            .execute_durable(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "recover-slot-view".to_string(),
+                    value: b"view".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+    engine.unload_shard(1);
+
+    let index_path = index_dir.join("shard-1.index.json");
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&index_path).expect("index file")).unwrap();
+    json["strings"] = serde_json::json!({});
+    std::fs::write(&index_path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+
+    let recovered = TemporalEngine::with_local_dirs(1024, &cache_dir, &page_dir, &index_dir);
+    recovered.load_shard(1);
+    {
+        let shards = recovered.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("recovered shard");
+        assert!(shard.strings.contains_key("recover-slot-view"));
+    }
+    let get = recovered.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "recover-slot-view".to_string(),
+        },
+    });
+    assert_eq!(
+        get.response,
+        CommandResponse::Bytes {
+            value: Some(b"view".to_vec())
+        }
+    );
+}
+
+// shared-corpus: storage_dump_load_recovery
+#[test]
+fn core_index_loads_legacy_slot_page_field_names() {
+    let legacy_json = r#"{
+        "slots": {
+            "7": {
+                "routing_slot": 7,
+                "layout": "SinglePageObject",
+                "dirty": false,
+                "meta_loaded": true,
+                "loading": false,
+                "in_memory": true,
+                "ttl_ms": null,
+                "dirty_generation": 3,
+                "last_dump_sequence": 11,
+                "object_ids": [42],
+                "page_refs": {
+                    "string:k::1:2": {
+                        "object_key": "k",
+                        "model_id": "string",
+                        "object_id": 42,
+                        "address": {
+                            "page_segment_id": 1,
+                            "offset": 2,
+                            "length": 3,
+                            "page_id": 4,
+                            "object_id": 42,
+                            "routing_slot": 7
+                        },
+                        "dirty": false,
+                        "deleted": false,
+                        "log_backed": true
+                    }
+                }
+            }
+        }
+    }"#;
+
+    let index: CoreIndex = serde_json::from_str(legacy_json).unwrap();
+    let slot = index.slot_map.get(&7).expect("legacy slot should load");
+    assert!(slot.object_index.contains(&42));
+    assert_eq!(slot.page_index.len(), 1);
+    assert_eq!(
+        slot.page_index
+            .values()
+            .next()
+            .expect("legacy page index should load")
+            .address
+            .routing_slot,
+        Some(7)
+    );
+}
+
+// shared-corpus: storage_object_page_slot_parity_surfaces storage_slot_layout_transitions;
+#[test]
+fn slot_store_reports_all_layout_states_and_runtime_flags() {
+    let mut shard = ShardState::default();
+    shard.slot_index.slot_map.insert(
+        1,
+        SlotNode {
+            routing_slot: 1,
+            meta_loaded: true,
+            ..SlotNode::default()
+        },
+    );
+    shard.slot_index.slot_map.insert(
+        2,
+        SlotNode {
+            routing_slot: 2,
+            layout: SlotLayoutState::SingleObject,
+            dirty: true,
+            deleted: true,
+            meta_loaded: true,
+            in_memory: false,
+            ttl_ms: Some(5_000),
+            dirty_generation: 7,
+            object_index: [20].into_iter().collect(),
+            ..SlotNode::default()
+        },
+    );
+    shard.slot_index.slot_map.insert(
+        3,
+        SlotNode {
+            routing_slot: 3,
+            layout: SlotLayoutState::SinglePageObject,
+            meta_loaded: true,
+            in_memory: true,
+            object_index: [30].into_iter().collect(),
+            page_index: [(
+                "string:k::1:0".to_string(),
+                PageIndex {
+                    object_key: "k".to_string(),
+                    model_id: "string".to_string(),
+                    component: None,
+                    object_id: 30,
+                    address: PageAddress {
+                        page_segment_id: 1,
+                        offset: 0,
+                        length: 4,
+                        page_id: Some(1),
+                        object_id: Some(30),
+                        routing_slot: Some(3),
+                        extent_id: None,
+                        generation: Some(1),
+                        sha256: None,
+                    },
+                    dirty: false,
+                    deleted: false,
+                    log_backed: true,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..SlotNode::default()
+        },
+    );
+    shard.slot_index.slot_map.insert(
+        4,
+        SlotNode {
+            routing_slot: 4,
+            layout: SlotLayoutState::MultiPageObject,
+            meta_loaded: true,
+            loading: true,
+            in_memory: true,
+            object_index: [40].into_iter().collect(),
+            page_index: [
+                (
+                    "feature:k::2:0".to_string(),
+                    PageIndex {
+                        object_key: "feature-key".to_string(),
+                        model_id: "feature".to_string(),
+                        component: None,
+                        object_id: 40,
+                        address: PageAddress {
+                            page_segment_id: 2,
+                            offset: 0,
+                            length: 4,
+                            page_id: Some(2),
+                            object_id: Some(40),
+                            routing_slot: Some(4),
+                            extent_id: None,
+                            generation: Some(2),
+                            sha256: None,
+                        },
+                        dirty: false,
+                        deleted: false,
+                        log_backed: true,
+                    },
+                ),
+                (
+                    "feature:k::2:4".to_string(),
+                    PageIndex {
+                        object_key: "feature-key".to_string(),
+                        model_id: "feature".to_string(),
+                        component: None,
+                        object_id: 40,
+                        address: PageAddress {
+                            page_segment_id: 2,
+                            offset: 4,
+                            length: 4,
+                            page_id: Some(3),
+                            object_id: Some(40),
+                            routing_slot: Some(4),
+                            extent_id: None,
+                            generation: Some(3),
+                            sha256: None,
+                        },
+                        dirty: false,
+                        deleted: false,
+                        log_backed: true,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            ..SlotNode::default()
+        },
+    );
+    shard.slot_index.slot_map.insert(
+        5,
+        SlotNode {
+            routing_slot: 5,
+            layout: SlotLayoutState::MultiObject,
+            meta_loaded: true,
+            in_memory: true,
+            object_index: [50, 51].into_iter().collect(),
+            page_index: [
+                (
+                    "hash:k:a:3:0".to_string(),
+                    PageIndex {
+                        object_key: "hash-key".to_string(),
+                        model_id: "hash".to_string(),
+                        component: Some("a".to_string()),
+                        object_id: 50,
+                        address: PageAddress {
+                            page_segment_id: 3,
+                            offset: 0,
+                            length: 1,
+                            page_id: Some(4),
+                            object_id: Some(50),
+                            routing_slot: Some(5),
+                            extent_id: None,
+                            generation: Some(4),
+                            sha256: None,
+                        },
+                        dirty: false,
+                        deleted: false,
+                        log_backed: true,
+                    },
+                ),
+                (
+                    "hash:k:b:3:1".to_string(),
+                    PageIndex {
+                        object_key: "hash-key".to_string(),
+                        model_id: "hash".to_string(),
+                        component: Some("b".to_string()),
+                        object_id: 51,
+                        address: PageAddress {
+                            page_segment_id: 3,
+                            offset: 1,
+                            length: 1,
+                            page_id: Some(5),
+                            object_id: Some(51),
+                            routing_slot: Some(5),
+                            extent_id: None,
+                            generation: Some(5),
+                            sha256: None,
+                        },
+                        dirty: false,
+                        deleted: false,
+                        log_backed: true,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            ..SlotNode::default()
+        },
+    );
+
+    let report = slot_store::runtime_report(&shard);
+    assert_eq!(report.empty_slots, 1);
+    assert_eq!(report.single_object_slots, 1);
+    assert_eq!(report.single_page_object_slots, 1);
+    assert_eq!(report.multi_page_object_slots, 1);
+    assert_eq!(report.multi_object_slots, 1);
+    assert_eq!(report.deleted_slot_count, 1);
+    assert_eq!(report.loading_slot_count, 1);
+    assert_eq!(report.ttl_slot_count, 1);
+    assert_eq!(report.in_memory_slot_count, 3);
+    assert_eq!(report.max_dirty_generation, 7);
+}
+
+// shared-corpus: storage_object_page_slot_parity_surfaces storage_object_hot_cold_reload;
