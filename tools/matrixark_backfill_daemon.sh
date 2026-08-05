@@ -19,6 +19,12 @@ cd "$REPO_ROOT"
 PYTHON="${TEMPORALSTORE_PYTHON:-python3}"
 TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/temporalstore-context-workflow-target}"
 BATCH="$TARGET_DIR/debug/context_batch_ingest"
+# Low-priority execution so real-time (live-hook) ingestion is never starved by
+# the backfill: nice lowers CPU priority, ionice (if present) lowers IO priority,
+# and a short yield between chunks releases the store lock for any live write.
+NICE_PREFIX="nice -n ${MATRIXARK_BACKFILL_NICE:-19}"
+command -v ionice >/dev/null 2>&1 && NICE_PREFIX="ionice -c3 $NICE_PREFIX"
+YIELD_MS="${MATRIXARK_BACKFILL_YIELD_MS:-200}"
 INGESTER="$REPO_ROOT/tools/matrixark_local_backfill_ingester.py"
 WORK="${MATRIXARK_BACKFILL_WORK:-/tmp/matrixark-backfill}"
 CHUNK="${MATRIXARK_BACKFILL_CHUNK:-400}"
@@ -69,9 +75,10 @@ for AG in $AGENTS; do
         MATRIXARK_AGENT_NAME="$AG" MATRIXARK_ACCOUNT_ID="$(agent_account "$AG")" \
         MATRIXARK_TENANT_ID="$(agent_tenant "$AG")" MATRIXARK_USER_ID="${USER:-root}" \
         TEMPORALSTORE_RUST_CODEX_HOOK_ROOT="$ROOT" \
-        "$BATCH" --agent-name "$AG" >>"$LOG" 2>&1; then
+        $NICE_PREFIX "$BATCH" --agent-name "$AG" >>"$LOG" 2>&1; then
       off=$end
       echo "$off" >"$off_file"
+      [[ "${YIELD_MS:-0}" -gt 0 ]] && sleep "$(awk "BEGIN{print $YIELD_MS/1000}")"
     else
       log "$AG: chunk failed at offset $off; will retry next launch"
       all_done=0
