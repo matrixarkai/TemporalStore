@@ -15,11 +15,18 @@ import socket
 import time
 from typing import Any
 
-from matrixark_mcp_core import (
-    BACKEND_READINESS_CONNECT_TIMEOUT_MS,
-    Json,
-    MATRIXARK_ROLE_SCOPE_LIMITS,
-)
+try:  # package import: from tools.matrixark_mcp_core (dominant, 110 importers)
+    from .matrixark_mcp_core import (
+        BACKEND_READINESS_CONNECT_TIMEOUT_MS,
+        Json,
+        MATRIXARK_ROLE_SCOPE_LIMITS,
+    )
+except ImportError:  # top-level import: PYTHONPATH=tools, import matrixark_mcp_core
+    from matrixark_mcp_core import (
+        BACKEND_READINESS_CONNECT_TIMEOUT_MS,
+        Json,
+        MATRIXARK_ROLE_SCOPE_LIMITS,
+    )
 
 
 def normalize_matrixark_role(role: str) -> str:
