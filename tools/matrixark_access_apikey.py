@@ -225,6 +225,7 @@ class _AccessApiKeyMixin:
         external_user_id = optional_string(args, "external_user_id", email or optional_string(args, "external_subject", ""))
         external_subject = optional_string(args, "external_subject", f"{provider}:{external_user_id}" if external_user_id else "")
         first_key_scopes = optional_string_list(args, "first_key_scopes", sorted(MATRIXARK_ALL_SCOPES))
+        password = optional_string(args, "password", "")
         apply_args: Json = {
             **args,
             "scopes": first_key_scopes,
@@ -233,7 +234,21 @@ class _AccessApiKeyMixin:
             "key_display_name": optional_string(args, "key_display_name", "MatrixArk owner key"),
             "key_prefix": optional_string(args, "key_prefix", "mk_live"),
         }
+        # Never let a plaintext password flow into API-key creation or audit records.
+        apply_args.pop("password", None)
         result = self.apply_api_key(apply_args, identity)
+        resolved_user_id = result.get("local_scope", {}).get("user_id", optional_string(args, "user_id", ""))
+        password_set = False
+        if password and resolved_user_id:
+            self.set_user_password(
+                result.get("account_id", identity.get("account_id", "")),
+                result.get("tenant_id", identity.get("tenant_id", "")),
+                resolved_user_id,
+                password,
+                email=email,
+                identity=identity,
+            )
+            password_set = True
         signup_identity = {
             **identity,
             "account_id": result.get("account_id", identity.get("account_id", "")),
@@ -263,6 +278,7 @@ class _AccessApiKeyMixin:
                 "external_subject": external_subject,
                 "matrixark_user_id": result.get("local_scope", {}).get("user_id", ""),
             },
+            "password_login_enabled": password_set,
             "key_inventory_redacted": True,
         }
 

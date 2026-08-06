@@ -81,6 +81,7 @@ HTTP_TOOL_ROUTES: dict[str, str] = {
     "/api/audit": "matrixark_admin_audit",
     "/api/replay": "matrixark_replay",
     "/api/auth/signup": "matrixark_auth_signup",
+    "/api/auth/login": "matrixark_auth_login",
     "/api/auth/sso_login": "matrixark_auth_sso_login",
     "/api/auth/sso_callback": "matrixark_auth_sso_callback",
     "/api/admin/create_account": "matrixark_admin_create_account",

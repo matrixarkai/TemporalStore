@@ -213,6 +213,7 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
         "matrixark_auth_signup",
         "matrixark_auth_sso_callback",
         "matrixark_auth_sso_login",
+        "matrixark_auth_login",
     }
     SCOPED_READ_TOOLS = {"matrixark_retrieve", "matrixark_replay", "matrixark_management_portal", "matrixark_ingestion_dashboard", "matrixark_list_resources", "matrixark_list_skills"}
     SERVER_NAME = "matrixark-context"

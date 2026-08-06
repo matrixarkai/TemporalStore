@@ -195,6 +195,10 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
         result = server.access.sso_callback(args, identity)
         response = {**result, "access": args.get("_matrixark_auth", {})}
         return server._finalize_write_response(name, args, identity, hook, response)
+    if name == "matrixark_auth_login":
+        result = server.access.login(args, identity)
+        response = {**result, "access": args.get("_matrixark_auth", {})}
+        return server._finalize_write_response(name, args, identity, hook, response)
     if name == "matrixark_management_portal":
         result = server.access.management_portal(args, identity)
         server.access.append_audit("admin.management_portal", identity, status="ok", details={"account_id": result.get("account_id"), "tenant_id": result.get("tenant_id")})
