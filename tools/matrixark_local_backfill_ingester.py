@@ -203,42 +203,136 @@ def iter_claude_transcripts(home: str, limit: int | None) -> Iterator[Item]:
                 break
 
 
+# Codex rollout payload types that carry exploration signal beyond plain messages.
+_CODEX_CALL_TYPES = ("function_call", "custom_tool_call", "local_shell_call")
+_CODEX_OUT_TYPES = ("function_call_output", "custom_tool_call_output",
+                    "local_shell_call_output")
+_CODEX_EXPL_MAX = 4000  # cap for one coalesced exploration digest
+
+
+def _codex_call_frag(pay: dict) -> str:
+    """One-line digest of a tool/function call: name + best-effort target."""
+    name = pay.get("name") or pay.get("type") or "tool"
+    arg = pay.get("arguments")
+    if arg is None:
+        arg = pay.get("input")
+    target = ""
+    if isinstance(arg, str):
+        try:
+            j = json.loads(arg)
+        except Exception:
+            j = None
+        if isinstance(j, dict):
+            target = (j.get("command") or j.get("cmd") or j.get("query")
+                      or j.get("path") or j.get("file_path") or "")
+            if isinstance(target, list):
+                target = " ".join(str(x) for x in target)
+        if not target:
+            target = arg
+    elif arg is not None:
+        target = str(arg)
+    target = " ".join(str(target).split())[:180]
+    frag = f"$ {name}: {target}" if target else f"$ {name}"
+    return frag.strip()
+
+
+def _codex_out_frag(pay: dict) -> str:
+    out = pay.get("output")
+    if isinstance(out, dict):
+        out = out.get("content") or out.get("output") or ""
+    line = " ".join(str(out or "").split())[:180]
+    return f"  -> {line}" if line else ""
+
+
 def iter_codex_rollouts(home: str, limit: int | None,
-                        min_assistant_chars: int = 400, user_only: bool = False) -> Iterator[Item]:
-    """Codex rollouts contain one message per reasoning/tool micro-step, so the
-    raw stream is ~200k items dominated by short intermediate assistant turns.
-    For store-warming we keep every *user* turn (the queries -- high signal) and
-    only *substantive* assistant turns (>= min_assistant_chars), dropping the
-    micro-step noise. Set user_only to ingest queries alone."""
+                        min_assistant_chars: int = 400, user_only: bool = False,
+                        coalesce: bool = True) -> Iterator[Item]:
+    """Codex rollouts are ~200k items dominated by reasoning/tool micro-steps.
+
+    Policy: keep every *user* turn (queries -- high signal) and every
+    *substantive* assistant turn (>= min_assistant_chars) as first-class
+    records. The intermediate "exploration" (tool/function calls, their
+    outputs, and short assistant micro-steps) is not dropped -- it is
+    *coalesced per turn* into a single [exploration] digest, so the signal
+    (which commands ran, which files were touched, key results) is retained
+    as one accepted record instead of thousands of noisy fragments. Encrypted
+    `reasoning` items carry no plaintext summary and are skipped. Set
+    coalesce=False for the old drop-everything behaviour, or user_only to
+    ingest queries alone."""
     root = os.path.join(home, ".codex", "sessions")
     files = sorted(glob.glob(os.path.join(root, "**", "rollout-*.jsonl"), recursive=True))
     for fp in files:
         sid = Path(fp).stem
         n = 0
+        expl: list[tuple[int, str]] = []  # (ts_ms, fragment) for the current turn
+
+        def _flush_expl():
+            if not expl:
+                return None
+            ts0 = expl[0][0]
+            body = "[exploration] codex activity\n" + "\n".join(fr for _, fr in expl)
+            body = body[:_CODEX_EXPL_MAX]
+            expl.clear()
+            return Item("codex", sid, "PostToolUse",
+                        {"hook_event_name": "PostToolUse", "session_id": sid, "prompt": body},
+                        "codex_rollout_exploration", text=body, ts_ms=ts0)
+
+        stop = False
         for line in _read_lines(fp):
+            if stop:
+                break
             d = _loads(line)
             if not d or d.get("type") != "response_item":
                 if d and d.get("type") == "session_meta":
                     sid = ((d.get("payload") or {}).get("id")) or sid
                 continue
             pay = d.get("payload") or {}
-            if pay.get("type") != "message":
-                continue
-            role = pay.get("role")
-            if role not in ("user", "assistant"):
-                continue
-            text = _content_to_text(pay.get("content"))
-            if not text or _is_system_noise(text):
-                continue
-            if role == "assistant" and (user_only or len(text) < min_assistant_chars):
-                continue
-            ev = EVENT_FOR_ROLE[role]
-            yield Item("codex", sid, ev,
-                       {"hook_event_name": ev, "session_id": sid, "prompt": text},
-                       "codex_rollout", text=text, ts_ms=_iso_to_ms(d.get("timestamp")))
-            n += 1
-            if limit and n >= limit:
-                break
+            pt = pay.get("type")
+            ts = _iso_to_ms(d.get("timestamp"))
+            if pt == "message":
+                role = pay.get("role")
+                if role not in ("user", "assistant"):
+                    continue
+                text = _content_to_text(pay.get("content"))
+                if not text or _is_system_noise(text):
+                    continue
+                if role == "user":
+                    if coalesce:
+                        it = _flush_expl()
+                        if it is not None:
+                            yield it
+                            n += 1
+                            if limit and n >= limit:
+                                stop = True
+                                continue
+                    yield Item("codex", sid, "UserPromptSubmit",
+                               {"hook_event_name": "UserPromptSubmit", "session_id": sid, "prompt": text},
+                               "codex_rollout", text=text, ts_ms=ts)
+                    n += 1
+                    if limit and n >= limit:
+                        stop = True
+                elif len(text) >= min_assistant_chars and not user_only:
+                    yield Item("codex", sid, "Stop",
+                               {"hook_event_name": "Stop", "session_id": sid, "prompt": text},
+                               "codex_rollout", text=text, ts_ms=ts)
+                    n += 1
+                    if limit and n >= limit:
+                        stop = True
+                elif coalesce and not user_only:
+                    expl.append((ts, "assistant: " + " ".join(text.split())[:200]))
+            elif coalesce and not user_only and pt in _CODEX_CALL_TYPES:
+                frag = _codex_call_frag(pay)
+                if frag:
+                    expl.append((ts, frag))
+            elif coalesce and not user_only and pt in _CODEX_OUT_TYPES:
+                frag = _codex_out_frag(pay)
+                if frag:
+                    expl.append((ts, frag))
+            # reasoning (encrypted), tool_search_*, web_search_call -> skipped
+        if coalesce and not stop:
+            it = _flush_expl()
+            if it is not None:
+                yield it
 
 
 def iter_codex_dual_hooks(tmp: str, limit: int | None) -> Iterator[Item]:
@@ -418,7 +512,8 @@ def build_items(args, home, tmp) -> list[Item]:
     if "transcripts" in args.sources and "claude" in args.agents:
         items += list(iter_claude_transcripts(home, per))
     if "rollouts" in args.sources and "codex" in args.agents:
-        items += list(iter_codex_rollouts(home, per, args.rollout_min_assistant_chars, args.rollout_user_only))
+        items += list(iter_codex_rollouts(home, per, args.rollout_min_assistant_chars,
+                                            args.rollout_user_only, coalesce=not args.rollout_no_coalesce))
     if "dual_hooks" in args.sources and "codex" in args.agents:
         items += list(iter_codex_dual_hooks(tmp, per))
     if "openviking" in args.sources:
@@ -487,6 +582,8 @@ def main() -> int:
                     help="drop codex-rollout assistant micro-steps shorter than this")
     ap.add_argument("--rollout-user-only", action="store_true",
                     help="ingest only user turns from codex rollouts (queries only)")
+    ap.add_argument("--rollout-no-coalesce", action="store_true",
+                    help="drop codex exploration micro-steps instead of coalescing them per turn")
     ap.add_argument("--max-chars", type=int, default=1500, help="resource chunk size (chars)")
     ap.add_argument("--max-ctx", type=int, default=256, help="MATRIXARK_HOOK_MAX_CONTEXT_TOKENS during backfill")
     ap.add_argument("--limit-per-source", type=int, default=None, help="cap items per source (smoke tests)")
