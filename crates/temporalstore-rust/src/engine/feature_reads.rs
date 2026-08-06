@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use matrixcache::MultiLayerCache;
 
-use crate::page_store::{LocalPageStore, PageAddress};
+use crate::block_store::{LocalBlockStore, BlockAddress};
 use crate::types::{FeatureFilter, FeaturePoint, SequenceFeatureRow, ShardId};
 
 use super::packed_pages::{
@@ -16,11 +16,11 @@ use super::slot_index_object_page_addresses;
 use super::state::ShardState;
 
 fn timestamp_page_refs_in_range(
-    series: &BTreeMap<u64, PageAddress>,
+    series: &BTreeMap<u64, BlockAddress>,
     start_ms: u64,
     end_ms: u64,
     limit: usize,
-) -> Vec<(u64, PageAddress)> {
+) -> Vec<(u64, BlockAddress)> {
     let mut refs = Vec::with_capacity(limit.min(series.len()));
     refs.extend(
         series
@@ -32,9 +32,9 @@ fn timestamp_page_refs_in_range(
 }
 
 fn timestamp_page_refs_last(
-    series: &BTreeMap<u64, PageAddress>,
+    series: &BTreeMap<u64, BlockAddress>,
     limit: usize,
-) -> Vec<(u64, PageAddress)> {
+) -> Vec<(u64, BlockAddress)> {
     let mut refs = Vec::with_capacity(limit.min(series.len()));
     refs.extend(
         series
@@ -55,7 +55,7 @@ fn is_feature_count_aggregator(aggregator: &str) -> bool {
 
 pub(super) fn read_feature_points_in_range(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     model_id: &str,
@@ -85,7 +85,7 @@ pub(super) fn read_feature_points_in_range(
 
 pub(super) fn read_filtered_feature_points(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     key: &str,
@@ -113,7 +113,7 @@ pub(super) fn read_filtered_feature_points(
 
 pub(super) fn read_feature_aggregate(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     key: &str,
@@ -143,7 +143,7 @@ pub(super) fn read_feature_aggregate(
 
 pub(super) fn read_ips_count_in_range(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     key: &str,
@@ -171,7 +171,7 @@ pub(super) fn read_ips_count_in_range(
 
 pub(super) fn read_ips_points_last(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     key: &str,

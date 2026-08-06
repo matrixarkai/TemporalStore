@@ -66,7 +66,7 @@ use crate::control::{
     UnloadShardRequest, UnloadShardResponse,
 };
 use crate::index_log::LocalIndexLogStore;
-use crate::page_store::{LocalPageStore, PageAddress, PageStoreError, PageStoreOptions};
+use crate::block_store::{LocalBlockStore, BlockAddress, BlockStoreError, BlockStoreOptions};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextCompressionEvent,
     ContextEmbedding,
@@ -85,7 +85,7 @@ use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache};
 pub struct TemporalEngine {
     shards: Arc<RwLock<HashMap<ShardId, ShardState>>>,
     cache: MultiLayerCache,
-    page_store: LocalPageStore,
+    page_store: LocalBlockStore,
     wal_store: LocalWriteAheadLogStore,
     index_log_store: LocalIndexLogStore,
     index_dir: PathBuf,
@@ -1015,7 +1015,7 @@ fn now_ms() -> u64 {
 /// Returns true if it wrote a compression record. Entities are never touched.
 fn maybe_auto_compress_context_node(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &mut ShardState,
     tenant_hash: u64,
@@ -1367,17 +1367,17 @@ fn collect_live_page_segment_ids(shard: &ShardState) -> BTreeSet<u64> {
 
 fn append_value(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     bytes: &[u8],
     object_id: Option<u64>,
     routing_slot: Option<u32>,
     async_storage: bool,
-) -> Result<PageAddress, PageStoreError> {
+) -> Result<BlockAddress, BlockStoreError> {
     if !async_storage {
         return page_store.append_with_page_metadata(bytes, object_id, routing_slot);
     }
-    let address = PageAddress {
+    let address = BlockAddress {
         page_segment_id: HOT_PAGE_SEGMENT_ID,
         offset: HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed),
         length: bytes.len() as u64,
@@ -1405,7 +1405,7 @@ fn append_value(
 
 fn persist_risk_page(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &mut ShardState,
     key: &str,
@@ -1534,9 +1534,9 @@ fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) 
 
 fn read_page_bytes(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
-    address: &PageAddress,
+    address: &BlockAddress,
 ) -> Option<Vec<u8>> {
     let cache_key = CacheKey::page_with_slot_generation(
         shard_id,
@@ -1554,7 +1554,7 @@ fn read_page_bytes(
     Some(bytes)
 }
 
-fn read_page_bytes_cold(page_store: &LocalPageStore, address: &PageAddress) -> Option<Vec<u8>> {
+fn read_page_bytes_cold(page_store: &LocalBlockStore, address: &BlockAddress) -> Option<Vec<u8>> {
     page_store.read(address).ok()
 }
 

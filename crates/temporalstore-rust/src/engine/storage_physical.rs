@@ -1,4 +1,4 @@
-use crate::page_store::PageAddress;
+use crate::block_store::BlockAddress;
 
 use super::reports::{
     StorageBlockAddressSample, StoragePageAddressSample, StoragePhysicalPageIndex,
@@ -9,13 +9,13 @@ use super::storage_model::storage_model_code;
 pub(super) const CPP_PACKED_PAGE_INDEX_SIZE: usize = 17;
 pub(super) const CPP_PACKED_SLOT_NODE_SIZE: usize = 24;
 
-fn physical_address_word(address: &PageAddress) -> u64 {
+fn physical_address_word(address: &BlockAddress) -> u64 {
     address.page_segment_id.wrapping_shl(32) | (address.offset & u32::MAX as u64)
 }
 
 pub(super) fn storage_page_address_sample(
     shard_id: u64,
-    address: &PageAddress,
+    address: &BlockAddress,
 ) -> StoragePageAddressSample {
     StoragePageAddressSample {
         shard_id,
@@ -30,7 +30,7 @@ pub(super) fn storage_page_address_sample(
 
 pub(super) fn storage_block_address_sample(
     shard_id: u64,
-    address: &PageAddress,
+    address: &BlockAddress,
 ) -> StorageBlockAddressSample {
     StorageBlockAddressSample {
         shard_id,
@@ -52,7 +52,7 @@ pub(super) fn cpp_packed_page_index_bytes(
     bytes[4] = u8::from(page.dirty) | (u8::from(page.log_backed) << 1);
     let page_size = if page.deleted { 0 } else { page.length as u32 };
     bytes[5..9].copy_from_slice(&page_size.to_le_bytes());
-    let address = physical_address_word(&PageAddress {
+    let address = physical_address_word(&BlockAddress {
         page_segment_id: page.page_segment_id,
         offset: page.offset,
         length: page.length,

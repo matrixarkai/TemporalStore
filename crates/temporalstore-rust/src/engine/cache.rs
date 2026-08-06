@@ -5,7 +5,7 @@ use matrixcache::{CacheKey, MultiLayerCache};
 use super::constants::HOT_PAGE_SEGMENT_ID;
 use super::page_reads::page_address_cache_key;
 use super::records::storage_model_kinds;
-use crate::page_store::PageAddress;
+use crate::block_store::BlockAddress;
 use crate::types::ShardId;
 
 pub(super) type PagePhysicalIdentityKey = (
@@ -18,7 +18,7 @@ pub(super) type PagePhysicalIdentityKey = (
     Option<u64>,
 );
 
-pub(super) fn page_physical_identity_key(address: &PageAddress) -> PagePhysicalIdentityKey {
+pub(super) fn page_physical_identity_key(address: &BlockAddress) -> PagePhysicalIdentityKey {
     (
         address.page_segment_id,
         address.offset,
@@ -33,12 +33,12 @@ pub(super) fn page_physical_identity_key(address: &PageAddress) -> PagePhysicalI
 pub(super) fn page_memory_resident(
     cache: &MultiLayerCache,
     shard_id: ShardId,
-    address: &PageAddress,
+    address: &BlockAddress,
 ) -> bool {
     cache.peek(&page_address_cache_key(shard_id, address))
 }
 
-pub(super) fn page_address_is_memory_only(address: &PageAddress) -> bool {
+pub(super) fn page_address_is_memory_only(address: &BlockAddress) -> bool {
     address.page_segment_id == HOT_PAGE_SEGMENT_ID
 }
 
@@ -53,7 +53,7 @@ pub(super) fn invalidate_cache_key(cache: &MultiLayerCache, key: CacheKey, memor
 pub(super) fn invalidate_page_addresses(
     cache: &MultiLayerCache,
     shard_id: ShardId,
-    addresses: Vec<PageAddress>,
+    addresses: Vec<BlockAddress>,
 ) {
     invalidate_page_addresses_except(cache, shard_id, addresses, BTreeSet::new());
 }
@@ -61,7 +61,7 @@ pub(super) fn invalidate_page_addresses(
 pub(super) fn invalidate_page_addresses_except(
     cache: &MultiLayerCache,
     shard_id: ShardId,
-    addresses: Vec<PageAddress>,
+    addresses: Vec<BlockAddress>,
     live_address_keys: BTreeSet<PagePhysicalIdentityKey>,
 ) {
     if addresses.is_empty() {

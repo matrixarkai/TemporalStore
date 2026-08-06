@@ -1,6 +1,6 @@
 use matrixcache::MultiLayerCache;
 
-use crate::page_store::LocalPageStore;
+use crate::block_store::LocalBlockStore;
 use crate::types::ShardId;
 
 use super::page_reads::read_page_bytes_batch;
@@ -11,7 +11,7 @@ use super::state::ShardState;
 
 pub(super) fn read_hash_multi_values(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     key: &str,
@@ -52,7 +52,7 @@ pub(super) fn read_hash_len(shard: &ShardState, key: &str) -> i64 {
 
 pub(super) fn read_set_members(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     key: &str,

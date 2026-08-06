@@ -340,7 +340,7 @@ pub struct BlockStoreBandSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BlockStoreZoneUsage {
+pub struct BlockStoreBandUsage {
     #[serde(alias = "extent_id", alias = "zone_id")]
     pub band_id: u64,
     pub page_segment_id: u64,
@@ -385,7 +385,7 @@ pub struct StreamBackedBandRuntimeReport {
     #[serde(default)]
     pub zone_stats_ready: bool,
     #[serde(default)]
-    pub zone_usage: Vec<BlockStoreZoneUsage>,
+    pub zone_usage: Vec<BlockStoreBandUsage>,
     pub stream_segment_count: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
@@ -628,7 +628,7 @@ impl LocalBlockStore {
         self.band_descriptors()
     }
 
-    pub fn zone_usage(&self) -> Vec<BlockStoreZoneUsage> {
+    pub fn zone_usage(&self) -> Vec<BlockStoreBandUsage> {
         band_zone_usage(
             &self
                 .inner
@@ -816,10 +816,10 @@ fn band_lifecycle_states(summary: &BlockStoreBandSummary) -> Vec<String> {
 
 fn band_zone_usage(
     bands: &BTreeMap<u64, BlockStoreBandDescriptor>,
-) -> Vec<BlockStoreZoneUsage> {
+) -> Vec<BlockStoreBandUsage> {
     #[derive(Debug, Clone)]
     struct ZoneUsageAcc {
-        usage: BlockStoreZoneUsage,
+        usage: BlockStoreBandUsage,
     }
 
     fn merged_zone_state(
@@ -847,7 +847,7 @@ fn band_zone_usage(
         let entry = zones
             .entry(band.band_id)
             .or_insert_with(|| ZoneUsageAcc {
-                usage: BlockStoreZoneUsage {
+                usage: BlockStoreBandUsage {
                     band_id: band.band_id,
                     page_segment_id: band.page_segment_id,
                     storage_zone_id: band.band_id,
@@ -901,141 +901,6 @@ impl Default for LocalBlockStore {
         Self::new(unique_temp_path("pages"))
     }
 }
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreError; page naming remains only for legacy compatibility"
-)]
-pub type PageStoreError = BlockStoreError;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockAddress; page naming remains only for legacy compatibility"
-)]
-pub type PageAddress = BlockAddress;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreStats; page naming remains only for legacy compatibility"
-)]
-pub type PageStoreStats = BlockStoreStats;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreOptions; page naming remains only for legacy compatibility"
-)]
-pub type PageStoreOptions = BlockStoreOptions;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreGcReport; page naming remains only for legacy compatibility"
-)]
-pub type PageStoreGcReport = BlockStoreGcReport;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreGcUtilityCandidate; page naming remains only for legacy compatibility"
-)]
-pub type PageStoreGcUtilityCandidate = BlockStoreGcUtilityCandidate;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreGcPolicy; page naming remains only for legacy compatibility"
-)]
-pub type PageStoreGcPolicy = BlockStoreGcPolicy;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreGcPolicyPlan; page naming remains only for legacy compatibility"
-)]
-pub type PageStoreGcPolicyPlan = BlockStoreGcPolicyPlan;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreDelayedDestroySegmentReport; page naming remains only for legacy compatibility"
-)]
-pub type PageStoreDelayedDestroySegmentReport = BlockStoreDelayedDestroySegmentReport;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStorePurgeDelayedDestroyReport; page naming remains only for legacy compatibility"
-)]
-pub type PageStorePurgeDelayedDestroyReport = BlockStorePurgeDelayedDestroyReport;
-
-#[deprecated(since = "0.1.0", note = "use BlockStoreBandState")]
-pub type BlockStoreZoneState = BlockStoreBandState;
-
-#[deprecated(since = "0.1.0", note = "use BlockStoreBandDescriptor")]
-pub type BlockStoreZoneDescriptor = BlockStoreBandDescriptor;
-
-#[deprecated(since = "0.1.0", note = "use BlockStoreBandSummary")]
-pub type BlockStoreZoneSummary = BlockStoreBandSummary;
-
-#[deprecated(since = "0.1.0", note = "use BlockStoreZoneUsage")]
-pub type PageStoreZoneUsage = BlockStoreZoneUsage;
-
-#[deprecated(since = "0.1.0", note = "use StreamBackedBandRuntimeReport")]
-pub type StreamBackedZoneRuntimeReport = StreamBackedBandRuntimeReport;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreBandState; page naming remains only for legacy compatibility"
-)]
-pub type PageStoreBandState = BlockStoreBandState;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreBandState; zone naming remains only for legacy compatibility"
-)]
-pub type PageStoreZoneState = BlockStoreBandState;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreBandDescriptor; page naming remains only for legacy compatibility"
-)]
-pub type PageStoreBandDescriptor = BlockStoreBandDescriptor;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreBandDescriptor; zone naming remains only for legacy compatibility"
-)]
-pub type PageStoreZoneDescriptor = BlockStoreBandDescriptor;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreBandSummary; page naming remains only for legacy compatibility"
-)]
-pub type PageStoreBandSummary = BlockStoreBandSummary;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreBandSummary; zone naming remains only for legacy compatibility"
-)]
-pub type PageStoreZoneSummary = BlockStoreBandSummary;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreSegmentReport; page naming remains only for legacy compatibility"
-)]
-pub type PageStoreSegmentReport = BlockStoreSegmentReport;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreBlockIndexReport; page naming remains only for legacy compatibility"
-)]
-pub type PageStorePageIndexReport = BlockStoreBlockIndexReport;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreRollReport; page naming remains only for legacy compatibility"
-)]
-pub type PageStoreRollReport = BlockStoreRollReport;
-
-#[deprecated(
-    since = "0.1.0",
-    note = "use LocalBlockStore; page naming remains only for legacy compatibility"
-)]
-pub type LocalPageStore = LocalBlockStore;
 
 mod tests {
     use super::*;

@@ -2,12 +2,12 @@ use std::collections::{HashMap, HashSet};
 
 use matrixcache::{CacheEntryInfo, CacheKey, MultiLayerCache};
 
-use crate::page_store::{LocalPageStore, PageAddress};
+use crate::block_store::{LocalBlockStore, BlockAddress};
 use crate::types::ShardId;
 
 pub(super) fn single_non_empty_page_address(
-    addresses: &[Option<PageAddress>],
-) -> Option<&PageAddress> {
+    addresses: &[Option<BlockAddress>],
+) -> Option<&BlockAddress> {
     let mut single_address = None;
     for address in addresses.iter().flatten() {
         match single_address {
@@ -21,7 +21,7 @@ pub(super) fn single_non_empty_page_address(
 
 pub(super) struct BatchPageReadEntry {
     pub(super) key: CacheKey,
-    pub(super) address: PageAddress,
+    pub(super) address: BlockAddress,
     pub(super) first_index: usize,
     pub(super) extra_indexes: Vec<usize>,
 }
@@ -93,7 +93,7 @@ pub(super) fn duplicate_page_read_values(
 }
 
 pub(super) fn duplicate_sparse_page_read_values(
-    addresses: &[Option<PageAddress>],
+    addresses: &[Option<BlockAddress>],
     bytes: Option<Vec<u8>>,
 ) -> Vec<Option<Vec<u8>>> {
     let Some(bytes) = bytes else {
@@ -120,13 +120,13 @@ pub(super) fn duplicate_sparse_page_read_values(
 }
 
 pub(super) fn read_page_bytes_cold(
-    page_store: &LocalPageStore,
-    address: &PageAddress,
+    page_store: &LocalBlockStore,
+    address: &BlockAddress,
 ) -> Option<Vec<u8>> {
     page_store.read_cold(address).ok()
 }
 
-pub(super) fn page_address_cache_key(shard_id: ShardId, address: &PageAddress) -> CacheKey {
+pub(super) fn page_address_cache_key(shard_id: ShardId, address: &BlockAddress) -> CacheKey {
     CacheKey::page_with_slot_generation(
         shard_id,
         address.page_segment_id,
@@ -139,9 +139,9 @@ pub(super) fn page_address_cache_key(shard_id: ShardId, address: &PageAddress) -
 
 pub(super) fn read_page_bytes(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
-    address: &PageAddress,
+    address: &BlockAddress,
 ) -> Option<Vec<u8>> {
     let cache_key = page_address_cache_key(shard_id, address);
     if let Ok(Some(bytes)) = cache.get(&cache_key) {
@@ -154,9 +154,9 @@ pub(super) fn read_page_bytes(
 
 pub(super) fn read_page_bytes_batch(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
-    addresses: &[Option<PageAddress>],
+    addresses: &[Option<BlockAddress>],
 ) -> Vec<Option<Vec<u8>>> {
     if addresses.is_empty() {
         return Vec::new();
@@ -271,9 +271,9 @@ pub(super) fn read_page_bytes_batch(
 
 pub(super) fn read_page_bytes_batch_owned(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard_id: ShardId,
-    addresses: Vec<Option<PageAddress>>,
+    addresses: Vec<Option<BlockAddress>>,
 ) -> Vec<Option<Vec<u8>>> {
     if addresses.is_empty() {
         return Vec::new();

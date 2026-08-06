@@ -3,7 +3,7 @@ use super::*;
 
 pub(crate) fn execute_on_shard(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     feature_max_size: usize,
     async_storage: bool,
     shard_id: ShardId,

@@ -1,12 +1,12 @@
 use super::*;
 
 pub(super) fn storage_feature_page_layout_report(
-    page_store: &LocalPageStore,
+    page_store: &LocalBlockStore,
     shard: &ShardState,
 ) -> StorageFeaturePageLayoutReport {
     let mut report = StorageFeaturePageLayoutReport::default();
     let mut family_reports = BTreeMap::<String, StorageTimestampedPageFamilyReport>::new();
-    let mut inspected_addresses = HashSet::<PageAddress>::new();
+    let mut inspected_addresses = HashSet::<BlockAddress>::new();
     for (kind, key, series) in timestamped_kv_series(shard) {
         report.indexed_timestamped_points = report
             .indexed_timestamped_points
@@ -22,7 +22,7 @@ pub(super) fn storage_feature_page_layout_report(
             }
         });
         family.indexed_points = family.indexed_points.saturating_add(series.len());
-        let mut timestamps_by_address = HashMap::<PageAddress, BTreeSet<u64>>::new();
+        let mut timestamps_by_address = HashMap::<BlockAddress, BTreeSet<u64>>::new();
         for (timestamp_ms, address) in series {
             timestamps_by_address
                 .entry(address.clone())
@@ -235,7 +235,7 @@ pub(super) fn storage_feature_page_layout_report(
 fn feature_page_error(
     kind: &str,
     key: &str,
-    address: &PageAddress,
+    address: &BlockAddress,
     error: impl Into<String>,
 ) -> StorageFeaturePageError {
     StorageFeaturePageError {
@@ -252,7 +252,7 @@ fn feature_page_timestamp_mismatch(
     kind: &str,
     key: &str,
     timestamp_ms: u64,
-    address: &PageAddress,
+    address: &BlockAddress,
 ) -> StorageFeaturePageTimestampMismatch {
     StorageFeaturePageTimestampMismatch {
         kind: kind.to_string(),

@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::page_store::{
-    PageStoreSegmentReport, PageStoreStats, PageStoreZoneDescriptor, PageStoreZoneSummary,
+use crate::block_store::{
+    BlockStoreSegmentReport, BlockStoreStats, BlockStoreBandDescriptor, BlockStoreBandSummary,
 };
 use crate::storage_config::{
     StorageTuningConfig, TS_BLOCK_INDEX_CACHE_BYTES, TS_BLOCK_SEGMENT_TARGET_BYTES,
@@ -200,7 +200,7 @@ pub struct ShardExpirySweepRequest {
 pub struct RustStorageObservation {
     pub shard_id: ShardId,
     pub cache: CacheStats,
-    pub page_store: PageStoreStats,
+    pub page_store: BlockStoreStats,
     pub observed_memory_hit: bool,
     pub observed_block_cache_hit: bool,
     pub observed_local_file_read: bool,
@@ -222,11 +222,11 @@ pub struct StorageRecoveryReport {
     pub index_log_records: usize,
     pub active_page_segment_ids: Vec<u64>,
     pub live_page_segment_ids: Vec<u64>,
-    pub zone_descriptors: Vec<PageStoreZoneDescriptor>,
+    pub zone_descriptors: Vec<BlockStoreBandDescriptor>,
     #[serde(default)]
-    pub zone_summary: PageStoreZoneSummary,
+    pub zone_summary: BlockStoreBandSummary,
     #[serde(default)]
-    pub page_segment_reports: Vec<PageStoreSegmentReport>,
+    pub page_segment_reports: Vec<BlockStoreSegmentReport>,
     #[serde(default)]
     pub page_segment_live_reports: Vec<StorageRecoverySegmentLiveReport>,
     pub total_page_refs: usize,
@@ -864,7 +864,7 @@ impl Default for PublicStorageContract {
         compatibility_aliases.insert(text("stream_blob"), text("Stream"));
 
         Self {
-            page_address: text("PageAddress"),
+            page_address: text("BlockAddress"),
             block_address: text("BlockAddress"),
             page_index_entry: text("PageIndexEntry"),
             block_index_entry: text("BlockIndexEntry"),
@@ -2059,7 +2059,7 @@ pub fn default_storage_write_contract(
     contract.insert("shard_id".to_string(), contract_u64(0));
     contract.insert("slot".to_string(), contract_text("slot:0"));
     contract.insert("placement_key".to_string(), contract_text("storage:parity"));
-    contract.insert("page_address".to_string(), contract_text("PageAddress"));
+    contract.insert("page_address".to_string(), contract_text("BlockAddress"));
     contract.insert("block_address".to_string(), contract_text("BlockAddress"));
     contract.insert(
         "append_watermark".to_string(),
@@ -2315,7 +2315,7 @@ pub fn default_storage_index_contract(
     let mut contract = BTreeMap::new();
     contract.insert(
         "page_address_codec".to_string(),
-        contract_text("PageAddress"),
+        contract_text("BlockAddress"),
     );
     contract.insert(
         "block_address_codec".to_string(),
