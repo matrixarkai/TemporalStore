@@ -625,9 +625,12 @@ impl ContextWire for ContextNode {
         encode_bytes_field(&mut out, 4, self.canonical_name.as_bytes());
         encode_bytes_field(&mut out, 5, self.l0.as_bytes());
         encode_varint_field(&mut out, 6, self.last_event_time_ms);
-        if !self.raw_metadata_ref.is_empty() {
-            encode_bytes_field(&mut out, 10, self.raw_metadata_ref.as_bytes());
-        }
+        // raw_metadata_ref is a deprecated hot-schema field (like status,
+        // summary_dirty, and l1_ref, all #[serde(default, skip_serializing)]);
+        // source provenance moved to resource/provenance sidecars. It is the last
+        // deprecated field still being written to the canonical C++ wire payload,
+        // so encoding it round-trips a value the trimmed schema must drop. Stop
+        // emitting field 10; decode still accepts it for legacy on-disk pages.
         out
     }
 
