@@ -1471,3 +1471,123 @@ th {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* Account access card (sign in / register) */
+.auth-card {
+  display: grid;
+  gap: 16px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--white);
+}
+
+.auth-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: #f1f5f9;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.auth-tab {
+  padding: 8px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.auth-tab.is-on {
+  color: var(--ink);
+  background: var(--white);
+  box-shadow: 0 1px 4px rgba(18, 24, 38, 0.14);
+}
+
+.provider-buttons {
+  display: grid;
+  gap: 10px;
+}
+
+.provider-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 50px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--white);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease, transform 0.14s ease;
+}
+
+.provider-btn:hover {
+  border-color: var(--teal);
+  box-shadow: 0 8px 20px rgba(18, 24, 38, 0.08);
+  transform: translateY(-1px);
+}
+
+.provider-btn span {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.provider-btn.github {
+  background: #1b2330;
+  color: #ffffff;
+  border-color: #1b2330;
+}
+
+.provider-btn.github span {
+  color: #aab4c2;
+}
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.auth-register-only {
+  display: none;
+}
+
+.auth-card.is-register .auth-register-only {
+  display: grid;
+}
+
+.auth-2col {
+  gap: 11px;
+}
+
+.auth-card.is-register .auth-2col {
+  grid-template-columns: 1fr 1fr;
+}
+
+@media (max-width: 620px) {
+  .auth-card.is-register .auth-2col {
+    grid-template-columns: 1fr;
+  }
+}

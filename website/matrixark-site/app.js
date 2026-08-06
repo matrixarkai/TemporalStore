@@ -74,3 +74,68 @@ const updateApiKeyPayload = () => {
 
 apiKeyForm?.addEventListener("input", updateApiKeyPayload);
 updateApiKeyPayload();
+
+
+// --- Account access: Gmail auto-login, GitHub, and email sign in / register ---
+const authForm = document.querySelector("#auth-form");
+const authPayload = document.querySelector("#auth-payload");
+if (authForm && authPayload) {
+  const authCard = document.querySelector(".auth-card");
+  const value = (selector, fallback) => (document.querySelector(selector)?.value || fallback || "").trim();
+  const registerScopes = [
+    "admin:account", "admin:user", "admin:api_key", "admin:sso", "admin:audit",
+    "portal:read", "context:ingest", "context:retrieve", "context:feedback", "context:replay", "resource:read", "skill:read",
+  ];
+  let authMode = "signin";
+  let authProvider = "password";
+
+  const buildAuthPayload = () => {
+    const email = value("#auth-email", "alice@gmail.com");
+    const account_id = value("#auth-account", "acct_acme");
+    const tenant_id = value("#auth-tenant", "tenant_prod");
+    if (authProvider === "google") {
+      return { endpoint: "/api/auth/sso_callback", tool: "matrixark_auth_sso_callback",
+        arguments: { provider: "google", id_token: "<google-oidc-id-token>", google_client_id: "<your-google-client-id>", account_id, tenant_id } };
+    }
+    if (authProvider === "github") {
+      return { endpoint: "/api/auth/sso_callback", tool: "matrixark_auth_sso_callback",
+        arguments: { provider: "github", external_user_id: email, email, trusted_gateway: true, account_id, tenant_id } };
+    }
+    if (authMode === "register") {
+      return { endpoint: "/api/auth/signup", tool: "matrixark_auth_signup",
+        arguments: { provider: "password", email, password: "••••••••", display_name: value("#auth-name", "Alice Chen"), account_id, tenant_id, user_id: "usr_" + (email.split("@")[0] || "user"), first_key_scopes: registerScopes } };
+    }
+    return { endpoint: "/api/auth/login", tool: "matrixark_auth_login",
+      arguments: { email, password: "••••••••", account_id, tenant_id, provider: "password" } };
+  };
+
+  const renderAuth = () => {
+    authPayload.textContent = JSON.stringify(buildAuthPayload(), null, 2);
+    const title = document.querySelector("#auth-payload-title");
+    if (title) {
+      title.textContent = authProvider === "google" ? "Google verified → sso_callback"
+        : authProvider === "github" ? "GitHub → sso_callback"
+        : authMode === "register" ? "Register → signup" : "Sign in → login";
+    }
+  };
+
+  const setAuthMode = (mode) => {
+    authMode = mode;
+    authProvider = "password";
+    authCard?.classList.toggle("is-register", mode === "register");
+    document.querySelectorAll(".auth-tab").forEach((tab) => {
+      const on = tab.dataset.authMode === mode;
+      tab.classList.toggle("is-on", on);
+      tab.setAttribute("aria-selected", String(on));
+    });
+    const submit = document.querySelector("#auth-submit");
+    if (submit) submit.textContent = mode === "register" ? "Create account" : "Sign in";
+    renderAuth();
+  };
+
+  document.querySelectorAll(".auth-tab").forEach((tab) => tab.addEventListener("click", () => setAuthMode(tab.dataset.authMode)));
+  document.querySelectorAll("[data-auth-provider]").forEach((btn) => btn.addEventListener("click", () => { authProvider = btn.dataset.authProvider; renderAuth(); }));
+  authForm.addEventListener("input", () => { authProvider = "password"; renderAuth(); });
+  authForm.addEventListener("submit", (event) => { event.preventDefault(); authProvider = "password"; renderAuth(); });
+  setAuthMode("signin");
+}

@@ -42,9 +42,67 @@
             MatrixArk treats account, tenant, user, session, and API key as first-class boundaries. Start with a cloud account or local deployment, then issue scoped keys for Codex/Cursor hooks, MCP servers, batch ingestion, and admin automation.
           </p>
           <div class="hero-actions">
-            <a class="button primary" href="./management-portal.html">Open portal</a>
+            <a class="button primary" href="#account-access">Sign in or register</a>
             <a class="button secondary" href="#api-key-request">API key request</a>
           </div>
+        </div>
+      </section>
+
+      <section id="account-access" class="section key-request-section">
+        <div class="section-heading compact">
+          <p class="eyebrow">Sign in / Register</p>
+          <h2>Continue with Gmail, or create an account with email and password.</h2>
+          <p>Verified Gmail/Google and GitHub identities map to a MatrixArk user; email accounts store a salted PBKDF2 hash. Identity and API-key hashes persist in MatrixKV SQL or MySQL — never a raw token or password.</p>
+        </div>
+        <div class="key-request-layout">
+          <div class="auth-card">
+            <div class="auth-tabs" role="tablist" aria-label="Sign in or register">
+              <button class="auth-tab is-on" type="button" data-auth-mode="signin" aria-selected="true">Sign in</button>
+              <button class="auth-tab" type="button" data-auth-mode="register" aria-selected="false">Create account</button>
+            </div>
+            <div class="provider-buttons">
+              <button class="provider-btn" type="button" data-auth-provider="google">
+                <svg viewBox="0 0 18 18" width="18" height="18" aria-hidden="true"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.71-1.57 2.68-3.88 2.68-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.83.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.97 10.72a5.4 5.4 0 0 1 0-3.44V4.95H.96a9 9 0 0 0 0 8.1l3.01-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.47.9 11.43 0 9 0A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/></svg>
+                Continue with Google <span>Gmail auto-login</span>
+              </button>
+              <button class="provider-btn github" type="button" data-auth-provider="github">
+                <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+                Continue with GitHub <span>SSO callback</span>
+              </button>
+            </div>
+            <div class="auth-divider"><span>or use email</span></div>
+            <form class="access-form" id="auth-form" aria-label="Email sign in or registration">
+              <label class="auth-register-only">
+                Full name
+                <input id="auth-name" value="Alice Chen" autocomplete="name" />
+              </label>
+              <label>
+                Work email
+                <input id="auth-email" type="email" value="alice@gmail.com" autocomplete="email" />
+              </label>
+              <div class="auth-register-only auth-2col">
+                <label>Account ID<input id="auth-account" value="acct_acme" /></label>
+                <label>Tenant ID<input id="auth-tenant" value="tenant_prod" /></label>
+              </div>
+              <label>
+                Password
+                <input id="auth-password" type="password" value="use-a-strong-passphrase" autocomplete="current-password" />
+              </label>
+              <button class="button primary" id="auth-submit" type="submit">Sign in</button>
+            </form>
+          </div>
+          <aside class="access-preview">
+            <div class="panel-head compact">
+              <h2 id="auth-payload-title">Request MatrixArk runs</h2>
+            </div>
+            <pre id="auth-payload" aria-live="polite"></pre>
+            <div class="access-note-grid">
+              <div><strong>Gmail/Google</strong><span>id_token verified in-process (RS256)</span></div>
+              <div><strong>Email account</strong><span>PBKDF2-SHA256 hash only</span></div>
+              <div><strong>Store</strong><span>MatrixKV SQL or MySQL</span></div>
+              <div><strong>Never stored</strong><span>raw token or password</span></div>
+            </div>
+          </aside>
         </div>
       </section>
 
@@ -145,9 +203,9 @@
 
       <section class="section access-section reference-section">
         <div class="section-heading">
-          <p class="eyebrow">OpenViking/VikingMem lessons</p>
+          <p class="eyebrow">OpenViking / VikingMem lessons</p>
           <h2>Registration is designed for agent context systems, not only ordinary API access.</h2>
-          <p>OpenViking shows why agents need organized memories, resources, and skills instead of flat chunks. VikingMem shows why long-running applications need session batches, event/entity memory, operators, temporal compression, and time-aware recall. MatrixArk keeps the caller surface simple while adding account, user, session, and key governance around those flows.</p>
+          <p>OpenViking and VikingMem on Volcano Engine (volcengine) show why agents need organized memories, resources, and skills instead of flat chunks — and why long-running applications need session batches, event/entity memory, operators, temporal compression, and time-aware recall. MatrixArk brings the same model to an open, self-hostable stack: it keeps the caller surface simple while adding account, user, session, and API-key governance, backed by your own MatrixKV SQL or MySQL.</p>
         </div>
         <div class="access-reference-grid">
           <article>
