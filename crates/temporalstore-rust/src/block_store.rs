@@ -524,6 +524,9 @@ pub struct LocalBlockStore {
 #[derive(Debug)]
 struct BlockStoreInner {
     root: PathBuf,
+    // Set when a relaxed (bulk) append deferred its fsync + manifest persist;
+    // cleared by sync_durable(). See bulk_relaxed_durability().
+    relaxed_dirty: bool,
     page_segment_id: u64,
     write_offset: u64,
     next_page_id: u64,
@@ -572,6 +575,7 @@ impl LocalBlockStore {
         Self {
             inner: Arc::new(Mutex::new(BlockStoreInner {
                 root,
+                relaxed_dirty: false,
                 page_segment_id,
                 write_offset,
                 next_page_id,
@@ -724,11 +728,34 @@ fn should_roll_before_append(
     write_offset > 0 && write_offset.saturating_add(record_len) > segment_target_bytes
 }
 
+/// Bulk backfill (MATRIXARK_BULK_INGEST) defers per-append fsync + manifest
+/// persistence to an explicit sync_durable(), trading crash-durability *within a
+/// resumable/WAL-backed chunk* for far fewer fsyncs. The live path (env unset)
+/// keeps full per-append durability.
+pub(crate) fn bulk_relaxed_durability() -> bool {
+    matches!(
+        std::env::var("MATRIXARK_BULK_INGEST")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 fn roll_segment_inner(
     inner: &mut BlockStoreInner,
 ) -> Result<BlockStoreRollReport, BlockStoreError> {
     fs::create_dir_all(&inner.root)?;
     let previous_page_segment_id = inner.page_segment_id;
+    // The outgoing segment may hold relaxed (un-fsynced) bulk appends; make them
+    // durable before we seal and stop writing to it.
+    {
+        let prev_path = segment_path(&inner.root, previous_page_segment_id);
+        if let Ok(prev) = OpenOptions::new().append(true).open(&prev_path) {
+            let _ = prev.sync_data();
+        }
+    }
     let next_from_current = inner.page_segment_id.saturating_add(1);
     let next_from_disk = segment_ids_at(&inner.root)?
         .into_iter()

@@ -108,6 +108,10 @@ impl TemporalEngine {
     /// after driving many extract_context calls under MATRIXARK_BULK_INGEST=1,
     /// which skips per-record persistence). Also refreshes the index-log tail.
     pub fn flush_shard_index(&self, shard_id: ShardId) {
+        // Make the chunk's deferred bulk writes durable before publishing the
+        // served index: fsync page segments + extent manifest, then the WAL.
+        let _ = self.page_store.sync_durable();
+        let _ = self.wal_store.flush(shard_id);
         let index_bytes = {
             // Reconstruct everything the per-command bulk path deferred: promote
             // model-map pages into slot_index, rebuild the secondary views, refresh
